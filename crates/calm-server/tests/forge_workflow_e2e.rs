@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -15,14 +16,23 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_mcp_token_set_tx, card_with_codex_create_tx, session_bind_attribution_tx,
-    session_mcp_token_set_tx, session_projection_active_for_card_tx, session_start_runtime_tx,
+    session_mark_wave_root_tx, session_mcp_token_set_tx, session_projection_active_for_card_tx,
+    session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
-use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::event::{ChannelVerdict, Event, EventBus, EventScope, RatifyDecision};
 use calm_server::forge_trust::trusted_forge_plugin;
-use calm_server::ids::{ActorId, CoveId, WaveId};
-use calm_server::mcp_server::{McpServer, build_default_registry};
-use calm_server::model::{CardRole, NewCove, NewPlugin, NewWave, WaveLifecycle, new_id, now_ms};
+use calm_server::harness::{
+    HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
+};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
+use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
+use calm_server::mcp_server::{
+    AppContext, McpServer, ToolCallIdentity, ToolRegistry, build_default_registry,
+};
+use calm_server::model::{
+    CardRole, NewCard, NewCove, NewPlugin, NewWave, WaveLifecycle, new_id, now_ms,
+};
 use calm_server::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionAdapter, ForgeActionPayload, ProbeSpec,
 };
@@ -34,8 +44,11 @@ use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRunti
 use calm_server::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
+use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_types::worker::WorkerSessionId;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::mcp::{
@@ -57,6 +70,7 @@ const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
 const ISSUE_VIEW_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.view";
 const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const SPEC_SESSION_ID: &str = "forge-workflow-spec-session";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 const WORKFLOW_ID: &str = "issue-development";
@@ -67,27 +81,33 @@ struct Fixture {
     repo: Arc<SqlxRepo>,
     events: EventBus,
     write: WriteContext,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
+    review_ctx: Arc<AppContext>,
+    review_registry: Arc<ToolRegistry>,
     socket_path: PathBuf,
     raw_token: String,
     thread_id: String,
     wave_id: String,
     cove_id: String,
+    spec_card_id: String,
+    worker_card_id: String,
     lease_id: String,
     lease_abs: PathBuf,
+    wave_cwd: PathBuf,
     origin_repo: PathBuf,
     _runtime: Arc<OperationRuntime>,
-    _lease_tmp: TempDir,
     _socket_tmp: TempDir,
     _tmp: TempDir,
 }
 
 struct Caller {
+    card_id: String,
     raw_token: String,
     thread_id: String,
     wave_id: String,
     lease_id: String,
     lease_abs: PathBuf,
-    _lease_tmp: TempDir,
 }
 
 #[derive(Clone, Debug)]
@@ -758,6 +778,462 @@ async fn git_forge_issue_close_crash_recovers_once_via_verdict_probe() {
         .expect("stop git-forge plugin");
 }
 
+#[tokio::test]
+async fn dual_review_converges_then_merges() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _env = setup_forge_env();
+
+    let fx = boot_fixture().await;
+    let design_round = emit_review_round(&fx, &ReviewRoundInput::design("760")).await;
+    // Scripted dispatch: CI lacks the real scheduler/Codex path, matching this slice's scripted verdict spine.
+    let impl_dispatch = emit_scripted_impl_dispatch(&fx, "760").await;
+    let pr = drive_pr_to_diff(
+        &fx,
+        40,
+        760,
+        "slice-760-review-converges",
+        "review-converges.txt",
+        "review convergence e2e\n",
+        "Review convergence E2E",
+    )
+    .await;
+    let impl_round = emit_review_round(
+        &fx,
+        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 8, true),
+    )
+    .await;
+
+    let merged = merge_reviewed_pr(&fx, 44, &pr, "760").await;
+    let issue_closed = close_issue(&fx, 46, &pr.repo_arg, 760).await;
+    transition_wave_to_done(&fx).await;
+    let done = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["to"] == "done"
+    })
+    .await;
+
+    assert!(
+        design_round.id < impl_dispatch.id,
+        "design review must precede scripted impl dispatch"
+    );
+    assert!(
+        design_round.id < merged.id,
+        "design review must precede merge"
+    );
+    assert!(impl_round.id < merged.id, "PR review must precede merge");
+    assert_eq!(
+        row_head_sha(&merged).as_deref(),
+        Some(pr.head_sha.as_str()),
+        "merge must use reviewed head"
+    );
+    assert!(merged.id < issue_closed.id, "merge must precede close");
+    assert!(issue_closed.id < done.id, "close must precede done");
+    assert_subject_keyed_cap_enforcement(&fx).await;
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+#[tokio::test]
+async fn cap_exhausted_give_up_fails_terminal() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _env = setup_forge_env();
+
+    let fx = boot_fixture().await;
+    let pr = drive_pr_to_diff(
+        &fx,
+        50,
+        761,
+        "slice-760-review-give-up",
+        "review-give-up.txt",
+        "review give-up e2e\n",
+        "Review give-up E2E",
+    )
+    .await;
+    let cap_round = emit_review_round(
+        &fx,
+        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 1, false),
+    )
+    .await;
+
+    transition_wave_along(
+        &fx,
+        &[
+            WaveLifecycle::Planning,
+            WaveLifecycle::Dispatching,
+            WaveLifecycle::Working,
+            WaveLifecycle::Reviewing,
+            WaveLifecycle::Failed,
+        ],
+        "scripted give-up after cap exhaustion",
+    )
+    .await;
+    let failed = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["to"] == "failed"
+    })
+    .await;
+    assert_eq!(failed.payload["from"], "reviewing");
+    assert!(cap_round.id < failed.id);
+    // Scripted-event-spine coverage: the spine ordering/cap guard is in scope; production merge intent is not.
+    assert!(
+        event_rows(&fx.repo, "forge.pr.merged")
+            .await
+            .iter()
+            .all(|row| row.payload["subject"]["pr_number"] != json!(pr.pr_number)),
+        "give-up subject must not merge"
+    );
+    assert_subject_keyed_cap_enforcement(&fx).await;
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+#[tokio::test]
+async fn cap_exhausted_ask_human_pauses_then_resumes() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _env = setup_forge_env();
+
+    let fx = boot_fixture().await;
+    let pr = drive_pr_to_diff(
+        &fx,
+        60,
+        762,
+        "slice-760-review-ask-human",
+        "review-ask-human.txt",
+        "review ask-human e2e\n",
+        "Review ask-human E2E",
+    )
+    .await;
+    transition_wave_along(
+        &fx,
+        &[
+            WaveLifecycle::Planning,
+            WaveLifecycle::Dispatching,
+            WaveLifecycle::Working,
+            WaveLifecycle::Reviewing,
+        ],
+        "ready for capped review",
+    )
+    .await;
+    let cap_round = emit_review_round(
+        &fx,
+        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 1, 1, false),
+    )
+    .await;
+    transition_wave_along(
+        &fx,
+        &[WaveLifecycle::Working],
+        "ask human after capped review",
+    )
+    .await;
+    let request = request_ratification(&fx, "cap_exhausted").await;
+
+    let lifecycle = event_rows(&fx.repo, "wave.lifecycle_changed").await;
+    let reviewing_to_working = lifecycle
+        .iter()
+        .find(|row| {
+            row.id > cap_round.id
+                && row.scope_wave.as_deref() == Some(&fx.wave_id)
+                && row.payload["from"] == "reviewing"
+                && row.payload["to"] == "working"
+        })
+        .expect("reviewing->working edge before ratify");
+    let working_to_blocked = lifecycle
+        .iter()
+        .find(|row| {
+            row.id > reviewing_to_working.id
+                && row.scope_wave.as_deref() == Some(&fx.wave_id)
+                && row.payload["from"] == "working"
+                && row.payload["to"] == "blocked"
+        })
+        .expect("working->blocked edge from ratify request");
+    assert!(working_to_blocked.id < request.id);
+    assert!(
+        lifecycle.iter().all(|row| {
+            !(row.scope_wave.as_deref() == Some(&fx.wave_id)
+                && row.payload["from"] == "reviewing"
+                && row.payload["to"] == "blocked")
+        }),
+        "ASK-HUMAN must not use a direct reviewing->blocked edge"
+    );
+    // Scripted-event-spine coverage: pre-grant merge absence scopes the cap guard, not production Codex bytes.
+    assert!(
+        event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
+        "merge must be absent while latest subject round is unconverged before grant"
+    );
+    assert_subject_keyed_cap_enforcement(&fx).await;
+
+    let (status, body) = post_ratify(&fx, "grant").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let resolved = wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["decision"] == "grant"
+    })
+    .await;
+    let unblocked = wait_for_event_matching(&fx.repo, "wave.lifecycle_changed", |row| {
+        row.id > request.id
+            && row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.payload["from"] == "blocked"
+            && row.payload["to"] == "working"
+    })
+    .await;
+    assert!(unblocked.id < resolved.id);
+
+    transition_wave_along(
+        &fx,
+        &[WaveLifecycle::Reviewing],
+        "resume review after grant",
+    )
+    .await;
+    let converged = emit_review_round(
+        &fx,
+        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 2, 8, true),
+    )
+    .await;
+    let merged = merge_reviewed_pr(&fx, 64, &pr, "760").await;
+    close_issue(&fx, 66, &pr.repo_arg, 762).await;
+    transition_wave_along(
+        &fx,
+        &[WaveLifecycle::Done],
+        "done after ratified convergence",
+    )
+    .await;
+
+    assert!(resolved.id < converged.id);
+    assert!(converged.id < merged.id);
+    assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
+    assert_subject_keyed_cap_enforcement(&fx).await;
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+#[tokio::test]
+async fn review_round_recovers_into_pending_queue() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _env = setup_forge_env();
+
+    let fx = boot_fixture().await;
+    transition_wave_along(
+        &fx,
+        &[
+            WaveLifecycle::Planning,
+            WaveLifecycle::Dispatching,
+            WaveLifecycle::Working,
+        ],
+        "recovery ratify setup",
+    )
+    .await;
+    let input = ReviewRoundInput::impl_round("760", 760, "head-sha-recovery", 1, 1, false);
+    emit_review_round(&fx, &input).await;
+    request_ratification(&fx, "cap_exhausted").await;
+    let (status, body) = post_ratify(&fx, "grant").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    wait_for_event_matching(&fx.repo, "ratify.resolved", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["decision"] == "grant"
+    })
+    .await;
+
+    let runtime = fx
+        .repo
+        .session_projection_by_id(&SPEC_SESSION_ID.to_string())
+        .await
+        .expect("query spec runtime")
+        .expect("spec runtime");
+    let repo: Arc<dyn Repo> = fx.repo.clone();
+    let daemon = SharedCodexAppServer::new_stub(repo.clone());
+    let registry = HarnessRegistry::new();
+    let handle = spawn_recovered_harness(
+        repo,
+        fx.events.clone(),
+        fx.card_role_cache.clone(),
+        fx.wave_cove_cache.clone(),
+        daemon,
+        &registry,
+        runtime,
+    )
+    .await
+    .expect("spawn recovered harness")
+    .expect("recovered harness");
+
+    let pending = wait_for_recovered_pending(&handle).await;
+    assert!(
+        pending.iter().any(|obs| matches!(
+            obs,
+            Observation::ReviewRound {
+                phase,
+                slice_id,
+                pr_number: Some(760),
+                head_sha: Some(head_sha),
+                n: 1,
+                cap: 1,
+                converged: false,
+                ..
+            } if phase == "impl" && slice_id == "760" && head_sha == "head-sha-recovery"
+        )),
+        "review.round must recover into pending queue: {pending:?}"
+    );
+    assert!(
+        pending.iter().any(|obs| matches!(
+            obs,
+            Observation::RatifyRequested { reason, .. } if reason == "cap_exhausted"
+        )),
+        "ratify.requested must recover into pending queue: {pending:?}"
+    );
+    assert!(
+        pending.iter().any(|obs| matches!(
+            obs,
+            Observation::RatifyResolved {
+                decision: RatifyDecision::Grant,
+                ..
+            }
+        )),
+        "ratify.resolved grant must recover into pending queue: {pending:?}"
+    );
+    assert_review_round_duplicate_noop(&fx, &input).await;
+
+    handle.shutdown().await.expect("shutdown recovered harness");
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
+#[tokio::test]
+async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _env = setup_forge_env();
+
+    let fx = boot_fixture().await;
+    let pr = drive_pr_to_diff(
+        &fx,
+        70,
+        763,
+        "slice-760-fu4",
+        "fu4.txt",
+        "fu4 teardown fence e2e\n",
+        "FU4 teardown fence E2E",
+    )
+    .await;
+    let state = shim_state_dir(&fx.origin_repo);
+    let block = ShimBlock::new(&state, "pr_merge");
+
+    let checks_resp = call_tool(
+        &fx,
+        74,
+        PR_CHECKS_TOOL,
+        json!({ "repo": pr.repo_arg, "pr": pr.pr_number }),
+    )
+    .await;
+    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    let merge_resp = call_tool(
+        &fx,
+        75,
+        PR_MERGE_TOOL,
+        json!({
+            "repo": pr.repo_arg.as_str(),
+            "pr": pr.pr_number,
+            "phase": "impl",
+            "slice_id": "760",
+            "expected_head_sha": pr.head_sha.as_str()
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    let op_id = op_id_from_response(&merge_resp);
+    wait_for_counter(&state.join("pr_merge_count"), 1).await;
+    wait_for_operation_phase(&fx.repo, &op_id, "parked").await;
+
+    let release_count_before = event_rows(&fx.repo, "workspace.released").await.len();
+    let status = delete_wave(&fx).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(workspace_lease_state(&fx.repo, &fx.lease_id).await, "held");
+    assert_event_count_stays(&fx.repo, "workspace.released", release_count_before).await;
+    assert!(
+        fx.lease_abs.exists(),
+        "lease path must survive fenced teardown"
+    );
+
+    block.release();
+    wait_for_operation_phase(&fx.repo, &op_id, "succeeded").await;
+    let merged = wait_for_event_matching(&fx.repo, "forge.pr.merged", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.payload["subject"]["pr_number"] == json!(pr.pr_number)
+    })
+    .await;
+    assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
+    close_issue(&fx, 76, &pr.repo_arg, 763).await;
+
+    let status = delete_wave(&fx).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let released_rows =
+        wait_for_event_count(&fx.repo, "workspace.released", release_count_before + 1).await;
+    assert_eq!(
+        released_rows.len(),
+        release_count_before + 1,
+        "successful teardown must emit exactly one new workspace.released row"
+    );
+    let released = released_rows
+        .iter()
+        .find(|row| row.payload["lease_id"] == json!(fx.lease_id))
+        .expect("teardown persisted workspace.released for worker lease");
+    assert_eq!(
+        released.payload["card_id"],
+        json!(fx.worker_card_id.as_str()),
+        "workspace.released must identify the released worker card"
+    );
+    assert_eq!(
+        workspace_lease_state_optional(&fx.repo, &fx.lease_id).await,
+        None,
+        "wave delete cascades released workspace lease rows after persisting workspace.released"
+    );
+    assert!(
+        !git_ref_exists(
+            &fx.wave_cwd,
+            &format!("refs/heads/neige/{}/{}", fx.wave_id, fx.worker_card_id),
+        ),
+        "wave teardown must remove the released worker branch"
+    );
+    assert!(
+        !fx.lease_abs.exists(),
+        "wave teardown must remove the released worker checkout"
+    );
+
+    let release_count = event_rows(&fx.repo, "workspace.released").await.len();
+    let recovery = boot_recovery_runtime(&fx).await;
+    let _plan = recovery.recover_on_boot().await.expect("recover on boot");
+    assert_event_count_stays(&fx.repo, "workspace.released", release_count).await;
+    assert_eq!(
+        workspace_lease_state_optional(&fx.repo, &fx.lease_id).await,
+        None,
+        "boot recovery must not recreate a cascaded released lease row"
+    );
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+}
+
 async fn boot_fixture() -> Fixture {
     let tmp = short_tempdir("w").expect("tempdir");
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
@@ -806,8 +1282,26 @@ async fn boot_fixture() -> Fixture {
         .await
         .expect("seed wave/cove cache");
 
-    let caller = create_worker_caller(&sqlx_repo, &card_role_cache, wave.id.clone()).await;
-    clone_for_worker(&origin_repo, &caller.lease_abs);
+    let spec_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .expect("create spec card");
+    card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    seed_spec_runtime(&sqlx_repo, &wave.id, &spec_card.id).await;
+
+    let caller =
+        create_worker_caller(&sqlx_repo, &card_role_cache, wave.id.clone(), &wave_cwd).await;
+    provision_worker_worktree(
+        &wave_cwd,
+        &caller.wave_id,
+        &caller.card_id,
+        &caller.lease_abs,
+    );
 
     let plugin_host = boot_plugin_host(
         repo.clone(),
@@ -855,6 +1349,22 @@ async fn boot_fixture() -> Fixture {
     assert!(plugin_host_cell.set(plugin_host.clone()).is_ok());
     let operation_runtime_cell = Arc::new(OnceCell::new());
     assert!(operation_runtime_cell.set(runtime.clone()).is_ok());
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+    let review_ctx = Arc::new(AppContext {
+        repo: route_repo,
+        wave_vcs: sqlx_repo
+            .sqlite_pool()
+            .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
+        events: events.clone(),
+        write: write.clone(),
+        daemon_token_hash: None,
+        gate_logs_dir: tmp.path().join("gate-logs"),
+        plugin_host: plugin_host_cell.clone(),
+        operation_runtime: operation_runtime_cell.clone(),
+    });
+    let mut review_registry = ToolRegistry::new();
+    calm_server::mcp_server::tools::register_default_tools(&mut review_registry);
+    let review_registry = Arc::new(review_registry);
     let server = McpServer::spawn(
         repo,
         events.clone(),
@@ -876,16 +1386,22 @@ async fn boot_fixture() -> Fixture {
         repo: sqlx_repo,
         events,
         write,
+        card_role_cache,
+        wave_cove_cache,
+        review_ctx,
+        review_registry,
         socket_path,
         raw_token: caller.raw_token,
         thread_id: caller.thread_id,
         wave_id: caller.wave_id,
         cove_id: cove.id.to_string(),
+        spec_card_id: spec_card.id.to_string(),
+        worker_card_id: caller.card_id,
         lease_id: caller.lease_id,
         lease_abs: caller.lease_abs,
+        wave_cwd,
         origin_repo,
         _runtime: runtime,
-        _lease_tmp: caller._lease_tmp,
         _socket_tmp: socket_tmp,
         _tmp: tmp,
     }
@@ -895,15 +1411,15 @@ async fn create_worker_caller(
     sqlx_repo: &Arc<SqlxRepo>,
     card_role_cache: &CardRoleCache,
     wave_id: WaveId,
+    wave_cwd: &Path,
 ) -> Caller {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
-    let lease_tmp = tempfile::Builder::new()
-        .prefix(".forge-workflow-lease-")
-        .tempdir()
-        .expect("worker lease tempdir");
-    let lease_abs = lease_tmp.path().join("leases").join(&card_id);
-    std::fs::create_dir_all(&lease_abs).expect("create lease dir");
+    let lease_abs = wave_cwd
+        .join(".claude")
+        .join("worktrees")
+        .join(wave_id.as_str())
+        .join(&card_id);
     let lease_path = lease_abs.display().to_string();
 
     let mut tx = sqlx_repo.pool().begin().await.expect("begin card tx");
@@ -947,13 +1463,43 @@ async fn create_worker_caller(
     seed_runtime_thread(sqlx_repo, card_id.as_str(), thread_id.as_str()).await;
 
     Caller {
+        card_id,
         raw_token,
         thread_id,
         wave_id: wave_id.to_string(),
         lease_id,
         lease_abs,
-        _lease_tmp: lease_tmp,
     }
+}
+
+async fn seed_spec_runtime(sqlx_repo: &SqlxRepo, wave_id: &WaveId, spec_card_id: &CardId) {
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some("spec-thread".into());
+    let mut tx = sqlx_repo.pool().begin().await.expect("begin spec tx");
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: SPEC_SESSION_ID.to_string(),
+            card_id: spec_card_id.to_string(),
+            kind: WorkerSessionKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some("spec-thread".into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).expect("snapshot json")),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .expect("start spec runtime");
+    session_mark_wave_root_tx(&mut tx, wave_id, &WorkerSessionId::from(SPEC_SESSION_ID))
+        .await
+        .expect("mark spec root session");
+    tx.commit().await.expect("commit spec tx");
 }
 
 fn wave_router_for_fixture(fx: &Fixture) -> axum::Router {
@@ -964,10 +1510,28 @@ fn wave_router_for_fixture(fx: &Fixture) -> axum::Router {
         Arc::new(DaemonClient::new_stub()),
         fx.plugin_host.clone(),
         Arc::new(CodexClient::new_stub()),
-        None,
-        None,
+        Some(fx.card_role_cache.clone()),
+        Some(fx.wave_cove_cache.clone()),
     );
     calm_server::routes::waves::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state)
+}
+
+fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
+    let repo: Arc<dyn Repo> = fx.repo.clone();
+    let state = AppState::from_parts(
+        repo,
+        fx.events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        fx.plugin_host.clone(),
+        Arc::new(CodexClient::new_stub()),
+        Some(fx.card_role_cache.clone()),
+        Some(fx.wave_cove_cache.clone()),
+    );
+    calm_server::routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
         ))
@@ -1190,6 +1754,606 @@ async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
     recv_frame(&mut rd).await
 }
 
+fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: fx.spec_card_id.clone(),
+        role: CardRole::Spec,
+        provider: AgentProvider::Codex,
+        session_id: SPEC_SESSION_ID.to_string(),
+        wave_id: Some(fx.wave_id.clone()),
+        cove_id: fx.cove_id.clone(),
+        thread_id: "spec-thread".into(),
+    }
+}
+
+async fn call_review_tool(
+    fx: &Fixture,
+    name: &str,
+    args: Value,
+) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
+    let handler = fx
+        .review_registry
+        .lookup(name)
+        .unwrap_or_else(|| panic!("review tool not registered: {name}"));
+    handler(fx.review_ctx.clone(), spec_identity(fx), args).await
+}
+
+fn approved_channels() -> Vec<ChannelVerdict> {
+    vec![
+        ChannelVerdict {
+            role: "reviewer-a".into(),
+            verdict: "approved".into(),
+        },
+        ChannelVerdict {
+            role: "reviewer-b".into(),
+            verdict: "approved".into(),
+        },
+    ]
+}
+
+fn changes_requested_channels() -> Vec<ChannelVerdict> {
+    vec![
+        ChannelVerdict {
+            role: "reviewer-a".into(),
+            verdict: "changes_requested".into(),
+        },
+        ChannelVerdict {
+            role: "reviewer-b".into(),
+            verdict: "approved".into(),
+        },
+    ]
+}
+
+#[derive(Clone, Debug)]
+struct ReviewRoundInput {
+    phase: String,
+    slice_id: String,
+    pr_number: Option<u64>,
+    head_sha: Option<String>,
+    n: u32,
+    cap: u32,
+    converged: bool,
+    channels: Vec<ChannelVerdict>,
+    root_cause: Option<String>,
+}
+
+impl ReviewRoundInput {
+    fn design(slice_id: &str) -> Self {
+        Self {
+            phase: "design".into(),
+            slice_id: slice_id.into(),
+            pr_number: None,
+            head_sha: None,
+            n: 1,
+            cap: 8,
+            converged: true,
+            channels: approved_channels(),
+            root_cause: None,
+        }
+    }
+
+    fn impl_round(
+        slice_id: &str,
+        pr_number: u64,
+        head_sha: &str,
+        n: u32,
+        cap: u32,
+        converged: bool,
+    ) -> Self {
+        Self {
+            phase: "impl".into(),
+            slice_id: slice_id.into(),
+            pr_number: Some(pr_number),
+            head_sha: Some(head_sha.into()),
+            n,
+            cap,
+            converged,
+            channels: if converged {
+                approved_channels()
+            } else {
+                changes_requested_channels()
+            },
+            root_cause: (!converged).then(|| "scripted review did not converge".into()),
+        }
+    }
+
+    fn args(&self) -> Value {
+        let mut subject = json!({
+            "phase": self.phase.as_str(),
+            "slice_id": self.slice_id.as_str(),
+        });
+        if let Some(pr_number) = self.pr_number {
+            subject["pr_number"] = json!(pr_number);
+        }
+        let mut args = json!({
+            "subject": subject,
+            "n": self.n,
+            "cap": self.cap,
+            "converged": self.converged,
+            "channels": self.channels.clone(),
+        });
+        if let Some(head_sha) = &self.head_sha {
+            args["head_sha"] = json!(head_sha);
+        }
+        if let Some(root_cause) = &self.root_cause {
+            args["root_cause"] = json!(root_cause);
+        }
+        args
+    }
+}
+
+async fn emit_review_round(fx: &Fixture, input: &ReviewRoundInput) -> EventRow {
+    let before = event_rows(&fx.repo, "review.round").await.len();
+    let resp = call_review_tool(fx, TOOL_REVIEW_ROUND, input.args())
+        .await
+        .expect("calm.review.round succeeds");
+    assert_eq!(resp["ok"], true, "review.round response: {resp}");
+    assert_eq!(
+        resp["emitted"], true,
+        "review.round should append in this helper: {resp}"
+    );
+    let rows = wait_for_event_count(&fx.repo, "review.round", before + 1).await;
+    rows.last().expect("new review.round").clone()
+}
+
+async fn assert_review_round_duplicate_noop(fx: &Fixture, input: &ReviewRoundInput) {
+    let before = event_rows(&fx.repo, "review.round").await.len();
+    let resp = call_review_tool(fx, TOOL_REVIEW_ROUND, input.args())
+        .await
+        .expect("duplicate review.round succeeds as no-op");
+    assert_eq!(resp["ok"], true, "duplicate review.round response: {resp}");
+    assert_eq!(
+        resp["emitted"], false,
+        "duplicate review.round should be an idempotent no-op: {resp}"
+    );
+    assert_event_count_stays(&fx.repo, "review.round", before).await;
+}
+
+async fn request_ratification(fx: &Fixture, reason: &str) -> EventRow {
+    let before = event_rows(&fx.repo, "ratify.requested").await.len();
+    let resp = call_review_tool(fx, TOOL_RATIFY_REQUEST, json!({ "reason": reason }))
+        .await
+        .expect("calm.ratify.request succeeds");
+    assert_eq!(resp["ok"], true, "ratify.request response: {resp}");
+    let rows = wait_for_event_count(&fx.repo, "ratify.requested", before + 1).await;
+    rows.last().expect("new ratify.requested").clone()
+}
+
+async fn post_ratify(fx: &Fixture, decision: &str) -> (StatusCode, Value) {
+    let body = serde_json::to_vec(&json!({
+        "decision": decision,
+        "message": format!("human says {decision}")
+    }))
+    .expect("ratify body json");
+    let resp = app_router_for_fixture(fx)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{}/ratify", fx.spec_card_id))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, json)
+}
+
+async fn delete_wave(fx: &Fixture) -> StatusCode {
+    app_router_for_fixture(fx)
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/waves/{}", fx.wave_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+async fn transition_wave_along(fx: &Fixture, targets: &[WaveLifecycle], message: &str) {
+    let wave_id = WaveId::from(fx.wave_id.clone());
+    let scope = EventScope::Wave {
+        wave: wave_id.clone(),
+        cove: CoveId::from(fx.cove_id.clone()),
+    };
+    let actor = ActorId::AiSpec(CardId::from(fx.spec_card_id.clone()));
+    let targets = targets.to_vec();
+    let message = message.to_string();
+    write_with_actor_events_typed::<(), _>(
+        fx.repo.as_ref(),
+        None,
+        &fx.events,
+        &fx.write,
+        move |tx| {
+            let wave_id = wave_id.clone();
+            let scope = scope.clone();
+            let actor = actor.clone();
+            let targets = targets.clone();
+            let message = message.clone();
+            Box::pin(async move {
+                let mut events = Vec::new();
+                for target in targets {
+                    let lifecycle_events =
+                        calm_server::wave_lifecycle::apply_requested_transition_in_tx(
+                            tx,
+                            &wave_id,
+                            target,
+                            &actor,
+                            message.clone(),
+                        )
+                        .await?
+                        .unwrap_or_else(|| {
+                            panic!("expected lifecycle transition to {target:?} to persist")
+                        });
+                    events.extend(
+                        lifecycle_events
+                            .into_iter()
+                            .map(|event| (actor.clone(), scope.clone(), event)),
+                    );
+                }
+                Ok(((), events))
+            })
+        },
+    )
+    .await
+    .expect("transition wave lifecycle");
+}
+
+async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
+    let wave_id = WaveId::from(fx.wave_id.clone());
+    let scope = EventScope::Wave {
+        wave: wave_id,
+        cove: CoveId::from(fx.cove_id.clone()),
+    };
+    let task_key = format!("impl-review-{slice_id}");
+    let idempotency_key = format!("{}:{task_key}", fx.wave_id);
+    let agent_message = format!("[scheduler] dispatching task {task_key}");
+    let (_, event_ids) = write_with_actor_events_typed::<(), _>(
+        fx.repo.as_ref(),
+        None,
+        &fx.events,
+        &fx.write,
+        move |_tx| {
+            let scope = scope.clone();
+            let idempotency_key = idempotency_key.clone();
+            let agent_message = agent_message.clone();
+            Box::pin(async move {
+                Ok((
+                    (),
+                    vec![(
+                        ActorId::KernelDispatcher,
+                        scope,
+                        Event::TaskDispatched {
+                            idempotency_key,
+                            kind: "codex".to_string(),
+                            agent_message: Some(agent_message),
+                        },
+                    )],
+                ))
+            })
+        },
+    )
+    .await
+    .expect("scripted impl dispatch");
+    let event_id = event_ids
+        .first()
+        .copied()
+        .expect("scripted impl dispatch persisted event id");
+    let dispatch = event_rows(&fx.repo, "task.dispatched")
+        .await
+        .into_iter()
+        .find(|row| row.id == event_id)
+        .expect("scripted impl dispatch row");
+    assert_eq!(dispatch.scope_kind, "wave");
+    assert_eq!(dispatch.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    dispatch
+}
+
+#[derive(Clone, Debug)]
+struct ForgePrRun {
+    repo_arg: String,
+    pr_number: u64,
+    head_sha: String,
+}
+
+async fn drive_pr_to_diff(
+    fx: &Fixture,
+    id_base: i64,
+    issue_number: u64,
+    head: &str,
+    filename: &str,
+    contents: &str,
+    title: &str,
+) -> ForgePrRun {
+    let repo_arg = fx.origin_repo.display().to_string();
+    let base = "main";
+    let issue_view_resp = call_tool(
+        fx,
+        id_base,
+        ISSUE_VIEW_TOOL,
+        json!({ "repo": repo_arg, "issue": issue_number }),
+    )
+    .await;
+    assert_tool_succeeded(&issue_view_resp, "gh.issue.view");
+
+    run_git(&fx.lease_abs, ["checkout", "-B", head, "origin/main"]);
+    stage_git_change(&fx.lease_abs, filename, contents);
+    let commit_resp = call_tool(
+        fx,
+        id_base + 1,
+        COMMIT_TOOL,
+        json!({ "message": title, "idem": format!("{head}-commit") }),
+    )
+    .await;
+    assert_tool_succeeded(&commit_resp, "git.commit");
+    let head_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "HEAD"]);
+    let base_sha = run_git_capture(&fx.lease_abs, ["rev-parse", "origin/main"]);
+    run_git(&fx.lease_abs, ["push", "-u", "origin", head, "--force"]);
+
+    let create_resp = call_tool(
+        fx,
+        id_base + 2,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": head,
+            "base": base,
+            "title": title,
+            "body": "Created by forge workflow review E2E"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    let opened = wait_for_event_matching(&fx.repo, "forge.pr.opened", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id) && row.payload["head_sha"] == json!(head_sha)
+    })
+    .await;
+    let pr_number = opened.payload["pr_number"].as_u64().expect("pr number");
+
+    let diff_resp = call_tool(
+        fx,
+        id_base + 3,
+        PR_DIFF_TOOL,
+        json!({
+            "repo": repo_arg,
+            "pr": pr_number,
+            "base_sha": base_sha,
+            "head_sha": head_sha
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&diff_resp, "gh.pr.diff");
+    let diff = wait_for_event_matching(&fx.repo, "forge.pr.diff.read", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.payload["pr_number"] == json!(pr_number)
+            && row.payload["head_sha"] == json!(head_sha)
+    })
+    .await;
+    assert_eq!(diff.payload["base_sha"], base_sha);
+
+    ForgePrRun {
+        repo_arg,
+        pr_number,
+        head_sha,
+    }
+}
+
+async fn merge_reviewed_pr(
+    fx: &Fixture,
+    id_base: i64,
+    pr: &ForgePrRun,
+    slice_id: &str,
+) -> EventRow {
+    let checks_resp = call_tool(
+        fx,
+        id_base,
+        PR_CHECKS_TOOL,
+        json!({ "repo": pr.repo_arg, "pr": pr.pr_number }),
+    )
+    .await;
+    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+
+    let merge_resp = call_tool(
+        fx,
+        id_base + 1,
+        PR_MERGE_TOOL,
+        json!({
+            "repo": pr.repo_arg,
+            "pr": pr.pr_number,
+            "phase": "impl",
+            "slice_id": slice_id,
+            "expected_head_sha": pr.head_sha
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&merge_resp, "gh.pr.merge");
+    let merged = wait_for_event_matching(&fx.repo, "forge.pr.merged", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.payload["subject"]["pr_number"] == json!(pr.pr_number)
+    })
+    .await;
+    assert_eq!(merged.payload["head_sha"], pr.head_sha);
+    merged
+}
+
+async fn close_issue(fx: &Fixture, id: i64, repo_arg: &str, issue_number: u64) -> EventRow {
+    let issue_resp = call_tool(
+        fx,
+        id,
+        ISSUE_CLOSE_TOOL,
+        json!({ "repo": repo_arg, "issue": issue_number }),
+    )
+    .await;
+    assert_tool_succeeded(&issue_resp, "gh.issue.close");
+    wait_for_event_matching(&fx.repo, "forge.issue.closed", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.payload["issue_number"] == json!(issue_number)
+    })
+    .await
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct SubjectKey {
+    phase: String,
+    slice_id: String,
+    pr_number: Option<u64>,
+}
+
+impl SubjectKey {
+    fn from_subject_payload(subject: &Value) -> Self {
+        Self {
+            phase: subject["phase"]
+                .as_str()
+                .expect("subject.phase")
+                .to_string(),
+            slice_id: subject["slice_id"]
+                .as_str()
+                .expect("subject.slice_id")
+                .to_string(),
+            pr_number: subject.get("pr_number").and_then(Value::as_u64),
+        }
+    }
+}
+
+fn review_subject_key(row: &EventRow) -> SubjectKey {
+    SubjectKey::from_subject_payload(&row.payload["subject"])
+}
+
+fn review_round_n(row: &EventRow) -> u32 {
+    row.payload["n"].as_u64().expect("review n") as u32
+}
+
+fn review_round_converged(row: &EventRow) -> bool {
+    row.payload["converged"]
+        .as_bool()
+        .expect("review converged")
+}
+
+fn merge_matches_subject(row: &EventRow, key: &SubjectKey) -> bool {
+    SubjectKey::from_subject_payload(&row.payload["subject"]) == *key
+}
+
+fn row_head_sha(row: &EventRow) -> Option<String> {
+    row.payload
+        .get("head_sha")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+}
+
+async fn assert_subject_keyed_cap_enforcement(fx: &Fixture) {
+    let rounds = event_rows(&fx.repo, "review.round").await;
+    let merges = event_rows(&fx.repo, "forge.pr.merged").await;
+    let issue_closed = event_rows(&fx.repo, "forge.issue.closed").await;
+    let lifecycle = event_rows(&fx.repo, "wave.lifecycle_changed").await;
+    let ratify_resolved = event_rows(&fx.repo, "ratify.resolved").await;
+
+    let mut max_round_by_subject: HashMap<SubjectKey, EventRow> = HashMap::new();
+    for round in &rounds {
+        let key = review_subject_key(round);
+        let replace = max_round_by_subject
+            .get(&key)
+            .map(|existing| review_round_n(round) > review_round_n(existing))
+            .unwrap_or(true);
+        if replace {
+            max_round_by_subject.insert(key, round.clone());
+        }
+    }
+
+    for (key, max_round) in max_round_by_subject {
+        if review_round_converged(&max_round) {
+            if key.pr_number.is_some() {
+                let expected = row_head_sha(&max_round).expect("converged PR review head_sha");
+                for merge in merges.iter().filter(|row| merge_matches_subject(row, &key)) {
+                    assert_eq!(
+                        row_head_sha(merge).as_deref(),
+                        Some(expected.as_str()),
+                        "merge head must match latest max-n converged review for {key:?}"
+                    );
+                }
+            }
+            continue;
+        }
+
+        let later_grant = ratify_resolved.iter().find(|row| {
+            row.id > max_round.id
+                && row.scope_wave.as_deref() == Some(&fx.wave_id)
+                && row.payload["decision"] == "grant"
+        });
+        let later_converged = later_grant.and_then(|grant| {
+            rounds
+                .iter()
+                .filter(|row| {
+                    row.id > grant.id
+                        && review_subject_key(row) == key
+                        && review_round_converged(row)
+                })
+                .max_by_key(|row| review_round_n(row))
+        });
+
+        if let Some(converged) = later_converged {
+            let expected = row_head_sha(converged).expect("later converged review head_sha");
+            for merge in merges.iter().filter(|row| merge_matches_subject(row, &key)) {
+                assert_eq!(
+                    row_head_sha(merge).as_deref(),
+                    Some(expected.as_str()),
+                    "post-ratify merge head must match intervening converged review for {key:?}"
+                );
+            }
+            continue;
+        }
+
+        assert!(
+            !merges
+                .iter()
+                .any(|row| row.id > max_round.id && merge_matches_subject(row, &key)),
+            "unconverged max-n subject {key:?} must not merge later"
+        );
+        assert!(
+            !issue_closed.iter().any(|row| row.id > max_round.id),
+            "unconverged max-n subject {key:?} must not close an issue later"
+        );
+        assert!(
+            !lifecycle.iter().any(|row| {
+                row.id > max_round.id
+                    && row.scope_wave.as_deref() == Some(&fx.wave_id)
+                    && row.payload["to"] == "done"
+            }),
+            "unconverged max-n subject {key:?} must not reach done later"
+        );
+    }
+}
+
+async fn wait_for_recovered_pending(
+    handle: &calm_server::harness::SpecHarness,
+) -> Vec<Observation> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let pending = handle.pending_queue_for_test().await;
+        if pending
+            .iter()
+            .any(|obs| matches!(obs, Observation::ReviewRound { .. }))
+            && pending
+                .iter()
+                .any(|obs| matches!(obs, Observation::RatifyRequested { .. }))
+            && pending
+                .iter()
+                .any(|obs| matches!(obs, Observation::RatifyResolved { .. }))
+        {
+            return pending;
+        }
+        if Instant::now() > deadline {
+            panic!("timed out waiting for recovered pending queue, last={pending:?}");
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
 async fn boot_recovery_runtime(fx: &Fixture) -> Arc<OperationRuntime> {
     let operation_repo = Arc::new(SqlxOperationRepo::new(fx.repo.pool().clone()));
     let completion = OperationCompletionBus::new();
@@ -1380,6 +2544,14 @@ async fn workspace_lease_state(repo: &SqlxRepo, lease_id: &str) -> String {
         .expect("workspace lease state")
 }
 
+async fn workspace_lease_state_optional(repo: &SqlxRepo, lease_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT state FROM workspace_leases WHERE lease_id = ?1")
+        .bind(lease_id)
+        .fetch_optional(repo.pool())
+        .await
+        .expect("workspace lease state optional")
+}
+
 fn assert_tool_succeeded(resp: &Value, label: &str) {
     assert!(
         resp.get("error").is_none(),
@@ -1562,9 +2734,40 @@ fn clone_for_wave(origin: &Path, target: &Path) {
     configure_repo_identity(target);
 }
 
-fn clone_for_worker(origin: &Path, target: &Path) {
-    run_git_no_cwd(["clone", path_str(origin), path_str(target)]);
+fn provision_worker_worktree(repo: &Path, wave_id: &str, card_id: &str, target: &Path) {
+    ensure_worktree_root_excluded(repo);
+    let parent = target.parent().expect("worker worktree target parent");
+    std::fs::create_dir_all(parent).expect("create worker worktree parent");
+    let branch = format!("neige/{wave_id}/{card_id}");
+    run_git(
+        repo,
+        ["worktree", "add", "-b", branch.as_str(), path_str(target)],
+    );
     configure_repo_identity(target);
+}
+
+fn ensure_worktree_root_excluded(repo: &Path) {
+    use std::io::Write as _;
+
+    const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
+    let exclude = run_git_capture(repo, ["rev-parse", "--git-path", "info/exclude"]);
+    let exclude = repo.join(exclude);
+    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if existing.lines().any(|line| line.trim() == WORKTREE_EXCLUDE) {
+        return;
+    }
+    if let Some(parent) = exclude.parent() {
+        std::fs::create_dir_all(parent).expect("create git exclude parent");
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&exclude)
+        .expect("open git exclude");
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        writeln!(file).expect("separate git exclude entries");
+    }
+    writeln!(file, "{WORKTREE_EXCLUDE}").expect("write worktree exclude");
 }
 
 fn configure_repo_identity(repo: &Path) {
@@ -1591,6 +2794,12 @@ fn run_git_no_cwd<const N: usize>(args: [&str; N]) {
 fn run_git_capture<const N: usize>(repo: &Path, args: [&str; N]) -> String {
     let output = run_git_output(Some(repo), args);
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn git_ref_exists(repo: &Path, ref_name: &str) -> bool {
+    run_git_output(Some(repo), ["show-ref", "--verify", "--quiet", ref_name])
+        .status
+        .success()
 }
 
 fn run_git_inner<const N: usize>(repo: Option<&Path>, args: [&str; N]) {
@@ -1691,6 +2900,31 @@ fn prepend_to_path(dir: &Path) -> OsString {
     value.push(OsStr::new(":"));
     value.push(current);
     value
+}
+
+struct ForgeTestEnv {
+    _path_dir: TempDir,
+    _results_dir: TempDir,
+    _trusted: EnvGuard,
+    _results: EnvGuard,
+    _path: EnvGuard,
+}
+
+fn setup_forge_env() -> ForgeTestEnv {
+    let path_dir = short_tempdir("p").expect("gh shim PATH tempdir");
+    write_gh_shim(path_dir.path());
+    let path_value = prepend_to_path(path_dir.path());
+    let results_dir = short_tempdir("r").expect("forge results tempdir");
+    let trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
+    let results = EnvGuard::set("NEIGE_FORGE_RESULTS_DIR", results_dir.path());
+    let path = EnvGuard::set("PATH", path_value);
+    ForgeTestEnv {
+        _path_dir: path_dir,
+        _results_dir: results_dir,
+        _trusted: trusted,
+        _results: results,
+        _path: path,
+    }
 }
 
 fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {
@@ -1954,9 +3188,14 @@ case "$area:$verb" in
     [ "$#" -ge 1 ] || exit 2
     selector=$1
     repo=$(get_arg --repo "$@") || exit 2
+    expected_head=$(get_arg --match-head-commit "$@" || true)
     state=$(ensure_state "$repo")
     pr_dir=$(find_pr "$selector" "$state") || exit 1
     head_sha=$(cat "$pr_dir/headRefOid")
+    if [ -n "$expected_head" ] && [ "$expected_head" != "$head_sha" ]; then
+      echo "head commit did not match" >&2
+      exit 1
+    fi
     if [ "$(cat "$pr_dir/merged")" = "true" ]; then
       merge_sha=$(cat "$pr_dir/merge_sha")
     else
