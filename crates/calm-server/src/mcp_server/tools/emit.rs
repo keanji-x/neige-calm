@@ -39,8 +39,10 @@ use crate::mcp_server::tools::lifecycle_args::{lifecycle_schema, message_schema}
 use crate::mcp_server::transport::{PluginForgePayload, submit_forge_action};
 use crate::model::CardRole;
 use crate::operation::forge_action_adapter::ProbeSpec;
-use crate::operation::workspace_lease::workspace_slice_branch_for;
-use crate::session_projection_repo::{AgentProvider, WorkerSessionKind};
+use crate::operation::workspace_lease::{
+    git_repo_root_for_wave_cwd, workspace_lease_path_for, workspace_slice_branch_for,
+};
+use crate::session_projection_repo::AgentProvider;
 use serde_json::Map;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -208,7 +210,7 @@ async fn submit_worker_success_commit(
     }
 
     let card_id = identity.card_id.clone();
-    let Some(cwd_lease) = codex_git_worktree_lease_for_completion(ctx, identity, &wave_id).await?
+    let Some(cwd_lease) = codex_git_worktree_lease_for_completion(identity, &wave_id, &wave.cwd)?
     else {
         return Ok(());
     };
@@ -263,10 +265,10 @@ async fn submit_worker_success_commit(
     }
 }
 
-async fn codex_git_worktree_lease_for_completion(
-    ctx: &Arc<AppContext>,
+fn codex_git_worktree_lease_for_completion(
     identity: &ToolCallIdentity,
     wave_id: &str,
+    wave_cwd: &str,
 ) -> Result<Option<PathBuf>, String> {
     if identity.provider != AgentProvider::Codex {
         tracing::debug!(
@@ -278,56 +280,10 @@ async fn codex_git_worktree_lease_for_completion(
         return Ok(None);
     }
 
-    let runtime = ctx
-        .repo
-        .session_projection_active_for_card(&identity.card_id)
-        .await
-        .map_err(|e| format!("worker success commit runtime lookup: {e}"))?;
-    let Some(runtime) = runtime else {
-        tracing::debug!(
-            card_id = %identity.card_id,
-            wave_id,
-            "task_complete: skipping auto commit because worker has no active runtime"
-        );
-        return Ok(None);
-    };
-    if runtime.kind != WorkerSessionKind::CodexCard
-        || runtime.agent_provider != Some(AgentProvider::Codex)
-    {
-        tracing::debug!(
-            card_id = %identity.card_id,
-            wave_id,
-            runtime_kind = ?runtime.kind,
-            runtime_provider = ?runtime.agent_provider,
-            "task_complete: skipping auto commit for non-codex runtime"
-        );
-        return Ok(None);
-    }
-
-    let lease = ctx
-        .repo
-        .workspace_lease_for_card(&identity.card_id)
-        .await
-        .map_err(|e| format!("worker success commit workspace lease lookup: {e}"))?;
-    let Some(lease) = lease else {
-        tracing::debug!(
-            card_id = %identity.card_id,
-            wave_id,
-            "task_complete: skipping auto commit because worker has no held workspace lease"
-        );
-        return Ok(None);
-    };
-    if lease.wave_id != wave_id {
-        tracing::debug!(
-            card_id = %identity.card_id,
-            wave_id,
-            lease_wave_id = %lease.wave_id,
-            "task_complete: skipping auto commit because workspace lease belongs to another wave"
-        );
-        return Ok(None);
-    }
-
-    let path = PathBuf::from(&lease.path);
+    let repo_root = git_repo_root_for_wave_cwd(wave_id, wave_cwd)
+        .map_err(|e| format!("worker success commit repo root lookup: {e}"))?;
+    let path = workspace_lease_path_for(&repo_root, wave_id, &identity.card_id)
+        .map_err(|e| format!("worker success commit workspace path: {e}"))?;
     if !is_isolated_git_worktree(&path) {
         tracing::debug!(
             card_id = %identity.card_id,
@@ -482,11 +438,15 @@ mod tests {
     use crate::ids::WaveId;
     use crate::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
     use crate::operation::forge_action_adapter::{FORGE_ACTION_KIND, ForgeActionAdapter};
-    use crate::operation::workspace_lease::acquire_plain_workspace_lease_tx;
+    use crate::operation::workspace_lease::{
+        acquire_plain_workspace_lease_tx, release_workspace_lease_for_card_repo,
+    };
     use crate::operation::{
         OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
     };
-    use crate::session_projection_repo::{WorkerSessionInit, WorkerSessionState};
+    use crate::session_projection_repo::{
+        WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    };
     use crate::state::{DaemonClient, WriteContext};
     use crate::terminal_renderer::TerminalRendererRegistry;
     use crate::wave_cove_cache::WaveCoveCache;
@@ -553,6 +513,50 @@ mod tests {
             .await
             .expect("codex worktree enqueue");
         assert_eq!(forge_op_count(&fx.repo).await, 1);
+    }
+
+    #[tokio::test]
+    async fn worker_success_commit_emits_after_codex_workspace_lease_released() {
+        let fx = commit_guard_fixture().await;
+        let codex_worktree = fx
+            .worker_with_runtime(
+                WorkerSessionKind::CodexCard,
+                Some(AgentProvider::Codex),
+                AgentProvider::Codex,
+            )
+            .await;
+        let codex_worktree_path = fx.worktree_path(&codex_worktree.card_id);
+        let branch =
+            workspace_slice_branch_for(&fx.wave_id, &codex_worktree.card_id).expect("slice branch");
+        fx.add_git_worktree(&codex_worktree_path, &branch);
+        fx.lease(&codex_worktree.card_id, &codex_worktree_path)
+            .await;
+        fx.release_lease(&codex_worktree.card_id).await;
+
+        fs::write(
+            codex_worktree_path.join("released-worker-output.txt"),
+            "released worker output\n",
+        )
+        .expect("write worker output");
+
+        submit_worker_success_commit(&fx.ctx, &codex_worktree)
+            .await
+            .expect("released codex worktree enqueue");
+        assert_eq!(forge_op_count(&fx.repo).await, 1);
+
+        let payloads = wait_for_event_payloads(&fx.repo, "worktree.committed", 1).await;
+        let head = git_stdout(&codex_worktree_path, ["rev-parse", "HEAD"]);
+        assert_eq!(payloads[0]["wave_id"], fx.wave_id);
+        assert_eq!(payloads[0]["card_id"], codex_worktree.card_id);
+        assert_eq!(payloads[0]["branch"], branch);
+        assert_eq!(payloads[0]["commit_sha"], head);
+        assert_eq!(
+            git_stdout(
+                &codex_worktree_path,
+                ["show", "HEAD:released-worker-output.txt"],
+            ),
+            "released worker output"
+        );
     }
 
     impl CommitGuardFixture {
@@ -640,6 +644,20 @@ mod tests {
                 .expect("acquire lease");
             tx.commit().await.expect("commit lease tx");
         }
+
+        async fn release_lease(&self, card_id: &str) {
+            release_workspace_lease_for_card_repo(self.repo.as_ref(), &EventBus::new(), card_id)
+                .await
+                .expect("release lease");
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM workspace_leases WHERE card_id = ?1 ORDER BY created_at_ms DESC LIMIT 1",
+            )
+            .bind(card_id)
+            .fetch_one(self.repo.pool())
+            .await
+            .expect("lease state");
+            assert_eq!(state, "released");
+        }
     }
 
     async fn commit_guard_fixture() -> CommitGuardFixture {
@@ -725,6 +743,33 @@ mod tests {
             .expect("count forge ops")
     }
 
+    async fn wait_for_event_payloads(repo: &SqlxRepo, kind: &str, expected: usize) -> Vec<Value> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let payloads = event_payloads(repo, kind).await;
+            if payloads.len() >= expected {
+                return payloads;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {expected} {kind} events"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
+    async fn event_payloads(repo: &SqlxRepo, kind: &str) -> Vec<Value> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT payload FROM events WHERE kind = ?1 ORDER BY id ASC")
+                .bind(kind)
+                .fetch_all(repo.pool())
+                .await
+                .expect("event payload rows");
+        rows.into_iter()
+            .map(|(payload,)| serde_json::from_str(&payload).expect("event payload json"))
+            .collect()
+    }
+
     fn init_git_repo(path: &Path) {
         run_git(path, ["init"]);
         run_git(path, ["config", "user.email", "commit-guard@example.test"]);
@@ -747,5 +792,21 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn git_stdout<const N: usize>(cwd: &Path, args: [&str; N]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git failed: status={:?} stdout={} stderr={}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 }
