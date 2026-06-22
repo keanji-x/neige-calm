@@ -15,6 +15,7 @@ use crate::db::sqlite::{
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::Event;
+use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
     SpecHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
@@ -28,6 +29,7 @@ use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // this module into `crate::per_card_lock` so the `/spec/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
+use crate::plugin_host::{PluginHost, manifest::WorkflowDescriptor};
 use crate::routes::cards::card_scope;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -70,6 +72,7 @@ pub struct SpecHarnessStartAdapter {
     repo: Arc<dyn Repo>,
     daemon: Arc<SharedCodexAppServer>,
     harness_registry: HarnessRegistry,
+    plugin: Arc<PluginHost>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
     mcp_socket_path: Option<PathBuf>,
@@ -81,6 +84,7 @@ impl SpecHarnessStartAdapter {
         repo: Arc<dyn Repo>,
         daemon: Arc<SharedCodexAppServer>,
         harness_registry: HarnessRegistry,
+        plugin: Arc<PluginHost>,
         card_role_cache: CardRoleCache,
         wave_cove_cache: WaveCoveCache,
         mcp_socket_path: Option<PathBuf>,
@@ -89,6 +93,7 @@ impl SpecHarnessStartAdapter {
             repo,
             daemon,
             harness_registry,
+            plugin,
             card_role_cache,
             wave_cove_cache,
             mcp_socket_path,
@@ -120,6 +125,52 @@ impl SpecHarnessStartAdapter {
                 "spec harness MCP socket path missing".into(),
             ))
         }
+    }
+
+    async fn bound_workflow_descriptor(&self, wave_id: &str) -> Result<Option<WorkflowDescriptor>> {
+        let wave = match self.repo.wave_get(wave_id).await {
+            Ok(wave) => wave,
+            Err(error) => {
+                tracing::error!(
+                    target: "spec_harness::workflow_binding",
+                    wave_id,
+                    error = %error,
+                    "workflow binding lookup failed; using vanilla spec prompt"
+                );
+                return Ok(None);
+            }
+        };
+        let Some(wave) = wave else {
+            tracing::error!(
+                target: "spec_harness::workflow_binding",
+                wave_id,
+                "bound workflow wave was not found while resolving descriptor; using vanilla spec prompt"
+            );
+            return Ok(None);
+        };
+        let Some(workflow_id) = wave.workflow_id.as_deref() else {
+            return Ok(None);
+        };
+        let running_plugin_ids = self.plugin.running_plugin_ids().await;
+        for manifest in self.plugin.registry().list() {
+            if !running_plugin_ids.contains(&manifest.id) || !trusted_forge_plugin(&manifest.id) {
+                continue;
+            }
+            if let Some(workflow) = manifest
+                .workflows
+                .into_iter()
+                .find(|workflow| workflow.id == workflow_id)
+            {
+                return Ok(Some(workflow));
+            }
+        }
+        tracing::error!(
+            target: "spec_harness::workflow_binding",
+            wave_id,
+            workflow_id,
+            "bound workflow descriptor was not resolved from a running trusted forge plugin; using vanilla spec prompt"
+        );
+        Ok(None)
     }
 }
 
@@ -159,6 +210,44 @@ struct SpecThreadEnvPolicy<'a> {
 struct SpecThreadStartConfig<'a> {
     #[serde(rename = "shell_environment_policy")]
     shell_environment_policy: SpecThreadEnvPolicy<'a>,
+}
+
+fn render_spec_developer_instructions(
+    wave_id: &str,
+    workflow_descriptor: Option<&WorkflowDescriptor>,
+) -> String {
+    let mut instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Spec.prompt_template(),
+        wave_id,
+    );
+    let Some(workflow_descriptor) = workflow_descriptor else {
+        return instructions;
+    };
+
+    if !workflow_descriptor.spec_instructions.is_empty() {
+        instructions.push_str("\n\n## Bound Workflow Instructions\n");
+        instructions.push_str(&crate::spec_card::render_system_prompt(
+            &workflow_descriptor.spec_instructions,
+            wave_id,
+        ));
+    }
+    if !workflow_descriptor.plan_template.is_empty() {
+        instructions.push_str("\n\n## Bound Workflow Plan Template\n");
+        instructions.push_str("```json\n");
+        let plan_template_json = serde_json::to_string_pretty(&workflow_descriptor.plan_template)
+            .expect("PlanTaskInput serializes");
+        instructions.push_str(&plan_template_json);
+        instructions.push_str("\n```");
+    }
+    if !workflow_descriptor.gates.is_empty() {
+        instructions.push_str("\n\n## Bound Workflow Gates\n");
+        instructions.push_str("```json\n");
+        let gates_json =
+            serde_json::to_string_pretty(&workflow_descriptor.gates).expect("GateInput serializes");
+        instructions.push_str(&gates_json);
+        instructions.push_str("\n```");
+    }
+    instructions
 }
 
 #[async_trait]
@@ -392,10 +481,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             thread_id
         } else {
-            let developer_instructions = crate::spec_card::render_system_prompt(
-                crate::spec_card::SeededCardRole::Spec.prompt_template(),
-                &wave_id,
-            );
+            let workflow_descriptor = self.bound_workflow_descriptor(&wave_id).await?;
+            let developer_instructions =
+                render_spec_developer_instructions(&wave_id, workflow_descriptor.as_ref());
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
@@ -879,3 +967,353 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
 
 // The per-card lock behavior test moved to `crate::per_card_lock::tests`
 // alongside the lifted implementation (issue #649 i2).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use crate::db::prelude::{ServerRepoOutOfDomainExt, ServerRepoSyncDomainRawExt};
+    use crate::db::sqlite::SqlxRepo;
+    use crate::event::EventBus;
+    use crate::mcp_server::tools::plan::{GateInput, GateStepInput, PlanTaskInput};
+    use crate::model::{NewCove, NewPlugin, NewWave};
+    use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
+    use crate::routes::theme::RequestTheme;
+    use tokio::time::{Instant, sleep};
+
+    const WORKFLOW_ID: &str = "issue-development";
+
+    fn plan_task(key: &str, kind: &str, depends_on: &[&str]) -> PlanTaskInput {
+        PlanTaskInput {
+            key: key.into(),
+            kind: kind.into(),
+            goal: "do the thing".into(),
+            context: Some(json!({ "issue": 760, "slice": "5a" })),
+            acceptance_criteria: Some("passes the requested gates".into()),
+            cwd: Some("/workspace/repo".into()),
+            depends_on: depends_on.iter().map(|dep| (*dep).to_string()).collect(),
+            priority: Some(10),
+            gate: Some(GateInput {
+                cwd: Some("/workspace/repo".into()),
+                timeout_secs: Some(120),
+                steps: vec![GateStepInput {
+                    name: "test".into(),
+                    cmd: "cargo test -p calm-server".into(),
+                }],
+            }),
+            no_gate_reason: None,
+        }
+    }
+
+    #[test]
+    fn spec_developer_instructions_append_workflow_descriptor_when_bound() {
+        let workflow = WorkflowDescriptor {
+            id: "issue-development".into(),
+            spec_instructions: "Follow workflow instructions for wave {wave_id}.".into(),
+            plan_template: vec![
+                plan_task("review-a", "codex", &[]),
+                plan_task("review-b", "claude", &["review-a"]),
+                plan_task("merge", "terminal", &["review-a", "review-b"]),
+            ],
+            gates: vec![GateInput {
+                cwd: Some("/workspace/repo".into()),
+                timeout_secs: Some(300),
+                steps: vec![GateStepInput {
+                    name: "fmt".into(),
+                    cmd: "cargo fmt --all --check".into(),
+                }],
+            }],
+            card_kinds: vec![],
+        };
+
+        let out = render_spec_developer_instructions("wave-abc", Some(&workflow));
+
+        assert!(out.contains("Follow workflow instructions for wave wave-abc."));
+        assert!(!out.contains("{wave_id}"));
+        assert!(out.contains("## Bound Workflow Plan Template"));
+        assert!(out.contains("```json"));
+        assert!(out.contains(r#""key": "review-a""#));
+        assert!(out.contains(r#""goal": "do the thing""#));
+        assert!(out.contains(r#""context": {"#));
+        assert!(out.contains(r#""acceptance_criteria": "passes the requested gates""#));
+        assert!(out.contains(r#""cwd": "/workspace/repo""#));
+        assert!(out.contains(r#""priority": 10"#));
+        assert!(out.contains(r#""depends_on": ["#));
+        assert!(out.contains(r#""review-a""#));
+        assert!(out.contains(r#""gate": {"#));
+        assert!(out.contains(r#""timeout_secs": 120"#));
+        assert!(out.contains(r#""no_gate_reason": null"#));
+        assert!(out.contains("## Bound Workflow Gates"));
+        assert!(out.contains(r#""name": "fmt""#));
+        assert!(out.contains(r#""cmd": "cargo fmt --all --check""#));
+        assert!(out.contains(r#""timeout_secs": 300"#));
+        assert!(!out.contains(r#""id": "issue-development""#));
+        assert!(!out.contains(r#""card_kinds""#));
+    }
+
+    #[test]
+    fn spec_developer_instructions_skip_empty_workflow_instructions_section() {
+        let workflow = WorkflowDescriptor {
+            id: "issue-development".into(),
+            spec_instructions: String::new(),
+            plan_template: vec![plan_task("review-a", "codex", &[])],
+            gates: vec![],
+            card_kinds: vec![],
+        };
+
+        let out = render_spec_developer_instructions("wave-abc", Some(&workflow));
+
+        assert!(!out.contains("## Bound Workflow Instructions"));
+        assert!(out.contains("## Bound Workflow Plan Template"));
+        assert!(out.contains(r#""key": "review-a""#));
+    }
+
+    #[test]
+    fn spec_developer_instructions_without_workflow_match_static_template() {
+        let expected = crate::spec_card::render_system_prompt(
+            crate::spec_card::SeededCardRole::Spec.prompt_template(),
+            "wave-abc",
+        );
+
+        let out = render_spec_developer_instructions("wave-abc", None);
+
+        assert_eq!(out, expected);
+    }
+
+    #[tokio::test]
+    async fn bound_workflow_descriptor_filters_running_trusted_workflow_binding() {
+        let trusted_plugin_id = configured_trusted_plugin_id();
+        let untrusted_plugin_id = untrusted_plugin_id(&trusted_plugin_id);
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite repo"),
+        );
+        let bound_wave = make_wave(repo.as_ref(), Some(WORKFLOW_ID)).await;
+        let unbound_wave = make_wave(repo.as_ref(), None).await;
+
+        let (trusted_running_host, trusted_running_tmp) =
+            plugin_host_with_workflow(repo.clone(), &trusted_plugin_id, true).await;
+        trusted_running_host
+            .spawn(&trusted_plugin_id)
+            .await
+            .expect("spawn trusted plugin");
+        wait_for_running(&trusted_running_host, &trusted_plugin_id).await;
+        let trusted_running_adapter = adapter_for(repo.clone(), trusted_running_host.clone());
+        let descriptor = trusted_running_adapter
+            .bound_workflow_descriptor(bound_wave.id.as_str())
+            .await
+            .expect("resolve trusted running descriptor")
+            .expect("descriptor");
+        assert_eq!(descriptor.id, WORKFLOW_ID);
+
+        let (trusted_stopped_host, _trusted_stopped_tmp) =
+            plugin_host_with_workflow(repo.clone(), &trusted_plugin_id, false).await;
+        let trusted_stopped_adapter = adapter_for(repo.clone(), trusted_stopped_host);
+        assert!(
+            trusted_stopped_adapter
+                .bound_workflow_descriptor(bound_wave.id.as_str())
+                .await
+                .expect("trusted stopped lookup")
+                .is_none()
+        );
+
+        let (untrusted_running_host, untrusted_running_tmp) =
+            plugin_host_with_workflow(repo.clone(), &untrusted_plugin_id, true).await;
+        untrusted_running_host
+            .spawn(&untrusted_plugin_id)
+            .await
+            .expect("spawn untrusted plugin");
+        wait_for_running(&untrusted_running_host, &untrusted_plugin_id).await;
+        let untrusted_running_adapter = adapter_for(repo.clone(), untrusted_running_host.clone());
+        assert!(
+            untrusted_running_adapter
+                .bound_workflow_descriptor(bound_wave.id.as_str())
+                .await
+                .expect("untrusted running lookup")
+                .is_none()
+        );
+
+        assert!(
+            trusted_running_adapter
+                .bound_workflow_descriptor(unbound_wave.id.as_str())
+                .await
+                .expect("unbound lookup")
+                .is_none()
+        );
+
+        untrusted_running_host
+            .stop(&untrusted_plugin_id)
+            .await
+            .expect("stop untrusted plugin");
+        trusted_running_host
+            .stop(&trusted_plugin_id)
+            .await
+            .expect("stop trusted plugin");
+        drop(untrusted_running_tmp);
+        drop(trusted_running_tmp);
+    }
+
+    fn configured_trusted_plugin_id() -> String {
+        std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS")
+            .ok()
+            .and_then(|configured| {
+                configured
+                    .split(',')
+                    .map(str::trim)
+                    .find(|id| !id.is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "dev.neige.git-forge".to_string())
+    }
+
+    fn untrusted_plugin_id(trusted_plugin_id: &str) -> String {
+        let mut candidate = "dev.neige.untrusted-workflow-test".to_string();
+        let mut suffix = 0;
+        while candidate == trusted_plugin_id || trusted_forge_plugin(&candidate) {
+            suffix += 1;
+            candidate = format!("dev.neige.untrusted-workflow-test-{suffix}");
+        }
+        candidate
+    }
+
+    async fn make_wave(repo: &SqlxRepo, workflow_id: Option<&str>) -> crate::model::Wave {
+        let cove = repo
+            .cove_create(NewCove {
+                name: format!("cove-{workflow_id:?}"),
+                color: "#101010".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        repo.wave_create(NewWave {
+            cove_id: cove.id,
+            title: "workflow resolver".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: workflow_id.map(str::to_string),
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave")
+    }
+
+    async fn plugin_host_with_workflow(
+        repo: Arc<SqlxRepo>,
+        plugin_id: &str,
+        seed_plugin_row: bool,
+    ) -> (Arc<PluginHost>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugins_dir = tmp.path().join("plugins");
+        let plugins_data_dir = tmp.path().join("plugins-data");
+        let install_dir = plugins_dir.join(plugin_id);
+        let bin_dir = install_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
+        std::fs::create_dir_all(&plugins_data_dir).expect("create plugins data dir");
+        std::os::unix::fs::symlink(stub_echo_bin(), bin_dir.join("stub"))
+            .expect("symlink echo stub");
+
+        let manifest_json = json!({
+            "manifest_version": 1,
+            "id": plugin_id,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Workflow Resolver Stub",
+            "entrypoint": { "command": "bin/stub" },
+            "workflows": [
+                {
+                    "id": WORKFLOW_ID,
+                    "plan_template": [
+                        {
+                            "key": "inspect",
+                            "kind": "codex",
+                            "goal": "Inspect the issue.",
+                            "depends_on": []
+                        }
+                    ],
+                    "gates": [],
+                    "spec_instructions": "Use workflow {wave_id}.",
+                    "card_kinds": []
+                }
+            ],
+            "permissions": {}
+        });
+        let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
+        let registry = PluginRegistry::empty();
+        registry.insert(manifest, Some(install_dir.clone()));
+        if seed_plugin_row {
+            repo.plugin_install(NewPlugin {
+                id: plugin_id.to_string(),
+                version: "0.1.0".into(),
+                install_path: install_dir.display().to_string(),
+                manifest: manifest_json,
+                enabled: true,
+                user_config: json!({}),
+            })
+            .await
+            .expect("seed plugin row");
+        }
+        let repo_dyn: Arc<dyn Repo> = repo;
+        let host = Arc::new(PluginHost::new_full(
+            Arc::new(registry),
+            repo_dyn,
+            plugins_dir,
+            plugins_data_dir,
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+        ));
+        (host, tmp)
+    }
+
+    fn adapter_for(repo: Arc<SqlxRepo>, plugin: Arc<PluginHost>) -> SpecHarnessStartAdapter {
+        let repo_dyn: Arc<dyn Repo> = repo;
+        SpecHarnessStartAdapter::new(
+            repo_dyn.clone(),
+            SharedCodexAppServer::new_stub(repo_dyn),
+            HarnessRegistry::new(),
+            plugin,
+            CardRoleCache::new(),
+            WaveCoveCache::new(),
+            None,
+        )
+    }
+
+    async fn wait_for_running(host: &Arc<PluginHost>, plugin_id: &str) {
+        let start = Instant::now();
+        loop {
+            if let Some(status) = host.status(plugin_id).await
+                && matches!(status.status, PluginRuntimeStatus::Running)
+            {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "timed out waiting for plugin {plugin_id} to run"
+            );
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn stub_echo_bin() -> PathBuf {
+        if let Some(path) = std::env::var_os("CARGO_BIN_EXE_plugin-host-stub-echo") {
+            return path.into();
+        }
+        if let Some(path) = option_env!("CARGO_BIN_EXE_plugin-host-stub-echo") {
+            return path.into();
+        }
+        let current = std::env::current_exe().expect("current test executable");
+        let deps_dir = current.parent().expect("test executable parent");
+        let debug_dir = deps_dir.parent().expect("target debug dir");
+        let candidate = debug_dir.join("plugin-host-stub-echo");
+        assert!(
+            candidate.exists(),
+            "missing plugin-host-stub-echo at {}",
+            candidate.display()
+        );
+        candidate
+    }
+}

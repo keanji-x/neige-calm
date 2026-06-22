@@ -38,6 +38,7 @@ use crate::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use crate::operation::terminal_adapter::{TerminalAdapter, TerminalWorkerAdapter};
 use crate::operation::{OperationCompletionBus, OperationRuntime, SpawnCtx, SqlxOperationRepo};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
+use crate::plugin_host::{PluginHost, PluginRegistry};
 use crate::provider_registry::WorkerProviderRegistry;
 use crate::reaper::{DEFAULT_REAPER_RECONCILE_SECS, Reaper, reaper_disabled_from_env};
 use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
@@ -161,6 +162,23 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
     }
 }
 
+fn empty_plugin_host_for_dispatcher_runtime(
+    repo: Arc<dyn Repo>,
+    events: EventBus,
+    write: WriteContext,
+) -> Arc<PluginHost> {
+    let route_repo: Arc<dyn RouteRepo> = repo;
+    Arc::new(PluginHost::new_full(
+        Arc::new(PluginRegistry::empty()),
+        route_repo,
+        PathBuf::new(),
+        std::env::temp_dir().join("calm-dispatcher-plugins-data"),
+        Vec::new(),
+        events,
+        write,
+    ))
+}
+
 #[allow(deprecated, clippy::too_many_arguments)]
 fn dispatcher_operation_runtime(
     repo: Arc<dyn Repo>,
@@ -172,6 +190,7 @@ fn dispatcher_operation_runtime(
     mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
     shared_codex_appserver: Arc<SharedCodexAppServer>,
     harness: HarnessRegistry,
+    plugin: Arc<PluginHost>,
 ) -> Arc<OperationRuntime> {
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(
@@ -236,6 +255,7 @@ fn dispatcher_operation_runtime(
         repo.clone(),
         shared_codex_appserver.clone(),
         harness.clone(),
+        plugin,
         write.role_cache().clone(),
         write.cove_cache().clone(),
         mcp_socket_path,
@@ -483,6 +503,8 @@ impl Dispatcher {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
     ) -> Self {
+        let plugin =
+            empty_plugin_host_for_dispatcher_runtime(repo.clone(), events.clone(), write.clone());
         let operation_runtime = dispatcher_operation_runtime(
             repo.clone(),
             events.clone(),
@@ -493,6 +515,7 @@ impl Dispatcher {
             mcp_server.clone(),
             shared_codex_appserver.clone(),
             HarnessRegistry::new(),
+            plugin,
         );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
@@ -550,6 +573,8 @@ impl Dispatcher {
         shared_codex_appserver: Arc<SharedCodexAppServer>,
         permits: usize,
     ) -> Self {
+        let plugin =
+            empty_plugin_host_for_dispatcher_runtime(repo.clone(), events.clone(), write.clone());
         let operation_runtime = dispatcher_operation_runtime(
             repo.clone(),
             events.clone(),
@@ -560,6 +585,7 @@ impl Dispatcher {
             mcp_server.clone(),
             shared_codex_appserver.clone(),
             harness.clone(),
+            plugin,
         );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
