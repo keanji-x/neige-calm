@@ -239,6 +239,14 @@ fn render_spec_developer_instructions(
         instructions.push_str(&plan_template_json);
         instructions.push_str("\n```");
     }
+    if !workflow_descriptor.gates.is_empty() {
+        instructions.push_str("\n\n## Bound Workflow Gates\n");
+        instructions.push_str("```json\n");
+        let gates_json =
+            serde_json::to_string_pretty(&workflow_descriptor.gates).expect("GateInput serializes");
+        instructions.push_str(&gates_json);
+        instructions.push_str("\n```");
+    }
     instructions
 }
 
@@ -1009,7 +1017,14 @@ mod tests {
                 plan_task("review-b", "claude", &["review-a"]),
                 plan_task("merge", "terminal", &["review-a", "review-b"]),
             ],
-            gates: vec![],
+            gates: vec![GateInput {
+                cwd: Some("/workspace/repo".into()),
+                timeout_secs: Some(300),
+                steps: vec![GateStepInput {
+                    name: "fmt".into(),
+                    cmd: "cargo fmt --all --check".into(),
+                }],
+            }],
             card_kinds: vec![],
         };
 
@@ -1030,6 +1045,12 @@ mod tests {
         assert!(out.contains(r#""gate": {"#));
         assert!(out.contains(r#""timeout_secs": 120"#));
         assert!(out.contains(r#""no_gate_reason": null"#));
+        assert!(out.contains("## Bound Workflow Gates"));
+        assert!(out.contains(r#""name": "fmt""#));
+        assert!(out.contains(r#""cmd": "cargo fmt --all --check""#));
+        assert!(out.contains(r#""timeout_secs": 300"#));
+        assert!(!out.contains(r#""id": "issue-development""#));
+        assert!(!out.contains(r#""card_kinds""#));
     }
 
     #[test]
