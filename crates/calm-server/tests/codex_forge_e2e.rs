@@ -62,8 +62,8 @@ const SPEC_SESSION_ID: &str = "codex-forge-e2e-spec-session";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
-const GOAL: &str = r#"Goal: Create a single new file `FORGE_E2E.md` at the repository root containing exactly the line `forge-e2e-ok`. Then commit it using the `git.commit` MCP tool with message `forge-e2e: add marker` and idem `forge-e2e-commit`. Do not modify any other file. Do not run `git push`. Do not open a PR.
-Acceptance: `FORGE_E2E.md` exists with that content and exactly one commit was made via `git.commit`."#;
+const GOAL: &str = r#"Goal: At the repository root, create a file named `FORGE_E2E.md` whose entire contents are the single line `forge-e2e-ok`. Then stage it by running `git add FORGE_E2E.md`. Then commit it by calling the `git.commit` MCP tool with arguments message `forge-e2e: add marker` and idem `forge-e2e-commit`. Do not modify any other file, do not run `git push`, and do not open a pull request.
+Acceptance: `FORGE_E2E.md` exists with exactly that content, it is staged, and exactly one commit was created via the `git.commit` MCP tool."#;
 
 #[allow(dead_code)]
 struct Fixture {
@@ -539,19 +539,56 @@ async fn assert_worker_git_state(fx: &Fixture, worker_cwd: &Path) {
 }
 
 async fn panic_with_debug(fx: &Fixture, task_id: &str, reason: String) -> ! {
-    let worker_cwd = worker_operation_for_task(&fx.repo, task_id)
-        .await
-        .and_then(|row| row.tx_output)
-        .map(|output| PathBuf::from(output_string(&output, "cwd")));
+    let worker = worker_operation_for_task(&fx.repo, task_id).await;
+    let worker_summary = worker
+        .as_ref()
+        .map(operation_debug_summary)
+        .unwrap_or_else(|| format!("missing codex-worker operation for task {task_id}"));
+    let worker_cwd = worker
+        .as_ref()
+        .and_then(|row| row.tx_output.as_ref())
+        .map(|output| PathBuf::from(output_string(output, "cwd")));
+    let commit_summary = commit_operation_debug_summary(&fx.repo).await;
     let git_status = worker_cwd
         .as_deref()
         .map(git_status_for_debug)
         .unwrap_or_else(|| "<worker cwd not yet known>".to_string());
+    let git_log = worker_cwd
+        .as_deref()
+        .map(git_log_for_debug)
+        .unwrap_or_else(|| "<worker cwd not yet known>".to_string());
     panic!(
-        "{reason}\n\ncodex stderr:\n{}\n\nworker git status:\n{}",
+        "{reason}\n\ncodex-worker operation:\n{worker_summary}\n\ngit.commit operation:\n{commit_summary}\n\ncodex stderr:\n{}\n\nworker git log --oneline -5:\n{}\n\nworker git status:\n{}",
         read_lossy(&fx.codex_stderr_log),
+        git_log,
         git_status
     );
+}
+
+fn operation_debug_summary(row: &OperationRow) -> String {
+    format!(
+        "id={} phase={} last_error={:?}",
+        row.id, row.phase, row.last_error
+    )
+}
+
+async fn commit_operation_debug_summary(repo: &SqlxRepo) -> String {
+    let raw = operation_for_idem(repo, FORGE_ACTION_KIND, COMMIT_PLUGIN_IDEM).await;
+    let scoped = operation_for_idem_suffix(repo, FORGE_ACTION_KIND, COMMIT_PLUGIN_IDEM).await;
+
+    let raw_summary = raw
+        .as_ref()
+        .map(operation_debug_summary)
+        .unwrap_or_else(|| format!("missing exact idempotency_key {COMMIT_PLUGIN_IDEM}"));
+    let scoped_summary = match scoped.as_ref() {
+        Some(row) if raw.as_ref().is_some_and(|raw| raw.id == row.id) => {
+            "same as exact".to_string()
+        }
+        Some(row) => operation_debug_summary(row),
+        None => format!("missing any idempotency_key ending in {COMMIT_PLUGIN_IDEM}"),
+    };
+
+    format!("exact: {raw_summary}\nscoped/suffix: {scoped_summary}")
 }
 
 fn git_status_for_debug(cwd: &Path) -> String {
@@ -567,6 +604,19 @@ fn git_status_for_debug(cwd: &Path) -> String {
         cwd.display(),
         String::from_utf8_lossy(&status.stdout),
         String::from_utf8_lossy(&status.stderr)
+    )
+}
+
+fn git_log_for_debug(cwd: &Path) -> String {
+    if !cwd.exists() {
+        return format!("{} does not exist", cwd.display());
+    }
+    let log = run_git_output(Some(cwd), ["log", "--oneline", "-5"]);
+    format!(
+        "cwd: {}\nstdout:\n{}\nstderr:\n{}",
+        cwd.display(),
+        String::from_utf8_lossy(&log.stdout),
+        String::from_utf8_lossy(&log.stderr)
     )
 }
 
