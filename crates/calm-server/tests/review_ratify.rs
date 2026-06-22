@@ -564,6 +564,46 @@ async fn ratify_route_rejects_non_blocked_wave_for_all_decisions_without_event()
 }
 
 #[tokio::test]
+async fn ratify_route_rejects_stale_second_verdict_after_grant_without_second_event() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;
+
+    let (status, body) = post_ratify(&boot, "grant").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+    assert!(
+        matches!(
+            events.as_slice(),
+            [Event::RatifyResolved {
+                decision: RatifyDecision::Grant,
+                ..
+            }]
+        ),
+        "{events:?}",
+    );
+
+    for decision in ["grant", "deny"] {
+        let (status, body) = post_ratify(&boot, decision).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["code"], json!("conflict"));
+        assert!(
+            body["error"].as_str().is_some_and(
+                |message| message.contains("ratify: wave is not awaiting ratification")
+            ),
+            "{body}",
+        );
+
+        let events = events_for_wave(&boot, &["ratify.resolved"]).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "stale {decision} must not append a second resolution: {events:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Blocked).await;

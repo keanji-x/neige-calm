@@ -621,6 +621,18 @@ pub struct SendSpecInputResponse {
     pub runtime_id: String,
 }
 
+async fn ratify_wave_lifecycle_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wave_id: &WaveId,
+) -> Result<WaveLifecycle> {
+    let lifecycle = sqlx::query_scalar::<_, String>("SELECT lifecycle FROM waves WHERE id = ?1")
+        .bind(wave_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", wave_id.as_str())))?;
+    WaveLifecycle::try_from(lifecycle).map_err(CalmError::Internal)
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct InterruptSpecCardResponse {
     #[schema(value_type = String)]
@@ -826,11 +838,6 @@ pub(crate) async fn ratify_card(
         .wave_get(card.wave_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
-    if wave.lifecycle != WaveLifecycle::Blocked {
-        return Err(CalmError::Conflict(
-            "ratify: wave is not awaiting ratification (lifecycle != blocked)".into(),
-        ));
-    }
 
     let actor_id = ActorId::User;
     let scope = EventScope::Wave {
@@ -848,6 +855,13 @@ pub(crate) async fn ratify_card(
         let wave_id = wave_id.clone();
         let message = message.clone();
         Box::pin(async move {
+            let lifecycle = ratify_wave_lifecycle_in_tx(tx, &wave_id).await?;
+            if lifecycle != WaveLifecycle::Blocked {
+                return Err(CalmError::Conflict(
+                    "ratify: wave is not awaiting ratification (lifecycle != blocked)".into(),
+                ));
+            }
+
             let mut events = Vec::new();
             if decision == RatifyCardDecision::Grant
                 && let Some(lifecycle_events) = apply_requested_transition_in_tx(
