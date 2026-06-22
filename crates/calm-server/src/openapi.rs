@@ -80,6 +80,7 @@ use utoipa::OpenApi;
         crate::routes::cards::update_card,
         crate::routes::cards::get_harness_items,
         crate::routes::cards::send_spec_input,
+        crate::routes::cards::ratify_card,
         crate::routes::cards::interrupt_spec_card,
         crate::routes::cards::get_spec_run,
         crate::routes::cards::reset_spec_card,

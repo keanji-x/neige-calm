@@ -14,8 +14,10 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.plan.cancel",
         "calm.plan.list",
         "calm.plan.upsert",
+        "calm.ratify.request",
         "calm.report.edit",
         "calm.report.write",
+        "calm.review.round",
         "calm.task.verdict",
     ]
 }

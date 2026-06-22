@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::event::RatifyDecision;
 use crate::ids::{CardId, WaveId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -101,6 +102,24 @@ pub enum Observation {
         card_id: CardId,
         path: String,
     },
+    ReviewRound {
+        wave_id: WaveId,
+        phase: String,
+        slice_id: String,
+        pr_number: Option<u64>,
+        head_sha: Option<String>,
+        n: u32,
+        cap: u32,
+        converged: bool,
+    },
+    RatifyRequested {
+        wave_id: WaveId,
+        reason: String,
+    },
+    RatifyResolved {
+        wave_id: WaveId,
+        decision: RatifyDecision,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,6 +144,9 @@ impl Observation {
                 | Observation::ForgePrChecks { .. }
                 | Observation::ForgeIssueClosed { .. }
                 | Observation::WorktreeProvisioned { .. }
+                | Observation::ReviewRound { .. }
+                | Observation::RatifyRequested { .. }
+                | Observation::RatifyResolved { .. }
         )
     }
 
@@ -217,6 +239,40 @@ impl Observation {
             Observation::WorktreeProvisioned { path, .. } => {
                 format!("A worker git worktree was provisioned at {path}. Re-read the wave state.")
             }
+            Observation::ReviewRound {
+                phase,
+                slice_id,
+                pr_number,
+                head_sha,
+                n,
+                cap,
+                converged,
+                ..
+            } => {
+                let subject = match pr_number {
+                    Some(pr) => format!("{phase}/{slice_id}/PR #{pr}"),
+                    None => format!("{phase}/{slice_id}/design"),
+                };
+                let head = head_sha
+                    .as_deref()
+                    .map(|sha| format!(" at {sha}"))
+                    .unwrap_or_default();
+                format!(
+                    "Review round {n}/{cap} for {subject}{head} recorded converged={converged}. Re-read the wave state."
+                )
+            }
+            Observation::RatifyRequested { reason, .. } => {
+                format!("Ratification was requested: {reason}. Re-read the wave state.")
+            }
+            Observation::RatifyResolved { decision, .. } => {
+                let decision = match decision {
+                    RatifyDecision::Grant => "grant",
+                    RatifyDecision::Deny => "deny",
+                };
+                format!(
+                    "Ratification was resolved with decision={decision}. Re-read the wave state."
+                )
+            }
         }
     }
 }
@@ -245,5 +301,40 @@ mod tests {
             text.contains("Did you check Korean refiners?"),
             "raw text missing: {text}"
         );
+    }
+
+    #[test]
+    fn review_and_ratify_observations_are_hard_fire() {
+        let review = Observation::ReviewRound {
+            wave_id: WaveId::from("wave-1"),
+            phase: "impl".into(),
+            slice_id: "5b".into(),
+            pr_number: Some(760),
+            head_sha: Some("head-sha".into()),
+            n: 2,
+            cap: 8,
+            converged: true,
+        };
+        assert!(review.is_hard_fire());
+        let text = review.to_turn_text();
+        assert!(text.contains("2/8"), "round count missing: {text}");
+        assert!(
+            text.contains("converged=true"),
+            "convergence missing: {text}"
+        );
+
+        let requested = Observation::RatifyRequested {
+            wave_id: WaveId::from("wave-1"),
+            reason: "cap_exhausted".into(),
+        };
+        assert!(requested.is_hard_fire());
+        assert!(requested.to_turn_text().contains("cap_exhausted"));
+
+        let resolved = Observation::RatifyResolved {
+            wave_id: WaveId::from("wave-1"),
+            decision: RatifyDecision::Grant,
+        };
+        assert!(resolved.is_hard_fire());
+        assert!(resolved.to_turn_text().contains("decision=grant"));
     }
 }

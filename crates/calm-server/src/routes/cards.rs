@@ -16,10 +16,10 @@ use crate::db::sqlite::{
 use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::event::{Event, EventScope};
+use crate::event::{Event, EventScope, RatifyDecision};
 use crate::harness::{HarnessPhaseTag, Observation, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, WaveId};
-use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, new_id};
+use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, WaveLifecycle, new_id};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
@@ -27,6 +27,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
 use crate::plugin_host::callbacks::extract_card_creation_from_tool_call_result;
+use crate::ratify_state::ratify_request_pending_tx;
 use crate::routes::terminal_cards::{calm_error_from_operation_failure, stable_payload_hash};
 use crate::session_projection_lookup::{
     card_is_shared_spec, project_runtime_into_card_payload, project_runtime_into_cards_payload,
@@ -34,6 +35,7 @@ use crate::session_projection_lookup::{
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::wave_lifecycle::apply_requested_transition_in_tx;
 
 use axum::{
     Json, Router,
@@ -118,6 +120,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/cards/{id}/harness/items", get(get_harness_items))
         .route("/api/cards/{id}/spec/input", post(send_spec_input))
+        .route("/api/cards/{id}/ratify", post(ratify_card))
         .route("/api/cards/{id}/spec/interrupt", post(interrupt_spec_card))
         .route("/api/cards/{id}/spec/run", get(get_spec_run))
         .route("/api/cards/{id}/spec/reset", post(reset_spec_card))
@@ -580,6 +583,38 @@ pub struct SendSpecInputRequest {
     pub text: String,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RatifyCardRequest {
+    pub decision: RatifyCardDecision,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RatifyCardDecision {
+    Grant,
+    Deny,
+}
+
+impl From<RatifyCardDecision> for RatifyDecision {
+    fn from(value: RatifyCardDecision) -> Self {
+        match value {
+            RatifyCardDecision::Grant => RatifyDecision::Grant,
+            RatifyCardDecision::Deny => RatifyDecision::Deny,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RatifyCardResponse {
+    #[schema(value_type = String)]
+    pub card_id: CardId,
+    #[schema(value_type = String)]
+    pub wave_id: WaveId,
+    pub decision: RatifyCardDecision,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SendSpecInputResponse {
     #[schema(value_type = String)]
@@ -743,6 +778,112 @@ pub(crate) async fn send_spec_input(
     Ok(Json(SendSpecInputResponse {
         card_id: card.id,
         runtime_id: runtime.id.clone(),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/cards/{id}/ratify",
+    tag = "cards",
+    params(("id" = String, Path, description = "Spec card id")),
+    request_body = RatifyCardRequest,
+    responses(
+        (status = 200, description = "Human ratify verdict recorded", body = RatifyCardResponse),
+        (status = 400, description = "Malformed request", body = ErrorBody),
+        (status = 403, description = "Card is not a spec codex card, or actor is not the authenticated user", body = ErrorBody),
+        (status = 404, description = "Card or wave not found", body = ErrorBody),
+        (status = 409, description = "Wave is not awaiting ratification", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn ratify_card(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(id): Path<String>,
+    Json(body): Json<RatifyCardRequest>,
+) -> Result<Json<RatifyCardResponse>> {
+    if actor.as_str() != "user" {
+        return Err(CalmError::Forbidden(
+            "ratify verdicts must be authored by the authenticated user".into(),
+        ));
+    }
+
+    let card = s
+        .repo
+        .card_get(&id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    let role = s
+        .write
+        .verify_role(&card.id)
+        .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    if card.kind != "codex" || role != CardRole::Spec {
+        return Err(CalmError::Forbidden(format!(
+            "card {id} is not a spec codex card",
+        )));
+    }
+    let wave = s
+        .repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {} for card {id}", card.wave_id)))?;
+
+    let actor_id = ActorId::User;
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let wave_id = wave.id.clone();
+    let card_id = card.id.clone();
+    let decision = body.decision;
+    let message = body.message.unwrap_or_default();
+
+    write_with_actor_events_typed::<(), _>(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
+        let actor_id = actor_id.clone();
+        let scope = scope.clone();
+        let wave_id = wave_id.clone();
+        let message = message.clone();
+        Box::pin(async move {
+            if !ratify_request_pending_tx(tx, &wave_id).await? {
+                return Err(CalmError::Conflict(
+                    "ratify: wave is not awaiting ratification".into(),
+                ));
+            }
+
+            let mut events = Vec::new();
+            if decision == RatifyCardDecision::Grant
+                && let Some(lifecycle_events) = apply_requested_transition_in_tx(
+                    tx,
+                    &wave_id,
+                    WaveLifecycle::Working,
+                    &actor_id,
+                    message,
+                )
+                .await?
+            {
+                events.extend(
+                    lifecycle_events
+                        .into_iter()
+                        .map(|event| (actor_id.clone(), scope.clone(), event)),
+                );
+            }
+            events.push((
+                actor_id,
+                scope,
+                Event::RatifyResolved {
+                    wave_id,
+                    decision: decision.into(),
+                },
+            ));
+            Ok(((), events))
+        })
+    })
+    .await?;
+
+    Ok(Json(RatifyCardResponse {
+        card_id,
+        wave_id: wave.id,
+        decision,
     }))
 }
 

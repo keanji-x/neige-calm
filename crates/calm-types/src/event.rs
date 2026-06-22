@@ -338,7 +338,10 @@ impl EventScope {
 ///   Adds `workflow.registered` to the event union.
 /// * `10` — issue body read events (issue #760 slice ④-b). Adds
 ///   `forge.issue.read` to the event union.
-pub const SYNC_EVENT_VERSION: u32 = 10;
+/// * `11` — review/ratify workflow events (issue #760 slice ⑤-b-i).
+///   Adds `review.round`, `ratify.requested`, and `ratify.resolved`
+///   to the event union.
+pub const SYNC_EVENT_VERSION: u32 = 11;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -347,6 +350,31 @@ pub struct ForgeMergeSubject {
     pub phase: String,
     pub slice_id: String,
     pub pr_number: u64,
+}
+
+/// Logical review subject key for `review.round`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct ReviewSubject {
+    pub phase: String,
+    pub slice_id: String,
+    pub pr_number: Option<u64>,
+}
+
+/// Per-channel verdict recorded on a `review.round`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct ChannelVerdict {
+    pub role: String,
+    pub verdict: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum RatifyDecision {
+    Grant,
+    Deny,
 }
 
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
@@ -780,6 +808,25 @@ pub enum Event {
         head_sha: String,
         merge_sha: String,
     },
+    #[serde(rename = "review.round")]
+    ReviewRound {
+        wave_id: WaveId,
+        subject: ReviewSubject,
+        head_sha: Option<String>,
+        n: u32,
+        cap: u32,
+        converged: bool,
+        channels: Vec<ChannelVerdict>,
+        root_cause: Option<String>,
+        idempotency_key: String,
+    },
+    #[serde(rename = "ratify.requested")]
+    RatifyRequested { wave_id: WaveId, reason: String },
+    #[serde(rename = "ratify.resolved")]
+    RatifyResolved {
+        wave_id: WaveId,
+        decision: RatifyDecision,
+    },
     #[serde(rename = "forge.scan.completed")]
     ForgeScanCompleted {
         wave_id: WaveId,
@@ -1139,6 +1186,9 @@ impl Event {
                 }
             }
             Event::ForgePrMerged { wave_id, .. }
+            | Event::ReviewRound { wave_id, .. }
+            | Event::RatifyRequested { wave_id, .. }
+            | Event::RatifyResolved { wave_id, .. }
             | Event::ForgeScanCompleted { wave_id, .. }
             | Event::ForgePrOpened { wave_id, .. }
             | Event::ForgePrDiffRead { wave_id, .. }
@@ -1209,6 +1259,9 @@ impl Event {
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
+            Event::ReviewRound { .. } => "review.round",
+            Event::RatifyRequested { .. } => "ratify.requested",
+            Event::RatifyResolved { .. } => "ratify.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
             Event::ForgePrOpened { .. } => "forge.pr.opened",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
@@ -1394,6 +1447,9 @@ pub fn topics(ev: &Event) -> Vec<String> {
         ],
 
         Event::ForgePrMerged { wave_id, .. }
+        | Event::ReviewRound { wave_id, .. }
+        | Event::RatifyRequested { wave_id, .. }
+        | Event::RatifyResolved { wave_id, .. }
         | Event::ForgeScanCompleted { wave_id, .. }
         | Event::ForgePrOpened { wave_id, .. }
         | Event::ForgePrDiffRead { wave_id, .. }
@@ -1678,6 +1734,38 @@ mod scope_tests {
             merge_sha: "merge-sha".into(),
         };
         assert_eq!(forge_pr_merged.kind_tag(), "forge.pr.merged");
+
+        let review_round = Event::ReviewRound {
+            wave_id: WaveId::from("wave-1"),
+            subject: ReviewSubject {
+                phase: "impl".into(),
+                slice_id: "5b".into(),
+                pr_number: Some(760),
+            },
+            head_sha: Some("head-sha".into()),
+            n: 1,
+            cap: 8,
+            converged: false,
+            channels: vec![ChannelVerdict {
+                role: "design-correctness".into(),
+                verdict: "changes_requested".into(),
+            }],
+            root_cause: Some("tests failing".into()),
+            idempotency_key: "review.round:wave-1:impl:5b:760:1".into(),
+        };
+        assert_eq!(review_round.kind_tag(), "review.round");
+
+        let ratify_requested = Event::RatifyRequested {
+            wave_id: WaveId::from("wave-1"),
+            reason: "cap_exhausted".into(),
+        };
+        assert_eq!(ratify_requested.kind_tag(), "ratify.requested");
+
+        let ratify_resolved = Event::RatifyResolved {
+            wave_id: WaveId::from("wave-1"),
+            decision: RatifyDecision::Grant,
+        };
+        assert_eq!(ratify_resolved.kind_tag(), "ratify.resolved");
 
         let forge_scan_completed = Event::ForgeScanCompleted {
             wave_id: WaveId::from("wave-1"),
@@ -2676,6 +2764,32 @@ mod scope_tests {
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
+            Event::ReviewRound {
+                wave_id: WaveId::from("wave-1"),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: "5b".into(),
+                    pr_number: Some(760),
+                },
+                head_sha: Some("head-sha".into()),
+                n: 1,
+                cap: 8,
+                converged: false,
+                channels: vec![ChannelVerdict {
+                    role: "design-correctness".into(),
+                    verdict: "changes_requested".into(),
+                }],
+                root_cause: Some("tests failing".into()),
+                idempotency_key: "review.round:wave-1:impl:5b:760:1".into(),
+            },
+            Event::RatifyRequested {
+                wave_id: WaveId::from("wave-1"),
+                reason: "cap_exhausted".into(),
+            },
+            Event::RatifyResolved {
+                wave_id: WaveId::from("wave-1"),
+                decision: RatifyDecision::Grant,
+            },
             Event::ForgeScanCompleted {
                 wave_id: WaveId::from("wave-1"),
                 overlapping_prs: vec![1, 2],
@@ -2893,6 +3007,44 @@ mod scope_tests {
                     },
                     "head_sha": "head-sha",
                     "merge_sha": "merge-sha",
+                }),
+            ),
+            (
+                "review.round",
+                "review.round",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "subject": {
+                        "phase": "impl",
+                        "slice_id": "5b",
+                        "pr_number": 760,
+                    },
+                    "head_sha": "head-sha",
+                    "n": 1,
+                    "cap": 8,
+                    "converged": false,
+                    "channels": [
+                        { "role": "design-correctness", "verdict": "changes_requested" },
+                        { "role": "failure-path", "verdict": "approved" },
+                    ],
+                    "root_cause": "tests failing",
+                    "idempotency_key": "review.round:wave-1:impl:5b:760:1",
+                }),
+            ),
+            (
+                "ratify.requested",
+                "ratify.requested",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "reason": "cap_exhausted",
+                }),
+            ),
+            (
+                "ratify.resolved",
+                "ratify.resolved",
+                serde_json::json!({
+                    "wave_id": "wave-1",
+                    "decision": "grant",
                 }),
             ),
             (

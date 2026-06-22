@@ -88,6 +88,9 @@ pub(crate) fn event_warrants_spec_push_with_role(
         Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
+        | Event::ReviewRound { .. }
+        | Event::RatifyRequested { .. }
+        | Event::RatifyResolved { .. }
         | Event::ForgeScanCompleted { .. }
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
@@ -695,6 +698,9 @@ impl Dispatcher {
             "forge.issue.closed".into(),
             "worktree.provisioned".into(),
             "forge.pr.merged".into(),
+            "review.round".into(),
+            "ratify.requested".into(),
+            "ratify.resolved".into(),
             "codex.hook".into(),
             "claude.hook".into(),
             // Issue #644 PR-B — scheduler triggers (§5.1). These
@@ -955,6 +961,9 @@ impl Inner {
                 }
             }
             Event::ForgePrMerged { wave_id, .. }
+            | Event::ReviewRound { wave_id, .. }
+            | Event::RatifyRequested { wave_id, .. }
+            | Event::RatifyResolved { wave_id, .. }
             | Event::ForgeScanCompleted { wave_id, .. }
             | Event::ForgePrOpened { wave_id, .. }
             | Event::ForgePrChecks { wave_id, .. }
@@ -1248,6 +1257,31 @@ pub(crate) fn harness_observation_from_event(
             wave_id: wave_id.clone(),
             pr_number: subject.pr_number,
         }),
+        Event::ReviewRound {
+            subject,
+            head_sha,
+            n,
+            cap,
+            converged,
+            ..
+        } => Some(HarnessObservation::ReviewRound {
+            wave_id: wave_id.clone(),
+            phase: subject.phase.clone(),
+            slice_id: subject.slice_id.clone(),
+            pr_number: subject.pr_number,
+            head_sha: head_sha.clone(),
+            n: *n,
+            cap: *cap,
+            converged: *converged,
+        }),
+        Event::RatifyRequested { reason, .. } => Some(HarnessObservation::RatifyRequested {
+            wave_id: wave_id.clone(),
+            reason: reason.clone(),
+        }),
+        Event::RatifyResolved { decision, .. } => Some(HarnessObservation::RatifyResolved {
+            wave_id: wave_id.clone(),
+            decision: *decision,
+        }),
         Event::ForgeScanCompleted {
             overlapping_prs, ..
         } => Some(HarnessObservation::ForgeScanCompleted {
@@ -1365,6 +1399,7 @@ mod tests {
     use crate::card_role_cache::CardRoleCache;
     use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
     use crate::ids::CoveId;
+    use calm_types::event::{ChannelVerdict, RatifyDecision, ReviewSubject};
 
     fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
         EventScope::Wave {
@@ -1396,6 +1431,9 @@ mod tests {
                 "forge.issue.closed".into(),
                 "worktree.provisioned".into(),
                 "forge.pr.merged".into(),
+                "review.round".into(),
+                "ratify.requested".into(),
+                "ratify.resolved".into(),
                 "codex.hook".into(),
                 "claude.hook".into(),
                 "plan.updated".into(),
@@ -1508,6 +1546,32 @@ mod tests {
             },
             head_sha: "head-sha".into(),
             merge_sha: "merge-sha".into(),
+        })));
+        assert!(filter.matches(&env(Event::ReviewRound {
+            wave_id: wave.clone(),
+            subject: ReviewSubject {
+                phase: "impl".into(),
+                slice_id: "5b".into(),
+                pr_number: Some(760),
+            },
+            head_sha: Some("head-sha".into()),
+            n: 1,
+            cap: 8,
+            converged: false,
+            channels: vec![ChannelVerdict {
+                role: "design-correctness".into(),
+                verdict: "changes_requested".into(),
+            }],
+            root_cause: Some("tests failing".into()),
+            idempotency_key: "review.round:w:impl:5b:760:1".into(),
+        })));
+        assert!(filter.matches(&env(Event::RatifyRequested {
+            wave_id: wave.clone(),
+            reason: "cap_exhausted".into(),
+        })));
+        assert!(filter.matches(&env(Event::RatifyResolved {
+            wave_id: wave.clone(),
+            decision: RatifyDecision::Grant,
         })));
         assert!(!filter.matches(&env(Event::ForgePrDiffRead {
             wave_id: wave.clone(),
@@ -1926,6 +1990,32 @@ mod tests {
                 head_sha: "head-sha".into(),
                 merge_sha: "merge-sha".into(),
             },
+            Event::ReviewRound {
+                wave_id: wave.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: "5b".into(),
+                    pr_number: Some(760),
+                },
+                head_sha: Some("head-sha".into()),
+                n: 1,
+                cap: 8,
+                converged: false,
+                channels: vec![ChannelVerdict {
+                    role: "design-correctness".into(),
+                    verdict: "changes_requested".into(),
+                }],
+                root_cause: Some("tests failing".into()),
+                idempotency_key: "review.round:w:impl:5b:760:1".into(),
+            },
+            Event::RatifyRequested {
+                wave_id: wave.clone(),
+                reason: "cap_exhausted".into(),
+            },
+            Event::RatifyResolved {
+                wave_id: wave.clone(),
+                decision: RatifyDecision::Grant,
+            },
             Event::ForgeScanCompleted {
                 wave_id: wave.clone(),
                 overlapping_prs: vec![1, 2],
@@ -2253,6 +2343,65 @@ mod tests {
             Some(HarnessObservation::ForgePrMerged {
                 wave_id: wave.clone(),
                 pr_number: 760,
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::ReviewRound {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    subject: ReviewSubject {
+                        phase: "impl".into(),
+                        slice_id: "5b".into(),
+                        pr_number: Some(760),
+                    },
+                    head_sha: Some("head-sha".into()),
+                    n: 1,
+                    cap: 8,
+                    converged: false,
+                    channels: vec![ChannelVerdict {
+                        role: "design-correctness".into(),
+                        verdict: "changes_requested".into(),
+                    }],
+                    root_cause: Some("tests failing".into()),
+                    idempotency_key: "review.round:wave-map:impl:5b:760:1".into(),
+                }
+            ),
+            Some(HarnessObservation::ReviewRound {
+                wave_id: wave.clone(),
+                phase: "impl".into(),
+                slice_id: "5b".into(),
+                pr_number: Some(760),
+                head_sha: Some("head-sha".into()),
+                n: 1,
+                cap: 8,
+                converged: false,
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::RatifyRequested {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    reason: "cap_exhausted".into(),
+                }
+            ),
+            Some(HarnessObservation::RatifyRequested {
+                wave_id: wave.clone(),
+                reason: "cap_exhausted".into(),
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::RatifyResolved {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    decision: RatifyDecision::Deny,
+                }
+            ),
+            Some(HarnessObservation::RatifyResolved {
+                wave_id: wave.clone(),
+                decision: RatifyDecision::Deny,
             })
         );
         assert_eq!(

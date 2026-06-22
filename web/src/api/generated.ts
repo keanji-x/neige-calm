@@ -73,6 +73,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/cards/{id}/ratify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ratify_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cards/{id}/spec/input": {
         parameters: {
             query?: never;
@@ -1499,6 +1515,17 @@ export interface components {
             state: string;
             version: string;
         };
+        /** @enum {string} */
+        RatifyCardDecision: "grant" | "deny";
+        RatifyCardRequest: {
+            decision: components["schemas"]["RatifyCardDecision"];
+            message?: string | null;
+        };
+        RatifyCardResponse: {
+            card_id: string;
+            decision: components["schemas"]["RatifyCardDecision"];
+            wave_id: string;
+        };
         ReadFileResponse: {
             path: string;
             /** Format: int64 */
@@ -2288,6 +2315,78 @@ export interface operations {
             };
             /** @description Card not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    ratify_card: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Spec card id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RatifyCardRequest"];
+            };
+        };
+        responses: {
+            /** @description Human ratify verdict recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RatifyCardResponse"];
+                };
+            };
+            /** @description Malformed request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card is not a spec codex card, or actor is not the authenticated user */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Card or wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave is not awaiting ratification */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -245,6 +245,15 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'forge.pr.merged': noop(
     'Forge merge lifecycle is card/wave-scoped; no React Query cache consumes forge merge rows yet.',
   ),
+  'review.round': noop(
+    'Review convergence rounds are spec-observed workflow history; no React Query cache consumes them yet.',
+  ),
+  'ratify.requested': noop(
+    'Ratification requests are spec-observed workflow history; no React Query cache consumes them yet.',
+  ),
+  'ratify.resolved': noop(
+    'Ratification decisions are spec-observed workflow history; no React Query cache consumes them yet.',
+  ),
   'forge.scan.completed': noop(
     'Forge scan lifecycle is wave-scoped; no React Query cache consumes forge scan rows yet.',
   ),
