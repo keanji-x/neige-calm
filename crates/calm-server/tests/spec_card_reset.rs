@@ -313,6 +313,7 @@ fn install_failing_spec_start_runtime(boot: &mut Boot) {
             boot.repo.clone(),
             boot.state.shared_codex_appserver.clone(),
             boot.state.harness.clone(),
+            boot.state.plugin.clone(),
             boot.state.card_role_cache.clone(),
             boot.state.wave_cove_cache.clone(),
             None,

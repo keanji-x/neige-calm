@@ -340,6 +340,7 @@ fn build_aspect_registry() -> Arc<AspectRegistry> {
 struct OperationAdapterInputs {
     route_repo: Arc<dyn RouteRepo>,
     repo: Arc<dyn Repo>,
+    plugin: Arc<PluginHost>,
     codex: Arc<CodexClient>,
     shared_codex_appserver: Arc<SharedCodexAppServer>,
     pending_codex_threads: Arc<PendingThreadStartRegistry>,
@@ -424,6 +425,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
             input.repo.clone(),
             input.shared_codex_appserver.clone(),
             input.harness.clone(),
+            input.plugin.clone(),
             input.card_role_cache.clone(),
             input.wave_cove_cache.clone(),
             input
@@ -583,6 +585,7 @@ impl AppState {
         let adapters = build_operation_adapters(OperationAdapterInputs {
             route_repo: route_repo.clone(),
             repo: repo.clone(),
+            plugin: plugin.clone(),
             codex: codex.clone(),
             shared_codex_appserver: shared_codex_appserver.clone(),
             pending_codex_threads: pending_codex_threads.clone(),
@@ -709,6 +712,7 @@ impl AppState {
         let adapters = build_operation_adapters(OperationAdapterInputs {
             route_repo: route_repo.clone(),
             repo: self.raw.clone(),
+            plugin: self.plugin.clone(),
             codex: self.codex.clone(),
             shared_codex_appserver: self.shared_codex_appserver.clone(),
             pending_codex_threads: self.pending_codex_threads.clone(),
@@ -902,6 +906,16 @@ impl AppState {
             repo.clone(),
             Some(pending_codex_threads.clone()),
         );
+        let plugin = Arc::new(PluginHost::new_full(
+            Arc::new(registry),
+            repo.clone(),
+            plugins_dir,
+            plugins_data_dir,
+            cfg.plugins_disabled.clone(),
+            events.clone(),
+            write.clone(),
+        ));
+        let _ = plugin_host_cell.set(plugin.clone());
         let operation_repo = Arc::new(SqlxOperationRepo::new(
             repo.sqlite_pool()
                 .ok_or_else(|| anyhow::anyhow!("OperationRuntime requires a sqlite-backed Repo"))?,
@@ -909,6 +923,7 @@ impl AppState {
         let adapters = build_operation_adapters(OperationAdapterInputs {
             route_repo: route_repo.clone(),
             repo: repo.clone(),
+            plugin: plugin.clone(),
             codex: codex.clone(),
             shared_codex_appserver: shared_codex_appserver.clone(),
             pending_codex_threads: pending_codex_threads.clone(),
@@ -967,17 +982,6 @@ impl AppState {
                 crate::dispatcher::Dispatcher::permits_from_env(8),
             ),
         );
-
-        let plugin = Arc::new(PluginHost::new_full(
-            Arc::new(registry),
-            repo.clone(),
-            plugins_dir,
-            plugins_data_dir,
-            cfg.plugins_disabled.clone(),
-            events.clone(),
-            write.clone(),
-        ));
-        let _ = plugin_host_cell.set(plugin.clone());
 
         // Auto-spawn every enabled plugin row. Per-plugin errors are logged
         // inside `autospawn_enabled`; we never let one broken plugin block

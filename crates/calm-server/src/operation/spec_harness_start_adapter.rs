@@ -15,6 +15,7 @@ use crate::db::sqlite::{
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
 use crate::event::Event;
+use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
     SpecHarnessParams, initial_snapshot_with_goal, is_harness_snapshot_value,
@@ -28,6 +29,7 @@ use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // this module into `crate::per_card_lock` so the `/spec/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
+use crate::plugin_host::{PluginHost, manifest::WorkflowDescriptor};
 use crate::routes::cards::card_scope;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -70,6 +72,7 @@ pub struct SpecHarnessStartAdapter {
     repo: Arc<dyn Repo>,
     daemon: Arc<SharedCodexAppServer>,
     harness_registry: HarnessRegistry,
+    plugin: Arc<PluginHost>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
     mcp_socket_path: Option<PathBuf>,
@@ -81,6 +84,7 @@ impl SpecHarnessStartAdapter {
         repo: Arc<dyn Repo>,
         daemon: Arc<SharedCodexAppServer>,
         harness_registry: HarnessRegistry,
+        plugin: Arc<PluginHost>,
         card_role_cache: CardRoleCache,
         wave_cove_cache: WaveCoveCache,
         mcp_socket_path: Option<PathBuf>,
@@ -89,6 +93,7 @@ impl SpecHarnessStartAdapter {
             repo,
             daemon,
             harness_registry,
+            plugin,
             card_role_cache,
             wave_cove_cache,
             mcp_socket_path,
@@ -120,6 +125,29 @@ impl SpecHarnessStartAdapter {
                 "spec harness MCP socket path missing".into(),
             ))
         }
+    }
+
+    async fn bound_workflow_descriptor(&self, wave_id: &str) -> Result<Option<WorkflowDescriptor>> {
+        let Some(wave) = self.repo.wave_get(wave_id).await? else {
+            return Ok(None);
+        };
+        let Some(workflow_id) = wave.workflow_id.as_deref() else {
+            return Ok(None);
+        };
+        let running_plugin_ids = self.plugin.running_plugin_ids().await;
+        for manifest in self.plugin.registry().list() {
+            if !running_plugin_ids.contains(&manifest.id) || !trusted_forge_plugin(&manifest.id) {
+                continue;
+            }
+            if let Some(workflow) = manifest
+                .workflows
+                .into_iter()
+                .find(|workflow| workflow.id == workflow_id)
+            {
+                return Ok(Some(workflow));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -159,6 +187,43 @@ struct SpecThreadEnvPolicy<'a> {
 struct SpecThreadStartConfig<'a> {
     #[serde(rename = "shell_environment_policy")]
     shell_environment_policy: SpecThreadEnvPolicy<'a>,
+}
+
+fn render_spec_developer_instructions(
+    wave_id: &str,
+    workflow_descriptor: Option<&WorkflowDescriptor>,
+) -> String {
+    let mut instructions = crate::spec_card::render_system_prompt(
+        crate::spec_card::SeededCardRole::Spec.prompt_template(),
+        wave_id,
+    );
+    let Some(workflow_descriptor) = workflow_descriptor else {
+        return instructions;
+    };
+
+    instructions.push_str("\n\n## Bound Workflow Instructions\n");
+    instructions.push_str(&crate::spec_card::render_system_prompt(
+        &workflow_descriptor.spec_instructions,
+        wave_id,
+    ));
+    instructions.push_str("\n\n## Bound Workflow Plan Template\n");
+    if workflow_descriptor.plan_template.is_empty() {
+        instructions.push_str("(empty)\n");
+    } else {
+        for task in &workflow_descriptor.plan_template {
+            let depends_on = task
+                .depends_on
+                .iter()
+                .map(|dep| format!("`{dep}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            instructions.push_str(&format!(
+                "- `{}` · `{}` · depends_on=[{}]\n",
+                task.key, task.kind, depends_on
+            ));
+        }
+    }
+    instructions
 }
 
 #[async_trait]
@@ -392,10 +457,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             thread_id
         } else {
-            let developer_instructions = crate::spec_card::render_system_prompt(
-                crate::spec_card::SeededCardRole::Spec.prompt_template(),
-                &wave_id,
-            );
+            let workflow_descriptor = self.bound_workflow_descriptor(&wave_id).await?;
+            let developer_instructions =
+                render_spec_developer_instructions(&wave_id, workflow_descriptor.as_ref());
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
@@ -879,3 +943,59 @@ fn step_arg_run_status(step: &CompensationStep, key: &str) -> Result<WorkerSessi
 
 // The per-card lock behavior test moved to `crate::per_card_lock::tests`
 // alongside the lifted implementation (issue #649 i2).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp_server::tools::plan::PlanTaskInput;
+
+    fn plan_task(key: &str, kind: &str, depends_on: &[&str]) -> PlanTaskInput {
+        PlanTaskInput {
+            key: key.into(),
+            kind: kind.into(),
+            goal: "do the thing".into(),
+            context: None,
+            acceptance_criteria: None,
+            cwd: None,
+            depends_on: depends_on.iter().map(|dep| (*dep).to_string()).collect(),
+            priority: None,
+            gate: None,
+            no_gate_reason: None,
+        }
+    }
+
+    #[test]
+    fn spec_developer_instructions_append_workflow_descriptor_when_bound() {
+        let workflow = WorkflowDescriptor {
+            id: "issue-development".into(),
+            spec_instructions: "Follow workflow instructions for wave {wave_id}.".into(),
+            plan_template: vec![
+                plan_task("review-a", "codex", &[]),
+                plan_task("review-b", "claude", &["review-a"]),
+                plan_task("merge", "terminal", &["review-a", "review-b"]),
+            ],
+            gates: vec![],
+            card_kinds: vec![],
+        };
+
+        let out = render_spec_developer_instructions("wave-abc", Some(&workflow));
+
+        assert!(out.contains("Follow workflow instructions for wave wave-abc."));
+        assert!(!out.contains("{wave_id}"));
+        assert!(out.contains("`review-a` · `codex` · depends_on=[]"));
+        assert!(out.contains("`review-b` · `claude` · depends_on=[`review-a`]"));
+        assert!(out.contains("`merge` · `terminal` · depends_on=[`review-a`, `review-b`]"));
+    }
+
+    #[test]
+    fn spec_developer_instructions_without_workflow_match_static_template() {
+        let expected = crate::spec_card::render_system_prompt(
+            crate::spec_card::SeededCardRole::Spec.prompt_template(),
+            "wave-abc",
+        );
+
+        let out = render_spec_developer_instructions("wave-abc", None);
+
+        assert_eq!(out, expected);
+    }
+}
