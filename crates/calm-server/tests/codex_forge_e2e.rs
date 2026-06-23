@@ -15,6 +15,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -24,28 +25,35 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::harness::HarnessRegistry;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::{
     McpServer, ToolCallIdentity, ToolRegistry, auth, build_default_registry,
 };
-use calm_server::model::{CardRole, NewCard, NewCove, NewPlugin, NewWave, now_ms};
+use calm_server::model::{CardRole, NewCard, NewCove, NewPlugin, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::forge_action_adapter::ForgeActionAdapter;
+use calm_server::operation::spec_harness_start_adapter::{
+    SpecHarnessStartAdapter, SpecHarnessStartOperationPayload,
+};
 use calm_server::operation::{
-    OperationCompletionBus, OperationRuntime, ProviderAdapter, SpawnCtx, SqlxOperationRepo,
-    TxOutput,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRuntime, ProviderAdapter,
+    SpawnCtx, SqlxOperationRepo, TxOutput,
 };
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
+use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::session_projection_repo::{
-    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepo,
+    WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedDaemonState};
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_report::WaveReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -62,6 +70,21 @@ const TASK_KEY: &str = "forge-e2e";
 const SPEC_SESSION_ID: &str = "codex-forge-e2e-spec-session";
 
 static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+pub struct FixtureSpec {
+    pub goal: Option<String>,
+    pub workflow_id: Option<String>,
+    pub plan_source: PlanSource,
+    pub issue_body: Option<String>,
+    pub mint_report_card: bool,
+    pub require_task_gates: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanSource {
+    Injected,
+    RealSpecTurn,
+}
 
 #[allow(dead_code)]
 struct Fixture {
@@ -80,9 +103,11 @@ struct Fixture {
     daemon: Arc<DaemonClient>,
     shared: Arc<SharedCodexAppServer>,
     runtime: Arc<OperationRuntime>,
+    harness: HarnessRegistry,
     renderer: Arc<TerminalRendererRegistry>,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
+    used_injected_plan: AtomicBool,
     wave_cwd: PathBuf,
     origin_repo: PathBuf,
     origin_main_initial: String,
@@ -92,6 +117,12 @@ struct Fixture {
     _proxy_env: ProxyEnv,
     _tmp: TempDir,
     _socket_tmp: TempDir,
+}
+
+impl Fixture {
+    fn used_injected_plan(&self) -> bool {
+        self.used_injected_plan.load(Ordering::SeqCst)
+    }
 }
 
 #[tokio::test]
@@ -146,6 +177,93 @@ async fn real_codex_worker_writes_code_on_leased_worktree() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
+#[tokio::test]
+async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        eprintln!("[codex-forge-e2e] SKIP: no codex bin");
+        return;
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    let goal =
+        "Plan the smallest issue-development workflow for adding one marker file.".to_string();
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: Some(goal.clone()),
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            eprintln!("[codex-forge-e2e] SKIP: {reason}");
+            return;
+        }
+    };
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be AiSpecSession, got {actor:?}"
+    );
+    assert!(
+        plan["changed_keys"]
+            .as_array()
+            .is_some_and(|keys| !keys.is_empty()),
+        "plan.updated changed_keys must be non-empty: {plan}",
+    );
+    // These preconditions prove `bound_workflow_descriptor` resolves the
+    // trusted bound workflow instead of falling back to the vanilla spec prompt.
+    assert_bound_issue_development_workflow_preconditions(&fx).await;
+
+    // Superset-tolerant (design §1/§2): assert the kernel-deterministic
+    // Draft->Planning companion is present exactly once; the real spec may emit
+    // further lifecycle transitions (e.g. Planning->Dispatching) once it plans,
+    // so we filter rather than assert the total count.
+    let lifecycle = lifecycle_changed_rows(&fx.repo).await;
+    let draft_to_planning: Vec<&(ActorId, Value)> = lifecycle
+        .iter()
+        .filter(|(_, payload)| {
+            payload["from"] == json!("draft") && payload["to"] == json!("planning")
+        })
+        .collect();
+    assert_eq!(
+        draft_to_planning.len(),
+        1,
+        "expected exactly one wave.lifecycle_changed draft->planning, got {lifecycle:?}"
+    );
+    let (lifecycle_actor, lifecycle_payload) = draft_to_planning[0];
+    assert_eq!(
+        lifecycle_actor,
+        &ActorId::Kernel,
+        "draft->planning companion actor must be Kernel"
+    );
+    assert_eq!(lifecycle_payload["id"], json!(fx.wave_id.as_str()));
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
 fn forge_goal() -> String {
     r#"Goal: At the repository root, create a single new file named `FORGE_E2E.md` whose entire contents are exactly the single line `forge-e2e-ok`. Do not modify any other file, do not run `git push`, and do not open a pull request.
 Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that content."#
@@ -153,6 +271,21 @@ Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that conte
 }
 
 async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, String> {
+    boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: Some(forge_goal()),
+            workflow_id: None,
+            plan_source: PlanSource::Injected,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: true,
+        },
+        codex_bin,
+    )
+    .await
+}
+
+async fn boot_forge_e2e_fixture(spec: FixtureSpec, codex_bin: PathBuf) -> Result<Fixture, String> {
     let forge_env = setup_forge_env();
     let codex_path = codex_bin
         .parent()
@@ -160,6 +293,7 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
         .map(|path| EnvGuard::set("PATH", path))
         .ok_or_else(|| format!("codex binary has no parent: {}", codex_bin.display()))?;
     let proxy_env = apply_proxy_env();
+    let _issue_body = spec.issue_body.as_deref();
 
     let tmp = target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?;
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
@@ -210,12 +344,19 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
-            workflow_id: None,
+            workflow_id: spec.workflow_id.clone(),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .expect("create wave");
+    if !spec.require_task_gates {
+        sqlx::query("UPDATE waves SET require_task_gates = 0 WHERE id = ?1")
+            .bind(wave.id.as_str())
+            .execute(sqlx_repo.pool())
+            .await
+            .expect("disable task gates for fixture wave");
+    }
     repo_dyn
         .seed_wave_cove_cache(&wave_cove_cache)
         .await
@@ -224,17 +365,78 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
         .seed_card_role_cache(&cache)
         .await
         .expect("seed card-role cache");
+    // The injected (#835) path leaves the spec card a kind:"spec"/null-payload
+    // placeholder (it never boots a real harness). The RealSpecTurn path drives
+    // the real `spec-harness-start` op, whose AppServerInteract phase requires
+    // the production-faithful spec card shape: a kind:"codex" card whose payload
+    // is the `spec_harness_card_payload` JSON object (routes/waves.rs:657) — the
+    // adapter mutates that object in place (codex_thread_id, appserver_sock, …).
+    let (spec_kind, spec_payload) = match spec.plan_source {
+        PlanSource::Injected => ("spec".to_string(), Value::Null),
+        PlanSource::RealSpecTurn => {
+            let mut payload = serde_json::Map::new();
+            payload.insert(
+                "schemaVersion".into(),
+                json!(calm_server::validation::CODEX_PAYLOAD_SCHEMA_VERSION),
+            );
+            payload.insert("codex_source".into(), json!("shared"));
+            payload.insert("spec_harness".into(), json!(true));
+            if let Some(goal) = spec
+                .goal
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                payload.insert("prompt".into(), json!(goal));
+            }
+            ("codex".to_string(), Value::Object(payload))
+        }
+    };
     let spec_card = repo_dyn
         .card_create(NewCard {
             wave_id: wave.id.clone(),
-            kind: "spec".into(),
+            kind: spec_kind,
             sort: None,
-            payload: Value::Null,
+            payload: spec_payload,
         })
         .await
         .expect("create spec card");
     cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
-    seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
+    if matches!(spec.plan_source, PlanSource::RealSpecTurn) {
+        // `card_create` persists `cards.role = 'worker'` unconditionally
+        // (`card_create_tx` → `card_create_with_id_tx(.., CardRole::Worker, ..)`),
+        // independent of kind. The injected path never reads the DB role (it
+        // hand-builds `spec_identity()`), but the REAL spec turn's MCP calls
+        // resolve identity via `card_identity_get_by_session`, which reads
+        // `cards.role`. Production mints the spec card with
+        // `card_create_with_id_tx(.., CardRole::Spec, ..)`; the test must mirror
+        // that or `calm.plan.upsert` fails the role-gate with `got=Worker`.
+        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+            .bind(spec_card.id.as_str())
+            .execute(sqlx_repo.pool())
+            .await
+            .expect("persist spec card DB role");
+    }
+    if spec.mint_report_card {
+        let report_card = repo_dyn
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "wave-report".into(),
+                sort: Some(-1.0),
+                payload: serde_json::to_value(WaveReportPayload::initial())
+                    .expect("wave report payload"),
+            })
+            .await
+            .expect("create report card");
+        cache.insert(
+            report_card.id.clone(),
+            CardRole::ReportCard,
+            wave.id.clone(),
+        );
+    }
+    if matches!(spec.plan_source, PlanSource::Injected) {
+        seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
+    }
 
     let plugin_host = boot_plugin_host(
         repo_dyn.clone(),
@@ -324,6 +526,7 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
     let renderer = TerminalRendererRegistry::new_with_repo(route_repo.clone());
     let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
     let completion = OperationCompletionBus::new();
+    let harness = HarnessRegistry::new();
     let runtime = Arc::new(
         OperationRuntime::new(
             operation_repo.clone(),
@@ -336,6 +539,15 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
                     Some(server.clone()),
                     cache.clone(),
                     wave_cove_cache.clone(),
+                )) as Arc<dyn ProviderAdapter>,
+                Arc::new(SpecHarnessStartAdapter::new(
+                    repo_dyn.clone(),
+                    shared.clone(),
+                    harness.clone(),
+                    plugin_host.clone(),
+                    cache.clone(),
+                    wave_cove_cache.clone(),
+                    Some(server.shim_config.socket_path.clone()),
                 )) as Arc<dyn ProviderAdapter>,
             ],
             events.clone(),
@@ -386,9 +598,11 @@ async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, S
         daemon,
         shared,
         runtime,
+        harness,
         renderer,
         ctx,
         registry: Arc::new(registry),
+        used_injected_plan: AtomicBool::new(false),
         wave_cwd,
         origin_repo,
         origin_main_initial,
@@ -417,6 +631,7 @@ fn spawn_dispatcher(fx: &Fixture) -> Dispatcher {
 }
 
 async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
+    fx.used_injected_plan.store(true, Ordering::SeqCst);
     let handler = fx
         .registry
         .lookup(TOOL_PLAN_UPSERT)
@@ -438,6 +653,48 @@ async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
     )
     .await
     .expect("plan codex task");
+}
+
+async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
+    let request = SpecHarnessStartOperationPayload {
+        actor: ActorId::Kernel,
+        wave_id: fx.wave_id.as_str().to_string(),
+        spec_card_id: fx.spec_card_id.clone(),
+        report_card_id: None,
+        sort: None,
+        cwd: fx.wave_cwd.display().to_string(),
+        goal: Some(goal),
+        reset_harness_items: false,
+        force_new_thread: true,
+    };
+    let payload = serde_json::to_value(&request).expect("spec-harness-start payload");
+    let payload_hash = stable_payload_hash(&json!({ "request": &request }))
+        .expect("spec-harness-start payload hash");
+    let key = OperationKey {
+        operation_key: new_id(),
+        idempotency_key: Some(format!(
+            "codex-forge-e2e-spec-start:{}:{}",
+            fx.wave_id.as_str(),
+            fx.spec_card_id.as_str()
+        )),
+        payload_hash,
+    };
+
+    let op_id = fx
+        .runtime
+        .submit("spec-harness-start", key, payload)
+        .await
+        .expect("submit spec-harness-start");
+    let outcome = fx
+        .runtime
+        .wait(&op_id)
+        .await
+        .expect("wait spec-harness-start")
+        .outcome;
+    match outcome {
+        OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {}
+        other => panic!("spec-harness-start outcome: {other:?}"),
+    }
 }
 
 fn spec_identity(fx: &Fixture) -> ToolCallIdentity {
@@ -710,6 +967,139 @@ async fn event_payloads(repo: &SqlxRepo, kind: &str) -> Vec<Value> {
         .collect()
 }
 
+async fn plan_updated_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
+    actor_payload_rows(repo, "plan.updated").await
+}
+
+async fn lifecycle_changed_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
+    actor_payload_rows(repo, "wave.lifecycle_changed").await
+}
+
+async fn actor_payload_rows(repo: &SqlxRepo, kind: &str) -> Vec<(ActorId, Value)> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT actor, payload FROM events WHERE kind = ?1 ORDER BY id ASC")
+            .bind(kind)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap_or_else(|e| panic!("{kind} event rows: {e}"));
+    rows.into_iter()
+        .map(|(actor, payload)| {
+            (
+                serde_json::from_str(&actor).expect("event actor json"),
+                serde_json::from_str(&payload).expect("event payload json"),
+            )
+        })
+        .collect()
+}
+
+async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows = plan_updated_rows(&fx.repo).await;
+        if let Some(row) = rows.into_iter().next() {
+            return row;
+        }
+        if Instant::now() >= deadline {
+            let diag = dump_spec_diag(&fx.repo).await;
+            panic!(
+                "timed out after {budget:?} waiting for plan.updated\n{diag}\ncodex stderr:\n{}",
+                read_lossy(&fx.codex_stderr_log)
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn assert_bound_issue_development_workflow_preconditions(fx: &Fixture) {
+    let bound_workflow: Option<String> =
+        sqlx::query_scalar("SELECT workflow_id FROM waves WHERE id = ?1")
+            .bind(fx.wave_id.as_str())
+            .fetch_one(fx.repo.pool())
+            .await
+            .expect("select bound wave workflow_id");
+    assert_eq!(
+        bound_workflow.as_deref(),
+        Some("issue-development"),
+        "wave must be bound to issue-development workflow",
+    );
+
+    let registered = event_payloads(&fx.repo, "workflow.registered").await;
+    assert!(
+        registered.iter().any(|payload| {
+            payload["pluginId"] == json!(PLUGIN_ID)
+                && payload["workflowId"] == json!("issue-development")
+        }),
+        "expected workflow.registered for {PLUGIN_ID}/issue-development, got {registered:?}"
+    );
+}
+
+async fn shutdown_spec_harness_if_registered(fx: &Fixture) {
+    let Ok(Some(runtime)) = fx
+        .repo
+        .session_projection_active_for_card(&fx.spec_card_id.to_string())
+        .await
+    else {
+        return;
+    };
+    if let Some(harness) = fx.harness.remove(&runtime.id) {
+        let _ = harness.shutdown().await;
+    }
+}
+
+/// `(id, turn_id, item_type, method, params)` for the harness-item diagnostic.
+type HarnessItemDiagRow = (i64, Option<String>, Option<String>, String, String);
+
+/// Diagnostic dump for the real-spec-turn path: what events fired and what the
+/// real spec turn actually did (harness_items = the spec's thread items / tool
+/// calls — e.g. the `calm.plan.upsert` call and any role-gate rejection). Used
+/// only on the `wait_for_plan_updated` timeout so a nightly/manual failure is
+/// triageable instead of a bare "timed out".
+async fn dump_spec_diag(repo: &SqlxRepo) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("\n==== SPEC DIAG ====\n");
+
+    let kinds: Vec<(String, i64)> =
+        sqlx::query_as("SELECT kind, COUNT(*) FROM events GROUP BY kind ORDER BY kind")
+            .fetch_all(repo.pool())
+            .await
+            .unwrap_or_default();
+    let _ = writeln!(out, "-- event kind counts --");
+    for (k, n) in &kinds {
+        let _ = writeln!(out, "  {k}: {n}");
+    }
+
+    let evs: Vec<(i64, String, String, String)> =
+        sqlx::query_as("SELECT id, kind, actor, substr(payload,1,240) FROM events ORDER BY id ASC")
+            .fetch_all(repo.pool())
+            .await
+            .unwrap_or_default();
+    let _ = writeln!(out, "-- event stream ({} rows) --", evs.len());
+    for (id, kind, actor, payload) in &evs {
+        let _ = writeln!(out, "  #{id} {kind} actor={actor} {payload}");
+    }
+
+    let items: Vec<HarnessItemDiagRow> = sqlx::query_as(
+        "SELECT id, turn_id, item_type, method, substr(params,1,360) \
+         FROM harness_items ORDER BY id ASC",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap_or_default();
+    let _ = writeln!(
+        out,
+        "-- harness_items ({} rows: the spec's real turn) --",
+        items.len()
+    );
+    for (id, turn, ty, method, params) in &items {
+        let _ = writeln!(
+            out,
+            "  #{id} turn={turn:?} type={ty:?} method={method} {params}"
+        );
+    }
+    out.push_str("==== END DIAG ====\n");
+    out
+}
+
 async fn committed_event_rows(repo: &SqlxRepo) -> Vec<CommittedEventRow> {
     let rows: Vec<RawCommittedEventRow> = sqlx::query_as(
         "SELECT actor, scope_kind, scope_wave, scope_card, payload \
@@ -744,6 +1134,14 @@ fn e2e_budget() -> Duration {
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(180))
+}
+
+fn spec_planning_budget() -> Duration {
+    std::env::var("NEIGE_SPEC_PLANNING_BUDGET")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(240))
 }
 
 fn resolve_codex_bin() -> Option<PathBuf> {
