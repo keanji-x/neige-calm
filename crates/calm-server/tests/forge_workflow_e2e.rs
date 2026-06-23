@@ -2,12 +2,9 @@
 
 mod support;
 
-use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -51,9 +48,17 @@ use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_types::worker::WorkerSessionId;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+use support::event_queries::{EventRow, event_rows, wait_for_event_count};
+use support::forge_env::{EnvGuard, FORGE_ENV_LOCK, ForgeTestEnv};
+use support::gh_shim::write_gh_shim;
+use support::git_helpers::{
+    clone_for_wave, configure_repo_identity, git_ref_exists, init_bare_origin, run_git,
+    run_git_capture, stage_git_change,
+};
 use support::mcp::{
     connect, handshake, recv_frame, send_frame, tools_call_frame, tools_list_frame,
 };
+use support::oracle::{assert_subject_keyed_cap_enforcement, row_head_sha};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep, timeout};
@@ -72,7 +77,6 @@ const ISSUE_CLOSE_TOOL: &str = "plugin.dev.neige.git-forge_gh.issue.close";
 const RECOVERY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const SPEC_SESSION_ID: &str = "forge-workflow-spec-session";
 
-static FORGE_ENV_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 const WORKFLOW_ID: &str = "issue-development";
 
 struct Fixture {
@@ -109,24 +113,6 @@ struct Caller {
     lease_id: String,
     lease_abs: PathBuf,
 }
-
-#[derive(Clone, Debug)]
-struct EventRow {
-    id: i64,
-    scope_kind: String,
-    scope_wave: Option<String>,
-    scope_card: Option<String>,
-    payload: Value,
-}
-
-type RawEventRow = (
-    i64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-);
 
 #[tokio::test]
 async fn git_forge_workflow_registers_and_wave_create_binds() {
@@ -838,7 +824,7 @@ async fn dual_review_converges_then_merges() {
     );
     assert!(merged.id < issue_closed.id, "merge must precede close");
     assert!(issue_closed.id < done.id, "close must precede done");
-    assert_subject_keyed_cap_enforcement(&fx).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -897,7 +883,7 @@ async fn cap_exhausted_give_up_fails_terminal() {
             .all(|row| row.payload["subject"]["pr_number"] != json!(pr.pr_number)),
         "give-up subject must not merge"
     );
-    assert_subject_keyed_cap_enforcement(&fx).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -981,7 +967,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         event_rows(&fx.repo, "forge.pr.merged").await.is_empty(),
         "merge must be absent while latest subject round is unconverged before grant"
     );
-    assert_subject_keyed_cap_enforcement(&fx).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
 
     let (status, body) = post_ratify(&fx, "grant").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -1021,7 +1007,7 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
     assert!(resolved.id < converged.id);
     assert!(converged.id < merged.id);
     assert_eq!(row_head_sha(&merged).as_deref(), Some(pr.head_sha.as_str()));
-    assert_subject_keyed_cap_enforcement(&fx).await;
+    assert_subject_keyed_cap_enforcement(&fx.repo, &fx.wave_id).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -2206,137 +2192,6 @@ async fn close_issue(fx: &Fixture, id: i64, repo_arg: &str, issue_number: u64) -
     .await
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct SubjectKey {
-    phase: String,
-    slice_id: String,
-    pr_number: Option<u64>,
-}
-
-impl SubjectKey {
-    fn from_subject_payload(subject: &Value) -> Self {
-        Self {
-            phase: subject["phase"]
-                .as_str()
-                .expect("subject.phase")
-                .to_string(),
-            slice_id: subject["slice_id"]
-                .as_str()
-                .expect("subject.slice_id")
-                .to_string(),
-            pr_number: subject.get("pr_number").and_then(Value::as_u64),
-        }
-    }
-}
-
-fn review_subject_key(row: &EventRow) -> SubjectKey {
-    SubjectKey::from_subject_payload(&row.payload["subject"])
-}
-
-fn review_round_n(row: &EventRow) -> u32 {
-    row.payload["n"].as_u64().expect("review n") as u32
-}
-
-fn review_round_converged(row: &EventRow) -> bool {
-    row.payload["converged"]
-        .as_bool()
-        .expect("review converged")
-}
-
-fn merge_matches_subject(row: &EventRow, key: &SubjectKey) -> bool {
-    SubjectKey::from_subject_payload(&row.payload["subject"]) == *key
-}
-
-fn row_head_sha(row: &EventRow) -> Option<String> {
-    row.payload
-        .get("head_sha")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
-async fn assert_subject_keyed_cap_enforcement(fx: &Fixture) {
-    let rounds = event_rows(&fx.repo, "review.round").await;
-    let merges = event_rows(&fx.repo, "forge.pr.merged").await;
-    let issue_closed = event_rows(&fx.repo, "forge.issue.closed").await;
-    let lifecycle = event_rows(&fx.repo, "wave.lifecycle_changed").await;
-    let ratify_resolved = event_rows(&fx.repo, "ratify.resolved").await;
-
-    let mut max_round_by_subject: HashMap<SubjectKey, EventRow> = HashMap::new();
-    for round in &rounds {
-        let key = review_subject_key(round);
-        let replace = max_round_by_subject
-            .get(&key)
-            .map(|existing| review_round_n(round) > review_round_n(existing))
-            .unwrap_or(true);
-        if replace {
-            max_round_by_subject.insert(key, round.clone());
-        }
-    }
-
-    for (key, max_round) in max_round_by_subject {
-        if review_round_converged(&max_round) {
-            if key.pr_number.is_some() {
-                let expected = row_head_sha(&max_round).expect("converged PR review head_sha");
-                for merge in merges.iter().filter(|row| merge_matches_subject(row, &key)) {
-                    assert_eq!(
-                        row_head_sha(merge).as_deref(),
-                        Some(expected.as_str()),
-                        "merge head must match latest max-n converged review for {key:?}"
-                    );
-                }
-            }
-            continue;
-        }
-
-        let later_grant = ratify_resolved.iter().find(|row| {
-            row.id > max_round.id
-                && row.scope_wave.as_deref() == Some(&fx.wave_id)
-                && row.payload["decision"] == "grant"
-        });
-        let later_converged = later_grant.and_then(|grant| {
-            rounds
-                .iter()
-                .filter(|row| {
-                    row.id > grant.id
-                        && review_subject_key(row) == key
-                        && review_round_converged(row)
-                })
-                .max_by_key(|row| review_round_n(row))
-        });
-
-        if let Some(converged) = later_converged {
-            let expected = row_head_sha(converged).expect("later converged review head_sha");
-            for merge in merges.iter().filter(|row| merge_matches_subject(row, &key)) {
-                assert_eq!(
-                    row_head_sha(merge).as_deref(),
-                    Some(expected.as_str()),
-                    "post-ratify merge head must match intervening converged review for {key:?}"
-                );
-            }
-            continue;
-        }
-
-        assert!(
-            !merges
-                .iter()
-                .any(|row| row.id > max_round.id && merge_matches_subject(row, &key)),
-            "unconverged max-n subject {key:?} must not merge later"
-        );
-        assert!(
-            !issue_closed.iter().any(|row| row.id > max_round.id),
-            "unconverged max-n subject {key:?} must not close an issue later"
-        );
-        assert!(
-            !lifecycle.iter().any(|row| {
-                row.id > max_round.id
-                    && row.scope_wave.as_deref() == Some(&fx.wave_id)
-                    && row.payload["to"] == "done"
-            }),
-            "unconverged max-n subject {key:?} must not reach done later"
-        );
-    }
-}
-
 async fn wait_for_recovered_pending(
     handle: &calm_server::harness::SpecHarness,
 ) -> Vec<Observation> {
@@ -2577,42 +2432,6 @@ fn assert_tool_succeeded(resp: &Value, label: &str) {
     );
 }
 
-async fn event_rows(repo: &SqlxRepo, kind: &str) -> Vec<EventRow> {
-    let rows: Vec<RawEventRow> = sqlx::query_as(
-        "SELECT id, scope_kind, scope_cove, scope_wave, scope_card, payload \
-             FROM events WHERE kind = ?1 ORDER BY id ASC",
-    )
-    .bind(kind)
-    .fetch_all(repo.pool())
-    .await
-    .expect("event rows");
-    rows.into_iter()
-        .map(
-            |(id, scope_kind, _scope_cove, scope_wave, scope_card, payload)| EventRow {
-                id,
-                scope_kind,
-                scope_wave,
-                scope_card,
-                payload: serde_json::from_str(&payload).expect("event payload json"),
-            },
-        )
-        .collect()
-}
-
-async fn wait_for_event_count(repo: &SqlxRepo, kind: &str, expected: usize) -> Vec<EventRow> {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let rows = event_rows(repo, kind).await;
-        if rows.len() == expected {
-            return rows;
-        }
-        if Instant::now() > deadline {
-            panic!("expected {expected} `{kind}` events, got {}", rows.len());
-        }
-        sleep(Duration::from_millis(25)).await;
-    }
-}
-
 async fn assert_event_count_stays(repo: &SqlxRepo, kind: &str, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(1);
     loop {
@@ -2713,35 +2532,6 @@ fn read_manifest() -> Manifest {
     Manifest::parse(&raw).expect("git-forge manifest parses")
 }
 
-fn init_bare_origin(origin: &Path, seed: &Path) {
-    run_git_no_cwd(["init", "--bare", path_str(origin)]);
-    std::fs::create_dir_all(seed).expect("create seed repo");
-    run_git(seed, ["init"]);
-    run_git(
-        seed,
-        ["config", "user.email", "forge-workflow@example.test"],
-    );
-    run_git(seed, ["config", "user.name", "Forge Workflow Test"]);
-    run_git(seed, ["branch", "-M", "main"]);
-    std::fs::write(seed.join("README.md"), "initial\n").expect("write README");
-    run_git(seed, ["add", "README.md"]);
-    run_git(seed, ["commit", "-m", "initial"]);
-    run_git(seed, ["remote", "add", "origin", path_str(origin)]);
-    run_git(seed, ["push", "-u", "origin", "main"]);
-    run_git_no_cwd([
-        "--git-dir",
-        path_str(origin),
-        "symbolic-ref",
-        "HEAD",
-        "refs/heads/main",
-    ]);
-}
-
-fn clone_for_wave(origin: &Path, target: &Path) {
-    run_git_no_cwd(["clone", path_str(origin), path_str(target)]);
-    configure_repo_identity(target);
-}
-
 fn provision_worker_worktree(repo: &Path, wave_id: &str, card_id: &str, target: &Path) {
     ensure_worktree_root_excluded(repo);
     let parent = target.parent().expect("worker worktree target parent");
@@ -2778,69 +2568,8 @@ fn ensure_worktree_root_excluded(repo: &Path) {
     writeln!(file, "{WORKTREE_EXCLUDE}").expect("write worktree exclude");
 }
 
-fn configure_repo_identity(repo: &Path) {
-    run_git(
-        repo,
-        ["config", "user.email", "forge-workflow@example.test"],
-    );
-    run_git(repo, ["config", "user.name", "Forge Workflow Test"]);
-}
-
-fn stage_git_change(repo: &Path, name: &str, contents: &str) {
-    std::fs::write(repo.join(name), contents).expect("write git change");
-    run_git(repo, ["add", name]);
-}
-
-fn run_git<const N: usize>(repo: &Path, args: [&str; N]) {
-    run_git_inner(Some(repo), args);
-}
-
-fn run_git_no_cwd<const N: usize>(args: [&str; N]) {
-    run_git_inner(None, args);
-}
-
-fn run_git_capture<const N: usize>(repo: &Path, args: [&str; N]) -> String {
-    let output = run_git_output(Some(repo), args);
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
-}
-
-fn git_ref_exists(repo: &Path, ref_name: &str) -> bool {
-    run_git_output(Some(repo), ["show-ref", "--verify", "--quiet", ref_name])
-        .status
-        .success()
-}
-
-fn run_git_inner<const N: usize>(repo: Option<&Path>, args: [&str; N]) {
-    let output = run_git_output(repo, args);
-    assert!(
-        output.status.success(),
-        "git failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-fn run_git_output<const N: usize>(repo: Option<&Path>, args: [&str; N]) -> std::process::Output {
-    let mut cmd = Command::new("git");
-    cmd.args(args);
-    if let Some(repo) = repo {
-        cmd.current_dir(repo);
-    }
-    cmd.output().expect("run git")
-}
-
 fn path_str(path: &Path) -> &str {
     path.to_str().expect("test paths are utf-8")
-}
-
-fn write_gh_shim(dir: &Path) {
-    let path = dir.join("gh");
-    std::fs::write(&path, GH_SHIM).expect("write gh shim");
-    let mut perms = std::fs::metadata(&path)
-        .expect("gh shim metadata")
-        .permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&path, perms).expect("chmod gh shim");
 }
 
 fn shim_state_dir(repo: &Path) -> PathBuf {
@@ -2910,14 +2639,6 @@ fn prepend_to_path(dir: &Path) -> OsString {
     value
 }
 
-struct ForgeTestEnv {
-    _path_dir: TempDir,
-    _results_dir: TempDir,
-    _trusted: EnvGuard,
-    _results: EnvGuard,
-    _path: EnvGuard,
-}
-
 fn setup_forge_env() -> ForgeTestEnv {
     let path_dir = short_tempdir("p").expect("gh shim PATH tempdir");
     write_gh_shim(path_dir.path());
@@ -2949,312 +2670,3 @@ fn socket_tempdir() -> std::io::Result<TempDir> {
     std::fs::create_dir_all(&base)?;
     tempfile::Builder::new().prefix("s").tempdir_in(base)
 }
-
-struct EnvGuard {
-    key: &'static str,
-    previous: Option<OsString>,
-}
-
-impl EnvGuard {
-    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match self.previous.as_ref() {
-            Some(previous) => unsafe { std::env::set_var(self.key, previous) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
-
-const GH_SHIM: &str = r#"#!/bin/sh
-# Hermetic gh shim for forge_workflow_e2e.
-# State is derived only from --repo so the kernel's env-cleared subprocess can
-# replay probes without test-only variables. The merge command is idempotent:
-# repeated merges for the same PR return the original recorded merge oid.
-
-get_arg() {
-  wanted=$1
-  shift
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "$wanted" ]; then
-      shift
-      if [ "$#" -gt 0 ]; then
-        printf '%s\n' "$1"
-        return 0
-      fi
-      return 1
-    fi
-    shift
-  done
-  return 1
-}
-
-state_dir_for() {
-  printf '%s.shimstate\n' "$1"
-}
-
-ensure_state() {
-  repo=$1
-  state=$(state_dir_for "$repo")
-  mkdir -p "$state/prs" "$state/issues"
-  printf '%s\n' "$state"
-}
-
-inc_counter() {
-  file=$1
-  if [ -f "$file" ]; then
-    count=$(cat "$file")
-  else
-    count=0
-  fi
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$file"
-}
-
-block_if_requested() {
-  state=$1
-  verb=$2
-  block="$state/block_$verb"
-  release="$state/release_$verb"
-  [ -f "$block" ] || return 0
-  i=0
-  while [ "$i" -lt 200 ]; do
-    [ -f "$release" ] && return 0
-    # CI uses GNU coreutils; keep a real delay if fractional sleep is unavailable.
-    sleep 0.1 2>/dev/null || sleep 1
-    i=$((i + 1))
-  done
-  return 0
-}
-
-find_pr() {
-  selector=$1
-  state=$2
-  for pr_dir in "$state"/prs/*; do
-    [ -d "$pr_dir" ] || continue
-    number=$(cat "$pr_dir/number")
-    head=$(cat "$pr_dir/head")
-    if [ "$selector" = "$number" ] || [ "$selector" = "$head" ]; then
-      printf '%s\n' "$pr_dir"
-      return 0
-    fi
-  done
-  return 1
-}
-
-find_pr_by_head() {
-  wanted_head=$1
-  state=$2
-  for pr_dir in "$state"/prs/*; do
-    [ -d "$pr_dir" ] || continue
-    head=$(cat "$pr_dir/head")
-    if [ "$wanted_head" = "$head" ]; then
-      printf '%s\n' "$pr_dir"
-      return 0
-    fi
-  done
-  return 1
-}
-
-print_pr_json() {
-  pr_dir=$1
-  number=$(cat "$pr_dir/number")
-  head_sha=$(cat "$pr_dir/headRefOid")
-  printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
-}
-
-[ "$#" -ge 2 ] || {
-  echo "unsupported gh invocation" >&2
-  exit 2
-}
-
-area=$1
-verb=$2
-shift 2
-
-case "$area:$verb" in
-  pr:list)
-    repo=$(get_arg --repo "$@") || exit 2
-    base=$(get_arg --base "$@" || true)
-    head=$(get_arg --head "$@" || true)
-    state=$(ensure_state "$repo")
-    printf '['
-    sep=
-    for pr_dir in "$state"/prs/*; do
-      [ -d "$pr_dir" ] || continue
-      merged=$(cat "$pr_dir/merged")
-      pr_base=$(cat "$pr_dir/base")
-      pr_head=$(cat "$pr_dir/head")
-      if [ "$merged" = "true" ]; then
-        continue
-      fi
-      if [ -n "$base" ] && [ "$base" != "$pr_base" ]; then
-        continue
-      fi
-      if [ -n "$head" ] && [ "$head" != "$pr_head" ]; then
-        continue
-      fi
-      number=$(cat "$pr_dir/number")
-      printf '%s%s' "$sep" "$number"
-      sep=,
-    done
-    printf ']\n'
-    ;;
-  pr:create)
-    repo=$(get_arg --repo "$@") || exit 2
-    head=$(get_arg --head "$@") || exit 2
-    base=$(get_arg --base "$@") || exit 2
-    state=$(ensure_state "$repo")
-    if pr_dir=$(find_pr_by_head "$head" "$state"); then
-      print_pr_json "$pr_dir"
-      exit 0
-    fi
-    next_file="$state/next_pr"
-    if [ -f "$next_file" ]; then
-      number=$(cat "$next_file")
-    else
-      number=1
-    fi
-    next=$((number + 1))
-    printf '%s\n' "$next" > "$next_file"
-    head_sha=$(git --git-dir "$repo" rev-parse "$head")
-    pr_dir="$state/prs/$number"
-    mkdir -p "$pr_dir"
-    printf '%s\n' "$number" > "$pr_dir/number"
-    printf '%s\n' "$head" > "$pr_dir/head"
-    printf '%s\n' "$base" > "$pr_dir/base"
-    printf '%s\n' "$head_sha" > "$pr_dir/headRefOid"
-    printf 'false\n' > "$pr_dir/merged"
-    print_pr_json "$pr_dir"
-    ;;
-  pr:diff)
-    [ "$#" -ge 1 ] || exit 2
-    selector=$1
-    repo=$(get_arg --repo "$@") || exit 2
-    state=$(ensure_state "$repo")
-    pr_dir=$(find_pr "$selector" "$state") || exit 1
-    base=$(cat "$pr_dir/base")
-    head=$(cat "$pr_dir/head")
-    patch_file="$state/diff.$$"
-    if git --git-dir "$repo" diff --patch "$base...$head" > "$patch_file" && [ -s "$patch_file" ]; then
-      cat "$patch_file"
-    else
-      printf 'diff --git a/feature.txt b/feature.txt\n'
-      printf 'new file mode 100644\n'
-      printf '--- /dev/null\n'
-      printf '+++ b/feature.txt\n'
-      printf '@@ -0,0 +1 @@\n'
-      printf '+hello from e2e\n'
-    fi
-    rm -f "$patch_file"
-    ;;
-  pr:view)
-    [ "$#" -ge 1 ] || exit 2
-    selector=$1
-    repo=$(get_arg --repo "$@") || exit 2
-    json_fields=$(get_arg --json "$@" || true)
-    state=$(ensure_state "$repo")
-    pr_dir=$(find_pr "$selector" "$state") || exit 1
-    number=$(cat "$pr_dir/number")
-    head_sha=$(cat "$pr_dir/headRefOid")
-    merged=$(cat "$pr_dir/merged")
-    case "$json_fields" in
-      state)
-        if [ "$merged" = "true" ]; then
-          printf '{"state":"MERGED"}\n'
-        else
-          printf '{"state":"OPEN"}\n'
-        fi
-        ;;
-      number,headRefOid)
-        printf '{"number":%s,"headRefOid":"%s"}\n' "$number" "$head_sha"
-        ;;
-      headRefOid,mergeCommit)
-        if [ "$merged" = "true" ]; then
-          merge_sha=$(cat "$pr_dir/merge_sha")
-          printf '{"headRefOid":"%s","mergeCommit":{"oid":"%s"}}\n' "$head_sha" "$merge_sha"
-        else
-          printf '{"headRefOid":"%s","mergeCommit":null}\n' "$head_sha"
-        fi
-        ;;
-      statusCheckRollup)
-        printf '{"conclusion":"success"}\n'
-        ;;
-      *)
-        echo "unsupported gh pr view --json $json_fields" >&2
-        exit 2
-        ;;
-    esac
-    ;;
-  pr:merge)
-    [ "$#" -ge 1 ] || exit 2
-    selector=$1
-    repo=$(get_arg --repo "$@") || exit 2
-    expected_head=$(get_arg --match-head-commit "$@" || true)
-    state=$(ensure_state "$repo")
-    pr_dir=$(find_pr "$selector" "$state") || exit 1
-    head_sha=$(cat "$pr_dir/headRefOid")
-    if [ -n "$expected_head" ] && [ "$expected_head" != "$head_sha" ]; then
-      echo "head commit did not match" >&2
-      exit 1
-    fi
-    if [ "$(cat "$pr_dir/merged")" = "true" ]; then
-      merge_sha=$(cat "$pr_dir/merge_sha")
-    else
-      number=$(cat "$pr_dir/number")
-      merge_sha=$(printf '%s' "merge:$number:$head_sha" | git hash-object --stdin)
-      printf '%s\n' "$merge_sha" > "$pr_dir/merge_sha"
-      printf 'true\n' > "$pr_dir/merged"
-      inc_counter "$state/pr_merge_count"
-      block_if_requested "$state" pr_merge
-    fi
-    printf '{"headRefOid":"%s","mergeCommit":{"oid":"%s"}}\n' "$head_sha" "$merge_sha"
-    ;;
-  issue:view)
-    [ "$#" -ge 1 ] || exit 2
-    issue=$1
-    repo=$(get_arg --repo "$@") || exit 2
-    json_fields=$(get_arg --json "$@" || true)
-    jq_expr=$(get_arg --jq "$@" || true)
-    state=$(ensure_state "$repo")
-    issue_state=OPEN
-    if [ -f "$state/issues/$issue.closed" ]; then
-      issue_state=CLOSED
-    fi
-    case "$json_fields:$jq_expr" in
-      state:*)
-        printf '{"state":"%s"}\n' "$issue_state"
-        ;;
-      body:.body)
-        printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
-        ;;
-      *)
-        echo "unsupported gh issue view --json $json_fields --jq $jq_expr" >&2
-        exit 2
-        ;;
-    esac
-    ;;
-  issue:close)
-    [ "$#" -ge 1 ] || exit 2
-    issue=$1
-    repo=$(get_arg --repo "$@") || exit 2
-    state=$(ensure_state "$repo")
-    if [ ! -f "$state/issues/$issue.closed" ]; then
-      printf 'closed\n' > "$state/issues/$issue.closed"
-      inc_counter "$state/issue_close_count"
-      block_if_requested "$state" issue_close
-    fi
-    printf 'closed issue %s\n' "$issue"
-    ;;
-  *)
-    echo "unsupported gh invocation: $area $verb" >&2
-    exit 2
-    ;;
-esac
-"#;
