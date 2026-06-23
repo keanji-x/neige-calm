@@ -31,6 +31,7 @@
 
 pub mod error;
 pub mod event;
+pub mod forge_git;
 pub mod harness;
 pub mod ids;
 pub mod model;

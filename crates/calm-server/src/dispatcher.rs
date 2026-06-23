@@ -95,7 +95,8 @@ pub(crate) fn event_warrants_spec_push_with_role(
         | Event::ForgePrOpened { .. }
         | Event::ForgePrChecks { .. }
         | Event::ForgeIssueClosed { .. }
-        | Event::WorktreeProvisioned { .. } => true,
+        | Event::WorktreeProvisioned { .. }
+        | Event::WorktreeCommitted { .. } => true,
         Event::CodexHook { card_id, kind, .. } | Event::ClaudeHook { card_id, kind, .. } => {
             let is_turn_end = kind == "hook.codex.stop" || kind == "hook.claude.stop";
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
@@ -697,6 +698,7 @@ impl Dispatcher {
             "forge.pr.checks".into(),
             "forge.issue.closed".into(),
             "worktree.provisioned".into(),
+            "worktree.committed".into(),
             "forge.pr.merged".into(),
             "review.round".into(),
             "ratify.requested".into(),
@@ -968,7 +970,8 @@ impl Inner {
             | Event::ForgePrOpened { wave_id, .. }
             | Event::ForgePrChecks { wave_id, .. }
             | Event::ForgeIssueClosed { wave_id, .. }
-            | Event::WorktreeProvisioned { wave_id, .. } => {
+            | Event::WorktreeProvisioned { wave_id, .. }
+            | Event::WorktreeCommitted { wave_id, .. } => {
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
@@ -1314,6 +1317,17 @@ pub(crate) fn harness_observation_from_event(
                 path: path.clone(),
             })
         }
+        Event::WorktreeCommitted {
+            card_id,
+            commit_sha,
+            branch,
+            ..
+        } => Some(HarnessObservation::WorktreeCommitted {
+            wave_id: wave_id.clone(),
+            card_id: card_id.clone(),
+            commit_sha: commit_sha.clone(),
+            branch: branch.clone(),
+        }),
         Event::CodexHook {
             card_id,
             kind,
@@ -1430,6 +1444,7 @@ mod tests {
                 "forge.pr.checks".into(),
                 "forge.issue.closed".into(),
                 "worktree.provisioned".into(),
+                "worktree.committed".into(),
                 "forge.pr.merged".into(),
                 "review.round".into(),
                 "ratify.requested".into(),
@@ -1536,6 +1551,12 @@ mod tests {
             wave_id: wave.clone(),
             card_id: CardId::from("worker"),
             path: "/tmp/worktree".into(),
+        })));
+        assert!(filter.matches(&env(Event::WorktreeCommitted {
+            wave_id: wave.clone(),
+            card_id: CardId::from("worker"),
+            commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+            branch: "neige/w/card".into(),
         })));
         assert!(filter.matches(&env(Event::ForgePrMerged {
             wave_id: wave.clone(),
@@ -2039,6 +2060,12 @@ mod tests {
                 card_id: worker.clone(),
                 path: "/tmp/worktree".into(),
             },
+            Event::WorktreeCommitted {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                branch: "neige/w/card".into(),
+            },
         ] {
             assert!(event_warrants_spec_push(
                 &forge_event,
@@ -2472,6 +2499,23 @@ mod tests {
                 wave_id: wave.clone(),
                 card_id: worker.clone(),
                 path: "/tmp/worktree-map".into(),
+            })
+        );
+        assert_eq!(
+            harness_observation_from_event(
+                &wave,
+                &Event::WorktreeCommitted {
+                    wave_id: WaveId::from("payload-wave-ignored"),
+                    card_id: worker.clone(),
+                    commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                    branch: "neige/w/card".into(),
+                }
+            ),
+            Some(HarnessObservation::WorktreeCommitted {
+                wave_id: wave.clone(),
+                card_id: worker.clone(),
+                commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                branch: "neige/w/card".into(),
             })
         );
         assert_eq!(

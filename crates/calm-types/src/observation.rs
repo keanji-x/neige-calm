@@ -102,6 +102,12 @@ pub enum Observation {
         card_id: CardId,
         path: String,
     },
+    WorktreeCommitted {
+        wave_id: WaveId,
+        card_id: CardId,
+        commit_sha: String,
+        branch: String,
+    },
     ReviewRound {
         wave_id: WaveId,
         phase: String,
@@ -144,6 +150,7 @@ impl Observation {
                 | Observation::ForgePrChecks { .. }
                 | Observation::ForgeIssueClosed { .. }
                 | Observation::WorktreeProvisioned { .. }
+                | Observation::WorktreeCommitted { .. }
                 | Observation::ReviewRound { .. }
                 | Observation::RatifyRequested { .. }
                 | Observation::RatifyResolved { .. }
@@ -238,6 +245,9 @@ impl Observation {
             }
             Observation::WorktreeProvisioned { path, .. } => {
                 format!("A worker git worktree was provisioned at {path}. Re-read the wave state.")
+            }
+            Observation::WorktreeCommitted { branch, .. } => {
+                format!("A worker git worktree committed branch {branch}. Re-read the wave state.")
             }
             Observation::ReviewRound {
                 phase,

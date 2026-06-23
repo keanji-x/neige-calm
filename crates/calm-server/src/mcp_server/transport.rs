@@ -708,19 +708,19 @@ fn plugin_tool_route(
 }
 
 #[derive(Debug, Deserialize)]
-struct PluginForgePayload {
-    argv: Vec<String>,
-    idem_key: String,
+pub(crate) struct PluginForgePayload {
+    pub(crate) argv: Vec<String>,
+    pub(crate) idem_key: String,
     #[serde(default)]
-    event_spec: Option<ForgeEventSpec>,
+    pub(crate) event_spec: Option<ForgeEventSpec>,
     #[serde(default)]
-    subject: Option<ForgeMergeSubject>,
+    pub(crate) subject: Option<ForgeMergeSubject>,
     #[serde(default)]
-    context: serde_json::Map<String, Value>,
+    pub(crate) context: serde_json::Map<String, Value>,
     #[serde(default)]
-    probe: Option<ProbeSpec>,
+    pub(crate) probe: Option<ProbeSpec>,
     #[serde(default)]
-    parked: bool,
+    pub(crate) parked: bool,
 }
 
 /// Semantic subset used for idempotency payload comparison.
@@ -745,40 +745,27 @@ struct SemanticForgePayload<'a> {
     probe: Option<&'a ProbeSpec>,
 }
 
-async fn dispatch_forge_action_plugin_tool(
+pub(crate) struct ForgeActionSubmission {
+    pub(crate) op_id: String,
+    pub(crate) parked: bool,
+}
+
+pub(crate) async fn submit_forge_action(
     ctx: &Arc<AppContext>,
-    client: Arc<crate::plugin_host::McpClient>,
     plugin_id: &str,
-    tool_name: &str,
-    arguments: Value,
-    identity: ToolCallIdentity,
-) -> Result<Value, RpcError> {
-    let result = client.tools_call(tool_name, arguments).await?;
-    if result.is_error == Some(true) {
-        return serde_json::to_value(result)
-            .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")));
-    }
-
-    let Some(structured) = result.structured_content else {
-        return Err(malformed_forge_payload());
-    };
-    let payload: PluginForgePayload =
-        serde_json::from_value(structured).map_err(|_| malformed_forge_payload())?;
-
+    wave_id: String,
+    card_id: String,
+    cwd_lease: PathBuf,
+    payload: PluginForgePayload,
+) -> Result<std::result::Result<ForgeActionSubmission, String>, RpcError> {
     validate_plugin_forge_payload(&payload)?;
 
     let Some(runtime) = ctx.operation_runtime.get().cloned() else {
         return Err(RpcError::internal("operation runtime not bound"));
     };
 
-    let wave_id = identity
-        .wave_id
-        .clone()
-        .ok_or_else(|| RpcError::invalid_params("forge action requires a wave-scoped caller"))?;
     let parked = payload.parked;
-    let card_id = identity.card_id.clone();
     let idempotency_key = format!("{plugin_id}:{wave_id}:{card_id}:{}", payload.idem_key);
-    let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
     let result_path = forge_result_path(&ctx.gate_logs_dir, &idempotency_key)?;
     let deadline_ms = now_ms() + forge_deadline_ms(payload.parked);
 
@@ -803,15 +790,54 @@ async fn dispatch_forge_action_plugin_tool(
     let operation_payload = serde_json::to_value(forge_payload)
         .map_err(|e| RpcError::internal(format!("forge-action payload serialization: {e}")))?;
 
-    let op_id = match runtime
+    match runtime
         .submit(FORGE_ACTION_KIND, key, operation_payload)
         .await
     {
-        Ok(op_id) => op_id,
-        Err(e) => return Ok(mcp_error_result(e.to_string())),
+        Ok(op_id) => Ok(Ok(ForgeActionSubmission { op_id, parked })),
+        Err(e) => Ok(Err(e.to_string())),
+    }
+}
+
+async fn dispatch_forge_action_plugin_tool(
+    ctx: &Arc<AppContext>,
+    client: Arc<crate::plugin_host::McpClient>,
+    plugin_id: &str,
+    tool_name: &str,
+    arguments: Value,
+    identity: ToolCallIdentity,
+) -> Result<Value, RpcError> {
+    let result = client.tools_call(tool_name, arguments).await?;
+    if result.is_error == Some(true) {
+        return serde_json::to_value(result)
+            .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")));
+    }
+
+    let Some(structured) = result.structured_content else {
+        return Err(malformed_forge_payload());
     };
-    if parked {
-        let result = match runtime.operation_result(&op_id).await {
+    let payload: PluginForgePayload =
+        serde_json::from_value(structured).map_err(|_| malformed_forge_payload())?;
+
+    validate_plugin_forge_payload(&payload)?;
+
+    let wave_id = identity
+        .wave_id
+        .clone()
+        .ok_or_else(|| RpcError::invalid_params("forge action requires a wave-scoped caller"))?;
+    let card_id = identity.card_id.clone();
+    let cwd_lease = resolve_forge_cwd(ctx, &identity, &wave_id).await?;
+
+    let submitted =
+        match submit_forge_action(ctx, plugin_id, wave_id, card_id, cwd_lease, payload).await? {
+            Ok(submitted) => submitted,
+            Err(e) => return Ok(mcp_error_result(e)),
+        };
+    let Some(runtime) = ctx.operation_runtime.get().cloned() else {
+        return Err(RpcError::internal("operation runtime not bound"));
+    };
+    if submitted.parked {
+        let result = match runtime.operation_result(&submitted.op_id).await {
             Ok(result) => result,
             Err(e) => return Ok(mcp_error_result(e.to_string())),
         };
@@ -819,12 +845,12 @@ async fn dispatch_forge_action_plugin_tool(
             return Ok(operation_result_to_mcp_result(result));
         }
         return Ok(mcp_success_result(json!({
-            "op_id": op_id,
+            "op_id": submitted.op_id,
             "parked": true,
         })));
     }
 
-    let outcome = match runtime.wait(&op_id).await {
+    let outcome = match runtime.wait(&submitted.op_id).await {
         Ok(outcome) => outcome,
         Err(e) => return Ok(mcp_error_result(e.to_string())),
     };

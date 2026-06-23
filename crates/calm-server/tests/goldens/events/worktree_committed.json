@@ -1,0 +1,12 @@
+{
+  "description": "worktree.committed carries the wave/card routing ids and committed slice branch",
+  "wire": {
+    "ev": "worktree.committed",
+    "data": {
+      "wave_id": "wave-01",
+      "card_id": "card-01",
+      "commit_sha": "0123456789abcdef0123456789abcdef01234567",
+      "branch": "neige/wave-01/card-01"
+    }
+  }
+}
