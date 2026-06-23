@@ -534,8 +534,10 @@ async fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
                 // after it.
                 name: format!("plugin.{}_{}", plugin_id, entry.name),
                 description: entry.description.unwrap_or_default(),
-                input_schema: json!({ "type": "object" }),
-                annotations: None,
+                input_schema: entry
+                    .input_schema
+                    .unwrap_or_else(|| json!({ "type": "object" })),
+                annotations: entry.annotations,
                 visible_to_roles: PLUGIN_TOOL_ROLES,
             });
         }
