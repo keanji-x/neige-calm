@@ -454,23 +454,55 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
 }
 
 async fn request_lines_containing(path: &PathBuf, method: &str, count: usize) -> Vec<Value> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    request_lines_containing_within(path, method, count, Duration::from_secs(15)).await
+}
+
+/// Poll `path` (an ndjson capture file) until at least `count` lines whose
+/// `method` field equals `method` are present, then return them. Panics on
+/// timeout with a descriptive message — a missing line is a real failure, not
+/// something to swallow. (Flaky-test #845: the old silent partial-return
+/// mis-reported anomalies as `has_interrupt` failures.)
+async fn request_lines_containing_within(
+    path: &PathBuf,
+    method: &str,
+    count: usize,
+    within: Duration,
+) -> Vec<Value> {
+    let deadline = Instant::now() + within;
     loop {
-        if let Ok(raw) = std::fs::read_to_string(path) {
-            let matching = raw
-                .lines()
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .filter(|row| row.get("method").and_then(Value::as_str) == Some(method))
-                .collect::<Vec<_>>();
-            if matching.len() >= count || Instant::now() >= deadline {
-                return matching;
-            }
+        let matching = std::fs::read_to_string(path)
+            .ok()
+            .map(|raw| {
+                raw.lines()
+                    .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .filter(|row| row.get("method").and_then(Value::as_str) == Some(method))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if matching.len() >= count {
+            return matching;
         }
         if Instant::now() >= deadline {
-            return Vec::new();
+            panic!(
+                "request_lines_containing: captured {}/{} '{method}' lines within {within:?}; rows={matching:?}",
+                matching.len(),
+                count,
+            );
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
+}
+
+#[tokio::test]
+#[should_panic(expected = "captured 0/2")]
+async fn request_lines_containing_panics_loudly_on_timeout() {
+    // A capture file that never reaches the requested count must panic with a
+    // descriptive message — not silently return a partial vector (#845).
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("never-written.ndjson");
+    let _ =
+        request_lines_containing_within(&missing, "turn/interrupt", 2, Duration::from_millis(50))
+            .await;
 }
 
 async fn wait_for_harness_watermark(harness: &SpecHarness, watermark: i64) {
@@ -1465,12 +1497,12 @@ async fn shared_card_delete_interrupts_active_turn() {
         .set_active_turn_for_test("thread-delete", "turn-delete");
 
     let status = delete_empty(boot.app.clone(), &format!("/api/cards/{}", card.id)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let rows = request_lines_containing(&capture_file, "turn/interrupt", 1).await;
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
 
-    assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(
         has_interrupt(&rows, "thread-delete", "turn-delete"),
         "card delete must interrupt active shared turn: {rows:?}"
@@ -1496,12 +1528,12 @@ async fn shared_wave_delete_interrupts_all_child_turns() {
         .set_active_turn_for_test("thread-wave-b", "turn-wave-b");
 
     let status = delete_empty(boot.app.clone(), &format!("/api/waves/{}", boot.wave_id)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let rows = request_lines_containing(&capture_file, "turn/interrupt", 2).await;
     unsafe {
         std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
     }
 
-    assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(
         has_interrupt(&rows, "thread-wave-a", "turn-wave-a"),
         "wave delete must interrupt first active shared turn: {rows:?}"
