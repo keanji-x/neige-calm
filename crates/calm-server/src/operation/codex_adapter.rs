@@ -1127,7 +1127,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         .ok_or_else(|| CalmError::Internal(format!("worker runtime {runtime_id} vanished")))?;
     let persisted_turn_id = TxOutput::non_empty_string(runtime.active_turn_id.as_deref());
     let worker_instructions = crate::spec_card::render_system_prompt(
-        crate::spec_card::SeededCardRole::Worker.prompt_template(),
+        crate::spec_card::SeededCardRole::WorkerCodex.prompt_template(),
         ctx.wave_id.as_str(),
     );
     let thread_id =

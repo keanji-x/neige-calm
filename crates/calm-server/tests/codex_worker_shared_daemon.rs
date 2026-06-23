@@ -1302,10 +1302,14 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
             .any(|row| row.get("method").and_then(Value::as_str) == Some("turn/start")),
         "shared daemon should receive turn/start: {rows:?}"
     );
-    // The shared worker must be started with the Worker-role developer
+    // The shared worker must be started with the WorkerCodex-role developer
     // instructions — otherwise the agent on the shared daemon behaves like
-    // a plain prompt session and skips the neige task reporting contract.
-    // Assert thread/start carried them.
+    // a plain prompt session and skips the task reporting contract. Assert
+    // thread/start carried them. Since #838 Move 2 the codex worker reports
+    // completion via the native `calm.task.complete` / `calm.task.fail` MCP
+    // tools (channel 2) instead of the `neige task-completed` shell CLI —
+    // the CLI needs channel 3, which keeps getting dropped (#836). claude
+    // keeps the CLI (asserted by the claude_adapter contract test).
     let thread_start = rows
         .iter()
         .find(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
@@ -1321,11 +1325,16 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
         .expect("thread/start params must carry developer_instructions");
     assert!(
         developer_instructions.contains("worker agent under spec card"),
-        "developer_instructions must be the Worker prompt: {developer_instructions}"
+        "developer_instructions must be the WorkerCodex prompt: {developer_instructions}"
     );
     assert!(
-        developer_instructions.contains("neige task-completed"),
-        "developer_instructions must include the task reporting contract: {developer_instructions}"
+        developer_instructions.contains("calm.task.complete")
+            && developer_instructions.contains("calm.task.fail"),
+        "developer_instructions must mandate the MCP completion tools: {developer_instructions}"
+    );
+    assert!(
+        !developer_instructions.contains("neige task-completed"),
+        "codex worker must NOT mandate the neige completion CLI (#838 Move 2): {developer_instructions}"
     );
 }
 

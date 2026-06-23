@@ -256,17 +256,14 @@ forbidden by design).
 Do not mint new spec cards from within this session.
 ";
 
-/// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
-/// the production prompt: workers are short-lived, fire-and-forget,
-/// driven by the kernel scheduler from the spec-maintained plan. They
-/// run one job and exit.
-///
-/// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
-/// downstream call sites; the content is now production. A followup
-/// can rename this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry
-/// with [`SPEC_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR
-/// touching this file.
-pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str = "\
+/// Head of the **claude** (CLI-completion) worker prompt — everything
+/// before the shared `## Reading wave state` tail. Step 3 reports through
+/// the `neige` shell CLI. A literal-yielding macro so it can be
+/// `concat!`'d with the shared tail at compile time (keeps DRY without a
+/// runtime allocation or a stale duplicated tail).
+macro_rules! worker_prompt_head_cli {
+    () => {
+        "\
 You are a worker agent under spec card on wave `{wave_id}`.
 
 You were spawned to execute one job. Your contract:
@@ -297,6 +294,56 @@ refuses worker-actor dispatch emits from old paths. If the job needs \
 further decomposition, report `task.failed` with a reason \
 explaining what's missing and the spec will handle re-decomposition.
 
+"
+    };
+}
+
+/// Head of the **codex** (MCP-completion) worker prompt — everything
+/// before the shared `## Reading wave state` tail. Step 3 reports through
+/// the native `calm.task.complete` / `calm.task.fail` MCP tools.
+macro_rules! worker_prompt_head_mcp {
+    () => {
+        "\
+You are a worker agent under spec card on wave `{wave_id}`.
+
+You were spawned to execute one job. Your contract:
+
+1. Read the goal, context, and acceptance criteria handed to you. \
+   Run `neige state` if you need to inspect the wave's shape before \
+   starting — but don't poll it; the wave snapshot you receive once is \
+   enough.
+2. Execute the task. Make tool calls, write files, run commands \
+   — whatever the goal requires.
+3. When the task is done, report exactly once via the MCP tool:
+   * On success: call `calm.task.complete` with `idempotency_key` = K \
+     (the kernel task id you were handed). Optionally include `result` \
+     (json-or-text) and `artifacts` (an array of path/blob refs you produced).
+   * On failure: call `calm.task.fail` with `idempotency_key` = K and a \
+     free-form `reason` (required).
+4. Exit. You are short-lived by design — run your single job and stop. \
+   Your completion report is a claim; a kernel gate may verify it before \
+   the task counts as done. The kernel delivers ungated reports, failures, \
+   or gate results to the spec card as pushed turn inputs, and the spec \
+   continues the wave from there. You do not wait for or observe anything.
+
+You may NOT call `calm.task.verdict` — that is a spec-only tool and the \
+kernel's role gate will refuse you. You also may NOT mint new workers; \
+`calm.task.dispatch` is retired, and the kernel's role gate (#583) still \
+refuses worker-actor dispatch emits from old paths. If the job needs \
+further decomposition, report `task.failed` with a reason \
+explaining what's missing and the spec will handle re-decomposition.
+
+"
+    };
+}
+
+/// Shared `## Reading wave state` tail — concatenated into BOTH worker
+/// prompts. Reads stay on the `neige` shell CLI for both providers
+/// (#339/#377 read-via-CLI principle); only the completion *report* moves
+/// to MCP for codex.
+macro_rules! worker_prompt_tail {
+    () => {
+        "\
 ## Reading wave state
 
 You may read your wave's state READ-ONLY from the shell with the `neige` \
@@ -307,13 +354,63 @@ and `neige cat <path>` reads one view. Useful paths include `/`, \
 `cards/<card_id>/.payload.json`, and `cards/<card_id>/runtime.json`. \
 `.payload.json` is the card's own payload; runtime identity/status lives \
 in `runtime.json`. These views are own-wave-only; cross-wave reads are forbidden.
-";
+"
+    };
+}
+
+/// Worker-agent system prompt. PR8 (#136) replaces the PR6 stub with
+/// the production prompt: workers are short-lived, fire-and-forget,
+/// driven by the kernel scheduler from the spec-maintained plan. They
+/// run one job and exit.
+///
+/// The name retains the `_PLACEHOLDER` suffix only to avoid churn in
+/// downstream call sites; the content is now production. A followup
+/// can rename this to `WORKER_SYSTEM_PROMPT_TEMPLATE` for symmetry
+/// with [`SPEC_SYSTEM_PROMPT_TEMPLATE`] when there's no other PR
+/// touching this file.
+///
+/// This is the **claude** (CLI-completion) body; codex uses
+/// [`WORKER_CODEX_SYSTEM_PROMPT`] (#838 Move 2).
+pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str =
+    concat!(worker_prompt_head_cli!(), worker_prompt_tail!());
+
+/// codex worker variant (#838 Move 2). Identical to
+/// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] except step 3: completion is
+/// reported through the native `calm.task.complete` / `calm.task.fail`
+/// MCP tools (channel 2 — DaemonTrust + codex-injected `_meta.threadId`)
+/// instead of the `neige` shell CLI. This decouples the kernel-critical
+/// completion path from the per-thread `shell_environment_policy` env
+/// (channel 3) that keeps getting silently dropped (#738/#747/#836).
+///
+/// claude keeps [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (it has no codex
+/// thread to authenticate against — the native-MCP resolver is
+/// `AgentProvider::Codex`-only — and its contract test asserts the CLI
+/// surface). The shared `## Reading wave state` block (`worker_prompt_tail!`)
+/// is concatenated into both, keeping reads on the CLI for both providers.
+pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str =
+    concat!(worker_prompt_head_mcp!(), worker_prompt_tail!());
 
 /// Substitute the per-spawn placeholders into a prompt template. Today
 /// the only placeholder is `{wave_id}`; lifted out as its own helper so
 /// PR7+ can extend the substitution set without rewriting call sites.
 pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
     template.replace("{wave_id}", wave_id)
+}
+
+/// Test-only seam (#838 A1 e2e): render the rendered worker prompt for the
+/// provider under test. `codex=true` yields the native-MCP-completion body
+/// ([`WORKER_CODEX_SYSTEM_PROMPT`], what `codex_adapter` ships);
+/// `codex=false` yields the CLI body ([`WORKER_SYSTEM_PROMPT_PLACEHOLDER`],
+/// what `claude_adapter` ships and the RED baseline). Doc-hidden so it does
+/// not widen the public prompt API beyond the e2e harness.
+#[doc(hidden)]
+pub fn render_worker_prompt_for_e2e(wave_id: &str, codex: bool) -> String {
+    let role = if codex {
+        SeededCardRole::WorkerCodex
+    } else {
+        SeededCardRole::Worker
+    };
+    render_system_prompt(role.prompt_template(), wave_id)
 }
 
 /// Roles that legitimately need role-specific Codex setup.
@@ -330,10 +427,17 @@ pub(crate) enum SeededCardRole {
     /// Spec card minted by `routes::waves::create_wave`. Gets
     /// [`SPEC_SYSTEM_PROMPT_TEMPLATE`].
     Spec,
-    /// Worker card minted by the dispatcher. Gets
-    /// [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] (PR8 will swap in the
-    /// production worker prompt).
+    /// Worker card minted by the dispatcher for a **claude** provider.
+    /// Gets [`WORKER_SYSTEM_PROMPT_PLACEHOLDER`] — completion is reported
+    /// through the `neige` shell CLI (claude has no codex thread for the
+    /// native-MCP path and its contract test asserts the CLI surface).
     Worker,
+    /// Worker card minted by the dispatcher for a **codex** provider
+    /// (#838 Move 2). Gets [`WORKER_CODEX_SYSTEM_PROMPT`] — completion is
+    /// reported through the native `calm.task.complete` / `calm.task.fail`
+    /// MCP tools, decoupling the kernel-critical completion path from the
+    /// channel-3 exec-shell env.
+    WorkerCodex,
 }
 
 impl SeededCardRole {
@@ -341,6 +445,7 @@ impl SeededCardRole {
         match self {
             SeededCardRole::Spec => SPEC_SYSTEM_PROMPT_TEMPLATE,
             SeededCardRole::Worker => WORKER_SYSTEM_PROMPT_PLACEHOLDER,
+            SeededCardRole::WorkerCodex => WORKER_CODEX_SYSTEM_PROMPT,
         }
     }
 }
@@ -576,6 +681,61 @@ mod tests {
         assert!(
             p.contains("READ-ONLY") && p.contains("own-wave-only"),
             "worker prompt must constrain neige reads to read-only own-wave views"
+        );
+    }
+
+    /// #838 Move 2 — the codex worker prompt reports completion through the
+    /// native MCP tools, NOT the `neige task-completed`/`task-failed` CLI.
+    /// claude keeps the CLI (covered by the const tests above + the
+    /// claude_adapter contract test), so this is the codex-only divergence.
+    #[test]
+    fn worker_codex_prompt_reports_completion_via_mcp_tools_not_cli() {
+        let p = WORKER_CODEX_SYSTEM_PROMPT;
+
+        // Completion is mandated through the native MCP tools.
+        assert!(
+            p.contains("calm.task.complete") && p.contains("calm.task.fail"),
+            "codex worker prompt must mandate the calm.task.complete / calm.task.fail MCP tools"
+        );
+        // It must NOT mandate the neige completion CLI (that is claude-only).
+        assert!(
+            !p.contains("neige task-completed") && !p.contains("neige task-failed"),
+            "codex worker prompt must NOT mandate the neige completion CLI"
+        );
+        // Reads still ride the neige CLI for BOTH providers (shared tail).
+        assert!(
+            p.contains("neige state") && p.contains("neige cat") && p.contains("neige ls"),
+            "codex worker prompt must keep the neige read CLI in the shared tail"
+        );
+        assert!(
+            p.contains("READ-ONLY") && p.contains("own-wave-only"),
+            "codex worker prompt must keep the read-only own-wave constraint"
+        );
+        // The required-arg wording matches the tool schemas: complete needs
+        // `idempotency_key`; fail needs `idempotency_key` + a required `reason`.
+        assert!(
+            p.contains("idempotency_key") && p.contains("required"),
+            "codex worker prompt must name idempotency_key and the required reason"
+        );
+    }
+
+    /// The provider split must not change the claude (CLI) body: the codex
+    /// and claude worker prompts share everything except step 3, so the
+    /// shared `## Reading wave state` tail must be byte-identical in both.
+    #[test]
+    fn worker_prompts_share_identical_reads_tail() {
+        let marker = "## Reading wave state";
+        let cli_tail = WORKER_SYSTEM_PROMPT_PLACEHOLDER
+            .split_once(marker)
+            .map(|(_, tail)| tail)
+            .expect("CLI worker prompt has a reads tail");
+        let mcp_tail = WORKER_CODEX_SYSTEM_PROMPT
+            .split_once(marker)
+            .map(|(_, tail)| tail)
+            .expect("codex worker prompt has a reads tail");
+        assert_eq!(
+            cli_tail, mcp_tail,
+            "both worker prompts must share a byte-identical reads tail"
         );
     }
 }
