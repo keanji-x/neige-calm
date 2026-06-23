@@ -11,35 +11,42 @@
 //!
 //! ## Current status: PASSES, regression net for #569 codex approval gap
 //!
-//! Reproduces the exact user-visible symptom from the docker preview:
+//! Native dotted `calm.*` `tools/call` dispatch from a codex worker → the
+//! kernel **works on codex 0.137.0** (verified by a real-codex spike for
+//! #838; see issue #838 comments). The end-to-end path is:
 //!
 //!   - kernel MCP server gets `initialize` (daemon trust) ✓
-//!   - kernel returns `tools/list` (11 tools, including
-//!     `calm.task.verdict`) ✓
+//!   - kernel returns `tools/list` (incl. `calm.task.verdict`) ✓
 //!   - LLM returns `function_call name="calm_task_verdict"
 //!     namespace="mcp__calm"` ✓
 //!   - codex emits `McpToolCallBegin` → `item/started` ✓
-//!   - codex **never sends `tools/call` to the kernel** — the dispatch
-//!     path silently drops between `ToolCall:` log and the JSON-RPC
-//!     write. The daemon goes idle (only inotify file-watch noise after
-//!     `response.completed`).
-//!   - no `McpToolCallEnd`, no `item/completed`, turn times out.
+//!   - codex sends the `tools/call` to the kernel; the sanitized name
+//!     `calm_task_verdict` (ns `mcp__calm`) is correctly reverse-mapped to
+//!     the dotted `calm.task.verdict` — there is **no** `mcp__calmcalm_*`
+//!     name mangling, and the kernel does no name mangling either
+//!     (exact `registry.lookup`) ✓
+//!   - kernel runs the handler, returns a result → `McpToolCallEnd` →
+//!     `item/completed`. The spike saw `started=2 completed=2`. ✓
 //!
-//! Reproduced with codex **0.133.0** AND **0.137.0** — not a recent
-//! regression on either side. The mcp-shim-round-trip integration test
-//! (`tests/mcp_shim_round_trip.rs`) proves the shim + kernel handle
-//! `initialize` + `tools/call` correctly when driven directly, so the
-//! gap is in codex's MCP dispatch (probably the sanitized name
-//! `calm_task_verdict` → original `calm.task.verdict`
-//! reverse-mapping; codex's session log shows the bizarre joined name
-//! `mcp__calmcalm_task_verdict` in its `ToolCall:` info line).
+//! ## #569 root cause (corrected)
+//!
+//! The original #569 "stuck in running…" symptom was **missing tool
+//! annotations**, not dotted-name mangling. Codex defaults a tool with no
+//! annotations to approval-required, which stalls the call before the
+//! `tools/call` is ever dispatched. The fix was attaching
+//! `role_gated_write_annotations()` to the `calm.*` write tools
+//! (`mcp_server/tools/emit.rs`); with annotations present there is no
+//! approval stall and the dispatch completes. The earlier hypothesis in
+//! this file's history — that codex "never sends `tools/call`" and that
+//! the sanitized-name reverse mapping produced `mcp__calmcalm_*` —
+//! is **stale and disproven on 0.137.0**.
 //!
 //! ## Why ship it
 //!
-//! Deterministic, single-shot, headless regression net for the MCP
-//! approval-gate bug. The `#[ignore]` gate keeps it out of normal
-//! `cargo test` runs (no codex on CI per memory
-//! `project_ci_e2e_no_codex.md`). Operator workflow:
+//! Deterministic, single-shot, headless regression net: if codex ever
+//! regresses native `calm.*` dispatch (or the approval-annotation
+//! contract), this test goes RED. The `#[ignore]` gate keeps it out of
+//! normal `cargo test` runs (no codex on CI). Operator workflow:
 //!
 //! ```sh
 //! NEIGE_CODEX_BIN=/path/to/codex \
@@ -51,10 +58,6 @@
 //!   - `codex-home/sessions/.../*.jsonl` (codex's turn rollout)
 //!   - `codex-home/logs_2.sqlite` (codex's structured `logs` table)
 //!   - `logs/shared-codex-appserver/stderr.log` (codex stderr stream)
-//!
-//! Once the codex-side dispatch is fixed (upstream patch or workaround
-//! we land in the kernel), drop the FAIL framing and the test becomes
-//! the permanent regression gate.
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 

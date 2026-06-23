@@ -94,10 +94,18 @@ async fn retired_update_wave_state_shadow_is_not_registered() {
     );
 }
 
+/// #838 Move 2 — a worker's `tools/list` now advertises exactly the two
+/// native completion tools (`calm.task.complete` / `calm.task.fail`), which
+/// were flipped from `visible_to_roles: &[]` to `&[CardRole::Worker]` so a
+/// codex worker can report completion via MCP instead of the `neige` CLI.
 #[tokio::test]
-async fn tools_list_for_worker_role_is_empty() {
+async fn tools_list_for_worker_role_returns_completion_tools() {
     let names = tools_list_names_for_role(CardRole::Worker).await;
-    assert!(names.is_empty(), "worker tools/list = {names:?}");
+    assert_eq!(
+        names,
+        vec!["calm.task.complete", "calm.task.fail"],
+        "worker tools/list must contain exactly the two completion tools",
+    );
 }
 
 #[tokio::test]
