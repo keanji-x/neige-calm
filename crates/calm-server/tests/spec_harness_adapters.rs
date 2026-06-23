@@ -557,6 +557,118 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
     assert_ne!(first_token, second_token);
 }
 
+/// #838 (lean Move 1) spec-path point-of-use test.
+///
+/// The sibling of `worker_exec_shell_env.rs::worker_thread_start_carries_neige_mcp_exec_shell_env`
+/// for the SPEC spawn path. It drives the production `spec-harness-start`
+/// operation end-to-end through the operation runtime against a live fake
+/// codex app-server, captures the inbound `thread/start` request, and asserts
+/// the spec `thread/start` carries the channel-3 MCP exec-shell env in
+/// `/params/config/shell_environment_policy/set` — `NEIGE_MCP_SOCKET`
+/// value-pinned to the socket the spec path actually resolves, and a
+/// non-empty `NEIGE_MCP_TOKEN`.
+///
+/// `thread/start` `config.shell_environment_policy.set` is THE ONLY channel
+/// reaching the AI exec-shell, so this pins the byte shape at the spec
+/// point-of-use. Before #838-2 the spec path built this shape via its own
+/// parallel `SpecThread*` structs; after the refactor it goes through the
+/// shared `card_mcp_thread_start_config` helper. This test characterizes the
+/// behavior and must stay GREEN across that migration (shape preserved).
+///
+/// In this harness the spec adapter is wired via `AppState::from_parts` with
+/// no live `McpServer`, so `mcp_socket_path_for_thread()` resolves through the
+/// `fixtures`-gated `fixture_socket_path()` — the value we pin against here,
+/// the spec analogue of the worker sibling pinning to
+/// `server.shim_config.socket_path`.
+#[tokio::test]
+async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
+    let _guard = ENV_LOCK.lock().await;
+    let tmp = TempDir::new().unwrap();
+    let capture_file = tmp.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let _env = EnvGuard("FAKE_CODEX_CAPTURE_REQUESTS");
+
+    let (state, repo, role_cache) = state_with_live_daemon(&tmp).await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_spec_card(&repo, &role_cache, &wave, &card_id).await;
+
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: Some("spec channel-3 point-of-use".into()),
+        reset_harness_items: false,
+        force_new_thread: false,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    assert!(matches!(
+        wait_op(&state, &op_id).await,
+        OperationOutcome::Succeeded { .. }
+    ));
+
+    let rows = wait_for_requests(&capture_file, 2).await;
+    let starts = rows
+        .iter()
+        .filter(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        starts.len(),
+        1,
+        "spec spawn must send exactly one thread/start"
+    );
+    let thread_start = starts[0];
+
+    // The #838 spec-path channel-3 assertions: the spec thread/start must
+    // carry the MCP exec-shell env in shell_environment_policy.set so the
+    // spec AI exec-shell can reach + authenticate to the MCP socket.
+    let mcp_socket = thread_start
+        .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
+        .and_then(Value::as_str);
+    let mcp_token = thread_start
+        .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN")
+        .and_then(Value::as_str);
+
+    // Value-pin the socket to the path the spec adapter actually resolves
+    // (the `fixtures` socket, since this harness wires no live McpServer).
+    let expected_socket = calm_server::operation::spec_harness_start_adapter::fixture_socket_path()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        mcp_socket,
+        Some(expected_socket.as_str()),
+        "#838: spec thread/start NEIGE_MCP_SOCKET must match the spec-resolved \
+         MCP socket. Captured request: {thread_start}"
+    );
+    assert!(
+        mcp_socket.is_some_and(|value| !value.is_empty()),
+        "#838: spec thread/start must set a non-empty NEIGE_MCP_SOCKET in \
+         shell_environment_policy.set. Captured request: {thread_start}"
+    );
+    assert!(
+        mcp_token.is_some_and(|value| !value.is_empty()),
+        "#838: spec thread/start must set a non-empty NEIGE_MCP_TOKEN in \
+         shell_environment_policy.set — otherwise the spec AI exec-shell \
+         cannot authenticate to the MCP socket. Captured request: {thread_start}"
+    );
+    // The token shipped on the wire must be the freshly minted raw token whose
+    // hash is persisted for the card (parity with `thread_start_token` usage).
+    let card_hash = card_mcp_hash(&repo, &card_id)
+        .await
+        .expect("spec mint stores card MCP hash");
+    assert_eq!(auth::hash_token(mcp_token.unwrap()), card_hash);
+}
+
 #[tokio::test]
 async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;

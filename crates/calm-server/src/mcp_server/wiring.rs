@@ -112,6 +112,28 @@ mod tests {
         );
     }
 
+    /// #838 (lean Move 1): the single channel-3 producer used by ALL spawn
+    /// paths (spec, worker, cold-respawn) emits the exact
+    /// `shell_environment_policy.set.{NEIGE_MCP_SOCKET,NEIGE_MCP_TOKEN}` shape.
+    /// Pinning the byte shape here locks the contract every producer now goes
+    /// through after the spec path's parallel `SpecThread*` structs were
+    /// deleted — i.e. the unification holds at the function level.
+    #[test]
+    fn card_mcp_thread_start_config_emits_channel_3_shape() {
+        let cfg = card_mcp_thread_start_config(Path::new("/tmp/kernel.sock"), "raw-token");
+        assert_eq!(
+            cfg,
+            serde_json::json!({
+                "shell_environment_policy": {
+                    "set": {
+                        "NEIGE_MCP_SOCKET": "/tmp/kernel.sock",
+                        "NEIGE_MCP_TOKEN": "raw-token",
+                    }
+                }
+            })
+        );
+    }
+
     #[test]
     fn daemon_shim_env_emits_daemon_token_key_only() {
         let env = daemon_shim_env(Path::new("/tmp/kernel.sock"), "daemon-token");

@@ -22,7 +22,8 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::wiring::{
-    card_mcp_env, mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
+    card_mcp_thread_start_config, mint_card_mcp_token_pair, mirror_session_mcp_token,
+    persist_card_mcp_token_hash,
 };
 use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
@@ -60,7 +61,7 @@ const REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR: &str =
 pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
 
 #[cfg(feature = "fixtures")]
-pub(crate) fn fixture_socket_path() -> std::path::PathBuf {
+pub fn fixture_socket_path() -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
         "{FIXTURE_SOCKET_PREFIX}{}.sock",
         std::process::id()
@@ -190,26 +191,6 @@ pub struct SpecHarnessStartOperationPayload {
     pub reset_harness_items: bool,
     #[serde(default)]
     pub force_new_thread: bool,
-}
-
-#[derive(Serialize)]
-struct SpecThreadEnvSet<'a> {
-    #[serde(rename = "NEIGE_MCP_SOCKET")]
-    neige_mcp_socket: &'a str,
-    #[serde(rename = "NEIGE_MCP_TOKEN")]
-    neige_mcp_token: &'a str,
-}
-
-#[derive(Serialize)]
-struct SpecThreadEnvPolicy<'a> {
-    #[serde(rename = "set")]
-    set: SpecThreadEnvSet<'a>,
-}
-
-#[derive(Serialize)]
-struct SpecThreadStartConfig<'a> {
-    #[serde(rename = "shell_environment_policy")]
-    shell_environment_policy: SpecThreadEnvPolicy<'a>,
 }
 
 fn render_spec_developer_instructions(
@@ -487,15 +468,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
-            let env = card_mcp_env(Path::new(&socket_path), raw.as_str());
-            let cfg = serde_json::to_value(SpecThreadStartConfig {
-                shell_environment_policy: SpecThreadEnvPolicy {
-                    set: SpecThreadEnvSet {
-                        neige_mcp_socket: env[0].1.as_str(),
-                        neige_mcp_token: env[1].1.as_str(),
-                    },
-                },
-            })?;
+            // #838 (lean Move 1): build the channel-3 `thread/start` config
+            // (`shell_environment_policy.set.{NEIGE_MCP_SOCKET,NEIGE_MCP_TOKEN}`)
+            // through the single shared producer so the worker, cold-respawn,
+            // and spec spawn paths all emit the byte-identical shape from one
+            // place. Previously this path wrapped `card_mcp_env` in its own
+            // parallel `SpecThread*` structs.
+            let cfg = card_mcp_thread_start_config(Path::new(&socket_path), raw.as_str());
             let params = SharedThreadStartParams {
                 cwd,
                 approval_policy: "never".into(),
