@@ -17,6 +17,24 @@ pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, Stri
     ]
 }
 
+/// Builds the per-card `thread/start` `config` that injects the MCP env into
+/// the daemon's AI exec-shells. codex does NOT inherit the daemon process env
+/// into exec-shells; the per-thread `shell_environment_policy.set` field is the
+/// ONLY channel that reaches the `neige` CLI an agent must run to report its
+/// task. Both the spec harness (`spec_harness_start_adapter`) and the codex
+/// worker spawn (`codex_adapter`) emit this same shape.
+pub fn card_mcp_thread_start_config(socket_path: &Path, raw_token: &str) -> serde_json::Value {
+    let mut set = serde_json::Map::new();
+    for (key, value) in card_mcp_env(socket_path, raw_token) {
+        set.insert(key.to_string(), serde_json::Value::String(value));
+    }
+    serde_json::json!({
+        "shell_environment_policy": {
+            "set": set,
+        },
+    })
+}
+
 /// Daemon-shim MCP environment assembler.
 pub fn daemon_shim_env(socket_path: &Path, daemon_token: &str) -> [(&'static str, String); 2] {
     [

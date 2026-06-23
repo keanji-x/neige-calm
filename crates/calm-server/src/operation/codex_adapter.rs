@@ -19,7 +19,9 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::McpServer;
-use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
+use crate::mcp_server::wiring::{
+    card_mcp_env, card_mcp_thread_start_config, mint_and_persist_card_token,
+};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{
     WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
@@ -433,7 +435,12 @@ impl ProviderAdapter for CodexAdapter {
                     {
                         thread_id
                     } else {
-                        // Worker daemons inherit NEIGE_MCP_TOKEN from the per-card spawn env, so no per-thread override is needed.
+                        // CodexAdapter (kind="codex-create") is the user-initiated
+                        // interactive card path: it has no McpServer and never mints a
+                        // per-card MCP token, so there is no NEIGE_MCP_SOCKET/TOKEN to
+                        // inject and no `neige` task-reporting contract to satisfy here.
+                        // The worker path (CodexWorkerAdapter -> spawn_codex_worker_via_shared_daemon)
+                        // is the one that needs shell_environment_policy.set (#836).
                         self.shared_codex_appserver
                             .thread_start_mint_for_card(
                                 &card_id,
@@ -1124,6 +1131,21 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
         if let Some(thread_id) = TxOutput::non_empty_string(runtime.thread_id.as_deref()) {
             thread_id
         } else {
+            // The worker's AI exec-shells only receive NEIGE_MCP_SOCKET /
+            // NEIGE_MCP_TOKEN via the per-thread `shell_environment_policy.set`
+            // config — codex does NOT inherit the daemon process env into
+            // exec-shells, and the daemon `env_remove`s NEIGE_MCP_TOKEN from
+            // itself. Without this, the mandated `neige task-completed` CLI (and
+            // every `neige` read) fails and the worker can never report
+            // task.complete (#836). Use the SAME shim socket already used below
+            // for the terminal viewer env so the daemon's shim socket matches.
+            let config = match (ctx.mcp_token, ctx.mcp_server) {
+                (Some(token), Some(server)) => Some(card_mcp_thread_start_config(
+                    &server.shim_config.socket_path,
+                    token,
+                )),
+                _ => None,
+            };
             let thread_id = ctx
                 .shared_codex_appserver
                 .thread_start_mint_for_card(
@@ -1133,7 +1155,7 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
                         approval_policy: "never".into(),
                         sandbox_mode: "workspace-write".into(),
                         developer_instructions: Some(worker_instructions),
-                        config: None,
+                        config,
                     },
                 )
                 .await?;
