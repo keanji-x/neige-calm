@@ -11,47 +11,263 @@
     {
       "name": "git.worktree.add",
       "description": "Lower git worktree add into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Target worktree path to create"
+          },
+          "branch": {
+            "type": "string",
+            "description": "Optional branch name to create for the worktree"
+          }
+        },
+        "required": ["target"]
+      },
+      "annotations": {
+        "title": "Git Worktree Add",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     },
     {
       "name": "git.commit",
       "description": "Lower git commit into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Commit message to pass to git commit"
+          },
+          "idem": {
+            "type": "string",
+            "description": "Idempotency key for the commit action"
+          },
+          "branch": {
+            "type": "string",
+            "description": "Optional branch name expected after committing"
+          }
+        },
+        "required": ["message", "idem"]
+      },
+      "annotations": {
+        "title": "Git Commit",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     },
     {
       "name": "gh.pr.create",
       "description": "Lower GitHub pull request creation into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "head": {
+            "type": "string",
+            "description": "Head branch for the pull request"
+          },
+          "base": {
+            "type": "string",
+            "description": "Base branch for the pull request"
+          },
+          "title": {
+            "type": "string",
+            "description": "Pull request title"
+          },
+          "body": {
+            "type": "string",
+            "description": "Pull request body"
+          }
+        },
+        "required": ["repo", "head", "base", "title", "body"]
+      },
+      "annotations": {
+        "title": "Create Pull Request",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     },
     {
       "name": "gh.pr.list",
       "description": "Lower GitHub pull request overlap scans into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "base": {
+            "type": "string",
+            "description": "Base branch to filter pull requests"
+          },
+          "head": {
+            "type": "string",
+            "description": "Head branch to filter pull requests"
+          }
+        },
+        "required": ["repo", "base", "head"]
+      },
+      "annotations": {
+        "title": "List Pull Requests",
+        "readOnlyHint": true
+      }
     },
     {
       "name": "gh.pr.diff",
       "description": "Lower GitHub pull request diff reads into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "pr": {
+            "type": "integer",
+            "description": "Pull request number"
+          },
+          "base_sha": {
+            "type": "string",
+            "description": "Base commit SHA for the diff"
+          },
+          "head_sha": {
+            "type": "string",
+            "description": "Head commit SHA for the diff"
+          }
+        },
+        "required": ["repo", "pr", "base_sha", "head_sha"]
+      },
+      "annotations": {
+        "title": "Read Pull Request Diff",
+        "readOnlyHint": true
+      }
     },
     {
       "name": "gh.pr.checks",
       "description": "Lower GitHub pull request check reads into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "pr": {
+            "type": "integer",
+            "description": "Pull request number"
+          },
+          "attempt": {
+            "type": ["string", "integer"],
+            "description": "Optional check attempt identifier"
+          }
+        },
+        "required": ["repo", "pr"]
+      },
+      "annotations": {
+        "title": "Read Pull Request Checks",
+        "readOnlyHint": true
+      }
     },
     {
       "name": "gh.pr.merge",
       "description": "Lower GitHub pull request merges into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "pr": {
+            "type": "integer",
+            "description": "Pull request number"
+          },
+          "phase": {
+            "type": "string",
+            "description": "Review phase associated with the merge subject"
+          },
+          "slice_id": {
+            "type": "string",
+            "description": "Slice identifier associated with the merge subject"
+          },
+          "expected_head_sha": {
+            "type": "string",
+            "description": "Optional expected head commit SHA for merge fencing"
+          }
+        },
+        "required": ["repo", "pr", "phase", "slice_id"]
+      },
+      "annotations": {
+        "title": "Merge Pull Request",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     },
     {
       "name": "gh.issue.view",
       "description": "Lower GitHub issue views into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "issue": {
+            "type": "integer",
+            "description": "Issue number"
+          }
+        },
+        "required": ["repo", "issue"]
+      },
+      "annotations": {
+        "title": "View Issue",
+        "readOnlyHint": true
+      }
     },
     {
       "name": "gh.issue.close",
       "description": "Lower GitHub issue closes into a forge action",
-      "kind": "forge-action"
+      "kind": "forge-action",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "Repository git-dir path or selector passed to gh/git"
+          },
+          "issue": {
+            "type": "integer",
+            "description": "Issue number"
+          }
+        },
+        "required": ["repo", "issue"]
+      },
+      "annotations": {
+        "title": "Close Issue",
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
     }
   ],
   "workflows": [

@@ -211,6 +211,14 @@ pub struct ExposedTool {
     pub description: Option<String>,
     #[serde(default)]
     pub kind: Option<ToolKind>,
+    /// Optional JSON Schema for the tool's MCP `inputSchema`. When absent the
+    /// kernel falls back to a permissive empty object schema. Without this a
+    /// real agent calls the tool with empty args (see #840 d1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    /// Optional MCP tool annotations (title/readOnlyHint/etc.) surfaced in tools/list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<Value>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

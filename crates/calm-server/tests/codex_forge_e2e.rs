@@ -178,6 +178,110 @@ async fn real_codex_worker_writes_code_on_leased_worktree() {
 }
 
 #[tokio::test]
+async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        eprintln!("[codex-forge-e2e] SKIP: no codex bin");
+        return;
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    let fx = match boot_real_codex_worker_fixture(codex_bin).await {
+        Ok(fx) => fx,
+        Err(reason) => {
+            eprintln!("[codex-forge-e2e] SKIP: {reason}");
+            return;
+        }
+    };
+
+    let _dispatcher = spawn_dispatcher(&fx);
+    let repo_gitdir = fx.wave_cwd.join(".git").display().to_string();
+    // R-d1: this is the first test where a real worker must DISCOVER+CALL
+    // annotation-less plugin forge tools (forge plugin tools are published with
+    // empty schema/annotations). If the worker fails to call them, that is a
+    // genuine finding (forge tool descriptors may need annotations), not to be
+    // worked around by scripting the call.
+    let goal = forge_pr_goal(&repo_gitdir);
+    plan_codex_task(&fx, TASK_KEY, &goal).await;
+
+    let budget = e2e_budget();
+    let task_id = task_id(&fx, TASK_KEY);
+    let worker = wait_for_worker_success(&fx, &task_id, budget).await;
+    let output = worker
+        .tx_output
+        .as_ref()
+        .expect("codex-worker tx_output persisted");
+    let worker_cwd = PathBuf::from(output_string(output, "cwd"));
+    let worker_card_id = output_string(output, "card_id");
+
+    // This file issues NO scripted `call_tool` for any `gh.*` or `git.commit`
+    // (the only direct tool call in the whole file is `TOOL_PLAN_UPSERT` via
+    // the spec identity inside `plan_codex_task`). Therefore the ONLY thing
+    // that can emit `forge.pr.opened` / `forge.pr.checks` is the real worker's
+    // own MCP `tools/call`. Assert via the `events` table (NOT
+    // `harness_items`, which is spec-thread-only).
+    let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
+    assert_eq!(s5.actor, ActorId::KernelDispatcher);
+    assert_eq!(s5.scope_kind, "card");
+    assert_eq!(s5.scope_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(s5.scope_card.as_deref(), Some(worker_card_id.as_str()));
+    assert_eq!(
+        s5.payload["branch"],
+        format!("neige/{}/{}", fx.wave_id.as_str(), worker_card_id)
+    );
+    let head = git_stdout(&worker_cwd, ["rev-parse", "HEAD"]);
+    assert!(
+        is_hex_sha(&head),
+        "worker worktree HEAD should be a 40-char hex sha, got {head:?}"
+    );
+    assert_eq!(s5.payload["commit_sha"], head);
+
+    let (s6_id, s6_wave, s6) = wait_for_first_forge_event(&fx, "forge.pr.opened", budget).await;
+    assert_eq!(s6_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(s6["head_sha"], head);
+    let pr_number = s6["pr_number"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {s6}"));
+    assert!(pr_number >= 1, "PR number must be >= 1, got {pr_number}");
+
+    let (s7_id, s7_wave, s7) = wait_for_first_forge_event(&fx, "forge.pr.checks", budget).await;
+    assert_eq!(s7_wave.as_deref(), Some(fx.wave_id.as_str()));
+    assert_eq!(s7["pr_number"].as_u64(), Some(pr_number));
+    assert_eq!(s7["conclusion"], "success");
+
+    let task_completed_id = wait_for_task_completed_id(&fx, budget).await;
+
+    // Enforce that the worker performed git.commit/gh.pr.create/gh.pr.checks
+    // in-turn BEFORE calm.task.complete (construction W), preventing a
+    // false-pass where the worker completes early then opens the PR afterward.
+    assert!(
+        s5_id < s6_id && s6_id < s7_id && s7_id < task_completed_id,
+        "expected S5 < S6 < S7 < task.completed, got S5={s5_id}, S6={s6_id}, S7={s7_id}, task.completed={task_completed_id}"
+    );
+    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
+    assert_eq!(
+        event_payloads(&fx.repo, "forge.issue.closed").await.len(),
+        0
+    );
+
+    let marker_at_head = git_stdout(&worker_cwd, ["show", "HEAD:FORGE_E2E.md"]);
+    assert_eq!(
+        marker_at_head.trim(),
+        "forge-e2e-ok",
+        "FORGE_E2E.md content at committed HEAD mismatch"
+    );
+
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
+#[tokio::test]
 async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
     let Some(codex_bin) = resolve_codex_bin() else {
         eprintln!("[codex-forge-e2e] SKIP: no codex bin");
@@ -268,6 +372,28 @@ fn forge_goal() -> String {
     r#"Goal: At the repository root, create a single new file named `FORGE_E2E.md` whose entire contents are exactly the single line `forge-e2e-ok`. Do not modify any other file, do not run `git push`, and do not open a pull request.
 Acceptance: `FORGE_E2E.md` exists at the repository root with exactly that content."#
         .to_string()
+}
+
+fn forge_pr_goal(repo_gitdir: &str) -> String {
+    format!(
+        r#"Goal: In your current leased git worktree, perform EXACTLY these steps in order, using the MCP tools provided to you. Do not use the shell for git/gh; use the MCP tools.
+
+1. Create a single new file named `FORGE_E2E.md` at the worktree root whose entire contents are exactly the single line `forge-e2e-ok`. Do not modify any other file.
+
+2. Call the MCP tool whose name ends in `git.commit` (full name `plugin.dev.neige.git-forge_git.commit`) with arguments {{"message":"forge-e2e worker commit","idem":"forge-e2e-worker-commit"}} to commit that file on your current slice branch. Note the `branch` it reports.
+
+3. Call the MCP tool whose name ends in `gh.pr.create` (full name `plugin.dev.neige.git-forge_gh.pr.create`) with arguments:
+   {{"repo":"{repo}","head":"<the branch git.commit reported in step 2>","base":"main","title":"forge-e2e","body":"forge-e2e worker PR"}}
+   The `repo` value MUST be exactly `{repo}`. ALL of repo, head, base, title, body are mandatory. Note the PR `number` it returns.
+
+4. Call the MCP tool whose name ends in `gh.pr.checks` (full name `plugin.dev.neige.git-forge_gh.pr.checks`) with arguments {{"repo":"{repo}","pr":<the PR number from step 3>}}.
+
+5. Call `calm.task.complete` with a non-empty `idempotency_key`.
+
+Hard constraints: Do NOT run `git push`. Do NOT call gh.pr.merge. Do NOT close any issue. Do NOT call gh.pr.diff or gh.pr.list. Perform steps 2, 3, 4 in that exact order BEFORE calling calm.task.complete in step 5.
+Acceptance: `FORGE_E2E.md` exists with exactly that content; a PR was created; its checks were read."#,
+        repo = repo_gitdir
+    )
 }
 
 async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixture, String> {
@@ -830,6 +956,110 @@ async fn wait_for_worktree_committed_event(fx: &Fixture, budget: Duration) -> Co
     }
 }
 
+async fn wait_for_first_worktree_committed_event(
+    fx: &Fixture,
+    task_id: &str,
+    budget: Duration,
+) -> (i64, CommittedEventRow) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<RawCommittedEventRowWithId> = sqlx::query_as(
+            "SELECT id, actor, scope_kind, scope_wave, scope_card, payload \
+                 FROM events WHERE kind = 'worktree.committed' ORDER BY id ASC",
+        )
+        .fetch_all(fx.repo.pool())
+        .await
+        .expect("worktree.committed event rows");
+        if let Some((id, actor, scope_kind, scope_wave, scope_card, payload)) =
+            rows.into_iter().next()
+        {
+            return (
+                id,
+                CommittedEventRow {
+                    actor: serde_json::from_str(&actor).expect("event actor json"),
+                    scope_kind,
+                    scope_wave,
+                    scope_card,
+                    payload: serde_json::from_str(&payload).expect("event payload json"),
+                },
+            );
+        }
+        if Instant::now() >= deadline {
+            let kinds: Vec<(String, i64)> =
+                sqlx::query_as("SELECT kind, COUNT(*) FROM events GROUP BY kind ORDER BY kind")
+                    .fetch_all(fx.repo.pool())
+                    .await
+                    .unwrap_or_default();
+            let census = kinds
+                .iter()
+                .map(|(k, n)| format!("{k}={n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            panic_with_debug(
+                fx,
+                task_id,
+                format!(
+                    "timed out after {budget:?} waiting for first worktree.committed; event census: [{census}]"
+                ),
+            )
+            .await
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_first_forge_event(
+    fx: &Fixture,
+    kind: &str,
+    budget: Duration,
+) -> (i64, Option<String>, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, Option<String>, String)> = sqlx::query_as(
+            "SELECT id, scope_wave, payload FROM events WHERE kind = ?1 ORDER BY id ASC",
+        )
+        .bind(kind)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("{kind} event rows: {e}"));
+        if let Some((id, scope_wave, payload)) = rows.into_iter().next() {
+            return (
+                id,
+                scope_wave,
+                serde_json::from_str(&payload).expect("event payload json"),
+            );
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out after {budget:?} waiting for {kind}\ncodex stderr:\n{}",
+                read_lossy(&fx.codex_stderr_log)
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_task_completed_id(fx: &Fixture, budget: Duration) -> i64 {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64,)> =
+            sqlx::query_as("SELECT id FROM events WHERE kind = 'task.completed' ORDER BY id ASC")
+                .fetch_all(fx.repo.pool())
+                .await
+                .expect("task.completed event rows");
+        if let Some((id,)) = rows.into_iter().next() {
+            return id;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out after {budget:?} waiting for task.completed\ncodex stderr:\n{}",
+                read_lossy(&fx.codex_stderr_log)
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
 async fn panic_with_debug(fx: &Fixture, task_id: &str, reason: String) -> ! {
     let worker = worker_operation_for_task(&fx.repo, task_id).await;
     let worker_summary = worker
@@ -947,6 +1177,7 @@ struct CommittedEventRow {
 }
 
 type RawCommittedEventRow = (String, String, Option<String>, Option<String>, String);
+type RawCommittedEventRowWithId = (i64, String, String, Option<String>, Option<String>, String);
 
 async fn task_failed_reason(repo: &SqlxRepo, task_id: &str) -> Option<String> {
     let rows = event_payloads(repo, "task.failed").await;
