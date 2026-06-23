@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use serde::Serialize;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
@@ -33,7 +32,7 @@ use crate::db::sqlite::session_projection_active_for_card_tx;
 use crate::db::{Repo, SharedCodexDaemonUpdate, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::mcp_server::transport;
-use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
+use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_card_token};
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::proc_identity::{
@@ -1456,15 +1455,8 @@ impl SharedCodexAppServer {
                     continue;
                 }
             };
-            let mut set = serde_json::Map::new();
-            for (key, value) in card_mcp_env(&self.kernel_mcp_socket_path, raw_token.as_str()) {
-                set.insert(key.to_string(), serde_json::Value::String(value));
-            }
-            let config = json!({
-                "shell_environment_policy": {
-                    "set": set,
-                },
-            });
+            let config =
+                card_mcp_thread_start_config(&self.kernel_mcp_socket_path, raw_token.as_str());
             // Invariant: only the cold respawn caller may rotate and reemit
             // per-card MCP config, and only for the card's active thread.
             // Hot takeover always plain-resumes because loaded threads ignore
