@@ -31,6 +31,7 @@ import type { ExitChange, XtermViewHandle } from '../../XtermView';
 import { sharedEventStream } from '../../api/events';
 import { CardStatusDot } from '../../shared/components/CardStatusDot';
 import { CardExitBadge } from '../../shared/components/CardExitBadge';
+import type { components } from '../../api/generated';
 import {
   createClaudeCard,
   createCodexCard,
@@ -52,6 +53,8 @@ import {
   payloadSchemaVersion,
 } from './schemaVersions';
 
+type WorkerSessionState = components['schemas']['WorkerSessionState'];
+
 declare module '../../types' {
   interface WaveCardDataMap {
     codex: CodexCardData;
@@ -67,6 +70,7 @@ export interface CodexCardData {
   cwd?: string;
   iconBg?: string;
   iconFg?: string;
+  runtimeStatus?: WorkerSessionState;
   unsupportedVersion?: number;
 }
 
@@ -79,6 +83,7 @@ export interface ClaudeCardData {
   iconBg?: string;
   iconFg?: string;
   claudeSessionId?: string;
+  runtimeStatus?: WorkerSessionState;
   unsupportedVersion?: number;
 }
 
@@ -260,6 +265,14 @@ function CodexCardImpl({
   const [restartPending, setRestartPending] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
   const terminalId = card.terminalId;
+  const runtimeStatus = card.runtimeStatus;
+  const dead = isDeadRuntimeStatus(runtimeStatus);
+  const runtimeFsm = runtimeStatusToFsm(runtimeStatus);
+  const overlayFsm =
+    status?.state && isFsmState(status.state) ? status.state : null;
+  const dotFsm = overlayFsm ?? runtimeFsm ?? fsm;
+  const dotLabel = dead && label === 'starting…' ? 'session ended' : label;
+  const ended = !!exit || dead;
   useEffect(() => {
     if (!cardId || !terminalId) return;
     let cancelled = false;
@@ -369,7 +382,7 @@ function CodexCardImpl({
               before that lands.
             */}
             {exit && <CardExitBadge exit={exit} />}
-            {provider === 'claude' && exit && (
+            {provider === 'claude' && ended && (
               <span className="claude-restart-control">
                 <button
                   type="button"
@@ -387,7 +400,7 @@ function CodexCardImpl({
               </span>
             )}
             <span aria-live="polite">
-              <CardStatusDot state={fsm} title={`${fsm} — ${label}`} />
+              <CardStatusDot state={dotFsm} title={`${dotFsm} — ${dotLabel}`} />
             </span>
           </>
         }
@@ -403,6 +416,27 @@ function CodexCardImpl({
               onExitChange={setExit}
             />
           </Suspense>
+        ) : dead ? (
+          <div className="codex-card-empty">
+            <div>{title} session ended.</div>
+            {provider === 'claude' && (
+              <span className="claude-restart-control">
+                <button
+                  type="button"
+                  className="claude-restart-button"
+                  onClick={onRestartClaude}
+                  disabled={restartPending || !cardId}
+                >
+                  {restartPending ? 'Restarting…' : 'Restart'}
+                </button>
+                {restartError && (
+                  <span className="claude-restart-error" role="status">
+                    {restartError}
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
         ) : (
           <div className="codex-card-empty">
             {title} is starting… waiting for PTY.
@@ -411,6 +445,18 @@ function CodexCardImpl({
       </div>
     </div>
   );
+}
+
+function isDeadRuntimeStatus(status: WorkerSessionState | undefined): boolean {
+  return status === 'exited' || status === 'failed' || status === 'superseded';
+}
+
+function runtimeStatusToFsm(
+  status: WorkerSessionState | undefined,
+): FsmState | null {
+  if (status === 'failed') return 'Errored';
+  if (status === 'exited' || status === 'superseded') return 'Done';
+  return null;
 }
 
 function isFsmState(s: string): s is FsmState {
@@ -530,10 +576,11 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
       type: 'codex',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      terminalId: parsed.data.terminal_id,
+      terminalId: parsed.data.terminal_id ?? k.runtime?.terminal_id ?? undefined,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
       iconFg: parsed.data.icon_fg,
+      runtimeStatus: k.runtime?.status,
     };
   },
   addPanel: {
@@ -600,11 +647,12 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
       type: 'claude',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      terminalId: parsed.data.terminal_id,
+      terminalId: parsed.data.terminal_id ?? k.runtime?.terminal_id ?? undefined,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
       iconFg: parsed.data.icon_fg,
       claudeSessionId: parsed.data.claude_session_id,
+      runtimeStatus: k.runtime?.status,
     };
   },
   addPanel: {
