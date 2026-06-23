@@ -3,6 +3,7 @@ import { Suspense, type ComponentType, type ReactNode, type Ref } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider } from '../../app/theme';
 import type { ClaudeCardData, CodexCardData } from './codex';
+import type { KernelCard } from '../../api/wire';
 
 const mocks = vi.hoisted(() => ({
   refresh: vi.fn(),
@@ -67,6 +68,21 @@ const codexCard: CodexCardData = {
 };
 
 type AgentCardData = CodexCardData | ClaudeCardData;
+
+function makeKernelCard(over: Partial<KernelCard> = {}): KernelCard {
+  return {
+    created_at: 1,
+    deletable: true,
+    id: 'card_kernel',
+    kind: 'codex',
+    payload: {},
+    runtime: null,
+    sort: 0,
+    updated_at: 1,
+    wave_id: 'wave_1',
+    ...over,
+  };
+}
 
 function Wrap({
   children,
@@ -228,5 +244,94 @@ describe('Codex card controller behavior', () => {
     expect(
       screen.queryByRole('button', { name: /Restart/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows ended state and Restart for a reaped Claude PTY with exited runtime', () => {
+    const card = ClaudeEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_claude_dead',
+        kind: 'claude',
+        payload: {},
+        runtime: {
+          kind: 'claude',
+          runtime_id: 'rt1',
+          status: 'exited',
+          terminal_id: null,
+        },
+      }),
+    );
+
+    expect(card).not.toBeNull();
+    renderAgentCard(card!, { deletable: false });
+
+    expect(
+      screen.queryByText(/is starting… waiting for PTY/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
+  });
+
+  it('shows ended state without Restart for a reaped Codex PTY with failed runtime', () => {
+    const card = CodexEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_codex_dead',
+        kind: 'codex',
+        payload: {},
+        runtime: {
+          kind: 'codex',
+          runtime_id: 'rt2',
+          status: 'failed',
+          terminal_id: null,
+        },
+      }),
+    );
+
+    expect(card).not.toBeNull();
+    renderAgentCard(card!, { deletable: false });
+
+    expect(
+      screen.queryByText(/is starting… waiting for PTY/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Restart/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps waiting for PTY for transient Claude runtime states', () => {
+    const startingCard = ClaudeEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_claude_starting',
+        kind: 'claude',
+        payload: {},
+        runtime: {
+          kind: 'claude',
+          runtime_id: 'rt3',
+          status: 'starting',
+          terminal_id: null,
+        },
+      }),
+    );
+    const noRuntimeCard = ClaudeEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_claude_no_runtime',
+        kind: 'claude',
+        payload: {},
+        runtime: null,
+      }),
+    );
+
+    for (const card of [startingCard, noRuntimeCard]) {
+      expect(card).not.toBeNull();
+      const { unmount } = renderAgentCard(card!, { deletable: false });
+
+      expect(screen.getByText(/Claude is starting… waiting for PTY/i)).toBeInTheDocument();
+      expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /Restart/ }),
+      ).not.toBeInTheDocument();
+
+      unmount();
+    }
   });
 });
