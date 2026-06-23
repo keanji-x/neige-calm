@@ -118,7 +118,7 @@ pub enum ThreadConfig {
 }
 
 impl ThreadConfig {
-    fn to_redactable_value(&self) -> Option<serde_json::Value> {
+    fn to_wire_config(&self) -> Option<serde_json::Value> {
         match self {
             Self::NoMcp => None,
             Self::McpShell {
@@ -140,7 +140,7 @@ pub struct SharedThreadStartParams {
 
 impl std::fmt::Debug for SharedThreadStartParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted_config = self.config.to_redactable_value();
+        let redacted_config = self.config.to_wire_config();
         f.debug_struct("SharedThreadStartParams")
             .field("cwd", &self.cwd)
             .field("approval_policy", &self.approval_policy)
@@ -561,13 +561,7 @@ impl SharedCodexAppServer {
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
-        let config = match params.config {
-            ThreadConfig::NoMcp => None,
-            ThreadConfig::McpShell {
-                socket_path,
-                raw_token,
-            } => Some(card_mcp_thread_start_config(&socket_path, &raw_token)),
-        };
+        let config = params.config.to_wire_config();
         let thread = client
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
@@ -1467,7 +1461,7 @@ impl SharedCodexAppServer {
                 "resuming shared codex thread"
             );
             if mode == ResumeMode::HotTakeover {
-                Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp).await;
                 continue;
             }
 
@@ -1494,11 +1488,13 @@ impl SharedCodexAppServer {
             {
                 Ok(Some(raw_token)) => raw_token,
                 Ok(None) => {
-                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                    Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp)
+                        .await;
                     continue;
                 }
                 Err(e) => {
-                    Self::resume_thread_plain(&client, &thread_id, &card_id).await;
+                    Self::resume_thread_typed(&client, &thread_id, &card_id, ThreadConfig::NoMcp)
+                        .await;
                     tracing::warn!(
                         target = "shared_codex_daemon::resume",
                         %thread_id,
@@ -1509,29 +1505,31 @@ impl SharedCodexAppServer {
                     continue;
                 }
             };
-            let config =
-                card_mcp_thread_start_config(&self.kernel_mcp_socket_path, raw_token.as_str());
             // Invariant: only the cold respawn caller may rotate and reemit
             // per-card MCP config, and only for the card's active thread.
             // Hot takeover always plain-resumes because loaded threads ignore
             // resume config and keep using their existing environment.
-            if let Err(e) = client
-                .thread_resume_with_config(&thread_id, Some(config))
-                .await
-            {
-                tracing::warn!(
-                    target = "shared_codex_daemon::resume",
-                    %thread_id,
-                    %card_id,
-                    error = %e,
-                    "shared codex thread resume failed; leaving mapping intact"
-                );
-            }
+            Self::resume_thread_typed(
+                &client,
+                &thread_id,
+                &card_id,
+                ThreadConfig::McpShell {
+                    socket_path: self.kernel_mcp_socket_path.clone(),
+                    raw_token,
+                },
+            )
+            .await;
         }
     }
 
-    async fn resume_thread_plain(client: &CodexAppServer, thread_id: &str, card_id: &str) {
-        if let Err(e) = client.thread_resume(thread_id).await {
+    async fn resume_thread_typed(
+        client: &CodexAppServer,
+        thread_id: &str,
+        card_id: &str,
+        config: ThreadConfig,
+    ) {
+        let lowered = config.to_wire_config();
+        if let Err(e) = client.thread_resume_with_config(thread_id, lowered).await {
             tracing::warn!(
                 target = "shared_codex_daemon::resume",
                 %thread_id,
