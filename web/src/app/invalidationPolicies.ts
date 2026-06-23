@@ -275,6 +275,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'worktree.provisioned': noop(
     'Git worktree provisioning is card-scoped; no React Query cache consumes worktree rows yet.',
   ),
+  'worktree.committed': noop(
+    'Git worktree commit is card-scoped; no React Query cache consumes worktree rows yet.',
+  ),
   'worktree.removed': noop(
     'Git worktree teardown is card-scoped; no React Query cache consumes worktree rows yet.',
   ),
