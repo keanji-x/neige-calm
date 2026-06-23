@@ -623,6 +623,83 @@ async fn post_claude_restart_after_exit_reuses_terminal_and_resumes_session() {
 }
 
 #[tokio::test]
+async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session() {
+    let _guard = ENV_LOCK.lock().await;
+    let calls = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let calls_for_factory = calls.clone();
+    let boot =
+        boot_with_spawn_hook_factory(move |_, _| recording_spawn_hook(calls_for_factory)).await;
+
+    let (create_status, created) =
+        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap();
+    let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
+    let session_id = created["payload"]["claude_session_id"].as_str().unwrap();
+    boot.repo
+        .session_projection_complete_for_card(card_id, WorkerSessionState::Exited)
+        .await
+        .unwrap();
+    boot.repo.terminal_delete(old_terminal_id).await.unwrap();
+    assert!(
+        boot.repo
+            .terminal_get_by_card(card_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "test setup must match the post-upgrade missing-terminal state"
+    );
+
+    let (restart_status, restarted) = post_restart(boot.app.clone(), card_id).await;
+    assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
+    assert_eq!(restarted["id"], created["id"]);
+    assert_eq!(restarted["payload"]["claude_session_id"], session_id);
+    let new_terminal_id = restarted["payload"]["terminal_id"].as_str().unwrap();
+    assert_ne!(new_terminal_id, old_terminal_id);
+    assert_eq!(boot.spawn_count.load(Ordering::SeqCst), 2);
+
+    let recreated = boot
+        .repo
+        .terminal_get_by_card(card_id)
+        .await
+        .unwrap()
+        .expect("restart must recreate missing terminal row");
+    assert_eq!(recreated.id, new_terminal_id);
+    assert_eq!(recreated.cwd, "/workspace");
+
+    let calls = calls.lock().await.clone();
+    let restart_call = calls.last().expect("restart spawn call recorded");
+    assert_eq!(restart_call.terminal_id, new_terminal_id);
+    assert_eq!(restart_call.cwd, "/workspace");
+    assert!(
+        restart_call
+            .program
+            .contains(&format!("--resume '{}'", session_id)),
+        "restart program must resume existing session: {}",
+        restart_call.program
+    );
+
+    let rows = sqlx::query(
+        "SELECT state AS status, terminal_run_id, agent_session_id AS session_id FROM worker_sessions WHERE card_id = ?1 ORDER BY created_at_ms ASC, id ASC",
+    )
+    .bind(card_id)
+    .fetch_all(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 2);
+    let first_status: String = rows[0].try_get("status").unwrap();
+    let second_status: String = rows[1].try_get("status").unwrap();
+    let first_terminal: Option<String> = rows[0].try_get("terminal_run_id").unwrap();
+    let second_terminal: String = rows[1].try_get("terminal_run_id").unwrap();
+    let second_session: String = rows[1].try_get("session_id").unwrap();
+    assert_eq!(first_status, "exited");
+    assert_eq!(second_status, "running");
+    assert_eq!(first_terminal, None);
+    assert_eq!(second_terminal, new_terminal_id);
+    assert_eq!(second_session, session_id);
+}
+
+#[tokio::test]
 async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
     let _guard = ENV_LOCK.lock().await;
     let saw_existing_entry = Arc::new(tokio::sync::Mutex::new(Vec::new()));
