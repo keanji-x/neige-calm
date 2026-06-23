@@ -14,7 +14,7 @@ use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
-use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
+use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
 use calm_server::operation::{
@@ -261,6 +261,45 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
         boot.shared.clone(),
         permits,
     )
+}
+
+/// Spawns a dispatcher whose codex-worker adapter has a real `McpServer`
+/// wired in (the production wiring), so the worker `thread/start` carries the
+/// per-card `shell_environment_policy.set` MCP env. The returned `McpServer`'s
+/// `shim_config.socket_path` is the exact source the worker spawn injects, so
+/// tests can compare the captured config against it. The `TempDir` guard owns
+/// the bound UDS path and must outlive the dispatcher.
+async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
+    let tmp = TempDir::new().expect("mcp socket tempdir");
+    let socket_path = tmp.path().join("mcp.sock");
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    boot.repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let server = McpServer::spawn(
+        boot.repo.clone(),
+        boot.events.clone(),
+        WriteContext::new(boot.cache.clone(), wcc),
+        socket_path,
+        PathBuf::from("/nonexistent-shim-bin"),
+        build_default_registry(),
+        None,
+        Arc::new(tokio::sync::OnceCell::new()),
+        Arc::new(tokio::sync::OnceCell::new()),
+        tmp.path().join("gate-logs"),
+    )
+    .await
+    .expect("spawn McpServer");
+    let dispatcher = Dispatcher::spawn_with_terminal_renderer(
+        boot.repo.clone(),
+        boot.events.clone(),
+        WriteContext::new(boot.cache.clone(), boot.wcc.clone()),
+        boot.codex.clone(),
+        boot.daemon.clone(),
+        boot.renderer.clone(),
+        Some(server.clone()),
+        boot.shared.clone(),
+        4,
+    );
+    (dispatcher, server, tmp)
 }
 
 fn spec_identity(boot: &Boot) -> ToolCallIdentity {
@@ -1447,5 +1486,92 @@ async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
     assert!(
         leftover.is_some(),
         "PTY spawn rollback must delete the worker card row so idempotency_key clears for retry"
+    );
+}
+
+/// Regression for #836: a shared-daemon codex worker's AI exec-shells only
+/// receive `NEIGE_MCP_SOCKET`/`NEIGE_MCP_TOKEN` through the per-thread
+/// `thread/start` `shell_environment_policy.set` channel (codex does NOT
+/// inherit the daemon process env into exec-shells, and the daemon even
+/// `env_remove`s `NEIGE_MCP_TOKEN` from itself). Without that config the
+/// mandated `neige task-completed` CLI fails and the worker can never report
+/// `task.complete`. Assert the worker `thread/start` carries both keys under
+/// `shell_environment_policy.set`.
+#[tokio::test]
+async fn worker_thread_start_carries_mcp_shell_environment_policy() {
+    let _guard = ENV_LOCK.lock().await;
+    let capture = TempDir::new().unwrap();
+    let capture_file = capture.path().join("requests.ndjson");
+    unsafe {
+        std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
+    }
+    let boot = boot(true).await;
+    let (_dispatcher, server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
+    let key = "shared-worker-mcp-env";
+    let idempotency_key = task_id(&boot, key);
+    plan_codex_task(&boot, key, "report task completion via neige CLI").await;
+    wait_for(Duration::from_secs(5), || async {
+        let mut cards = boot
+            .repo
+            .cards_by_wave(boot.wave_id.as_str())
+            .await
+            .unwrap();
+        project_runtime_into_cards_payload(boot.repo.as_ref(), &mut cards)
+            .await
+            .unwrap();
+        cards
+            .into_iter()
+            .find(|c| {
+                c.payload.get("idempotency_key").and_then(Value::as_str)
+                    == Some(idempotency_key.as_str())
+                    && c.payload.get("codex_thread_id").and_then(Value::as_str)
+                        == Some("fake-thread-0001")
+            })
+            .map(|_| ())
+    })
+    .await
+    .expect("shared worker card minted with projected thread id");
+
+    let rows = wait_for_requests(&capture_file, 3).await;
+    unsafe {
+        std::env::remove_var("FAKE_CODEX_CAPTURE_REQUESTS");
+    }
+
+    let thread_start = rows
+        .iter()
+        .find(|row| row.get("method").and_then(Value::as_str) == Some("thread/start"))
+        .expect("shared daemon should receive thread/start");
+
+    let socket = thread_start
+        .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            panic!(
+                "worker thread/start must carry NEIGE_MCP_SOCKET under \
+                 shell_environment_policy.set: {thread_start}"
+            )
+        });
+    assert!(
+        !socket.is_empty(),
+        "NEIGE_MCP_SOCKET must be non-empty: {thread_start}"
+    );
+    assert_eq!(
+        socket,
+        server.shim_config.socket_path.to_string_lossy(),
+        "worker thread/start NEIGE_MCP_SOCKET must match the daemon shim socket"
+    );
+
+    let token = thread_start
+        .pointer("/params/config/shell_environment_policy/set/NEIGE_MCP_TOKEN")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            panic!(
+                "worker thread/start must carry NEIGE_MCP_TOKEN under \
+                 shell_environment_policy.set: {thread_start}"
+            )
+        });
+    assert!(
+        !token.is_empty(),
+        "NEIGE_MCP_TOKEN must be non-empty: {thread_start}"
     );
 }
