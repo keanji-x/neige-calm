@@ -731,6 +731,16 @@ export const worktreeProvisionedSchema = z.object({
   }),
 });
 
+export const worktreeCommittedSchema = z.object({
+  ev: z.literal('worktree.committed'),
+  data: z.object({
+    wave_id: z.string(),
+    card_id: z.string(),
+    commit_sha: z.string(),
+    branch: z.string(),
+  }),
+});
+
 export const worktreeRemovedSchema = z.object({
   ev: z.literal('worktree.removed'),
   data: z.object({
@@ -843,6 +853,7 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   forgeIssueReadSchema,
   forgeIssueClosedSchema,
   worktreeProvisionedSchema,
+  worktreeCommittedSchema,
   worktreeRemovedSchema,
   taskGateResultSchema,
 ]);
@@ -904,6 +915,7 @@ export type ForgePrChecksEvent = z.infer<typeof forgePrChecksSchema>;
 export type ForgeIssueReadEvent = z.infer<typeof forgeIssueReadSchema>;
 export type ForgeIssueClosedEvent = z.infer<typeof forgeIssueClosedSchema>;
 export type WorktreeProvisionedEvent = z.infer<typeof worktreeProvisionedSchema>;
+export type WorktreeCommittedEvent = z.infer<typeof worktreeCommittedSchema>;
 export type WorktreeRemovedEvent = z.infer<typeof worktreeRemovedSchema>;
 export type TaskGateResultEvent = z.infer<typeof taskGateResultSchema>;
 

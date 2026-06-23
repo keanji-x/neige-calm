@@ -1383,7 +1383,7 @@ fn validate_path_segment(label: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<PathBuf> {
+pub(crate) fn git_repo_root_for_wave_cwd(wave_id: &str, cwd: &str) -> Result<PathBuf> {
     let cwd_path = Path::new(cwd);
     if cwd.trim().is_empty() || !cwd_path.is_absolute() {
         return Err(CalmError::BadRequest(format!(

@@ -166,7 +166,7 @@ async fn real_git_forge_plugin_lowers_through_forge_action_seam() {
         &fx,
         11,
         COMMIT_TOOL,
-        json!({ "message": "m", "idem": "step-1" }),
+        json!({ "message": "m", "idem": "step-1", "branch": "wt-x" }),
     )
     .await;
     assert!(
@@ -177,13 +177,24 @@ async fn real_git_forge_plugin_lowers_through_forge_action_seam() {
     let commit_structured = &commit_resp["result"]["structuredContent"];
     assert_eq!(commit_structured["parked"], false);
     assert!(commit_structured["op_id"].as_str().is_some());
-    assert!(commit_structured["result"]["event_kind"].is_null());
-    assert!(commit_structured["result"]["event"].is_null());
+    assert_eq!(
+        commit_structured["result"]["event_kind"],
+        "worktree.committed"
+    );
+    assert_eq!(commit_structured["result"]["event"]["branch"], "wt-x");
+    assert!(
+        commit_structured["result"]["event"]["commit_sha"]
+            .as_str()
+            .is_some_and(is_hex_sha)
+    );
     assert_eq!(
         forge_event_count(&fx.repo).await,
-        before_commit_events,
-        "resultless git.commit must not persist another forge event row"
+        before_commit_events + 1,
+        "git.commit must persist one worktree.committed event row"
     );
+    let commit_rows = event_rows(&fx.repo, "worktree.committed").await;
+    assert_eq!(commit_rows.len(), 1, "git.commit must persist one event");
+    assert_worktree_committed_event(&commit_rows[0], &fx.wave_id, &fx.card_id, "wt-x");
 
     let commit_key = scoped_idem_key(PLUGIN_ID, &fx.wave_id, &fx.card_id, "git.commit:step-1");
     assert!(
@@ -563,7 +574,8 @@ async fn forge_event_count(repo: &SqlxRepo) -> i64 {
         "SELECT COUNT(*) FROM events WHERE kind IN (\
          'forge.pr.merged', 'forge.scan.completed', 'forge.pr.opened', \
          'forge.pr.diff.read', 'forge.pr.checks', 'forge.issue.read', \
-         'forge.issue.closed', 'worktree.provisioned', 'worktree.removed')",
+         'forge.issue.closed', 'worktree.provisioned', 'worktree.committed', \
+         'worktree.removed')",
     )
     .fetch_one(repo.pool())
     .await
@@ -590,6 +602,21 @@ fn assert_worktree_event(row: &EventRow, wave_id: &str, card_id: &str, target: &
     assert_eq!(payload["wave_id"], wave_id);
     assert_eq!(payload["card_id"], card_id);
     assert_eq!(payload["path"], target);
+}
+
+fn assert_worktree_committed_event(row: &EventRow, wave_id: &str, card_id: &str, branch: &str) {
+    let (scope_kind, _scope_cove, scope_wave, scope_card, payload) = row;
+    assert_eq!(scope_kind, "card");
+    assert_eq!(scope_wave.as_deref(), Some(wave_id));
+    assert_eq!(scope_card.as_deref(), Some(card_id));
+    assert_eq!(payload["wave_id"], wave_id);
+    assert_eq!(payload["card_id"], card_id);
+    assert_eq!(payload["branch"], branch);
+    assert!(payload["commit_sha"].as_str().is_some_and(is_hex_sha));
+}
+
+fn is_hex_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn scoped_idem_key(plugin_id: &str, wave_id: &str, card_id: &str, idem_key: &str) -> String {

@@ -544,6 +544,7 @@ pub async fn commit_events_with_author_in_tx(
                 | Event::ForgeIssueRead { .. }
                 | Event::ForgeIssueClosed { .. }
                 | Event::WorktreeProvisioned { .. }
+                | Event::WorktreeCommitted { .. }
                 | Event::WorktreeRemoved { .. }
         )
     }) {
@@ -2220,6 +2221,7 @@ fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDelta {
         | Event::ForgeIssueRead { .. }
         | Event::ForgeIssueClosed { .. }
         | Event::WorktreeProvisioned { .. }
+        | Event::WorktreeCommitted { .. }
         | Event::WorktreeRemoved { .. } => {}
     }
     delta
@@ -3447,6 +3449,66 @@ mod tests {
         )
         .await
         .expect("commit forge.pr.merged batch");
+        tx.commit().await.expect("commit transaction");
+
+        let after = head(repo.pool(), &wave.id).await.expect("head after");
+        let commit_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM wave_vcs_commits WHERE wave_id = ?1")
+                .bind(wave.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .expect("commit count");
+        assert_eq!(committed, None);
+        assert_eq!(after, before);
+        assert_eq!(commit_count, 0);
+    }
+
+    #[tokio::test]
+    async fn worktree_committed_only_batch_does_not_advance_head() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open sqlite repo");
+        let cove = repo
+            .cove_create(NewCove {
+                name: "cove".into(),
+                color: "#336699".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "wave".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let before = head(repo.pool(), &wave.id).await.expect("head before");
+
+        let event = Event::WorktreeCommitted {
+            wave_id: wave.id.clone(),
+            card_id: CardId::from("card-1"),
+            commit_sha: "1111111111111111111111111111111111111111".into(),
+            branch: "neige/wave/card-1".into(),
+        };
+        let mut tx = begin_immediate_tx(repo.pool())
+            .await
+            .expect("begin transaction");
+        let committed = commit_events_with_author_in_tx(
+            &mut tx,
+            &wave.id,
+            Some(&ActorId::KernelDispatcher),
+            42,
+            &[event],
+            MANIFEST_SCHEMA_VERSION,
+        )
+        .await
+        .expect("commit worktree.committed batch");
         tx.commit().await.expect("commit transaction");
 
         let after = head(repo.pool(), &wave.id).await.expect("head after");
