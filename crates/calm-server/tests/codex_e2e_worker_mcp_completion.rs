@@ -14,7 +14,16 @@
 //! Move 2 routes **codex** worker completion through the native
 //! `calm.task.complete` MCP tool (channel 2 — DaemonTrust + codex-injected
 //! `_meta.threadId`), which a shared-daemon worker has regardless of
-//! channel 3. This test is the load-bearing proof of that decoupling.
+//! channel 3.
+//!
+//! What A1 proves is exactly that **channel-2 completion works end-to-end
+//! with channel 3 stripped** — the decoupling itself, against the real codex
+//! binary. It does NOT guard the prompt swap. The PROMPT mandate (the codex
+//! worker uses `calm.task.complete`, not the `neige task-completed` CLI) is
+//! locked deterministically elsewhere: the const test
+//! `spec_card.rs::worker_codex_prompt_reports_completion_via_mcp_tools_not_cli`
+//! pins the rendered prompt text, and the `codex_worker_shared_daemon.rs`
+//! `thread/start` contract test pins what the worker spawn actually wires.
 //!
 //! ## How channel 3 is stripped
 //!
@@ -51,7 +60,11 @@
 //! pre-#838 RED (CLI is the worker's ONLY completion path), set
 //! `WORKER_CODEX = false` **and** revert Part C (both descriptors back to
 //! `visible_to_roles: &[]`) — then the worker times out with no commit.
-//! That exact RED was captured during development; see the PR report.
+//! Reverting BOTH the prompt (the `Worker`/CLI mandate) and the visibility
+//! flip is not a confound: both were the actual pre-#838 baseline, so this
+//! is the faithful repro of the world before Move 2, not an artificial
+//! handicap. That exact RED was captured during development; see the PR
+//! report.
 //!
 //! ## Run
 //!

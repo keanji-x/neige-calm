@@ -1138,10 +1138,12 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             // NEIGE_MCP_TOKEN via the per-thread `shell_environment_policy.set`
             // config — codex does NOT inherit the daemon process env into
             // exec-shells, and the daemon `env_remove`s NEIGE_MCP_TOKEN from
-            // itself. Without this, the mandated `neige task-completed` CLI (and
-            // every `neige` read) fails and the worker can never report
-            // task.complete (#836). Use the SAME shim socket already used below
-            // for the terminal viewer env so the daemon's shim socket matches.
+            // itself. Channel 3 is still needed so the worker's `neige` READS
+            // can reach the kernel; completion no longer rides it — since #838
+            // Move 2 the codex worker reports via the native
+            // `calm.task.complete` MCP tool (channel 2). Use the SAME shim
+            // socket already used below for the terminal viewer env so the
+            // daemon's shim socket matches.
             //
             // Production INVARIANT: both arms are always `Some` for a real
             // worker spawn. `ctx.mcp_token` is minted unconditionally above
