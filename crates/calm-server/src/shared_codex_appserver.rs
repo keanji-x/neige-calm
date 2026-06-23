@@ -118,7 +118,7 @@ pub enum ThreadConfig {
 }
 
 impl ThreadConfig {
-    fn to_redactable_value(&self) -> Option<serde_json::Value> {
+    fn to_wire_config(&self) -> Option<serde_json::Value> {
         match self {
             Self::NoMcp => None,
             Self::McpShell {
@@ -140,7 +140,7 @@ pub struct SharedThreadStartParams {
 
 impl std::fmt::Debug for SharedThreadStartParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let redacted_config = self.config.to_redactable_value();
+        let redacted_config = self.config.to_wire_config();
         f.debug_struct("SharedThreadStartParams")
             .field("cwd", &self.cwd)
             .field("approval_policy", &self.approval_policy)
@@ -561,13 +561,7 @@ impl SharedCodexAppServer {
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
-        let config = match params.config {
-            ThreadConfig::NoMcp => None,
-            ThreadConfig::McpShell {
-                socket_path,
-                raw_token,
-            } => Some(card_mcp_thread_start_config(&socket_path, &raw_token)),
-        };
+        let config = params.config.to_wire_config();
         let thread = client
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
@@ -1534,13 +1528,7 @@ impl SharedCodexAppServer {
         card_id: &str,
         config: ThreadConfig,
     ) {
-        let lowered: Option<serde_json::Value> = match config {
-            ThreadConfig::NoMcp => None,
-            ThreadConfig::McpShell {
-                socket_path,
-                raw_token,
-            } => Some(card_mcp_thread_start_config(&socket_path, &raw_token)),
-        };
+        let lowered = config.to_wire_config();
         if let Err(e) = client.thread_resume_with_config(thread_id, lowered).await {
             tracing::warn!(
                 target = "shared_codex_daemon::resume",
