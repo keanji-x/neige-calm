@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -22,8 +22,7 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::wiring::{
-    card_mcp_thread_start_config, mint_card_mcp_token_pair, mirror_session_mcp_token,
-    persist_card_mcp_token_hash,
+    mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
 };
 use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
@@ -35,7 +34,7 @@ use crate::routes::cards::card_scope;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
 
@@ -474,13 +473,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             // and spec spawn paths all emit the byte-identical shape from one
             // place. Previously this path wrapped `card_mcp_env` in its own
             // parallel `SpecThread*` structs.
-            let cfg = card_mcp_thread_start_config(Path::new(&socket_path), raw.as_str());
             let params = SharedThreadStartParams {
                 cwd,
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: Some(developer_instructions),
-                config: Some(cfg),
+                config: ThreadConfig::McpShell {
+                    socket_path: PathBuf::from(&socket_path),
+                    raw_token: raw,
+                },
             };
             if runtime_deferred {
                 self.daemon

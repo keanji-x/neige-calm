@@ -98,7 +98,9 @@ use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use calm_server::shared_codex_appserver::{
+    SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
+};
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -345,7 +347,7 @@ async fn worker_completes_with_channel3_stripped() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: Some(worker_instructions),
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await

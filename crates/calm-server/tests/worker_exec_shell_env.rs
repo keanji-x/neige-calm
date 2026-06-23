@@ -1,16 +1,10 @@
 //! Independent acceptance-level regression test for bug #836.
 //!
-//! A shared-daemon codex **worker** thread is started with `config: None`
-//! (`crates/calm-server/src/operation/codex_adapter.rs`
-//! `spawn_codex_worker_via_shared_daemon`), so its `thread/start` request
-//! carries NO `shell_environment_policy.set`. As a result the worker's AI
-//! exec-shell never receives `NEIGE_MCP_SOCKET` / `NEIGE_MCP_TOKEN`, and
-//! `neige task-completed` (plus other `neige` reads) fail.
-//!
-//! The SPEC path does it right: its `thread/start` request DOES carry
+//! A shared-daemon codex **worker** thread must carry
 //! `/params/config/shell_environment_policy/set/NEIGE_MCP_SOCKET` +
-//! `.../NEIGE_MCP_TOKEN` (see `spec_harness_adapters.rs` /
-//! `shared_codex_appserver.rs`).
+//! `.../NEIGE_MCP_TOKEN`, matching the SPEC path. Without that config, the
+//! worker's AI exec-shell never receives the per-card MCP credentials and
+//! `neige` reads fail.
 //!
 //! This test drives the **production WORKER spawn path** end-to-end through
 //! the real dispatcher/operation runtime against a live fake codex

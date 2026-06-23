@@ -106,6 +106,7 @@ struct Boot {
     daemon: Arc<DaemonClient>,
     renderer: Arc<TerminalRendererRegistry>,
     shared: Arc<SharedCodexAppServer>,
+    mcp_server: Arc<McpServer>,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     spec_card_id: CardId,
@@ -187,6 +188,21 @@ async fn boot(start_shared: bool) -> Boot {
         shared.start_or_takeover().await.unwrap();
     }
 
+    let mcp_server = McpServer::spawn(
+        repo.clone(),
+        events.clone(),
+        WriteContext::new(cache.clone(), wcc.clone()),
+        tmp.path().join("mcp.sock"),
+        PathBuf::from("/nonexistent-shim-bin"),
+        build_default_registry(),
+        None,
+        Arc::new(tokio::sync::OnceCell::new()),
+        Arc::new(tokio::sync::OnceCell::new()),
+        tmp.path().join("gate-logs"),
+    )
+    .await
+    .expect("spawn McpServer");
+
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
         repo: route_repo,
@@ -214,6 +230,7 @@ async fn boot(start_shared: bool) -> Boot {
         daemon,
         renderer,
         shared,
+        mcp_server,
         ctx,
         registry: Arc::new(registry),
         spec_card_id: spec_card.id,
@@ -257,49 +274,16 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
         boot.codex.clone(),
         boot.daemon.clone(),
         boot.renderer.clone(),
-        None,
+        Some(boot.mcp_server.clone()),
         boot.shared.clone(),
         permits,
     )
 }
 
-/// Spawns a dispatcher whose codex-worker adapter has a real `McpServer`
-/// wired in (the production wiring), so the worker `thread/start` carries the
-/// per-card `shell_environment_policy.set` MCP env. The returned `McpServer`'s
-/// `shim_config.socket_path` is the exact source the worker spawn injects, so
-/// tests can compare the captured config against it. The `TempDir` guard owns
-/// the bound UDS path and must outlive the dispatcher.
-async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
-    let tmp = TempDir::new().expect("mcp socket tempdir");
-    let socket_path = tmp.path().join("mcp.sock");
-    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
-    boot.repo.seed_wave_cove_cache(&wcc).await.unwrap();
-    let server = McpServer::spawn(
-        boot.repo.clone(),
-        boot.events.clone(),
-        WriteContext::new(boot.cache.clone(), wcc),
-        socket_path,
-        PathBuf::from("/nonexistent-shim-bin"),
-        build_default_registry(),
-        None,
-        Arc::new(tokio::sync::OnceCell::new()),
-        Arc::new(tokio::sync::OnceCell::new()),
-        tmp.path().join("gate-logs"),
-    )
-    .await
-    .expect("spawn McpServer");
-    let dispatcher = Dispatcher::spawn_with_terminal_renderer(
-        boot.repo.clone(),
-        boot.events.clone(),
-        WriteContext::new(boot.cache.clone(), boot.wcc.clone()),
-        boot.codex.clone(),
-        boot.daemon.clone(),
-        boot.renderer.clone(),
-        Some(server.clone()),
-        boot.shared.clone(),
-        4,
-    );
-    (dispatcher, server, tmp)
+/// Returns a dispatcher with production worker MCP wiring plus the server whose
+/// shim socket should appear in captured worker `thread/start` config.
+fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>) {
+    (spawn_dispatcher(boot), boot.mcp_server.clone())
 }
 
 fn spec_identity(boot: &Boot) -> ToolCallIdentity {
@@ -609,16 +593,32 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
             std::path::PathBuf::new(),
             std::env::temp_dir().join("calm-plugins-data"),
             Vec::new(),
-            events,
+            events.clone(),
             WriteContext::new(cache.clone(), wcc.clone()),
         )),
         Arc::new(CodexClient::new_stub()),
         Some(cache),
         Some(wcc),
     );
+    let mcp_server = McpServer::spawn(
+        repo.clone(),
+        events.clone(),
+        WriteContext::new(state.card_role_cache.clone(), state.wave_cove_cache.clone()),
+        tmp.path().join("worker-recovery-mcp.sock"),
+        PathBuf::from("/nonexistent-shim-bin"),
+        build_default_registry(),
+        None,
+        Arc::new(tokio::sync::OnceCell::new()),
+        Arc::new(tokio::sync::OnceCell::new()),
+        tmp.path().join("worker-recovery-gate-logs"),
+    )
+    .await
+    .expect("spawn worker recovery McpServer");
     let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     (
-        state.with_shared_codex_appserver(shared),
+        state
+            .with_mcp_server(mcp_server)
+            .with_shared_codex_appserver(shared),
         repo,
         wave.id,
         tmp,
@@ -1515,7 +1515,7 @@ async fn worker_thread_start_carries_mcp_shell_environment_policy() {
         std::env::set_var("FAKE_CODEX_CAPTURE_REQUESTS", &capture_file);
     }
     let boot = boot(true).await;
-    let (_dispatcher, server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
+    let (_dispatcher, server) = spawn_dispatcher_with_mcp(&boot);
     let key = "shared-worker-mcp-env";
     let idempotency_key = task_id(&boot, key);
     plan_codex_task(&boot, key, "report task completion via neige CLI").await;

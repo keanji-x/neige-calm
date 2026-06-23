@@ -66,7 +66,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calm_server::card_role_cache::CardRoleCache;
-use calm_server::codex_appserver::{InputItem, Notification};
+use calm_server::codex_appserver::{
+    ClientInfo, CodexAppServer, InputItem, Notification, ThreadStartParams,
+};
 use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, session_start_runtime_tx};
@@ -77,7 +79,7 @@ use calm_server::routes::theme::RequestTheme;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::shared_codex_home::SharedCodexHome;
 use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -313,21 +315,34 @@ async fn codex_mcp_double_call_both_complete() {
             }
         }
     });
-    let thread_id = daemon
-        .thread_start_for_card(
-            &card_id,
-            CardRole::Spec,
-            Some(&wave_id),
-            SharedThreadStartParams {
-                cwd: TEST_CWD.into(),
-                approval_policy: "never".into(),
-                sandbox_mode: "workspace-write".into(),
-                developer_instructions: None,
-                config: Some(thread_config),
-            },
-        )
+    let remote = daemon.remote_uri();
+    let socket_path = remote
+        .strip_prefix("unix://")
+        .expect("shared daemon remote URI must be unix://");
+    let (wire_client, _wire_notifications) = CodexAppServer::connect(socket_path)
         .await
-        .expect("thread_start_for_card");
+        .expect("connect wire test client");
+    wire_client
+        .initialize(ClientInfo {
+            name: "neige-calm-double-call-wire-test".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .await
+        .expect("initialize wire test client");
+    let thread = wire_client
+        .thread_start_with_params(ThreadStartParams {
+            cwd: TEST_CWD.into(),
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions: None,
+            config: Some(thread_config),
+        })
+        .await
+        .expect("wire thread_start_with_params");
+    let thread_id = thread
+        .thread_id()
+        .expect("thread/start returned no thread.id")
+        .to_string();
     seed_shared_spec_runtime(&repo, &card_id, &thread_id).await;
     eprintln!("[double-call] thread_id={thread_id} runtime_attribution=seeded");
 

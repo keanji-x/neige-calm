@@ -9,7 +9,9 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::db::{Repo, RepoSyncDomainRaw};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::routes::theme::RequestTheme;
-use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use calm_server::shared_codex_appserver::{
+    SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
+};
 use clap::Parser;
 use serde_json::json;
 
@@ -103,7 +105,7 @@ async fn shared_appserver_two_threads_true_binary() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -119,7 +121,7 @@ async fn shared_appserver_two_threads_true_binary() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -159,7 +161,7 @@ async fn shared_appserver_restart_resumes_thread() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await

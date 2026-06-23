@@ -18,7 +18,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::{
-    BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams,
+    BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams, ThreadConfig,
     bounded_exponential_backoff, drop_spawned_child_guard_for_test,
 };
 use clap::Parser;
@@ -837,7 +837,7 @@ async fn restart_resumes_rollout_backed_threads() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -921,7 +921,7 @@ async fn cold_respawn_plain_resumes_stale_cache_entry_without_rotating_active_to
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -989,7 +989,7 @@ async fn thread_start_mint_for_card_respects_needs_respawn_flag() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -1032,7 +1032,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
                     approval_policy: "never".into(),
                     sandbox_mode: "workspace-write".into(),
                     developer_instructions: None,
-                    config: None,
+                    config: ThreadConfig::NoMcp,
                 },
             )
             .await
@@ -1084,7 +1084,7 @@ async fn concurrent_mark_during_respawn_is_preserved() {
                     approval_policy: "never".into(),
                     sandbox_mode: "workspace-write".into(),
                     developer_instructions: None,
-                    config: None,
+                    config: ThreadConfig::NoMcp,
                 },
             )
             .await
@@ -1426,7 +1426,7 @@ async fn turn_start_seeds_active_turns_synchronously() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -1470,7 +1470,7 @@ async fn interrupt_active_turn_immediately_after_turn_start_succeeds() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
@@ -1511,7 +1511,7 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
