@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
     append_decision_event_in_tx, session_complete_tx, session_projection_active_for_card_tx,
-    session_set_status_tx, session_start_runtime_tx, terminal_get_by_card_tx,
+    session_set_status_tx, session_start_runtime_tx, terminal_create_tx, terminal_get_by_card_tx,
 };
 use crate::db::write_with_events_typed;
 use crate::error::{CalmError, Result};
@@ -18,7 +18,8 @@ use crate::model::new_id;
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
 use crate::routes::cards::card_scope;
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
-use crate::routes::codex_cards::shell_single_quote;
+use crate::routes::codex_cards::{default_cwd, shell_single_quote};
+use crate::routes::theme::RequestTheme;
 use crate::session_projection_lookup::resolve_claude_session_for_card;
 use crate::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -26,6 +27,7 @@ use crate::session_projection_repo::{
 use crate::state::{CodexClient, WriteContext};
 use crate::wave_cove_cache::WaveCoveCache;
 use calm_truth::decision_gate::PermissiveGate;
+use calm_truth::model::NewTerminal;
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, CompensationStep, Operation, PhaseTag,
@@ -145,10 +147,6 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned)
             .ok_or_else(|| CalmError::Forbidden("Claude card has no settings_path".into()))?;
-        let term = terminal_get_by_card_tx(tx, &card_id)
-            .await?
-            .ok_or_else(|| CalmError::Forbidden("Claude card has no terminal".into()))?;
-
         if let Some(active) = session_projection_active_for_card_tx(tx, &card_id).await? {
             // Claude runtimes only reach Starting/Running here today;
             // Idle/TurnPending are not part of the Claude state machine.
@@ -170,6 +168,30 @@ impl ProviderAdapter for ClaudeRestartAdapter {
             shell_single_quote(&claude_session_id),
         );
         let env = build_claude_env(self.repo.as_ref(), &self.codex, &card_id).await?;
+        let term = match terminal_get_by_card_tx(tx, &card_id).await? {
+            Some(term) => term,
+            None => {
+                let cwd = card
+                    .payload
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(default_cwd);
+                terminal_create_tx(
+                    tx,
+                    NewTerminal {
+                        card_id: card.id.clone(),
+                        program: command_line.clone(),
+                        cwd,
+                        env: env.clone(),
+                        theme: RequestTheme::default_dark(),
+                    },
+                )
+                .await?
+            }
+        };
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         session_start_runtime_tx(
             tx,
