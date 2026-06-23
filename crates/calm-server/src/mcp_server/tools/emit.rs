@@ -145,7 +145,11 @@ fn task_complete_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[],
+        // #838 Move 2 — visible to workers so a codex worker's `tools/list`
+        // advertises the native completion tool (it reports completion via
+        // this tool instead of the `neige` CLI). Role-gated to Worker (the
+        // handler also `require_role(Worker)`s).
+        visible_to_roles: &[CardRole::Worker],
     }
 }
 
@@ -363,7 +367,8 @@ fn task_fail_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[],
+        // #838 Move 2 — visible to workers (see `task_complete_descriptor`).
+        visible_to_roles: &[CardRole::Worker],
     }
 }
 
