@@ -16,22 +16,25 @@
 //! the real dispatcher/operation runtime against a live fake codex
 //! app-server, captures the inbound `thread/start` request, and asserts the
 //! worker `thread/start` carries the same MCP exec-shell env the spec path
-//! does. On unfixed `main` the worker emits `config: None`, so the captured
-//! `thread/start` has no `/params/config` at all and this test is RED. Once
-//! the worker path emits the same `shell_environment_policy.set`, it turns
-//! GREEN.
+//! does. It runs with a LIVE `McpServer` (`mcp_server = Some`) — the
+//! production wiring (`state.rs` `new`: `McpServer::spawn` then `Dispatcher`
+//! with `Some(mcp_server)`), so the worker spawn hits the
+//! config-injecting arm of the #836 fix. On unfixed `main` the worker emits
+//! `config: None`, so the captured `thread/start` has no `/params/config` at
+//! all and this test is RED. Once the worker path emits the same
+//! `shell_environment_policy.set`, it turns GREEN.
 //!
 //! The harness here mirrors `tests/codex_worker_shared_daemon.rs`
-//! (`worker_via_shared_daemon_writes_runtime_and_projects_thread_id`,
-//! which asserts the worker `thread/start` `developer_instructions`): same
+//! (`worker_thread_start_carries_mcp_shell_environment_policy` /
+//! `spawn_dispatcher_with_mcp`, which wire a live `McpServer`): same
 //! `boot`/`Dispatcher`/`plan_codex_task` wiring, same live shared daemon +
 //! `FAKE_CODEX_CAPTURE_REQUESTS` capture file. We must NOT edit that file
-//! (owned by the parallel fix agent), so the shared helpers are replicated
-//! here.
+//! (owned by the parallel fix agent), and helpers cannot be imported across
+//! test binaries, so the shared helpers are replicated here.
 
 #![cfg(unix)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,7 +48,7 @@ use calm_server::event::EventBus;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
-use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
+use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -241,18 +244,51 @@ async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
     tx.commit().await.unwrap();
 }
 
-fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
-    Dispatcher::spawn_with_terminal_renderer(
+/// Spawns a dispatcher whose codex-worker adapter has a real `McpServer`
+/// wired in — i.e. `mcp_server = Some`, the PRODUCTION wiring. In production
+/// `state.rs` `new` (`McpServer::spawn` at `:867`, then `Dispatcher::spawn_*`
+/// with `Some(mcp_server)` at `:978`) ALWAYS hands a live `McpServer` to the
+/// dispatcher (boot fails if the spawn fails), so a real worker spawn always
+/// hits the `(Some(token), Some(server))` arm of the
+/// `spawn_codex_worker_via_shared_daemon` config guard. The `from_parts` test
+/// hatch (`state.rs:597/:635/:665`) is the only path that wires `None`; using
+/// it here would exercise a `config: None` branch production can never reach,
+/// making the #836 assertion a harness-fidelity artifact rather than a real
+/// regression check. So mirror the GREEN sibling test
+/// (`codex_worker_shared_daemon.rs::spawn_dispatcher_with_mcp`) and wire a live
+/// server. The returned `TempDir` owns the bound UDS path and must outlive the
+/// dispatcher.
+async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, TempDir) {
+    let tmp = TempDir::new().expect("mcp socket tempdir");
+    let socket_path = tmp.path().join("mcp.sock");
+    let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
+    boot.repo.seed_wave_cove_cache(&wcc).await.unwrap();
+    let server = McpServer::spawn(
         boot.repo.clone(),
         boot.events.clone(),
-        calm_server::state::WriteContext::new(boot.cache.clone(), boot.wcc.clone()),
+        WriteContext::new(boot.cache.clone(), wcc),
+        socket_path,
+        PathBuf::from("/nonexistent-shim-bin"),
+        build_default_registry(),
+        None,
+        Arc::new(tokio::sync::OnceCell::new()),
+        Arc::new(tokio::sync::OnceCell::new()),
+        tmp.path().join("gate-logs"),
+    )
+    .await
+    .expect("spawn McpServer");
+    let dispatcher = Dispatcher::spawn_with_terminal_renderer(
+        boot.repo.clone(),
+        boot.events.clone(),
+        WriteContext::new(boot.cache.clone(), boot.wcc.clone()),
         boot.codex.clone(),
         boot.daemon.clone(),
         boot.renderer.clone(),
-        None,
+        Some(server.clone()),
         boot.shared.clone(),
         4,
-    )
+    );
+    (dispatcher, server, tmp)
 }
 
 fn spec_identity(boot: &Boot) -> ToolCallIdentity {
@@ -332,7 +368,10 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
     }
 
     let boot = boot().await;
-    let _dispatcher = spawn_dispatcher(&boot);
+    // Live `McpServer` (mcp_server = Some) — production wiring, so the worker
+    // spawn hits the config-injecting arm of the #836 fix. `_server`/`_mcp_tmp`
+    // own the bound MCP socket + must outlive the worker spawn.
+    let (_dispatcher, _server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
     plan_codex_task(&boot, "worker-mcp-env-1", "prove worker exec-shell env").await;
 
     let thread_start = wait_for_worker_thread_start(&capture_file).await;

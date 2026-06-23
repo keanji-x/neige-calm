@@ -1139,6 +1139,19 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             // every `neige` read) fails and the worker can never report
             // task.complete (#836). Use the SAME shim socket already used below
             // for the terminal viewer env so the daemon's shim socket matches.
+            //
+            // Production INVARIANT: both arms are always `Some` for a real
+            // worker spawn. `ctx.mcp_token` is minted unconditionally above
+            // (`mint_card_mcp_token`), and `ctx.mcp_server` is wired from
+            // `AppState::new` (`state.rs`), which calls `McpServer::spawn`
+            // unconditionally (boot fails if it fails) and passes
+            // `Some(mcp_server)` into the dispatcher/adapter. The only path that
+            // wires `mcp_server = None` is the `from_parts`/`boot()` TEST hatch
+            // (`state.rs:597/:635/:665`). So the `_ => None` fallback is
+            // UNREACHABLE in production — it exists only so that the test hatch
+            // (and existing worker tests that legitimately run with
+            // `mcp_server = None`) don't panic. The #836 acceptance tests run
+            // with a live `McpServer` precisely to exercise this production arm.
             let config = match (ctx.mcp_token, ctx.mcp_server) {
                 (Some(token), Some(server)) => Some(card_mcp_thread_start_config(
                     &server.shim_config.socket_path,
