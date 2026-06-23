@@ -436,9 +436,12 @@ impl ProviderAdapter for CodexAdapter {
                         thread_id
                     } else {
                         // CodexAdapter (kind="codex-create") is the user-initiated
-                        // interactive card path: it has no McpServer and never mints a
-                        // per-card MCP token, so there is no NEIGE_MCP_SOCKET/TOKEN to
-                        // inject and no `neige` task-reporting contract to satisfy here.
+                        // interactive card path. `config: None` is correct here: this
+                        // card injects no NEIGE_MCP_SOCKET/NEIGE_MCP_TOKEN into its
+                        // runtime env (see `build_codex_env`) and starts with
+                        // `developer_instructions: None` (no worker prompt, hence no
+                        // `neige task-completed` reporting contract to satisfy), so there
+                        // is nothing to put in `shell_environment_policy.set`.
                         // The worker path (CodexWorkerAdapter -> spawn_codex_worker_via_shared_daemon)
                         // is the one that needs shell_environment_policy.set (#836).
                         self.shared_codex_appserver

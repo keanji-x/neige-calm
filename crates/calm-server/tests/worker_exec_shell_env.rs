@@ -369,9 +369,9 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
 
     let boot = boot().await;
     // Live `McpServer` (mcp_server = Some) — production wiring, so the worker
-    // spawn hits the config-injecting arm of the #836 fix. `_server`/`_mcp_tmp`
+    // spawn hits the config-injecting arm of the #836 fix. `server`/`_mcp_tmp`
     // own the bound MCP socket + must outlive the worker spawn.
-    let (_dispatcher, _server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
+    let (_dispatcher, server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
     plan_codex_task(&boot, "worker-mcp-env-1", "prove worker exec-shell env").await;
 
     let thread_start = wait_for_worker_thread_start(&capture_file).await;
@@ -387,11 +387,6 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
     let developer_instructions = thread_start
         .pointer("/params/developerInstructions")
         .and_then(Value::as_str)
-        .or_else(|| {
-            thread_start
-                .pointer("/params/developer_instructions")
-                .and_then(Value::as_str)
-        })
         .expect("worker thread/start must carry developer_instructions");
     assert!(
         developer_instructions.contains("worker agent under spec card"),
@@ -414,6 +409,12 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
          shell_environment_policy.set — otherwise the worker AI exec-shell \
          cannot reach the MCP socket and `neige task-completed` fails. \
          Captured request: {thread_start}"
+    );
+    assert_eq!(
+        mcp_socket.unwrap(),
+        server.shim_config.socket_path.to_string_lossy(),
+        "#836: worker thread/start NEIGE_MCP_SOCKET must match the live daemon \
+         shim socket. Captured request: {thread_start}"
     );
     assert!(
         mcp_token.is_some_and(|value| !value.is_empty()),
