@@ -130,8 +130,14 @@ async fn real_codex_worker_writes_code_on_leased_worktree() {
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
     let worker_card_id = output_string(output, "card_id");
 
-    assert_worker_wrote_marker_file(&fx, &worker_cwd).await;
+    // The codex-worker op reaches `succeeded` at turn-START (it only awaits the
+    // initial TurnStarted), not worker-done. The real worker writes the file and
+    // reports `task.complete` tens of seconds later, after which the kernel
+    // commits and emits `worktree.committed`. So wait on that commit event (the
+    // true end-to-end completion barrier) BEFORE asserting working-tree state,
+    // otherwise the marker check races the async worker turn.
     assert_worker_commit_landed(&fx, &worker_cwd, &worker_card_id, budget).await;
+    assert_worker_wrote_marker_file(&fx, &worker_cwd).await;
 
     fx.plugin_host
         .stop(PLUGIN_ID)
