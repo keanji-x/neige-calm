@@ -19,9 +19,7 @@ use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::McpServer;
-use crate::mcp_server::wiring::{
-    card_mcp_env, card_mcp_thread_start_config, mint_and_persist_card_token,
-};
+use crate::mcp_server::wiring::{card_mcp_env, mint_and_persist_card_token};
 use crate::model::{Card, CardRole, new_id, now_ms};
 use crate::operation::worker_cleanup::{
     WorkerCleanupOutcome, compensate_worker_rows, worker_spawn_failure_preserved,
@@ -42,7 +40,7 @@ use crate::routes::theme::RequestTheme;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionKind, WorkerSessionState,
 };
-use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::{CodexClient, WriteContext};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::wave_cove_cache::WaveCoveCache;
@@ -436,7 +434,7 @@ impl ProviderAdapter for CodexAdapter {
                         thread_id
                     } else {
                         // CodexAdapter (kind="codex-create") is the user-initiated
-                        // interactive card path. `config: None` is correct here: this
+                        // interactive card path. `ThreadConfig::NoMcp` is correct here: this
                         // card injects no NEIGE_MCP_SOCKET/NEIGE_MCP_TOKEN into its
                         // runtime env (see `build_codex_env`) and starts with
                         // `developer_instructions: None` (no worker prompt, hence no
@@ -452,7 +450,7 @@ impl ProviderAdapter for CodexAdapter {
                                     approval_policy: "never".into(),
                                     sandbox_mode: "workspace-write".into(),
                                     developer_instructions: None,
-                                    config: None,
+                                    config: ThreadConfig::NoMcp,
                                 },
                             )
                             .await?
@@ -1150,31 +1148,26 @@ pub(crate) async fn spawn_codex_worker_via_shared_daemon(
             // (`mint_card_mcp_token`), and `ctx.mcp_server` is wired from
             // `AppState::new` (`state.rs`), which calls `McpServer::spawn`
             // unconditionally (boot fails if it fails) and passes
-            // `Some(mcp_server)` into the dispatcher/adapter. The only path that
-            // wires `mcp_server = None` is the `from_parts`/`boot()` TEST hatch
-            // (`state.rs:597/:635/:665`). So the `_ => None` fallback is
-            // UNREACHABLE in production — it exists only so that the test hatch
-            // (and existing worker tests that legitimately run with
-            // `mcp_server = None`) don't panic. The #836 acceptance tests run
-            // with a live `McpServer` precisely to exercise this production arm.
-            let config = match (ctx.mcp_token, ctx.mcp_server) {
-                (Some(token), Some(server)) => Some(card_mcp_thread_start_config(
-                    &server.shim_config.socket_path,
-                    token,
-                )),
-                _ => None,
+            // `Some(mcp_server)` into the dispatcher/adapter. The remaining
+            // test hatches that use `from_parts` must wire a stub `McpServer`
+            // before reaching this worker spawn path.
+            let (token, server) = match (ctx.mcp_token, ctx.mcp_server) {
+                (Some(token), Some(server)) => (token, server),
+                _ => {
+                    return Err(CalmError::Internal(
+                        "codex worker shared-daemon spawn requires MCP server and per-card token"
+                            .into(),
+                    ));
+                }
             };
             let thread_id = ctx
                 .shared_codex_appserver
-                .thread_start_mint_for_card(
+                .thread_start_mint_mcp_shell(
                     card_id,
-                    SharedThreadStartParams {
-                        cwd: ctx.cwd.to_string(),
-                        approval_policy: "never".into(),
-                        sandbox_mode: "workspace-write".into(),
-                        developer_instructions: Some(worker_instructions),
-                        config,
-                    },
+                    ctx.cwd.to_string(),
+                    Some(worker_instructions),
+                    server.shim_config.socket_path.clone(),
+                    token.to_string(),
                 )
                 .await?;
             tracing::info!(

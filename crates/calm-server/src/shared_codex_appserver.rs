@@ -107,22 +107,46 @@ enum ResumeMode {
 }
 
 #[derive(Clone)]
+pub enum ThreadConfig {
+    /// No per-card MCP credentials injected. Serializes to omitted `config`.
+    NoMcp,
+    /// Per-card MCP shell env injected through `shell_environment_policy.set`.
+    McpShell {
+        socket_path: PathBuf,
+        raw_token: String,
+    },
+}
+
+impl ThreadConfig {
+    fn to_redactable_value(&self) -> Option<serde_json::Value> {
+        match self {
+            Self::NoMcp => None,
+            Self::McpShell {
+                socket_path,
+                raw_token,
+            } => Some(card_mcp_thread_start_config(socket_path, raw_token)),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct SharedThreadStartParams {
     pub cwd: String,
     pub approval_policy: String,
     pub sandbox_mode: String,
     pub developer_instructions: Option<String>,
-    pub config: Option<serde_json::Value>,
+    pub config: ThreadConfig,
 }
 
 impl std::fmt::Debug for SharedThreadStartParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let redacted_config = self.config.to_redactable_value();
         f.debug_struct("SharedThreadStartParams")
             .field("cwd", &self.cwd)
             .field("approval_policy", &self.approval_policy)
             .field("sandbox_mode", &self.sandbox_mode)
             .field("developer_instructions", &self.developer_instructions)
-            .field("config", &redact_thread_start_config(&self.config))
+            .field("config", &redact_thread_start_config(&redacted_config))
             .finish()
     }
 }
@@ -489,6 +513,29 @@ impl SharedCodexAppServer {
         self.thread_start_mint_inner(card_id, params).await
     }
 
+    /// Worker/spec mint that can only inject per-card MCP shell credentials.
+    pub async fn thread_start_mint_mcp_shell(
+        self: &Arc<Self>,
+        card_id: &str,
+        cwd: String,
+        developer_instructions: Option<String>,
+        socket_path: PathBuf,
+        raw_token: String,
+    ) -> Result<String> {
+        let params = SharedThreadStartParams {
+            cwd,
+            approval_policy: "never".into(),
+            sandbox_mode: "workspace-write".into(),
+            developer_instructions,
+            config: ThreadConfig::McpShell {
+                socket_path,
+                raw_token,
+            },
+        };
+        let _start_guard = self.kernel_thread_start_serial.lock().await;
+        self.thread_start_mint_inner(card_id, params).await
+    }
+
     /// Caller MUST hold `kernel_thread_start_serial`.
     async fn thread_start_mint_inner(
         self: &Arc<Self>,
@@ -514,13 +561,20 @@ impl SharedCodexAppServer {
         }
         self.reap_and_respawn_with_current_settings().await?;
         let client = self.connected_client().await?;
+        let config = match params.config {
+            ThreadConfig::NoMcp => None,
+            ThreadConfig::McpShell {
+                socket_path,
+                raw_token,
+            } => Some(card_mcp_thread_start_config(&socket_path, &raw_token)),
+        };
         let thread = client
             .thread_start_with_params(ThreadStartParams {
                 cwd: params.cwd,
                 approval_policy: params.approval_policy,
                 sandbox_mode: params.sandbox_mode,
                 developer_instructions: params.developer_instructions,
-                config: params.config,
+                config,
             })
             .await?;
         let thread_id = thread
@@ -1983,22 +2037,15 @@ mod tests {
             approval_policy: "never".into(),
             sandbox_mode: "workspace-write".into(),
             developer_instructions: None,
-            config: Some(json!({
-                "shell_environment_policy": {
-                    "set": {
-                        "NEIGE_MCP_SOCKET": "/tmp/x.sock",
-                        "NEIGE_MCP_TOKEN": "secret-abcdef",
-                    },
-                    "append": {
-                        "SOME_KEY": "some_value",
-                    }
-                }
-            })),
+            config: ThreadConfig::McpShell {
+                socket_path: PathBuf::from("/tmp/x.sock"),
+                raw_token: "secret-abcdef".into(),
+            },
         };
 
         let rendered = format!("{params:?}");
         assert!(!rendered.contains("secret-abcdef"));
-        assert!(!rendered.contains("some_value"));
+        assert!(rendered.contains("NEIGE_MCP_TOKEN"));
         assert!(rendered.contains("\"[REDACTED]\""));
     }
 

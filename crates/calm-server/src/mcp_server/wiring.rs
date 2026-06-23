@@ -23,7 +23,10 @@ pub fn card_mcp_env(socket_path: &Path, raw_token: &str) -> [(&'static str, Stri
 /// ONLY channel that reaches the `neige` CLI an agent must run to report its
 /// task. Both the spec harness (`spec_harness_start_adapter`) and the codex
 /// worker spawn (`codex_adapter`) emit this same shape.
-pub fn card_mcp_thread_start_config(socket_path: &Path, raw_token: &str) -> serde_json::Value {
+pub(crate) fn card_mcp_thread_start_config(
+    socket_path: &Path,
+    raw_token: &str,
+) -> serde_json::Value {
     let mut set = serde_json::Map::new();
     for (key, value) in card_mcp_env(socket_path, raw_token) {
         set.insert(key.to_string(), serde_json::Value::String(value));

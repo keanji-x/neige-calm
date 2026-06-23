@@ -695,6 +695,13 @@ impl AppState {
     }
 
     #[cfg(feature = "fixtures")]
+    pub fn with_mcp_server(mut self, mcp_server: Arc<McpServer>) -> Self {
+        self.mcp_server = Some(mcp_server);
+        self.rebuild_operation_runtime();
+        self
+    }
+
+    #[cfg(feature = "fixtures")]
     pub fn with_pending_codex_threads(mut self, pending: Arc<PendingThreadStartRegistry>) -> Self {
         self.pending_codex_threads = pending.clone();
         self.codex_shell.pending_codex_threads = pending;

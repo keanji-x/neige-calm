@@ -13,7 +13,9 @@ use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
-use calm_server::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams};
+use calm_server::shared_codex_appserver::{
+    SharedCodexAppServer, SharedThreadStartParams, ThreadConfig,
+};
 use serde_json::json;
 
 async fn fresh_repo() -> Arc<SqlxRepo> {
@@ -69,7 +71,7 @@ async fn harness_with(
                     approval_policy: "never".into(),
                     sandbox_mode: "workspace-write".into(),
                     developer_instructions: None,
-                    config: None,
+                    config: ThreadConfig::NoMcp,
                 },
             )
             .await
@@ -751,7 +753,7 @@ async fn restored_wave_goal_issues_first_turn_without_new_observation() {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions: None,
-                config: None,
+                config: ThreadConfig::NoMcp,
             },
         )
         .await
