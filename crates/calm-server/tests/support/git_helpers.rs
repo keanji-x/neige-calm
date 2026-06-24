@@ -66,7 +66,8 @@ pub fn run_git_inner<const N: usize>(repo: Option<&Path>, args: [&str; N]) {
     let output = run_git_output(repo, args);
     assert!(
         output.status.success(),
-        "git failed\nstdout:\n{}\nstderr:\n{}",
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -86,4 +87,33 @@ pub fn run_git_output<const N: usize>(
 
 fn path_str(path: &Path) -> &str {
     path.to_str().expect("test paths are utf-8")
+}
+
+pub fn git_stdout_no_cwd<const N: usize>(args: [&str; N]) -> String {
+    let output = run_git_output(None, args);
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+pub fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
+    let output = run_git_output(Some(repo), args);
+    assert!(
+        output.status.success(),
+        "git {:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        args,
+        repo.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+pub fn is_hex_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
