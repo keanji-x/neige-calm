@@ -55,7 +55,6 @@ use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_report::WaveReportPayload;
-use calm_types::worker::WorkerSessionId;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -937,7 +936,11 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
         .await
         .expect("log seeded design task.dispatched");
 
-    // Test fixture shortcut: Card scope alone routes this self-report to the completed bucket.
+    // The §7.3 design-phase fixture shortcut does not mint a real review-worker
+    // session, so author the completion as KernelDispatcher (gate-unrestricted
+    // per role_gate rule 5). Card scope alone routes it to the completed bucket
+    // (is_spec_verdict_event is false for non-Wave scope), so runs/ surfaces the
+    // verdict the real spec reads.
     let card_scope = EventScope::Card {
         card: fx.spec_card_id.clone(),
         wave: fx.wave_id.clone(),
@@ -945,9 +948,7 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
     };
     fx.repo
         .log_pure_event(
-            ActorId::AiCodexSession(WorkerSessionId::from(format!(
-                "codex-forge-e2e-review-{key}"
-            ))),
+            ActorId::KernelDispatcher,
             card_scope,
             None,
             &fx.events,
