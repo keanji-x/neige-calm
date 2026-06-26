@@ -25,7 +25,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::harness::{HarnessRegistry, Observation, SpecHarness};
+use calm_server::harness::{HarnessRegistry, HarnessState, Observation, SpecHarness};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
@@ -413,6 +413,13 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
         "plan.updated actor must be the real spec session, got {plan_actor:?}"
     );
 
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    // Settle the planning turn before seeding so the accepted review.round is
+    // causally a response to the injected task completions, not a planning-time
+    // fabrication. R6 deliberately does not prove the spec literally read runs/:
+    // the runs/ pre-check proves the verdict data is present and readable, and
+    // this causal wake is sufficient for the autonomy thesis.
+    wait_for_spec_turn_settled(&harness, spec_planning_budget()).await;
     seed_design_channel_complete(&fx, "review-design-a", "a").await;
     seed_design_channel_complete(&fx, "review-design-b", "b").await;
     let floor = max_event_id(&fx.repo).await;
@@ -422,7 +429,6 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
         "planning turn must not have emitted a design review.round before the seeded verdicts (id<=floor): proof-validity guard"
     );
 
-    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
     inject_task_completed(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_completed(&harness, &task_id(&fx, "review-design-b")).await;
 
@@ -1488,6 +1494,30 @@ async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, Valu
             );
         }
         sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_spec_turn_settled(h: &SpecHarness, budget: Duration) {
+    let deadline = Instant::now() + budget;
+    let mut last_state = h.state_for_test().await;
+    let mut last_pending = h.pending_len_for_test().await;
+    loop {
+        if matches!(
+            last_state,
+            HarnessState::Idle | HarnessState::TurnCompleted { .. }
+        ) && last_pending == 0
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out after {budget:?} waiting for spec harness turn to settle; \
+                 last_state={last_state:?}; last_pending_len={last_pending}"
+            );
+        }
+        sleep(Duration::from_millis(100)).await;
+        last_state = h.state_for_test().await;
+        last_pending = h.pending_len_for_test().await;
     }
 }
 
