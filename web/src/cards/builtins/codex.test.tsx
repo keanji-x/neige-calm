@@ -271,17 +271,17 @@ describe('Codex card controller behavior', () => {
     expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
   });
 
-  it('shows ended state instead of XtermView for a stale exited Claude terminal id', async () => {
+  it('keeps XtermView mounted for an exited Claude runtime with terminal scrollback', async () => {
     const card = ClaudeEntry.fromKernel!(
       makeKernelCard({
-        id: 'card_claude_stale_terminal',
+        id: 'card_claude_exited_terminal',
         kind: 'claude',
-        payload: { terminal_id: 'term_stale' },
+        payload: { terminal_id: 'term_live' },
         runtime: {
           kind: 'claude',
           runtime_id: 'rt1',
           status: 'exited',
-          terminal_id: 'term_stale',
+          terminal_id: 'term_live',
         },
       }),
     );
@@ -289,15 +289,14 @@ describe('Codex card controller behavior', () => {
     expect(card).not.toBeNull();
     renderAgentCard(card!, { deletable: false });
 
-    await waitFor(() =>
-      expect(screen.queryByText(/Loading terminal/i)).not.toBeInTheDocument(),
+    expect(await screen.findByTestId('xterm-view-stub')).toHaveAttribute(
+      'data-terminal-id',
+      'term_live',
     );
-    expect(screen.queryByTestId('xterm-view-stub')).not.toBeInTheDocument();
     expect(
       screen.queryByText(/is starting… waiting for PTY/i),
     ).not.toBeInTheDocument();
-    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
   });
 
   it('shows ended state without Restart for a reaped Codex PTY with failed runtime', () => {
@@ -327,17 +326,17 @@ describe('Codex card controller behavior', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('shows ended state instead of XtermView for a stale failed Codex terminal id', async () => {
+  it('keeps XtermView mounted for a failed Codex runtime with terminal scrollback', async () => {
     const card = CodexEntry.fromKernel!(
       makeKernelCard({
-        id: 'card_codex_stale_terminal',
+        id: 'card_codex_failed_terminal',
         kind: 'codex',
-        payload: { terminal_id: 'term_stale' },
+        payload: { terminal_id: 'term_live' },
         runtime: {
           kind: 'codex',
           runtime_id: 'rt2',
           status: 'failed',
-          terminal_id: 'term_stale',
+          terminal_id: 'term_live',
         },
       }),
     );
@@ -345,17 +344,14 @@ describe('Codex card controller behavior', () => {
     expect(card).not.toBeNull();
     renderAgentCard(card!, { deletable: false });
 
-    await waitFor(() =>
-      expect(screen.queryByText(/Loading terminal/i)).not.toBeInTheDocument(),
+    expect(await screen.findByTestId('xterm-view-stub')).toHaveAttribute(
+      'data-terminal-id',
+      'term_live',
     );
-    expect(screen.queryByTestId('xterm-view-stub')).not.toBeInTheDocument();
     expect(
       screen.queryByText(/is starting… waiting for PTY/i),
     ).not.toBeInTheDocument();
-    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /Restart/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/session ended/i)).not.toBeInTheDocument();
   });
 
   it('keeps waiting for PTY for transient Claude runtime states', () => {

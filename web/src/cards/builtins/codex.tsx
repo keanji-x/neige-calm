@@ -406,7 +406,7 @@ function CodexCardImpl({
         }
       />
       <div className="codex-card-pty">
-        {terminalId && !dead ? (
+        {terminalId ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
             <XtermView
               ref={setXtermRef}
