@@ -61,9 +61,19 @@ pub(crate) struct TimingConfig {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SystemdConfig {
+    pub scope: SystemdScope,
     pub unit_path: PathBuf,
     pub unit_name: String,
     pub bin: PathBuf,
+    pub user: Option<String>,
+    pub home: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SystemdScope {
+    #[default]
+    User,
+    System,
 }
 
 #[derive(Debug, Clone)]
@@ -129,9 +139,12 @@ struct ConfigBuilder {
     child_extra_args: Option<Vec<String>>,
     timing_stop_grace_ms: Option<u64>,
     timing_restart_delay_ms: Option<u64>,
+    systemd_scope: Option<SystemdScope>,
     systemd_unit_path: Option<String>,
     systemd_unit_name: Option<String>,
     systemd_bin: Option<String>,
+    systemd_user: Option<String>,
+    systemd_home: Option<String>,
     upgrade_current_version_file: Option<String>,
     source_url: Option<String>,
     source_branch: Option<String>,
@@ -204,9 +217,12 @@ impl AppConfig {
                 restart_delay: Duration::from_millis(1000),
             },
             systemd: SystemdConfig {
+                scope: SystemdScope::User,
                 unit_path: expand_tilde("~/.config/systemd/user/neige-app.service"),
                 unit_name: "neige-app".into(),
                 bin: PathBuf::from("/usr/local/bin/neige-app"),
+                user: None,
+                home: None,
             },
             upgrade: UpgradeConfig {
                 current_version_file: None,
@@ -312,6 +328,13 @@ impl AppConfig {
         if let Some(value) = builder.timing_restart_delay_ms {
             cfg.timing.restart_delay = Duration::from_millis(value);
         }
+        if let Some(value) = builder.systemd_scope {
+            cfg.systemd.scope = value;
+        }
+        cfg.systemd.unit_path = match cfg.systemd.scope {
+            SystemdScope::User => expand_tilde("~/.config/systemd/user/neige-app.service"),
+            SystemdScope::System => PathBuf::from("/etc/systemd/system/neige-app.service"),
+        };
         if let Some(value) = builder.systemd_unit_path {
             cfg.systemd.unit_path = expand_tilde(&value);
         }
@@ -321,6 +344,8 @@ impl AppConfig {
         if let Some(value) = builder.systemd_bin {
             cfg.systemd.bin = expand_tilde(&value);
         }
+        cfg.systemd.user = builder.systemd_user;
+        cfg.systemd.home = builder.systemd_home.map(|v| expand_tilde(&v));
         cfg.upgrade.current_version_file = builder
             .upgrade_current_version_file
             .map(|v| expand_tilde(&v));
@@ -490,9 +515,11 @@ stop_grace_ms = 5000
 restart_delay_ms = 1000
 
 [systemd]
-unit_path = "~/.config/systemd/user/neige-app.service"
+scope = "user"
 unit_name = "neige-app"
 bin = "/usr/local/bin/neige-app"
+user = ""
+home = ""
 
 [upgrade]
 current_version_file = ""
@@ -592,9 +619,12 @@ fn set_value(
         ("child", "extra_args") => builder.child_extra_args = Some(parse_string_array(value)?),
         ("timing", "stop_grace_ms") => builder.timing_stop_grace_ms = Some(parse_u64(value)?),
         ("timing", "restart_delay_ms") => builder.timing_restart_delay_ms = Some(parse_u64(value)?),
+        ("systemd", "scope") => builder.systemd_scope = Some(parse_systemd_scope(value)?),
         ("systemd", "unit_path") => builder.systemd_unit_path = Some(parse_string(value)?),
         ("systemd", "unit_name") => builder.systemd_unit_name = Some(parse_string(value)?),
         ("systemd", "bin") => builder.systemd_bin = Some(parse_string(value)?),
+        ("systemd", "user") => builder.systemd_user = parse_optional_string(value)?,
+        ("systemd", "home") => builder.systemd_home = parse_optional_string(value)?,
         ("upgrade", "current_version_file") => {
             builder.upgrade_current_version_file = parse_optional_string(value)?
         }
@@ -650,6 +680,16 @@ fn parse_bool(value: &str) -> anyhow::Result<bool> {
         "true" => Ok(true),
         "false" => Ok(false),
         other => Err(anyhow!("expected boolean true or false, got {other}")),
+    }
+}
+
+fn parse_systemd_scope(value: &str) -> anyhow::Result<SystemdScope> {
+    match parse_string(value)?.as_str() {
+        "user" => Ok(SystemdScope::User),
+        "system" => Ok(SystemdScope::System),
+        other => Err(anyhow!(
+            "expected systemd.scope user or system, got {other}"
+        )),
     }
 }
 
@@ -723,6 +763,59 @@ mod tests {
                 .ends_with("current-server/bin/neige-mcp-stdio-shim")
         );
         assert!(cfg.systemd.unit_path.ends_with("neige-app.service"));
+        assert_eq!(cfg.systemd.scope, SystemdScope::User);
+        assert!(cfg.systemd.unit_path.starts_with(home_dir()));
+        assert!(cfg.systemd.user.is_none());
+        assert!(cfg.systemd.home.is_none());
+    }
+
+    #[test]
+    fn systemd_system_scope_defaults_unit_path_and_parses_user_home() {
+        let tmp = test_temp_dir("config-systemd-scope");
+        let path = tmp.join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[systemd]
+scope = "system"
+user = "kenji"
+home = "/home/kenji"
+"#,
+        )
+        .expect("write config");
+
+        let cfg = AppConfig::load(Some(&path)).expect("load config");
+
+        assert_eq!(cfg.systemd.scope, SystemdScope::System);
+        assert_eq!(
+            cfg.systemd.unit_path,
+            PathBuf::from("/etc/systemd/system/neige-app.service")
+        );
+        assert_eq!(cfg.systemd.user.as_deref(), Some("kenji"));
+        assert_eq!(cfg.systemd.home.as_deref(), Some(Path::new("/home/kenji")));
+    }
+
+    #[test]
+    fn explicit_systemd_unit_path_overrides_scope_default() {
+        let tmp = test_temp_dir("config-systemd-unit-path");
+        let path = tmp.join("config.toml");
+        fs::write(
+            &path,
+            r#"
+[systemd]
+scope = "system"
+unit_path = "/tmp/neige-app.service"
+"#,
+        )
+        .expect("write config");
+
+        let cfg = AppConfig::load(Some(&path)).expect("load config");
+
+        assert_eq!(cfg.systemd.scope, SystemdScope::System);
+        assert_eq!(
+            cfg.systemd.unit_path,
+            PathBuf::from("/tmp/neige-app.service")
+        );
     }
 
     #[test]

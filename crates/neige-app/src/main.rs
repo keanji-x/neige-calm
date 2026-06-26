@@ -37,7 +37,7 @@ mod preflight;
 mod source;
 mod upgrade;
 
-use config::{AppConfig, ServeOverrides, default_config_path, init_config};
+use config::{AppConfig, ServeOverrides, SystemdScope, default_config_path, init_config};
 use identity::SpawnIdentity;
 use manifest::UnitName;
 use manifest::{CurrentVersion, ReleaseManifest};
@@ -72,7 +72,7 @@ enum SystemCommand {
     Unit(SystemUnitArgs),
     /// Create a starter config.toml.
     InitConfig(SystemInitConfigArgs),
-    /// Install config and user systemd unit files without starting services.
+    /// Install config and systemd unit files without starting services.
     Install(SystemInstallArgs),
     /// Verify and stage a local package without activating it.
     Upgrade(SystemUpgradeArgs),
@@ -182,13 +182,17 @@ struct SystemInstallArgs {
     #[arg(long)]
     config: Option<PathBuf>,
 
-    /// Overwrite an existing user systemd unit file.
+    /// Overwrite an existing systemd unit file.
     #[arg(long)]
     force: bool,
 
     /// PATH baked into the generated systemd unit. Defaults to this process' PATH.
     #[arg(long)]
     path: Option<String>,
+
+    /// User for system-scope units. Defaults to systemd.user, then SUDO_USER, then USER.
+    #[arg(long)]
+    user: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -766,9 +770,22 @@ async fn main() -> anyhow::Result<()> {
             let bin = args.bin.unwrap_or_else(|| cfg.systemd.bin.clone());
             let name = args.name.unwrap_or_else(|| cfg.systemd.unit_name.clone());
             let path_env = resolve_systemd_path_env(args.path.as_deref())?;
+            let run_as = systemd_run_as_for_scope(
+                cfg.systemd.scope,
+                None,
+                cfg.systemd.user.as_deref(),
+                cfg.systemd.home.as_deref(),
+            )?;
             print!(
                 "{}",
-                render_systemd_unit(&name, &bin, &config_path, &path_env)?
+                render_systemd_unit(
+                    &name,
+                    &bin,
+                    &config_path,
+                    &path_env,
+                    cfg.systemd.scope,
+                    run_as.as_ref(),
+                )?
             );
             Ok(())
         }
@@ -802,8 +819,10 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
         true
     };
     let cfg = AppConfig::load(Some(&config_path))?;
+    ensure_system_install_permission(cfg.systemd.scope, &cfg.systemd.unit_path)?;
     if let Some(parent) = cfg.systemd.unit_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| system_unit_write_context("create", parent, cfg.systemd.scope))?;
     }
     if cfg.systemd.unit_path.exists() && !args.force {
         anyhow::bail!(
@@ -813,15 +832,24 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
     }
     let path_env = resolve_systemd_path_env(args.path.as_deref())?;
     warn_missing_spawn_tools(&path_env);
+    let run_as = systemd_run_as_for_scope(
+        cfg.systemd.scope,
+        args.user.as_deref(),
+        cfg.systemd.user.as_deref(),
+        cfg.systemd.home.as_deref(),
+    )?;
     let token_created = ensure_admin_token_file(cfg.admin.token_file.as_ref())?;
     let unit = render_systemd_unit(
         &cfg.systemd.unit_name,
         &cfg.systemd.bin,
         &config_path,
         &path_env,
+        cfg.systemd.scope,
+        run_as.as_ref(),
     )?;
-    std::fs::write(&cfg.systemd.unit_path, unit)
-        .with_context(|| format!("write {}", cfg.systemd.unit_path.display()))?;
+    std::fs::write(&cfg.systemd.unit_path, unit).with_context(|| {
+        system_unit_write_context("write", &cfg.systemd.unit_path, cfg.systemd.scope)
+    })?;
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
@@ -829,13 +857,56 @@ fn run_install(args: SystemInstallArgs) -> anyhow::Result<()> {
             "configCreated": config_created,
             "tokenCreated": token_created,
             "unit": cfg.systemd.unit_path,
-            "nextSteps": [
-                "systemctl --user daemon-reload",
-                format!("systemctl --user enable --now {}", cfg.systemd.unit_name),
-            ],
+            "nextSteps": install_next_steps(cfg.systemd.scope, &cfg.systemd.unit_name),
         }))?
     );
     Ok(())
+}
+
+fn install_next_steps(scope: SystemdScope, unit_name: &str) -> Vec<String> {
+    match scope {
+        SystemdScope::User => vec![
+            "systemctl --user daemon-reload".into(),
+            format!("systemctl --user enable --now {unit_name}"),
+        ],
+        SystemdScope::System => vec![
+            "systemctl daemon-reload".into(),
+            format!("systemctl enable --now {unit_name}"),
+        ],
+    }
+}
+
+fn ensure_system_install_permission(scope: SystemdScope, unit_path: &Path) -> anyhow::Result<()> {
+    if !matches!(scope, SystemdScope::System)
+        || !unit_path.starts_with("/etc/systemd/system")
+        || current_euid_is_root()
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "installing a system-scope unit at {} requires root; run `sudo neige-app system install --force` or set systemd.unit_path to a writable test path",
+        unit_path.display()
+    );
+}
+
+#[cfg(unix)]
+fn current_euid_is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn current_euid_is_root() -> bool {
+    false
+}
+
+fn system_unit_write_context(action: &str, path: &Path, scope: SystemdScope) -> String {
+    match scope {
+        SystemdScope::User => format!("{action} {}", path.display()),
+        SystemdScope::System => format!(
+            "{action} {} (system units usually require root; try `sudo neige-app system install --force` or set systemd.unit_path to a writable test path)",
+            path.display()
+        ),
+    }
 }
 
 fn run_upgrade(args: SystemUpgradeArgs) -> anyhow::Result<()> {
@@ -895,7 +966,7 @@ fn upgrade_next_steps(
                     .unwrap_or_else(|| "<token-file>".into()),
                 cfg.admin.listen
             ),
-            format!("systemctl --user restart {}", cfg.systemd.unit_name),
+            systemctl_restart_step(cfg.systemd.scope, &cfg.systemd.unit_name),
         ],
         Some(_) => {
             vec!["No backend restart required; refresh open browser tabs or reload /calm/.".into()]
@@ -903,6 +974,13 @@ fn upgrade_next_steps(
         None => vec![
             "Review stage.preflight, then rerun with --activate to switch release symlinks.".into(),
         ],
+    }
+}
+
+fn systemctl_restart_step(scope: SystemdScope, unit_name: &str) -> String {
+    match scope {
+        SystemdScope::User => format!("systemctl --user restart {unit_name}"),
+        SystemdScope::System => format!("systemctl restart {unit_name}"),
     }
 }
 
@@ -1460,18 +1538,123 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SystemdRunAs {
+    user: String,
+    home: PathBuf,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SystemdInstallEnv {
+    sudo_user: Option<String>,
+    user: Option<String>,
+}
+
+impl SystemdInstallEnv {
+    fn from_process() -> Self {
+        Self {
+            sudo_user: std::env::var("SUDO_USER")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            user: std::env::var("USER").ok().filter(|value| !value.is_empty()),
+        }
+    }
+}
+
+fn systemd_run_as_for_scope(
+    scope: SystemdScope,
+    cli_user: Option<&str>,
+    config_user: Option<&str>,
+    config_home: Option<&Path>,
+) -> anyhow::Result<Option<SystemdRunAs>> {
+    match scope {
+        SystemdScope::User => Ok(None),
+        SystemdScope::System => resolve_systemd_run_as(
+            cli_user,
+            config_user,
+            config_home,
+            &SystemdInstallEnv::from_process(),
+            Path::new("/etc/passwd"),
+        )
+        .map(Some),
+    }
+}
+
+fn resolve_systemd_run_as(
+    cli_user: Option<&str>,
+    config_user: Option<&str>,
+    config_home: Option<&Path>,
+    env: &SystemdInstallEnv,
+    passwd_path: &Path,
+) -> anyhow::Result<SystemdRunAs> {
+    let explicit_user = cli_user
+        .filter(|value| !value.is_empty())
+        .or_else(|| config_user.filter(|value| !value.is_empty()));
+    let user = explicit_user
+        .or_else(|| env.sudo_user.as_deref().filter(|value| !value.is_empty()))
+        .or_else(|| env.user.as_deref().filter(|value| !value.is_empty()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "systemd system scope requires a run user; set systemd.user or pass --user"
+            )
+        })?;
+    if user == "root" && explicit_user.is_none() {
+        anyhow::bail!(
+            "refusing to install a system unit as root inferred from the environment; set systemd.user or pass --user"
+        );
+    }
+    validate_systemd_identity(user)?;
+    let home = match config_home {
+        Some(home) => home.to_path_buf(),
+        None => passwd_home_for_user(passwd_path, user)?.with_context(|| {
+            format!(
+                "resolve home for user {user} from {}",
+                passwd_path.display()
+            )
+        })?,
+    };
+    validate_systemd_home(&home)?;
+    Ok(SystemdRunAs {
+        user: user.to_owned(),
+        home,
+    })
+}
+
+fn passwd_home_for_user(passwd_path: &Path, user: &str) -> anyhow::Result<Option<PathBuf>> {
+    let text = std::fs::read_to_string(passwd_path)
+        .with_context(|| format!("read {}", passwd_path.display()))?;
+    for line in text.lines() {
+        let mut fields = line.split(':');
+        let Some(name) = fields.next() else {
+            continue;
+        };
+        if name != user {
+            continue;
+        }
+        let home = fields.nth(4).unwrap_or_default();
+        if home.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(PathBuf::from(home)));
+    }
+    Ok(None)
+}
+
 fn render_systemd_unit(
     name: &str,
     bin: &Path,
     config_path: &Path,
     path_env: &str,
+    scope: SystemdScope,
+    run_as: Option<&SystemdRunAs>,
 ) -> anyhow::Result<String> {
     validate_systemd_exec_path(bin, "systemd.bin")?;
     validate_systemd_exec_path(config_path, "config path")?;
     validate_systemd_path_env(path_env)?;
     let escaped_path_env = escape_systemd_environment_value(path_env);
-    Ok(format!(
-        "\
+    match scope {
+        SystemdScope::User => Ok(format!(
+            "\
 [Unit]
 Description={name} user service
 After=network-online.target
@@ -1489,11 +1672,46 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 ",
-        name = name,
-        bin = bin.display(),
-        config_path = config_path.display(),
-        escaped_path_env = escaped_path_env,
-    ))
+            name = name,
+            bin = bin.display(),
+            config_path = config_path.display(),
+            escaped_path_env = escaped_path_env,
+        )),
+        SystemdScope::System => {
+            let run_as = run_as.context("system systemd unit rendering requires user and home")?;
+            validate_systemd_identity(&run_as.user)?;
+            validate_systemd_home(&run_as.home)?;
+            Ok(format!(
+                "\
+[Unit]
+Description={name} system service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={user}
+Group={user}
+Environment=\"PATH={escaped_path_env}\"
+Environment=HOME={home}
+ExecStart={bin} system serve --config {config_path}
+Restart=always
+RestartSec=2
+Delegate=yes
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+",
+                name = name,
+                user = run_as.user,
+                home = run_as.home.display(),
+                bin = bin.display(),
+                config_path = config_path.display(),
+                escaped_path_env = escaped_path_env,
+            ))
+        }
+    }
 }
 
 fn resolve_systemd_path_env(override_path: Option<&str>) -> anyhow::Result<String> {
@@ -1515,6 +1733,39 @@ fn validate_systemd_path_env(path_env: &str) -> anyhow::Result<()> {
     }
     if path_env.contains('%') {
         anyhow::bail!("PATH for systemd unit must not contain % systemd specifiers");
+    }
+    Ok(())
+}
+
+fn validate_systemd_identity(value: &str) -> anyhow::Result<()> {
+    if value.is_empty() {
+        anyhow::bail!("systemd user must not be empty");
+    }
+    if value
+        .chars()
+        .any(|c| c.is_ascii_control() || c.is_ascii_whitespace())
+    {
+        anyhow::bail!("systemd user must not contain whitespace or control characters");
+    }
+    if value.contains('%') {
+        anyhow::bail!("systemd user must not contain % systemd specifiers");
+    }
+    Ok(())
+}
+
+fn validate_systemd_home(home: &Path) -> anyhow::Result<()> {
+    let value = home.as_os_str().to_string_lossy();
+    if value.is_empty() {
+        anyhow::bail!("systemd home must not be empty");
+    }
+    if value
+        .chars()
+        .any(|c| c.is_ascii_control() || c.is_ascii_whitespace())
+    {
+        anyhow::bail!("systemd home must not contain whitespace or control characters");
+    }
+    if value.contains('%') {
+        anyhow::bail!("systemd home must not contain % systemd specifiers");
     }
     Ok(())
 }
@@ -1751,6 +2002,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/usr/local/bin:/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect("render unit");
 
@@ -1759,7 +2012,40 @@ mod tests {
         assert!(unit.contains("--config /home/me/.config/neige-app/config.toml"));
         assert!(!unit.contains("--child-bin"));
         assert!(unit.contains("Restart=always"));
+        assert!(!unit.contains("Group="));
+        assert!(!unit.contains("Environment=HOME="));
+        assert!(!unit.contains("Delegate=yes"));
+        assert!(!unit.contains("KillMode=mixed"));
+        assert!(!unit.contains("WantedBy=multi-user.target"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn systemd_system_unit_includes_system_scope_directives() {
+        let run_as = SystemdRunAs {
+            user: "kenji".into(),
+            home: PathBuf::from("/home/kenji"),
+        };
+        let unit = render_systemd_unit(
+            "neige-app",
+            &PathBuf::from("/opt/neige/bin/neige-app"),
+            &PathBuf::from("/home/kenji/.config/neige-app/config.toml"),
+            "/usr/local/bin:/usr/bin",
+            SystemdScope::System,
+            Some(&run_as),
+        )
+        .expect("render unit");
+
+        assert!(unit.contains("Description=neige-app system service"));
+        assert!(unit.contains("User=kenji"));
+        assert!(unit.contains("Group=kenji"));
+        assert!(unit.contains("Environment=HOME=/home/kenji"));
+        assert!(unit.contains("ExecStart=/opt/neige/bin/neige-app system serve"));
+        assert!(unit.contains("Restart=always"));
+        assert!(unit.contains("Delegate=yes"));
+        assert!(unit.contains("KillMode=mixed"));
+        assert!(unit.contains("WantedBy=multi-user.target"));
+        assert!(!unit.contains("WantedBy=default.target"));
     }
 
     #[test]
@@ -1769,6 +2055,8 @@ mod tests {
             &PathBuf::from("/opt/neige app/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/usr/local/bin:/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect_err("unsafe path must fail");
         assert!(err.to_string().contains("whitespace"));
@@ -1781,6 +2069,8 @@ mod tests {
             &PathBuf::from("/opt/neige%h/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/usr/local/bin:/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect_err("percent path must fail");
         assert!(err.to_string().contains("%"));
@@ -1793,6 +2083,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/foo/bin:/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect("render unit");
 
@@ -1815,6 +2107,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/opt/ai tools/bin:/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect("render unit");
 
@@ -1828,6 +2122,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/opt/x$y/bin",
+            SystemdScope::User,
+            None,
         )
         .expect("render unit");
 
@@ -1844,6 +2140,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/a\\b/bin",
+            SystemdScope::User,
+            None,
         )
         .expect("render unit");
 
@@ -1857,6 +2155,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/a\"b/bin",
+            SystemdScope::User,
+            None,
         )
         .expect("render unit");
 
@@ -1870,6 +2170,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "",
+            SystemdScope::User,
+            None,
         )
         .expect_err("empty PATH must fail");
         assert!(err.to_string().contains("pass --path explicitly"));
@@ -1882,6 +2184,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/foo/bin\n/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect_err("newline in PATH must fail");
         assert!(err.to_string().contains("control"));
@@ -1894,6 +2198,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/foo/bin\t/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect_err("tab in PATH must fail");
         assert!(err.to_string().contains("control"));
@@ -1906,6 +2212,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/foo/%h/bin:/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect_err("percent in PATH must fail");
         assert!(err.to_string().contains("%"));
@@ -1918,6 +2226,8 @@ mod tests {
             &PathBuf::from("/opt/neige/bin/neige-app"),
             &PathBuf::from("/home/me/.config/neige-app/config.toml"),
             "/foo/bin\0/usr/bin",
+            SystemdScope::User,
+            None,
         )
         .expect_err("NUL in PATH must fail");
         assert!(err.to_string().contains("control"));
@@ -2074,6 +2384,7 @@ bin = "/usr/local/bin/neige-app"
             config: Some(config_path),
             force: false,
             path: Some("/usr/local/bin:/usr/bin".into()),
+            user: None,
         })
         .expect_err("existing unit must fail");
 
@@ -2108,6 +2419,7 @@ bin = "/usr/local/bin/neige-app"
             config: Some(config_path),
             force: false,
             path: Some("/usr/local/bin:/usr/bin".into()),
+            user: None,
         })
         .expect("install");
 
@@ -2125,6 +2437,93 @@ bin = "/usr/local/bin/neige-app"
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn install_next_steps_are_scope_aware() {
+        let user_steps = install_next_steps(SystemdScope::User, "neige-app");
+        assert!(user_steps.iter().any(|step| step.contains("--user")));
+        assert!(user_steps.contains(&"systemctl --user daemon-reload".to_owned()));
+        assert!(
+            user_steps
+                .iter()
+                .any(|step| step == "systemctl --user enable --now neige-app")
+        );
+
+        let system_steps = install_next_steps(SystemdScope::System, "neige-app");
+        assert!(!system_steps.iter().any(|step| step.contains("--user")));
+        assert!(system_steps.contains(&"systemctl daemon-reload".to_owned()));
+        assert!(
+            system_steps
+                .iter()
+                .any(|step| step == "systemctl enable --now neige-app")
+        );
+    }
+
+    #[test]
+    fn systemd_run_as_prefers_sudo_user_over_user_env() {
+        let tmp = test_temp_dir("passwd-sudo-user");
+        let passwd_path = tmp.join("passwd");
+        std::fs::write(
+            &passwd_path,
+            "root:x:0:0:root:/root:/bin/bash\nkenji:x:1000:1000:Kenji:/home/kenji:/bin/zsh\n",
+        )
+        .expect("write passwd");
+        let env = SystemdInstallEnv {
+            sudo_user: Some("kenji".into()),
+            user: Some("root".into()),
+        };
+
+        let run_as =
+            resolve_systemd_run_as(None, None, None, &env, &passwd_path).expect("resolve run user");
+
+        assert_eq!(run_as.user, "kenji");
+        assert_eq!(run_as.home, PathBuf::from("/home/kenji"));
+    }
+
+    #[test]
+    fn systemd_run_as_rejects_inferred_root() {
+        let tmp = test_temp_dir("passwd-root");
+        let passwd_path = tmp.join("passwd");
+        std::fs::write(&passwd_path, "root:x:0:0:root:/root:/bin/bash\n").expect("write passwd");
+        let env = SystemdInstallEnv {
+            sudo_user: None,
+            user: Some("root".into()),
+        };
+
+        let err = resolve_systemd_run_as(None, None, None, &env, &passwd_path)
+            .expect_err("inferred root must fail");
+
+        assert!(err.to_string().contains("refusing"));
+        assert!(err.to_string().contains("systemd.user"));
+        assert!(err.to_string().contains("--user"));
+    }
+
+    #[test]
+    fn systemd_run_as_config_override_wins_and_home_override_applies() {
+        let tmp = test_temp_dir("passwd-config-user");
+        let passwd_path = tmp.join("passwd");
+        std::fs::write(
+            &passwd_path,
+            "deploy:x:1001:1001:Deploy:/srv/deploy:/bin/sh\nkenji:x:1000:1000:Kenji:/home/kenji:/bin/zsh\n",
+        )
+        .expect("write passwd");
+        let env = SystemdInstallEnv {
+            sudo_user: Some("kenji".into()),
+            user: Some("root".into()),
+        };
+
+        let run_as = resolve_systemd_run_as(
+            None,
+            Some("deploy"),
+            Some(Path::new("/custom/home")),
+            &env,
+            &passwd_path,
+        )
+        .expect("resolve run user");
+
+        assert_eq!(run_as.user, "deploy");
+        assert_eq!(run_as.home, PathBuf::from("/custom/home"));
     }
 
     #[test]
@@ -2162,7 +2561,35 @@ bin = "/usr/local/bin/neige-app"
         let steps = upgrade_next_steps(&cfg, Some(&activation));
 
         assert!(steps.iter().any(|step| step.contains("/restart")));
-        assert!(steps.iter().any(|step| step.contains("systemctl")));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step == "systemctl --user restart neige-app")
+        );
+    }
+
+    #[test]
+    fn server_activation_next_steps_use_system_restart_for_system_scope() {
+        let mut cfg = AppConfig::starter(PathBuf::from("/tmp/neige-app/config.toml"));
+        cfg.systemd.scope = SystemdScope::System;
+        let activation = upgrade::ActivationResult {
+            activated: true,
+            mode: "server-only".into(),
+            release_id: "server-1".into(),
+            restart_required: true,
+            changed_symlinks: Vec::new(),
+            db_backup: None,
+        };
+
+        let steps = upgrade_next_steps(&cfg, Some(&activation));
+
+        assert!(steps.iter().any(|step| step.contains("/restart")));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step == "systemctl restart neige-app")
+        );
+        assert!(!steps.iter().any(|step| step.contains("--user")));
     }
 
     fn test_temp_dir(name: &str) -> PathBuf {
