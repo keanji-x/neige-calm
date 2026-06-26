@@ -271,7 +271,7 @@ function CodexCardImpl({
   const overlayFsm =
     status?.state && isFsmState(status.state) ? status.state : null;
   const dotFsm = runtimeFsm ?? overlayFsm ?? fsm;
-  const dotLabel = dead && label === 'starting…' ? 'session ended' : label;
+  const dotLabel = dead ? 'session ended' : label;
   const ended = !!exit || dead;
   useEffect(() => {
     if (!cardId || !terminalId) return;
@@ -419,23 +419,6 @@ function CodexCardImpl({
         ) : dead ? (
           <div className="codex-card-empty">
             <div>{title} session ended.</div>
-            {provider === 'claude' && (
-              <span className="claude-restart-control">
-                <button
-                  type="button"
-                  className="claude-restart-button"
-                  onClick={onRestartClaude}
-                  disabled={restartPending || !cardId}
-                >
-                  {restartPending ? 'Restarting…' : 'Restart'}
-                </button>
-                {restartError && (
-                  <span className="claude-restart-error" role="status">
-                    {restartError}
-                  </span>
-                )}
-              </span>
-            )}
           </div>
         ) : (
           <div className="codex-card-empty">

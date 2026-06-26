@@ -274,7 +274,7 @@ describe('Codex card controller behavior', () => {
       screen.queryByText(/is starting… waiting for PTY/i),
     ).not.toBeInTheDocument();
     expect(screen.getByText(/session ended/i)).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Restart' })).toHaveLength(1);
   });
 
   it('ignores a stale Claude payload terminal when exited runtime has no terminal', () => {
@@ -297,7 +297,35 @@ describe('Codex card controller behavior', () => {
 
     expect(screen.queryByTestId('xterm-view-stub')).not.toBeInTheDocument();
     expect(screen.getByText(/session ended/i)).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Restart' })).toHaveLength(1);
+  });
+
+  it('shows ended Done state for a superseded Claude runtime without a terminal', () => {
+    const card = ClaudeEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_claude_superseded',
+        kind: 'claude',
+        payload: {},
+        runtime: {
+          kind: 'claude',
+          runtime_id: 'rt_superseded',
+          status: 'superseded',
+          terminal_id: null,
+        },
+      }),
+    );
+
+    expect(card).not.toBeNull();
+    renderAgentCard(card!, { deletable: false });
+
+    expect(
+      screen.queryByText(/is starting… waiting for PTY/i),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'status Done' })).toHaveAttribute(
+      'title',
+      'Done — session ended',
+    );
   });
 
   it('keeps XtermView mounted for an exited Claude runtime with terminal scrollback', async () => {
