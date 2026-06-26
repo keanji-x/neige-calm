@@ -270,7 +270,7 @@ function CodexCardImpl({
   const runtimeFsm = runtimeStatusToFsm(runtimeStatus);
   const overlayFsm =
     status?.state && isFsmState(status.state) ? status.state : null;
-  const dotFsm = overlayFsm ?? runtimeFsm ?? fsm;
+  const dotFsm = runtimeFsm ?? overlayFsm ?? fsm;
   const dotLabel = dead && label === 'starting…' ? 'session ended' : label;
   const ended = !!exit || dead;
   useEffect(() => {
@@ -576,7 +576,9 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
       type: 'codex',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      terminalId: parsed.data.terminal_id,
+      terminalId: k.runtime
+        ? (k.runtime.terminal_id ?? undefined)
+        : parsed.data.terminal_id,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
       iconFg: parsed.data.icon_fg,
@@ -647,7 +649,9 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
       type: 'claude',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      terminalId: parsed.data.terminal_id,
+      terminalId: k.runtime
+        ? (k.runtime.terminal_id ?? undefined)
+        : parsed.data.terminal_id,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
       iconFg: parsed.data.icon_fg,

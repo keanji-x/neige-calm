@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   getTerminalForCard: vi.fn(),
   restartClaudeCard: vi.fn(),
   xtermUnmount: vi.fn(),
+  statusOverlay: null as { state: string } | null,
 }));
 
 vi.mock('../../XtermView', async () => {
@@ -46,6 +47,10 @@ vi.mock('../../api/events', () => ({
     removeTopic: () => {},
     on: () => () => {},
   })),
+}));
+
+vi.mock('../overlayRegistry', () => ({
+  useCardStatusOverlay: () => mocks.statusOverlay,
 }));
 
 import { ClaudeEntry, CodexEntry } from './codex';
@@ -148,6 +153,7 @@ describe('Codex card controller behavior', () => {
     mocks.restartClaudeCard.mockReset();
     mocks.restartClaudeCard.mockResolvedValue({});
     mocks.xtermUnmount.mockClear();
+    mocks.statusOverlay = null;
   });
 
   it('lifecycle refresh emits through the controller and refreshes XtermView', async () => {
@@ -271,6 +277,29 @@ describe('Codex card controller behavior', () => {
     expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
   });
 
+  it('ignores a stale Claude payload terminal when exited runtime has no terminal', () => {
+    const card = ClaudeEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_claude_stale_payload_terminal',
+        kind: 'claude',
+        payload: { terminal_id: 'term_stale' },
+        runtime: {
+          kind: 'claude',
+          runtime_id: 'rt_stale',
+          status: 'exited',
+          terminal_id: null,
+        },
+      }),
+    );
+
+    expect(card).not.toBeNull();
+    renderAgentCard(card!, { deletable: false });
+
+    expect(screen.queryByTestId('xterm-view-stub')).not.toBeInTheDocument();
+    expect(screen.getByText(/session ended/i)).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Restart' }).length).toBeGreaterThan(0);
+  });
+
   it('keeps XtermView mounted for an exited Claude runtime with terminal scrollback', async () => {
     const card = ClaudeEntry.fromKernel!(
       makeKernelCard({
@@ -324,6 +353,30 @@ describe('Codex card controller behavior', () => {
     expect(
       screen.queryByRole('button', { name: /Restart/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it('lets failed runtime state override a stale live status overlay in the dot', () => {
+    mocks.statusOverlay = { state: 'Working' };
+    const card = CodexEntry.fromKernel!(
+      makeKernelCard({
+        id: 'card_codex_failed_overlay',
+        kind: 'codex',
+        payload: {},
+        runtime: {
+          kind: 'codex',
+          runtime_id: 'rt_failed_overlay',
+          status: 'failed',
+          terminal_id: null,
+        },
+      }),
+    );
+
+    expect(card).not.toBeNull();
+    renderAgentCard(card!, { deletable: false });
+
+    const dot = screen.getByRole('img', { name: 'status Errored' });
+    expect(dot).toHaveAttribute('title', 'Errored — session ended');
+    expect(screen.queryByRole('img', { name: 'status Working' })).not.toBeInTheDocument();
   });
 
   it('keeps XtermView mounted for a failed Codex runtime with terminal scrollback', async () => {
