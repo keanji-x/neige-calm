@@ -25,10 +25,11 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::harness::HarnessRegistry;
+use calm_server::harness::{HarnessRegistry, Observation, SpecHarness};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
 use calm_server::mcp_server::{
     McpServer, ToolCallIdentity, ToolRegistry, auth, build_default_registry,
 };
@@ -54,6 +55,7 @@ use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_report::WaveReportPayload;
+use calm_types::worker::WorkerSessionId;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -359,6 +361,67 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
         !fx.used_injected_plan(),
         "RealSpecTurn must not use injected plan path"
     );
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
+#[tokio::test]
+async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        eprintln!("[codex-forge-e2e] SKIP: no codex bin");
+        return;
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+                then drive design-review convergence."
+        .to_string();
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: Some(goal.clone()),
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            eprintln!("[codex-forge-e2e] SKIP: {reason}");
+            return;
+        }
+    };
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(plan_actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+    );
+
+    seed_design_channel_complete(&fx, "review-design-a", "a").await;
+    seed_design_channel_complete(&fx, "review-design-b", "b").await;
+
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    inject_task_completed(&harness, &task_id(&fx, "review-design-a")).await;
+    inject_task_completed(&harness, &task_id(&fx, "review-design-b")).await;
+
+    let rounds = wait_for_review_round_design(&fx, review_budget()).await;
+    assert_real_design_review_round(&fx, &rounds).await;
 
     shutdown_spec_harness_if_registered(&fx).await;
     fx.plugin_host
@@ -839,6 +902,153 @@ fn task_id(fx: &Fixture, key: &str) -> String {
     format!("{}:{key}", fx.wave_id.as_str())
 }
 
+async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
+    let task_id = task_id(fx, key);
+    let wave_scope = EventScope::Wave {
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::KernelDispatcher,
+            wave_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::TaskDispatched {
+                idempotency_key: task_id.clone(),
+                kind: "codex".into(),
+                agent_message: Some(format!("[codex-forge-e2e] seed design review {chan}")),
+            },
+        )
+        .await
+        .expect("log seeded design task.dispatched");
+
+    let card_scope = EventScope::Card {
+        card: fx.spec_card_id.clone(),
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::AiCodexSession(WorkerSessionId::from(format!(
+                "codex-forge-e2e-review-{key}"
+            ))),
+            card_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::TaskCompleted {
+                idempotency_key: task_id.clone(),
+                result: json!({
+                    "summary": "approved",
+                    "verdict": "approved",
+                    "channel": chan,
+                }),
+                artifacts: Vec::new(),
+                agent_message: Some(format!("[codex-forge-e2e] review {chan} approved")),
+            },
+        )
+        .await
+        .expect("log seeded design task.completed");
+
+    let handler = fx
+        .registry
+        .lookup(TOOL_WAVE_CAT)
+        .expect("wave cat registered");
+    let json_path = format!("runs/{task_id}.json");
+    let json_read = handler(
+        fx.ctx.clone(),
+        spec_identity(fx),
+        json!({ "path": json_path }),
+    )
+    .await
+    .map_err(|e| format!("{e:?}"));
+    let mut json_diag = String::new();
+    if let Ok(value) = &json_read {
+        let content = value
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match serde_json::from_str::<Value>(content) {
+            Ok(run) => {
+                let result = run.pointer("/events/completed/payload/result");
+                json_diag = result
+                    .map(Value::to_string)
+                    .unwrap_or_else(|| "<missing completed result>".into());
+                if result
+                    .map(Value::to_string)
+                    .is_some_and(|raw| raw.contains("approved"))
+                {
+                    return;
+                }
+            }
+            Err(err) => {
+                json_diag = format!("invalid json content: {err}; content={content}");
+            }
+        }
+    }
+
+    let md_path = format!("runs/{task_id}.md");
+    let md_read = handler(
+        fx.ctx.clone(),
+        spec_identity(fx),
+        json!({ "path": md_path }),
+    )
+    .await
+    .map_err(|e| format!("{e:?}"));
+    if let Ok(value) = &md_read {
+        let content = value
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if content.contains("approved") {
+            return;
+        }
+    }
+
+    panic!(
+        "seeded design review run {task_id} did not expose approved in runs projection; \
+         json_result={}; json_read={:?}; md_read={:?}",
+        if json_diag.is_empty() {
+            "<unread>".to_string()
+        } else {
+            json_diag
+        },
+        json_read,
+        md_read
+    );
+}
+
+async fn recover_spec_harness(fx: &Fixture) -> Option<SpecHarness> {
+    let runtime = fx
+        .repo
+        .session_projection_active_for_card(&fx.spec_card_id.to_string())
+        .await
+        .ok()
+        .flatten()?;
+    fx.harness.get(&runtime.id)
+}
+
+#[cfg(feature = "fixtures")]
+async fn inject_task_completed(h: &SpecHarness, idem_key: &str) {
+    h.observe_for_test(
+        Observation::TaskCompleted {
+            idempotency_key: idem_key.into(),
+            result: json!({ "summary": "approved" }),
+        },
+        None,
+    )
+    .await;
+}
+
+#[cfg(not(feature = "fixtures"))]
+async fn inject_task_completed(_h: &SpecHarness, _idem_key: &str) {
+    panic!("inject_task_completed requires the fixtures feature");
+}
+
 async fn wait_for_worker_success(fx: &Fixture, task_id: &str, budget: Duration) -> OperationRow {
     let deadline = Instant::now() + budget;
     loop {
@@ -1241,6 +1451,145 @@ async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, Valu
     }
 }
 
+async fn wait_for_review_round_design(fx: &Fixture, budget: Duration) -> Vec<(ActorId, Value)> {
+    let deadline = Instant::now() + budget;
+    loop {
+        let design: Vec<(ActorId, Value)> = actor_payload_rows(&fx.repo, "review.round")
+            .await
+            .into_iter()
+            .filter(|(_, payload)| payload["subject"]["phase"] == json!("design"))
+            .collect();
+        if !design.is_empty() {
+            return design;
+        }
+        if Instant::now() >= deadline {
+            let diag = dump_spec_diag(&fx.repo).await;
+            panic!(
+                "timed out after {budget:?} waiting for design review.round\n{diag}\ncodex stderr:\n{}",
+                read_lossy(&fx.codex_stderr_log)
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn assert_real_design_review_round(fx: &Fixture, rounds: &[(ActorId, Value)]) {
+    fn null_or_absent(value: &Value, key: &str) -> bool {
+        value.get(key).is_none() || value[key].is_null()
+    }
+
+    fn required_str<'a>(value: &'a Value, key: &str, context: &str) -> &'a str {
+        value[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{context} missing string {key}: {value}"))
+    }
+
+    fn required_u64(value: &Value, key: &str, context: &str) -> u64 {
+        value[key]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{context} missing unsigned integer {key}: {value}"))
+    }
+
+    fn assert_channels(payload: &Value) {
+        let channels = payload["channels"]
+            .as_array()
+            .unwrap_or_else(|| panic!("review.round channels must be an array: {payload}"));
+        assert!(
+            channels.len() >= 2,
+            "review.round must carry at least two channels: {payload}"
+        );
+        let roles: std::collections::BTreeSet<&str> = channels
+            .iter()
+            .map(|channel| {
+                channel["role"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("review.round channel missing role: {channel}"))
+            })
+            .collect();
+        assert!(
+            roles.len() >= 2,
+            "review.round channels must have at least two distinct roles: {payload}"
+        );
+    }
+
+    assert!(
+        !rounds.is_empty(),
+        "expected at least one design review.round"
+    );
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    let mut by_subject: std::collections::BTreeMap<(String, String, Option<u64>), Vec<&Value>> =
+        std::collections::BTreeMap::new();
+    for (actor, payload) in rounds {
+        assert!(
+            matches!(actor, ActorId::AiSpecSession(_)),
+            "review.round actor must be AiSpecSession, got {actor:?} for {payload}"
+        );
+        assert_eq!(
+            payload["cap"],
+            json!(8),
+            "design review.round cap must be descriptor-fixed 8: {payload}"
+        );
+        assert!(
+            null_or_absent(payload, "head_sha"),
+            "design review.round must omit/null head_sha: {payload}"
+        );
+
+        let subject = &payload["subject"];
+        assert_eq!(
+            subject["phase"],
+            json!("design"),
+            "oracle received non-design review.round: {payload}"
+        );
+        assert!(
+            null_or_absent(subject, "pr_number"),
+            "design review.round subject must omit/null pr_number: {payload}"
+        );
+        let slice_id = required_str(subject, "slice_id", "review.round subject");
+        assert!(
+            !slice_id.is_empty(),
+            "design review.round subject.slice_id must be non-empty: {payload}"
+        );
+        assert_channels(payload);
+
+        by_subject
+            .entry(("design".to_string(), slice_id.to_string(), None))
+            .or_default()
+            .push(payload);
+    }
+
+    for (subject, subject_rounds) in &by_subject {
+        for (expected_n, payload) in (1_u64..).zip(subject_rounds.iter()) {
+            let n = required_u64(payload, "n", "review.round");
+            assert_eq!(
+                n, expected_n,
+                "design review.round n must be monotonic for {subject:?}: {subject_rounds:?}"
+            );
+        }
+
+        let latest = subject_rounds
+            .last()
+            .expect("subject group has at least one review.round");
+        assert_eq!(
+            latest["converged"],
+            json!(true),
+            "latest design review.round must be converged: {latest}"
+        );
+        let channels = latest["channels"].as_array().unwrap_or_else(|| {
+            panic!("latest design review.round channels must be an array: {latest}")
+        });
+        assert!(
+            channels
+                .iter()
+                .all(|channel| channel["verdict"] == json!("approved")),
+            "latest design review.round channel verdicts must all be literal approved: {latest}"
+        );
+    }
+}
+
 async fn assert_bound_issue_development_workflow_preconditions(fx: &Fixture) {
     let bound_workflow: Option<String> =
         sqlx::query_scalar("SELECT workflow_id FROM waves WHERE id = ?1")
@@ -1369,6 +1718,14 @@ fn e2e_budget() -> Duration {
 
 fn spec_planning_budget() -> Duration {
     std::env::var("NEIGE_SPEC_PLANNING_BUDGET")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(240))
+}
+
+fn review_budget() -> Duration {
+    std::env::var("NEIGE_SPEC_REVIEW_BUDGET")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
