@@ -406,7 +406,7 @@ function CodexCardImpl({
         }
       />
       <div className="codex-card-pty">
-        {terminalId ? (
+        {terminalId && !dead ? (
           <Suspense fallback={<div className="codex-card-empty">Loading terminal…</div>}>
             <XtermView
               ref={setXtermRef}
@@ -576,7 +576,7 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
       type: 'codex',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      terminalId: parsed.data.terminal_id ?? k.runtime?.terminal_id ?? undefined,
+      terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
       iconFg: parsed.data.icon_fg,
@@ -647,7 +647,7 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
       type: 'claude',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      terminalId: parsed.data.terminal_id ?? k.runtime?.terminal_id ?? undefined,
+      terminalId: parsed.data.terminal_id,
       cwd: parsed.data.cwd,
       iconBg: parsed.data.icon_bg,
       iconFg: parsed.data.icon_fg,
