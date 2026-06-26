@@ -415,12 +415,18 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
 
     seed_design_channel_complete(&fx, "review-design-a", "a").await;
     seed_design_channel_complete(&fx, "review-design-b", "b").await;
+    let floor = max_event_id(&fx.repo).await;
+    assert_eq!(
+        count_design_review_rounds(&fx).await,
+        0,
+        "planning turn must not have emitted a design review.round before the seeded verdicts (id<=floor): proof-validity guard"
+    );
 
     let harness = recover_spec_harness(&fx).await.expect("live spec harness");
     inject_task_completed(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_completed(&harness, &task_id(&fx, "review-design-b")).await;
 
-    let rounds = wait_for_review_round_design(&fx, review_budget()).await;
+    let rounds = wait_for_converged_design_review_round(&fx, floor, review_budget()).await;
     assert_real_design_review_round(&fx, &rounds).await;
 
     shutdown_spec_harness_if_registered(&fx).await;
@@ -925,6 +931,7 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
         .await
         .expect("log seeded design task.dispatched");
 
+    // Test fixture shortcut: Card scope alone routes this self-report to the completed bucket.
     let card_scope = EventScope::Card {
         card: fx.spec_card_id.clone(),
         wave: fx.wave_id.clone(),
@@ -975,14 +982,28 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
         match serde_json::from_str::<Value>(content) {
             Ok(run) => {
                 let result = run.pointer("/events/completed/payload/result");
-                json_diag = result
-                    .map(Value::to_string)
-                    .unwrap_or_else(|| "<missing completed result>".into());
-                if result
-                    .map(Value::to_string)
-                    .is_some_and(|raw| raw.contains("approved"))
-                {
-                    return;
+                match result {
+                    Some(Value::Object(result)) => match result.get("summary") {
+                        Some(Value::String(summary)) if summary == "approved" => return,
+                        Some(summary) => {
+                            json_diag = format!(
+                                "completed result summary was not exact approved: {summary}; result={}",
+                                Value::Object(result.clone())
+                            );
+                        }
+                        None => {
+                            json_diag = format!(
+                                "completed result missing summary: {}",
+                                Value::Object(result.clone())
+                            );
+                        }
+                    },
+                    Some(result) => {
+                        json_diag = format!("completed result was not an object: {result}");
+                    }
+                    None => {
+                        json_diag = "<missing completed result>".into();
+                    }
                 }
             }
             Err(err) => {
@@ -1004,13 +1025,13 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
             .get("content")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if content.contains("approved") {
+        if content.lines().any(|line| line == "approved") {
             return;
         }
     }
 
     panic!(
-        "seeded design review run {task_id} did not expose approved in runs projection; \
+        "seeded design review run {task_id} did not expose exact approved summary in runs projection; \
          json_result={}; json_read={:?}; md_read={:?}",
         if json_diag.is_empty() {
             "<unread>".to_string()
@@ -1416,6 +1437,25 @@ async fn lifecycle_changed_rows(repo: &SqlxRepo) -> Vec<(ActorId, Value)> {
     actor_payload_rows(repo, "wave.lifecycle_changed").await
 }
 
+async fn max_event_id(repo: &SqlxRepo) -> i64 {
+    sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
+        .fetch_one(repo.pool())
+        .await
+        .expect("select max event id")
+}
+
+async fn count_design_review_rounds(fx: &Fixture) -> usize {
+    actor_payload_rows(&fx.repo, "review.round")
+        .await
+        .into_iter()
+        .filter(|(_, payload)| is_design_review_round(payload))
+        .count()
+}
+
+fn is_design_review_round(payload: &Value) -> bool {
+    payload.pointer("/subject/phase").and_then(Value::as_str) == Some("design")
+}
+
 async fn actor_payload_rows(repo: &SqlxRepo, kind: &str) -> Vec<(ActorId, Value)> {
     let rows: Vec<(String, String)> =
         sqlx::query_as("SELECT actor, payload FROM events WHERE kind = ?1 ORDER BY id ASC")
@@ -1451,21 +1491,45 @@ async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, Valu
     }
 }
 
-async fn wait_for_review_round_design(fx: &Fixture, budget: Duration) -> Vec<(ActorId, Value)> {
+async fn wait_for_converged_design_review_round(
+    fx: &Fixture,
+    floor: i64,
+    budget: Duration,
+) -> Vec<(ActorId, Value)> {
     let deadline = Instant::now() + budget;
     loop {
-        let design: Vec<(ActorId, Value)> = actor_payload_rows(&fx.repo, "review.round")
-            .await
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, actor, payload FROM events \
+             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
+        )
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
+        let design: Vec<(i64, ActorId, Value)> = rows
             .into_iter()
-            .filter(|(_, payload)| payload["subject"]["phase"] == json!("design"))
+            .map(|(id, actor, payload)| {
+                (
+                    id,
+                    serde_json::from_str(&actor).expect("event actor json"),
+                    serde_json::from_str(&payload).expect("event payload json"),
+                )
+            })
+            .filter(|(_, _, payload)| is_design_review_round(payload))
             .collect();
-        if !design.is_empty() {
-            return design;
+        if design
+            .last()
+            .is_some_and(|(_, _, payload)| payload["converged"] == json!(true))
+        {
+            return design
+                .into_iter()
+                .map(|(_, actor, payload)| (actor, payload))
+                .collect();
         }
         if Instant::now() >= deadline {
             let diag = dump_spec_diag(&fx.repo).await;
             panic!(
-                "timed out after {budget:?} waiting for design review.round\n{diag}\ncodex stderr:\n{}",
+                "timed out after {budget:?} waiting for converged design review.round after event id {floor}\n{diag}\ncodex stderr:\n{}",
                 read_lossy(&fx.codex_stderr_log)
             );
         }
