@@ -12,14 +12,21 @@
 mod support;
 
 use std::path::PathBuf;
+use std::time::Duration;
 
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::event::{Event, EventScope};
+use calm_server::harness::{HarnessState, Observation, SpecHarness};
 use calm_server::ids::ActorId;
+use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
 use serde_json::{Value, json};
 use support::codex_fixture::*;
 use support::event_queries::*;
 use support::forge_env::FORGE_ENV_LOCK;
 use support::git_helpers::*;
 use support::spec_turn::*;
+use tokio::time::{Instant, sleep};
 
 #[tokio::test]
 async fn real_codex_worker_writes_code_on_leased_worktree() {
@@ -256,4 +263,454 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
         .await
         .expect("stop git-forge plugin");
     shutdown_shared_codex(&fx.shared).await;
+}
+
+#[tokio::test]
+async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!("no codex bin");
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+                then drive design-review convergence."
+        .to_string();
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: Some(goal.clone()),
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            skip!("{reason}");
+        }
+    };
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(plan_actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+    );
+
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    // Settle the planning turn before seeding so the accepted review.round is
+    // causally a response to the injected task completions, not a planning-time
+    // fabrication. R6 deliberately does not prove the spec literally read runs/:
+    // the runs/ pre-check proves the verdict data is present and readable, and
+    // this causal wake is sufficient for the autonomy thesis.
+    wait_for_spec_turn_settled(&harness, spec_planning_budget()).await;
+    seed_design_channel_complete(&fx, "review-design-a", "a").await;
+    seed_design_channel_complete(&fx, "review-design-b", "b").await;
+    let floor = max_event_id(&fx.repo).await;
+    assert_eq!(
+        count_design_review_rounds(&fx).await,
+        0,
+        "planning turn must not have emitted a design review.round before the seeded verdicts (id<=floor): proof-validity guard"
+    );
+
+    inject_task_completed(&harness, &task_id(&fx, "review-design-a")).await;
+    inject_task_completed(&harness, &task_id(&fx, "review-design-b")).await;
+
+    let rounds = wait_for_converged_design_review_round(&fx, floor, review_budget()).await;
+    assert_real_design_review_round(&fx, &rounds).await;
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
+async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
+    let task_id = task_id(fx, key);
+    let wave_scope = EventScope::Wave {
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::KernelDispatcher,
+            wave_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::TaskDispatched {
+                idempotency_key: task_id.clone(),
+                kind: "codex".into(),
+                agent_message: Some(format!("[codex-forge-e2e] seed design review {chan}")),
+            },
+        )
+        .await
+        .expect("log seeded design task.dispatched");
+
+    // The §7.3 design-phase fixture shortcut does not mint a real review-worker
+    // session, so author the completion as KernelDispatcher (gate-unrestricted
+    // per role_gate rule 5). Card scope alone routes it to the completed bucket
+    // (is_spec_verdict_event is false for non-Wave scope), so runs/ surfaces the
+    // verdict the real spec reads.
+    let card_scope = EventScope::Card {
+        card: fx.spec_card_id.clone(),
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::KernelDispatcher,
+            card_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::TaskCompleted {
+                idempotency_key: task_id.clone(),
+                result: json!({
+                    "summary": "approved",
+                    "verdict": "approved",
+                    "channel": chan,
+                }),
+                artifacts: Vec::new(),
+                agent_message: Some(format!("[codex-forge-e2e] review {chan} approved")),
+            },
+        )
+        .await
+        .expect("log seeded design task.completed");
+
+    let handler = fx
+        .registry
+        .lookup(TOOL_WAVE_CAT)
+        .expect("wave cat registered");
+    let json_path = format!("runs/{task_id}.json");
+    let json_read = handler(
+        fx.ctx.clone(),
+        spec_identity(fx),
+        json!({ "path": json_path }),
+    )
+    .await
+    .map_err(|e| format!("{e:?}"));
+    let mut json_diag = String::new();
+    if let Ok(value) = &json_read {
+        let content = value
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match serde_json::from_str::<Value>(content) {
+            Ok(run) => {
+                let result = run.pointer("/events/completed/payload/result");
+                match result {
+                    Some(Value::Object(result)) => match result.get("summary") {
+                        Some(Value::String(summary)) if summary == "approved" => return,
+                        Some(summary) => {
+                            json_diag = format!(
+                                "completed result summary was not exact approved: {summary}; result={}",
+                                Value::Object(result.clone())
+                            );
+                        }
+                        None => {
+                            json_diag = format!(
+                                "completed result missing summary: {}",
+                                Value::Object(result.clone())
+                            );
+                        }
+                    },
+                    Some(result) => {
+                        json_diag = format!("completed result was not an object: {result}");
+                    }
+                    None => {
+                        json_diag = "<missing completed result>".into();
+                    }
+                }
+            }
+            Err(err) => {
+                json_diag = format!("invalid json content: {err}; content={content}");
+            }
+        }
+    }
+
+    let md_path = format!("runs/{task_id}.md");
+    let md_read = handler(
+        fx.ctx.clone(),
+        spec_identity(fx),
+        json!({ "path": md_path }),
+    )
+    .await
+    .map_err(|e| format!("{e:?}"));
+    if let Ok(value) = &md_read {
+        let content = value
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if content.lines().any(|line| line == "approved") {
+            return;
+        }
+    }
+
+    panic!(
+        "seeded design review run {task_id} did not expose exact approved summary in runs projection; \
+         json_result={}; json_read={:?}; md_read={:?}",
+        if json_diag.is_empty() {
+            "<unread>".to_string()
+        } else {
+            json_diag
+        },
+        json_read,
+        md_read
+    );
+}
+
+async fn recover_spec_harness(fx: &Fixture) -> Option<SpecHarness> {
+    let runtime = fx
+        .repo
+        .session_projection_active_for_card(&fx.spec_card_id.to_string())
+        .await
+        .ok()
+        .flatten()?;
+    fx.harness.get(&runtime.id)
+}
+
+#[cfg(feature = "fixtures")]
+async fn inject_task_completed(h: &SpecHarness, idem_key: &str) {
+    h.observe_for_test(
+        Observation::TaskCompleted {
+            idempotency_key: idem_key.into(),
+            result: json!({ "summary": "approved" }),
+        },
+        None,
+    )
+    .await;
+}
+
+#[cfg(not(feature = "fixtures"))]
+async fn inject_task_completed(_h: &SpecHarness, _idem_key: &str) {
+    panic!("inject_task_completed requires the fixtures feature");
+}
+
+async fn wait_for_spec_turn_settled(h: &SpecHarness, budget: Duration) {
+    let deadline = Instant::now() + budget;
+    let mut last_state = h.state_for_test().await;
+    let mut last_pending = h.pending_len_for_test().await;
+    loop {
+        if matches!(
+            last_state,
+            HarnessState::Idle | HarnessState::TurnCompleted { .. }
+        ) && last_pending == 0
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "timed out after {budget:?} waiting for spec harness turn to settle; \
+                 last_state={last_state:?}; last_pending_len={last_pending}"
+            );
+        }
+        sleep(Duration::from_millis(100)).await;
+        last_state = h.state_for_test().await;
+        last_pending = h.pending_len_for_test().await;
+    }
+}
+
+async fn max_event_id(repo: &SqlxRepo) -> i64 {
+    sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
+        .fetch_one(repo.pool())
+        .await
+        .expect("select max event id")
+}
+
+async fn count_design_review_rounds(fx: &Fixture) -> usize {
+    actor_payload_rows(&fx.repo, "review.round")
+        .await
+        .into_iter()
+        .filter(|(_, payload)| is_design_review_round(payload))
+        .count()
+}
+
+fn is_design_review_round(payload: &Value) -> bool {
+    payload.pointer("/subject/phase").and_then(Value::as_str) == Some("design")
+}
+
+async fn wait_for_converged_design_review_round(
+    fx: &Fixture,
+    floor: i64,
+    budget: Duration,
+) -> Vec<(ActorId, Value)> {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, actor, payload FROM events \
+             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
+        )
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
+        let design: Vec<(i64, ActorId, Value)> = rows
+            .into_iter()
+            .map(|(id, actor, payload)| {
+                (
+                    id,
+                    serde_json::from_str(&actor).expect("event actor json"),
+                    serde_json::from_str(&payload).expect("event payload json"),
+                )
+            })
+            .filter(|(_, _, payload)| is_design_review_round(payload))
+            .collect();
+        if design
+            .last()
+            .is_some_and(|(_, _, payload)| payload["converged"] == json!(true))
+        {
+            return design
+                .into_iter()
+                .map(|(_, actor, payload)| (actor, payload))
+                .collect();
+        }
+        if Instant::now() >= deadline {
+            let diag = dump_spec_diag(&fx.repo).await;
+            panic!(
+                "timed out after {budget:?} waiting for converged design review.round after event id {floor}\n{diag}\ncodex stderr:\n{}",
+                read_lossy(&fx.codex_stderr_log)
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn assert_real_design_review_round(fx: &Fixture, rounds: &[(ActorId, Value)]) {
+    fn null_or_absent(value: &Value, key: &str) -> bool {
+        value.get(key).is_none() || value[key].is_null()
+    }
+
+    fn required_str<'a>(value: &'a Value, key: &str, context: &str) -> &'a str {
+        value[key]
+            .as_str()
+            .unwrap_or_else(|| panic!("{context} missing string {key}: {value}"))
+    }
+
+    fn required_u64(value: &Value, key: &str, context: &str) -> u64 {
+        value[key]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{context} missing unsigned integer {key}: {value}"))
+    }
+
+    fn assert_channels(payload: &Value) {
+        let channels = payload["channels"]
+            .as_array()
+            .unwrap_or_else(|| panic!("review.round channels must be an array: {payload}"));
+        assert!(
+            channels.len() >= 2,
+            "review.round must carry at least two channels: {payload}"
+        );
+        let roles: std::collections::BTreeSet<&str> = channels
+            .iter()
+            .map(|channel| {
+                channel["role"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("review.round channel missing role: {channel}"))
+            })
+            .collect();
+        assert!(
+            roles.len() >= 2,
+            "review.round channels must have at least two distinct roles: {payload}"
+        );
+    }
+
+    assert!(
+        !rounds.is_empty(),
+        "expected at least one design review.round"
+    );
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    let mut by_subject: std::collections::BTreeMap<(String, String, Option<u64>), Vec<&Value>> =
+        std::collections::BTreeMap::new();
+    for (actor, payload) in rounds {
+        assert!(
+            matches!(actor, ActorId::AiSpecSession(_)),
+            "review.round actor must be AiSpecSession, got {actor:?} for {payload}"
+        );
+        assert_eq!(
+            payload["cap"],
+            json!(8),
+            "design review.round cap must be descriptor-fixed 8: {payload}"
+        );
+        assert!(
+            null_or_absent(payload, "head_sha"),
+            "design review.round must omit/null head_sha: {payload}"
+        );
+
+        let subject = &payload["subject"];
+        assert_eq!(
+            subject["phase"],
+            json!("design"),
+            "oracle received non-design review.round: {payload}"
+        );
+        assert!(
+            null_or_absent(subject, "pr_number"),
+            "design review.round subject must omit/null pr_number: {payload}"
+        );
+        let slice_id = required_str(subject, "slice_id", "review.round subject");
+        assert!(
+            !slice_id.is_empty(),
+            "design review.round subject.slice_id must be non-empty: {payload}"
+        );
+        assert_channels(payload);
+
+        by_subject
+            .entry(("design".to_string(), slice_id.to_string(), None))
+            .or_default()
+            .push(payload);
+    }
+
+    for (subject, subject_rounds) in &by_subject {
+        for (expected_n, payload) in (1_u64..).zip(subject_rounds.iter()) {
+            let n = required_u64(payload, "n", "review.round");
+            assert_eq!(
+                n, expected_n,
+                "design review.round n must be monotonic for {subject:?}: {subject_rounds:?}"
+            );
+        }
+
+        let latest = subject_rounds
+            .last()
+            .expect("subject group has at least one review.round");
+        assert_eq!(
+            latest["converged"],
+            json!(true),
+            "latest design review.round must be converged: {latest}"
+        );
+        let channels = latest["channels"].as_array().unwrap_or_else(|| {
+            panic!("latest design review.round channels must be an array: {latest}")
+        });
+        assert!(
+            channels
+                .iter()
+                .all(|channel| channel["verdict"] == json!("approved")),
+            "latest design review.round channel verdicts must all be literal approved: {latest}"
+        );
+    }
+}
+
+fn review_budget() -> Duration {
+    std::env::var("NEIGE_SPEC_REVIEW_BUDGET")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        // Default doubled vs spec_planning_budget — the review wait includes the spec's autonomous runs/ read round-trip and 1/5 stability runs exceeded 240s (design §6 headroom).
+        .unwrap_or_else(|| Duration::from_secs(480))
 }
