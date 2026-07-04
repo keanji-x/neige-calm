@@ -1,5 +1,8 @@
 #[cfg(feature = "codex-e2e")]
 #[allow(dead_code)]
+pub mod agent_diag;
+#[cfg(feature = "codex-e2e")]
+#[allow(dead_code)]
 pub mod codex_fixture;
 #[allow(dead_code)]
 pub mod event_queries;
