@@ -137,24 +137,27 @@ pub enum HookKind {
 
 impl Observation {
     pub fn is_hard_fire(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Observation::TaskCompleted { .. }
-                | Observation::TaskFailed { .. }
-                | Observation::WorkerHookStop { .. }
-                | Observation::UserMessage { .. }
-                | Observation::TaskGateResult { .. }
-                | Observation::ForgePrMerged { .. }
-                | Observation::ForgeScanCompleted { .. }
-                | Observation::ForgePrOpened { .. }
-                | Observation::ForgePrChecks { .. }
-                | Observation::ForgeIssueClosed { .. }
-                | Observation::WorktreeProvisioned { .. }
-                | Observation::WorktreeCommitted { .. }
-                | Observation::ReviewRound { .. }
-                | Observation::RatifyRequested { .. }
-                | Observation::RatifyResolved { .. }
-        )
+            | Observation::TaskFailed { .. }
+            | Observation::WorkerHookStop { .. }
+            | Observation::UserMessage { .. }
+            | Observation::TaskGateResult { .. }
+            | Observation::ForgePrMerged { .. }
+            | Observation::ForgeScanCompleted { .. }
+            | Observation::ForgePrOpened { .. }
+            | Observation::ForgePrChecks { .. }
+            | Observation::ForgeIssueClosed { .. }
+            | Observation::WorktreeProvisioned { .. }
+            | Observation::WorktreeCommitted { .. }
+            | Observation::ReviewRound { .. }
+            | Observation::RatifyRequested { .. }
+            | Observation::RatifyResolved { .. } => true,
+            Observation::WaveGoal { .. }
+            | Observation::ReportEdited { .. }
+            | Observation::WorkspaceLeased { .. }
+            | Observation::WorkspaceReleased { .. } => false,
+        }
     }
 
     pub fn report_sha256(&self) -> Option<&str> {
