@@ -724,7 +724,7 @@ async fn reset_from_fixture_wipes_and_reseeds() {
 
     // Verify the persisted log shape matches the fixture.
     let log = repo
-        .events_since(0, None)
+        .events_since(0, i64::MAX)
         .await
         .expect("events_since after reset");
     assert_eq!(log.len() as i64, n, "log has only the reseeded events");
@@ -844,7 +844,7 @@ async fn schema_version_future_dropped_on_both_replay_and_rest_read() {
     // `ws::events::run_replay` (either the filter is missing or it's
     // over-filtering).
     let db_rows = repo
-        .events_since(0, None)
+        .events_since(0, i64::MAX)
         .await
         .expect("events_since after seed");
     assert_eq!(

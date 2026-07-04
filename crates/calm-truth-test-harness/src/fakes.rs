@@ -565,7 +565,7 @@ pub async fn full_loop_dispatch_to_lifecycle_done() {
         WaveLifecycle::Done
     );
     let events = repo
-        .events_since(0, None)
+        .events_since(0, i64::MAX)
         .await
         .expect("events since")
         .into_iter()
@@ -615,7 +615,7 @@ pub async fn full_loop_cross_principal_denied() {
     set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Working).await;
     set_lifecycle(repo.as_ref(), wave_id.clone(), WaveLifecycle::Reviewing).await;
 
-    let before_events = repo.events_since(0, None).await.expect("events").len();
+    let before_events = repo.events_since(0, i64::MAX).await.expect("events").len();
     let sink = GatedDecisionSink::new(
         Arc::clone(&repo),
         EventBus::new(),
@@ -647,7 +647,7 @@ pub async fn full_loop_cross_principal_denied() {
         WaveLifecycle::Reviewing
     );
     assert_eq!(
-        repo.events_since(0, None).await.expect("events").len(),
+        repo.events_since(0, i64::MAX).await.expect("events").len(),
         before_events
     );
 }

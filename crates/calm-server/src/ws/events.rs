@@ -58,9 +58,14 @@
 //!   restart at id=1) a per-connection signal it can use to detect the
 //!   reset and re-bootstrap its cache. Issue #290.
 //! * `_snapshot_required` is sent when the client's `since` cursor
-//!   predates the retention horizon (the smallest live `events.id`).
-//!   After sending it, the server closes the connection. The client must
-//!   clear its persisted query cache (`qc.clear()`) and reconnect cold.
+//!   predates the retention horizon (the smallest live `events.id`), or
+//!   when a `since > 0` replay window exceeds the replay cap
+//!   (`NEIGE_WS_REPLAY_MAX_EVENTS`, issue #854). After sending it, the
+//!   server closes the connection. The client must clear its persisted
+//!   query cache (`qc.clear()`) and reconnect cold. A cold (`since = 0`)
+//!   over-cap replay never gets this frame — the client would reconnect
+//!   at `since = 0` and loop; instead the backlog is skipped and
+//!   `_replay_complete` lands directly at the server tip.
 //!
 //! These frames stay out of the `Event` enum so they don't pollute the
 //! ts-rs export — the client's `wireEventSchema` zod union doesn't
@@ -255,12 +260,41 @@ enum ReplayOutcome {
     ClientClosed,
 }
 
+/// Ceiling on the number of rows a single replay may stream (issue #854).
+/// The events table is unbounded (214k rows / 1.7 GB observed in prod), so
+/// a replay past this budget doesn't stream — it re-routes:
+///
+///   * `since > 0` — the cursor is too far behind to backfill within
+///     budget; send `_snapshot_required` so the client drops its cache,
+///     refetches over REST, and reconnects cold.
+///   * `since == 0` — a cold client has no cache to invalidate, so the
+///     backlog is skipped entirely: send `_replay_complete` at the server
+///     tip and go live-forward. The client's terminator handler runs a
+///     defensive batch invalidate, and its REST reads are fresh, so no
+///     state is lost. Sending `_snapshot_required` here instead would
+///     loop forever — the client's response is "clear cursor, reconnect
+///     at since=0".
+const WS_REPLAY_MAX_EVENTS_ENV: &str = "NEIGE_WS_REPLAY_MAX_EVENTS";
+const DEFAULT_WS_REPLAY_MAX_EVENTS: i64 = 10_000;
+
+fn ws_replay_max_events_from_env() -> i64 {
+    match std::env::var(WS_REPLAY_MAX_EVENTS_ENV) {
+        Ok(raw) => match raw.trim().parse::<i64>() {
+            Ok(n) if n > 0 => n,
+            _ => DEFAULT_WS_REPLAY_MAX_EVENTS,
+        },
+        Err(_) => DEFAULT_WS_REPLAY_MAX_EVENTS,
+    }
+}
+
 /// Stream the replay window for `since` to the client, then send the
 /// `_replay_complete` synthetic envelope. Returns the server's actual
 /// `events.id` tip (the new dedup cursor — `MAX(id)` of the live log,
 /// queried after the in-window scan completes; falls back to the
 /// in-window high-water mark if that query errors), or signals
-/// `_snapshot_required` if `since` predates the retention horizon.
+/// `_snapshot_required` if `since` predates the retention horizon or the
+/// pending window exceeds the replay cap (see
+/// [`WS_REPLAY_MAX_EVENTS_ENV`] for the over-cap routing table).
 ///
 /// Implements the subscribe-first ordering: the broadcast subscription is
 /// established *before* this function is called (in `handle`), so any
@@ -280,6 +314,7 @@ where
     // server can't honor a contiguous replay. Tell the client to throw
     // away its cache and refetch. `since == 0` is always honored (the
     // client deliberately wants "everything") even when the table is empty.
+    let mut earliest_id: Option<i64> = None;
     if since > 0 {
         match repo.events_earliest_id().await {
             Ok(Some(earliest)) if since < earliest - 1 => {
@@ -291,7 +326,7 @@ where
                 let _ = tx.send(Message::Text(frame.into())).await;
                 return ReplayOutcome::SnapshotRequired;
             }
-            Ok(_) => {}
+            Ok(found) => earliest_id = found,
             Err(e) => {
                 tracing::error!(error = %e, "ws /api/events: events_earliest_id failed");
                 // Fall through — better to attempt the replay than to
@@ -300,7 +335,10 @@ where
         }
     }
 
-    let rows = match repo.events_since(since, None).await {
+    // Fetch one row past the cap so "over budget" is detectable without a
+    // COUNT round-trip.
+    let cap = ws_replay_max_events_from_env();
+    let mut rows = match repo.events_since(since, cap.saturating_add(1)).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, since, "ws /api/events: events_since query failed");
@@ -312,6 +350,26 @@ where
             return ReplayOutcome::Streamed(since);
         }
     };
+    if rows.len() as i64 > cap {
+        if since > 0 {
+            let earliest = earliest_id
+                .or_else(|| rows.first().map(|(id, ..)| *id))
+                .unwrap_or(since);
+            tracing::warn!(
+                since,
+                cap,
+                "ws /api/events: replay window exceeds cap; forcing re-snapshot"
+            );
+            let frame = snapshot_required_frame(earliest);
+            let _ = tx.send(Message::Text(frame.into())).await;
+            return ReplayOutcome::SnapshotRequired;
+        }
+        tracing::warn!(
+            cap,
+            "ws /api/events: cold replay window exceeds cap; skipping backlog to server tip"
+        );
+        rows.clear();
+    }
 
     let mut last_id = since;
     for (id, event_version, scope, ev) in rows {

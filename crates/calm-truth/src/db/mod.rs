@@ -686,9 +686,12 @@ pub trait RepoEventWrite: RepoRead {
     /// relies on the strict-monotonic `events.id` to dedupe replay-vs-live
     /// at the boundary (design §2.2).
     ///
-    /// `limit = None` returns every row above `since_id`; `Some(n)`
-    /// truncates at the first `n` rows in id order (used by chunked
-    /// pagination if a future tuning splits very large historical windows).
+    /// `limit` is required — the events table grows for the lifetime of
+    /// the deployment (issue #854: 214k rows / 1.7 GB observed), so every
+    /// reader must state its bound. The window truncates at the first
+    /// `limit` rows in id order; non-positive limits return no rows. A
+    /// caller that genuinely wants the whole log (fixture asserts, boot
+    /// replay over a bounded fixture set) says so with `i64::MAX`.
     ///
     /// Rows whose payload fails to deserialize back into an `Event` variant
     /// are logged + skipped, not propagated as an error — corrupt history
@@ -706,7 +709,7 @@ pub trait RepoEventWrite: RepoRead {
     async fn events_since(
         &self,
         since_id: i64,
-        limit: Option<i64>,
+        limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
 
     /// Read only selected event kinds scoped to one wave. This is for

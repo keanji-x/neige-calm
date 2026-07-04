@@ -818,3 +818,117 @@ async fn replay_skips_future_schema_version_overlay_set_assertion_strict() {
         "future-schemaVersion overlay row must be filtered from replay"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 8. Replay cap (#854 slice 1). The events table is unbounded in prod
+//    (214k rows / 1.7 GB observed), so a single replay must never stream
+//    the whole log. `NEIGE_WS_REPLAY_MAX_EVENTS` bounds the window:
+//
+//      * `since == 0` (cold client, empty cache) — skip the backlog and
+//        jump straight to `_replay_complete` at the server tip. The
+//        client's terminator handler runs a defensive full invalidate,
+//        and its REST reads are fresh, so no state is lost. We must NOT
+//        send `_snapshot_required` here: the client's response to that
+//        frame is "clear cursor, reconnect cold at since=0", which would
+//        loop forever.
+//      * `since > 0` (stale cursor, cached state) — send
+//        `_snapshot_required` so the client throws its cache away and
+//        reconnects cold (landing on the bounded path above).
+// ---------------------------------------------------------------------------
+
+/// Both cap tests mutate the same process-global env var; serialize them.
+static REPLAY_CAP_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Seed `n` `cove.updated` rows via `log_pure_event` (cheaper than the
+/// full `cove_create_tx` write path when only the event log matters).
+/// Returns the assigned `events.id`s in append order.
+async fn seed_n_cove_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i64> {
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let id = repo
+            .log_pure_event(
+                calm_server::ids::ActorId::User,
+                calm_server::event::EventScope::System,
+                None,
+                bus,
+                &calm_server::card_role_cache::CardRoleCache::new(),
+                &calm_server::wave_cove_cache::WaveCoveCache::new(),
+                Event::CoveUpdated(calm_server::model::Cove {
+                    id: format!("cap-{i}").into(),
+                    name: "n".into(),
+                    color: "#000".into(),
+                    sort: 0.0,
+                    kind: calm_server::model::CoveKind::User,
+                    created_at: 0,
+                    updated_at: 0,
+                }),
+            )
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    ids
+}
+
+#[tokio::test]
+async fn cold_replay_over_cap_skips_to_tip() {
+    let _guard = REPLAY_CAP_ENV_LOCK.lock().await;
+    // `set_var` / `remove_var` are unsafe in 2024-edition Rust.
+    unsafe { std::env::set_var("NEIGE_WS_REPLAY_MAX_EVENTS", "6") };
+
+    let (addr, repo, bus) = boot().await;
+    let seeded = seed_n_cove_updates(&repo, &bus, 10).await;
+    let tip = *seeded.last().unwrap();
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+
+    // The backlog (10 rows) exceeds the cap (6): the very first frame must
+    // be the terminator at the server tip — no event frames stream.
+    let first = recv_json(&mut ws).await;
+    assert_eq!(
+        first["ev"], "_replay_complete",
+        "over-cap cold replay must skip the backlog, got {first}"
+    );
+    assert_eq!(first["_id"], tip, "terminator carries the server tip");
+
+    // The connection stays live-forward: a fresh write past the tip must
+    // still arrive (the skip must not poison the dedup cursor).
+    let live_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let live = recv_json(&mut ws).await;
+    assert_eq!(live["ev"], "cove.updated");
+    assert_eq!(live["_id"], live_id);
+
+    unsafe { std::env::remove_var("NEIGE_WS_REPLAY_MAX_EVENTS") };
+}
+
+#[tokio::test]
+async fn stale_cursor_over_cap_gets_snapshot_required() {
+    let _guard = REPLAY_CAP_ENV_LOCK.lock().await;
+    unsafe { std::env::set_var("NEIGE_WS_REPLAY_MAX_EVENTS", "6") };
+
+    let (addr, repo, bus) = boot().await;
+    let seeded = seed_n_cove_updates(&repo, &bus, 10).await;
+
+    // Resume from just past the first row: 9 pending rows > cap of 6.
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let sub = format!(r#"{{"sub":["*"], "since": {}}}"#, seeded[0]);
+    ws.send(TMessage::Text(sub)).await.unwrap();
+
+    let frame = recv_json(&mut ws).await;
+    assert_eq!(
+        frame["ev"], "_snapshot_required",
+        "over-cap stale-cursor replay must force a re-snapshot, got {frame}"
+    );
+    assert_eq!(frame["data"]["earliest_id"], seeded[0]);
+
+    // Connection closes shortly after — tolerate either an explicit close
+    // frame, a transport-level closure, or a timeout falling through.
+    let _ = timeout(Duration::from_millis(500), ws.next()).await;
+
+    unsafe { std::env::remove_var("NEIGE_WS_REPLAY_MAX_EVENTS") };
+}

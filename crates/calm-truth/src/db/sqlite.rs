@@ -357,7 +357,7 @@ pub async fn begin_immediate_tx<'a>(pool: &'a SqlitePool) -> Result<Transaction<
     unreachable!("bounded retry loop must return or error");
 }
 
-fn is_sqlite_busy(e: &sqlx::Error) -> bool {
+pub fn is_sqlite_busy(e: &sqlx::Error) -> bool {
     let Some(db_err) = e.as_database_error() else {
         return false;
     };
@@ -6386,12 +6386,12 @@ impl RepoEventWrite for SqlxRepo {
     async fn events_since(
         &self,
         since_id: i64,
-        limit: Option<i64>,
+        limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>> {
-        // `LIMIT -1` is sqlite's "no limit" sentinel; using `?` binding lets
-        // us keep one SQL string regardless of caller intent. Callers that
-        // pass `None` want every row > since_id.
-        let cap = limit.unwrap_or(-1);
+        // Clamp so no caller-supplied value can reach sqlite's `LIMIT -1`
+        // "no limit" sentinel — the bound is load-bearing (issue #854: a
+        // cold WS replay against a 214k-row table pulled the entire log).
+        let cap = limit.max(0);
         // `event_version` is selected so the replay path can stamp the
         // envelope with the version persisted on the row, not the current
         // `SYNC_EVENT_VERSION` constant — old rows that predate migration

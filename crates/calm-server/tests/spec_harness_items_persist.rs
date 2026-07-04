@@ -257,7 +257,7 @@ async fn item_notification_persists_row_and_emits_event() {
         "HarnessItemAdded envelope must be card-scoped, got {event_scope:?}"
     );
 
-    let events = repo.events_since(0, None).await.unwrap();
+    let events = repo.events_since(0, i64::MAX).await.unwrap();
     let durable_item_event_id = events
         .iter()
         .find_map(|(id, _version, _scope, event)| match event {
@@ -302,7 +302,7 @@ async fn phase_log_failure_keeps_last_phase_for_retry() {
         .unwrap();
 
     harness.persist_snapshot().await.unwrap();
-    let events = repo.events_since(0, None).await.unwrap();
+    let events = repo.events_since(0, i64::MAX).await.unwrap();
     assert!(
         events.iter().any(|(_id, _version, _scope, event)| matches!(
             event,
@@ -351,7 +351,7 @@ async fn phase_transition_persists_row_and_emits_durable_event_id() {
         other => panic!("expected HarnessPhaseChanged, got {other:?}"),
     }
 
-    let events = repo.events_since(0, None).await.unwrap();
+    let events = repo.events_since(0, i64::MAX).await.unwrap();
     let durable_phase_event_id = events
         .iter()
         .find_map(|(id, _version, _scope, event)| match event {

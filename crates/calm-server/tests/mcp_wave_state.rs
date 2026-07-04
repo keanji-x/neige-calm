@@ -734,7 +734,7 @@ async fn task_verdict_lifecycle_illegal_rolls_back_verdict_and_events() {
         "illegal transition emitted event: {no_event:?}"
     );
 
-    let events = boot.repo.events_since(0, Some(100)).await.unwrap();
+    let events = boot.repo.events_since(0, 100).await.unwrap();
     assert!(
         events.iter().all(
             |(_, _, _, event)| !matches!(event, Event::TaskCompleted { idempotency_key, .. }

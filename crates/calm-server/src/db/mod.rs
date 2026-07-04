@@ -371,7 +371,7 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
     async fn events_since(
         &self,
         since_id: i64,
-        limit: Option<i64>,
+        limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
     async fn events_for_wave(
         &self,
@@ -463,7 +463,7 @@ where
     async fn events_since(
         &self,
         since_id: i64,
-        limit: Option<i64>,
+        limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>> {
         calm_truth::db::RepoEventWrite::events_since(self, since_id, limit)
             .await

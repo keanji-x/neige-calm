@@ -931,7 +931,7 @@ mod tests {
     }
 
     async fn task_failed_events(repo: &SqlxRepo, task_id: &str) -> Vec<Event> {
-        RepoEventWrite::events_since(repo, 0, None)
+        RepoEventWrite::events_since(repo, 0, i64::MAX)
             .await
             .expect("events")
             .into_iter()
@@ -945,7 +945,7 @@ mod tests {
     }
 
     async fn lifecycle_changes(repo: &SqlxRepo, wave_id: &WaveId) -> Vec<Event> {
-        RepoEventWrite::events_since(repo, 0, None)
+        RepoEventWrite::events_since(repo, 0, i64::MAX)
             .await
             .expect("events")
             .into_iter()
@@ -1082,7 +1082,7 @@ mod tests {
             other => panic!("expected lifecycle change, got {other:?}"),
         }
         // No task row, so no TaskFailed event anywhere.
-        let task_failed = RepoEventWrite::events_since(repo.as_ref(), 0, None)
+        let task_failed = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
             .await
             .expect("events")
             .into_iter()
@@ -1415,7 +1415,7 @@ mod tests {
             EventBus::new(),
             write_context(&repo).await,
         );
-        let before_events = RepoEventWrite::events_since(repo.as_ref(), 0, None)
+        let before_events = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
             .await
             .expect("events before");
 
@@ -1424,7 +1424,7 @@ mod tests {
 
         assert_eq!(fake.probe_call_count(), 4);
         assert_eq!(
-            RepoEventWrite::events_since(repo.as_ref(), 0, None)
+            RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
                 .await
                 .expect("events after")
                 .len(),
@@ -2142,7 +2142,7 @@ mod tests {
             .expect("task get")
             .expect("task exists");
         assert_eq!(task_row.status, TaskStatus::Done);
-        let completed = RepoEventWrite::events_since(repo.as_ref(), 0, None)
+        let completed = RepoEventWrite::events_since(repo.as_ref(), 0, i64::MAX)
             .await
             .expect("events")
             .into_iter()
