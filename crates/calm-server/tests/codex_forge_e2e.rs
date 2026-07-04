@@ -16,10 +16,11 @@ use std::time::Duration;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
-use calm_server::event::{Event, EventScope};
+use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
 use calm_server::harness::{HarnessState, Observation, SpecHarness};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
+use calm_server::model::{WaveLifecycle, WavePatch};
 use serde_json::{Value, json};
 use support::agent_diag::panic_with_agent_diag;
 use support::codex_fixture::*;
@@ -337,7 +338,213 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
     shutdown_shared_codex(&fx.shared).await;
 }
 
+#[tokio::test]
+async fn real_spec_gives_up_at_review_cap_from_descriptor() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!("no codex bin");
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    // Steer the cap-exhaust GIVE-UP branch (R7 design D3): GIVE-UP and
+    // ASK-HUMAN are mutually exclusive terminal branches of one wave, so the
+    // goal fixes coverage on this branch; branch choice is descriptor-legal
+    // either way and the protocol mechanics stay autonomous.
+    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+                then drive design review. If design review cannot converge at the review \
+                cap, give up and fail the wave; do not request ratification."
+        .to_string();
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: Some(goal.clone()),
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            skip!("{reason}");
+        }
+    };
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(plan_actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+    );
+    // The review subject slice comes from the spec's OWN real plan so the
+    // seeded prior round matches the spec's mental model (design D2).
+    let slice_id = plan["changed_keys"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
+        .to_string();
+
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    // Settle the planning turn before seeding (R6 causality guard): the
+    // accepted give-up sequence must be causally a response to the injected
+    // observations below, not a planning-time fabrication.
+    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+
+    // Pre-position the wave at `reviewing` via a raw WavePatch (precedent:
+    // crates/calm-server/tests/review_ratify.rs `set_wave_lifecycle`) —
+    // walking planning -> ... -> reviewing by real turns is capstone scope.
+    fx.repo_dyn
+        .wave_update(
+            fx.wave_id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Reviewing),
+                ..WavePatch::default()
+            },
+        )
+        .await
+        .expect("pre-position wave lifecycle to reviewing");
+
+    seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
+    seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
+    // Seed ONE prior round at n=7/cap=8 (design D2): the kernel's monotonic
+    // check reads max(n) from the event log, so the only acceptable next
+    // round on this subject is n=8, and n=9 is then unreachable (n<=cap).
+    // role_gate rule 2.8 makes AiSpec(spec card) the ONLY legal author for
+    // review.round — KernelDispatcher (R6's seed actor) is rejected.
+    seed_prior_design_review_round(&fx, &slice_id, 7, 8).await;
+
+    let floor = max_event_id(&fx.repo).await;
+    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
+    assert_eq!(
+        pre_wake_rounds.len(),
+        1,
+        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
+    );
+
+    // Wake: both channels changes_requested + the prior-round state, injected
+    // exactly as the prod dispatcher's `harness_observation_from_event` would
+    // push them (design D5; no dispatcher runs in the spec-harness E2E).
+    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
+    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
+    inject_design_review_round_observation(&harness, &fx, &slice_id, 7, 8, false).await;
+
+    // Oracle (a): the spec's own round 8/8, non-converged, on the seeded
+    // subject. The kernel guarantees n==8 is the only accepted next round.
+    let (round_id, round_actor, round) =
+        wait_for_design_review_round_on_subject(&fx, floor, &slice_id, review_budget()).await;
+    assert!(
+        matches!(round_actor, ActorId::AiSpecSession(_)),
+        "cap round actor must be AiSpecSession, got {round_actor:?} for {round}"
+    );
+    assert_eq!(round["n"], json!(8), "cap round must be n=8: {round}");
+    assert_eq!(
+        round["cap"],
+        json!(8),
+        "cap must be descriptor-fixed 8: {round}"
+    );
+    assert_eq!(
+        round["converged"],
+        json!(false),
+        "cap round must be non-converged: {round}"
+    );
+    assert!(
+        round
+            .pointer("/subject/pr_number")
+            .is_none_or(Value::is_null),
+        "design review.round subject must omit/null pr_number: {round}"
+    );
+    let channels = round["channels"]
+        .as_array()
+        .unwrap_or_else(|| panic!("cap round channels must be an array: {round}"));
+    assert!(
+        channels.len() >= 2,
+        "cap round must carry at least two channels: {round}"
+    );
+    let roles: std::collections::BTreeSet<&str> = channels
+        .iter()
+        .map(|channel| {
+            channel["role"]
+                .as_str()
+                .unwrap_or_else(|| panic!("cap round channel missing role: {channel}"))
+        })
+        .collect();
+    assert!(
+        roles.len() >= 2,
+        "cap round channels must have at least two distinct roles: {round}"
+    );
+    assert!(
+        channels
+            .iter()
+            .any(|channel| channel["verdict"] == json!("changes_requested")),
+        "cap round must carry at least one changes_requested verdict: {round}"
+    );
+
+    // Oracle (b): the FSM's give-up edge, spec-only-legal. The *edge* is in
+    // the static prompt, but the *when* (at cap, instead of ratifying) comes
+    // only from the descriptor. Waiting from the cap round's event id (not
+    // the original floor) pins the ordering invariant: the give-up must
+    // FOLLOW the cap round, so a fail-first-record-later turn cannot pass.
+    let (edge_actor, edge) = wait_for_wave_failed_edge(&fx, round_id, review_budget()).await;
+    assert_eq!(
+        edge["from"],
+        json!("reviewing"),
+        "give-up edge must leave reviewing: {edge}"
+    );
+    assert_eq!(edge["id"], json!(fx.wave_id.as_str()));
+    assert!(
+        matches!(edge_actor, ActorId::AiSpecSession(_)),
+        "give-up edge actor must be AiSpecSession, got {edge_actor:?} for {edge}"
+    );
+
+    // Oracle (c): the waves row landed on the terminal lifecycle.
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
+        .bind(fx.wave_id.as_str())
+        .fetch_one(fx.repo.pool())
+        .await
+        .expect("select wave lifecycle");
+    assert_eq!(lifecycle, "failed", "wave row lifecycle must be failed");
+
+    // Oracle (d): branch purity, asserted AFTER the give-up edge (terminal
+    // state + teardown follows, so no window ambiguity): the steered run
+    // must neither merge nor ask for ratification.
+    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
+    assert_eq!(
+        event_payloads(&fx.repo, "ratify.requested").await.len(),
+        0,
+        "steered GIVE-UP run must not request ratification"
+    );
+
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
 async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
+    seed_design_channel_verdict(fx, key, chan, "approved").await;
+}
+
+async fn seed_design_channel_changes_requested(fx: &Fixture, key: &str, chan: &str) {
+    seed_design_channel_verdict(fx, key, chan, "changes_requested").await;
+}
+
+/// Seed a design review-channel task pair (dispatched + completed) carrying
+/// `verdict`, then fail fast unless the runs/ projection surfaces that exact
+/// verdict — the real spec reads runs/ to learn the channel outcomes.
+async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdict: &str) {
     let task_id = task_id(fx, key);
     let wave_scope = EventScope::Wave {
         wave: fx.wave_id.clone(),
@@ -381,12 +588,12 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
             Event::TaskCompleted {
                 idempotency_key: task_id.clone(),
                 result: json!({
-                    "summary": "approved",
-                    "verdict": "approved",
+                    "summary": verdict,
+                    "verdict": verdict,
                     "channel": chan,
                 }),
                 artifacts: Vec::new(),
-                agent_message: Some(format!("[codex-forge-e2e] review {chan} approved")),
+                agent_message: Some(format!("[codex-forge-e2e] review {chan} {verdict}")),
             },
         )
         .await
@@ -415,10 +622,10 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
                 let result = run.pointer("/events/completed/payload/result");
                 match result {
                     Some(Value::Object(result)) => match result.get("summary") {
-                        Some(Value::String(summary)) if summary == "approved" => return,
+                        Some(Value::String(summary)) if summary == verdict => return,
                         Some(summary) => {
                             json_diag = format!(
-                                "completed result summary was not exact approved: {summary}; result={}",
+                                "completed result summary was not exact {verdict}: {summary}; result={}",
                                 Value::Object(result.clone())
                             );
                         }
@@ -456,13 +663,13 @@ async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
             .get("content")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if content.lines().any(|line| line == "approved") {
+        if content.lines().any(|line| line == verdict) {
             return;
         }
     }
 
     panic!(
-        "seeded design review run {task_id} did not expose exact approved summary in runs projection; \
+        "seeded design review run {task_id} did not expose exact {verdict} summary in runs projection; \
          json_result={}; json_read={:?}; md_read={:?}",
         if json_diag.is_empty() {
             "<unread>".to_string()
@@ -499,6 +706,208 @@ async fn inject_task_completed(h: &SpecHarness, idem_key: &str) {
 #[cfg(not(feature = "fixtures"))]
 async fn inject_task_completed(_h: &SpecHarness, _idem_key: &str) {
     panic!("inject_task_completed requires the fixtures feature");
+}
+
+#[cfg(feature = "fixtures")]
+async fn inject_task_changes_requested(h: &SpecHarness, idem_key: &str) {
+    h.observe_for_test(
+        Observation::TaskCompleted {
+            idempotency_key: idem_key.into(),
+            result: json!({ "summary": "changes_requested" }),
+        },
+        None,
+    )
+    .await;
+}
+
+#[cfg(not(feature = "fixtures"))]
+async fn inject_task_changes_requested(_h: &SpecHarness, _idem_key: &str) {
+    panic!("inject_task_changes_requested requires the fixtures feature");
+}
+
+/// Inject the same `Observation::ReviewRound` the prod dispatcher's
+/// `harness_observation_from_event` would push for the seeded prior round —
+/// the spec cannot learn prior rounds from runs//wave-fs (no review.round
+/// projection exists), so this observation turn text is its ONLY channel for
+/// round state, exactly as in production.
+#[cfg(feature = "fixtures")]
+async fn inject_design_review_round_observation(
+    h: &SpecHarness,
+    fx: &Fixture,
+    slice_id: &str,
+    n: u32,
+    cap: u32,
+    converged: bool,
+) {
+    h.observe_for_test(
+        Observation::ReviewRound {
+            wave_id: fx.wave_id.clone(),
+            phase: "design".into(),
+            slice_id: slice_id.into(),
+            pr_number: None,
+            head_sha: None,
+            n,
+            cap,
+            converged,
+        },
+        None,
+    )
+    .await;
+}
+
+#[cfg(not(feature = "fixtures"))]
+async fn inject_design_review_round_observation(
+    _h: &SpecHarness,
+    _fx: &Fixture,
+    _slice_id: &str,
+    _n: u32,
+    _cap: u32,
+    _converged: bool,
+) {
+    panic!("inject_design_review_round_observation requires the fixtures feature");
+}
+
+/// Seed one prior non-converged design review.round as typed
+/// `Event::ReviewRound` (typed-seeding precedent:
+/// crates/calm-truth/src/wave_vcs.rs review/ratify batch test). Actor MUST be
+/// `ActorId::AiSpec(spec card)` with `EventScope::Wave`: role_gate rule 2.8
+/// makes review.round spec-only, and the seeded AiSpec rows stay
+/// actor-distinguishable from the real spec's AiSpecSession rows.
+async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, cap: u32) {
+    let wave_scope = EventScope::Wave {
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::AiSpec(fx.spec_card_id.clone()),
+            wave_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::ReviewRound {
+                wave_id: fx.wave_id.clone(),
+                subject: ReviewSubject {
+                    phase: "design".into(),
+                    slice_id: slice_id.into(),
+                    pr_number: None,
+                },
+                head_sha: None,
+                n,
+                cap,
+                converged: false,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "design-a".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                    ChannelVerdict {
+                        role: "design-b".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                ],
+                root_cause: None,
+                // Canonical shape from `review_round_idempotency_key`
+                // (mcp_server/tools/review.rs): design subjects use the
+                // literal "design" in the pr slot.
+                idempotency_key: format!(
+                    "review.round:{}:design:{}:design:{}",
+                    fx.wave_id.as_str(),
+                    slice_id,
+                    n
+                ),
+            },
+        )
+        .await
+        .expect("log seeded prior review.round");
+}
+
+/// First post-floor `review.round` on the seeded design subject (phase,
+/// slice AND null/absent pr_number — a hypothetical `{design, S, Some(pr)}`
+/// subject is a different review stream and must not be returned). Rounds on
+/// other subjects are tolerated (the kernel keeps them internally monotone);
+/// on the seeded subject the kernel only accepts n=8 next, so the first hit
+/// IS the cap round. Returns the event id so callers can pin ordering
+/// invariants against it.
+async fn wait_for_design_review_round_on_subject(
+    fx: &Fixture,
+    floor: i64,
+    slice_id: &str,
+    budget: Duration,
+) -> (i64, ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, actor, payload FROM events \
+             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
+        )
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
+        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
+            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
+            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+            let on_subject = {
+                let subject = &payload["subject"];
+                subject["phase"] == json!("design")
+                    && subject["slice_id"] == json!(slice_id)
+                    && subject.get("pr_number").is_none_or(Value::is_null)
+            };
+            on_subject.then_some((id, actor, payload))
+        });
+        if let Some(hit) = hit {
+            return hit;
+        }
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for post-floor design review.round \
+                     on slice {slice_id} after event id {floor}"
+                ),
+            )
+            .await;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// First post-floor `wave.lifecycle_changed` landing on `failed` for the
+/// fixture wave. Other lifecycle transitions are tolerated.
+async fn wait_for_wave_failed_edge(fx: &Fixture, floor: i64, budget: Duration) -> (ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, actor, payload FROM events \
+             WHERE kind = 'wave.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
+        )
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("wave.lifecycle_changed rows after floor {floor}: {e}"));
+        let hit = rows.into_iter().find_map(|(_, actor, payload)| {
+            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
+            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+            (payload["to"] == json!("failed") && payload["id"] == json!(fx.wave_id.as_str()))
+                .then_some((actor, payload))
+        });
+        if let Some(hit) = hit {
+            return hit;
+        }
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for wave.lifecycle_changed to=failed \
+                     after event id {floor}"
+                ),
+            )
+            .await;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
 }
 
 async fn wait_for_spec_turn_settled(fx: &Fixture, h: &SpecHarness, budget: Duration) {
