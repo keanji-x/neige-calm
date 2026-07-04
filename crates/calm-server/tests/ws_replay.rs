@@ -909,6 +909,68 @@ async fn cold_replay_over_cap_skips_to_tip() {
     assert_eq!(live["_id"], live_id);
 }
 
+// PR #867 round-3 review: the cold-skip ack must be the tip snapshot taken
+// BEFORE the connection's broadcast subscription — not the tip read after
+// streaming. A row committed after the subscribe exists only in the
+// connection's broadcast buffer (it is never replayed on the skip path);
+// acking a post-hoc tip that covers it would make the dedup pass drop the
+// buffered frame, and live-only consumers (hook/phase listeners) would
+// miss the event permanently. Deterministic shape: the post-subscribe row
+// is committed mid-connection (its live delivery proves it postdates the
+// subscribe), then a cold `since=0` re-anchor over-caps and must ack only
+// the pre-subscription tip.
+#[tokio::test]
+async fn cold_skip_acks_only_the_pre_subscription_tip() {
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
+    // Backlog of 10 (> cap 6) exists BEFORE the connection opens, so the
+    // handler's pre-subscribe snapshot lands exactly here.
+    let pre = seed_n_cove_updates(&repo, &bus, 10).await;
+    let conn_tip = *pre.last().unwrap();
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+    // Live-only subscription first (no `since` → no replay), then give the
+    // handler a beat to process it (same pattern as
+    // `subscribe_without_since_only_live`).
+    ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Commit a row AFTER the connection subscribed. Its live arrival below
+    // proves it postdates the subscribe — this is the row a post-hoc tip
+    // stamp would silently ack.
+    let post_sub_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let live = recv_json(&mut ws).await;
+    assert_eq!(live["ev"], "cove.updated");
+    assert_eq!(live["_id"], post_sub_id);
+
+    // Cold re-anchor: 11 pending rows > cap → skip. The terminator must
+    // ack only the PRE-subscription tip, not the current tip that covers
+    // the post-subscribe row.
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+    let done = recv_json(&mut ws).await;
+    assert_eq!(
+        done["ev"], "_replay_complete",
+        "over-cap cold re-anchor must skip, got {done}"
+    );
+    assert_eq!(
+        done["_id"], conn_tip,
+        "cold-skip ack must stop at the pre-subscription tip snapshot \
+         ({conn_tip}), never cover the post-subscribe commit ({post_sub_id})"
+    );
+
+    // Live-forward keeps working past the (lower) cursor: a fresh write
+    // arrives exactly once.
+    let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let next = recv_json(&mut ws).await;
+    assert_eq!(next["ev"], "cove.updated");
+    assert_eq!(next["_id"], next_id);
+}
+
 #[tokio::test]
 async fn stale_cursor_over_cap_gets_snapshot_required() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
