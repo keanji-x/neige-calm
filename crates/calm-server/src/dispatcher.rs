@@ -102,7 +102,34 @@ pub(crate) fn event_warrants_spec_push_with_role(
             let is_worker = role_for_card(card_id) == Some(CardRole::Worker);
             is_turn_end && is_worker
         }
-        _ => false,
+        Event::CoveUpdated(_)
+        | Event::CoveDeleted { .. }
+        | Event::WaveUpdated(_)
+        | Event::WaveDeleted { .. }
+        | Event::WaveLifecycleChanged { .. }
+        | Event::CardAdded(_)
+        | Event::CardUpdated(_)
+        | Event::CardDeleted { .. }
+        | Event::RuntimeStarted { .. }
+        | Event::RuntimeStatusChanged { .. }
+        | Event::RuntimeSuperseded { .. }
+        | Event::HarnessItemAdded { .. }
+        | Event::HarnessPhaseChanged { .. }
+        | Event::HarnessTranscriptCleared { .. }
+        | Event::HarnessUserMessageEnqueued { .. }
+        | Event::OverlaySet(_)
+        | Event::OverlayDeleted { .. }
+        | Event::TerminalDeleted { .. }
+        | Event::PluginState { .. }
+        | Event::PluginToolRegistered { .. }
+        | Event::WorkflowRegistered { .. }
+        | Event::CodexWorkerRequested { .. }
+        | Event::TerminalWorkerRequested { .. }
+        | Event::PlanUpdated { .. }
+        | Event::TaskDispatched { .. }
+        | Event::ForgePrDiffRead { .. }
+        | Event::ForgeIssueRead { .. }
+        | Event::WorktreeRemoved { .. } => false,
     }
 }
 
@@ -1008,9 +1035,33 @@ impl Inner {
                     );
                 }
             }
-            other => {
+            Event::CoveUpdated(_)
+            | Event::CoveDeleted { .. }
+            | Event::WaveDeleted { .. }
+            | Event::CardAdded(_)
+            | Event::CardUpdated(_)
+            | Event::CardDeleted { .. }
+            | Event::RuntimeStarted { .. }
+            | Event::RuntimeStatusChanged { .. }
+            | Event::RuntimeSuperseded { .. }
+            | Event::HarnessItemAdded { .. }
+            | Event::HarnessPhaseChanged { .. }
+            | Event::HarnessTranscriptCleared { .. }
+            | Event::HarnessUserMessageEnqueued { .. }
+            | Event::OverlaySet(_)
+            | Event::OverlayDeleted { .. }
+            | Event::TerminalDeleted { .. }
+            | Event::PluginState { .. }
+            | Event::PluginToolRegistered { .. }
+            | Event::WorkflowRegistered { .. }
+            | Event::CodexWorkerRequested { .. }
+            | Event::TerminalWorkerRequested { .. }
+            | Event::TaskDispatched { .. }
+            | Event::ForgePrDiffRead { .. }
+            | Event::ForgeIssueRead { .. }
+            | Event::WorktreeRemoved { .. } => {
                 tracing::warn!(
-                    kind = other.kind_tag(),
+                    kind = envelope.event.kind_tag(),
                     "dispatcher received event with no handler; filter widened unexpectedly",
                 );
             }
@@ -1350,7 +1401,35 @@ pub(crate) fn harness_observation_from_event(
             kind: HarnessHookKind::ClaudeStop,
             idempotency_key: hook_idempotency_key.clone(),
         }),
-        _ => None,
+        Event::CodexHook { .. } | Event::ClaudeHook { .. } => None,
+        Event::CoveUpdated(_)
+        | Event::CoveDeleted { .. }
+        | Event::WaveUpdated(_)
+        | Event::WaveDeleted { .. }
+        | Event::WaveLifecycleChanged { .. }
+        | Event::CardAdded(_)
+        | Event::CardUpdated(_)
+        | Event::CardDeleted { .. }
+        | Event::RuntimeStarted { .. }
+        | Event::RuntimeStatusChanged { .. }
+        | Event::RuntimeSuperseded { .. }
+        | Event::HarnessItemAdded { .. }
+        | Event::HarnessPhaseChanged { .. }
+        | Event::HarnessTranscriptCleared { .. }
+        | Event::HarnessUserMessageEnqueued { .. }
+        | Event::OverlaySet(_)
+        | Event::OverlayDeleted { .. }
+        | Event::TerminalDeleted { .. }
+        | Event::PluginState { .. }
+        | Event::PluginToolRegistered { .. }
+        | Event::WorkflowRegistered { .. }
+        | Event::CodexWorkerRequested { .. }
+        | Event::TerminalWorkerRequested { .. }
+        | Event::PlanUpdated { .. }
+        | Event::TaskDispatched { .. }
+        | Event::ForgePrDiffRead { .. }
+        | Event::ForgeIssueRead { .. }
+        | Event::WorktreeRemoved { .. } => None,
     }
 }
 
@@ -2605,6 +2684,352 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// #828 slice 1 — predicate⇒mapping consistency table. Every event
+    /// kind that warrants a spec push must also map to a harness
+    /// observation, and known non-push kinds must do neither: a `true`
+    /// predicate with a `None` mapping (or vice versa) is exactly the
+    /// silent-wiring drift this pin exists to catch. One row per event
+    /// kind — a new spec-facing event gets its expectation recorded here.
+    #[test]
+    fn spec_push_predicate_and_observation_mapping_agree() {
+        let cache = CardRoleCache::new();
+        let wave = WaveId::from("w");
+        let cove = CoveId::from("c");
+        let worker = CardId::from("worker");
+        let spec = CardId::from("spec");
+        cache.insert(worker.clone(), CardRole::Worker, wave.clone());
+        cache.insert(spec.clone(), CardRole::Spec, wave.clone());
+        let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
+
+        let rows: Vec<(Event, ActorId, bool)> = vec![
+            (
+                Event::TaskCompleted {
+                    idempotency_key: "w:k".into(),
+                    result: serde_json::Value::Null,
+                    artifacts: Vec::new(),
+                    agent_message: None,
+                },
+                ActorId::AiCodex(worker.clone()),
+                true,
+            ),
+            (
+                Event::TaskFailed {
+                    idempotency_key: "w:k".into(),
+                    reason: "boom".into(),
+                    agent_message: None,
+                },
+                ActorId::AiCodex(worker.clone()),
+                true,
+            ),
+            (
+                Event::TaskGateResult {
+                    task_id: "w:k".into(),
+                    idempotency_key: "w:k".into(),
+                    passed: true,
+                    failing_step: None,
+                    exit_code: Some(0),
+                    log_tail: String::new(),
+                    log_path: "/tmp/gate.log".into(),
+                    attempt: 1,
+                    agent_message: None,
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::WaveReportEdited {
+                    wave_id: wave.clone(),
+                    card_id: spec.clone(),
+                    author: EditAuthor::User,
+                    edit_id: "e".into(),
+                    summary_before: String::new(),
+                    summary_after: String::new(),
+                    body_before: String::new(),
+                    body_after: "body".into(),
+                    agent_message: None,
+                },
+                ActorId::User,
+                true,
+            ),
+            (
+                Event::WorkspaceLeased {
+                    wave_id: wave.clone(),
+                    card_id: worker.clone(),
+                    lease_id: "lease".into(),
+                    path: "/tmp/ws".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::WorkspaceReleased {
+                    wave_id: wave.clone(),
+                    card_id: worker.clone(),
+                    lease_id: "lease".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::ForgePrMerged {
+                    wave_id: wave.clone(),
+                    subject: crate::event::ForgeMergeSubject {
+                        phase: "impl".into(),
+                        slice_id: "6".into(),
+                        pr_number: 1,
+                    },
+                    head_sha: "head-sha".into(),
+                    merge_sha: "merge-sha".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::ReviewRound {
+                    wave_id: wave.clone(),
+                    subject: ReviewSubject {
+                        phase: "impl".into(),
+                        slice_id: "5b".into(),
+                        pr_number: Some(760),
+                    },
+                    head_sha: Some("head-sha".into()),
+                    n: 1,
+                    cap: 8,
+                    converged: false,
+                    channels: vec![ChannelVerdict {
+                        role: "design-correctness".into(),
+                        verdict: "changes_requested".into(),
+                    }],
+                    root_cause: None,
+                    idempotency_key: "review.round:w:impl:5b:760:1".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::RatifyRequested {
+                    wave_id: wave.clone(),
+                    reason: "cap_exhausted".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::RatifyResolved {
+                    wave_id: wave.clone(),
+                    decision: RatifyDecision::Grant,
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::ForgeScanCompleted {
+                    wave_id: wave.clone(),
+                    overlapping_prs: vec![1, 2],
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::ForgePrOpened {
+                    wave_id: wave.clone(),
+                    pr_number: 1,
+                    head_sha: "head-sha".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::ForgePrChecks {
+                    wave_id: wave.clone(),
+                    pr_number: 1,
+                    conclusion: "success".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::ForgeIssueClosed {
+                    wave_id: wave.clone(),
+                    issue_number: 1,
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::WorktreeProvisioned {
+                    wave_id: wave.clone(),
+                    card_id: worker.clone(),
+                    path: "/tmp/worktree".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::WorktreeCommitted {
+                    wave_id: wave.clone(),
+                    card_id: worker.clone(),
+                    commit_sha: "0123456789abcdef0123456789abcdef01234567".into(),
+                    branch: "neige/w/card".into(),
+                },
+                ActorId::KernelDispatcher,
+                true,
+            ),
+            (
+                Event::CodexHook {
+                    card_id: worker.clone(),
+                    kind: "hook.codex.stop".into(),
+                    hook_idempotency_key: "hook-c".into(),
+                    payload: serde_json::Value::Null,
+                },
+                ActorId::User,
+                true,
+            ),
+            (
+                Event::ClaudeHook {
+                    card_id: worker.clone(),
+                    kind: "hook.claude.stop".into(),
+                    hook_idempotency_key: "hook-l".into(),
+                    payload: serde_json::Value::Null,
+                },
+                ActorId::User,
+                true,
+            ),
+            (
+                Event::CodexHook {
+                    card_id: worker.clone(),
+                    kind: "hook.codex.permission_request".into(),
+                    hook_idempotency_key: "hook-p".into(),
+                    payload: serde_json::Value::Null,
+                },
+                ActorId::User,
+                false,
+            ),
+            (
+                Event::PlanUpdated {
+                    wave_id: wave.clone(),
+                    changed_keys: vec!["k".into()],
+                    agent_message: None,
+                },
+                ActorId::AiSpec(spec.clone()),
+                false,
+            ),
+            (
+                Event::WaveLifecycleChanged {
+                    id: wave.clone(),
+                    cove_id: cove.clone(),
+                    from: crate::model::WaveLifecycle::Draft,
+                    to: crate::model::WaveLifecycle::Planning,
+                    agent_message: None,
+                },
+                ActorId::User,
+                false,
+            ),
+            (
+                Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
+                    crate::model::Wave {
+                        id: wave.clone(),
+                        cove_id: cove.clone(),
+                        title: "w".into(),
+                        sort: 0.0,
+                        archived_at: None,
+                        pinned_at: None,
+                        lifecycle: crate::model::WaveLifecycle::Working,
+                        cwd: String::new(),
+                        workflow_id: None,
+                        terminal_at: None,
+                        created_at: 1,
+                        updated_at: 1,
+                    },
+                    None,
+                )),
+                ActorId::User,
+                false,
+            ),
+            (
+                Event::TaskDispatched {
+                    idempotency_key: "w:k".into(),
+                    kind: "codex".into(),
+                    agent_message: None,
+                },
+                ActorId::KernelDispatcher,
+                false,
+            ),
+            (
+                Event::CodexWorkerRequested {
+                    idempotency_key: "k".into(),
+                    goal: "g".into(),
+                    context: serde_json::Value::Null,
+                    acceptance_criteria: None,
+                    agent_message: None,
+                },
+                ActorId::AiSpec(spec.clone()),
+                false,
+            ),
+            (
+                Event::TerminalWorkerRequested {
+                    idempotency_key: "k".into(),
+                    cmd: "ls".into(),
+                    cwd: None,
+                    agent_message: None,
+                },
+                ActorId::AiSpec(spec.clone()),
+                false,
+            ),
+            (
+                Event::ForgePrDiffRead {
+                    wave_id: wave.clone(),
+                    pr_number: 1,
+                    base_sha: "base-sha".into(),
+                    head_sha: "head-sha".into(),
+                    artifact_path: "/tmp/diff.patch".into(),
+                },
+                ActorId::KernelDispatcher,
+                false,
+            ),
+            (
+                Event::ForgeIssueRead {
+                    wave_id: wave.clone(),
+                    issue_number: 1,
+                    artifact_path: "/tmp/issue.md".into(),
+                },
+                ActorId::KernelDispatcher,
+                false,
+            ),
+            (
+                Event::WorktreeRemoved {
+                    wave_id: wave.clone(),
+                    card_id: worker.clone(),
+                    path: "/tmp/worktree".into(),
+                },
+                ActorId::KernelDispatcher,
+                false,
+            ),
+            (
+                Event::WaveDeleted {
+                    id: wave.clone(),
+                    cove_id: cove.clone(),
+                },
+                ActorId::User,
+                false,
+            ),
+        ];
+
+        for (event, actor, expect_push) in rows {
+            let kind = event.kind_tag();
+            assert_eq!(
+                event_warrants_spec_push(&event, &actor, &write),
+                expect_push,
+                "push predicate mismatch for {kind} (actor {actor})"
+            );
+            assert_eq!(
+                harness_observation_from_event(&wave, &event).is_some(),
+                expect_push,
+                "predicate⇒mapping consistency broken for {kind}"
+            );
+        }
     }
 
     /// #313 round-2 (B3) — the per-wave push lock map must serialize
