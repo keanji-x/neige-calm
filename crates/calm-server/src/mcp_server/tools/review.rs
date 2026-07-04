@@ -80,7 +80,7 @@ fn review_round_descriptor() -> ToolDescriptor {
                         "required": ["role", "verdict"],
                         "properties": {
                             "role": { "type": "string", "minLength": 1 },
-                            "verdict": { "enum": ["approved", "changes_requested"] }
+                            "verdict": { "type": "string", "enum": ["approved", "changes_requested"] }
                         }
                     }
                 },
