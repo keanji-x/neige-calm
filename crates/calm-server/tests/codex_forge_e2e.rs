@@ -21,6 +21,7 @@ use calm_server::harness::{HarnessState, Observation, SpecHarness};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
 use serde_json::{Value, json};
+use support::agent_diag::panic_with_agent_diag;
 use support::codex_fixture::*;
 use support::event_queries::*;
 use support::forge_env::FORGE_ENV_LOCK;
@@ -312,7 +313,7 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
     // fabrication. R6 deliberately does not prove the spec literally read runs/:
     // the runs/ pre-check proves the verdict data is present and readable, and
     // this causal wake is sufficient for the autonomy thesis.
-    wait_for_spec_turn_settled(&harness, spec_planning_budget()).await;
+    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
     seed_design_channel_complete(&fx, "review-design-a", "a").await;
     seed_design_channel_complete(&fx, "review-design-b", "b").await;
     let floor = max_event_id(&fx.repo).await;
@@ -500,7 +501,7 @@ async fn inject_task_completed(_h: &SpecHarness, _idem_key: &str) {
     panic!("inject_task_completed requires the fixtures feature");
 }
 
-async fn wait_for_spec_turn_settled(h: &SpecHarness, budget: Duration) {
+async fn wait_for_spec_turn_settled(fx: &Fixture, h: &SpecHarness, budget: Duration) {
     let deadline = Instant::now() + budget;
     let mut last_state = h.state_for_test().await;
     let mut last_pending = h.pending_len_for_test().await;
@@ -513,10 +514,14 @@ async fn wait_for_spec_turn_settled(h: &SpecHarness, budget: Duration) {
             return;
         }
         if Instant::now() >= deadline {
-            panic!(
-                "timed out after {budget:?} waiting for spec harness turn to settle; \
-                 last_state={last_state:?}; last_pending_len={last_pending}"
-            );
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for spec harness turn to settle; \
+                     last_state={last_state:?}; last_pending_len={last_pending}"
+                ),
+            )
+            .await;
         }
         sleep(Duration::from_millis(100)).await;
         last_state = h.state_for_test().await;
@@ -579,11 +584,13 @@ async fn wait_for_converged_design_review_round(
                 .collect();
         }
         if Instant::now() >= deadline {
-            let diag = dump_spec_diag(&fx.repo).await;
-            panic!(
-                "timed out after {budget:?} waiting for converged design review.round after event id {floor}\n{diag}\ncodex stderr:\n{}",
-                read_lossy(&fx.codex_stderr_log)
-            );
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for converged design review.round after event id {floor}"
+                ),
+            )
+            .await;
         }
         sleep(Duration::from_millis(250)).await;
     }

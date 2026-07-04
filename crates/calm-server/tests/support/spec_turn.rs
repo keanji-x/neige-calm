@@ -11,7 +11,8 @@ use calm_server::session_projection_repo::{AgentProvider, WorkerSessionProjectio
 use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
-use super::codex_fixture::{Fixture, PLUGIN_ID, SPEC_SESSION_ID, read_lossy};
+use super::agent_diag::panic_with_agent_diag;
+use super::codex_fixture::{Fixture, PLUGIN_ID, SPEC_SESSION_ID};
 use super::event_queries::event_payloads;
 
 pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
@@ -101,11 +102,11 @@ pub async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, 
             return row;
         }
         if Instant::now() >= deadline {
-            let diag = dump_spec_diag(&fx.repo).await;
-            panic!(
-                "timed out after {budget:?} waiting for plan.updated\n{diag}\ncodex stderr:\n{}",
-                read_lossy(&fx.codex_stderr_log)
-            );
+            panic_with_agent_diag(
+                fx,
+                format!("timed out after {budget:?} waiting for plan.updated"),
+            )
+            .await;
         }
         sleep(Duration::from_millis(250)).await;
     }
@@ -145,58 +146,4 @@ pub async fn shutdown_spec_harness_if_registered(fx: &Fixture) {
     if let Some(harness) = fx.harness.remove(&runtime.id) {
         let _ = harness.shutdown().await;
     }
-}
-
-/// `(id, turn_id, item_type, method, params)` for the harness-item diagnostic.
-type HarnessItemDiagRow = (i64, Option<String>, Option<String>, String, String);
-
-/// Diagnostic dump for the real-spec-turn path: what events fired and what the
-/// real spec turn actually did (harness_items = the spec's thread items / tool
-/// calls — e.g. the `calm.plan.upsert` call and any role-gate rejection). Used
-/// only on the `wait_for_plan_updated` timeout so a nightly/manual failure is
-/// triageable instead of a bare "timed out".
-pub async fn dump_spec_diag(repo: &SqlxRepo) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::from("\n==== SPEC DIAG ====\n");
-
-    let kinds: Vec<(String, i64)> =
-        sqlx::query_as("SELECT kind, COUNT(*) FROM events GROUP BY kind ORDER BY kind")
-            .fetch_all(repo.pool())
-            .await
-            .unwrap_or_default();
-    let _ = writeln!(out, "-- event kind counts --");
-    for (k, n) in &kinds {
-        let _ = writeln!(out, "  {k}: {n}");
-    }
-
-    let evs: Vec<(i64, String, String, String)> =
-        sqlx::query_as("SELECT id, kind, actor, substr(payload,1,240) FROM events ORDER BY id ASC")
-            .fetch_all(repo.pool())
-            .await
-            .unwrap_or_default();
-    let _ = writeln!(out, "-- event stream ({} rows) --", evs.len());
-    for (id, kind, actor, payload) in &evs {
-        let _ = writeln!(out, "  #{id} {kind} actor={actor} {payload}");
-    }
-
-    let items: Vec<HarnessItemDiagRow> = sqlx::query_as(
-        "SELECT id, turn_id, item_type, method, substr(params,1,360) \
-         FROM harness_items ORDER BY id ASC",
-    )
-    .fetch_all(repo.pool())
-    .await
-    .unwrap_or_default();
-    let _ = writeln!(
-        out,
-        "-- harness_items ({} rows: the spec's real turn) --",
-        items.len()
-    );
-    for (id, turn, ty, method, params) in &items {
-        let _ = writeln!(
-            out,
-            "  #{id} turn={turn:?} type={ty:?} method={method} {params}"
-        );
-    }
-    out.push_str("==== END DIAG ====\n");
-    out
 }
