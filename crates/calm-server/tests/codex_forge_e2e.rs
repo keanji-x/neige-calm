@@ -432,11 +432,11 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // push them (design D5; no dispatcher runs in the spec-harness E2E).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
-    inject_design_review_round_observation(&harness, &fx, &slice_id, 7, 8).await;
+    inject_design_review_round_observation(&harness, &fx, &slice_id, 7, 8, false).await;
 
     // Oracle (a): the spec's own round 8/8, non-converged, on the seeded
     // subject. The kernel guarantees n==8 is the only accepted next round.
-    let (round_actor, round) =
+    let (round_id, round_actor, round) =
         wait_for_design_review_round_on_subject(&fx, floor, &slice_id, review_budget()).await;
     assert!(
         matches!(round_actor, ActorId::AiSpecSession(_)),
@@ -487,8 +487,10 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
 
     // Oracle (b): the FSM's give-up edge, spec-only-legal. The *edge* is in
     // the static prompt, but the *when* (at cap, instead of ratifying) comes
-    // only from the descriptor.
-    let (edge_actor, edge) = wait_for_wave_failed_edge(&fx, floor, review_budget()).await;
+    // only from the descriptor. Waiting from the cap round's event id (not
+    // the original floor) pins the ordering invariant: the give-up must
+    // FOLLOW the cap round, so a fail-first-record-later turn cannot pass.
+    let (edge_actor, edge) = wait_for_wave_failed_edge(&fx, round_id, review_budget()).await;
     assert_eq!(
         edge["from"],
         json!("reviewing"),
@@ -735,6 +737,7 @@ async fn inject_design_review_round_observation(
     slice_id: &str,
     n: u32,
     cap: u32,
+    converged: bool,
 ) {
     h.observe_for_test(
         Observation::ReviewRound {
@@ -745,7 +748,7 @@ async fn inject_design_review_round_observation(
             head_sha: None,
             n,
             cap,
-            converged: false,
+            converged,
         },
         None,
     )
@@ -759,6 +762,7 @@ async fn inject_design_review_round_observation(
     _slice_id: &str,
     _n: u32,
     _cap: u32,
+    _converged: bool,
 ) {
     panic!("inject_design_review_round_observation requires the fixtures feature");
 }
@@ -819,16 +823,19 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
         .expect("log seeded prior review.round");
 }
 
-/// First post-floor `review.round` on the seeded design subject. Rounds on
+/// First post-floor `review.round` on the seeded design subject (phase,
+/// slice AND null/absent pr_number — a hypothetical `{design, S, Some(pr)}`
+/// subject is a different review stream and must not be returned). Rounds on
 /// other subjects are tolerated (the kernel keeps them internally monotone);
 /// on the seeded subject the kernel only accepts n=8 next, so the first hit
-/// IS the cap round.
+/// IS the cap round. Returns the event id so callers can pin ordering
+/// invariants against it.
 async fn wait_for_design_review_round_on_subject(
     fx: &Fixture,
     floor: i64,
     slice_id: &str,
     budget: Duration,
-) -> (ActorId, Value) {
+) -> (i64, ActorId, Value) {
     let deadline = Instant::now() + budget;
     loop {
         let rows: Vec<(i64, String, String)> = sqlx::query_as(
@@ -839,14 +846,16 @@ async fn wait_for_design_review_round_on_subject(
         .fetch_all(fx.repo.pool())
         .await
         .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
-        let hit = rows.into_iter().find_map(|(_, actor, payload)| {
+        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
             let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
             let payload: Value = serde_json::from_str(&payload).expect("event payload json");
             let on_subject = {
                 let subject = &payload["subject"];
-                subject["phase"] == json!("design") && subject["slice_id"] == json!(slice_id)
+                subject["phase"] == json!("design")
+                    && subject["slice_id"] == json!(slice_id)
+                    && subject.get("pr_number").is_none_or(Value::is_null)
             };
-            on_subject.then_some((actor, payload))
+            on_subject.then_some((id, actor, payload))
         });
         if let Some(hit) = hit {
             return hit;
