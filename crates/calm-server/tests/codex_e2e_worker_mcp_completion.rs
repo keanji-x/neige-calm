@@ -134,6 +134,11 @@ fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
         root.to_str().unwrap().to_string(),
         "--codex-bin".to_string(),
         codex_bin.to_string(),
+        // Test codex daemons must NEVER post hooks to the default listen address —
+        // that is the production calm-server port on shared boxes (production-kill
+        // incident, 2026-07-04); tests do not consume hook ingest.
+        "--codex-ingest-url".to_string(),
+        "http://127.0.0.1:1/hooks-disabled-in-e2e".to_string(),
     ])
 }
 

@@ -33,6 +33,11 @@ fn cfg(root: &tempfile::TempDir) -> Config {
         root.path().to_str().unwrap(),
         "--codex-bin",
         "codex",
+        // Test codex daemons must NEVER post hooks to the default listen address —
+        // that is the production calm-server port on shared boxes (production-kill
+        // incident, 2026-07-04); tests do not consume hook ingest.
+        "--codex-ingest-url",
+        "http://127.0.0.1:1/hooks-disabled-in-e2e",
     ])
 }
 
