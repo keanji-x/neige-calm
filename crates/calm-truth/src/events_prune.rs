@@ -20,9 +20,10 @@
 //!     quad whose LATEST row would be dropped by the read-side version
 //!     guard (`validation::should_skip_overlay` — future `schemaVersion`
 //!     written by a newer binary, or an unparseable payload) is skipped
-//!     entirely for the pass: replay would hide that latest row, so the
-//!     older supported row is the state a client actually folds and must
-//!     survive.
+//!     entirely: replay would hide that latest row, so the older supported
+//!     row is the state a client actually folds and must survive. The
+//!     freeze set is recomputed inside each delete's own `BEGIN IMMEDIATE`
+//!     transaction, never cached across batches.
 //!
 //! Accepted regression — what you lose after the horizon: `claude.hook` and
 //! `codex.hook` rows older than the retention horizon disappear from the two
@@ -64,7 +65,7 @@
 use crate::db::sqlite::begin_immediate_tx;
 use crate::error::Result;
 use crate::model::{Overlay, now_ms};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -230,9 +231,10 @@ fn events_pruner_config_from_env() -> Option<(Duration, EventsRetentionPolicy)> 
 /// for the whole statement, so "compute latest" and "delete the rest" are
 /// atomic. It is also guarded to `overlay.set` batches only — batches for
 /// the other allowlisted kinds never pay for it. Quads whose latest row is
-/// version-unsupported are computed once per pass and excluded from every
-/// `overlay.set` batch (error direction: keep extra rows until the next
-/// pass, never delete a row replay still needs).
+/// version-unsupported are recomputed INSIDE each `overlay.set` delete
+/// transaction (same writer-lock snapshot as the DELETE, so a future-schema
+/// write can never slip between the freeze decision and the delete) and
+/// excluded from that batch.
 pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy) -> Result<u64> {
     let started = std::time::Instant::now();
     let horizon_ms =
@@ -245,36 +247,18 @@ pub async fn prune_events_once(pool: &SqlitePool, policy: &EventsRetentionPolicy
     for rule in &policy.rules {
         for kind in &rule.kinds {
             let keep_latest = rule.keep_latest_per_overlay_key && *kind == "overlay.set";
-            let frozen_quads = if keep_latest {
-                match overlay_quads_with_unsupported_latest(pool).await {
-                    Ok(quads) => quads,
+            loop {
+                let deleted = match prune_batch(pool, kind, keep_latest, horizon_ms, batch).await {
+                    Ok(deleted) => deleted,
                     Err(e) => {
                         tracing::warn!(
+                            kind,
                             error = %e,
-                            "events_prune: unsupported-latest quad scan failed; \
-                             skipping overlay.set this pass"
+                            "events_prune: batch failed; continuing with next kind"
                         );
-                        continue;
+                        break;
                     }
-                }
-            } else {
-                Vec::new()
-            };
-            loop {
-                let deleted =
-                    match prune_batch(pool, kind, keep_latest, &frozen_quads, horizon_ms, batch)
-                        .await
-                    {
-                        Ok(deleted) => deleted,
-                        Err(e) => {
-                            tracing::warn!(
-                                kind,
-                                error = %e,
-                                "events_prune: batch failed; continuing with next kind"
-                            );
-                            break;
-                        }
-                    };
+                };
                 batches += 1;
                 if deleted > 0 {
                     pruned_total += deleted;
@@ -318,8 +302,15 @@ type OverlayQuad = (
 /// version guard on replay (future `schemaVersion`, or a payload that no
 /// longer parses as an `Overlay`). Pruning older rows of such a quad would
 /// leave replay with neither the old supported state nor the new one, so
-/// the whole quad is frozen for the pass.
-async fn overlay_quads_with_unsupported_latest(pool: &SqlitePool) -> Result<Vec<OverlayQuad>> {
+/// the whole quad is frozen for the batch.
+///
+/// Runs INSIDE the delete's `BEGIN IMMEDIATE` transaction: the writer lock
+/// is already held, so no `overlay.set` can land between "decide which
+/// quads are frozen" and "delete" — the freeze decision and the DELETE see
+/// the same snapshot by construction.
+async fn overlay_quads_with_unsupported_latest_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+) -> Result<Vec<OverlayQuad>> {
     type Row = (
         Option<String>,
         Option<String>,
@@ -341,7 +332,7 @@ async fn overlay_quads_with_unsupported_latest(pool: &SqlitePool) -> Result<Vec<
                       json_extract(payload, '$.entity_id'),
                       json_extract(payload, '$.kind'))"#,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut **tx)
     .await?;
     Ok(rows
         .into_iter()
@@ -361,10 +352,16 @@ async fn prune_batch(
     pool: &SqlitePool,
     kind: &str,
     keep_latest_per_overlay_key: bool,
-    frozen_quads: &[OverlayQuad],
     horizon_ms: i64,
     batch: i64,
 ) -> Result<u64> {
+    let mut tx = begin_immediate_tx(pool).await?;
+    let frozen_quads = if keep_latest_per_overlay_key {
+        overlay_quads_with_unsupported_latest_tx(&mut tx).await?
+    } else {
+        Vec::new()
+    };
+
     let mut sql = String::from(
         r#"DELETE FROM events WHERE id IN (
                SELECT id FROM events
@@ -403,7 +400,7 @@ async fn prune_batch(
         .bind(horizon_ms)
         .bind(batch);
     if keep_latest_per_overlay_key {
-        for (plugin_id, entity_kind, entity_id, overlay_kind) in frozen_quads {
+        for (plugin_id, entity_kind, entity_id, overlay_kind) in &frozen_quads {
             query = query
                 .bind(plugin_id)
                 .bind(entity_kind)
@@ -412,7 +409,6 @@ async fn prune_batch(
         }
     }
 
-    let mut tx = begin_immediate_tx(pool).await?;
     let deleted_ids: Vec<i64> = query.fetch_all(&mut *tx).await?;
     if let Some(max_id) = deleted_ids.iter().max() {
         sqlx::query(
@@ -686,6 +682,79 @@ mod tests {
 
         assert_eq!(pruned, 1, "only the control quad's superseded row goes");
         assert_eq!(remaining_ids(pool).await, vec![supported, future, b2]);
+    }
+
+    #[tokio::test]
+    async fn freeze_set_is_recomputed_at_delete_time_not_cached() {
+        let repo = repo().await;
+        let pool = repo.pool();
+        // A lone supported old row is its quad's MAX(id): kept.
+        let supported = insert_event(
+            pool,
+            "overlay.set",
+            &overlay_payload_with_inner(
+                "kernel",
+                "view",
+                "w1",
+                "layout",
+                serde_json::json!({"schemaVersion": 1, "positions": {}}),
+            ),
+            old(90),
+        )
+        .await;
+        assert_eq!(
+            prune_events_once(pool, &EventsRetentionPolicy::default())
+                .await
+                .expect("prune"),
+            0
+        );
+
+        // A future-schema write lands and becomes the latest. The NEXT
+        // delete batch must see it (freeze decided inside the delete tx,
+        // never carried over from an earlier scan) and keep BOTH rows.
+        let future = insert_event(
+            pool,
+            "overlay.set",
+            &overlay_payload_with_inner(
+                "kernel",
+                "view",
+                "w1",
+                "layout",
+                serde_json::json!({"schemaVersion": 99, "positions": {}}),
+            ),
+            old(60),
+        )
+        .await;
+        assert_eq!(
+            prune_events_once(pool, &EventsRetentionPolicy::default())
+                .await
+                .expect("prune"),
+            0
+        );
+        assert_eq!(remaining_ids(pool).await, vec![supported, future]);
+
+        // Once a SUPPORTED write supersedes the future-schema row, the
+        // freeze lifts on the next batch and the stale history goes.
+        let healed = insert_event(
+            pool,
+            "overlay.set",
+            &overlay_payload_with_inner(
+                "kernel",
+                "view",
+                "w1",
+                "layout",
+                serde_json::json!({"schemaVersion": 1, "positions": {"c": {"x": 0, "y": 0, "w": 1, "h": 1}}}),
+            ),
+            old(40),
+        )
+        .await;
+        assert_eq!(
+            prune_events_once(pool, &EventsRetentionPolicy::default())
+                .await
+                .expect("prune"),
+            2
+        );
+        assert_eq!(remaining_ids(pool).await, vec![healed]);
     }
 
     #[test]
