@@ -1192,11 +1192,11 @@ mod tests {
             channels: vec![
                 crate::event::ChannelVerdict {
                     role: "reviewer-a".into(),
-                    verdict: "approved".into(),
+                    verdict: crate::event::ChannelVerdictKind::Approved,
                 },
                 crate::event::ChannelVerdict {
                     role: "reviewer-b".into(),
-                    verdict: "approved".into(),
+                    verdict: crate::event::ChannelVerdictKind::Approved,
                 },
             ],
             root_cause: None,

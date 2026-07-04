@@ -11,7 +11,7 @@
 
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
-use crate::event::{ChannelVerdict, Event, EventScope, ReviewSubject};
+use crate::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
 use crate::ids::WaveId;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
@@ -80,7 +80,7 @@ fn review_round_descriptor() -> ToolDescriptor {
                         "required": ["role", "verdict"],
                         "properties": {
                             "role": { "type": "string", "minLength": 1 },
-                            "verdict": { "type": "string", "minLength": 1 }
+                            "verdict": { "enum": ["approved", "changes_requested"] }
                         }
                     }
                 },
@@ -333,11 +333,6 @@ fn validate_review_round_args(args: &ReviewRoundArgs) -> Result<(), RpcError> {
             "review_round: channel roles must be distinct (two independent reviewers required)",
         ));
     }
-    if args.channels.iter().any(|c| c.verdict.trim().is_empty()) {
-        return Err(RpcError::invalid_params(
-            "review_round: channel verdict must not be empty",
-        ));
-    }
     if args.converged && !args.channels.iter().all(is_approving_channel) {
         return Err(RpcError::invalid_params(
             "review_round: converged=true requires every channel verdict to be approved",
@@ -347,7 +342,7 @@ fn validate_review_round_args(args: &ReviewRoundArgs) -> Result<(), RpcError> {
 }
 
 fn is_approving_channel(channel: &ChannelVerdict) -> bool {
-    channel.verdict.trim().eq_ignore_ascii_case("approved")
+    channel.verdict == ChannelVerdictKind::Approved
 }
 
 fn review_round_idempotency_key(wave_id: &WaveId, subject: &ReviewSubject, n: u32) -> String {

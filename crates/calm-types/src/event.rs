@@ -366,7 +366,15 @@ pub struct ReviewSubject {
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub struct ChannelVerdict {
     pub role: String,
-    pub verdict: String,
+    pub verdict: ChannelVerdictKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub enum ChannelVerdictKind {
+    Approved,
+    ChangesRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1759,7 +1767,7 @@ mod scope_tests {
             converged: false,
             channels: vec![ChannelVerdict {
                 role: "design-correctness".into(),
-                verdict: "changes_requested".into(),
+                verdict: ChannelVerdictKind::ChangesRequested,
             }],
             root_cause: Some("tests failing".into()),
             idempotency_key: "review.round:wave-1:impl:5b:760:1".into(),
@@ -2796,7 +2804,7 @@ mod scope_tests {
                 converged: false,
                 channels: vec![ChannelVerdict {
                     role: "design-correctness".into(),
-                    verdict: "changes_requested".into(),
+                    verdict: ChannelVerdictKind::ChangesRequested,
                 }],
                 root_cause: Some("tests failing".into()),
                 idempotency_key: "review.round:wave-1:impl:5b:760:1".into(),

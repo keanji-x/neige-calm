@@ -17,7 +17,9 @@ use calm_server::db::sqlite::{
     session_start_runtime_tx,
 };
 use calm_server::db::write_with_actor_events_typed;
-use calm_server::event::{ChannelVerdict, Event, EventBus, EventScope, RatifyDecision};
+use calm_server::event::{
+    ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision,
+};
 use calm_server::forge_trust::trusted_forge_plugin;
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
@@ -1776,11 +1778,11 @@ fn approved_channels() -> Vec<ChannelVerdict> {
     vec![
         ChannelVerdict {
             role: "reviewer-a".into(),
-            verdict: "approved".into(),
+            verdict: ChannelVerdictKind::Approved,
         },
         ChannelVerdict {
             role: "reviewer-b".into(),
-            verdict: "approved".into(),
+            verdict: ChannelVerdictKind::Approved,
         },
     ]
 }
@@ -1789,11 +1791,11 @@ fn changes_requested_channels() -> Vec<ChannelVerdict> {
     vec![
         ChannelVerdict {
             role: "reviewer-a".into(),
-            verdict: "changes_requested".into(),
+            verdict: ChannelVerdictKind::ChangesRequested,
         },
         ChannelVerdict {
             role: "reviewer-b".into(),
-            verdict: "approved".into(),
+            verdict: ChannelVerdictKind::Approved,
         },
     ]
 }
