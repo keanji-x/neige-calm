@@ -43,11 +43,12 @@ use tokio::process::Command as TokioCommand;
 use tokio::sync::OnceCell;
 use tokio::time::{Instant, sleep};
 
+use super::agent_diag::{EvidenceTempDir, panic_with_agent_diag};
 use super::event_queries::*;
 use super::forge_env::{EnvGuard, ForgeTestEnv};
 use super::gh_shim::write_gh_shim;
 use super::git_helpers::{
-    clone_for_wave, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha, run_git_output,
+    clone_for_wave, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha,
 };
 use super::spec_turn::spec_identity;
 
@@ -101,13 +102,17 @@ pub struct Fixture {
     pub _forge_env: ForgeTestEnv,
     pub _codex_path: EnvGuard,
     pub _proxy_env: ProxyEnv,
-    pub _tmp: TempDir,
+    pub _tmp: EvidenceTempDir,
     pub _socket_tmp: TempDir,
 }
 
 impl Fixture {
     pub fn used_injected_plan(&self) -> bool {
         self.used_injected_plan.load(Ordering::SeqCst)
+    }
+
+    pub fn evidence_root(&self) -> &Path {
+        self._tmp.path()
     }
 }
 
@@ -171,7 +176,8 @@ pub async fn boot_forge_e2e_fixture(
     let proxy_env = apply_proxy_env();
     let _issue_body = spec.issue_body.as_deref();
 
-    let tmp = target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?;
+    let tmp =
+        EvidenceTempDir::new(target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?);
     let socket_tmp = socket_tempdir().expect("MCP socket tempdir");
     let socket_path = socket_tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
@@ -548,10 +554,9 @@ pub async fn wait_for_worker_success(
     let deadline = Instant::now() + budget;
     loop {
         if let Some(reason) = task_failed_reason(&fx.repo, task_id).await {
-            panic_with_debug(
+            panic_with_agent_diag(
                 fx,
-                task_id,
-                format!("task failed before worker write assertion: {reason}"),
+                format!("task {task_id} failed before worker write assertion: {reason}"),
             )
             .await;
         }
@@ -560,19 +565,22 @@ pub async fn wait_for_worker_success(
                 return worker;
             }
             if worker.phase == "failed" || worker.phase == "stuck" {
-                panic_with_debug(
+                panic_with_agent_diag(
                     fx,
-                    task_id,
-                    format!("codex-worker operation ended in {}", worker.phase),
+                    format!(
+                        "codex-worker operation for task {task_id} ended in {}",
+                        worker.phase
+                    ),
                 )
                 .await;
             }
         }
         if Instant::now() >= deadline {
-            panic_with_debug(
+            panic_with_agent_diag(
                 fx,
-                task_id,
-                format!("timed out after {budget:?} waiting for codex-worker operation to succeed"),
+                format!(
+                    "timed out after {budget:?} waiting for codex-worker operation for task {task_id} to succeed"
+                ),
             )
             .await;
         }
@@ -656,10 +664,13 @@ pub async fn wait_for_worktree_committed_event(
             );
             return rows.into_iter().next().expect("one committed event row");
         }
-        assert!(
-            Instant::now() < deadline,
-            "timed out after {budget:?} waiting for worktree.committed"
-        );
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!("timed out after {budget:?} waiting for worktree.committed"),
+            )
+            .await;
+        }
         sleep(Duration::from_millis(250)).await;
     }
 }
@@ -693,21 +704,10 @@ pub async fn wait_for_first_worktree_committed_event(
             );
         }
         if Instant::now() >= deadline {
-            let kinds: Vec<(String, i64)> =
-                sqlx::query_as("SELECT kind, COUNT(*) FROM events GROUP BY kind ORDER BY kind")
-                    .fetch_all(fx.repo.pool())
-                    .await
-                    .unwrap_or_default();
-            let census = kinds
-                .iter()
-                .map(|(k, n)| format!("{k}={n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            panic_with_debug(
+            panic_with_agent_diag(
                 fx,
-                task_id,
                 format!(
-                    "timed out after {budget:?} waiting for first worktree.committed; event census: [{census}]"
+                    "timed out after {budget:?} waiting for first worktree.committed for task {task_id}"
                 ),
             )
             .await
@@ -738,10 +738,8 @@ pub async fn wait_for_first_forge_event(
             );
         }
         if Instant::now() >= deadline {
-            panic!(
-                "timed out after {budget:?} waiting for {kind}\ncodex stderr:\n{}",
-                read_lossy(&fx.codex_stderr_log)
-            );
+            panic_with_agent_diag(fx, format!("timed out after {budget:?} waiting for {kind}"))
+                .await;
         }
         sleep(Duration::from_millis(250)).await;
     }
@@ -759,75 +757,14 @@ pub async fn wait_for_task_completed_id(fx: &Fixture, budget: Duration) -> i64 {
             return id;
         }
         if Instant::now() >= deadline {
-            panic!(
-                "timed out after {budget:?} waiting for task.completed\ncodex stderr:\n{}",
-                read_lossy(&fx.codex_stderr_log)
-            );
+            panic_with_agent_diag(
+                fx,
+                format!("timed out after {budget:?} waiting for task.completed"),
+            )
+            .await;
         }
         sleep(Duration::from_millis(250)).await;
     }
-}
-
-pub async fn panic_with_debug(fx: &Fixture, task_id: &str, reason: String) -> ! {
-    let worker = worker_operation_for_task(&fx.repo, task_id).await;
-    let worker_summary = worker
-        .as_ref()
-        .map(operation_debug_summary)
-        .unwrap_or_else(|| format!("missing codex-worker operation for task {task_id}"));
-    let worker_cwd = worker
-        .as_ref()
-        .and_then(|row| row.tx_output.as_ref())
-        .map(|output| PathBuf::from(output_string(output, "cwd")));
-    let git_status = worker_cwd
-        .as_deref()
-        .map(git_status_for_debug)
-        .unwrap_or_else(|| "<worker cwd not yet known>".to_string());
-    let git_log = worker_cwd
-        .as_deref()
-        .map(git_log_for_debug)
-        .unwrap_or_else(|| "<worker cwd not yet known>".to_string());
-    panic!(
-        "{reason}\n\ncodex-worker operation:\n{worker_summary}\n\ncodex stderr:\n{}\n\nworker git log --oneline -5:\n{}\n\nworker git status:\n{}",
-        read_lossy(&fx.codex_stderr_log),
-        git_log,
-        git_status
-    );
-}
-
-pub fn operation_debug_summary(row: &OperationRow) -> String {
-    format!(
-        "id={} phase={} last_error={:?}",
-        row.id, row.phase, row.last_error
-    )
-}
-
-pub fn git_status_for_debug(cwd: &Path) -> String {
-    if !cwd.exists() {
-        return format!("{} does not exist", cwd.display());
-    }
-    let status = run_git_output(
-        Some(cwd),
-        ["status", "--short", "--branch", "--untracked-files=all"],
-    );
-    format!(
-        "cwd: {}\nstdout:\n{}\nstderr:\n{}",
-        cwd.display(),
-        String::from_utf8_lossy(&status.stdout),
-        String::from_utf8_lossy(&status.stderr)
-    )
-}
-
-pub fn git_log_for_debug(cwd: &Path) -> String {
-    if !cwd.exists() {
-        return format!("{} does not exist", cwd.display());
-    }
-    let log = run_git_output(Some(cwd), ["log", "--oneline", "-5"]);
-    format!(
-        "cwd: {}\nstdout:\n{}\nstderr:\n{}",
-        cwd.display(),
-        String::from_utf8_lossy(&log.stdout),
-        String::from_utf8_lossy(&log.stderr)
-    )
 }
 
 pub fn output_string(output: &TxOutput, key: &str) -> String {
