@@ -1101,7 +1101,12 @@ impl AppState {
         // grace window; see `wave_vcs::sweep_unreferenced_objects_once`.
         if let Some(pool) = state.raw.sqlite_pool() {
             crate::wave_vcs::spawn_unreferenced_object_sweeper(pool.clone());
-            crate::wave_vcs::spawn_wave_history_pruner(pool);
+            crate::wave_vcs::spawn_wave_history_pruner(pool.clone());
+            // Events retention pruner (#854 slice 2). Allowlist-only,
+            // age-horizoned, keep-latest overlay carve-out; see
+            // `calm_truth::events_prune` module docs and
+            // `docs/events-retention.md`.
+            crate::events_prune::spawn_events_pruner(pool);
         }
 
         Ok(state)

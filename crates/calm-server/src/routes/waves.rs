@@ -1118,3 +1118,26 @@ pub(crate) async fn update_wave_report(
     })?;
     Ok((StatusCode::OK, Json(payload)).into_response())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::spec_harness_layout_payload;
+
+    /// Pins the full-write assumption the events retention pruner's
+    /// keep-latest `overlay.set` carve-out depends on (#854 slice 2):
+    /// `fold_layout_positions` ignores a positions-less `overlay.set`
+    /// (`.or(current)`), so keeping only `MAX(id)` per overlay quad is
+    /// fold-preserving only if every kernel-emitted `view/layout`
+    /// `overlay.set` carries the complete positions map. This is that
+    /// writer. See `calm_truth::events_prune` module docs.
+    #[test]
+    fn spec_harness_layout_payload_is_a_full_positions_write() {
+        let payload = spec_harness_layout_payload("spec-1", "report-1");
+        let positions = payload
+            .get("positions")
+            .and_then(|v| v.as_object())
+            .expect("layout overlay.set payload must carry a full positions object");
+        assert!(positions.contains_key("spec-1"));
+        assert!(positions.contains_key("report-1"));
+    }
+}

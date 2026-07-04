@@ -454,6 +454,7 @@ pub mod dispatcher;
 pub mod error;
 pub mod event;
 pub mod event_cursor;
+pub mod events_prune;
 // #679 PR1 — `ids` moved wholesale to calm-types; the re-export keeps every
 // `calm_server::ids::…` / `crate::ids::…` path working unchanged.
 pub use calm_types::ids;

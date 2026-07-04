@@ -101,6 +101,7 @@ pub struct Fixture {
     pub _forge_env: ForgeTestEnv,
     pub _codex_path: EnvGuard,
     pub _proxy_env: ProxyEnv,
+    pub _events_prune_env: EnvGuard,
     pub _tmp: TempDir,
     pub _socket_tmp: TempDir,
 }
@@ -169,6 +170,11 @@ pub async fn boot_forge_e2e_fixture(
         .map(|path| EnvGuard::set("PATH", path))
         .ok_or_else(|| format!("codex binary has no parent: {}", codex_bin.display()))?;
     let proxy_env = apply_proxy_env();
+    // Belt-and-braces for the events retention pruner (#854 slice 2):
+    // fixtures seed events freely, so the shared boot harness pins the
+    // pruner off even though no test path calls `AppState::new` (the only
+    // spawn site). See `calm_truth::events_prune` and design §5.
+    let events_prune_env = EnvGuard::set("NEIGE_EVENTS_PRUNE_INTERVAL_SECS", "0");
     let _issue_body = spec.issue_body.as_deref();
 
     let tmp = target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?;
@@ -491,6 +497,7 @@ pub async fn boot_forge_e2e_fixture(
         _forge_env: forge_env,
         _codex_path: codex_path,
         _proxy_env: proxy_env,
+        _events_prune_env: events_prune_env,
         _tmp: tmp,
         _socket_tmp: socket_tmp,
     })
