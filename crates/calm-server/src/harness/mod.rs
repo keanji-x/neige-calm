@@ -253,7 +253,7 @@ mod tests {
     use crate::shared_codex_appserver::SharedCodexAppServer;
     use crate::wave_cove_cache::WaveCoveCache;
     use calm_truth::decision_gate::PermissiveGate;
-    use calm_types::event::{ChannelVerdict, ReviewSubject};
+    use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
     use serde_json::json;
 
     #[tokio::test]
@@ -504,11 +504,11 @@ mod tests {
             channels: vec![
                 ChannelVerdict {
                     role: "design-correctness".into(),
-                    verdict: "changes_requested".into(),
+                    verdict: ChannelVerdictKind::ChangesRequested,
                 },
                 ChannelVerdict {
                     role: "failure-path".into(),
-                    verdict: "approved".into(),
+                    verdict: ChannelVerdictKind::Approved,
                 },
             ],
             root_cause: Some("tests failing".into()),

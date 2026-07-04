@@ -31,7 +31,7 @@ use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{ChannelVerdict, RatifyDecision, ReviewSubject};
+use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -751,11 +751,11 @@ golden_test!(
         channels: vec![
             ChannelVerdict {
                 role: "design-correctness".into(),
-                verdict: "changes_requested".into(),
+                verdict: ChannelVerdictKind::ChangesRequested,
             },
             ChannelVerdict {
                 role: "failure-path".into(),
-                verdict: "approved".into(),
+                verdict: ChannelVerdictKind::Approved,
             },
         ],
         root_cause: Some("tests failing".into()),

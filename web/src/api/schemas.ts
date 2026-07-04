@@ -614,7 +614,7 @@ export const reviewSubjectSchema = z.object({
 
 export const channelVerdictSchema = z.object({
   role: z.string(),
-  verdict: z.string(),
+  verdict: z.enum(['approved', 'changes_requested']),
 });
 
 export const ratifyDecisionSchema = z.enum(['grant', 'deny']);

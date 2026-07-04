@@ -1492,7 +1492,7 @@ mod tests {
     use crate::card_role_cache::CardRoleCache;
     use crate::event::{ArtifactRef, BroadcastEnvelope, EventScope};
     use crate::ids::CoveId;
-    use calm_types::event::{ChannelVerdict, RatifyDecision, ReviewSubject};
+    use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
 
     fn wave_scope(wave: &WaveId, cove: &CoveId) -> EventScope {
         EventScope::Wave {
@@ -1660,7 +1660,7 @@ mod tests {
             converged: false,
             channels: vec![ChannelVerdict {
                 role: "design-correctness".into(),
-                verdict: "changes_requested".into(),
+                verdict: ChannelVerdictKind::ChangesRequested,
             }],
             root_cause: Some("tests failing".into()),
             idempotency_key: "review.round:w:impl:5b:760:1".into(),
@@ -2103,7 +2103,7 @@ mod tests {
                 converged: false,
                 channels: vec![ChannelVerdict {
                     role: "design-correctness".into(),
-                    verdict: "changes_requested".into(),
+                    verdict: ChannelVerdictKind::ChangesRequested,
                 }],
                 root_cause: Some("tests failing".into()),
                 idempotency_key: "review.round:w:impl:5b:760:1".into(),
@@ -2467,7 +2467,7 @@ mod tests {
                     converged: false,
                     channels: vec![ChannelVerdict {
                         role: "design-correctness".into(),
-                        verdict: "changes_requested".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
                     }],
                     root_cause: Some("tests failing".into()),
                     idempotency_key: "review.round:wave-map:impl:5b:760:1".into(),

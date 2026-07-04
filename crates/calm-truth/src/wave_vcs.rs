@@ -3375,7 +3375,7 @@ mod tests {
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
     use crate::event::ForgeMergeSubject;
     use crate::model::{NewCove, NewWave, RequestTheme};
-    use calm_types::event::{ChannelVerdict, RatifyDecision, ReviewSubject};
+    use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
 
     #[test]
     fn commit_hash_ignores_author_metadata() {
@@ -3565,11 +3565,11 @@ mod tests {
                 channels: vec![
                     ChannelVerdict {
                         role: "design-correctness".into(),
-                        verdict: "changes_requested".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
                     },
                     ChannelVerdict {
                         role: "failure-path".into(),
-                        verdict: "approved".into(),
+                        verdict: ChannelVerdictKind::Approved,
                     },
                 ],
                 root_cause: Some("tests failing".into()),
