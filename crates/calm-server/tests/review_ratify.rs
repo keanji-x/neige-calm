@@ -313,6 +313,72 @@ async fn review_round_rejects_duplicate_channel_roles() {
 }
 
 #[tokio::test]
+async fn review_round_rejects_non_token_verdict_at_deserialization() {
+    let boot = boot().await;
+    for verdict in ["LGTM", "Approved ", "rejected", ""] {
+        let err = call_tool(
+            &boot,
+            TOOL_REVIEW_ROUND,
+            json!({
+                "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
+                "n": 1,
+                "cap": 3,
+                "converged": true,
+                "channels": [
+                    { "role": "reviewer-a", "verdict": verdict },
+                    { "role": "reviewer-b", "verdict": "approved" }
+                ]
+            }),
+        )
+        .await
+        .expect_err("non-token verdict must be rejected");
+        assert_eq!(
+            err.code,
+            calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+        );
+        assert!(err.message.contains("invalid args"), "{err:?}");
+        assert!(
+            err.message.contains("approved") && err.message.contains("changes_requested"),
+            "error must name the valid tokens: {err:?}"
+        );
+    }
+    let events = events_for_wave(&boot, &["review.round"]).await;
+    assert!(events.is_empty(), "{events:?}");
+}
+
+#[tokio::test]
+async fn review_round_rejects_converged_with_changes_requested_channel() {
+    let boot = boot().await;
+    let err = call_tool(
+        &boot,
+        TOOL_REVIEW_ROUND,
+        json!({
+            "subject": { "phase": "impl", "slice_id": "5b", "pr_number": 760 },
+            "n": 1,
+            "cap": 3,
+            "converged": true,
+            "channels": [
+                { "role": "reviewer-a", "verdict": "approved" },
+                { "role": "reviewer-b", "verdict": "changes_requested" }
+            ]
+        }),
+    )
+    .await
+    .expect_err("converged=true with a changes_requested channel must be rejected");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(
+        err.message
+            .contains("requires every channel verdict to be approved"),
+        "{err:?}"
+    );
+    let events = events_for_wave(&boot, &["review.round"]).await;
+    assert!(events.is_empty(), "{events:?}");
+}
+
+#[tokio::test]
 async fn review_round_rejects_n_above_cap() {
     let boot = boot().await;
     let err = call_tool(

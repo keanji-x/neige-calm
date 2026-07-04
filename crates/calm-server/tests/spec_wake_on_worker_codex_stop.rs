@@ -27,7 +27,7 @@ use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
-use calm_types::event::{ChannelVerdict, ReviewSubject};
+use calm_types::event::{ChannelVerdict, ChannelVerdictKind, ReviewSubject};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -345,11 +345,11 @@ async fn live_review_round_event_reaches_spec_harness_and_issues_turn() {
                 channels: vec![
                     ChannelVerdict {
                         role: "design-correctness".into(),
-                        verdict: "changes_requested".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
                     },
                     ChannelVerdict {
                         role: "failure-path".into(),
-                        verdict: "approved".into(),
+                        verdict: ChannelVerdictKind::Approved,
                     },
                 ],
                 root_cause: Some("tests failing".into()),

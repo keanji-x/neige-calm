@@ -114,7 +114,9 @@ export type CardRuntimeView = { runtime_id: string, kind: WorkerSessionKind, sta
 /**
  * Per-channel verdict recorded on a `review.round`.
  */
-export type ChannelVerdict = { role: string, verdict: string, };
+export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
+
+export type ChannelVerdictKind = "approved" | "changes_requested";
 
 export type Cove = { id: CoveId, name: string, color: string, sort: number, 
 /**
