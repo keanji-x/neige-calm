@@ -81,12 +81,12 @@
 //! `_snapshot_required` from the envelope **before** schema validation
 //! runs.
 //!
-//! ## Delivery invariant (issue #854 / PR #867 review rounds 2–4)
+//! ## Delivery invariant (issue #854 / PR #867 review rounds 2–5)
 //!
 //! The replay window, the ack cursor, and the broadcast-subscription
-//! buffer are assembled at different instants; rounds 2, 3, and 4 were
-//! all facets of orderings that let those three views disagree. The
-//! single invariant every replay execution must satisfy:
+//! buffer are assembled at different instants; rounds 2–5 were all
+//! facets of orderings that let those three views disagree. The single
+//! invariant every replay execution must satisfy:
 //!
 //! > For every `{sub, since}` replay that terminates in
 //! > `_replay_complete` with cursor `C` (the frame's `_id`, installed as
@@ -106,11 +106,30 @@
 //! >
 //! > The anchor is the client's `since`, EXCEPT on the over-cap cold
 //! > skip, where it is promoted to `conn_tip` — the log tip snapshotted
-//! > BEFORE the subscription. The promotion is the skip's contract: rows
-//! > `<= conn_tip` are covered by the client's defensive full invalidate
-//! > (REST re-reads), not by frames. `_snapshot_required` routes stamp
-//! > no cursor and close the connection, satisfying the invariant
-//! > vacuously.
+//! > immediately AFTER the subscription is established at connection
+//! > accept. The promotion is the skip's contract: rows `<= conn_tip`
+//! > are covered by the client's defensive full invalidate (REST
+//! > re-reads), not by frames. `_snapshot_required` routes stamp no
+//! > cursor and close the connection, satisfying the invariant
+//! > vacuously. Clients that never send `since` never stamp a cursor
+//! > either: for them clause 2 degenerates to "everything committed
+//! > after accept is buffered", which the subscribe-first ordering
+//! > below guarantees.
+//!
+//! Ordering at accept (round 5): the subscription is established FIRST,
+//! synchronously, before ANY awaited work — a live-only client (no
+//! `since`) has no replay to recover events with, so an awaited DB read
+//! placed before the subscribe would be an unbuffered loss window for
+//! it. The `conn_tip` snapshot is read right after. Consequently the
+//! round-4 "committed between snapshot and subscribe" cell no longer
+//! exists — there is no such window. The one residual sliver: a row
+//! that commits DURING the snapshot read and lands at/below the
+//! returned tip is buffered but wholesale-acked. That is within the
+//! skip contract by construction: it predates the client's first sub
+//! frame (the topic set is still empty, so the live path could never
+//! have delivered it) and the invalidate covers it like the rest of
+//! the backlog; a row that lands above the returned tip is gap-drained
+//! as a frame instead.
 //!
 //! Why the streaming path satisfies it constructively: ids are
 //! append-only monotonic. The raw window probe runs *after* the
@@ -124,9 +143,9 @@
 //! `min` passes a regressed tip (issue #290 `/dev/reset` detection)
 //! through unclamped. The cold skip reuses this exact machinery — anchor
 //! promotion, then the `(conn_tip, tip]` gap streams as an ordinary
-//! window — so rows committed between the `conn_tip` snapshot and the
-//! subscribe (in NEITHER the buffer NOR the skipped backlog; round 4)
-//! are delivered as replay frames rather than lost.
+//! window — so rows committed after the snapshot (e.g. between accept
+//! and the client's sub frame; round 4) are delivered as replay frames
+//! rather than lost.
 //!
 //! ### Implementation hints
 //!
@@ -187,33 +206,40 @@ struct SubMessage {
 
 async fn handle(socket: WebSocket, state: AppState) {
     let (mut tx, mut rx) = socket.split();
-    // Snapshot the log tip BEFORE subscribing (PR #867 rounds 3–4). The
-    // over-cap cold skip promotes its replay anchor to this snapshot:
+    // Always subscribe up-front — UNCONDITIONALLY FIRST, before any
+    // awaited work (PR #867 round-5 review) — so any live event emitted
+    // between now and the first `{sub, since}` is buffered in the
+    // broadcast channel rather than dropped. The design's
+    // "subscribe-first" pattern (§2.2) is the *only* mechanism that
+    // prevents drops at the replay→live boundary, and for a documented
+    // live-only client (no `since`, no replay) the buffer is the ONLY
+    // delivery vehicle: an awaited DB read placed before this line would
+    // open an unbuffered window whose events such a client can never
+    // recover. `subscribe()` is synchronous, so no event can slip in
+    // between socket accept and the receiver existing.
+    let mut bus = state.events.subscribe();
+    // Snapshot the log tip immediately AFTER subscribing (rounds 3–5).
+    // The over-cap cold skip promotes its replay anchor to this snapshot:
     // everything `<= conn_tip` is acked wholesale under the skip contract
     // (the client's defensive invalidate re-reads state over REST), and
-    // because the snapshot PREDATES the subscription, every broadcast the
-    // channel ever buffers has `id > conn_tip` — so the wholesale ack can
-    // never swallow a buffered frame (round 3). Rows committed after this
-    // read (whether before or after the subscribe below) land ABOVE the
-    // promoted anchor and are delivered as frames: the `(conn_tip, tip]`
+    // everything above it is delivered as frames — the `(conn_tip, tip]`
     // gap streams through the ordinary bounded replay path (round 4), and
-    // anything past that flows live. See the module's "Delivery
-    // invariant" section. A read error degrades to `0` ("promote to
-    // nothing"), which routes an over-cap cold window to
+    // anything past that flows live. Because the subscription already
+    // exists, a row that commits DURING this read is buffered either way;
+    // if it lands at/below the returned tip it falls under the wholesale
+    // ack — it predates the client's first sub frame (empty topic set:
+    // the live path could not have delivered it anyway) and is covered by
+    // the invalidate contract like the rest of the backlog. See the
+    // module's "Delivery invariant" section. A read error degrades to `0`
+    // ("promote to nothing"), which routes an over-cap cold window to
     // `_snapshot_required` instead of skipping — safe, one extra bounce.
     let conn_tip = match state.repo.events_latest_id().await {
         Ok(tip) => tip.unwrap_or(0),
         Err(e) => {
-            tracing::error!(error = %e, "ws /api/events: pre-subscribe tip snapshot failed");
+            tracing::error!(error = %e, "ws /api/events: connection tip snapshot failed");
             0
         }
     };
-    // Always subscribe up-front so any live event emitted between now and
-    // the first `{sub, since}` is buffered in the broadcast channel rather
-    // than dropped. The design's "subscribe-first" pattern (§2.2) is the
-    // *only* mechanism that prevents drops at the replay→live boundary,
-    // so it has to come before any SQL query against the events table.
-    let mut bus = state.events.subscribe();
     let mut subs: HashSet<String> = HashSet::new();
     // Tracks the largest replayed event id while a replay is in flight.
     // Any live event with `id <= last_replayed_id` is a duplicate (already
@@ -381,9 +407,11 @@ pub(crate) fn ws_replay_max_events_from_env() -> i64 {
 /// `_snapshot_required` if `since` predates the retention horizon or the
 /// pending window exceeds the replay cap `cap` (env-derived on the
 /// `AppState`; see [`WS_REPLAY_MAX_EVENTS_ENV`] for the over-cap routing
-/// table). `conn_tip` is the log tip snapshotted in `handle` BEFORE the
-/// connection's broadcast subscription — the anchor the over-cap cold
-/// skip promotes to (module doc, "Delivery invariant").
+/// table). `conn_tip` is the log tip snapshotted in `handle` immediately
+/// AFTER the connection's broadcast subscription is established (the
+/// subscribe itself is first, unconditionally — round 5) — the anchor
+/// the over-cap cold skip promotes to (module doc, "Delivery
+/// invariant").
 ///
 /// Implements the subscribe-first ordering: the broadcast subscription is
 /// established *before* this function is called (in `handle`), so any
@@ -452,12 +480,11 @@ where
     //     `conn_tip` and the probe re-runs. Rows ≤ conn_tip are acked
     //     wholesale under the skip contract (client refetches over REST
     //     after the defensive invalidate); the remaining gap
-    //     `(conn_tip, tip]` — including rows committed between the
-    //     conn_tip snapshot and the broadcast subscribe, which are in
-    //     NEITHER the buffer NOR the skipped backlog (round-4 review) —
-    //     then streams through this same bounded path as an ordinary
-    //     warm window, so nothing above the final cursor is unbuffered
-    //     and nothing below it is unsent.
+    //     `(conn_tip, tip]` — every row committed after the accept-time
+    //     snapshot, e.g. while the client's sub frame was in flight
+    //     (round-4 review) — then streams through this same bounded
+    //     path as an ordinary warm window, so nothing above the final
+    //     cursor is unbuffered and nothing below it is unsent.
     //   * a promoted anchor that is STILL over cap (a flood committed
     //     since the connection opened, or `conn_tip == 0` on an
     //     empty-at-accept log) → `_snapshot_required`; the skip cannot
@@ -851,12 +878,16 @@ mod tests {
         let (backlog_id, conn_tip) = (9_000, 15_000);
         assert!(backlog_id <= conn_tip, "wholesale-acked by the promotion");
 
-        // cold-skip, commit BETWEEN conn_tip snapshot and subscribe
-        // (round 4): id 15_001 is above the promoted anchor and NOT
-        // buffered — it must be STREAMED by the promoted window. The gap
-        // probe from conn_tip covers it (gap under cap → Stream), and
-        // the stamp then acks it as sent. [integration:
-        // cold_skip_drains_gap_committed_before_the_sub_frame]
+        // cold-skip, commit AFTER the conn_tip snapshot but BEFORE the
+        // client's sub frame (round 4): id 15_001 is above the promoted
+        // anchor — it must be STREAMED by the promoted window whether or
+        // not its broadcast was consumed while the topic set was still
+        // empty. The gap probe from conn_tip covers it (gap under cap →
+        // Stream), and the stamp then acks it as sent. Round 5 note: the
+        // former "between snapshot and subscribe" variant of this cell no
+        // longer exists — the subscription is established synchronously
+        // BEFORE the snapshot read, so there is no such window.
+        // [integration: cold_skip_drains_gap_committed_before_the_sub_frame]
         assert_eq!(replay_cap_route(conn_tip, 1, CAP, true), CapRoute::Stream);
         let gap_accounted = 15_001; // gap read streamed the row
         assert!(replay_complete_stamp(15_001, gap_accounted) >= 15_001);
@@ -883,6 +914,20 @@ mod tests {
             CapRoute::Snapshot
         );
         assert_eq!(replay_cap_route(0, CAP + 1, CAP, true), CapRoute::Snapshot);
+
+        // ---- LIVE-ONLY column (no `since`, round 5) ------------------
+        // A documented live-only client never enters `run_replay`: no
+        // probe, no promotion, no cursor stamp (`last_replayed_id` stays
+        // 0, so `replay_cap_route` / `replay_complete_stamp` are simply
+        // never consulted — nothing for the pure seams to assert). Its
+        // entire delivery contract is clause 2 of the invariant with
+        // C = 0: everything committed after accept must be buffered,
+        // which holds because `handle` establishes the subscription
+        // synchronously before ANY awaited work — an awaited DB read
+        // placed before the subscribe would be an unbuffered loss window
+        // that no replay ever recovers. [integration:
+        // live_only_client_receives_first_post_connect_commit,
+        // subscribe_without_since_only_live]
 
         // ---- #290 reset detection (both paths) -----------------------
         // A tip BELOW the accounted end is the log-regression signal and

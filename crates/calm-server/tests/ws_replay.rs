@@ -979,15 +979,15 @@ async fn cold_skip_drains_post_subscribe_commit_as_replay_frame() {
 }
 
 // Round-4 cell: a row committed after the connection opened but BEFORE
-// the client's sub frame. Relative to the handler's subscribe instant it
-// may or may not be buffered (unobservable from outside) — the invariant
-// makes both sides of that race correct via the same mechanism: the row
-// is above the promoted anchor, so the gap drain streams it as a replay
-// frame, and the buffered duplicate (if any) dedupes below the cursor.
-// On the round-3 code this test fails: the cursor was parked at conn_tip
-// with no gap drain, so the first frame was the terminator and the row —
-// consumed by the handler while the subscription set was still empty —
-// was never delivered on this connection.
+// the client's sub frame. It is above the promoted anchor (the accept-time
+// tip snapshot), so the gap drain streams it as a replay frame; its
+// broadcast — buffered post-subscribe (round 5: the subscription is
+// established synchronously before any awaited work) but possibly
+// consumed while the topic set was still empty — never double-delivers:
+// either it was dropped by the empty-subs topic filter or it dedupes
+// below the cursor. On the round-3 code this test fails: the cursor was
+// parked at conn_tip with no gap drain, so the first frame was the
+// terminator and the row was never delivered on this connection.
 #[tokio::test]
 async fn cold_skip_drains_gap_committed_before_the_sub_frame() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
@@ -1023,6 +1023,44 @@ async fn cold_skip_drains_gap_committed_before_the_sub_frame() {
     let next = recv_json(&mut ws).await;
     assert_eq!(next["ev"], "cove.updated");
     assert_eq!(next["_id"], next_id);
+}
+
+// Round-5 cell (live-only column of the delivery-invariant matrix): a
+// documented live-only client (no `since`, no replay, no cursor) whose
+// event commits right after the subscription is provably active. The
+// handler must establish the broadcast receiver synchronously at accept,
+// BEFORE any awaited DB work — a pre-subscribe awaited read (the round-3/4
+// `conn_tip` placement) opened an unbuffered window whose events a
+// live-only client can never recover (there is no replay to backfill it).
+// Deterministic shape mirrors `subscribe_without_since_only_live`, but the
+// committed row is a PERSISTED write (real `events.id` on the wire), and
+// it must be the FIRST frame the client ever receives — no terminator, no
+// replay frames precede it.
+#[tokio::test]
+async fn live_only_client_receives_first_post_connect_commit() {
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
+    // Pre-history the live-only client must NOT see (also proves the
+    // handler does not sneak in a replay).
+    let _ = seed_n_cove_updates(&repo, &bus, 3).await;
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    // Live-only sub (no `since`), then give the handler a beat to process
+    // it — the same establishment pattern the other tests use.
+    ws.send(TMessage::Text(r#"{"sub":["*"]}"#.to_string()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The subscription is provably active from here on; this persisted
+    // commit must reach the client as its very first frame.
+    let live_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let first = recv_json(&mut ws).await;
+    assert_eq!(
+        first["ev"], "cove.updated",
+        "live-only client's first frame must be the live event, got {first}"
+    );
+    assert_eq!(first["_id"], live_id, "persisted id rides the wire");
 }
 
 // Escalation cell: the promoted window is ITSELF over cap — a flood
