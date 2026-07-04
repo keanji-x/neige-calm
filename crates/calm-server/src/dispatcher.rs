@@ -2686,12 +2686,84 @@ mod tests {
         );
     }
 
-    /// #828 slice 1 — predicate⇒mapping consistency table. Every event
-    /// kind that warrants a spec push must also map to a harness
-    /// observation, and known non-push kinds must do neither: a `true`
-    /// predicate with a `None` mapping (or vice versa) is exactly the
-    /// silent-wiring drift this pin exists to catch. One row per event
-    /// kind — a new spec-facing event gets its expectation recorded here.
+    /// One consistency-table row: a representative event + actor and the
+    /// expected verdict at BOTH #828 seams. `expect_push` and
+    /// `expect_observation` are separate fields (not one bool) because the
+    /// invariant is one-directional — predicate ⇒ mapping. Conditional
+    /// kinds carry false-side rows where the observation stays `Some`
+    /// (the mapping is per-kind; the predicate additionally gates on
+    /// actor/author/role).
+    struct SpecPushWiringRow {
+        event: Event,
+        actor: ActorId,
+        expect_push: bool,
+        expect_observation: bool,
+    }
+
+    /// Canonical census of every `Event` kind tag, derived from the
+    /// derived deserializer's unknown-variant diagnostic: serde lists the
+    /// complete accepted-tag set when asked to parse an unknown `ev`, so
+    /// this census cannot drift from the enum — adding a variant grows
+    /// the set automatically, and the completeness assertion in
+    /// `spec_push_predicate_and_observation_mapping_agree` then fails
+    /// until the table gains a row. The canary assert fails loudly (with
+    /// the raw diagnostic) if serde's message shape ever changes, rather
+    /// than letting the census silently shrink.
+    fn all_event_kind_tags() -> std::collections::BTreeSet<String> {
+        let err = Event::from_kind_and_payload("__not_an_event_kind__", serde_json::Value::Null)
+            .expect_err("an unknown kind tag must fail to deserialize");
+        let msg = err.to_string();
+        let (_, list) = msg
+            .split_once("expected one of ")
+            .unwrap_or_else(|| panic!("serde unknown-variant diagnostic changed shape: {msg}"));
+        // The list is backtick-quoted: `a`, `b`, … — take the odd split
+        // segments.
+        let mut tags: std::collections::BTreeSet<String> = list
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_string)
+            .collect();
+        // The diagnostic also lists `#[serde(alias)]` spellings —
+        // alternate names for kinds already counted (the deprecated
+        // pre-#644 `*.job_requested` tags kept for old-log replay), not
+        // kinds of their own: `kind_tag()` never emits them, so a table
+        // row can never cover them. Strip the known ones; a FUTURE alias
+        // fails the completeness assertion loudly until recorded here.
+        for alias in ["codex.job_requested", "terminal.job_requested"] {
+            assert!(
+                tags.remove(alias),
+                "stale alias {alias:?} no longer in the deserializer; drop it from this list"
+            );
+        }
+        assert!(
+            tags.contains("cove.updated") && tags.contains("task.completed") && tags.len() >= 46,
+            "kind census parse failed; raw diagnostic: {msg}"
+        );
+        tags
+    }
+
+    /// #828 slice 1 — predicate⇒mapping consistency table over EVERY
+    /// event kind. Each row checks the push predicate
+    /// (`event_warrants_spec_push`) and the harness-observation mapping
+    /// (`harness_observation_from_event`) jointly, and the
+    /// `all_event_kind_tags` census asserts the table covers every kind:
+    /// a new `Event` variant breaks compilation at the two exhaustive
+    /// seams AND fails this test until a row records its expected wiring
+    /// — so a variant wired predicate=true / mapping=None while fixing
+    /// the seam compile errors can no longer slip through by convention.
+    ///
+    /// The invariant is one-directional (predicate ⇒ mapping), enforced
+    /// structurally on the expectations themselves: a row that expects
+    /// push without an observation is rejected before the seams are even
+    /// consulted. Conditional kinds carry false-side rows (spec-actor
+    /// task terminals, spec-authored report edit, stop hooks on
+    /// spec/unknown-role cards, non-stop hooks for both providers) whose
+    /// observation column shows the mapping staying `Some` where it is
+    /// kind-scoped. The exhaustive actor/author/role matrices remain
+    /// pinned in `event_warrants_spec_push_covers_push_allowlist` and
+    /// `event_warrants_spec_push_task_actor_matrix_and_request_kinds_pin`;
+    /// this table owns per-kind coverage and cross-seam agreement.
     #[test]
     fn spec_push_predicate_and_observation_mapping_agree() {
         let cache = CardRoleCache::new();
@@ -2699,31 +2771,76 @@ mod tests {
         let cove = CoveId::from("c");
         let worker = CardId::from("worker");
         let spec = CardId::from("spec");
+        let unknown = CardId::from("unknown");
         cache.insert(worker.clone(), CardRole::Worker, wave.clone());
         cache.insert(spec.clone(), CardRole::Spec, wave.clone());
         let write = WriteContext::new(cache, crate::wave_cove_cache::WaveCoveCache::new());
 
-        let rows: Vec<(Event, ActorId, bool)> = vec![
-            (
-                Event::TaskCompleted {
-                    idempotency_key: "w:k".into(),
-                    result: serde_json::Value::Null,
-                    artifacts: Vec::new(),
-                    agent_message: None,
-                },
+        let row = |event: Event, actor: ActorId, expect_push: bool, expect_observation: bool| {
+            SpecPushWiringRow {
+                event,
+                actor,
+                expect_push,
+                expect_observation,
+            }
+        };
+        let codex_hook = |card_id: &CardId, kind: &str| Event::CodexHook {
+            card_id: card_id.clone(),
+            kind: kind.into(),
+            hook_idempotency_key: format!("hook-codex-{kind}"),
+            payload: serde_json::Value::Null,
+        };
+        let claude_hook = |card_id: &CardId, kind: &str| Event::ClaudeHook {
+            card_id: card_id.clone(),
+            kind: kind.into(),
+            hook_idempotency_key: format!("hook-claude-{kind}"),
+            payload: serde_json::Value::Null,
+        };
+        let report_edited = |author: EditAuthor| Event::WaveReportEdited {
+            wave_id: wave.clone(),
+            card_id: spec.clone(),
+            author,
+            edit_id: "e".into(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: String::new(),
+            body_after: "body".into(),
+            agent_message: None,
+        };
+        let task_completed = || Event::TaskCompleted {
+            idempotency_key: "w:k".into(),
+            result: serde_json::Value::Null,
+            artifacts: Vec::new(),
+            agent_message: None,
+        };
+        let task_failed = || Event::TaskFailed {
+            idempotency_key: "w:k".into(),
+            reason: "boom".into(),
+            agent_message: None,
+        };
+        let card_sample = || crate::model::Card {
+            id: worker.clone(),
+            wave_id: wave.clone(),
+            kind: "terminal".into(),
+            sort: 0.0,
+            payload: serde_json::Value::Null,
+            runtime: None,
+            deletable: true,
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let rows: Vec<SpecPushWiringRow> = vec![
+            // -- Push-capable kinds, push-side rows: predicate true ⇒
+            //    mapping Some. ------------------------------------------
+            row(
+                task_completed(),
                 ActorId::AiCodex(worker.clone()),
                 true,
-            ),
-            (
-                Event::TaskFailed {
-                    idempotency_key: "w:k".into(),
-                    reason: "boom".into(),
-                    agent_message: None,
-                },
-                ActorId::AiCodex(worker.clone()),
                 true,
             ),
-            (
+            row(task_failed(), ActorId::AiCodex(worker.clone()), true, true),
+            row(
                 Event::TaskGateResult {
                     task_id: "w:k".into(),
                     idempotency_key: "w:k".into(),
@@ -2737,23 +2854,10 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
-            ),
-            (
-                Event::WaveReportEdited {
-                    wave_id: wave.clone(),
-                    card_id: spec.clone(),
-                    author: EditAuthor::User,
-                    edit_id: "e".into(),
-                    summary_before: String::new(),
-                    summary_after: String::new(),
-                    body_before: String::new(),
-                    body_after: "body".into(),
-                    agent_message: None,
-                },
-                ActorId::User,
                 true,
             ),
-            (
+            row(report_edited(EditAuthor::User), ActorId::User, true, true),
+            row(
                 Event::WorkspaceLeased {
                     wave_id: wave.clone(),
                     card_id: worker.clone(),
@@ -2762,8 +2866,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::WorkspaceReleased {
                     wave_id: wave.clone(),
                     card_id: worker.clone(),
@@ -2771,8 +2876,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::ForgePrMerged {
                     wave_id: wave.clone(),
                     subject: crate::event::ForgeMergeSubject {
@@ -2785,8 +2891,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::ReviewRound {
                     wave_id: wave.clone(),
                     subject: ReviewSubject {
@@ -2807,32 +2914,36 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::RatifyRequested {
                     wave_id: wave.clone(),
                     reason: "cap_exhausted".into(),
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::RatifyResolved {
                     wave_id: wave.clone(),
                     decision: RatifyDecision::Grant,
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::ForgeScanCompleted {
                     wave_id: wave.clone(),
                     overlapping_prs: vec![1, 2],
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::ForgePrOpened {
                     wave_id: wave.clone(),
                     pr_number: 1,
@@ -2840,8 +2951,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::ForgePrChecks {
                     wave_id: wave.clone(),
                     pr_number: 1,
@@ -2849,16 +2961,18 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::ForgeIssueClosed {
                     wave_id: wave.clone(),
                     issue_number: 1,
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::WorktreeProvisioned {
                     wave_id: wave.clone(),
                     card_id: worker.clone(),
@@ -2866,8 +2980,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
+                true,
             ),
-            (
+            row(
                 Event::WorktreeCommitted {
                     wave_id: wave.clone(),
                     card_id: worker.clone(),
@@ -2876,58 +2991,97 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 true,
-            ),
-            (
-                Event::CodexHook {
-                    card_id: worker.clone(),
-                    kind: "hook.codex.stop".into(),
-                    hook_idempotency_key: "hook-c".into(),
-                    payload: serde_json::Value::Null,
-                },
-                ActorId::User,
                 true,
             ),
-            (
-                Event::ClaudeHook {
-                    card_id: worker.clone(),
-                    kind: "hook.claude.stop".into(),
-                    hook_idempotency_key: "hook-l".into(),
-                    payload: serde_json::Value::Null,
-                },
+            row(
+                codex_hook(&worker, "hook.codex.stop"),
                 ActorId::User,
                 true,
+                true,
             ),
-            (
-                Event::CodexHook {
-                    card_id: worker.clone(),
-                    kind: "hook.codex.permission_request".into(),
-                    hook_idempotency_key: "hook-p".into(),
-                    payload: serde_json::Value::Null,
-                },
+            row(
+                claude_hook(&worker, "hook.claude.stop"),
                 ActorId::User,
-                false,
+                true,
+                true,
             ),
-            (
-                Event::PlanUpdated {
-                    wave_id: wave.clone(),
-                    changed_keys: vec!["k".into()],
-                    agent_message: None,
-                },
+            // -- Conditional kinds, false side: predicate false while the
+            //    kind-scoped mapping stays Some — the exact asymmetry a
+            //    single shared bool could not express. -------------------
+            row(task_completed(), ActorId::AiSpec(spec.clone()), false, true),
+            row(task_failed(), ActorId::AiSpec(spec.clone()), false, true),
+            row(
+                report_edited(EditAuthor::Spec),
                 ActorId::AiSpec(spec.clone()),
                 false,
+                true,
             ),
-            (
-                Event::WaveLifecycleChanged {
-                    id: wave.clone(),
-                    cove_id: cove.clone(),
-                    from: crate::model::WaveLifecycle::Draft,
-                    to: crate::model::WaveLifecycle::Planning,
-                    agent_message: None,
-                },
+            row(
+                report_edited(EditAuthor::Kernel),
+                ActorId::Kernel,
+                false,
+                true,
+            ),
+            row(
+                codex_hook(&spec, "hook.codex.stop"),
                 ActorId::User,
                 false,
+                true,
             ),
-            (
+            row(
+                claude_hook(&spec, "hook.claude.stop"),
+                ActorId::User,
+                false,
+                true,
+            ),
+            row(
+                codex_hook(&unknown, "hook.codex.stop"),
+                ActorId::User,
+                false,
+                true,
+            ),
+            row(
+                claude_hook(&unknown, "hook.claude.stop"),
+                ActorId::User,
+                false,
+                true,
+            ),
+            // Non-stop hooks map to nothing on either seam — both
+            // providers.
+            row(
+                codex_hook(&worker, "hook.codex.permission_request"),
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
+                claude_hook(&worker, "hook.claude.post_tool_use"),
+                ActorId::User,
+                false,
+                false,
+            ),
+            // -- Never-push kinds: explicit-false on both seams. ---------
+            row(
+                Event::CoveUpdated(crate::model::Cove {
+                    id: cove.clone(),
+                    name: "c".into(),
+                    color: "#000000".into(),
+                    sort: 0.0,
+                    kind: crate::model::CoveKind::User,
+                    created_at: 1,
+                    updated_at: 1,
+                }),
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
+                Event::CoveDeleted { id: cove.clone() },
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
                 Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
                     crate::model::Wave {
                         id: wave.clone(),
@@ -2947,17 +3101,189 @@ mod tests {
                 )),
                 ActorId::User,
                 false,
+                false,
             ),
-            (
-                Event::TaskDispatched {
-                    idempotency_key: "w:k".into(),
-                    kind: "codex".into(),
+            row(
+                Event::WaveDeleted {
+                    id: wave.clone(),
+                    cove_id: cove.clone(),
+                },
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
+                Event::WaveLifecycleChanged {
+                    id: wave.clone(),
+                    cove_id: cove.clone(),
+                    from: crate::model::WaveLifecycle::Draft,
+                    to: crate::model::WaveLifecycle::Planning,
                     agent_message: None,
+                },
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(Event::CardAdded(card_sample()), ActorId::User, false, false),
+            row(
+                Event::CardUpdated(card_sample()),
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
+                Event::CardDeleted {
+                    id: worker.clone(),
+                    wave_id: wave.clone(),
+                },
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
+                Event::RuntimeStarted {
+                    runtime_id: "rt".into(),
+                    card_id: worker.to_string(),
+                    kind: calm_types::runtime::WorkerSessionKind::CodexCard,
+                    agent_provider: Some(calm_types::runtime::AgentProvider::Codex),
+                    status: calm_types::worker::WorkerSessionState::Starting,
                 },
                 ActorId::KernelDispatcher,
                 false,
+                false,
             ),
-            (
+            row(
+                Event::RuntimeStatusChanged {
+                    runtime_id: "rt".into(),
+                    card_id: worker.to_string(),
+                    old_status: calm_types::worker::WorkerSessionState::Starting,
+                    new_status: calm_types::worker::WorkerSessionState::Running,
+                },
+                ActorId::KernelDispatcher,
+                false,
+                false,
+            ),
+            row(
+                Event::RuntimeSuperseded {
+                    old_runtime_id: "rt-old".into(),
+                    new_runtime_id: "rt-new".into(),
+                    card_id: worker.to_string(),
+                },
+                ActorId::KernelDispatcher,
+                false,
+                false,
+            ),
+            row(
+                Event::HarnessItemAdded {
+                    runtime_id: "rt".into(),
+                    card_id: spec.clone(),
+                    wave_id: wave.clone(),
+                    item_db_id: 1,
+                    item_uuid: None,
+                    item_type: None,
+                    turn_id: None,
+                    method: "item/agent_message".into(),
+                },
+                ActorId::KernelDispatcher,
+                false,
+                false,
+            ),
+            row(
+                Event::HarnessPhaseChanged {
+                    runtime_id: "rt".into(),
+                    card_id: spec.clone(),
+                    wave_id: wave.clone(),
+                    old_phase: calm_types::harness::HarnessPhaseTag::Idle,
+                    new_phase: calm_types::harness::HarnessPhaseTag::TurnRunning,
+                },
+                ActorId::KernelDispatcher,
+                false,
+                false,
+            ),
+            row(
+                Event::HarnessTranscriptCleared {
+                    runtime_id: "rt".into(),
+                    card_id: spec.clone(),
+                    wave_id: wave.clone(),
+                },
+                ActorId::KernelDispatcher,
+                false,
+                false,
+            ),
+            row(
+                Event::HarnessUserMessageEnqueued {
+                    runtime_id: "rt".into(),
+                    card_id: spec.clone(),
+                    wave_id: wave.clone(),
+                    char_count: 5,
+                },
+                ActorId::User,
+                false,
+                false,
+            ),
+            row(
+                Event::OverlaySet(crate::model::Overlay {
+                    id: "o".into(),
+                    plugin_id: "p".into(),
+                    entity_kind: "card".into(),
+                    entity_id: worker.to_string(),
+                    kind: "status".into(),
+                    payload: serde_json::Value::Null,
+                    updated_at: 1,
+                }),
+                ActorId::Plugin("p".into()),
+                false,
+                false,
+            ),
+            row(
+                Event::OverlayDeleted {
+                    plugin_id: "p".into(),
+                    entity_kind: "card".into(),
+                    entity_id: worker.to_string(),
+                    kind: "status".into(),
+                },
+                ActorId::Plugin("p".into()),
+                false,
+                false,
+            ),
+            row(
+                Event::TerminalDeleted {
+                    id: "term".into(),
+                    card_id: worker.clone(),
+                },
+                ActorId::Kernel,
+                false,
+                false,
+            ),
+            row(
+                Event::PluginState {
+                    id: "p".into(),
+                    state: "running".into(),
+                    last_error: None,
+                },
+                ActorId::Kernel,
+                false,
+                false,
+            ),
+            row(
+                Event::PluginToolRegistered {
+                    plugin_id: "p".into(),
+                    tool_name: "t".into(),
+                },
+                ActorId::Kernel,
+                false,
+                false,
+            ),
+            row(
+                Event::WorkflowRegistered {
+                    plugin_id: "p".into(),
+                    workflow_id: "wf".into(),
+                },
+                ActorId::Kernel,
+                false,
+                false,
+            ),
+            row(
                 Event::CodexWorkerRequested {
                     idempotency_key: "k".into(),
                     goal: "g".into(),
@@ -2967,8 +3293,9 @@ mod tests {
                 },
                 ActorId::AiSpec(spec.clone()),
                 false,
+                false,
             ),
-            (
+            row(
                 Event::TerminalWorkerRequested {
                     idempotency_key: "k".into(),
                     cmd: "ls".into(),
@@ -2977,8 +3304,29 @@ mod tests {
                 },
                 ActorId::AiSpec(spec.clone()),
                 false,
+                false,
             ),
-            (
+            row(
+                Event::PlanUpdated {
+                    wave_id: wave.clone(),
+                    changed_keys: vec!["k".into()],
+                    agent_message: None,
+                },
+                ActorId::AiSpec(spec.clone()),
+                false,
+                false,
+            ),
+            row(
+                Event::TaskDispatched {
+                    idempotency_key: "w:k".into(),
+                    kind: "codex".into(),
+                    agent_message: None,
+                },
+                ActorId::KernelDispatcher,
+                false,
+                false,
+            ),
+            row(
                 Event::ForgePrDiffRead {
                     wave_id: wave.clone(),
                     pr_number: 1,
@@ -2988,8 +3336,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 false,
+                false,
             ),
-            (
+            row(
                 Event::ForgeIssueRead {
                     wave_id: wave.clone(),
                     issue_number: 1,
@@ -2997,8 +3346,9 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 false,
+                false,
             ),
-            (
+            row(
                 Event::WorktreeRemoved {
                     wave_id: wave.clone(),
                     card_id: worker.clone(),
@@ -3006,30 +3356,51 @@ mod tests {
                 },
                 ActorId::KernelDispatcher,
                 false,
-            ),
-            (
-                Event::WaveDeleted {
-                    id: wave.clone(),
-                    cove_id: cove.clone(),
-                },
-                ActorId::User,
                 false,
             ),
         ];
 
-        for (event, actor, expect_push) in rows {
-            let kind = event.kind_tag();
-            assert_eq!(
-                event_warrants_spec_push(&event, &actor, &write),
-                expect_push,
-                "push predicate mismatch for {kind} (actor {actor})"
+        let mut covered = std::collections::BTreeSet::new();
+        for row in &rows {
+            let kind = row.event.kind_tag();
+            covered.insert(kind.to_string());
+            // Reject rows that would record predicate⇒mapping drift as
+            // an expectation: expecting a push without an observation is
+            // exactly the silent-wiring class #828 pins against.
+            assert!(
+                !row.expect_push || row.expect_observation,
+                "row for {kind} violates predicate⇒mapping: expect_push without expect_observation"
             );
             assert_eq!(
-                harness_observation_from_event(&wave, &event).is_some(),
-                expect_push,
-                "predicate⇒mapping consistency broken for {kind}"
+                event_warrants_spec_push(&row.event, &row.actor, &write),
+                row.expect_push,
+                "push predicate mismatch for {kind} (actor {})",
+                row.actor
+            );
+            assert_eq!(
+                harness_observation_from_event(&wave, &row.event).is_some(),
+                row.expect_observation,
+                "observation mapping mismatch for {kind} (actor {})",
+                row.actor
             );
         }
+
+        // Completeness: every Event kind must have at least one row. A
+        // new variant fails here (its serde tag joins the census
+        // automatically) until its wiring expectation is recorded above.
+        let all = all_event_kind_tags();
+        let missing: Vec<_> = all.difference(&covered).collect();
+        assert!(
+            missing.is_empty(),
+            "Event kinds without a consistency-table row (add one per kind): {missing:?}"
+        );
+        // And the reverse guards `kind_tag()` against drifting from the
+        // serde rename set (rows can only name real kinds).
+        let unknown_tags: Vec<_> = covered.difference(&all).collect();
+        assert!(
+            unknown_tags.is_empty(),
+            "row kind_tag() values missing from the serde census: {unknown_tags:?}"
+        );
     }
 
     /// #313 round-2 (B3) — the per-wave push lock map must serialize
