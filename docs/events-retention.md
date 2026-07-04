@@ -9,15 +9,24 @@ causing `database is locked` stalls and slow cold WS replay.
 
 Hourly background pass that deletes rows matching ALL of:
 
-* **exact-kind allowlist** — `claude.hook`, `harness.phase.changed`,
-  `harness.item.added`, `overlay.set`. Everything else (all `card.*` /
-  `wave.*` / `cove.*` / `terminal.*` structural kinds, and `overlay.deleted`
-  tombstones) is permanent by construction;
-* **age horizon** on `at` — default 30 days;
+* **exact-kind allowlist** — `claude.hook`, `codex.hook`,
+  `harness.phase.changed`, `harness.item.added`, `overlay.set`. Everything
+  else (all `card.*` / `wave.*` / `cove.*` / `terminal.*` structural kinds,
+  and `overlay.deleted` tombstones) is permanent by construction;
+* **age horizon** on `at` — default 30 days (floored at 1 day, see Knobs);
 * **keep-latest carve-out** — the newest `overlay.set` per
   `(plugin_id, entity_kind, entity_id, kind)` quad is always kept, so the
   last-writer-wins overlay fold (server `derive_layout_positions`, frontend
-  `useOverlayState`) is invariant under pruning.
+  `useOverlayState`) is invariant under pruning. A quad whose latest row
+  carries an unsupported (future) `schemaVersion` is skipped entirely —
+  replay hides that row, so the older supported row must survive.
+
+Every pruning DELETE also advances a durable **retention watermark**
+(`retention_meta.events_prune_watermark` = highest `events.id` ever pruned,
+updated in the same transaction). WS clients reconnecting with a cursor
+below the watermark receive `_snapshot_required` instead of a replay with
+interior holes — the `MIN(id)` check alone can't detect those, because
+structural events are permanent and the earliest id never advances.
 
 Deletes run in small batches (default 5000 rows) inside `BEGIN IMMEDIATE`
 transactions with a ~100ms yield in between, so writer-lock hold stays in
@@ -25,15 +34,17 @@ the milliseconds even on a first pass over a bloated DB.
 
 ## What you lose after the horizon
 
-Pruning `claude.hook` rows older than the horizon is an **accepted
-regression** for two production consumers that replay them from genesis:
+Pruning `claude.hook` / `codex.hook` rows older than the horizon is an
+**accepted regression** for two production consumers that replay them from
+genesis:
 
 1. **Wave-fs hook transcript** — `hook_events_for_card`
    (`crates/calm-truth/src/wave_fs_view.rs`): a card's hook transcript
-   projection no longer includes hook events older than the horizon.
+   projection no longer includes hook events (either kind) older than the
+   horizon.
 2. **Harness recovery catch-up** — `replay_harness_events_since`
    (`crates/calm-server/src/harness/mod.rs`): boot recovery replays
-   `claude.hook` (among other kinds) above the harness push watermark; a
+   both hook kinds (among others) above the harness push watermark; a
    watermark older than the horizon cannot recover hooks that were pruned.
 
 Both consume diagnostics-grade data; >30-day-old hook history is not needed
@@ -59,7 +70,7 @@ ls -lh "$DB"*
 | Env var | Default | Meaning |
 | --- | --- | --- |
 | `NEIGE_EVENTS_PRUNE_INTERVAL_SECS` | `3600` | Pass interval. `0` disables the pruner. |
-| `NEIGE_EVENTS_RETENTION_SECS` | `2592000` (30d) | Age horizon on `at`. |
+| `NEIGE_EVENTS_RETENTION_SECS` | `2592000` (30d) | Age horizon on `at`. Floor: `86400` (1 day) — smaller values clamp with a `warn!` so a secs-vs-days typo can't wipe all history. `0` falls back to the default (it is NOT a disable switch). |
 | `NEIGE_EVENTS_PRUNE_BATCH` | `5000` | Rows per delete transaction. |
 
 Starter profiles:
@@ -80,7 +91,9 @@ events_prune: pass complete pruned_total=… pruned_by_kind=… batches=… dura
 ```
 
 Failed batches log `events_prune: batch failed` warnings and the pass
-continues with the next kind. Cross-check with the inspection queries above:
+continues with the next kind. Misconfigured knobs (unparseable values,
+sub-floor retention) log `warn!` lines at boot — the pruner stays ON with
+safe defaults; only `NEIGE_EVENTS_PRUNE_INTERVAL_SECS=0` disables it. Cross-check with the inspection queries above:
 allowlisted kinds should hold a bounded row count once steady state is
 reached.
 
@@ -104,6 +117,8 @@ off-peak, never during active use.
   (`crates/calm-truth/src/db/sqlite.rs`). The DELETE predicate ports as-is
   to a future PG backend, where autovacuum makes the space-reclaim section
   moot.
-* **WS replay safety** — clients whose cursor predates the post-prune
-  `events_earliest_id` receive `snapshot_required` (slice 1 protocol,
-  `crates/calm-server/src/ws/events.rs`) instead of a gappy replay.
+* **WS replay safety** — two triggers in `run_replay`
+  (`crates/calm-server/src/ws/events.rs`): a cursor below
+  `events_earliest_id - 1` (head of the log gone — slice 1 protocol) OR a
+  cursor below the durable retention watermark (interior rows pruned by
+  this pruner) receives `_snapshot_required` instead of a gappy replay.

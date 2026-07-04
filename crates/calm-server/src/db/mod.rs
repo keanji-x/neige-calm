@@ -380,6 +380,7 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         since_id: Option<i64>,
     ) -> Result<Vec<WaveEvent>>;
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
+    async fn events_prune_watermark(&self) -> Result<i64>;
     async fn events_latest_id(&self) -> Result<Option<i64>>;
 }
 
@@ -481,6 +482,11 @@ where
     }
     async fn events_earliest_id(&self) -> Result<Option<i64>> {
         calm_truth::db::RepoEventWrite::events_earliest_id(self)
+            .await
+            .map_err(Into::into)
+    }
+    async fn events_prune_watermark(&self) -> Result<i64> {
+        calm_truth::db::RepoEventWrite::events_prune_watermark(self)
             .await
             .map_err(Into::into)
     }

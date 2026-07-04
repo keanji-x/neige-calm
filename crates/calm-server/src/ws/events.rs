@@ -276,27 +276,45 @@ async fn run_replay<S>(
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
-    // Retention check: if `since` predates the smallest surviving id, the
-    // server can't honor a contiguous replay. Tell the client to throw
-    // away its cache and refetch. `since == 0` is always honored (the
-    // client deliberately wants "everything") even when the table is empty.
+    // Retention check, two independent triggers. `since == 0` is always
+    // honored (the client deliberately wants "everything") even when the
+    // table is empty.
+    //
+    //   1. `since < earliest - 1` — the head of the log is gone (rows
+    //      between `since + 1` and `earliest - 1` no longer exist).
+    //      `since == earliest - 1` is the happy case: the next id we'd
+    //      send is exactly `earliest`, no gap.
+    //   2. `since < watermark` — the events pruner (#854 slice 2) deletes
+    //      INTERIOR rows too, and structural events are permanent, so
+    //      `MIN(id)` never advances past the first structural row. The
+    //      durable retention watermark is the highest id ever pruned; a
+    //      cursor below it may have pruned rows anywhere in
+    //      `(since, watermark]`, so a contiguous replay can't be promised.
+    //
+    // Either way the client must throw away its cache and refetch.
     if since > 0 {
-        match repo.events_earliest_id().await {
-            Ok(Some(earliest)) if since < earliest - 1 => {
-                // since < earliest - 1 means there's at least one row
-                // between `since + 1` and `earliest - 1` that's been
-                // pruned. (since == earliest - 1 is the happy case: the
-                // next id we'd send is exactly `earliest`, no gap.)
-                let frame = snapshot_required_frame(earliest);
-                let _ = tx.send(Message::Text(frame.into())).await;
-                return ReplayOutcome::SnapshotRequired;
-            }
-            Ok(_) => {}
+        let earliest = match repo.events_earliest_id().await {
+            Ok(earliest) => earliest,
             Err(e) => {
                 tracing::error!(error = %e, "ws /api/events: events_earliest_id failed");
                 // Fall through — better to attempt the replay than to
                 // strand the client over a transient DB hiccup.
+                None
             }
+        };
+        let watermark = match repo.events_prune_watermark().await {
+            Ok(watermark) => watermark,
+            Err(e) => {
+                tracing::error!(error = %e, "ws /api/events: events_prune_watermark failed");
+                // Same fall-through rationale as `events_earliest_id`.
+                0
+            }
+        };
+        let head_pruned = matches!(earliest, Some(earliest) if since < earliest - 1);
+        if head_pruned || since < watermark {
+            let frame = snapshot_required_frame(earliest.unwrap_or(watermark));
+            let _ = tx.send(Message::Text(frame.into())).await;
+            return ReplayOutcome::SnapshotRequired;
         }
     }
 

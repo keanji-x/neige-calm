@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use calm_server::db::sqlite::{SqlxRepo, card_create_tx, cove_create_tx, wave_create_tx};
-use calm_server::db::write_with_event_typed;
+use calm_server::db::{RepoEventWrite, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::events_prune::{EVENTS_PRUNE_KINDS, EventsRetentionPolicy, prune_events_once};
 use calm_server::ids::ActorId;
@@ -264,6 +264,13 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         old(40),
     )
     .await;
+    let codex_hook_old = insert_event(
+        pool,
+        "codex.hook",
+        r#"{"card_id":"card-a","kind":"stop","payload":{}}"#,
+        old(40),
+    )
+    .await;
     let phase_old = insert_event(pool, "harness.phase.changed", "{}", old(40)).await;
     let item_old = insert_event(pool, "harness.item.added", "{}", old(40)).await;
     // Transient kind inside the horizon: kept.
@@ -319,8 +326,9 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         "structural event count must be unchanged"
     );
 
-    // layout_old, status_old, hook_old, phase_old, item_old pruned.
-    assert_eq!(pruned, 5);
+    // layout_old, status_old, hook_old, codex_hook_old, phase_old,
+    // item_old pruned.
+    assert_eq!(pruned, 6);
     for (id, expect) in [
         (layout_old, false),
         (structural_old, true),
@@ -328,6 +336,7 @@ async fn prune_preserves_layout_fold_and_structural_events() {
         (status_old, false),
         (status_new, true),
         (hook_old, false),
+        (codex_hook_old, false),
         (phase_old, false),
         (item_old, false),
         (hook_new, true),
@@ -339,6 +348,17 @@ async fn prune_preserves_layout_fold_and_structural_events() {
             "unexpected survival state for event {id}"
         );
     }
+
+    // The durable retention watermark advanced to the highest pruned id,
+    // so the WS replay guard can detect the interior holes this pass
+    // punched (`MIN(id)` cannot — the structural head survives).
+    assert_eq!(
+        RepoEventWrite::events_prune_watermark(repo.as_ref())
+            .await
+            .expect("watermark"),
+        item_old,
+        "watermark = MAX(pruned id)"
+    );
 }
 
 // ---------------------------------------------------------------------------
