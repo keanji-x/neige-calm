@@ -1,172 +1,213 @@
-import { act, renderHook } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+// Unit tests for `useCardOverlay` — the REST-seeded card overlay reader.
+//
+// The load-bearing case (#854 / PR #867 review finding 1): the hook must
+// yield the correct overlay payload from the REST snapshot alone, with NO
+// `overlay.set` stream frame ever arriving. That is exactly the shape of
+// an over-cap cold connect, where the server skips the replay backlog and
+// goes straight to `_replay_complete` — the old stream-fold implementation
+// stayed `null` there and every live card dot regressed to "Starting".
+//
+// Live convergence is invalidation-driven (eventBridge invalidates
+// `['overlays', 'card']` on overlay events and runs a global invalidate on
+// `_replay_complete`); we simulate those invalidations directly against
+// the QueryClient — the bridge's own dispatch is covered by
+// `eventBridge.test.tsx`.
 
-const streamMock = vi.hoisted(() => {
-  const listeners = new Set<(ev: unknown) => void>();
-  return {
-    addTopic: vi.fn(),
-    on: vi.fn((listener: (ev: unknown) => void) => {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    }),
-    emit(ev: unknown) {
-      for (const listener of Array.from(listeners)) listener(ev);
-    },
-    reset() {
-      listeners.clear();
-      this.addTopic.mockClear();
-      this.on.mockClear();
-    },
-  };
-});
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ReactNode } from 'react';
 
-vi.mock('../api/events', () => ({
-  sharedEventStream: vi.fn(() => streamMock),
+vi.mock('../api/calm', () => ({
+  listAllOverlays: vi.fn(),
 }));
 
+import * as api from '../api/calm';
+import { queryKeys } from '../api/queries';
 import { useCardStatusOverlay } from './overlayRegistry';
 import { useCardOverlay } from './useCardOverlay';
+import type { KernelOverlay } from '../api/wire';
+
+function makeOverlay(
+  entity_id: string,
+  kind: string,
+  payload: unknown,
+): KernelOverlay {
+  return {
+    id: `ov-${entity_id}-${kind}`,
+    plugin_id: 'kernel',
+    entity_kind: 'card',
+    entity_id,
+    kind,
+    payload,
+    updated_at: 0,
+  };
+}
+
+function makeClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: 0 },
+    },
+  });
+}
+
+function wrapper(client: QueryClient) {
+  return function Wrapper({ children }: { children: ReactNode }) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  };
+}
+
+const listAllOverlays = api.listAllOverlays as ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('useCardOverlay', () => {
-  beforeEach(() => {
-    streamMock.reset();
-  });
+  it('seeds from REST with no stream frames — the over-cap cold-connect case', async () => {
+    // No `overlay.set` frame is ever delivered in this test. The REST
+    // snapshot alone must populate the value, or an over-cap cold connect
+    // (backlog skipped, `_replay_complete` straight at the tip) leaves
+    // every card overlay consumer stuck at null.
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('card_other', 'status', { state: 'Ignored' }),
+      makeOverlay('card_1', 'badge', { state: 'Ignored' }),
+      makeOverlay('card_1', 'status', { state: 'Working' }),
+    ]);
 
-  it('sets and clears matching card overlay payloads', () => {
-    const { result } = renderHook(() =>
-      useCardOverlay<{ state: string }>('card_1', 'status'),
+    const client = makeClient();
+    const { result } = renderHook(
+      () => useCardOverlay<{ state: string }>('card_1', 'status'),
+      { wrapper: wrapper(client) },
     );
 
-    expect(streamMock.addTopic).toHaveBeenCalledWith('card:card_1');
-    expect(result.current).toBeNull();
-
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.set',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'card_1',
-          kind: 'status',
-          payload: { state: 'Working' },
-        },
-      });
+    expect(result.current).toBeNull(); // pending fetch
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'Working' });
     });
-    expect(result.current).toEqual({ state: 'Working' });
+    expect(listAllOverlays).toHaveBeenCalledWith('card');
+  });
 
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.set',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'card_1',
-          kind: 'other',
-          payload: { state: 'Ignored' },
-        },
-      });
-    });
-    expect(result.current).toEqual({ state: 'Working' });
+  it('returns null when no overlay matches (cardId, kind)', async () => {
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('card_1', 'badge', { state: 'Ignored' }),
+    ]);
 
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.deleted',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'card_1',
-          kind: 'status',
-        },
-      });
+    const client = makeClient();
+    const { result } = renderHook(
+      () => useCardOverlay<{ state: string }>('card_1', 'status'),
+      { wrapper: wrapper(client) },
+    );
+
+    await waitFor(() => {
+      expect(listAllOverlays).toHaveBeenCalled();
     });
     expect(result.current).toBeNull();
   });
 
-  it('does not subscribe without a cardId', () => {
-    const { result } = renderHook(() =>
-      useCardOverlay<{ state: string }>(undefined, 'status'),
+  it('does not fetch without a cardId', async () => {
+    listAllOverlays.mockResolvedValue([]);
+
+    const client = makeClient();
+    const { result } = renderHook(
+      () => useCardOverlay<{ state: string }>(undefined, 'status'),
+      { wrapper: wrapper(client) },
     );
 
     expect(result.current).toBeNull();
-    expect(streamMock.addTopic).not.toHaveBeenCalled();
-    expect(streamMock.on).not.toHaveBeenCalled();
+    // The query is disabled: give microtasks a beat, then assert no fetch.
+    await Promise.resolve();
+    expect(listAllOverlays).not.toHaveBeenCalled();
   });
 
-  it('clears payload when cardId changes before a new event arrives', () => {
+  it('converges on the new value when the snapshot is invalidated (overlay.set path)', async () => {
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('card_1', 'status', { state: 'Working' }),
+    ]);
+
+    const client = makeClient();
+    const { result } = renderHook(
+      () => useCardOverlay<{ state: string }>('card_1', 'status'),
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'Working' });
+    });
+
+    // eventBridge's `overlay.set` policy invalidates ['overlays','card'];
+    // the refetch must land the new payload.
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('card_1', 'status', { state: 'Ready' }),
+    ]);
+    await client.invalidateQueries({
+      queryKey: queryKeys.overlaysByKind('card'),
+    });
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'Ready' });
+    });
+  });
+
+  it('drops to null when the overlay disappears from the snapshot (overlay.deleted path)', async () => {
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('card_1', 'status', { state: 'Working' }),
+    ]);
+
+    const client = makeClient();
+    const { result } = renderHook(
+      () => useCardOverlay<{ state: string }>('card_1', 'status'),
+      { wrapper: wrapper(client) },
+    );
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'Working' });
+    });
+
+    listAllOverlays.mockResolvedValue([]);
+    await client.invalidateQueries({
+      queryKey: queryKeys.overlaysByKind('card'),
+    });
+    await waitFor(() => {
+      expect(result.current).toBeNull();
+    });
+  });
+
+  it('re-selects from the shared snapshot when cardId changes', async () => {
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('A', 'status', { state: 'A payload' }),
+      makeOverlay('B', 'status', { state: 'B payload' }),
+    ]);
+
+    const client = makeClient();
     const { result, rerender } = renderHook(
       ({ cardId }) => useCardOverlay<{ state: string }>(cardId, 'status'),
-      { initialProps: { cardId: 'A' } },
+      { initialProps: { cardId: 'A' }, wrapper: wrapper(client) },
     );
-
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.set',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'A',
-          kind: 'status',
-          payload: { state: 'A payload' },
-        },
-      });
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'A payload' });
     });
-    expect(result.current).toEqual({ state: 'A payload' });
 
+    // Same shared cache entry — the new selection is available without a
+    // second fetch.
     rerender({ cardId: 'B' });
-
-    expect(result.current).toBeNull();
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'B payload' });
+    });
+    expect(listAllOverlays).toHaveBeenCalledTimes(1);
   });
 
-  it('clears payload when overlayKind changes before a new event arrives', () => {
-    const { result, rerender } = renderHook(
-      ({ overlayKind }) =>
-        useCardOverlay<{ state: string }>('card_1', overlayKind),
-      { initialProps: { overlayKind: 'status' } },
-    );
+  it('filters status overlays through useCardStatusOverlay', async () => {
+    listAllOverlays.mockResolvedValue([
+      makeOverlay('card_1', 'badge', { state: 'Ignored' }),
+      makeOverlay('card_1', 'status', { state: 'Ready' }),
+    ]);
 
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.set',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'card_1',
-          kind: 'status',
-          payload: { state: 'Status payload' },
-        },
-      });
+    const client = makeClient();
+    const { result } = renderHook(() => useCardStatusOverlay('card_1'), {
+      wrapper: wrapper(client),
     });
-    expect(result.current).toEqual({ state: 'Status payload' });
 
-    rerender({ overlayKind: 'badge' });
-
-    expect(result.current).toBeNull();
-  });
-
-  it('filters status overlays through useCardStatusOverlay', () => {
-    const { result } = renderHook(() => useCardStatusOverlay('card_1'));
-
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.set',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'card_1',
-          kind: 'badge',
-          payload: { state: 'Ignored' },
-        },
-      });
+    await waitFor(() => {
+      expect(result.current).toEqual({ state: 'Ready' });
     });
-    expect(result.current).toBeNull();
-
-    act(() => {
-      streamMock.emit({
-        ev: 'overlay.set',
-        data: {
-          entity_kind: 'card',
-          entity_id: 'card_1',
-          kind: 'status',
-          payload: { state: 'Ready' },
-        },
-      });
-    });
-    expect(result.current).toEqual({ state: 'Ready' });
   });
 });

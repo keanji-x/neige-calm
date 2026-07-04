@@ -712,6 +712,24 @@ pub trait RepoEventWrite: RepoRead {
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
 
+    /// Bounded probe: how many RAW `events` rows have `id > since_id`,
+    /// counted up to `probe_limit` (non-positive limits count zero rows).
+    ///
+    /// "Raw" is the load-bearing word (issue #854 review): this counts rows
+    /// *before* the payload/kind deserialization pass that
+    /// [`RepoEventWrite::events_since`] applies, which silently drops
+    /// malformed-payload and unknown-kind rows. A replay-cap decision made
+    /// on the *filtered* `events_since` length can undercount the pending
+    /// window — the filtered length sits at/below the cap while more raw
+    /// rows remain — so the caller would stream the surviving page and then
+    /// stamp `_replay_complete` at the server tip, permanently advancing
+    /// the client past events that were never sent. Over-cap routing must
+    /// therefore be decided on this raw count.
+    ///
+    /// Cost: an index-only scan of at most `probe_limit` ids (the count is
+    /// taken over a `LIMIT`ed subquery), never a full-table `COUNT(*)`.
+    async fn events_raw_count_since(&self, since_id: i64, probe_limit: i64) -> Result<i64>;
+
     /// Read only selected event kinds scoped to one wave. This is for
     /// projection tools that need a bounded audit-log slice, not a replay
     /// cursor: callers must pass the exact kind tags they need and the query

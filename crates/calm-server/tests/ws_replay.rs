@@ -46,6 +46,15 @@ use tokio_tungstenite::tungstenite::Message as TMessage;
 /// SqlxRepo, and return the bound address plus the concrete SqlxRepo /
 /// EventBus so tests can seed events directly.
 async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
+    boot_with_cap(None).await
+}
+
+/// `boot` variant that pins the WS replay cap (#854 slice 1) on this
+/// test's own `AppState` via `with_ws_replay_cap`. Deliberately NOT an
+/// env-var override: `NEIGE_WS_REPLAY_MAX_EVENTS` is process-global, so
+/// mutating it here would race the sibling tests in this binary that boot
+/// their own servers concurrently (PR #867 review finding).
+async fn boot_with_cap(cap: Option<i64>) -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
     let events = EventBus::new();
     let repo = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -72,6 +81,10 @@ async fn boot() -> (std::net::SocketAddr, Arc<SqlxRepo>, EventBus) {
         None,
         None,
     );
+    let state = match cap {
+        Some(cap) => state.with_ws_replay_cap(cap),
+        None => state,
+    };
     let app = axum::Router::new().merge(ws::router()).with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -836,9 +849,6 @@ async fn replay_skips_future_schema_version_overlay_set_assertion_strict() {
 //        reconnects cold (landing on the bounded path above).
 // ---------------------------------------------------------------------------
 
-/// Both cap tests mutate the same process-global env var; serialize them.
-static REPLAY_CAP_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 /// Seed `n` `cove.updated` rows via `log_pure_event` (cheaper than the
 /// full `cove_create_tx` write path when only the event log matters).
 /// Returns the assigned `events.id`s in append order.
@@ -872,11 +882,7 @@ async fn seed_n_cove_updates(repo: &SqlxRepo, bus: &EventBus, n: usize) -> Vec<i
 
 #[tokio::test]
 async fn cold_replay_over_cap_skips_to_tip() {
-    let _guard = REPLAY_CAP_ENV_LOCK.lock().await;
-    // `set_var` / `remove_var` are unsafe in 2024-edition Rust.
-    unsafe { std::env::set_var("NEIGE_WS_REPLAY_MAX_EVENTS", "6") };
-
-    let (addr, repo, bus) = boot().await;
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     let seeded = seed_n_cove_updates(&repo, &bus, 10).await;
     let tip = *seeded.last().unwrap();
 
@@ -901,16 +907,11 @@ async fn cold_replay_over_cap_skips_to_tip() {
     let live = recv_json(&mut ws).await;
     assert_eq!(live["ev"], "cove.updated");
     assert_eq!(live["_id"], live_id);
-
-    unsafe { std::env::remove_var("NEIGE_WS_REPLAY_MAX_EVENTS") };
 }
 
 #[tokio::test]
 async fn stale_cursor_over_cap_gets_snapshot_required() {
-    let _guard = REPLAY_CAP_ENV_LOCK.lock().await;
-    unsafe { std::env::set_var("NEIGE_WS_REPLAY_MAX_EVENTS", "6") };
-
-    let (addr, repo, bus) = boot().await;
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     let seeded = seed_n_cove_updates(&repo, &bus, 10).await;
 
     // Resume from just past the first row: 9 pending rows > cap of 6.
@@ -929,6 +930,127 @@ async fn stale_cursor_over_cap_gets_snapshot_required() {
     // Connection closes shortly after — tolerate either an explicit close
     // frame, a transport-level closure, or a timeout falling through.
     let _ = timeout(Duration::from_millis(500), ws.next()).await;
+}
 
-    unsafe { std::env::remove_var("NEIGE_WS_REPLAY_MAX_EVENTS") };
+// ---------------------------------------------------------------------------
+// 9. Cap edges (#854 slice 1, PR #867 review round).
+//
+//    * `replay_exactly_at_cap_streams_full_window` — a window of exactly
+//      `cap` rows is NOT over-cap: the whole backlog streams, terminator
+//      at the tip. Pins the `>` (not `>=`) in the over-cap comparison.
+//    * `over_cap_decision_counts_raw_rows_not_deserialized` — the over-cap
+//      decision must run on the RAW row count. `events_since` silently
+//      drops unknown-kind rows during deserialization, so a window whose
+//      raw size exceeds the cap can deserialize to exactly `cap` events;
+//      deciding on the filtered length would stream that page and stamp
+//      `_replay_complete` at the tip, permanently advancing the client
+//      past rows that were never sent.
+//    * `unknown_kind_row_in_under_cap_window_skips_only_that_row` — an
+//      unknown-kind row inside an under-cap window must not cost the
+//      client any OTHER event: every deserializable row still streams and
+//      the terminator advances past the dropped row to the true tip.
+// ---------------------------------------------------------------------------
+
+/// Insert a raw `events` row whose `kind` matches no `Event` variant —
+/// simulates history written by a different (newer/older) kernel binary.
+/// `events_since` drops it at deserialization time; the raw-count probe
+/// must still see it. Returns the assigned `events.id`.
+async fn seed_unknown_kind_row(repo: &SqlxRepo) -> i64 {
+    let row: (i64,) = sqlx::query_as(
+        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+           VALUES ('test.unknown_kind', '{}', 'user', 0, 1)
+           RETURNING id"#,
+    )
+    .fetch_one(repo.pool())
+    .await
+    .expect("insert unknown-kind events row");
+    row.0
+}
+
+#[tokio::test]
+async fn replay_exactly_at_cap_streams_full_window() {
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
+    let seeded = seed_n_cove_updates(&repo, &bus, 6).await;
+    let tip = *seeded.last().unwrap();
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+
+    // Exactly cap rows pending: full replay, in id order, then the
+    // terminator — no skip, no snapshot.
+    for id in &seeded {
+        let v = recv_json(&mut ws).await;
+        assert_eq!(
+            v["ev"], "cove.updated",
+            "at-cap window must stream, got {v}"
+        );
+        assert_eq!(v["_id"], *id, "frame ids in order");
+    }
+    let done = recv_json(&mut ws).await;
+    assert_eq!(done["ev"], "_replay_complete");
+    assert_eq!(done["_id"], tip);
+}
+
+#[tokio::test]
+async fn over_cap_decision_counts_raw_rows_not_deserialized() {
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
+    // Window after `since = head[0]`: 3 good + 1 unknown-kind + 3 good
+    // = 7 RAW rows (> cap 6) that deserialize to 6 events (== cap).
+    let head = seed_n_cove_updates(&repo, &bus, 4).await;
+    let _unknown = seed_unknown_kind_row(&repo).await;
+    let _tail = seed_n_cove_updates(&repo, &bus, 3).await;
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    let sub = format!(r#"{{"sub":["*"], "since": {}}}"#, head[0]);
+    ws.send(TMessage::Text(sub)).await.unwrap();
+
+    // A filtered-length decision sees 6 <= 6 and streams the page; the raw
+    // count sees 7 > 6 and must force the re-snapshot instead.
+    let frame = recv_json(&mut ws).await;
+    assert_eq!(
+        frame["ev"], "_snapshot_required",
+        "over-cap decision must count raw rows (7), not deserialized events (6); got {frame}"
+    );
+
+    let _ = timeout(Duration::from_millis(500), ws.next()).await;
+}
+
+#[tokio::test]
+async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
+    let (addr, repo, bus) = boot_with_cap(Some(6)).await;
+    // 2 good + 1 unknown-kind + 2 good = 5 raw rows <= cap 6: full replay.
+    let head = seed_n_cove_updates(&repo, &bus, 2).await;
+    let unknown_id = seed_unknown_kind_row(&repo).await;
+    let tail = seed_n_cove_updates(&repo, &bus, 2).await;
+    let tip = *tail.last().unwrap();
+
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+
+    // Every deserializable event arrives, in id order, straddling the
+    // dropped row; the terminator advances past it to the true tip.
+    let mut expected: Vec<i64> = head.clone();
+    expected.extend(&tail);
+    for id in &expected {
+        let v = recv_json(&mut ws).await;
+        assert_eq!(v["ev"], "cove.updated", "good rows must stream, got {v}");
+        assert_eq!(
+            v["_id"], *id,
+            "no event may be skipped around the unknown-kind row"
+        );
+    }
+    let done = recv_json(&mut ws).await;
+    assert_eq!(done["ev"], "_replay_complete");
+    assert_eq!(done["_id"], tip);
+    assert!(
+        unknown_id > head[1] && unknown_id < tail[0],
+        "sanity: the unknown-kind row sits inside the replayed window"
+    );
 }

@@ -6460,6 +6460,26 @@ impl RepoEventWrite for SqlxRepo {
         Ok(out)
     }
 
+    async fn events_raw_count_since(&self, since_id: i64, probe_limit: i64) -> Result<i64> {
+        // Same clamp rationale as `events_since`: no caller-supplied value
+        // may reach sqlite's `LIMIT -1` "no limit" sentinel. The count is
+        // taken over a LIMITed id-only subquery so the probe is bounded by
+        // `probe_limit` regardless of table size — this exists so the WS
+        // replay cap can be decided on RAW row count (pre-deserialization;
+        // see the trait doc for why the filtered `events_since` length is
+        // not a safe basis for that decision).
+        let cap = probe_limit.max(0);
+        let (n,): (i64,) = sqlx::query_as(
+            r#"SELECT COUNT(*)
+               FROM (SELECT id FROM events WHERE id > ?1 LIMIT ?2)"#,
+        )
+        .bind(since_id)
+        .bind(cap)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n)
+    }
+
     async fn events_for_wave(
         &self,
         wave_id: &str,

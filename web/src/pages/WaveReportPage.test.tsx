@@ -22,6 +22,16 @@ vi.mock('../api/queries', () => ({
   useWaveFileContent: vi.fn(),
 }));
 
+// The spec-conversation panel's status dot reads `useCardOverlay`, which is
+// React-Query-backed (REST-seeded card overlay snapshot) and would need a
+// QueryClientProvider around every render below. The overlay value is
+// irrelevant to this page's assertions (report body, files rail, event
+// line), so stub the hook; its own behavior is covered in
+// `src/cards/useCardOverlay.test.tsx`.
+vi.mock('../cards/useCardOverlay', () => ({
+  useCardOverlay: vi.fn(() => null),
+}));
+
 vi.mock('../app/theme', () => ({
   useTheme: () => ({
     mode: 'light',

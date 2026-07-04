@@ -167,6 +167,7 @@ async fn handle(socket: WebSocket, state: AppState) {
                                     state.repo.as_ref(),
                                     &subs,
                                     since,
+                                    state.ws_replay_cap,
                                 ).await {
                                     ReplayOutcome::Streamed(tip) => {
                                         last_replayed_id = tip;
@@ -277,7 +278,12 @@ enum ReplayOutcome {
 const WS_REPLAY_MAX_EVENTS_ENV: &str = "NEIGE_WS_REPLAY_MAX_EVENTS";
 const DEFAULT_WS_REPLAY_MAX_EVENTS: i64 = 10_000;
 
-fn ws_replay_max_events_from_env() -> i64 {
+/// Resolve the replay cap from `NEIGE_WS_REPLAY_MAX_EVENTS`. Called once
+/// per `AppState` construction (`BootState::into_app_state`) — NOT per
+/// connection — so tests can inject a small cap via
+/// `AppState::with_ws_replay_cap` instead of racing sibling tests on
+/// process-global env mutation.
+pub(crate) fn ws_replay_max_events_from_env() -> i64 {
     match std::env::var(WS_REPLAY_MAX_EVENTS_ENV) {
         Ok(raw) => match raw.trim().parse::<i64>() {
             Ok(n) if n > 0 => n,
@@ -293,8 +299,9 @@ fn ws_replay_max_events_from_env() -> i64 {
 /// queried after the in-window scan completes; falls back to the
 /// in-window high-water mark if that query errors), or signals
 /// `_snapshot_required` if `since` predates the retention horizon or the
-/// pending window exceeds the replay cap (see
-/// [`WS_REPLAY_MAX_EVENTS_ENV`] for the over-cap routing table).
+/// pending window exceeds the replay cap `cap` (env-derived on the
+/// `AppState`; see [`WS_REPLAY_MAX_EVENTS_ENV`] for the over-cap routing
+/// table).
 ///
 /// Implements the subscribe-first ordering: the broadcast subscription is
 /// established *before* this function is called (in `handle`), so any
@@ -306,6 +313,7 @@ async fn run_replay<S>(
     repo: &dyn RouteRepo,
     subs: &HashSet<String>,
     since: i64,
+    cap: i64,
 ) -> ReplayOutcome
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
@@ -335,41 +343,63 @@ where
         }
     }
 
-    // Fetch one row past the cap so "over budget" is detectable without a
-    // COUNT round-trip.
-    let cap = ws_replay_max_events_from_env();
-    let mut rows = match repo.events_since(since, cap.saturating_add(1)).await {
-        Ok(r) => r,
+    // Over-cap detection runs on the RAW row count, NOT on the length of
+    // the `events_since` result (PR #867 review finding): `events_since`
+    // silently drops malformed-payload / unknown-kind rows while mapping,
+    // so its filtered length can sit at/below the cap while more raw rows
+    // remain in the window. Deciding on the filtered length would stream
+    // the surviving page and then stamp `_replay_complete` at the server
+    // tip — permanently advancing the client past events that were never
+    // sent. The probe is bounded (`LIMIT cap+1` id-only subquery), so
+    // "over budget" stays detectable without a full-table COUNT.
+    let raw_pending = match repo
+        .events_raw_count_since(since, cap.saturating_add(1))
+        .await
+    {
+        Ok(n) => n,
         Err(e) => {
-            tracing::error!(error = %e, since, "ws /api/events: events_since query failed");
-            // Send the control frame with the highest id we have (or
-            // `since`) so the client at least sees a terminator and stops
-            // waiting. The next live broadcast will keep things moving.
+            tracing::error!(error = %e, since, "ws /api/events: replay-window raw count probe failed");
+            // Degraded path, mirrors the events_since error branch below:
+            // send the terminator at `since` so the client stops waiting
+            // and keeps its cursor; the next reconnect retries the replay.
             let frame = replay_complete_frame(since);
             let _ = tx.send(Message::Text(frame.into())).await;
             return ReplayOutcome::Streamed(since);
         }
     };
-    if rows.len() as i64 > cap {
-        if since > 0 {
-            let earliest = earliest_id
-                .or_else(|| rows.first().map(|(id, ..)| *id))
-                .unwrap_or(since);
-            tracing::warn!(
-                since,
-                cap,
-                "ws /api/events: replay window exceeds cap; forcing re-snapshot"
-            );
-            let frame = snapshot_required_frame(earliest);
-            let _ = tx.send(Message::Text(frame.into())).await;
-            return ReplayOutcome::SnapshotRequired;
-        }
+    if raw_pending > cap && since > 0 {
+        let earliest = earliest_id.unwrap_or(since);
+        tracing::warn!(
+            since,
+            cap,
+            "ws /api/events: replay window exceeds cap; forcing re-snapshot"
+        );
+        let frame = snapshot_required_frame(earliest);
+        let _ = tx.send(Message::Text(frame.into())).await;
+        return ReplayOutcome::SnapshotRequired;
+    }
+    let rows = if raw_pending > cap {
+        // since == 0: cold client, over-cap backlog — skip straight to the
+        // tip (see the routing table on WS_REPLAY_MAX_EVENTS_ENV).
         tracing::warn!(
             cap,
             "ws /api/events: cold replay window exceeds cap; skipping backlog to server tip"
         );
-        rows.clear();
-    }
+        Vec::new()
+    } else {
+        match repo.events_since(since, cap).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, since, "ws /api/events: events_since query failed");
+                // Send the control frame with the highest id we have (or
+                // `since`) so the client at least sees a terminator and stops
+                // waiting. The next live broadcast will keep things moving.
+                let frame = replay_complete_frame(since);
+                let _ = tx.send(Message::Text(frame.into())).await;
+                return ReplayOutcome::Streamed(since);
+            }
+        }
+    };
 
     let mut last_id = since;
     for (id, event_version, scope, ev) in rows {

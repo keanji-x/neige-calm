@@ -86,3 +86,63 @@ async fn events_since_non_positive_limit_returns_no_rows() {
         assert!(rows.is_empty(), "limit {limit} must return no rows");
     }
 }
+
+/// PR #867 review — the WS replay cap decision runs on
+/// `events_raw_count_since`, which must count RAW rows (including ones
+/// `events_since` drops at deserialization time) and stay bounded by the
+/// probe limit.
+#[tokio::test]
+async fn events_raw_count_since_counts_raw_rows_and_respects_probe_limit() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open sqlite repo");
+    let seeded = seed_cove_updates(&repo, 4).await;
+    // A raw row whose kind matches no `Event` variant: invisible to
+    // `events_since`, but the raw count must include it.
+    sqlx::query(
+        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+           VALUES ('test.unknown_kind', '{}', 'user', 0, 1)"#,
+    )
+    .execute(repo.pool())
+    .await
+    .expect("insert unknown-kind row");
+
+    // 5 raw rows total; events_since only surfaces the 4 good ones.
+    let filtered = repo.events_since(0, 100).await.expect("events_since");
+    assert_eq!(
+        filtered.len(),
+        4,
+        "unknown-kind row is filtered from events_since"
+    );
+    assert_eq!(
+        repo.events_raw_count_since(0, 100)
+            .await
+            .expect("raw count"),
+        5,
+        "raw count must include rows events_since drops"
+    );
+
+    // The probe is bounded by `probe_limit`, never a full count.
+    assert_eq!(
+        repo.events_raw_count_since(0, 3).await.expect("raw count"),
+        3
+    );
+    // `since_id` offsets the window like events_since does.
+    assert_eq!(
+        repo.events_raw_count_since(seeded[1], 100)
+            .await
+            .expect("raw count"),
+        3,
+        "two good rows + the unknown-kind row remain past seeded[1]"
+    );
+    // Non-positive probe limits clamp to zero (no `LIMIT -1` sentinel).
+    for limit in [0, -1, -100] {
+        assert_eq!(
+            repo.events_raw_count_since(0, limit)
+                .await
+                .expect("raw count"),
+            0,
+            "probe limit {limit} must count zero rows"
+        );
+    }
+}

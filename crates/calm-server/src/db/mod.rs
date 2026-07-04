@@ -373,6 +373,9 @@ pub trait ServerRepoEventWriteExt: ServerRepoReadExt {
         since_id: i64,
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
+    /// Bounded RAW-row probe for the WS replay cap decision — see
+    /// [`calm_truth::db::RepoEventWrite::events_raw_count_since`].
+    async fn events_raw_count_since(&self, since_id: i64, probe_limit: i64) -> Result<i64>;
     async fn events_for_wave(
         &self,
         wave_id: &str,
@@ -466,6 +469,11 @@ where
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>> {
         calm_truth::db::RepoEventWrite::events_since(self, since_id, limit)
+            .await
+            .map_err(Into::into)
+    }
+    async fn events_raw_count_since(&self, since_id: i64, probe_limit: i64) -> Result<i64> {
+        calm_truth::db::RepoEventWrite::events_raw_count_since(self, since_id, probe_limit)
             .await
             .map_err(Into::into)
     }

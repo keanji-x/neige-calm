@@ -203,6 +203,7 @@ impl BootState {
             plugin: self.plugin,
             codex: self.codex,
             db_instance_id: self.db_instance_id,
+            ws_replay_cap: crate::ws::events::ws_replay_max_events_from_env(),
             card_role_cache: self.card_role_cache,
             wave_cove_cache: self.wave_cove_cache,
             card_kind_registry: self.card_kind_registry,
@@ -255,6 +256,14 @@ pub struct AppState {
     /// process = a new instance id, full stop. `Arc<String>` so the value
     /// is cheap to clone across handler dispatches.
     pub db_instance_id: Arc<String>,
+    /// #854 slice 1 — ceiling on the number of rows a single WS replay may
+    /// stream (see `ws::events::run_replay` for the over-cap routing).
+    /// Resolved ONCE at construction from `NEIGE_WS_REPLAY_MAX_EVENTS`
+    /// (default 10_000) rather than per-connection, so tests can inject a
+    /// small cap via [`AppState::with_ws_replay_cap`] without mutating
+    /// process-global env (env mutation raced sibling tests in the same
+    /// binary — review finding on PR #867).
+    pub ws_replay_cap: i64,
     /// PR3 (#136) — `CardId -> CardRole` cache used by `role_gate::enforce_role`
     /// at every audited write entry. Clone-cheap (`Arc<DashMap<…>>` inside).
     /// Production builds seed this from the cards table during
@@ -475,6 +484,16 @@ impl AppState {
 
     pub(crate) fn sqlite_pool(&self) -> Option<sqlx::SqlitePool> {
         self.raw.sqlite_pool()
+    }
+
+    /// Override the WS replay cap (#854 slice 1). Test seam: lets a test
+    /// pin a small cap on its own `AppState` instead of mutating the
+    /// process-global `NEIGE_WS_REPLAY_MAX_EVENTS` env var, which is racy
+    /// against sibling tests booting servers in the same binary. Production
+    /// keeps the env-derived default from construction.
+    pub fn with_ws_replay_cap(mut self, cap: i64) -> Self {
+        self.ws_replay_cap = cap;
+        self
     }
 
     pub async fn recover_harnesses_on_boot(&self) -> crate::error::Result<usize> {
