@@ -363,6 +363,11 @@ pub async fn boot_forge_e2e_fixture(
         "10",
         "--shared-codex-appserver-restart-max-delay-ms",
         "50",
+        // Test codex daemons must NEVER post hooks to the default listen address —
+        // that is the production calm-server port on shared boxes (production-kill
+        // incident, 2026-07-04); tests do not consume hook ingest.
+        "--codex-ingest-url",
+        "http://127.0.0.1:1/hooks-disabled-in-e2e",
     ]);
     let home = Arc::new(SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
