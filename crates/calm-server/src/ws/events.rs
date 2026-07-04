@@ -56,7 +56,11 @@
 //!   persisted cursor is *ahead* of the server tip (the dev
 //!   `/dev/reset` path resets `sqlite_sequence`, so re-seeded events
 //!   restart at id=1) a per-connection signal it can use to detect the
-//!   reset and re-bootstrap its cache. Issue #290.
+//!   reset and re-bootstrap its cache. Issue #290. One qualifier: the
+//!   tip is capped at the highest raw id the replay window accounted
+//!   for, so rows committed concurrently with the replay stay above the
+//!   dedup cursor and arrive via live forwarding instead of being
+//!   silently skipped — see `replay_complete_stamp`.
 //! * `_snapshot_required` is sent when the client's `since` cursor
 //!   predates the retention horizon (the smallest live `events.id`), or
 //!   when a `since > 0` replay window exceeds the replay cap
@@ -352,13 +356,21 @@ where
     // tip — permanently advancing the client past events that were never
     // sent. The probe is bounded (`LIMIT cap+1` id-only subquery), so
     // "over budget" stays detectable without a full-table COUNT.
-    let raw_pending = match repo
-        .events_raw_count_since(since, cap.saturating_add(1))
+    //
+    // The probe also returns the raw MAX(id) of the window — the highest
+    // row this replay is about to account for. That bounds the terminator
+    // stamp below (PR #867 round-2 review): rows committed between this
+    // probe and the later `events_latest_id()` call must NOT be covered by
+    // the returned dedup cursor, or the buffered live broadcast carrying
+    // them would be dropped and the client would advance past events that
+    // were never sent.
+    let (raw_pending, raw_window_max) = match repo
+        .events_raw_window_since(since, cap.saturating_add(1))
         .await
     {
-        Ok(n) => n,
+        Ok(probe) => probe,
         Err(e) => {
-            tracing::error!(error = %e, since, "ws /api/events: replay-window raw count probe failed");
+            tracing::error!(error = %e, since, "ws /api/events: replay-window raw probe failed");
             // Degraded path, mirrors the events_since error branch below:
             // send the terminator at `since` so the client stops waiting
             // and keeps its cursor; the next reconnect retries the replay.
@@ -378,9 +390,14 @@ where
         let _ = tx.send(Message::Text(frame.into())).await;
         return ReplayOutcome::SnapshotRequired;
     }
-    let rows = if raw_pending > cap {
+    let skipped_backlog = raw_pending > cap;
+    let rows = if skipped_backlog {
         // since == 0: cold client, over-cap backlog — skip straight to the
-        // tip (see the routing table on WS_REPLAY_MAX_EVENTS_ENV).
+        // tip (see the routing table on WS_REPLAY_MAX_EVENTS_ENV). The
+        // skip deliberately accounts for the ENTIRE log (including rows
+        // committed while this handler runs): the client's terminator
+        // handler performs a defensive full invalidate and its REST reads
+        // are fresh, so the terminator below stamps the uncapped tip.
         tracing::warn!(
             cap,
             "ws /api/events: cold replay window exceeds cap; skipping backlog to server tip"
@@ -466,12 +483,26 @@ where
     }
 
     // Terminator: tells the client the historical window is fully
-    // delivered. Stamped with the SERVER'S actual log tip — not the
-    // highest id returned by the in-window scan — so a client whose
-    // persisted cursor is *ahead* of the server's tip (e.g. the dev
-    // `/dev/reset` path wipes `sqlite_sequence`, so re-seeded events
-    // restart at id=1) sees `_replay_complete._id < lastEventId` and
-    // can re-bootstrap. Issue #290.
+    // delivered. Stamped with the SERVER'S log tip — not the highest id
+    // returned by the in-window scan — so a client whose persisted cursor
+    // is *ahead* of the server's tip (e.g. the dev `/dev/reset` path wipes
+    // `sqlite_sequence`, so re-seeded events restart at id=1) sees
+    // `_replay_complete._id < lastEventId` and can re-bootstrap. Issue
+    // #290.
+    //
+    // ...capped at `accounted_end` (PR #867 round-2 review): a row can
+    // commit between the raw window probe and this `events_latest_id()`
+    // call. Such a row was never streamed, but it IS buffered on the
+    // broadcast subscription (subscribe-first ordering) — as long as the
+    // returned dedup cursor stays BELOW its id, the live-forward branch
+    // delivers it. `accounted_end` is the highest raw id this replay
+    // actually covered: the raw end of the probed window (which the
+    // bounded read fully consumed, `raw_pending <= cap`, including any
+    // trailing rows the deserialization pass dropped) joined with the
+    // highest row the read itself produced. Capping keeps concurrently
+    // committed rows strictly above the cursor while leaving the #290
+    // regression signal intact (a regressed tip is *below* the cap, so
+    // `min` passes it through). See `replay_complete_stamp`.
     //
     // Falling back to `last_id` (which equals `since` when zero rows
     // matched) on a query error preserves the pre-#290 invariant
@@ -486,11 +517,36 @@ where
             last_id
         }
     };
-    let frame = replay_complete_frame(server_tip);
+    let accounted_end = last_id.max(raw_window_max.unwrap_or(since));
+    let stamp = replay_complete_stamp(server_tip, accounted_end, skipped_backlog);
+    let frame = replay_complete_frame(stamp);
     if tx.send(Message::Text(frame.into())).await.is_err() {
         return ReplayOutcome::ClientClosed;
     }
-    ReplayOutcome::Streamed(server_tip)
+    ReplayOutcome::Streamed(stamp)
+}
+
+/// Decide the id `_replay_complete` carries (also the connection's dedup
+/// cursor). Pure so the decision table is unit-testable:
+///
+///   * over-cap cold skip (`skipped_backlog`) — the uncapped server tip.
+///     The skip's contract is "advance past the entire backlog and let the
+///     client's defensive full invalidate re-read state over REST", which
+///     covers rows committed while the handler runs, too.
+///   * otherwise — `min(server_tip, accounted_end)`. A tip ABOVE what this
+///     replay accounted for means rows committed concurrently with the
+///     replay (between the raw window probe and the `events_latest_id()`
+///     read); stamping the tip would let the dedup pass drop their
+///     buffered broadcasts and the client would permanently skip them
+///     (PR #867 round-2 review). A tip BELOW `accounted_end` is the #290
+///     log-regression signal (`/dev/reset` restarted ids) and must pass
+///     through unclamped so the client can detect it.
+fn replay_complete_stamp(server_tip: i64, accounted_end: i64, skipped_backlog: bool) -> i64 {
+    if skipped_backlog {
+        server_tip
+    } else {
+        server_tip.min(accounted_end)
+    }
 }
 
 /// `{ "_id": <id>, "eventVersion": <n>, "ev": "_replay_complete" }`.
@@ -498,11 +554,13 @@ where
 /// (which ts-rs exports — adding underscore-prefixed variants would muddy
 /// the client's discriminated union for no win).
 ///
-/// `server_tip_id` is the server's actual `events.id` tip (`MAX(id)`),
-/// not the highest id streamed in this replay window. See the module
-/// docstring + `run_replay` comments for why — issue #290's reset
-/// detection relies on the frame carrying the *server's* view of "how
-/// far the log goes" so a stale-cursor client can compare.
+/// `stamp_id` is the server's `events.id` tip (`MAX(id)`) capped at the
+/// highest raw id the replay accounted for — see [`replay_complete_stamp`]
+/// for the decision table. Issue #290's reset detection relies on the
+/// frame carrying the *server's* view of "how far the log goes" so a
+/// stale-cursor client can compare; the cap only bites when rows commit
+/// concurrently with the replay (PR #867 round-2 review), in which case
+/// those rows arrive via the live-forward branch instead.
 ///
 /// Control frames are kernel-emitted and carry `SYNC_EVENT_VERSION` for
 /// shape consistency with persisted-event frames — clients can treat
@@ -510,9 +568,9 @@ where
 /// on the replayed ones". They don't sit in the `events` table, so they
 /// don't have a row-level version to round-trip; the constant is the
 /// right source.
-fn replay_complete_frame(server_tip_id: i64) -> String {
+fn replay_complete_frame(stamp_id: i64) -> String {
     serde_json::json!({
-        "_id": server_tip_id,
+        "_id": stamp_id,
         "eventVersion": SYNC_EVENT_VERSION,
         "ev": "_replay_complete",
     })
@@ -587,6 +645,46 @@ mod tests {
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // `replay_complete_stamp` decision table (PR #867 round-2 review).
+    // The pure seam exists exactly so this race is pinnable without a
+    // mid-`run_replay` write hook: a row committing between the raw
+    // window probe and `events_latest_id()` pushes the tip ABOVE what
+    // the replay accounted for, and the stamp must not cover it.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn replay_stamp_caps_at_accounted_end_not_tip() {
+        // Concurrent commit during replay: probe/read accounted through
+        // id 10, but a row (id 11..12) landed before the tip read. Stamp
+        // 10 so the buffered broadcast for 11/12 survives the dedup pass
+        // (`env.id <= last_replayed_id` drops) and reaches the client.
+        assert_eq!(replay_complete_stamp(12, 10, false), 10);
+    }
+
+    #[test]
+    fn replay_stamp_uses_tip_when_fully_caught_up() {
+        // No concurrent writes: the tip IS the accounted end.
+        assert_eq!(replay_complete_stamp(10, 10, false), 10);
+    }
+
+    #[test]
+    fn replay_stamp_passes_regressed_tip_through_for_reset_detection() {
+        // Issue #290: after /dev/reset the log restarts at id 1, so the
+        // tip sits BELOW a stale client cursor (accounted_end == since
+        // when zero rows matched). The regression signal must reach the
+        // client unclamped.
+        assert_eq!(replay_complete_stamp(2, 5, false), 2);
+    }
+
+    #[test]
+    fn replay_stamp_cold_skip_advances_to_uncapped_tip() {
+        // Over-cap cold skip: nothing streamed (accounted_end == since ==
+        // 0), but the skip's contract is "land at the server tip and let
+        // the defensive invalidate re-read state over REST".
+        assert_eq!(replay_complete_stamp(15_000, 0, true), 15_000);
     }
 
     #[test]

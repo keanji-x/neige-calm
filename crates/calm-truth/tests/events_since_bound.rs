@@ -88,22 +88,25 @@ async fn events_since_non_positive_limit_returns_no_rows() {
 }
 
 /// PR #867 review — the WS replay cap decision runs on
-/// `events_raw_count_since`, which must count RAW rows (including ones
-/// `events_since` drops at deserialization time) and stay bounded by the
-/// probe limit.
+/// `events_raw_window_since`, which must probe RAW rows (including ones
+/// `events_since` drops at deserialization time), report the raw window
+/// end id, and stay bounded by the probe limit.
 #[tokio::test]
-async fn events_raw_count_since_counts_raw_rows_and_respects_probe_limit() {
+async fn events_raw_window_since_probes_raw_rows_and_respects_probe_limit() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await
         .expect("open sqlite repo");
     let seeded = seed_cove_updates(&repo, 4).await;
     // A raw row whose kind matches no `Event` variant: invisible to
-    // `events_since`, but the raw count must include it.
-    sqlx::query(
+    // `events_since`, but the raw probe must include it. Seeded LAST so
+    // the window's `max_id` assertion below proves the probe sees past
+    // what the deserialization pass surfaces.
+    let unknown_id: i64 = sqlx::query_scalar(
         r#"INSERT INTO events (kind, payload, actor, at, event_version)
-           VALUES ('test.unknown_kind', '{}', 'user', 0, 1)"#,
+           VALUES ('test.unknown_kind', '{}', 'user', 0, 1)
+           RETURNING id"#,
     )
-    .execute(repo.pool())
+    .fetch_one(repo.pool())
     .await
     .expect("insert unknown-kind row");
 
@@ -115,34 +118,42 @@ async fn events_raw_count_since_counts_raw_rows_and_respects_probe_limit() {
         "unknown-kind row is filtered from events_since"
     );
     assert_eq!(
-        repo.events_raw_count_since(0, 100)
+        repo.events_raw_window_since(0, 100)
             .await
-            .expect("raw count"),
-        5,
-        "raw count must include rows events_since drops"
+            .expect("raw probe"),
+        (5, Some(unknown_id)),
+        "raw probe must count rows events_since drops and report the raw window end"
     );
 
-    // The probe is bounded by `probe_limit`, never a full count.
+    // The probe is bounded by `probe_limit`, never a full scan: count and
+    // max id both reflect only the first `probe_limit` rows.
     assert_eq!(
-        repo.events_raw_count_since(0, 3).await.expect("raw count"),
-        3
+        repo.events_raw_window_since(0, 3).await.expect("raw probe"),
+        (3, Some(seeded[2]))
     );
     // `since_id` offsets the window like events_since does.
     assert_eq!(
-        repo.events_raw_count_since(seeded[1], 100)
+        repo.events_raw_window_since(seeded[1], 100)
             .await
-            .expect("raw count"),
-        3,
+            .expect("raw probe"),
+        (3, Some(unknown_id)),
         "two good rows + the unknown-kind row remain past seeded[1]"
+    );
+    // Empty window: zero count, no max id.
+    assert_eq!(
+        repo.events_raw_window_since(unknown_id, 100)
+            .await
+            .expect("raw probe"),
+        (0, None)
     );
     // Non-positive probe limits clamp to zero (no `LIMIT -1` sentinel).
     for limit in [0, -1, -100] {
         assert_eq!(
-            repo.events_raw_count_since(0, limit)
+            repo.events_raw_window_since(0, limit)
                 .await
-                .expect("raw count"),
-            0,
-            "probe limit {limit} must count zero rows"
+                .expect("raw probe"),
+            (0, None),
+            "probe limit {limit} must probe zero rows"
         );
     }
 }

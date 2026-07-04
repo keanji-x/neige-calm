@@ -712,10 +712,12 @@ pub trait RepoEventWrite: RepoRead {
         limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
 
-    /// Bounded probe: how many RAW `events` rows have `id > since_id`,
-    /// counted up to `probe_limit` (non-positive limits count zero rows).
+    /// Bounded probe over the RAW `events` window past `since_id`: returns
+    /// `(count, max_id)` for the first `probe_limit` rows with
+    /// `id > since_id` in id order (non-positive limits probe zero rows;
+    /// `max_id` is `None` when the window is empty).
     ///
-    /// "Raw" is the load-bearing word (issue #854 review): this counts rows
+    /// "Raw" is the load-bearing word (issue #854 review): this probes rows
     /// *before* the payload/kind deserialization pass that
     /// [`RepoEventWrite::events_since`] applies, which silently drops
     /// malformed-payload and unknown-kind rows. A replay-cap decision made
@@ -726,9 +728,21 @@ pub trait RepoEventWrite: RepoRead {
     /// the client past events that were never sent. Over-cap routing must
     /// therefore be decided on this raw count.
     ///
-    /// Cost: an index-only scan of at most `probe_limit` ids (the count is
-    /// taken over a `LIMIT`ed subquery), never a full-table `COUNT(*)`.
-    async fn events_raw_count_since(&self, since_id: i64, probe_limit: i64) -> Result<i64>;
+    /// `max_id` gives the caller the raw END of the probed window, so a
+    /// replay that reads the window with a separate (non-snapshot) query
+    /// can bound its cursor by what it actually accounted for — including
+    /// trailing rows the deserialization pass dropped — rather than by a
+    /// later `MAX(id)` that may cover rows committed in between (PR #867
+    /// round-2 review).
+    ///
+    /// Cost: an index-only scan of at most `probe_limit` ids (the
+    /// aggregates are taken over a `LIMIT`ed subquery), never a full-table
+    /// `COUNT(*)`.
+    async fn events_raw_window_since(
+        &self,
+        since_id: i64,
+        probe_limit: i64,
+    ) -> Result<(i64, Option<i64>)>;
 
     /// Read only selected event kinds scoped to one wave. This is for
     /// projection tools that need a bounded audit-log slice, not a replay
