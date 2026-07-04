@@ -2907,7 +2907,7 @@ mod tests {
                     converged: false,
                     channels: vec![ChannelVerdict {
                         role: "design-correctness".into(),
-                        verdict: "changes_requested".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
                     }],
                     root_cause: None,
                     idempotency_key: "review.round:w:impl:5b:760:1".into(),
