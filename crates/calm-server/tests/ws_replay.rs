@@ -31,7 +31,8 @@ use std::time::Duration;
 use calm_server::db::sqlite::{SqlxRepo, cove_create_tx, overlay_upsert_tx};
 use calm_server::db::{Repo, RepoEventWrite, write_with_event_typed};
 use calm_server::event::{Event, EventBus, EventScope};
-use calm_server::ids::ActorId;
+use calm_server::events_prune::{EventsRetentionPolicy, prune_events_once};
+use calm_server::ids::{ActorId, CardId};
 use calm_server::model::{NewCove, NewOverlay};
 use calm_server::plugin_host::PluginHost;
 use calm_server::state::{AppState, DaemonClient};
@@ -1247,5 +1248,195 @@ async fn unknown_kind_row_in_under_cap_window_skips_only_that_row() {
     assert!(
         unknown_id > head[1] && unknown_id < tail[0],
         "sanity: the unknown-kind row sits inside the replayed window"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot required when the retention pruner deleted an INTERIOR row
+//    (#854 slice 2). Structural events are permanent, so `MIN(id)` never
+//    advances past the first structural row — the earliest-id check alone
+//    can't see holes the events pruner punches mid-stream. The durable
+//    retention watermark (highest id ever pruned) closes that gap: any
+//    cursor below it gets `_snapshot_required`; any cursor at or above it
+//    still gets a normal contiguous replay.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn client_below_prune_watermark_gets_snapshot_required() {
+    let (addr, repo, bus) = boot().await;
+
+    let head = seed_three(&repo, &bus, ["c-1", "c-2", "c-3"]).await;
+    let hook_id = calm_server::db::RepoEventWrite::log_pure_event(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        &calm_server::card_role_cache::CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        Event::ClaudeHook {
+            card_id: CardId::from("card-hook"),
+            kind: "stop".into(),
+            hook_idempotency_key: String::new(),
+            payload: json!({}),
+        },
+    )
+    .await
+    .expect("log claude.hook");
+    let tail = seed_three(&repo, &bus, ["c-4", "c-5", "c-6"]).await;
+
+    // Age the seeded rows past a millisecond horizon, then run the real
+    // pruner: it deletes exactly the interior `claude.hook` row (structural
+    // cove.updated rows are not allowlisted).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let policy = EventsRetentionPolicy {
+        horizon: Duration::from_millis(1),
+        ..EventsRetentionPolicy::default()
+    };
+    let pruned = prune_events_once(repo.pool(), &policy)
+        .await
+        .expect("prune pass");
+    assert_eq!(pruned, 1, "exactly the interior hook row is pruned");
+    assert_eq!(
+        RepoEventWrite::events_earliest_id(repo.as_ref())
+            .await
+            .expect("earliest"),
+        Some(head[0].0),
+        "structural head survives — MIN(id) cannot signal the interior hole"
+    );
+
+    // Cursor BELOW the watermark: the pruned row sits inside the replay
+    // window (since < hook_id <= watermark) — must snapshot, not stream a
+    // gappy window.
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(format!(
+        r#"{{"sub":["*"], "since": {}}}"#,
+        head[2].0
+    )))
+    .await
+    .unwrap();
+    let frame = recv_json(&mut ws).await;
+    assert_eq!(frame["ev"], "_snapshot_required");
+    assert_eq!(frame["data"]["earliest_id"], head[0].0);
+    let _ = timeout(Duration::from_millis(500), ws.next()).await;
+
+    // Cursor AT the watermark: everything above `since` still exists, so
+    // the guard must NOT over-fire — normal contiguous replay.
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(format!(
+        r#"{{"sub":["*"], "since": {}}}"#,
+        hook_id
+    )))
+    .await
+    .unwrap();
+    let mut seen = Vec::new();
+    loop {
+        let frame = recv_json(&mut ws).await;
+        if frame["ev"] == "_replay_complete" {
+            break;
+        }
+        seen.push(frame["_id"].as_i64().unwrap());
+    }
+    assert_eq!(
+        seen,
+        tail.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        "cursor at the watermark replays the contiguous tail"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tail prune must not strand the client in a re-snapshot loop (#854 slice 2,
+// review round 2). When the pruner deletes the log's TAIL, the durable
+// watermark sits above the live MAX(id). The cold replay's terminator must
+// ack up to the watermark (`replay_complete_stamp` floor): stamping the
+// (lower) live tip would park the reconnect cursor below the watermark,
+// where the retention guard bounces it to `_snapshot_required`, whose
+// handler reconnects cold, which re-stamps below the watermark — forever.
+// The same floor also keeps a warm cursor AT the watermark from reading a
+// tail-pruned tip as a false #290 log-regression signal.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tail_prune_does_not_strand_client_in_snapshot_loop() {
+    let (addr, repo, bus) = boot().await;
+
+    let head = seed_three(&repo, &bus, ["c-1", "c-2", "c-3"]).await;
+    let hook_id = calm_server::db::RepoEventWrite::log_pure_event(
+        repo.as_ref(),
+        ActorId::User,
+        EventScope::System,
+        None,
+        &bus,
+        &calm_server::card_role_cache::CardRoleCache::new(),
+        &calm_server::wave_cove_cache::WaveCoveCache::new(),
+        Event::ClaudeHook {
+            card_id: CardId::from("card-hook"),
+            kind: "stop".into(),
+            hook_idempotency_key: String::new(),
+            payload: json!({}),
+        },
+    )
+    .await
+    .expect("log tail claude.hook");
+
+    // Age the rows, then prune: the hook is the log's TAIL, so the
+    // watermark lands ABOVE the surviving MAX(id).
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let policy = EventsRetentionPolicy {
+        horizon: Duration::from_millis(1),
+        ..EventsRetentionPolicy::default()
+    };
+    let pruned = prune_events_once(repo.pool(), &policy)
+        .await
+        .expect("prune pass");
+    assert_eq!(pruned, 1, "exactly the tail hook row is pruned");
+    assert_eq!(
+        RepoEventWrite::events_latest_id(repo.as_ref())
+            .await
+            .expect("latest"),
+        Some(head[2].0),
+        "sanity: the live tip now sits below the prune watermark"
+    );
+
+    // Cold replay: streams the surviving coves, then the terminator must
+    // ack up to the WATERMARK, not the (lower) live tip.
+    let url = format!("ws://{}/api/events", addr);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
+        .await
+        .unwrap();
+    let cursor = loop {
+        let frame = recv_json(&mut ws).await;
+        assert_ne!(
+            frame["ev"], "_snapshot_required",
+            "cold replay must never be told to re-snapshot"
+        );
+        if frame["ev"] == "_replay_complete" {
+            break frame["_id"].as_i64().unwrap();
+        }
+    };
+    assert_eq!(
+        cursor, hook_id,
+        "terminator floors at the prune watermark (dead tail ids are acked)"
+    );
+
+    // Reconnect with the stamped cursor: the loop must terminate — a
+    // normal (empty) replay, no `_snapshot_required`, and no false #290
+    // regression (`_id` must not dip back below the cursor).
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+    ws.send(TMessage::Text(format!(
+        r#"{{"sub":["*"], "since": {cursor}}}"#
+    )))
+    .await
+    .unwrap();
+    let frame = recv_json(&mut ws).await;
+    assert_eq!(
+        frame["ev"], "_replay_complete",
+        "reconnect at the stamped cursor must replay cleanly, got {frame}"
+    );
+    assert_eq!(
+        frame["_id"], cursor,
+        "no false log-regression signal from a tail-pruned tip"
     );
 }

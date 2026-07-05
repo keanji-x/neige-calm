@@ -766,6 +766,19 @@ pub trait RepoEventWrite: RepoRead {
     /// refetches via REST (design §2.3).
     async fn events_earliest_id(&self) -> Result<Option<i64>>;
 
+    /// Highest `events.id` ever deleted by the events retention pruner
+    /// (`crate::events_prune`), or `0` if nothing has ever been pruned.
+    ///
+    /// Durable (persisted in `retention_meta`, updated in the same
+    /// transaction as each pruning DELETE). Used by the WS replay guard:
+    /// a `since` cursor below this watermark may have pruned rows anywhere
+    /// in `(since, watermark]`, so the server must send
+    /// `_snapshot_required` instead of a gappy replay. `MIN(id)` alone
+    /// cannot detect these interior holes — structural events are
+    /// permanent, so the earliest id never advances past the first
+    /// structural row (#854 slice 2).
+    async fn events_prune_watermark(&self) -> Result<i64>;
+
     /// Highest live `events.id`, or `None` if the table is empty.
     ///
     /// Used by the WS handler so `_replay_complete` can stamp the

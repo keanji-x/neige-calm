@@ -6584,6 +6584,14 @@ impl RepoEventWrite for SqlxRepo {
         Ok(row.0)
     }
 
+    async fn events_prune_watermark(&self) -> Result<i64> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT value FROM retention_meta WHERE key = ?1")
+            .bind(crate::events_prune::EVENTS_PRUNE_WATERMARK_KEY)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|(v,)| v).unwrap_or(0))
+    }
+
     async fn events_latest_id(&self) -> Result<Option<i64>> {
         // Mirror of `events_earliest_id`: `MAX(id)` over an empty table
         // returns a single `NULL` row, surfaced as `None` here. Used by

@@ -10,6 +10,7 @@ pub mod card_role_cache;
 pub mod db;
 pub mod decision_gate;
 pub mod event_bus;
+pub mod events_prune;
 pub mod mcp_auth;
 pub mod model;
 pub mod role_gate;
