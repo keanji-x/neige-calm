@@ -872,17 +872,24 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 // production descriptor's merge step is kind:codex, so a real production run
 // may DISPATCH a worker to execute the merge instead of the spec calling
 // gh.pr.merge itself; the worker-executed merge topology stays open for
-// slice (e)/capstone. The autonomy content proven here (WHEN to merge and
-// WHICH expected_head_sha to pass, per fence F4) lives in the spec seat
-// either way, because the worker would only execute args the spec chose.
+// slice (e)/capstone. The goal ALSO restates F4's WHEN trigger ("once the
+// impl review round reports converged, execute the merge step"), so for the
+// WHEN half of F4, descriptor-obedience and goal-obedience are
+// indistinguishable here. The genuinely unsteered F4 autonomy content is the
+// expected_head_sha selection: the goal never mentions any sha, so choosing
+// the converged round's head_sha (observed, not given) is the spec's own.
 //
-// Seat proof, construction W (d1 precedent): no scripted call to
-// `gh.pr.merge` or `gh.issue.close` exists in this file beyond this comment —
-// scripted setup stops at `gh.pr.create`/`gh.pr.checks` (against this test's
-// isolated fixture only). The only possible emitter of `forge.pr.merged` /
-// `forge.issue.closed` is therefore the real spec session's own MCP
-// `tools/call`, which the oracle re-checks via the forge-action operation
-// idempotency keys embedding the caller's (spec) card id.
+// Seat proof, construction W (d1 precedent) — LOAD-BEARING: no scripted call
+// to `gh.pr.merge` or `gh.issue.close` exists in this file beyond this
+// comment — scripted setup stops at `gh.pr.create`/`gh.pr.checks` (against
+// this test's isolated fixture only). The only possible emitter of
+// `forge.pr.merged` / `forge.issue.closed` is therefore the real spec
+// session's own MCP `tools/call`. The oracle's forge-action op idem-key
+// checks CORROBORATE only on the worker-seat axis (the embedded caller card
+// id excludes other-card callers); they cannot discriminate
+// scripted-vs-autonomous, because scripted setup calls use the same spec
+// thread → same spec card → a hypothetical scripted merge would produce a
+// byte-identical key.
 #[tokio::test]
 async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
     let Some(codex_bin) = resolve_codex_bin() else {
@@ -1142,9 +1149,10 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // Oracle (a): the S11 merge event. All forge.* events are appended by the
     // kernel's forge-action observer as ActorId::KernelDispatcher
     // (forge_action_adapter.rs `complete_forge_op_succeeded`) — event actor
-    // therefore CANNOT attribute the seat; attribution is construction W (no
-    // scripted merge/close call in this file) plus the op idem-key check in
-    // oracle (b), which pins the caller's card id.
+    // therefore CANNOT attribute the seat; the load-bearing attribution is
+    // construction W (no scripted merge/close call in this file), with the
+    // oracle (b) op idem-key check corroborating on the worker-seat axis
+    // only (it pins the caller card, not scripted-vs-autonomous).
     let (merged_id, merged_actor, merged) = wait_for_wave_forge_event(
         &fx,
         "forge.pr.merged",
@@ -1195,7 +1203,12 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     // expected_head_sha was passed (plugins/git-forge/main.rs
     // `lower_gh_pr_merge`) — an omitted-sha merge produces
     // `gh.pr.merge:{repo}:{pr}` and MUST fail this assert. The embedded card
-    // id doubles as the seat proof: the caller was the spec card.
+    // id corroborates the seat on the worker-exclusion axis ONLY: it proves
+    // the caller was the spec card, but scripted setup calls use the same
+    // spec thread (`spec_session_thread_id`) → same card → a scripted merge
+    // would produce a byte-identical key, so construction W (file-level
+    // comment above the test) stays the sole scripted-vs-autonomous
+    // discriminator.
     let expected_merge_key = format!(
         "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
         fx.wave_id.as_str(),
@@ -1230,7 +1243,9 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
     );
 
     // Oracle (d): S12 — the issue close FOLLOWS the merge (#840 §4 invariant
-    // 5, oracle-only), on the right issue, from the spec seat (op idem key).
+    // 5, oracle-only), on the right issue; the op idem key corroborates the
+    // caller card (worker-seat exclusion; construction W carries the
+    // scripted-vs-autonomous axis).
     let (closed_id, closed_actor, closed) = wait_for_wave_forge_event(
         &fx,
         "forge.issue.closed",
