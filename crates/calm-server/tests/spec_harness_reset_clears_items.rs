@@ -180,7 +180,7 @@ async fn reset_spec_card_clears_persisted_harness_items() {
         .await
         .unwrap()
         .expect("new active runtime");
-    let events = boot.repo.events_since(0, None).await.unwrap();
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     assert!(
         events.iter().any(|(_id, _version, scope, event)| {
             matches!(

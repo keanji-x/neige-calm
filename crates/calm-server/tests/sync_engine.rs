@@ -879,7 +879,7 @@ async fn event_version_round_trips_from_write_to_replay() {
     );
 
     // Replay path round-trips the version into the envelope.
-    let log = repo.events_since(0, None).await.unwrap();
+    let log = repo.events_since(0, i64::MAX).await.unwrap();
     let (replayed_id, replayed_version, _scope, _ev) = log
         .into_iter()
         .find(|(id, _, _, _)| *id == event_id)
@@ -915,7 +915,7 @@ async fn replay_treats_unstamped_row_as_version_one() {
     .await
     .unwrap();
 
-    let log = repo.events_since(0, None).await.unwrap();
+    let log = repo.events_since(0, i64::MAX).await.unwrap();
     assert_eq!(log.len(), 1);
     let (_id, version, _scope, _ev) = &log[0];
     assert_eq!(
@@ -961,7 +961,7 @@ async fn replay_falls_back_to_system_scope_on_null_columns() {
     .await
     .unwrap();
 
-    let log = repo.events_since(0, None).await.unwrap();
+    let log = repo.events_since(0, i64::MAX).await.unwrap();
     assert_eq!(log.len(), 2);
 
     let (_, _, scope, _) = &log[0];

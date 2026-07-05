@@ -167,7 +167,7 @@ async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
 /// Count persisted `harness.phase.changed` rows whose `new_phase` is `tag`.
 async fn phase_changed_events(boot: &Boot, tag: HarnessPhaseTag) -> usize {
     boot.repo
-        .events_since(0, None)
+        .events_since(0, i64::MAX)
         .await
         .unwrap()
         .into_iter()

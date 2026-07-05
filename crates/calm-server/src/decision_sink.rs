@@ -831,7 +831,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let before_divergences = divergence_count_for_test();
         let before_events = repo
-            .events_since(0, None)
+            .events_since(0, i64::MAX)
             .await
             .expect("events before commit")
             .len();
@@ -866,7 +866,7 @@ mod tests {
             .expect("report after")
             .expect("report row");
         assert_eq!(after_report.payload, before_report.payload);
-        let events = repo.events_since(0, None).await.expect("events");
+        let events = repo.events_since(0, i64::MAX).await.expect("events");
         assert_eq!(events.len(), before_events);
     }
 
@@ -984,7 +984,7 @@ mod tests {
             .expect("wave after")
             .expect("wave row");
         assert_eq!(wave_after.lifecycle, WaveLifecycle::Dispatching);
-        let events = repo.events_since(0, None).await.expect("events");
+        let events = repo.events_since(0, i64::MAX).await.expect("events");
         assert!(events.iter().any(|(_, _, _, event)| matches!(
             event,
             Event::WaveLifecycleChanged {
