@@ -14,6 +14,8 @@ mod support;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
@@ -21,6 +23,8 @@ use calm_server::harness::{HarnessState, Observation, SpecHarness};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
 use calm_server::model::{WaveLifecycle, WavePatch};
+use calm_server::state::AppState;
+use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use support::agent_diag::panic_with_agent_diag;
 use support::codex_fixture::*;
@@ -30,6 +34,7 @@ use support::git_helpers::*;
 use support::mcp::call_tool_via_socket;
 use support::spec_turn::*;
 use tokio::time::{Instant, sleep};
+use tower::ServiceExt;
 
 const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
@@ -528,6 +533,321 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
         0,
         "steered GIVE-UP run must not request ratification"
     );
+
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
+#[tokio::test]
+async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!("no codex bin");
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    // Steer the cap-exhaust ASK-HUMAN branch (R7 design D4): GIVE-UP and
+    // ASK-HUMAN are mutually exclusive terminal branches of one wave, so the
+    // goal fixes coverage on this branch; branch choice is descriptor-legal
+    // either way and the protocol mechanics stay autonomous.
+    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+                then drive design review. If design review cannot converge at the review \
+                cap, ask for human ratification instead of giving up; do not fail the wave."
+        .to_string();
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: Some(goal.clone()),
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            skip!("{reason}");
+        }
+    };
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(plan_actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+    );
+    // The review subject slice comes from the spec's OWN real plan so the
+    // seeded prior round matches the spec's mental model (design D2).
+    let slice_id = plan["changed_keys"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
+        .to_string();
+
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    // Settle the planning turn before seeding (R6 causality guard): the
+    // accepted ASK-HUMAN sequence must be causally a response to the injected
+    // observations below, not a planning-time fabrication.
+    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+
+    // Pre-position the wave at `reviewing` via a raw WavePatch (precedent:
+    // crates/calm-server/tests/review_ratify.rs `set_wave_lifecycle`) —
+    // walking planning -> ... -> reviewing by real turns is capstone scope.
+    fx.repo_dyn
+        .wave_update(
+            fx.wave_id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Reviewing),
+                ..WavePatch::default()
+            },
+        )
+        .await
+        .expect("pre-position wave lifecycle to reviewing");
+
+    seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
+    seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
+    // Seed ONE prior round at n=7/cap=8 (design D2): the kernel's monotonic
+    // check reads max(n) from the event log, so the only acceptable next
+    // round on this subject is n=8, and n=9 is then unreachable (n<=cap).
+    seed_prior_design_review_round(&fx, &slice_id, 7, 8).await;
+
+    let floor = max_event_id(&fx.repo).await;
+    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
+    assert_eq!(
+        pre_wake_rounds.len(),
+        1,
+        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
+    );
+
+    // Wake: both channels changes_requested + the prior-round state, injected
+    // exactly as the prod dispatcher's `harness_observation_from_event` would
+    // push them (design D5; no dispatcher runs in the spec-harness E2E).
+    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
+    inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
+    inject_design_review_round_observation(&harness, &fx, &slice_id, 7, 8, false).await;
+
+    // Oracle phase 1 (a): the spec's own round 8/8, non-converged, on the
+    // seeded subject. The kernel guarantees n==8 is the only accepted next
+    // round.
+    let (round_id, round_actor, round) =
+        wait_for_design_review_round_on_subject(&fx, floor, &slice_id, review_budget()).await;
+    assert!(
+        matches!(round_actor, ActorId::AiSpecSession(_)),
+        "cap round actor must be AiSpecSession, got {round_actor:?} for {round}"
+    );
+    assert_eq!(round["n"], json!(8), "cap round must be n=8: {round}");
+    assert_eq!(
+        round["cap"],
+        json!(8),
+        "cap must be descriptor-fixed 8: {round}"
+    );
+    assert_eq!(
+        round["converged"],
+        json!(false),
+        "cap round must be non-converged: {round}"
+    );
+    assert!(
+        round
+            .pointer("/subject/pr_number")
+            .is_none_or(Value::is_null),
+        "design review.round subject must omit/null pr_number: {round}"
+    );
+    let channels = round["channels"]
+        .as_array()
+        .unwrap_or_else(|| panic!("cap round channels must be an array: {round}"));
+    assert!(
+        channels.len() >= 2,
+        "cap round must carry at least two channels: {round}"
+    );
+    let roles: std::collections::BTreeSet<&str> = channels
+        .iter()
+        .map(|channel| {
+            channel["role"]
+                .as_str()
+                .unwrap_or_else(|| panic!("cap round channel missing role: {channel}"))
+        })
+        .collect();
+    assert!(
+        roles.len() >= 2,
+        "cap round channels must have at least two distinct roles: {round}"
+    );
+    assert!(
+        channels
+            .iter()
+            .any(|channel| channel["verdict"] == json!("changes_requested")),
+        "cap round must carry at least one changes_requested verdict: {round}"
+    );
+
+    // Oracle phase 1 (b): the ordered ASK-HUMAN chain, every floor rising so
+    // each edge must FOLLOW the cap round (a fail-first-record-later turn
+    // cannot pass). `calm.ratify.request` demands lifecycle==Working, so the
+    // spec must first leave `reviewing`; the tool then emits working->blocked
+    // + ratify.requested in ONE tx (mcp_server/tools/review.rs), so both must
+    // appear.
+    let (rw_id, rw_actor, rw_edge) =
+        wait_for_wave_lifecycle_edge(&fx, round_id, "reviewing", "working", ratify_budget()).await;
+    assert!(
+        matches!(rw_actor, ActorId::AiSpecSession(_)),
+        "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
+    );
+    let (wb_id, wb_actor, wb_edge) =
+        wait_for_wave_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
+    assert!(
+        matches!(wb_actor, ActorId::AiSpecSession(_)),
+        "working->blocked edge actor must be AiSpecSession, got {wb_actor:?} for {wb_edge}"
+    );
+    // The request is REAL and structurally unforgeable: role_gate rule 2.8
+    // makes ratify.requested spec-session-only and this test never calls
+    // calm.ratify.request — only the real spec's own tool call can emit it.
+    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
+    assert!(
+        matches!(req_actor, ActorId::AiSpecSession(_)),
+        "ratify.requested actor must be AiSpecSession, got {req_actor:?} for {req}"
+    );
+    assert!(
+        req["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "ratify.requested must carry a non-empty reason: {req}"
+    );
+    assert_eq!(req["wave_id"], json!(fx.wave_id.as_str()));
+
+    // Oracle phase 1 (c): parked, not merged.
+    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
+    assert_eq!(
+        wave_lifecycle_row(&fx).await,
+        "blocked",
+        "wave row must be blocked while awaiting ratification"
+    );
+
+    // Grant = PRODUCTION HTTP route via in-process router-oneshot (design D4;
+    // precedent tests/review_ratify.rs). actor_middleware defaults an absent
+    // X-Calm-Actor header to the authenticated user; the route enforces the
+    // pending request and emits blocked->working + ratify.resolved{grant}
+    // same-tx as ActorId::User — a log_pure_event shortcut is User-only at the
+    // role gate AND would have to hand-roll the waves-row flip.
+    let app = fixture_router(&fx);
+    let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{}/ratify", fx.spec_card_id))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .expect("grant request"),
+        )
+        .await
+        .expect("grant response");
+    let status = resp.status();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("grant response body")
+        .to_bytes();
+    let grant_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
+    assert_eq!(grant_body["decision"], json!("grant"), "{grant_body}");
+
+    // Same-tx grant effects: waves row flipped + ratify.resolved{grant} by the
+    // human actor.
+    assert_eq!(
+        wave_lifecycle_row(&fx).await,
+        "working",
+        "grant must flip the wave row blocked->working"
+    );
+    let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
+    )
+    .fetch_all(fx.repo.pool())
+    .await
+    .expect("ratify.resolved rows");
+    assert_eq!(
+        resolved_rows.len(),
+        1,
+        "exactly one ratify.resolved after the grant: {resolved_rows:?}"
+    );
+    let (resolved_id, resolved_actor, resolved) = {
+        let (id, actor, payload) = &resolved_rows[0];
+        let actor: ActorId = serde_json::from_str(actor).expect("event actor json");
+        let payload: Value = serde_json::from_str(payload).expect("event payload json");
+        (*id, actor, payload)
+    };
+    assert_eq!(
+        resolved_actor,
+        ActorId::User,
+        "ratify.resolved actor must be User: {resolved}"
+    );
+    assert_eq!(resolved["decision"], json!("grant"), "{resolved}");
+    assert_eq!(resolved["wave_id"], json!(fx.wave_id.as_str()));
+    assert!(
+        resolved_id > req_id,
+        "grant must follow the request: resolved={resolved_id}, requested={req_id}"
+    );
+    // The grant's own blocked->working edge lands in the same tx, strictly
+    // between the request and the resolution row.
+    let grant_edges: Vec<(ActorId, Value)> =
+        lifecycle_changed_rows_between(&fx, req_id, resolved_id)
+            .await
+            .into_iter()
+            .filter(|(_, payload)| {
+                payload["from"] == json!("blocked")
+                    && payload["to"] == json!("working")
+                    && payload["id"] == json!(fx.wave_id.as_str())
+            })
+            .collect();
+    assert_eq!(
+        grant_edges.len(),
+        1,
+        "grant must emit exactly one blocked->working edge in-tx: {grant_edges:?}"
+    );
+    assert_eq!(
+        grant_edges[0].0,
+        ActorId::User,
+        "grant blocked->working edge actor must be User: {grant_edges:?}"
+    );
+
+    // Recovery wake: the same Observation the prod dispatcher's
+    // `harness_observation_from_event` would push for ratify.resolved
+    // (design D5; hard-fire).
+    inject_ratify_resolved_grant(&harness, &fx).await;
+
+    // Oracle phase 2 — PRIMARY resumption signal (independent checker's pin):
+    // the real spec re-enters review, working->reviewing, after the grant.
+    // Wrinkle: the descriptor tells the spec to resume "blocked->working->
+    // reviewing", but the grant route ALREADY flipped blocked->working (actor
+    // User, same-tx above) — if the real spec attempts that first transition
+    // itself it fails as an illegal working->working edge; that is tolerated
+    // noise, resumption is proven by the working->reviewing edge alone.
+    let (_resume_id, resume_actor, resume_edge) =
+        wait_for_wave_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
+            .await;
+    assert!(
+        matches!(resume_actor, ActorId::AiSpecSession(_)),
+        "post-grant working->reviewing edge actor must be AiSpecSession, got {resume_actor:?} for {resume_edge}"
+    );
+
+    // Post-grant convergence/merge is NOT asserted — kernel-impossible for
+    // this subject (next round would be n=9 > cap=8, rejected by the kernel):
+    // the recorded #840 cap-contradiction finding, a descriptor/kernel policy
+    // gap, not something this test papers over. Merge must still be absent.
+    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
 
     assert!(
         !fx.used_injected_plan(),
@@ -1399,6 +1719,165 @@ async fn wait_for_wave_failed_edge(fx: &Fixture, floor: i64, budget: Duration) -
     }
 }
 
+/// First post-floor `wave.lifecycle_changed` matching `from -> to` for the
+/// fixture wave. Other lifecycle transitions and other waves are tolerated.
+/// Returns the event id so callers can chain rising-floor ordering
+/// invariants.
+async fn wait_for_wave_lifecycle_edge(
+    fx: &Fixture,
+    floor: i64,
+    from: &str,
+    to: &str,
+    budget: Duration,
+) -> (i64, ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let hit = lifecycle_changed_rows_after(fx, floor)
+            .await
+            .into_iter()
+            .find(|(_, _, payload)| {
+                payload["from"] == json!(from)
+                    && payload["to"] == json!(to)
+                    && payload["id"] == json!(fx.wave_id.as_str())
+            });
+        if let Some(hit) = hit {
+            return hit;
+        }
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for wave.lifecycle_changed \
+                     {from}->{to} after event id {floor}"
+                ),
+            )
+            .await;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn lifecycle_changed_rows_after(fx: &Fixture, floor: i64) -> Vec<(i64, ActorId, Value)> {
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, actor, payload FROM events \
+         WHERE kind = 'wave.lifecycle_changed' AND id > ?1 ORDER BY id ASC",
+    )
+    .bind(floor)
+    .fetch_all(fx.repo.pool())
+    .await
+    .unwrap_or_else(|e| panic!("wave.lifecycle_changed rows after floor {floor}: {e}"));
+    rows.into_iter()
+        .map(|(id, actor, payload)| {
+            (
+                id,
+                serde_json::from_str(&actor).expect("event actor json"),
+                serde_json::from_str(&payload).expect("event payload json"),
+            )
+        })
+        .collect()
+}
+
+/// `wave.lifecycle_changed` rows strictly inside the `(after, before)` event
+/// id window — used to pin the grant's same-tx blocked->working edge between
+/// the request and the resolution rows.
+async fn lifecycle_changed_rows_between(
+    fx: &Fixture,
+    after: i64,
+    before: i64,
+) -> Vec<(ActorId, Value)> {
+    lifecycle_changed_rows_after(fx, after)
+        .await
+        .into_iter()
+        .filter(|(id, _, _)| *id < before)
+        .map(|(_, actor, payload)| (actor, payload))
+        .collect()
+}
+
+/// First post-floor `ratify.requested`. Never emitted by this test: role_gate
+/// rule 2.8 makes it spec-session-only, so an observed row proves the real
+/// spec's own `calm.ratify.request` tool call.
+async fn wait_for_ratify_requested(
+    fx: &Fixture,
+    floor: i64,
+    budget: Duration,
+) -> (i64, ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, actor, payload FROM events \
+             WHERE kind = 'ratify.requested' AND id > ?1 ORDER BY id ASC",
+        )
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("ratify.requested rows after floor {floor}: {e}"));
+        if let Some((id, actor, payload)) = rows.into_iter().next() {
+            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
+            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+            return (id, actor, payload);
+        }
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for ratify.requested after event id {floor}"
+                ),
+            )
+            .await;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wave_lifecycle_row(fx: &Fixture) -> String {
+    sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
+        .bind(fx.wave_id.as_str())
+        .fetch_one(fx.repo.pool())
+        .await
+        .expect("select wave lifecycle")
+}
+
+/// The production HTTP grant seam (design D4): the real `routes::router()`
+/// behind `actor_middleware`, over the fixture's LIVE parts (repo, event bus,
+/// role/wave-cove caches), driven in-process via `tower::ServiceExt::oneshot`
+/// — exact precedent tests/review_ratify.rs.
+fn fixture_router(fx: &Fixture) -> axum::Router {
+    let state = AppState::from_parts(
+        fx.repo_dyn.clone(),
+        fx.events.clone(),
+        fx.daemon.clone(),
+        fx.plugin_host.clone(),
+        fx.codex.clone(),
+        Some(fx.cache.clone()),
+        Some(fx.wave_cove_cache.clone()),
+    );
+    calm_server::routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state)
+}
+
+/// Inject the same `Observation::RatifyResolved` the prod dispatcher's
+/// `harness_observation_from_event` would push for the grant's
+/// ratify.resolved event (hard-fire).
+#[cfg(feature = "fixtures")]
+async fn inject_ratify_resolved_grant(h: &SpecHarness, fx: &Fixture) {
+    h.observe_for_test(
+        Observation::RatifyResolved {
+            wave_id: fx.wave_id.clone(),
+            decision: calm_server::event::RatifyDecision::Grant,
+        },
+        None,
+    )
+    .await;
+}
+
+#[cfg(not(feature = "fixtures"))]
+async fn inject_ratify_resolved_grant(_h: &SpecHarness, _fx: &Fixture) {
+    panic!("inject_ratify_resolved_grant requires the fixtures feature");
+}
+
 async fn wait_for_spec_turn_settled(fx: &Fixture, h: &SpecHarness, budget: Duration) {
     let deadline = Instant::now() + budget;
     let mut last_state = h.state_for_test().await;
@@ -1807,5 +2286,16 @@ fn review_budget() -> Duration {
         .and_then(|raw| raw.parse::<u64>().ok())
         .map(Duration::from_secs)
         // Default doubled vs spec_planning_budget — the review wait includes the spec's autonomous runs/ read round-trip and 1/5 stability runs exceeded 240s (design §6 headroom).
+        .unwrap_or_else(|| Duration::from_secs(480))
+}
+
+/// Budget for the ASK-HUMAN request-wait and the post-grant resume-wait
+/// (R7 design D6): each spans a full real spec turn, so it gets the same
+/// headroom as `review_budget`.
+fn ratify_budget() -> Duration {
+    std::env::var("NEIGE_SPEC_RATIFY_BUDGET")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_secs)
         .unwrap_or_else(|| Duration::from_secs(480))
 }
