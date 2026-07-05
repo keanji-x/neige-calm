@@ -11,7 +11,7 @@
 
 mod support;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use calm_server::db::prelude::*;
@@ -27,8 +27,15 @@ use support::codex_fixture::*;
 use support::event_queries::*;
 use support::forge_env::FORGE_ENV_LOCK;
 use support::git_helpers::*;
+use support::mcp::call_tool_via_socket;
 use support::spec_turn::*;
 use tokio::time::{Instant, sleep};
+
+const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
+const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
+/// The d2 test's source issue. Purely an environment fact: the gh shim keeps
+/// per-repo issue state keyed by number, and any number works.
+const D2_ISSUE_NUMBER: u64 = 840;
 
 #[tokio::test]
 async fn real_codex_worker_writes_code_on_leased_worktree() {
@@ -118,12 +125,14 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
     let worker_cwd = PathBuf::from(output_string(output, "cwd"));
     let worker_card_id = output_string(output, "card_id");
 
-    // This file issues NO scripted `call_tool` for any `gh.*` or `git.commit`
-    // (the only direct tool call in the whole file is `TOOL_PLAN_UPSERT` via
-    // the spec identity inside `plan_codex_task`). Therefore the ONLY thing
-    // that can emit `forge.pr.opened` / `forge.pr.checks` is the real worker's
-    // own MCP `tools/call`. Assert via the `events` table (NOT
-    // `harness_items`, which is spec-thread-only).
+    // Each test boots an isolated fixture/DB. This test's fixture sees NO
+    // scripted `call_tool` for any `gh.*` or `git.commit` (its only direct
+    // tool call is `TOOL_PLAN_UPSERT` via the spec identity inside
+    // `plan_codex_task`; the d2 merge test scripts `gh.pr.create`/
+    // `gh.pr.checks` only against its own separate fixture). Therefore the
+    // ONLY thing that can emit `forge.pr.opened` / `forge.pr.checks` here is
+    // the real worker's own MCP `tools/call`. Assert via the `events` table
+    // (NOT `harness_items`, which is spec-thread-only).
     let (s5_id, s5) = wait_for_first_worktree_committed_event(&fx, &task_id, budget).await;
     assert_eq!(s5.actor, ActorId::KernelDispatcher);
     assert_eq!(s5.scope_kind, "card");
@@ -533,6 +542,471 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     shutdown_shared_codex(&fx.shared).await;
 }
 
+// #840 slice (d2) — S11/S12: the real spec session, woken only by injected
+// observations, obeys merge fence F4 (call gh.pr.merge for a subject ONLY
+// when that subject's latest review.round has converged:true, passing
+// expected_head_sha equal to that round's head_sha) and then closes the
+// source issue, merge-before-close.
+//
+// Seat caveat (design pin): the seat was steered by goal text — the
+// production descriptor's merge step is kind:codex, so a real production run
+// may DISPATCH a worker to execute the merge instead of the spec calling
+// gh.pr.merge itself; the worker-executed merge topology stays open for
+// slice (e)/capstone. The autonomy content proven here (WHEN to merge and
+// WHICH expected_head_sha to pass, per fence F4) lives in the spec seat
+// either way, because the worker would only execute args the spec chose.
+//
+// Seat proof, construction W (d1 precedent): no scripted call to
+// `gh.pr.merge` or `gh.issue.close` exists in this file beyond this comment —
+// scripted setup stops at `gh.pr.create`/`gh.pr.checks` (against this test's
+// isolated fixture only). The only possible emitter of `forge.pr.merged` /
+// `forge.issue.closed` is therefore the real spec session's own MCP
+// `tools/call`, which the oracle re-checks via the forge-action operation
+// idempotency keys embedding the caller's (spec) card id.
+#[tokio::test]
+async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!("no codex bin");
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    // Goal carries environment facts only (repo gitdir + issue number,
+    // forge_pr_goal precedent) plus descriptor-legal branch steering. The
+    // pr_number and head_sha must reach the spec ONLY via observations —
+    // never as pre-chewed tool args. The goal needs the fixture's origin
+    // path, which only exists post-boot, so it flows through the
+    // spec-harness start op (the spec's actual WaveGoal source,
+    // `initial_snapshot_with_goal`); `FixtureSpec.goal` only mirrors into
+    // the card payload `prompt`, which the spec-harness path never reads.
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: None,
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            skip!("{reason}");
+        }
+    };
+    let repo_arg = fx.origin_repo.display().to_string();
+    let goal = merge_close_goal(&repo_arg, D2_ISSUE_NUMBER);
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(plan_actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+    );
+    // The review subject slice comes from the spec's OWN real plan so the
+    // seeded converged round matches the spec's mental model (R7a precedent).
+    let slice_id = plan["changed_keys"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
+        .to_string();
+
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    // Settle the planning turn before setup/seeding (R6 causality guard): the
+    // accepted merge+close must be causally a response to the injected
+    // observations below, not a planning-time fabrication.
+    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+
+    // Pre-position the wave at `reviewing` via a raw WavePatch (R7a
+    // precedent) — walking the FSM by real turns is capstone scope.
+    fx.repo_dyn
+        .wave_update(
+            fx.wave_id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Reviewing),
+                ..WavePatch::default()
+            },
+        )
+        .await
+        .expect("pre-position wave lifecycle to reviewing");
+
+    // Scripted REAL PR setup (setup, not the proof): branch + commit in the
+    // wave cwd with raw git, push to the bare origin, then scripted MCP
+    // tools/call of gh.pr.create + gh.pr.checks through the daemon socket
+    // (identity = the live spec thread) so GENUINE forge.pr.opened /
+    // forge.pr.checks events back the injected observations — the events go
+    // through the real plugin lowering, not fabricated shim state.
+    let branch = "neige-d2-impl-slice";
+    run_git(&fx.wave_cwd, ["checkout", "-B", branch, "origin/main"]);
+    stage_git_change(&fx.wave_cwd, "FORGE_E2E_D2.md", "forge-e2e-d2\n");
+    run_git(&fx.wave_cwd, ["commit", "-m", "d2 scripted impl commit"]);
+    let head_sha = run_git_capture(&fx.wave_cwd, ["rev-parse", "HEAD"]);
+    assert!(
+        is_hex_sha(&head_sha),
+        "scripted branch tip should be a 40-char hex sha, got {head_sha:?}"
+    );
+    run_git(&fx.wave_cwd, ["push", "-u", "origin", branch]);
+    run_git(&fx.wave_cwd, ["checkout", "main"]);
+
+    let spec_thread_id = spec_session_thread_id(&fx).await;
+    let create_resp = call_tool_via_socket(
+        &fx.socket_path,
+        &fx.daemon_token,
+        &spec_thread_id,
+        201,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": branch,
+            "base": "main",
+            "title": "d2 scripted impl PR",
+            "body": "Scripted setup PR for the #840 d2 merge E2E"
+        }),
+    )
+    .await;
+    assert_forge_tool_accepted(&create_resp, "gh.pr.create");
+    let (opened_id, _, opened) = wait_for_wave_forge_event(
+        &fx,
+        "forge.pr.opened",
+        0,
+        review_budget(),
+        "scripted setup PR",
+        |payload| payload["head_sha"] == json!(head_sha),
+    )
+    .await;
+    let pr_number = opened["pr_number"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {opened}"));
+
+    let checks_resp = call_tool_via_socket(
+        &fx.socket_path,
+        &fx.daemon_token,
+        &spec_thread_id,
+        202,
+        PR_CHECKS_TOOL,
+        json!({ "repo": repo_arg, "pr": pr_number }),
+    )
+    .await;
+    assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
+    let (checks_id, _, _checks) = wait_for_wave_forge_event(
+        &fx,
+        "forge.pr.checks",
+        opened_id,
+        review_budget(),
+        "scripted setup checks",
+        |payload| {
+            payload["pr_number"] == json!(pr_number) && payload["conclusion"] == json!("success")
+        },
+    )
+    .await;
+
+    // Seed the completed pipeline (dispatched + completed pairs, runs/
+    // pre-check each) so runs/ shows implement/open-pr/review-a/review-b done.
+    seed_completed_task_pair(
+        &fx,
+        "implement-change",
+        json!({ "summary": "completed" }),
+        "completed",
+    )
+    .await;
+    seed_completed_task_pair(
+        &fx,
+        "open-pr",
+        json!({ "summary": "completed" }),
+        "completed",
+    )
+    .await;
+    seed_completed_task_pair(
+        &fx,
+        "review-pr-a",
+        json!({ "summary": "approved", "verdict": "approved", "channel": "a" }),
+        "approved",
+    )
+    .await;
+    seed_completed_task_pair(
+        &fx,
+        "review-pr-b",
+        json!({ "summary": "approved", "verdict": "approved", "channel": "b" }),
+        "approved",
+    )
+    .await;
+
+    // Seed ONE converged typed impl review.round carrying the REAL branch tip
+    // (push precedes seeding so the round carries the real tip sha). Actor
+    // MUST be AiSpec(spec card) + wave scope: role_gate rule 2.8 makes
+    // review.round spec-only, and the seeded AiSpec row stays
+    // actor-distinguishable from anything the real AiSpecSession emits.
+    seed_converged_impl_review_round(&fx, &slice_id, pr_number, &head_sha).await;
+    let round_id = latest_event_id_of_kind(&fx, "review.round").await;
+
+    let floor = max_event_id(&fx.repo).await;
+    // Proof-validity guards: nothing merged yet, and exactly the one seeded
+    // round exists — a planning-time merge or fabricated round would poison
+    // the F4 evidence.
+    assert_eq!(
+        event_payloads(&fx.repo, "forge.pr.merged").await.len(),
+        0,
+        "proof-validity guard: no forge.pr.merged may exist pre-wake"
+    );
+    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
+    assert_eq!(
+        pre_wake_rounds.len(),
+        1,
+        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
+    );
+
+    // Wake: inject exactly what the prod dispatcher's
+    // `harness_observation_from_event` would push for the rows that exist
+    // (dispatcher.rs shapes; no dispatcher runs in the spec-harness E2E).
+    // The converged ReviewRound observation is the F4 trigger and the spec's
+    // ONLY channel for pr_number/head_sha selection (rounds have no runs/
+    // projection).
+    for key in ["implement-change", "open-pr"] {
+        inject_observation(
+            &harness,
+            Observation::TaskCompleted {
+                idempotency_key: task_id(&fx, key),
+                result: json!({ "summary": "completed" }),
+            },
+        )
+        .await;
+    }
+    for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
+        inject_observation(
+            &harness,
+            Observation::TaskCompleted {
+                idempotency_key: task_id(&fx, key),
+                result: json!({ "summary": "approved", "verdict": "approved", "channel": chan }),
+            },
+        )
+        .await;
+    }
+    inject_observation(
+        &harness,
+        Observation::ForgePrOpened {
+            wave_id: fx.wave_id.clone(),
+            pr_number,
+        },
+    )
+    .await;
+    inject_observation(
+        &harness,
+        Observation::ForgePrChecks {
+            wave_id: fx.wave_id.clone(),
+            pr_number,
+            conclusion: "success".into(),
+        },
+    )
+    .await;
+    inject_observation(
+        &harness,
+        Observation::ReviewRound {
+            wave_id: fx.wave_id.clone(),
+            phase: "impl".into(),
+            slice_id: slice_id.clone(),
+            pr_number: Some(pr_number),
+            head_sha: Some(head_sha.clone()),
+            n: 1,
+            cap: 8,
+            converged: true,
+        },
+    )
+    .await;
+
+    // Oracle (a): the S11 merge event. All forge.* events are appended by the
+    // kernel's forge-action observer as ActorId::KernelDispatcher
+    // (forge_action_adapter.rs `complete_forge_op_succeeded`) — event actor
+    // therefore CANNOT attribute the seat; attribution is construction W (no
+    // scripted merge/close call in this file) plus the op idem-key check in
+    // oracle (b), which pins the caller's card id.
+    let (merged_id, merged_actor, merged) = wait_for_wave_forge_event(
+        &fx,
+        "forge.pr.merged",
+        floor,
+        review_budget(),
+        "spec-initiated merge",
+        |_| true,
+    )
+    .await;
+    assert_eq!(
+        merged_actor,
+        ActorId::KernelDispatcher,
+        "forge.pr.merged is kernel-appended: {merged}"
+    );
+    assert_eq!(
+        merged["head_sha"],
+        json!(head_sha),
+        "merged head must equal the seeded round head_sha == real branch tip: {merged}"
+    );
+    let merge_sha = merged["merge_sha"]
+        .as_str()
+        .unwrap_or_else(|| panic!("forge.pr.merged missing merge_sha: {merged}"));
+    assert!(
+        is_hex_sha(merge_sha),
+        "merge_sha should be a git-shaped oid: {merged}"
+    );
+    assert_eq!(
+        merged["subject"]["phase"],
+        json!("impl"),
+        "merged subject phase: {merged}"
+    );
+    assert_eq!(
+        merged["subject"]["slice_id"],
+        json!(slice_id),
+        "merged subject slice: {merged}"
+    );
+    assert_eq!(
+        merged["subject"]["pr_number"],
+        json!(pr_number),
+        "merged subject pr: {merged}"
+    );
+
+    // Oracle (b) — the F4 proof: the spec must have passed expected_head_sha.
+    // The forge-action op idempotency key is
+    // `{plugin}:{wave}:{caller card}:{plugin idem}` (transport.rs
+    // `submit_forge_action`), and the plugin idem is the WITH-sha shape
+    // `gh.pr.merge:{repo}:{pr}:{expected_head_sha}` only when
+    // expected_head_sha was passed (plugins/git-forge/main.rs
+    // `lower_gh_pr_merge`) — an omitted-sha merge produces
+    // `gh.pr.merge:{repo}:{pr}` and MUST fail this assert. The embedded card
+    // id doubles as the seat proof: the caller was the spec card.
+    let expected_merge_key = format!(
+        "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
+        fx.wave_id.as_str(),
+        fx.spec_card_id.as_str(),
+        repo_arg,
+        pr_number,
+        head_sha
+    );
+    let merge_keys = forge_action_idem_keys_containing(&fx, ":gh.pr.merge:").await;
+    assert!(
+        !merge_keys.is_empty(),
+        "expected a parked forge-action gh.pr.merge operation row"
+    );
+    for key in &merge_keys {
+        assert_eq!(
+            key, &expected_merge_key,
+            "every gh.pr.merge forge-action op must carry the with-sha idempotency key (F4): {merge_keys:?}"
+        );
+    }
+
+    // Oracle (c) — ordering (oracle-only; no kernel check ties gh.pr.merge to
+    // review.round): the converged round precedes the merge (F4), and the
+    // checks event precedes the merge (attribute to setup ordering, not spec
+    // autonomy — S7 is d1's theorem).
+    assert!(
+        round_id < merged_id,
+        "converged review.round (id={round_id}) must precede forge.pr.merged (id={merged_id})"
+    );
+    assert!(
+        checks_id < merged_id,
+        "forge.pr.checks (id={checks_id}) must precede forge.pr.merged (id={merged_id})"
+    );
+
+    // Oracle (d): S12 — the issue close FOLLOWS the merge (#840 §4 invariant
+    // 5, oracle-only), on the right issue, from the spec seat (op idem key).
+    let (closed_id, closed_actor, closed) = wait_for_wave_forge_event(
+        &fx,
+        "forge.issue.closed",
+        floor,
+        review_budget(),
+        "spec-initiated issue close",
+        |_| true,
+    )
+    .await;
+    assert_eq!(
+        closed_actor,
+        ActorId::KernelDispatcher,
+        "forge.issue.closed is kernel-appended: {closed}"
+    );
+    assert!(
+        merged_id < closed_id,
+        "forge.pr.merged (id={merged_id}) must precede forge.issue.closed (id={closed_id})"
+    );
+    assert_eq!(
+        closed["issue_number"],
+        json!(D2_ISSUE_NUMBER),
+        "closed issue must match the goal's issue number: {closed}"
+    );
+    let expected_close_key = format!(
+        "{PLUGIN_ID}:{}:{}:gh.issue.close:{}:{}",
+        fx.wave_id.as_str(),
+        fx.spec_card_id.as_str(),
+        repo_arg,
+        D2_ISSUE_NUMBER
+    );
+    let close_keys = forge_action_idem_keys_containing(&fx, ":gh.issue.close:").await;
+    assert!(
+        !close_keys.is_empty(),
+        "expected a parked forge-action gh.issue.close operation row"
+    );
+    for key in &close_keys {
+        assert_eq!(
+            key, &expected_close_key,
+            "every gh.issue.close forge-action op must target the goal issue from the spec seat: {close_keys:?}"
+        );
+    }
+
+    // Exactly-once events (a spec retry with the same args dedups on the
+    // parked idempotent op; a differently-keyed retry already failed above).
+    assert_eq!(
+        event_payloads(&fx.repo, "forge.pr.merged").await.len(),
+        1,
+        "exactly one forge.pr.merged event"
+    );
+    assert_eq!(
+        event_payloads(&fx.repo, "forge.issue.closed").await.len(),
+        1,
+        "exactly one forge.issue.closed event"
+    );
+
+    // Oracle (e): shim counters — the remote side effect happened exactly
+    // once (the shim is idempotent and counts real merges/closes only).
+    let shim_state = PathBuf::from(format!("{repo_arg}.shimstate"));
+    assert_eq!(
+        shim_counter(&shim_state.join("pr_merge_count")),
+        1,
+        "gh shim must record exactly one real merge"
+    );
+    assert_eq!(
+        shim_counter(&shim_state.join("issue_close_count")),
+        1,
+        "gh shim must record exactly one real issue close"
+    );
+
+    // Oracle (f): purity. Happy path needs no ratification grant; extra
+    // lifecycle transitions (e.g. reviewing->done) are tolerated, but the
+    // wave must not have failed; the plan must be the spec's own.
+    assert_eq!(
+        event_payloads(&fx.repo, "ratify.requested").await.len(),
+        0,
+        "happy-path merge run must not request ratification"
+    );
+    let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
+        .bind(fx.wave_id.as_str())
+        .fetch_one(fx.repo.pool())
+        .await
+        .expect("select wave lifecycle");
+    assert_ne!(lifecycle, "failed", "wave must not fail on the happy path");
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
 async fn seed_design_channel_complete(fx: &Fixture, key: &str, chan: &str) {
     seed_design_channel_verdict(fx, key, chan, "approved").await;
 }
@@ -545,6 +1019,25 @@ async fn seed_design_channel_changes_requested(fx: &Fixture, key: &str, chan: &s
 /// `verdict`, then fail fast unless the runs/ projection surfaces that exact
 /// verdict — the real spec reads runs/ to learn the channel outcomes.
 async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdict: &str) {
+    seed_completed_task_pair(
+        fx,
+        key,
+        json!({
+            "summary": verdict,
+            "verdict": verdict,
+            "channel": chan,
+        }),
+        verdict,
+    )
+    .await
+}
+
+/// Seed a pipeline task pair (dispatched + completed) whose completion carries
+/// `result`, then fail fast unless the runs/ projection surfaces the exact
+/// `expected_summary` — the real spec reads runs/ to learn task outcomes.
+/// (Generalized from R6's design-channel helper for #840 d2.)
+async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expected_summary: &str) {
+    let verdict = expected_summary;
     let task_id = task_id(fx, key);
     let wave_scope = EventScope::Wave {
         wave: fx.wave_id.clone(),
@@ -561,17 +1054,17 @@ async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdic
             Event::TaskDispatched {
                 idempotency_key: task_id.clone(),
                 kind: "codex".into(),
-                agent_message: Some(format!("[codex-forge-e2e] seed design review {chan}")),
+                agent_message: Some(format!("[codex-forge-e2e] seed task {key}")),
             },
         )
         .await
-        .expect("log seeded design task.dispatched");
+        .expect("log seeded task.dispatched");
 
-    // The §7.3 design-phase fixture shortcut does not mint a real review-worker
-    // session, so author the completion as KernelDispatcher (gate-unrestricted
-    // per role_gate rule 5). Card scope alone routes it to the completed bucket
-    // (is_spec_verdict_event is false for non-Wave scope), so runs/ surfaces the
-    // verdict the real spec reads.
+    // The seeded fixture shortcut does not mint a real worker session, so
+    // author the completion as KernelDispatcher (gate-unrestricted per
+    // role_gate rule 5). Card scope alone routes it to the completed bucket
+    // (is_spec_verdict_event is false for non-Wave scope), so runs/ surfaces
+    // the summary the real spec reads.
     let card_scope = EventScope::Card {
         card: fx.spec_card_id.clone(),
         wave: fx.wave_id.clone(),
@@ -587,17 +1080,13 @@ async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdic
             &fx.wave_cove_cache,
             Event::TaskCompleted {
                 idempotency_key: task_id.clone(),
-                result: json!({
-                    "summary": verdict,
-                    "verdict": verdict,
-                    "channel": chan,
-                }),
+                result,
                 artifacts: Vec::new(),
-                agent_message: Some(format!("[codex-forge-e2e] review {chan} {verdict}")),
+                agent_message: Some(format!("[codex-forge-e2e] task {key} -> {verdict}")),
             },
         )
         .await
-        .expect("log seeded design task.completed");
+        .expect("log seeded task.completed");
 
     let handler = fx
         .registry
@@ -669,7 +1158,7 @@ async fn seed_design_channel_verdict(fx: &Fixture, key: &str, chan: &str, verdic
     }
 
     panic!(
-        "seeded design review run {task_id} did not expose exact {verdict} summary in runs projection; \
+        "seeded task run {task_id} did not expose exact {verdict} summary in runs projection; \
          json_result={}; json_read={:?}; md_read={:?}",
         if json_diag.is_empty() {
             "<unread>".to_string()
@@ -1120,6 +1609,196 @@ async fn assert_real_design_review_round(fx: &Fixture, rounds: &[(ActorId, Value
             "latest design review.round channel verdicts must all be literal approved: {latest}"
         );
     }
+}
+
+fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
+    format!(
+        "Drive the tail of the issue-development workflow for issue #{issue_number}. \
+         Environment facts: the `repo` argument for every gh.* MCP forge tool is exactly \
+         `{repo_gitdir}`; the wave's source issue is #{issue_number}. Implementation, the \
+         pull request, and both PR review channels are already complete for this wave; \
+         their results arrive as observations. Once the impl review round for the pull \
+         request reports converged, execute the merge step yourself with the MCP forge \
+         tools (gh.pr.merge, then gh.issue.close for issue #{issue_number}); do not \
+         dispatch further tasks."
+    )
+}
+
+/// The live spec session's bound codex thread id — the identity handle for
+/// scripted daemon-socket `tools/call`s (identical wire to the real spec's
+/// own calls, so scripted setup events go through the real plugin lowering).
+async fn spec_session_thread_id(fx: &Fixture) -> String {
+    fx.repo
+        .session_projection_active_for_card(&fx.spec_card_id.to_string())
+        .await
+        .expect("active spec session lookup")
+        .expect("live spec session for spec card")
+        .thread_id
+        .expect("spec session bound to a codex thread")
+}
+
+fn assert_forge_tool_accepted(resp: &Value, label: &str) {
+    assert!(
+        resp.get("error").is_none(),
+        "{label} returned JSON-RPC error: {resp:#?}"
+    );
+    assert_eq!(
+        resp["result"]["isError"], false,
+        "{label} returned MCP tool error: {resp:#?}"
+    );
+    assert!(
+        resp["result"]["structuredContent"]["op_id"]
+            .as_str()
+            .is_some(),
+        "{label} response must carry op_id: {resp:#?}"
+    );
+}
+
+/// First `kind` event on the fixture wave with id > `floor` matching
+/// `predicate`; superset-tolerant (other events/subjects are skipped, not
+/// failed). Returns the event id so callers can pin ordering invariants.
+async fn wait_for_wave_forge_event(
+    fx: &Fixture,
+    kind: &str,
+    floor: i64,
+    budget: Duration,
+    describe: &str,
+    predicate: impl Fn(&Value) -> bool,
+) -> (i64, ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT id, actor, scope_wave, payload FROM events \
+             WHERE kind = ?1 AND id > ?2 ORDER BY id ASC",
+        )
+        .bind(kind)
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("{kind} event rows after floor {floor}: {e}"));
+        let hit = rows
+            .into_iter()
+            .find_map(|(id, actor, scope_wave, payload)| {
+                let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
+                let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+                (scope_wave.as_deref() == Some(fx.wave_id.as_str()) && predicate(&payload))
+                    .then_some((id, actor, payload))
+            });
+        if let Some(hit) = hit {
+            return hit;
+        }
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for {kind} ({describe}) after event id {floor}"
+                ),
+            )
+            .await;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// Seed the ONE converged typed impl review.round (d2 design D2): actor MUST
+/// be `ActorId::AiSpec(spec card)` with `EventScope::Wave` — role_gate rule
+/// 2.8 makes review.round spec-only, and the seeded AiSpec row stays
+/// actor-distinguishable from the real spec's AiSpecSession rows. Phase
+/// literal is "impl" (forge_workflow_e2e `impl_round` precedent).
+async fn seed_converged_impl_review_round(
+    fx: &Fixture,
+    slice_id: &str,
+    pr_number: u64,
+    head_sha: &str,
+) {
+    let wave_scope = EventScope::Wave {
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::AiSpec(fx.spec_card_id.clone()),
+            wave_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::ReviewRound {
+                wave_id: fx.wave_id.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: slice_id.into(),
+                    pr_number: Some(pr_number),
+                },
+                head_sha: Some(head_sha.to_string()),
+                n: 1,
+                cap: 8,
+                converged: true,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "pr-correctness".into(),
+                        verdict: ChannelVerdictKind::Approved,
+                    },
+                    ChannelVerdict {
+                        role: "pr-failure-path".into(),
+                        verdict: ChannelVerdictKind::Approved,
+                    },
+                ],
+                root_cause: None,
+                // Canonical shape from `review_round_idempotency_key`
+                // (mcp_server/tools/review.rs): PR subjects carry the pr
+                // number in the pr slot.
+                idempotency_key: format!(
+                    "review.round:{}:impl:{}:{}:1",
+                    fx.wave_id.as_str(),
+                    slice_id,
+                    pr_number
+                ),
+            },
+        )
+        .await
+        .expect("log seeded converged impl review.round");
+}
+
+async fn latest_event_id_of_kind(fx: &Fixture, kind: &str) -> i64 {
+    sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events WHERE kind = ?1")
+        .bind(kind)
+        .fetch_one(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("max {kind} event id: {e}"))
+}
+
+/// All forge-action operation idempotency keys containing `needle`, oldest
+/// first. The key shape is `{plugin}:{wave}:{caller card}:{plugin idem}`
+/// (mcp_server/transport.rs `submit_forge_action`), so it pins BOTH the
+/// caller seat and the plugin-level idem (incl. F4's expected_head_sha).
+async fn forge_action_idem_keys_containing(fx: &Fixture, needle: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT idempotency_key FROM operations \
+         WHERE kind = 'forge-action' AND idempotency_key LIKE '%' || ?1 || '%' \
+         ORDER BY created_at_ms ASC",
+    )
+    .bind(needle)
+    .fetch_all(fx.repo.pool())
+    .await
+    .expect("forge-action idempotency keys")
+}
+
+fn shim_counter(path: &Path) -> u64 {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "fixtures")]
+async fn inject_observation(h: &SpecHarness, obs: Observation) {
+    h.observe_for_test(obs, None).await;
+}
+
+#[cfg(not(feature = "fixtures"))]
+async fn inject_observation(_h: &SpecHarness, _obs: Observation) {
+    panic!("inject_observation requires the fixtures feature");
 }
 
 fn review_budget() -> Duration {

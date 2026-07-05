@@ -97,6 +97,13 @@ pub struct Fixture {
     pub used_injected_plan: AtomicBool,
     pub wave_cwd: PathBuf,
     pub origin_repo: PathBuf,
+    /// Kernel MCP UDS socket — exposed so tests can drive scripted setup
+    /// `tools/call`s over the same wire real agent sessions use (#840 d2).
+    pub socket_path: PathBuf,
+    /// Plaintext shared-daemon MCP token (only the hash reaches the server);
+    /// authenticates scripted socket calls as `DaemonTrust`, with identity
+    /// resolved from `_meta.threadId` exactly like real codex sessions.
+    pub daemon_token: String,
     pub origin_main_initial: String,
     pub codex_stderr_log: PathBuf,
     pub _forge_env: ForgeTestEnv,
@@ -348,7 +355,7 @@ pub async fn boot_forge_e2e_fixture(
         repo_dyn.clone(),
         events.clone(),
         write.clone(),
-        socket_path,
+        socket_path.clone(),
         locate_shim_bin(),
         build_default_registry(),
         Some(daemon_token_hash.clone()),
@@ -492,6 +499,8 @@ pub async fn boot_forge_e2e_fixture(
         used_injected_plan: AtomicBool::new(false),
         wave_cwd,
         origin_repo,
+        socket_path,
+        daemon_token,
         origin_main_initial,
         codex_stderr_log,
         _forge_env: forge_env,
