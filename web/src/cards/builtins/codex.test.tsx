@@ -1,14 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  Suspense,
-  useState,
-  type ComponentType,
-  type ReactNode,
-  type Ref,
-} from 'react';
+import { Suspense, type ComponentType, type ReactNode, type Ref } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../app/theme';
+import { useState } from '../../shared/state';
 import type { ClaudeCardData, CodexCardData } from './codex';
 import type { KernelCard } from '../../api/wire';
 
