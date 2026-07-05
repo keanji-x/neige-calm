@@ -1,5 +1,17 @@
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Seed a fixture-controlled issue body for the shim's `issue view --json
+/// body` branch (#840 capstone S0). The shim keys state by the `--repo`
+/// selector string, so `repo_selector` must be byte-identical to the selector
+/// agents will pass. Absent a seeded file the shim keeps returning its
+/// hardcoded fallback body — behavior-preserving for every existing suite.
+pub fn seed_shim_issue_body(repo_selector: &Path, issue: u64, body: &str) {
+    let issues_dir = PathBuf::from(format!("{}.shimstate", repo_selector.display())).join("issues");
+    std::fs::create_dir_all(&issues_dir).expect("create gh shim issues state dir");
+    std::fs::write(issues_dir.join(format!("{issue}.body")), body)
+        .expect("write gh shim seeded issue body");
+}
 
 pub fn write_gh_shim(dir: &Path) {
     let path = dir.join("gh");
@@ -271,7 +283,11 @@ case "$area:$verb" in
         printf '{"state":"%s"}\n' "$issue_state"
         ;;
       body:.body)
-        printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
+        if [ -f "$state/issues/$issue.body" ]; then
+          cat "$state/issues/$issue.body"
+        else
+          printf '# Issue %s\n\nFake issue body for issue-development ingestion.\n' "$issue"
+        fi
         ;;
       *)
         echo "unsupported gh issue view --json $json_fields --jq $jq_expr" >&2
