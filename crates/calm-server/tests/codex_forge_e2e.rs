@@ -1607,7 +1607,15 @@ async fn real_spec_drives_issue_to_close_capstone() {
 
     // S8 — THE capstone-critical seam: a real reviewer worker reads the real
     // merge-base diff via gh.pr.diff (fixture verdicts satisfy S2/S9/S10, NOT
-    // S8; zero forge.pr.diff.read fails the run).
+    // S8; zero forge.pr.diff.read fails the run). Seat tightening (review
+    // channel A, item 3): this diff.read PRECEDES the converged impl round it
+    // feeds (the round wait floors on diff_id), the open-pr goal FORBIDS
+    // gh.pr.diff, the implement worker finishes before the PR exists, and the
+    // merge worker dispatches only after the round — leaving the reviewer
+    // workers (or the spec itself, an equally-real unscripted read) as the
+    // only possible emitters. The event is card-anonymous, so exact reviewer
+    // attribution stays tolerated (construction W: nothing scripted calls
+    // gh.pr.diff in this file).
     let (diff_id, diff_actor, diff_read) = wait_capstone_event(
         &fx,
         "forge.pr.diff.read",
@@ -1620,6 +1628,10 @@ async fn real_spec_drives_issue_to_close_capstone() {
     assert_eq!(diff_actor, ActorId::KernelDispatcher, "{diff_read}");
 
     // S9/S10 — the spec records the converged impl review round for this PR.
+    // The manifest spec_instructions mark subject.pr_number OPTIONAL for
+    // review rounds and the goal never pins it, so a real spec omitting it
+    // emits a perfectly legal round — tolerate absent/null, require equality
+    // only when present (review channel A, item 1).
     let (round_id, round_actor, round) = wait_capstone_event(
         &fx,
         "review.round",
@@ -1628,8 +1640,8 @@ async fn real_spec_drives_issue_to_close_capstone() {
         "spec records the converged impl review round",
         |p| {
             p["subject"]["phase"] == json!("impl")
-                && p["subject"]["pr_number"] == json!(pr_number)
                 && p["converged"] == json!(true)
+                && subject_pr_absent_or_matches(&p["subject"], pr_number)
         },
     )
     .await;
@@ -1637,12 +1649,10 @@ async fn real_spec_drives_issue_to_close_capstone() {
         matches!(round_actor, ActorId::AiSpecSession(_)),
         "impl review.round actor must be AiSpecSession, got {round_actor:?} for {round}"
     );
-    let round_head = round["head_sha"]
+    let round_slice = round["subject"]["slice_id"]
         .as_str()
-        .unwrap_or_else(|| panic!("converged impl round missing head_sha: {round}"))
+        .unwrap_or_else(|| panic!("impl review.round missing subject.slice_id: {round}"))
         .to_string();
-    assert!(is_hex_sha(&round_head), "{round}");
-    let subject = SubjectKey::from_subject_payload(&round["subject"]);
 
     // S11 — merge, fenced on the converged round (F4).
     let (merged_id, merged_actor, merged) = wait_capstone_event(
@@ -1655,11 +1665,30 @@ async fn real_spec_drives_issue_to_close_capstone() {
     )
     .await;
     assert_eq!(merged_actor, ActorId::KernelDispatcher, "{merged}");
+    let merged_head = merged["head_sha"]
+        .as_str()
+        .unwrap_or_else(|| panic!("forge.pr.merged missing head_sha: {merged}"))
+        .to_string();
+    assert!(is_hex_sha(&merged_head), "{merged}");
+    // F4 direct assert, bound to the LATEST (max-n) pre-merge round on the
+    // subject — NOT the first converged one the stage wait matched: a
+    // converge → late-fix → re-converge run merges on the newer head, which
+    // is legitimate and must pass (review channel A, item 2; consistent with
+    // `assert_subject_keyed_cap_enforcement` / 6a semantics).
+    let fence_round = latest_impl_round_before_merge(&fx, merged_id, &round_slice, pr_number).await;
     assert_eq!(
-        merged["head_sha"],
-        json!(round_head),
-        "merge head must equal the converged round's head_sha (F4): {merged}"
+        fence_round["converged"],
+        json!(true),
+        "latest pre-merge impl round must be converged (F4): {fence_round}"
     );
+    let fence_head = fence_round["head_sha"]
+        .as_str()
+        .unwrap_or_else(|| panic!("fence round missing head_sha (F4): {fence_round}"));
+    assert_eq!(
+        merged_head, fence_head,
+        "merge head must equal the LATEST converged round's head_sha (F4): {merged}"
+    );
+    let subject = SubjectKey::from_subject_payload(&fence_round["subject"]);
     let merge_sha = merged["merge_sha"]
         .as_str()
         .unwrap_or_else(|| panic!("forge.pr.merged missing merge_sha: {merged}"));
@@ -1693,9 +1722,13 @@ async fn real_spec_drives_issue_to_close_capstone() {
     );
 
     // ------------------------- post-run oracle -------------------------
-    capstone_oracle(&fx, pr_number, &round_head, &subject, &repo_gitdir).await;
+    capstone_oracle(&fx, pr_number, &merged_head, &subject, &repo_gitdir).await;
 
     // Teardown per P4: dispatcher handle first, then harness, plugin, codex.
+    // Panic paths (incl. every stage-wait timeout) do NOT run this teardown
+    // and leak the shared appserver pgid — the suite-wide pre-existing
+    // pattern, acceptable because real runs happen only inside the #863
+    // isolation wrapper, which reaps the whole session process group.
     drop(dispatcher);
     shutdown_spec_harness_if_registered(&fx).await;
     fx.plugin_host
@@ -1707,6 +1740,45 @@ async fn real_spec_drives_issue_to_close_capstone() {
 
 fn remaining(deadline: Instant) -> Duration {
     deadline.saturating_duration_since(Instant::now())
+}
+
+/// Review-round subject tolerance (review channel A, item 1): the descriptor
+/// marks `subject.pr_number` optional, so absent/null is legal; when present
+/// it must match the capstone PR.
+fn subject_pr_absent_or_matches(subject: &Value, pr_number: u64) -> bool {
+    match subject.get("pr_number") {
+        None => true,
+        Some(Value::Null) => true,
+        Some(v) => *v == json!(pr_number),
+    }
+}
+
+/// The F4 fence round: the max-n impl `review.round` on `slice_id`
+/// (pr_number absent-or-matching) with event id strictly BEFORE the merge —
+/// i.e. the round the merge's expected_head_sha must have been built on.
+/// Latest-n, not first-converged: a converge → late-fix → re-converge run
+/// legitimately merges on the newer head (review channel A, item 2).
+async fn latest_impl_round_before_merge(
+    fx: &Fixture,
+    merged_id: i64,
+    slice_id: &str,
+    pr_number: u64,
+) -> Value {
+    let rounds = event_rows(&fx.repo, "review.round").await;
+    rounds
+        .into_iter()
+        .filter(|r| r.id < merged_id)
+        .filter(|r| {
+            let subject = &r.payload["subject"];
+            subject["phase"] == json!("impl")
+                && subject["slice_id"] == json!(slice_id)
+                && subject_pr_absent_or_matches(subject, pr_number)
+        })
+        .max_by_key(|r| r.payload["n"].as_u64().unwrap_or(0))
+        .map(|r| r.payload)
+        .unwrap_or_else(|| {
+            panic!("no impl review.round on slice {slice_id} precedes the merge (id {merged_id})")
+        })
 }
 
 /// Wave goal for the capstone: environment facts (forge_pr_goal precedent —
@@ -1737,8 +1809,8 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          implement-change first; (2) add open-pr only after implement-change completes, \
          embedding the implement worker's actual branch name in its goal; (3) add review-pr-a, \
          review-pr-b AND merge together in ONE calm.plan.upsert batch only after open-pr \
-         completes, embedding the literal repo, pr number, base sha and head sha values in \
-         each of their goals.\n\
+         completes, embedding the literal repo, pr number, base sha, head sha and reviewed \
+         slice_id values in each of their goals.\n\
          - implement-change goal: implement exactly what the issue asks by editing src/lib.rs \
          in the worker's own working directory, then call the MCP tool whose name ends in \
          `git.commit` (arguments: a commit message and a non-empty idem) and note the branch \
@@ -1748,7 +1820,8 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          - open-pr goal: call gh.pr.create with repo `{repo_gitdir}`, head = the implement \
          worker's branch, base `main`, and a non-empty title and body; then call gh.pr.checks \
          for the created PR; then call calm.task.complete reporting the literal pr_number and \
-         head_sha values gh.pr.create returned.\n\
+         head_sha values gh.pr.create returned; the open-pr worker must NOT call gh.pr.diff \
+         or gh.pr.list.\n\
          - review-pr-a / review-pr-b goals: call gh.pr.diff with the embedded repo, pr, \
          base_sha and head_sha, review the returned diff against the issue requirements, and \
          report the literal verdict token `approved` or `changes_requested` in \
@@ -1840,7 +1913,7 @@ async fn wait_capstone_event(
 async fn capstone_oracle(
     fx: &Fixture,
     pr_number: u64,
-    round_head: &str,
+    merged_head: &str,
     subject: &SubjectKey,
     repo_gitdir: &str,
 ) {
@@ -1921,9 +1994,16 @@ async fn capstone_oracle(
     assert_provisioned_before_runtime_started_per_card(fx).await;
 
     // Fence 6: subject-keyed cap enforcement + 6a existence (converged
-    // subject must actually have a head-matching merge).
+    // subject must actually have a head-matching merge). 6a keys merges by
+    // the FULL subject; when the spec legally omitted pr_number from its
+    // round subjects (item-1 tolerance) the round subject can never equal
+    // the merge subject (which always carries pr_number from the tool args),
+    // so 6a is replaced by the direct latest-fence assert already made
+    // in-line (merged head == latest pre-merge converged round head).
     assert_subject_keyed_cap_enforcement(&fx.repo, fx.wave_id.as_str()).await;
-    assert_converged_subject_has_merge(&fx.repo, subject).await;
+    if subject.pr_number.is_some() {
+        assert_converged_subject_has_merge(&fx.repo, subject).await;
+    }
 
     // Actor table (event-row column, never payload).
     for (actor, payload) in actor_payload_rows(&fx.repo, "plan.updated").await {
@@ -1961,7 +2041,7 @@ async fn capstone_oracle(
         !merge_keys.is_empty(),
         "expected a parked forge-action gh.pr.merge operation row"
     );
-    let merge_suffix = format!(":gh.pr.merge:{repo_gitdir}:{pr_number}:{round_head}");
+    let merge_suffix = format!(":gh.pr.merge:{repo_gitdir}:{pr_number}:{merged_head}");
     for key in &merge_keys {
         assert!(
             key.ends_with(&merge_suffix),
@@ -2005,14 +2085,14 @@ async fn capstone_oracle(
         &fx.wave_cwd,
         [
             "diff",
-            &format!("{}..{}", fx.origin_main_initial, round_head),
+            &format!("{}..{}", fx.origin_main_initial, merged_head),
             "--",
             "src/lib.rs",
         ],
     );
     assert!(
         !content_diff.is_empty(),
-        "merged head {round_head} must change src/lib.rs vs the seeded base"
+        "merged head {merged_head} must change src/lib.rs vs the seeded base"
     );
     assert!(
         content_diff
