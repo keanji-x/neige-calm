@@ -729,6 +729,31 @@ where
             last_id
         }
     };
+    // Re-read the prune watermark HERE, co-located with the `server_tip`
+    // read above, so the stamp's floor and its tip come from the same
+    // instant (#854 slice 2, review round 4). The earlier `prune_watermark`
+    // read (the mid-replay recheck) is stale by now: a prune batch can
+    // delete a tail row between it and this `events_latest_id()` call,
+    // dropping `server_tip` below a row this replay already streamed while
+    // the recheck watermark is unaware. Without a fresh floor,
+    // `replay_complete_stamp` would stamp `_replay_complete` below the
+    // client's last-seen `_id`, and the web EventStream would read normal
+    // retention as a #290 log reset and refetch spuriously (no data loss,
+    // just churn). The watermark is monotonic non-decreasing, so on a read
+    // error we fall back to the earlier (never-larger) recheck value — a
+    // conservative floor that only re-opens the narrow race for this one
+    // terminator, matching the graceful-degradation posture of the other
+    // watermark reads.
+    let stamp_watermark = match repo.events_prune_watermark().await {
+        Ok(watermark) => watermark,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "ws /api/events: events_prune_watermark stamp-floor read failed"
+            );
+            prune_watermark
+        }
+    };
     // `accounted_end` is the highest raw id this replay covered: the raw
     // end of the probed window (which the bounded read fully consumed —
     // `raw_pending <= cap` — including trailing rows the deserialization
@@ -737,7 +762,7 @@ where
     // extends the ack over the wholesale-skipped backlog at/below the
     // request-time tip exactly as the invariant's carve-out allows.
     let accounted_end = last_id.max(raw_window_max.unwrap_or(anchor));
-    let stamp = replay_complete_stamp(server_tip, accounted_end, prune_watermark);
+    let stamp = replay_complete_stamp(server_tip, accounted_end, stamp_watermark);
     let frame = replay_complete_frame(stamp);
     if tx.send(Message::Text(frame.into())).await.is_err() {
         return ReplayOutcome::ClientClosed;
@@ -827,7 +852,13 @@ fn watermark_invalidates_window(since: i64, watermark: i64) -> bool {
 ///     pruned, not because the log restarted. The true #290 signal
 ///     survives: `/dev/reset` wipes `retention_meta` in the same
 ///     transaction as the log, so a post-reset watermark is `0` and the
-///     floor is inert.
+///     floor is inert. The `prune_watermark` passed here is re-read at the
+///     call site immediately alongside `server_tip` (review round 4), so a
+///     tail prune landing between the mid-replay recheck and this stamp
+///     — dropping the tip below an id this replay already streamed —
+///     still floors the stamp at the fresh watermark instead of emitting a
+///     spurious #290 regression (`min(tip, accounted_end)` would otherwise
+///     dip below the streamed `accounted_end`).
 fn replay_complete_stamp(server_tip: i64, accounted_end: i64, prune_watermark: i64) -> i64 {
     server_tip.min(accounted_end).max(prune_watermark)
 }
@@ -1094,6 +1125,22 @@ mod tests {
         // … and post-reset: `/dev/reset` wipes retention_meta with the
         // log, so the true #290 regressed-tip signal passes unclamped.
         assert_eq!(replay_complete_stamp(2, 5, 0), 2);
+    }
+
+    #[test]
+    fn replay_stamp_survives_tail_prune_between_tip_and_floor_reads() {
+        // Round-4 race: this replay STREAMED up to id 10
+        // (`accounted_end == 10`); a tail prune then commits between the
+        // `events_latest_id()` read (tip drops to 8) and the co-located
+        // watermark read (advances to 10). Without the fresh floor,
+        // `min(8, 10) == 8` would stamp BELOW the client's last-seen `_id`
+        // and fake a #290 reset → spurious refetch. The floor holds the
+        // stamp at 10 (no data loss, no false regression).
+        assert_eq!(replay_complete_stamp(8, 10, 10), 10);
+        // A TRUE #290 reset in the same shape still fires: `/dev/reset`
+        // wiped `retention_meta` alongside the log, so the co-located
+        // watermark read returns 0 and the regressed tip passes through.
+        assert_eq!(replay_complete_stamp(8, 10, 0), 8);
     }
 
     #[test]
