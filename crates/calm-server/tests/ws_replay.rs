@@ -909,27 +909,24 @@ async fn cold_replay_over_cap_skips_to_tip() {
     assert_eq!(live["_id"], live_id);
 }
 
-// PR #867 rounds 3–4 (delivery invariant, see ws/events.rs module doc):
-// the over-cap cold skip promotes its replay anchor to the tip snapshot
-// taken BEFORE the connection's broadcast subscription, then DRAINS the
-// `(conn_tip, tip]` gap as ordinary replay frames. A row committed after
-// the connection opened is therefore delivered as a frame and covered by
-// the terminator ack — never acked-unsent (round 3: post-hoc tip stamped
-// over a buffered-only row) and never unacked-undelivered (round 4:
-// cursor parked below an unbuffered gap row).
+// PR #867 rounds 3–6 (delivery invariant, see ws/events.rs module doc):
+// the over-cap cold skip promotes its replay anchor to the log tip read
+// AT PROMOTION TIME (request-time snapshot, round 6). A row that was
+// already delivered live under an earlier subscription is covered by
+// that ack — the skip must NOT re-stream it (no duplicate) and must not
+// park the cursor below it.
 //
-// This test pins the round-3 cell: the gap row provably postdates the
-// subscription (its live delivery under a live-only sub proves it), then
-// a cold `since=0` re-anchor over-caps. The skip must re-stream the gap
-// row as a replay frame and ack it — the buffered duplicate dedupes
-// server-side, and the connection stays live past it.
+// This test pins the "already-delivered-live" kind of the acked set: the
+// row provably postdates the subscription (its live delivery under a
+// live-only sub proves it), then a cold `since=0` re-anchor over-caps.
+// The request-time promotion covers the row, so the terminator arrives
+// directly at its id — exactly-once delivery overall.
 #[tokio::test]
-async fn cold_skip_drains_post_subscribe_commit_as_replay_frame() {
+async fn cold_skip_acks_live_delivered_row_without_duplicate() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
-    // Backlog of 10 (> cap 6) exists BEFORE the connection opens, so the
-    // handler's pre-subscribe snapshot (= the promoted anchor) lands here.
+    // Backlog of 10 (> cap 6) exists BEFORE the connection opens.
     let pre = seed_n_cove_updates(&repo, &bus, 10).await;
-    let conn_tip = *pre.last().unwrap();
+    let backlog_tip = *pre.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
@@ -943,99 +940,102 @@ async fn cold_skip_drains_post_subscribe_commit_as_replay_frame() {
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     // Commit a row AFTER the connection subscribed. Its live arrival below
-    // proves it postdates the subscribe.
-    let gap_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
-    assert_eq!(gap_id, conn_tip + 1);
+    // proves it postdates the subscribe AND that it was delivered.
+    let live_row = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    assert_eq!(live_row, backlog_tip + 1);
     let live = recv_json(&mut ws).await;
     assert_eq!(live["ev"], "cove.updated");
-    assert_eq!(live["_id"], gap_id);
+    assert_eq!(live["_id"], live_row);
 
-    // Cold re-anchor: 11 pending rows > cap → the backlog <= conn_tip is
-    // skipped and the (conn_tip, tip] gap streams as replay frames. The
-    // client sees the gap row again (normal replay-duplicate semantics
-    // for a since=0 re-anchor), then the terminator acking it.
+    // Cold re-anchor: 11 pending rows > cap → promote to the request-time
+    // tip (= live_row). Everything at/below it is acked — the already
+    // -delivered row is NOT re-streamed; the terminator is the first and
+    // only frame.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
-    let replayed = recv_json(&mut ws).await;
-    assert_eq!(
-        replayed["ev"], "cove.updated",
-        "the gap row must be drained as a replay frame, got {replayed}"
-    );
-    assert_eq!(replayed["_id"], gap_id);
     let done = recv_json(&mut ws).await;
-    assert_eq!(done["ev"], "_replay_complete", "got {done}");
     assert_eq!(
-        done["_id"], gap_id,
-        "the terminator acks the drained gap (streamed), not more, not less"
+        done["ev"], "_replay_complete",
+        "no replay frame may precede the terminator — the delivered row \
+         is covered by the promotion, got {done}"
+    );
+    assert_eq!(
+        done["_id"], live_row,
+        "the terminator acks the request-time tip, covering the row that \
+         was already delivered live"
     );
 
     // Live-forward keeps working past the cursor: a fresh write arrives
-    // exactly once (the buffered duplicate of `gap_id` was deduped).
+    // exactly once.
     let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
     assert_eq!(next["ev"], "cove.updated");
     assert_eq!(next["_id"], next_id);
 }
 
-// Round-4 cell: a row committed after the connection opened but BEFORE
-// the client's sub frame. It is above the promoted anchor (the accept-time
-// tip snapshot), so the gap drain streams it as a replay frame; its
-// broadcast — buffered post-subscribe (round 5: the subscription is
-// established synchronously before any awaited work) but possibly
-// consumed while the topic set was still empty — never double-delivers:
-// either it was dropped by the empty-subs topic filter or it dedupes
-// below the cursor. On the round-3 code this test fails: the cursor was
-// parked at conn_tip with no gap drain, so the first frame was the
-// terminator and the row was never delivered on this connection.
+// The "never-deliverable" kind of the acked set (rounds 4→6 evolution):
+// a row committed after the connection opened but BEFORE the client's
+// first (and only) sub frame. The topic set is empty until that frame is
+// processed, so the live path could never have delivered the row — no
+// server design could have; only a replay frame might, and the cold
+// skip's contract replaces exactly those frames with the defensive
+// invalidate. The request-time promotion therefore FOLDS the row into
+// the acked backlog: the terminator covers it and no frame carries it.
+// (Round 4's accept-time snapshot happened to drain it as a bonus; the
+// round-6 request-time snapshot trades that never-deliverable drain for
+// zero DB work on the live-only path — see the module-doc decomposition.)
 #[tokio::test]
-async fn cold_skip_drains_gap_committed_before_the_sub_frame() {
+async fn cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
     let pre = seed_n_cove_updates(&repo, &bus, 10).await;
-    let conn_tip = *pre.last().unwrap();
+    let backlog_tip = *pre.last().unwrap();
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    // Let the handler run its accept sequence (conn_tip snapshot, then
-    // subscribe) before committing the gap row.
+    // Let the handler reach its select loop, then commit the row while
+    // the client has not yet sent ANY sub frame (topic set empty →
+    // never deliverable live).
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let gap_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
-    assert_eq!(gap_id, conn_tip + 1);
+    let folded_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    assert_eq!(folded_id, backlog_tip + 1);
 
-    // First and only sub: cold, over-cap. The skip must not lose the gap
-    // row — it arrives as a replay frame, then the terminator acks it.
+    // First and only sub: cold, over-cap. The request-time promotion
+    // covers the folded row; the terminator is the first frame and acks
+    // it.
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
-    let replayed = recv_json(&mut ws).await;
-    assert_eq!(
-        replayed["ev"], "cove.updated",
-        "gap row committed before the sub frame must be drained, got {replayed}"
-    );
-    assert_eq!(replayed["_id"], gap_id);
     let done = recv_json(&mut ws).await;
-    assert_eq!(done["ev"], "_replay_complete", "got {done}");
-    assert_eq!(done["_id"], gap_id);
+    assert_eq!(
+        done["ev"], "_replay_complete",
+        "the never-deliverable row folds into the acked backlog, got {done}"
+    );
+    assert_eq!(done["_id"], folded_id);
 
-    // Exactly-once: the next frame is the NEXT live write, not a buffered
-    // duplicate of the gap row.
+    // The cursor is consistent: the next frame is the NEXT live write —
+    // nothing below the ack leaks, nothing above it is missed.
     let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
     let next = recv_json(&mut ws).await;
     assert_eq!(next["ev"], "cove.updated");
     assert_eq!(next["_id"], next_id);
 }
 
-// Round-5 cell (live-only column of the delivery-invariant matrix): a
+// Rounds 5–6 cell (live-only column of the delivery-invariant matrix): a
 // documented live-only client (no `since`, no replay, no cursor) whose
 // event commits right after the subscription is provably active. The
-// handler must establish the broadcast receiver synchronously at accept,
-// BEFORE any awaited DB work — a pre-subscribe awaited read (the round-3/4
-// `conn_tip` placement) opened an unbuffered window whose events a
-// live-only client can never recover (there is no replay to backfill it).
-// Deterministic shape mirrors `subscribe_without_since_only_live`, but the
-// committed row is a PERSISTED write (real `events.id` on the wire), and
-// it must be the FIRST frame the client ever receives — no terminator, no
-// replay frames precede it.
+// handler must establish the broadcast receiver synchronously at accept
+// with NO awaited DB work anywhere before its frames are processed — a
+// pre-subscribe awaited read (round 5) opened an unbuffered window whose
+// events a live-only client can never recover, and any accept-time read
+// (round 6) stalls its subscription behind SQLite, risking broadcast
+// `Lagged` for a snapshot only the replay path consumes. The tip read
+// now lives solely inside `run_replay`'s promotion arm, which this
+// client never enters. Deterministic shape mirrors
+// `subscribe_without_since_only_live`, but the committed row is a
+// PERSISTED write (real `events.id` on the wire), and it must be the
+// FIRST frame the client ever receives — no terminator, no replay
+// frames precede it.
 #[tokio::test]
 async fn live_only_client_receives_first_post_connect_commit() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
@@ -1063,33 +1063,45 @@ async fn live_only_client_receives_first_post_connect_commit() {
     assert_eq!(first["_id"], live_id, "persisted id rides the wire");
 }
 
-// Escalation cell: the promoted window is ITSELF over cap — a flood
-// committed after the connection opened (here: the log was empty at
-// accept, so conn_tip == 0 and promotion cannot help). The skip must not
-// spin re-promoting; it escalates to `_snapshot_required` and the client
-// bounces cold once more.
+// Post-connect flood cell (round 6): the log is EMPTY at accept and an
+// over-cap flood commits before the client's first sub frame. The
+// request-time promotion reads the tip AT the replay request, so it
+// covers the whole flood — the skip absorbs it in one pass (terminator
+// at the flood tip) instead of bouncing the client through
+// `_snapshot_required` the way the accept-time snapshot (whose stale
+// `conn_tip == 0` could not help) had to. Every flood row was
+// never-deliverable live (empty topic set), so the wholesale ack is
+// within the contract. The true escalation (rows STILL flooding between
+// the promotion read and the re-probe, or a failed promotion read) has
+// no deterministic integration seam; it is pinned by the pure
+// `replay_cap_route` rows in the decision matrix.
 #[tokio::test]
-async fn cold_over_cap_flood_after_connect_escalates_to_snapshot_required() {
+async fn cold_over_cap_flood_after_connect_is_absorbed_by_promotion() {
     let (addr, repo, bus) = boot_with_cap(Some(6)).await;
 
     let url = format!("ws://{}/api/events", addr);
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
-    // conn_tip snapshots an EMPTY log (0); the flood lands afterwards.
+    // The log is empty at accept; the flood lands afterwards, before any
+    // sub frame (never-deliverable live: the topic set is still empty).
     tokio::time::sleep(Duration::from_millis(50)).await;
-    let _flood = seed_n_cove_updates(&repo, &bus, 7).await;
+    let flood = seed_n_cove_updates(&repo, &bus, 7).await;
+    let flood_tip = *flood.last().unwrap();
 
     ws.send(TMessage::Text(r#"{"sub":["*"], "since": 0}"#.to_string()))
         .await
         .unwrap();
-    let frame = recv_json(&mut ws).await;
+    let done = recv_json(&mut ws).await;
     assert_eq!(
-        frame["ev"], "_snapshot_required",
-        "a flood the promotion cannot bound must escalate, got {frame}"
+        done["ev"], "_replay_complete",
+        "the request-time promotion absorbs the flood in one pass, got {done}"
     );
+    assert_eq!(done["_id"], flood_tip, "terminator acks the flood tip");
 
-    // Connection closes shortly after — tolerate either an explicit close
-    // frame, a transport-level closure, or a timeout falling through.
-    let _ = timeout(Duration::from_millis(500), ws.next()).await;
+    // Live-forward continues past the absorbed flood.
+    let next_id = seed_n_cove_updates(&repo, &bus, 1).await[0];
+    let next = recv_json(&mut ws).await;
+    assert_eq!(next["ev"], "cove.updated");
+    assert_eq!(next["_id"], next_id);
 }
 
 #[tokio::test]

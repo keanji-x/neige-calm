@@ -81,10 +81,10 @@
 //! `_snapshot_required` from the envelope **before** schema validation
 //! runs.
 //!
-//! ## Delivery invariant (issue #854 / PR #867 review rounds 2–5)
+//! ## Delivery invariant (issue #854 / PR #867 review rounds 2–6)
 //!
 //! The replay window, the ack cursor, and the broadcast-subscription
-//! buffer are assembled at different instants; rounds 2–5 were all
+//! buffer are assembled at different instants; rounds 2–6 were all
 //! facets of orderings that let those three views disagree. The single
 //! invariant every replay execution must satisfy:
 //!
@@ -105,31 +105,53 @@
 //! >    survives the `env.id <= C` dedupe.
 //! >
 //! > The anchor is the client's `since`, EXCEPT on the over-cap cold
-//! > skip, where it is promoted to `conn_tip` — the log tip snapshotted
-//! > immediately AFTER the subscription is established at connection
-//! > accept. The promotion is the skip's contract: rows `<= conn_tip`
-//! > are covered by the client's defensive full invalidate (REST
-//! > re-reads), not by frames. `_snapshot_required` routes stamp no
-//! > cursor and close the connection, satisfying the invariant
-//! > vacuously. Clients that never send `since` never stamp a cursor
-//! > either: for them clause 2 degenerates to "everything committed
-//! > after accept is buffered", which the subscribe-first ordering
-//! > below guarantees.
+//! > skip, where it is promoted to the log tip read AT PROMOTION TIME
+//! > (the request-time snapshot, round 6). The promotion is the skip's
+//! > contract: rows at/below the promoted anchor are covered by the
+//! > client's defensive full invalidate (REST re-reads), not by frames.
+//! > `_snapshot_required` routes stamp no cursor and close the
+//! > connection, satisfying the invariant vacuously. Clients that never
+//! > send `since` never stamp a cursor either: for them clause 2
+//! > degenerates to "everything committed after accept is buffered",
+//! > which the accept-time ordering below guarantees.
 //!
-//! Ordering at accept (round 5): the subscription is established FIRST,
-//! synchronously, before ANY awaited work — a live-only client (no
+//! Ordering at accept (rounds 5–6): the subscription is established
+//! FIRST, synchronously, and is the ONLY accept-time step — no awaited
+//! work of any kind precedes the select loop. A live-only client (no
 //! `since`) has no replay to recover events with, so an awaited DB read
-//! placed before the subscribe would be an unbuffered loss window for
-//! it. The `conn_tip` snapshot is read right after. Consequently the
-//! round-4 "committed between snapshot and subscribe" cell no longer
-//! exists — there is no such window. The one residual sliver: a row
-//! that commits DURING the snapshot read and lands at/below the
-//! returned tip is buffered but wholesale-acked. That is within the
-//! skip contract by construction: it predates the client's first sub
-//! frame (the topic set is still empty, so the live path could never
-//! have delivered it) and the invalidate covers it like the rest of
-//! the backlog; a row that lands above the returned tip is gap-drained
-//! as a frame instead.
+//! before the subscribe would be an unbuffered loss window (round 5),
+//! and one placed anywhere before its frames are processed would stall
+//! its subscription behind SQLite and risk broadcast `Lagged` for a
+//! snapshot only the replay path consumes (round 6). The tip snapshot
+//! is therefore read lazily, inside `run_replay`, only when a cold
+//! over-cap window actually promotes — live-only and warm clients pay
+//! zero DB reads for it.
+//!
+//! Why the request-time promotion cannot ack a deliverable-but-unsent
+//! row — the acked set decomposes into three kinds, all within the
+//! contract:
+//!
+//! * rows committed before the since-bearing frame began processing,
+//!   under a topic set that DID NOT match them (in particular the empty
+//!   set of a cold first-frame client, whose `sub` and `since` arrive
+//!   in the same message): never deliverable by the live path at all —
+//!   only a replay frame could have carried them, and the skip's
+//!   invalidate contract is exactly the replacement for those frames;
+//! * rows committed while an EARLIER subscription matched them (the
+//!   re-anchor case — a live-only `{sub}` frame followed later by a
+//!   `{sub, since}` frame): already delivered by the live branch before
+//!   the replay began, so acking them prevents a duplicate rather than
+//!   causing a loss;
+//! * the in-flight sliver: rows committing during the replay request's
+//!   own bounded queries (probe + promotion read, single-digit
+//!   milliseconds) that land at/below the returned tip. Buffered but
+//!   acked — accepted as part of the skip's backlog by construction;
+//!   every earlier placement of the snapshot had the same-magnitude
+//!   sliver around its own read.
+//!
+//! Rows above the promoted anchor need no carve-out: the `(anchor, tip]`
+//! gap streams through the ordinary bounded path and everything later
+//! flows live.
 //!
 //! Why the streaming path satisfies it constructively: ids are
 //! append-only monotonic. The raw window probe runs *after* the
@@ -142,10 +164,7 @@
 //! committed after the probe (which ARE buffered) above `C`, and the
 //! `min` passes a regressed tip (issue #290 `/dev/reset` detection)
 //! through unclamped. The cold skip reuses this exact machinery — anchor
-//! promotion, then the `(conn_tip, tip]` gap streams as an ordinary
-//! window — so rows committed after the snapshot (e.g. between accept
-//! and the client's sub frame; round 4) are delivered as replay frames
-//! rather than lost.
+//! promotion, then the gap streams as an ordinary window.
 //!
 //! ### Implementation hints
 //!
@@ -206,40 +225,24 @@ struct SubMessage {
 
 async fn handle(socket: WebSocket, state: AppState) {
     let (mut tx, mut rx) = socket.split();
-    // Always subscribe up-front — UNCONDITIONALLY FIRST, before any
-    // awaited work (PR #867 round-5 review) — so any live event emitted
-    // between now and the first `{sub, since}` is buffered in the
-    // broadcast channel rather than dropped. The design's
-    // "subscribe-first" pattern (§2.2) is the *only* mechanism that
-    // prevents drops at the replay→live boundary, and for a documented
-    // live-only client (no `since`, no replay) the buffer is the ONLY
-    // delivery vehicle: an awaited DB read placed before this line would
+    // Always subscribe up-front — UNCONDITIONALLY FIRST, and as the ONLY
+    // accept-time step: no awaited work of any kind precedes the select
+    // loop (PR #867 rounds 5–6). Any live event emitted between now and
+    // the first `{sub, since}` is buffered in the broadcast channel
+    // rather than dropped. The design's "subscribe-first" pattern (§2.2)
+    // is the *only* mechanism that prevents drops at the replay→live
+    // boundary, and for a documented live-only client (no `since`, no
+    // replay) the buffer is the ONLY delivery vehicle: an awaited DB
+    // read placed anywhere before its frames are processed would (a)
     // open an unbuffered window whose events such a client can never
-    // recover. `subscribe()` is synchronous, so no event can slip in
-    // between socket accept and the receiver existing.
+    // recover (round 5) and (b) stall its subscription processing behind
+    // SQLite — risking broadcast-buffer `Lagged` under load — for a
+    // snapshot only the replay path consumes (round 6). The over-cap
+    // cold skip therefore reads its tip snapshot lazily, at promotion
+    // time inside `run_replay`; live-only clients trigger zero DB work.
+    // `subscribe()` is synchronous, so no event can slip in between
+    // socket accept and the receiver existing.
     let mut bus = state.events.subscribe();
-    // Snapshot the log tip immediately AFTER subscribing (rounds 3–5).
-    // The over-cap cold skip promotes its replay anchor to this snapshot:
-    // everything `<= conn_tip` is acked wholesale under the skip contract
-    // (the client's defensive invalidate re-reads state over REST), and
-    // everything above it is delivered as frames — the `(conn_tip, tip]`
-    // gap streams through the ordinary bounded replay path (round 4), and
-    // anything past that flows live. Because the subscription already
-    // exists, a row that commits DURING this read is buffered either way;
-    // if it lands at/below the returned tip it falls under the wholesale
-    // ack — it predates the client's first sub frame (empty topic set:
-    // the live path could not have delivered it anyway) and is covered by
-    // the invalidate contract like the rest of the backlog. See the
-    // module's "Delivery invariant" section. A read error degrades to `0`
-    // ("promote to nothing"), which routes an over-cap cold window to
-    // `_snapshot_required` instead of skipping — safe, one extra bounce.
-    let conn_tip = match state.repo.events_latest_id().await {
-        Ok(tip) => tip.unwrap_or(0),
-        Err(e) => {
-            tracing::error!(error = %e, "ws /api/events: connection tip snapshot failed");
-            0
-        }
-    };
     let mut subs: HashSet<String> = HashSet::new();
     // Tracks the largest replayed event id while a replay is in flight.
     // Any live event with `id <= last_replayed_id` is a duplicate (already
@@ -270,7 +273,6 @@ async fn handle(socket: WebSocket, state: AppState) {
                                     &subs,
                                     since,
                                     state.ws_replay_cap,
-                                    conn_tip,
                                 ).await {
                                     ReplayOutcome::Streamed(tip) => {
                                         last_replayed_id = tip;
@@ -372,16 +374,17 @@ enum ReplayOutcome {
 ///     budget; send `_snapshot_required` so the client drops its cache,
 ///     refetches over REST, and reconnects cold.
 ///   * `since == 0` — a cold client has no cache to invalidate, so the
-///     replay anchor is PROMOTED to the connection's pre-subscription tip
-///     snapshot: the backlog at or below it is acked wholesale (the
-///     client's terminator handler runs a defensive batch invalidate and
-///     its REST reads are fresh, so no state is lost) and the remaining
-///     `(conn_tip, tip]` gap streams like an ordinary warm window — see
-///     the module's "Delivery invariant" section. Sending
-///     `_snapshot_required` here instead would loop forever — the
-///     client's response is "clear cursor, reconnect at since=0". Only a
-///     promoted window that is ITSELF over cap (post-connect flood)
-///     escalates to `_snapshot_required`.
+///     replay anchor is PROMOTED to the log tip read at promotion time
+///     (request-time snapshot, round 6): the backlog at or below it is
+///     acked wholesale (the client's terminator handler runs a defensive
+///     batch invalidate and its REST reads are fresh, so no state is
+///     lost) and the remaining `(anchor, tip]` gap streams like an
+///     ordinary warm window — see the module's "Delivery invariant"
+///     section. Sending `_snapshot_required` here instead would loop
+///     forever — the client's response is "clear cursor, reconnect at
+///     since=0". Only a promoted window that is ITSELF over cap (rows
+///     still flooding in between the promotion read and the re-probe,
+///     or a failed promotion read) escalates to `_snapshot_required`.
 const WS_REPLAY_MAX_EVENTS_ENV: &str = "NEIGE_WS_REPLAY_MAX_EVENTS";
 const DEFAULT_WS_REPLAY_MAX_EVENTS: i64 = 10_000;
 
@@ -407,11 +410,9 @@ pub(crate) fn ws_replay_max_events_from_env() -> i64 {
 /// `_snapshot_required` if `since` predates the retention horizon or the
 /// pending window exceeds the replay cap `cap` (env-derived on the
 /// `AppState`; see [`WS_REPLAY_MAX_EVENTS_ENV`] for the over-cap routing
-/// table). `conn_tip` is the log tip snapshotted in `handle` immediately
-/// AFTER the connection's broadcast subscription is established (the
-/// subscribe itself is first, unconditionally — round 5) — the anchor
-/// the over-cap cold skip promotes to (module doc, "Delivery
-/// invariant").
+/// table). The over-cap cold skip reads its tip snapshot lazily, at
+/// promotion time inside this function (request-time snapshot, round 6)
+/// — the anchor the skip promotes to (module doc, "Delivery invariant").
 ///
 /// Implements the subscribe-first ordering: the broadcast subscription is
 /// established *before* this function is called (in `handle`), so any
@@ -424,7 +425,6 @@ async fn run_replay<S>(
     subs: &HashSet<String>,
     since: i64,
     cap: i64,
-    conn_tip: i64,
 ) -> ReplayOutcome
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
@@ -476,19 +476,21 @@ where
     // module's "Delivery invariant" section):
     //
     //   * warm (`anchor > 0`) over-cap → `_snapshot_required`, no cursor.
-    //   * cold (`anchor == 0`) over-cap → the anchor is PROMOTED to
-    //     `conn_tip` and the probe re-runs. Rows ≤ conn_tip are acked
-    //     wholesale under the skip contract (client refetches over REST
-    //     after the defensive invalidate); the remaining gap
-    //     `(conn_tip, tip]` — every row committed after the accept-time
-    //     snapshot, e.g. while the client's sub frame was in flight
-    //     (round-4 review) — then streams through this same bounded
-    //     path as an ordinary warm window, so nothing above the final
-    //     cursor is unbuffered and nothing below it is unsent.
-    //   * a promoted anchor that is STILL over cap (a flood committed
-    //     since the connection opened, or `conn_tip == 0` on an
-    //     empty-at-accept log) → `_snapshot_required`; the skip cannot
-    //     help and the client must bounce cold once more.
+    //   * cold (`anchor == 0`) over-cap → the anchor is PROMOTED to the
+    //     log tip read at promotion time (the request-time snapshot,
+    //     round 6) and the probe re-runs. Rows at/below the promoted
+    //     anchor are acked wholesale under the skip contract (client
+    //     refetches over REST after the defensive invalidate) — the
+    //     invariant section derives why none of them was a
+    //     deliverable-but-unsent row. The remaining `(anchor, tip]` gap
+    //     then streams through this same bounded path as an ordinary
+    //     warm window, so nothing above the final cursor is unbuffered
+    //     and nothing below it is unsent.
+    //   * a promoted anchor that is STILL over cap (rows flooding in
+    //     between the promotion read and the re-probe, or a failed
+    //     promotion read that degraded to 0) → `_snapshot_required`;
+    //     the skip cannot help and the client must bounce cold once
+    //     more.
     let mut anchor = since;
     let mut anchor_promoted = false;
     let raw_window_max = loop {
@@ -502,9 +504,9 @@ where
                 // Degraded path, mirrors the events_since error branch
                 // below: send the terminator at the anchor so the client
                 // stops waiting. A promoted anchor still satisfies the
-                // invariant here — everything ≤ conn_tip is covered by the
-                // terminator-triggered defensive invalidate, everything
-                // above it stays un-acked.
+                // invariant here — everything at/below it is covered by
+                // the terminator-triggered defensive invalidate,
+                // everything above it stays un-acked.
                 let frame = replay_complete_frame(anchor);
                 let _ = tx.send(Message::Text(frame.into())).await;
                 return ReplayOutcome::Streamed(anchor);
@@ -525,12 +527,29 @@ where
                 return ReplayOutcome::SnapshotRequired;
             }
             CapRoute::PromoteAnchor => {
+                // Request-time tip snapshot (round 6): read HERE, at
+                // promotion time, and nowhere earlier — live-only and
+                // warm clients never pay this read, and the accept
+                // sequence stays free of awaited DB work (see `handle`).
+                // Everything at/below this tip is acked wholesale under
+                // the skip contract; the module's "Delivery invariant"
+                // section derives why that ack can never swallow a
+                // deliverable-but-unsent row. A read error promotes to 0,
+                // which the next pass routes to `_snapshot_required`
+                // (bounce, stamp nothing) rather than spinning.
+                let tip = match repo.events_latest_id().await {
+                    Ok(t) => t.unwrap_or(0),
+                    Err(e) => {
+                        tracing::error!(error = %e, "ws /api/events: promotion tip read failed");
+                        0
+                    }
+                };
                 tracing::warn!(
                     cap,
-                    conn_tip,
-                    "ws /api/events: cold replay window exceeds cap; skipping backlog to the pre-subscription tip"
+                    promoted_anchor = tip,
+                    "ws /api/events: cold replay window exceeds cap; promoting anchor to the request-time tip"
                 );
-                anchor = conn_tip;
+                anchor = tip;
                 anchor_promoted = true;
             }
         }
@@ -649,8 +668,8 @@ where
     // `raw_pending <= cap` — including trailing rows the deserialization
     // pass dropped) joined with the highest row the read itself produced,
     // floored at the anchor. On a promoted (cold-skip) anchor this
-    // extends the ack over the wholesale-skipped backlog `<= conn_tip`
-    // exactly as the invariant's carve-out allows.
+    // extends the ack over the wholesale-skipped backlog at/below the
+    // request-time tip exactly as the invariant's carve-out allows.
     let accounted_end = last_id.max(raw_window_max.unwrap_or(anchor));
     let stamp = replay_complete_stamp(server_tip, accounted_end);
     let frame = replay_complete_frame(stamp);
@@ -668,15 +687,16 @@ enum CapRoute {
     /// Window fits the budget — stream it from the current anchor.
     Stream,
     /// Over cap on the cold first pass (`anchor == 0`): promote the
-    /// anchor to the connection's pre-subscription tip snapshot and
-    /// re-probe. The skipped backlog is acked under the invalidate
-    /// contract; the remaining gap streams like a warm window.
+    /// anchor to the log tip read at promotion time (request-time
+    /// snapshot) and re-probe. The skipped backlog is acked under the
+    /// invalidate contract; the remaining gap streams like a warm
+    /// window.
     PromoteAnchor,
     /// Over cap with a positive anchor (a warm cursor, or an
-    /// already-promoted cold anchor facing a post-connect flood): the
-    /// client must re-snapshot. No cursor is stamped on this route, so
-    /// the delivery invariant holds vacuously — the connection closes
-    /// and the client reconnects cold.
+    /// already-promoted cold anchor still facing a flood): the client
+    /// must re-snapshot. No cursor is stamped on this route, so the
+    /// delivery invariant holds vacuously — the connection closes and
+    /// the client reconnects cold.
     Snapshot,
 }
 
@@ -684,8 +704,9 @@ fn replay_cap_route(anchor: i64, raw_pending: i64, cap: i64, anchor_promoted: bo
     if raw_pending <= cap {
         CapRoute::Stream
     } else if anchor > 0 || anchor_promoted {
-        // `anchor_promoted` matters when `conn_tip == 0` (log empty at
-        // accept, flood committed since): re-promoting to 0 would spin.
+        // `anchor_promoted` matters when the promotion landed at 0 (the
+        // promotion tip read failed, or the log was empty at read time
+        // with a flood committing right after): re-promoting would spin.
         CapRoute::Snapshot
     } else {
         CapRoute::PromoteAnchor
@@ -707,8 +728,8 @@ fn replay_cap_route(anchor: i64, raw_pending: i64, cap: i64, anchor_promoted: bo
 ///   * A tip BELOW `accounted_end` is the #290 log-regression signal
 ///     (`/dev/reset` restarted ids) and must pass through unclamped so
 ///     the client can detect it — on a promoted (cold-skip) anchor too
-///     (a reset between connection open and the replay shrinks the tip
-///     below `conn_tip`).
+///     (a reset between the promotion read and the final tip read
+///     shrinks the tip below the promoted anchor).
 fn replay_complete_stamp(server_tip: i64, accounted_end: i64) -> i64 {
     server_tip.min(accounted_end)
 }
@@ -864,58 +885,64 @@ mod tests {
         // ---- COLD path (since == 0) ----------------------------------
         // Under cap → plain stream, identical to warm with anchor 0.
         assert_eq!(replay_cap_route(0, 4, CAP, false), CapRoute::Stream);
-        // Over cap → promote the anchor to conn_tip (the skip). Never a
-        // snapshot on the first pass: the client would loop at since=0.
+        // Over cap → promote the anchor to the request-time tip (the
+        // skip). Never a snapshot on the first pass: the client would
+        // loop at since=0.
         assert_eq!(
             replay_cap_route(0, CAP + 1, CAP, false),
             CapRoute::PromoteAnchor
         );
 
-        // cold-skip, commit BEFORE the conn_tip snapshot (the 15k
-        // backlog itself): id <= conn_tip = promoted anchor — acked
-        // wholesale under the invalidate contract. [integration:
-        // cold_replay_over_cap_skips_to_tip]
-        let (backlog_id, conn_tip) = (9_000, 15_000);
-        assert!(backlog_id <= conn_tip, "wholesale-acked by the promotion");
+        // cold-skip, commit BEFORE the promotion tip read (round 6:
+        // request-time snapshot). This is the 15k backlog PLUS any row
+        // committed up to the read — id <= promoted anchor → acked
+        // wholesale under the invalidate contract. The module doc's
+        // decomposition shows why no such row was deliverable-but-unsent:
+        // either no matching topic set existed while its broadcast was
+        // consumed (a cold first-frame client's set is empty until the
+        // {sub, since} message — the row was never deliverable live), or
+        // an earlier subscription already delivered it live (re-anchor
+        // case — the ack prevents a duplicate). Round-5 note: the former
+        // "between snapshot and subscribe" cell is gone — the snapshot
+        // no longer exists at accept time at all. [integration:
+        // cold_replay_over_cap_skips_to_tip (never-deliverable),
+        // cold_skip_folds_pre_sub_frame_commit_into_the_acked_backlog
+        // (never-deliverable), cold_skip_acks_live_delivered_row_without_duplicate
+        // (already-delivered)]
+        let (backlog_id, promoted_anchor) = (9_000, 15_000);
+        assert!(
+            backlog_id <= promoted_anchor,
+            "wholesale-acked by the promotion"
+        );
 
-        // cold-skip, commit AFTER the conn_tip snapshot but BEFORE the
-        // client's sub frame (round 4): id 15_001 is above the promoted
-        // anchor — it must be STREAMED by the promoted window whether or
-        // not its broadcast was consumed while the topic set was still
-        // empty. The gap probe from conn_tip covers it (gap under cap →
-        // Stream), and the stamp then acks it as sent. Round 5 note: the
-        // former "between snapshot and subscribe" variant of this cell no
-        // longer exists — the subscription is established synchronously
-        // BEFORE the snapshot read, so there is no such window.
-        // [integration: cold_skip_drains_gap_committed_before_the_sub_frame]
-        assert_eq!(replay_cap_route(conn_tip, 1, CAP, true), CapRoute::Stream);
+        // cold-skip, commit AFTER the promotion tip read: id 15_001 is
+        // above the promoted anchor — the gap probe from the anchor
+        // covers it (gap under cap → Stream) and it is STREAMED as a
+        // replay frame; its buffered broadcast dedupes below the stamp.
+        assert_eq!(
+            replay_cap_route(promoted_anchor, 1, CAP, true),
+            CapRoute::Stream
+        );
         let gap_accounted = 15_001; // gap read streamed the row
         assert!(replay_complete_stamp(15_001, gap_accounted) >= 15_001);
 
-        // cold-skip, commit BETWEEN subscribe and the gap probe (round
-        // 3): buffered AND inside the gap window → streamed as a replay
-        // frame; the buffered duplicate is <= the stamp and dedupes.
-        // [integration: cold_skip_drains_post_subscribe_commit_as_replay_frame]
-        assert!(replay_complete_stamp(15_001, 15_001) >= 15_001);
-
-        // cold-skip, commit BETWEEN gap probe and tip-read: above the
-        // accounted gap (15_001), below the tip (15_002); buffered →
-        // stamp stays below it, delivered live. Round 2 logic on the
-        // promoted window.
+        // cold-skip, commit BETWEEN gap probe and tip-read (the in-flight
+        // sliver's outer edge): above the accounted gap (15_001), below
+        // the tip (15_002); buffered → stamp stays below it, delivered
+        // live. Round 2 logic on the promoted window.
         assert_eq!(replay_complete_stamp(15_002, 15_001), 15_001);
 
-        // cold-skip, promoted window ITSELF over cap (post-connect
-        // flood): escalate to snapshot rather than skipping again —
-        // includes the conn_tip == 0 (empty-at-accept) case, where
-        // re-promoting to 0 would spin. [integration:
-        // cold_over_cap_flood_after_connect_escalates_to_snapshot_required]
+        // cold-skip, promoted window ITSELF over cap (rows still
+        // flooding in between the promotion read and the re-probe, or a
+        // failed promotion read that degraded to anchor 0): escalate to
+        // snapshot rather than re-promoting (which could spin).
         assert_eq!(
-            replay_cap_route(conn_tip, CAP + 1, CAP, true),
+            replay_cap_route(promoted_anchor, CAP + 1, CAP, true),
             CapRoute::Snapshot
         );
         assert_eq!(replay_cap_route(0, CAP + 1, CAP, true), CapRoute::Snapshot);
 
-        // ---- LIVE-ONLY column (no `since`, round 5) ------------------
+        // ---- LIVE-ONLY column (no `since`, rounds 5–6) ---------------
         // A documented live-only client never enters `run_replay`: no
         // probe, no promotion, no cursor stamp (`last_replayed_id` stays
         // 0, so `replay_cap_route` / `replay_complete_stamp` are simply
@@ -923,16 +950,24 @@ mod tests {
         // entire delivery contract is clause 2 of the invariant with
         // C = 0: everything committed after accept must be buffered,
         // which holds because `handle` establishes the subscription
-        // synchronously before ANY awaited work — an awaited DB read
-        // placed before the subscribe would be an unbuffered loss window
-        // that no replay ever recovers. [integration:
+        // synchronously as the ONLY accept-time step. Round-6 Lagged
+        // hardening is structural: the tip snapshot lives inside
+        // `run_replay`'s promotion arm and NOWHERE on the accept or
+        // frame-dispatch path, so a live-only client's subscription
+        // processing can never stall behind an awaited DB read it does
+        // not need (SQLite lock at connect + >1024 buffered broadcasts
+        // → `Lagged` → close, with no replay cursor to recover). The
+        // seam-level pin: `run_replay` is the sole caller of the
+        // promotion read, and `handle` contains no awaited work before
+        // the select loop — asserted by code shape (see the `handle`
+        // accept comment) and exercised by [integration:
         // live_only_client_receives_first_post_connect_commit,
-        // subscribe_without_since_only_live]
+        // subscribe_without_since_only_live].
 
         // ---- #290 reset detection (both paths) -----------------------
         // A tip BELOW the accounted end is the log-regression signal and
         // passes through unclamped — warm anchor (accounted 5) and
-        // promoted anchor (accounted = conn_tip 10) alike. [integration:
+        // promoted anchor (accounted 10) alike. [integration:
         // replay_complete_id_reflects_server_tip_after_reset]
         assert_eq!(replay_complete_stamp(2, 5), 2);
         assert_eq!(replay_complete_stamp(2, 10), 2);
