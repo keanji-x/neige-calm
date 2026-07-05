@@ -316,7 +316,8 @@ fn actor_from_legacy_string(s: &str) -> ActorId {
 /// Tables wiped match the schema declared by `migrations/0001..0004`:
 /// `events`, `overlays`, `cards`, `waves`, `coves`, `terminals`,
 /// `plugins`, `plugin_kv`, `plugin_tokens`, `settings`, plus the
-/// #644 `tasks` table (migration 0041). Migration rows
+/// #644 `tasks` table (migration 0041) and the #854 `retention_meta`
+/// table (migration 0060). Migration rows
 /// (`_sqlx_migrations`) are preserved — wiping them would force a
 /// re-migrate that we don't need for a stateful reset.
 ///
@@ -346,6 +347,11 @@ pub async fn reset_from_fixture(
     let mut tx = pool.begin().await?;
     for stmt in [
         "DELETE FROM events",
+        // Retention bookkeeping must reset WITH the event log: a stale
+        // `events_prune_watermark` from the pre-reset log would sit above
+        // the re-seeded ids and strand every WS client in a
+        // `_snapshot_required` loop (#854 slice 2).
+        "DELETE FROM retention_meta",
         "DELETE FROM overlays",
         "DELETE FROM terminals",
         "DELETE FROM cards",
