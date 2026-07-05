@@ -73,6 +73,7 @@ function extensionsFor(path: string, theme?: 'light' | 'dark') {
     : null;
   return [
     EditorView.editable.of(false),
+    EditorView.lineWrapping,
     ...(theme ? [theme === 'dark' ? githubDark : githubLight] : []),
     ...(lang ? [lang] : []),
   ];
