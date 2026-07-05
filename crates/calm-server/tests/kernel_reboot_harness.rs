@@ -70,9 +70,12 @@
 //! touch prod: the DB lives in a throwaway `tempfile::tempdir()`, the port is a
 //! freshly-discovered ephemeral port (asserted `!= 4040`), and codex/claude/
 //! supervisor binaries are pointed at non-existent paths so no real agent or
-//! shared app-server is ever launched. Children are killed via a `Drop` guard
-//! even on panic. It is CI-safe: no external deps, and it self-skips if the
-//! sandbox denies a loopback bind.
+//! shared app-server is ever launched. The child environment is **cleared and
+//! rebuilt from a minimal allowlist** (`spawn_kernel`), so no inherited
+//! `CALM_*` / `NEIGE_*` / `RECORD_SESSION` var can bleed in and no write can
+//! escape the tempdir (`HOME`/`TMPDIR` are redirected into it). Children are
+//! killed via a `Drop` guard even on panic. It is CI-safe: no external deps, and
+//! it self-skips if the sandbox denies a loopback bind.
 
 #![cfg(target_os = "linux")]
 
@@ -159,8 +162,29 @@ fn free_port_or_skip(what: &str) -> Option<u16> {
 /// external dependency (codex/claude/supervisor/plugins/hook-fallback) pointed
 /// at throwaway paths inside `tmp` so no real agent, app-server, or prod
 /// artifact is ever touched.
+///
+/// The child environment is **cleared first** (`env_clear`) and rebuilt from a
+/// minimal allowlist, so no inherited `CALM_*` / `NEIGE_*` / `RECORD_SESSION`
+/// var from the developer's or CI's shell can bleed in — e.g. a stray
+/// `RECORD_SESSION` would append outside the tempdir (breaking isolation), and a
+/// malformed `CALM_SHARED_CODEX_APPSERVER_RESTART_*` could wedge boot. `HOME`
+/// and `TMPDIR` are redirected into `tmp` too, so any path the kernel derives
+/// from them also stays inside the throwaway dir.
 fn spawn_kernel(tmp: &Path, db_path: &Path, port: u16) -> Child {
+    // Bare essentials the binary/runtime need. `PATH` is passed through (fallen
+    // back to a sane default) so any incidental PATH lookup still resolves;
+    // everything else is an explicit fixture value.
+    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
+
     Command::new(CALM_SERVER_BIN)
+        .env_clear()
+        // ---- runtime essentials (allowlist) -------------------------------
+        .env("PATH", path)
+        .env("HOME", tmp)
+        .env("TMPDIR", tmp)
+        .env("RUST_LOG", "warn,calm_server=info")
+        .env("RUST_BACKTRACE", "1")
+        // ---- fixture config: DB + listener + all state under `tmp` --------
         .env(
             "CALM_DB_URL",
             format!("sqlite://{}?mode=rwc", db_path.display()),
@@ -183,8 +207,6 @@ fn spawn_kernel(tmp: &Path, db_path: &Path, port: u16) -> Child {
         // Dev autologin so boot doesn't panic requiring an owner password; the
         // `/api/version` readiness probe is public regardless.
         .env("CALM_DEV_AUTOLOGIN", "true")
-        // Keep logs quiet-ish but visible on failure.
-        .env("RUST_LOG", "warn,calm_server=info")
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
