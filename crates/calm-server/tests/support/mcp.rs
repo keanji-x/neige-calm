@@ -293,6 +293,26 @@ pub fn tools_list_frame(id: i64, thread_id: &str) -> Value {
     })
 }
 
+/// Scripted MCP `tools/call` over a kernel UDS socket (hoisted from
+/// forge_workflow_e2e.rs's fixture-local `call_tool`, generalized off that
+/// file's `Fixture`). `token` may be a card-bound session token or the
+/// shared-daemon token; identity resolves from `_meta.threadId` either way,
+/// so callers that only hold the daemon token (codex forge E2E) can drive
+/// scripted setup calls through the same wire as real agent sessions.
+pub async fn call_tool_via_socket(
+    socket_path: &std::path::Path,
+    token: &str,
+    thread_id: &str,
+    id: i64,
+    name: &str,
+    args: Value,
+) -> Value {
+    let (mut rd, mut wr) = connect(socket_path).await;
+    handshake(&mut rd, &mut wr, token).await;
+    send_frame(&mut wr, tools_call_frame(id, name, thread_id, args)).await;
+    recv_frame(&mut rd).await
+}
+
 pub fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value {
     json!({
         "jsonrpc": "2.0",
