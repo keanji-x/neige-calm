@@ -588,6 +588,51 @@ where
         }
     };
 
+    // One post-fetch prune-watermark read (#854 slice 2, review round 2),
+    // two uses. It deliberately sits AFTER the `events_since` read and
+    // BEFORE the first frame streams:
+    //
+    //   1. Recheck (P1): a prune batch can commit between the pre-fetch
+    //      guard at the top and the `events_since` read — the materialized
+    //      window would silently miss newly pruned interior rows. If the
+    //      watermark advanced past a warm `since`, the window can't be
+    //      trusted; re-snapshot before anything streams. A prune that
+    //      commits after THIS point only deletes rows the client is about
+    //      to receive anyway (the fetch itself is a single-statement
+    //      snapshot, internally contiguous), and the next reconnect's
+    //      guard sees the advanced watermark. Cold anchors are exempt,
+    //      like the guard: a `since == 0` client folds whatever the log
+    //      holds.
+    //   2. Terminator floor: pruned ids are dead forever (AUTOINCREMENT
+    //      ids are never reused, and the dev-reset path wipes
+    //      `retention_meta` together with the log), so the ack cursor may
+    //      safely extend to the watermark — see `replay_complete_stamp`.
+    let prune_watermark = match repo.events_prune_watermark().await {
+        Ok(watermark) => watermark,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "ws /api/events: events_prune_watermark recheck failed"
+            );
+            // Fall through with an inert floor — same rationale as the
+            // pre-fetch guard: never strand a client on a transient DB
+            // hiccup. The pre-fetch guard already screened `since`, so
+            // skipping the recheck only re-opens the (tiny) guard→fetch
+            // race for this one connection.
+            0
+        }
+    };
+    if watermark_invalidates_window(since, prune_watermark) {
+        tracing::warn!(
+            since,
+            watermark = prune_watermark,
+            "ws /api/events: prune watermark advanced mid-replay; forcing re-snapshot"
+        );
+        let frame = snapshot_required_frame(earliest_id.unwrap_or(prune_watermark));
+        let _ = tx.send(Message::Text(frame.into())).await;
+        return ReplayOutcome::SnapshotRequired;
+    }
+
     let mut last_id = anchor;
     for (id, event_version, scope, ev) in rows {
         // Tier A read-side guard, replay surface (issue #198 concern 4,
@@ -692,7 +737,7 @@ where
     // extends the ack over the wholesale-skipped backlog at/below the
     // request-time tip exactly as the invariant's carve-out allows.
     let accounted_end = last_id.max(raw_window_max.unwrap_or(anchor));
-    let stamp = replay_complete_stamp(server_tip, accounted_end);
+    let stamp = replay_complete_stamp(server_tip, accounted_end, prune_watermark);
     let frame = replay_complete_frame(stamp);
     if tx.send(Message::Text(frame.into())).await.is_err() {
         return ReplayOutcome::ClientClosed;
@@ -734,9 +779,23 @@ fn replay_cap_route(anchor: i64, raw_pending: i64, cap: i64, anchor_promoted: bo
     }
 }
 
+/// Pure verdict for the post-fetch prune-watermark recheck (#854 slice 2,
+/// review round 2): a warm window is invalid when the pruner's durable
+/// watermark advanced past `since` after the pre-fetch guard ran — a
+/// pruned interior row may sit inside `(since, watermark]`, and the
+/// materialized window would replay around it silently. Cold windows
+/// (`since == 0`) are never invalidated: a cold client folds whatever the
+/// log holds and the fetch itself is internally contiguous. The CALL SITE
+/// ordering carries the race closure — `run_replay` evaluates this on a
+/// watermark read taken after `events_since` and before the first frame
+/// streams.
+fn watermark_invalidates_window(since: i64, watermark: i64) -> bool {
+    since > 0 && since < watermark
+}
+
 /// Decide the id `_replay_complete` carries (also the connection's dedup
-/// cursor): `min(server_tip, accounted_end)`. Pure so the decision table
-/// is unit-testable.
+/// cursor): `min(server_tip, accounted_end).max(prune_watermark)`. Pure so
+/// the decision table is unit-testable.
 ///
 ///   * A tip ABOVE what this replay accounted for means rows committed
 ///     between the raw window probe and the `events_latest_id()` read
@@ -751,8 +810,26 @@ fn replay_cap_route(anchor: i64, raw_pending: i64, cap: i64, anchor_promoted: bo
 ///     the client can detect it — on a promoted (cold-skip) anchor too
 ///     (a reset between the promotion read and the final tip read
 ///     shrinks the tip below the promoted anchor).
-fn replay_complete_stamp(server_tip: i64, accounted_end: i64) -> i64 {
-    server_tip.min(accounted_end)
+///   * The stamp is FLOORED at the prune watermark (#854 slice 2, review
+///     round 2). When the pruner deleted the log's tail, the watermark
+///     sits ABOVE the live tip; a stamp below it strands the client in a
+///     `_snapshot_required` loop — the reconnect cursor lands below the
+///     watermark, the retention guard bounces it, the cold replay
+///     re-stamps below the watermark, forever (until an unrelated append
+///     outruns it). The floor is safe on every path: ids at or below the
+///     watermark can never carry a live or buffered row again
+///     (AUTOINCREMENT ids are never reused and `sqlite_sequence` already
+///     sits at/above the watermark, so concurrent commits land strictly
+///     above it), and a warm anchor only meets a biting floor at
+///     `since == watermark` exactly (the retention guard rejects anything
+///     lower), where lifting the stamp back to `since` suppresses a FALSE
+///     #290 regression signal — the tip regressed because the tail was
+///     pruned, not because the log restarted. The true #290 signal
+///     survives: `/dev/reset` wipes `retention_meta` in the same
+///     transaction as the log, so a post-reset watermark is `0` and the
+///     floor is inert.
+fn replay_complete_stamp(server_tip: i64, accounted_end: i64, prune_watermark: i64) -> i64 {
+    server_tip.min(accounted_end).max(prune_watermark)
 }
 
 /// `{ "_id": <id>, "eventVersion": <n>, "ev": "_replay_complete" }`.
@@ -859,7 +936,7 @@ mod tests {
     //
     //   * `replay_cap_route(anchor, raw_pending, cap, promoted)` — which
     //     path a probe pass takes (stream / promote-anchor / snapshot);
-    //   * `replay_complete_stamp(server_tip, accounted_end)` — where the
+    //   * `replay_complete_stamp(server_tip, accounted_end, prune_watermark)` — where the
     //     ack cursor lands relative to a concurrently committed row.
     //
     // The seams exist exactly so the commit-timing races are pinnable
@@ -886,22 +963,22 @@ mod tests {
         // accounted_end >= id and the stamp acks it as streamed.
         // [integration: subscribe_with_since_zero_replays_all]
         let (id, accounted_end, tip) = (8, 10, 10);
-        assert!(replay_complete_stamp(tip, accounted_end) >= id);
+        assert!(replay_complete_stamp(tip, accounted_end, 0) >= id);
 
         // warm, commit BETWEEN probe and tip-read: id (11..=12) is above
         // the accounted window (10) but below the tip (12). It IS
         // buffered (the subscription predates the probe), so the stamp
         // must stay below it → delivered live, exactly once. Round 2.
         // [integration: replay_then_live_no_drop_no_dupe]
-        assert_eq!(replay_complete_stamp(12, 10), 10);
+        assert_eq!(replay_complete_stamp(12, 10, 0), 10);
 
         // warm, commit AFTER tip-read: id > tip >= stamp — trivially
         // above the cursor, delivered live. [integration:
         // cold_replay_over_cap_skips_to_tip live tail]
-        assert!(13 > replay_complete_stamp(12, 12));
+        assert!(13 > replay_complete_stamp(12, 12, 0));
 
         // warm, fully caught up: tip == accounted end, ack everything.
-        assert_eq!(replay_complete_stamp(10, 10), 10);
+        assert_eq!(replay_complete_stamp(10, 10, 0), 10);
 
         // ---- COLD path (since == 0) ----------------------------------
         // Under cap → plain stream, identical to warm with anchor 0.
@@ -945,13 +1022,13 @@ mod tests {
             CapRoute::Stream
         );
         let gap_accounted = 15_001; // gap read streamed the row
-        assert!(replay_complete_stamp(15_001, gap_accounted) >= 15_001);
+        assert!(replay_complete_stamp(15_001, gap_accounted, 0) >= 15_001);
 
         // cold-skip, commit BETWEEN gap probe and tip-read (the in-flight
         // sliver's outer edge): above the accounted gap (15_001), below
         // the tip (15_002); buffered → stamp stays below it, delivered
         // live. Round 2 logic on the promoted window.
-        assert_eq!(replay_complete_stamp(15_002, 15_001), 15_001);
+        assert_eq!(replay_complete_stamp(15_002, 15_001, 0), 15_001);
 
         // cold-skip, promoted window ITSELF over cap (rows still
         // flooding in between the promotion read and the re-probe, or a
@@ -990,15 +1067,50 @@ mod tests {
         // passes through unclamped — warm anchor (accounted 5) and
         // promoted anchor (accounted 10) alike. [integration:
         // replay_complete_id_reflects_server_tip_after_reset]
-        assert_eq!(replay_complete_stamp(2, 5), 2);
-        assert_eq!(replay_complete_stamp(2, 10), 2);
+        assert_eq!(replay_complete_stamp(2, 5, 0), 2);
+        assert_eq!(replay_complete_stamp(2, 10, 0), 2);
     }
 
     #[test]
     fn replay_stamp_caps_at_accounted_end_not_tip() {
         // Round-2 headline case, kept as a named pin: concurrent commit
         // during replay must stay above the ack cursor.
-        assert_eq!(replay_complete_stamp(12, 10), 10);
+        assert_eq!(replay_complete_stamp(12, 10, 0), 10);
+    }
+
+    #[test]
+    fn replay_stamp_floors_at_prune_watermark() {
+        // Tail prune: watermark above the live tip. Cold replay (accounted
+        // end = tip) must ack up to the watermark or the reconnect cursor
+        // lands below it and re-snapshots forever (#854 round 2).
+        assert_eq!(replay_complete_stamp(3, 3, 4), 4);
+        // Warm anchor at exactly the watermark with a tail-pruned tip:
+        // the floor lifts the stamp back to the cursor, suppressing a
+        // FALSE #290 regression signal (tip dipped because the tail was
+        // pruned, not because the log restarted).
+        assert_eq!(replay_complete_stamp(3, 10, 10), 10);
+        // Inert whenever real rows reach past it (the common case) …
+        assert_eq!(replay_complete_stamp(12, 10, 4), 10);
+        // … and post-reset: `/dev/reset` wipes retention_meta with the
+        // log, so the true #290 regressed-tip signal passes unclamped.
+        assert_eq!(replay_complete_stamp(2, 5, 0), 2);
+    }
+
+    #[test]
+    fn watermark_recheck_invalidates_only_warm_windows_below_it() {
+        // The mid-replay prune race (#854 round 2): the pure verdict the
+        // post-fetch recheck applies. A warm cursor strictly below the
+        // (re-read) watermark means a pruned interior row may sit inside
+        // the just-materialized window — re-snapshot.
+        assert!(watermark_invalidates_window(3, 4));
+        assert!(watermark_invalidates_window(1, i64::MAX));
+        // At (or above) the watermark the window is contiguous by
+        // construction — pruned ids are all at/below the watermark.
+        assert!(!watermark_invalidates_window(4, 4));
+        assert!(!watermark_invalidates_window(9, 4));
+        // Cold windows are never invalidated (a since=0 client folds
+        // whatever the log holds; snapshot_required would loop it).
+        assert!(!watermark_invalidates_window(0, i64::MAX));
     }
 
     #[test]

@@ -122,3 +122,8 @@ off-peak, never during active use.
   `events_earliest_id - 1` (head of the log gone — slice 1 protocol) OR a
   cursor below the durable retention watermark (interior rows pruned by
   this pruner) receives `_snapshot_required` instead of a gappy replay.
+  The watermark is re-read after the replay window is materialized and
+  before the first frame streams, closing the race with a prune batch
+  committing mid-replay; and the `_replay_complete` cursor floors at the
+  watermark so a pruned TAIL (watermark above the live tip) cannot strand
+  clients in a re-snapshot loop (`replay_complete_stamp`).
