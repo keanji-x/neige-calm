@@ -4273,6 +4273,106 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .file-viewer-code-wrap .cm-editor { height: 100%; }
 .file-viewer-code-wrap .cm-scroller { font-family: var(--font-code); }
+.file-viewer-md-mode {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-self: flex-start;
+  margin: var(--space-3) var(--space-4) var(--space-0) var(--space-4);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.file-viewer-md-mode button {
+  height: 24px;
+  padding: var(--space-0) var(--space-4);
+  border: none;
+  border-right: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.file-viewer-md-mode button:last-child { border-right: none; }
+.file-viewer-md-mode button.active { background: var(--text); color: var(--paper); }
+.file-viewer-markdown {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-4) var(--space-6);
+  color: var(--text);
+  font-size: var(--text-sm);
+  line-height: var(--leading-base);
+  word-wrap: break-word;
+}
+.file-viewer-markdown > *:first-child { margin-top: var(--space-0); }
+.file-viewer-markdown > *:last-child { margin-bottom: var(--space-0); }
+.file-viewer-markdown h1,
+.file-viewer-markdown h2,
+.file-viewer-markdown h3,
+.file-viewer-markdown h4,
+.file-viewer-markdown h5,
+.file-viewer-markdown h6 {
+  margin: var(--space-5) var(--space-0) var(--space-3);
+  line-height: var(--leading-snug);
+}
+.file-viewer-markdown h1 { font-size: var(--text-xl); }
+.file-viewer-markdown h2 { font-size: var(--text-lg); }
+.file-viewer-markdown h3 { font-size: var(--text-md); }
+.file-viewer-markdown p,
+.file-viewer-markdown ul,
+.file-viewer-markdown ol,
+.file-viewer-markdown blockquote,
+.file-viewer-markdown table,
+.file-viewer-markdown pre { margin: var(--space-3) var(--space-0); }
+.file-viewer-markdown ul,
+.file-viewer-markdown ol { padding-left: var(--space-6); }
+.file-viewer-markdown a { color: var(--accent); }
+.file-viewer-markdown code {
+  padding: var(--space-px) var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--overlay-hover);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+}
+.file-viewer-markdown pre {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  overflow-x: auto;
+}
+.file-viewer-markdown pre code {
+  padding: var(--space-0);
+  background: transparent;
+  font-size: var(--text-sm);
+}
+.file-viewer-markdown blockquote {
+  padding-left: var(--space-4);
+  border-left: 3px solid var(--hairline-strong);
+  color: var(--text-2);
+}
+.file-viewer-markdown hr {
+  margin: var(--space-5) var(--space-0);
+  border: none;
+  border-top: 1px solid var(--hairline);
+}
+.file-viewer-markdown table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.file-viewer-markdown th,
+.file-viewer-markdown td {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--hairline);
+  text-align: left;
+}
+.file-viewer-markdown th { background: var(--surface-card); }
+.file-viewer-markdown img { max-width: 100%; }
+.file-viewer-markdown input[type="checkbox"] {
+  margin-right: var(--space-2);
+}
 .file-viewer-banner {
   flex: 0 0 auto;
   padding: var(--space-2) var(--space-4);
