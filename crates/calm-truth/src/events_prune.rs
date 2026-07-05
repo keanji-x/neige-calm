@@ -23,7 +23,10 @@
 //!     entirely: replay would hide that latest row, so the older supported
 //!     row is the state a client actually folds and must survive. The
 //!     freeze set is recomputed inside each delete's own `BEGIN IMMEDIATE`
-//!     transaction, never cached across batches.
+//!     transaction, never cached across batches. `overlay.set` rows whose
+//!     payload is not even valid JSON (`json_valid` fails) are never
+//!     delete candidates at all — SQLite would raise from `json_extract`
+//!     on them, and a row we cannot parse is a row we do not prune.
 //!
 //! Accepted regression — what you lose after the horizon: `claude.hook` and
 //! `codex.hook` rows older than the retention horizon disappear from the two
@@ -318,6 +321,15 @@ async fn overlay_quads_with_unsupported_latest_tx(
         Option<String>,
         String,
     );
+    // `json_valid` gates every `json_extract`: SQLite RAISES on
+    // `json_extract` over malformed JSON, and one malformed historical row
+    // would otherwise error the whole batch — disabling ALL `overlay.set`
+    // pruning until manually repaired (round-3 review). Rows failing
+    // `json_valid` never reach this scan (their quad is unknowable) and
+    // are excluded from delete candidacy entirely in `prune_batch` —
+    // conservatively kept, matching what replay folds (`events_since`
+    // skips rows whose payload cannot parse, so clients fold the newest
+    // VALID row per quad, which is exactly what the keep-set retains).
     let rows: Vec<Row> = sqlx::query_as(
         r#"SELECT json_extract(payload, '$.plugin_id'),
                   json_extract(payload, '$.entity_kind'),
@@ -325,8 +337,9 @@ async fn overlay_quads_with_unsupported_latest_tx(
                   json_extract(payload, '$.kind'),
                   payload
            FROM events
-           WHERE kind = 'overlay.set' AND id IN (
-             SELECT MAX(id) FROM events WHERE kind = 'overlay.set'
+           WHERE kind = 'overlay.set' AND json_valid(payload) AND id IN (
+             SELECT MAX(id) FROM events
+             WHERE kind = 'overlay.set' AND json_valid(payload)
              GROUP BY json_extract(payload, '$.plugin_id'),
                       json_extract(payload, '$.entity_kind'),
                       json_extract(payload, '$.entity_id'),
@@ -339,8 +352,10 @@ async fn overlay_quads_with_unsupported_latest_tx(
         .filter_map(|(plugin_id, entity_kind, entity_id, kind, payload)| {
             let unsupported = match serde_json::from_str::<Overlay>(&payload) {
                 Ok(overlay) => crate::validation::should_skip_overlay(&overlay),
-                // Unparseable latest — replay skips the row entirely, so
-                // treat it like an unsupported version and freeze the quad.
+                // Valid JSON that is not an `Overlay` shape — replay skips
+                // the row entirely, so treat it like an unsupported
+                // version and freeze the quad. (Malformed JSON never gets
+                // here: the `json_valid` gate above filters it out.)
                 Err(_) => true,
             };
             unsupported.then_some((plugin_id, entity_kind, entity_id, kind))
@@ -368,10 +383,17 @@ async fn prune_batch(
                WHERE kind = ?1 AND at < ?2"#,
     );
     if keep_latest_per_overlay_key {
+        // `json_valid` first: a malformed-JSON `overlay.set` row is never
+        // a delete candidate (keep what we cannot parse — the freeze
+        // philosophy), and the keep-set groups only valid rows so a
+        // malformed row can never claim a quad's MAX(id) slot from a
+        // valid one (round-3 review).
         sql.push_str(
             r#"
+                 AND json_valid(payload)
                  AND id NOT IN (
-                   SELECT MAX(id) FROM events WHERE kind = ?1
+                   SELECT MAX(id) FROM events
+                   WHERE kind = ?1 AND json_valid(payload)
                    GROUP BY json_extract(payload, '$.plugin_id'),
                             json_extract(payload, '$.entity_kind'),
                             json_extract(payload, '$.entity_id'),
@@ -379,13 +401,22 @@ async fn prune_batch(
         );
         for i in 0..frozen_quads.len() {
             // `IS` (not `=`) so a NULL quad component matches the same
-            // rows the keep-set `GROUP BY` grouped together.
+            // rows the keep-set `GROUP BY` grouped together. The extracts
+            // are CASE-gated on `json_valid` — SQLite does not guarantee
+            // AND-term evaluation order, so the bare `json_valid(payload)`
+            // conjunct above cannot be relied on to short-circuit a
+            // raising `json_extract` on a malformed row; CASE evaluation
+            // IS guaranteed lazy.
             let base = 4 + i * 4;
             sql.push_str(&format!(
-                "\n                 AND NOT (json_extract(payload, '$.plugin_id') IS ?{} \
-                 AND json_extract(payload, '$.entity_kind') IS ?{} \
-                 AND json_extract(payload, '$.entity_id') IS ?{} \
-                 AND json_extract(payload, '$.kind') IS ?{})",
+                "\n                 AND NOT (CASE WHEN json_valid(payload) \
+                 THEN json_extract(payload, '$.plugin_id') END IS ?{} \
+                 AND CASE WHEN json_valid(payload) \
+                 THEN json_extract(payload, '$.entity_kind') END IS ?{} \
+                 AND CASE WHEN json_valid(payload) \
+                 THEN json_extract(payload, '$.entity_id') END IS ?{} \
+                 AND CASE WHEN json_valid(payload) \
+                 THEN json_extract(payload, '$.kind') END IS ?{})",
                 base,
                 base + 1,
                 base + 2,
@@ -755,6 +786,55 @@ mod tests {
             2
         );
         assert_eq!(remaining_ids(pool).await, vec![healed]);
+    }
+
+    #[tokio::test]
+    async fn malformed_overlay_payload_never_poisons_the_batch() {
+        let repo = repo().await;
+        let pool = repo.pool();
+        // Malformed JSON payload: SQLite's `json_extract` would RAISE on
+        // this row; ungated it would error every overlay batch and
+        // disable overlay.set pruning entirely (round-3 review).
+        let malformed = insert_event(pool, "overlay.set", "{not json", old(90)).await;
+        // Normal quad history alongside it: pruning must still proceed.
+        let quad = overlay_payload("p1", "card", "c1", "status");
+        let _superseded = insert_event(pool, "overlay.set", &quad, old(80)).await;
+        let latest = insert_event(pool, "overlay.set", &quad, old(50)).await;
+        let _hook = insert_event(pool, "claude.hook", "{}", old(40)).await;
+
+        let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+            .await
+            .expect("prune must not error on a malformed overlay payload");
+
+        // superseded + hook pruned; the malformed row is conservatively
+        // KEPT (a row we cannot parse is a row we do not prune) and the
+        // valid quad's latest survives via the keep-set as usual.
+        assert_eq!(pruned, 2);
+        assert_eq!(remaining_ids(pool).await, vec![malformed, latest]);
+
+        // A second pass with the malformed row still present (and a fresh
+        // frozen-quad exclusion in play) stays error-free and idempotent.
+        let frozen_latest = insert_event(
+            pool,
+            "overlay.set",
+            &overlay_payload_with_inner(
+                "kernel",
+                "view",
+                "w1",
+                "layout",
+                serde_json::json!({"schemaVersion": 99, "positions": {}}),
+            ),
+            old(30),
+        )
+        .await;
+        let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+            .await
+            .expect("second prune with frozen quads must not error either");
+        assert_eq!(pruned, 0);
+        assert_eq!(
+            remaining_ids(pool).await,
+            vec![malformed, latest, frozen_latest]
+        );
     }
 
     #[test]
