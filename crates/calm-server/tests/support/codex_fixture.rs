@@ -46,9 +46,10 @@ use tokio::time::{Instant, sleep};
 use super::agent_diag::{EvidenceTempDir, panic_with_agent_diag};
 use super::event_queries::*;
 use super::forge_env::{EnvGuard, ForgeTestEnv};
-use super::gh_shim::write_gh_shim;
+use super::gh_shim::{seed_shim_issue_body, write_gh_shim};
 use super::git_helpers::{
     clone_for_wave, git_stdout, git_stdout_no_cwd, init_bare_origin, is_hex_sha,
+    seed_rust_micro_crate,
 };
 use super::spec_turn::spec_identity;
 
@@ -63,9 +64,35 @@ pub struct FixtureSpec {
     pub goal: Option<String>,
     pub workflow_id: Option<String>,
     pub plan_source: PlanSource,
-    pub issue_body: Option<String>,
+    pub issue_body: Option<FixtureIssue>,
     pub mint_report_card: bool,
     pub require_task_gates: bool,
+    /// #840 capstone (P1): when `Some`, every workflow gate step `cmd` in the
+    /// git-forge manifest is replaced with this command BEFORE
+    /// `Manifest::parse`, and a boot guard then asserts no registered gate cmd
+    /// contains `cargo` (the #863-B recursive-suite amplifier: gate cmds run
+    /// as `/bin/sh` wrappers inside this very `cargo test` suite). `None`
+    /// preserves the production manifest byte-identically (#835/#843 paths).
+    pub descriptor_gate_cmd: Option<String>,
+    /// #840 capstone (P2): what the local bare origin is seeded with.
+    pub repo_seed: RepoSeed,
+}
+
+/// Fixture-served source issue for the gh shim (#840 capstone S0): the body
+/// agents read via `gh.issue.view` becomes fixture-controlled instead of the
+/// shim's hardcoded fallback.
+pub struct FixtureIssue {
+    pub number: u64,
+    pub body: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepoSeed {
+    /// Historical default: a README-only repo (`init_bare_origin`).
+    ReadmeOnly,
+    /// #840 capstone: a real Rust micro-crate with a hermetic rustc gate
+    /// script and NO Cargo.toml (`seed_rust_micro_crate`).
+    RustMicroCrate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +191,8 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
             issue_body: None,
             mint_report_card: false,
             require_task_gates: true,
+            descriptor_gate_cmd: None,
+            repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
     )
@@ -181,7 +210,6 @@ pub async fn boot_forge_e2e_fixture(
         .map(|path| EnvGuard::set("PATH", path))
         .ok_or_else(|| format!("codex binary has no parent: {}", codex_bin.display()))?;
     let proxy_env = apply_proxy_env();
-    let _issue_body = spec.issue_body.as_deref();
 
     let tmp =
         EvidenceTempDir::new(target_tmpdir("cf").map_err(|e| format!("target tempdir: {e}"))?);
@@ -192,8 +220,20 @@ pub async fn boot_forge_e2e_fixture(
     let wave_cwd = tmp.path().join("wave-cwd");
     let origin_repo = tmp.path().join("origin.git");
 
-    init_bare_origin(&origin_repo, &tmp.path().join("seed"));
+    match spec.repo_seed {
+        RepoSeed::ReadmeOnly => init_bare_origin(&origin_repo, &tmp.path().join("seed")),
+        RepoSeed::RustMicroCrate => seed_rust_micro_crate(&origin_repo, &tmp.path().join("seed")),
+    }
     clone_for_wave(&origin_repo, &wave_cwd);
+    if let Some(issue) = &spec.issue_body {
+        // The gh shim keys state by the `--repo` selector string. The capstone
+        // goal pins the CLONE gitdir selector (forge_pr_goal precedent — the
+        // shim rev-parses worker branches there without any push), but seed
+        // both plausible selectors so scripted/agent calls agree wherever the
+        // steered goal points them.
+        seed_shim_issue_body(&origin_repo, issue.number, &issue.body);
+        seed_shim_issue_body(&wave_cwd.join(".git"), issue.number, &issue.body);
+    }
     let origin_main_initial =
         git_stdout_no_cwd(["--git-dir", path_str(&origin_repo), "rev-parse", "main"]);
 
@@ -333,6 +373,7 @@ pub async fn boot_forge_e2e_fixture(
         plugins_data_dir,
         events.clone(),
         write.clone(),
+        spec.descriptor_gate_cmd.as_deref(),
     )
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
@@ -520,6 +561,29 @@ pub fn spawn_dispatcher(fx: &Fixture) -> Dispatcher {
         fx.daemon.clone(),
         fx.renderer.clone(),
         Some(fx.server.clone()),
+        fx.shared.clone(),
+        fx.runtime.clone(),
+        4,
+    )
+}
+
+/// #840 capstone: like [`spawn_dispatcher`], but wired to the FIXTURE's
+/// `HarnessRegistry`. `spawn_dispatcher` builds a fresh internal registry,
+/// which is fine for worker-only tests but silently severs the dispatcher's
+/// spec wake-ups (`harness_observation_from_event` delivery): the spec harness
+/// booted through `fx.runtime`'s `SpecHarnessStartAdapter` registers in
+/// `fx.harness`, and the dispatcher must look it up in the SAME registry for
+/// live pushes to reach the real spec session.
+pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
+    Dispatcher::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
+        fx.repo_dyn.clone(),
+        fx.events.clone(),
+        fx.write.clone(),
+        fx.codex.clone(),
+        fx.daemon.clone(),
+        fx.renderer.clone(),
+        Some(fx.server.clone()),
+        fx.harness.clone(),
         fx.shared.clone(),
         fx.runtime.clone(),
         4,
@@ -799,6 +863,29 @@ pub fn spec_planning_budget() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(240))
 }
 
+/// #840 capstone overall deadline (P7 + checker pin c): a realistic single
+/// run is ~20–40min of real spec turns + substantial worker runs; 3600s
+/// leaves one stochastic fix-loop of headroom.
+pub fn capstone_budget() -> Duration {
+    std::env::var("NEIGE_CAPSTONE_BUDGET")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(3600))
+}
+
+/// #840 capstone per-stage floor (checker pin c): substantial workers
+/// (implement, open-pr, review-pr ×2) run for minutes each (d1 data), so
+/// every post-planning stage wait gets ≥480s — `e2e_budget`'s 180s default
+/// contradicts the observed worker runtimes.
+pub fn capstone_stage_budget() -> Duration {
+    std::env::var("NEIGE_CAPSTONE_STAGE_BUDGET")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(480))
+}
+
 pub fn resolve_codex_bin() -> Option<PathBuf> {
     let raw = std::env::var("NEIGE_CODEX_BIN").ok()?;
     let expanded = if let Some(stripped) = raw.strip_prefix("~/")
@@ -1033,6 +1120,7 @@ pub async fn boot_plugin_host(
     plugins_data_dir: PathBuf,
     events: EventBus,
     write: WriteContext,
+    descriptor_gate_cmd: Option<&str>,
 ) -> Arc<PluginHost> {
     let install_dir = plugins_dir.join(PLUGIN_ID);
     let bin_dir = install_dir.join("bin");
@@ -1041,7 +1129,7 @@ pub async fn boot_plugin_host(
     std::os::unix::fs::symlink(Path::new(FORGE_BIN), bin_dir.join("git-forge"))
         .expect("symlink git-forge plugin");
 
-    let manifest = read_manifest();
+    let manifest = read_manifest(descriptor_gate_cmd);
     let manifest_json = manifest.to_json();
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir.clone()));
@@ -1086,9 +1174,73 @@ pub fn manifest_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
 }
 
-pub fn read_manifest() -> Manifest {
+/// Load the git-forge manifest, optionally test-patching every workflow gate
+/// step cmd (#840 capstone P1). `None` = production manifest, byte-identical.
+/// When patched, the boot guard fails loud if ANY registered gate cmd still
+/// contains `cargo` — a bare `cargo test` dispatched from inside this `cargo
+/// test` suite is the #863-B recursive-suite amplifier.
+pub fn read_manifest(descriptor_gate_cmd: Option<&str>) -> Manifest {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
-    Manifest::parse(&raw).expect("git-forge manifest parses")
+    let raw = match descriptor_gate_cmd {
+        None => raw,
+        Some(cmd) => patch_manifest_gate_cmd(&raw, cmd),
+    };
+    let manifest = Manifest::parse(&raw).expect("git-forge manifest parses");
+    if descriptor_gate_cmd.is_some() {
+        assert_no_cargo_gate_cmds(&manifest);
+    }
+    manifest
+}
+
+/// Replace every `workflows[*].gates[*].steps[*].cmd` in the raw manifest
+/// JSON with `cmd`, leaving everything else (plan_template, spec_instructions,
+/// cap, tools) byte-identical at the JSON-value level. Panics if no gate step
+/// was found — a silently-unpatched manifest must never boot the capstone.
+pub fn patch_manifest_gate_cmd(raw: &str, cmd: &str) -> String {
+    let mut value: Value = serde_json::from_str(raw).expect("manifest is valid JSON");
+    let mut patched = 0usize;
+    let workflows = value
+        .get_mut("workflows")
+        .and_then(Value::as_array_mut)
+        .expect("manifest has a workflows array");
+    for workflow in workflows {
+        let Some(gates) = workflow.get_mut("gates").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for gate in gates {
+            let Some(steps) = gate.get_mut("steps").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for step in steps {
+                step["cmd"] = json!(cmd);
+                patched += 1;
+            }
+        }
+    }
+    assert!(
+        patched > 0,
+        "descriptor gate patch matched no gate steps; manifest shape moved?"
+    );
+    serde_json::to_string(&value).expect("patched manifest re-serializes")
+}
+
+/// #840 capstone boot guard (pin d): no registered workflow gate step may
+/// invoke cargo in the patched-descriptor fixture.
+pub fn assert_no_cargo_gate_cmds(manifest: &Manifest) {
+    for workflow in &manifest.workflows {
+        for gate in &workflow.gates {
+            for step in &gate.steps {
+                assert!(
+                    !step.cmd.contains("cargo"),
+                    "workflow {} gate step {} still invokes cargo ({}); the \
+                     capstone fixture must never register a cargo gate (#863-B)",
+                    workflow.id,
+                    step.name,
+                    step.cmd
+                );
+            }
+        }
+    }
 }
 
 pub fn path_str(path: &Path) -> &str {
