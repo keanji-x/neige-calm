@@ -11,12 +11,20 @@
 //!   spawn the real `calm-server` binary against a **file-backed** sqlite DB in
 //!   an isolated tempdir → wait until it is fully booted → `SIGKILL` it →
 //!   relaunch against the **same tempdir** on a fresh port → wait until booted
-//!   again → assert the rebooted kernel reconstructed durable state exactly
-//!   once, with no duplicate dispatch.
+//!   again → assert the rebooted kernel preserved durable state and reclaimed it
+//!   exactly once, with no duplicate dispatch.
 //!
-//! ## Danger-point-1: snapshot reconstruction, no duplicate dispatch
+//! ## Danger-point-1: snapshot preservation + codex-free lease reclaim
 //!
-//! Scoped (per the converged design) to the *supervisor-free* reconstruction
+//! Note on wording: with no codex present, `boot_harnesses` returns `Ok(0)` and
+//! harness recovery is **skipped**, so the `HarnessSnapshot` survives by
+//! *non-mutation* (preservation), NOT by `state_from_snapshot` reconstruction.
+//! The real crash-recovery invariant this slice proves is the **exactly-once
+//! workspace-lease reclaim** across a reboot. True snapshot reconstruction
+//! (`state_from_snapshot`, which requires a live codex daemon) is out of scope
+//! here and is NOT covered by e2/e3 either.
+//!
+//! Scoped (per the converged design) to the *supervisor-free* crash-recovery
 //! path — NOT terminal-PTY reconcile (which needs a live calm-proc-supervisor)
 //! and NOT the codex harness snapshot (which is deferred until the shared codex
 //! app-server is running; `boot_harnesses` swallows that failure and returns
@@ -24,8 +32,8 @@
 //! `recover_harnesses_after_daemon_boot`).
 //!
 //! The cheapest fully codex-free, worker-free, deterministic, DB-observable
-//! reconstruction is the **workspace-lease boot reclaim**, the very first action
-//! of `recover_operations_on_boot`
+//! crash-recovery action is the **workspace-lease boot reclaim**, the very first
+//! action of `recover_operations_on_boot`
 //! (`operation::driver::recover_on_boot` → `reclaim_dead_workspace_leases_on_boot`).
 //! It runs unconditionally, in pure SQLite, before the HTTP listener binds — so
 //! by the time `/api/version` answers 200 the reclaim has already happened.
@@ -44,9 +52,11 @@
 //!
 //! ## What e1 proves vs. what e2/e3 defer
 //!   * e1 (this): the spawn → file-DB → SIGKILL → relaunch → reconcile harness
-//!     works, and a codex-free boot reconstruction is exactly-once across a
-//!     reboot. Kill lands at an *arbitrary* instant (after ready), NOT a
-//!     targeted window.
+//!     works; a codex-free boot reclaim is exactly-once across a reboot and the
+//!     durable snapshot is preserved. Kill lands at an *arbitrary* instant
+//!     (after ready), NOT a targeted window. (True `state_from_snapshot`
+//!     reconstruction needs a live codex daemon and is not proven by any of
+//!     e1/e2/e3 — it belongs to the real-agent stability tier.)
 //!   * e2 (deferred): a `CALM_TEST_CRASH_AT` seam in the forge merge path
 //!     (`complete_parked_tx`) to crash inside the "merge landed but fence not
 //!     committed" window, then assert the gh-shim merge count == 1 (exactly-once
@@ -238,11 +248,21 @@ fn launch_kernel(tmp: &Path, db_path: &Path, what: &str) -> Option<ChildGuard> {
     for attempt in 0..5 {
         let port = free_port_or_skip(what)?;
         assert_ne!(port, 4040, "must never bind the prod calm-server port");
-        let mut child = spawn_kernel(tmp, db_path, port);
-        match wait_ready(&mut child, port) {
-            Ok(()) => return Some(ChildGuard { child, port }),
+        // Wrap the child in its `ChildGuard` IMMEDIATELY, before waiting on it.
+        // `wait_ready` can panic on a hard 30s timeout; because `guard` is a
+        // live local, unwinding drops it and `ChildGuard::drop` SIGKILLs+reaps
+        // the (possibly hung) kernel — so a wedged boot never leaks a real
+        // calm-server holding the tempdir. A bare `Child` would NOT be killed
+        // by its own `Drop`, which is the leak this guards against.
+        let mut guard = ChildGuard {
+            child: spawn_kernel(tmp, db_path, port),
+            port,
+        };
+        match wait_ready(&mut guard.child, port) {
+            Ok(()) => return Some(guard),
             Err(WaitErr::EarlyExit) => {
-                let _ = child.wait();
+                // `guard` drops here and reaps the already-exited child (its
+                // `try_wait` sees `Some(status)`, so no redundant kill).
                 eprintln!(
                     "{what}: relaunch attempt {attempt} on port {port} exited early; retrying on a fresh port"
                 );
@@ -436,7 +456,7 @@ async fn read_final_state(db_url: &str, seeded: &Seeded) -> FinalState {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kernel_reboot_reconstructs_snapshot_without_duplicate_dispatch() {
+async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_dispatch() {
     // ---- prod-safety hard guards (never touch the real DB / port) ---------
     let tmp: TempDir = tempfile::tempdir().expect("tempdir");
     let tmp_path: PathBuf = tmp.path().to_path_buf();
@@ -466,16 +486,18 @@ async fn kernel_reboot_reconstructs_snapshot_without_duplicate_dispatch() {
     // ---- SIGKILL at an arbitrary instant while durable state is live ------
     boot1.sigkill_and_reap();
 
-    // ---- boot 2: relaunch against the SAME tempdir on a fresh port --------
+    // ---- boot 2: relaunch against the SAME tempdir ------------------------
     // The whole tempdir (calm.db + its `-wal`/`-shm` WAL sidecars) is preserved
-    // across the kill — we reuse `tmp_path`/`db_path` verbatim.
+    // across the kill — we reuse `tmp_path`/`db_path` verbatim. `launch_kernel`
+    // picks a fresh ephemeral port; we do NOT assert it differs from boot 1's,
+    // because after the kill the OS allocator may legally hand back the same
+    // port and a same-port reboot is perfectly valid.
     let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2") else {
         return;
     };
-    assert_ne!(boot2.port, boot1.port, "relaunch must use a fresh port");
     boot2.sigkill_and_reap();
 
-    // ---- assert reconstruction + exactly-once, no duplicate dispatch ------
+    // ---- assert snapshot preservation + exactly-once reclaim, no dup -------
     let state = read_final_state(&db_url, &seeded).await;
 
     assert_eq!(
