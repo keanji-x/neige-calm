@@ -167,7 +167,11 @@ where
     let state = session("ws-t1", wave_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
-    let before = repo.events_since(0, None).await.expect("event count").len();
+    let before = repo
+        .events_since(0, i64::MAX)
+        .await
+        .expect("event count")
+        .len();
     let event = conformance_event("t1");
 
     let (inserted, event_id) = commit_decision(
@@ -197,7 +201,7 @@ where
             .expect("session get")
             .is_some()
     );
-    let after = repo.events_since(0, None).await.expect("event count");
+    let after = repo.events_since(0, i64::MAX).await.expect("event count");
     assert_eq!(after.len(), before + 1);
 }
 
@@ -206,7 +210,11 @@ pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
     let state = session("ws-t1-saga", wave_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
-    let before = repo.events_since(0, None).await.expect("event count").len();
+    let before = repo
+        .events_since(0, i64::MAX)
+        .await
+        .expect("event count")
+        .len();
     let event = conformance_event("t1-saga");
 
     let mut tx = begin_immediate_tx(repo.pool())
@@ -229,7 +237,7 @@ pub async fn invariant_t1_saga_in_tx_decision_write_couples_state_and_event() {
             .expect("session get")
             .is_some()
     );
-    let after = repo.events_since(0, None).await.expect("event count");
+    let after = repo.events_since(0, i64::MAX).await.expect("event count");
     assert_eq!(after.len(), before + 1);
 }
 
@@ -240,7 +248,11 @@ pub async fn invariant_t1_denied_decision_rolls_back_state_and_event() {
     let state = session("ws-t1-denied", wave_id);
     let actor = ActorId::Kernel;
     let scope = EventScope::System;
-    let before = repo.events_since(0, None).await.expect("event count").len();
+    let before = repo
+        .events_since(0, i64::MAX)
+        .await
+        .expect("event count")
+        .len();
 
     let result = commit_decision(
         &repo,
@@ -265,7 +277,7 @@ pub async fn invariant_t1_denied_decision_rolls_back_state_and_event() {
             .expect("session get")
             .is_none()
     );
-    let after = repo.events_since(0, None).await.expect("event count");
+    let after = repo.events_since(0, i64::MAX).await.expect("event count");
     assert_eq!(after.len(), before);
 }
 
@@ -287,7 +299,11 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
         .await
         .expect("set root session");
 
-    let before = repo.events_since(0, None).await.expect("event count").len();
+    let before = repo
+        .events_since(0, i64::MAX)
+        .await
+        .expect("event count")
+        .len();
     let denied_state = session("ws-root-denied", wave_id.clone());
     let denied_gate = DenyOnRoot {
         wave_id: wave_id.clone(),
@@ -316,7 +332,10 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
             .is_none()
     );
     assert_eq!(
-        repo.events_since(0, None).await.expect("event count").len(),
+        repo.events_since(0, i64::MAX)
+            .await
+            .expect("event count")
+            .len(),
         before
     );
 
@@ -346,7 +365,10 @@ pub async fn invariant_t1_gate_can_read_wave_root_inside_tx() {
             .is_some()
     );
     assert_eq!(
-        repo.events_since(0, None).await.expect("event count").len(),
+        repo.events_since(0, i64::MAX)
+            .await
+            .expect("event count")
+            .len(),
         before + 1
     );
 }
@@ -394,7 +416,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
     .await
     .expect("seed idle runtime");
 
-    let before = repo.events_since(0, None).await.expect("events").len();
+    let before = repo.events_since(0, i64::MAX).await.expect("events").len();
 
     write_in_tx_typed(&repo, {
         let runtime_id = runtime_id.clone();
@@ -421,7 +443,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
         .expect("runtime get")
         .expect("runtime row");
     assert_eq!(runtime.status, WorkerSessionState::TurnPending);
-    let after = repo.events_since(0, None).await.expect("events").len();
+    let after = repo.events_since(0, i64::MAX).await.expect("events").len();
     assert_eq!(after, before, "observation write must emit no event");
 }
 
@@ -471,7 +493,7 @@ where
         .expect("session row exists");
     assert_eq!(persisted.state, WorkerSessionState::Running);
     assert!(
-        repo.events_since(0, None)
+        repo.events_since(0, i64::MAX)
             .await
             .expect("events after delete")
             .is_empty()

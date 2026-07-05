@@ -72,27 +72,37 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
                     terminal_id = %term.id,
                     "terminal row is running in DB but supervisor has no live PTY; marking exited",
                 );
-                if let Err(e) = state
-                    .repo
-                    .terminal_set_exit(&term.id, Some(-1), false)
-                    .await
+                // Boot is the most lock-contended window the DB sees
+                // (issue #854: `database is locked (code 5)` here left
+                // terminals half-completed — row exited, projection not).
+                // Retry both writes through the busy/locked window; if the
+                // budget exhausts, scream at error level so the
+                // inconsistency is operator-visible, but keep boot alive.
+                if let Err(e) =
+                    retry_on_sqlite_busy(|| state.repo.terminal_set_exit(&term.id, Some(-1), false))
+                        .await
                 {
-                    tracing::warn!(
+                    tracing::error!(
                         terminal_id = %term.id,
                         error = %e,
-                        "failed to mark stale terminal exited during boot reconcile"
+                        "failed to mark stale terminal exited during boot reconcile; \
+                         terminal row left running against a dead PTY"
                     );
                 }
                 // Synthetic -1 means the process outcome is unknown at boot, so treat it as Exited.
-                if let Err(e) = state
-                    .repo
-                    .session_projection_complete_for_terminal(&term.id, WorkerSessionState::Exited)
-                    .await
+                if let Err(e) = retry_on_sqlite_busy(|| {
+                    state.repo.session_projection_complete_for_terminal(
+                        &term.id,
+                        WorkerSessionState::Exited,
+                    )
+                })
+                .await
                 {
-                    tracing::warn!(
+                    tracing::error!(
                         terminal_id = %term.id,
                         error = %e,
-                        "failed to complete stale terminal runtime during boot reconcile"
+                        "failed to complete stale terminal runtime during boot reconcile; \
+                         session projection left half-completed (terminal exited, session not)"
                     );
                 }
             }
@@ -106,6 +116,69 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
         }
     }
     tracing::info!(running, stale, "reconcile_supervisor_on_boot: complete",);
+}
+
+/// Bounded busy/locked retry for boot-reconcile writes. Mirrors the
+/// backoff schedule of `calm_truth::db::sqlite::begin_immediate_tx`, but
+/// wraps whole repo calls: the reconcile writes run outside any
+/// caller-held transaction, so re-issuing the call is safe. Non-busy
+/// errors pass through untouched on the first attempt.
+async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
+where
+    E: SqliteBusyClass + std::fmt::Display,
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+{
+    const MAX_RETRIES: usize = 6;
+    let mut backoff = Duration::from_millis(10);
+
+    for attempt in 0..=MAX_RETRIES {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) if e.is_sqlite_busy() && attempt < MAX_RETRIES => {
+                tracing::debug!(
+                    attempt,
+                    error = %e,
+                    "boot reconcile write hit sqlite writer contention; retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(250));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    unreachable!("bounded retry loop must return or error");
+}
+
+/// "Is this error a transient SQLITE_BUSY / SQLITE_LOCKED?" — the two
+/// reconcile writes surface different error types, and only one of them
+/// keeps the driver error structured, so classification is per-type.
+trait SqliteBusyClass {
+    fn is_sqlite_busy(&self) -> bool;
+}
+
+impl SqliteBusyClass for calm_truth::TruthError {
+    fn is_sqlite_busy(&self) -> bool {
+        matches!(self, calm_truth::TruthError::Db(db) if calm_truth::db::sqlite::is_sqlite_busy(db))
+    }
+}
+
+impl SqliteBusyClass for crate::session_projection_repo::WorkerSessionProjectionRepoError {
+    // This error type stringifies driver errors at the repo boundary
+    // (`From<sqlx::Error>` folds into `Message`), so the result code is
+    // gone by the time it reaches us. Match sqlite's canonical BUSY /
+    // LOCKED message texts instead — `SQLITE_BUSY_*` extended codes
+    // (including `SQLITE_BUSY_SNAPSHOT`) all render "database is locked",
+    // and `SQLITE_LOCKED` renders "database table is locked".
+    fn is_sqlite_busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Message { message }
+                if message.contains("database is locked")
+                    || message.contains("database table is locked")
+        )
+    }
 }
 
 pub async fn assert_worker_sessions_card_id_complete_on_boot(
@@ -610,5 +683,131 @@ mod boot_order_tests {
             .expect("main boot opens reaper gate");
         assert!(card_id_assert < reaper);
         assert!(recover < reaper);
+    }
+}
+
+#[cfg(test)]
+mod boot_reconcile_retry_tests {
+    use super::retry_on_sqlite_busy;
+    use crate::session_projection_repo::WorkerSessionProjectionRepoError;
+    use calm_truth::TruthError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Minimal `DatabaseError` carrying SQLITE_BUSY's primary code, so the
+    /// retry predicate exercises the same `code()`-based classification the
+    /// real sqlx sqlite driver feeds it — without a contention harness.
+    #[derive(Debug)]
+    struct FakeBusy;
+
+    impl std::fmt::Display for FakeBusy {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("database is locked")
+        }
+    }
+
+    impl std::error::Error for FakeBusy {}
+
+    impl sqlx::error::DatabaseError for FakeBusy {
+        fn message(&self) -> &str {
+            "database is locked"
+        }
+        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
+            Some("5".into())
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+    }
+
+    fn busy_error() -> TruthError {
+        TruthError::Db(sqlx::Error::Database(Box::new(FakeBusy)))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retries_through_busy_then_succeeds() {
+        let calls = AtomicUsize::new(0);
+        let out = retry_on_sqlite_busy(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move { if n < 3 { Err(busy_error()) } else { Ok(42) } }
+        })
+        .await;
+        assert_eq!(out.unwrap(), 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn errors_loudly_after_budget_exhausts() {
+        let calls = AtomicUsize::new(0);
+        let out: Result<(), TruthError> = retry_on_sqlite_busy(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(busy_error()) }
+        })
+        .await;
+        let err = out.expect_err("exhausted retries must surface the error");
+        assert!(matches!(err, TruthError::Db(_)), "got {err:?}");
+        // First attempt + MAX_RETRIES re-attempts.
+        assert_eq!(calls.load(Ordering::SeqCst), 7);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn non_busy_errors_pass_through_without_retry() {
+        let calls = AtomicUsize::new(0);
+        let out: Result<(), TruthError> = retry_on_sqlite_busy(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(TruthError::Internal("terminal t-1 missing".into())) }
+        })
+        .await;
+        assert!(matches!(out, Err(TruthError::Internal(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projection_repo_stringified_lock_error_retries() {
+        // `WorkerSessionProjectionRepoError` loses the sqlite result code
+        // at the repo boundary; classification falls back to sqlite's
+        // canonical message text. This is the exact error shape the #854
+        // boot failure surfaced ("database is locked (code 5)").
+        let calls = AtomicUsize::new(0);
+        let out = retry_on_sqlite_busy(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(WorkerSessionProjectionRepoError::Message {
+                        message: "error returned from database: (code: 5) database is locked"
+                            .into(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+        assert!(out.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projection_repo_non_lock_message_passes_through() {
+        let calls = AtomicUsize::new(0);
+        let out: Result<(), WorkerSessionProjectionRepoError> = retry_on_sqlite_busy(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async {
+                Err(WorkerSessionProjectionRepoError::Message {
+                    message: "no worker session for terminal t-1".into(),
+                })
+            }
+        })
+        .await;
+        assert!(out.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

@@ -58,7 +58,7 @@ use support::git_helpers::{
     run_git_capture, stage_git_change,
 };
 use support::mcp::{
-    connect, handshake, recv_frame, send_frame, tools_call_frame, tools_list_frame,
+    call_tool_via_socket, connect, handshake, recv_frame, send_frame, tools_list_frame,
 };
 use support::oracle::{assert_subject_keyed_cap_enforcement, row_head_sha};
 use tempfile::TempDir;
@@ -1744,10 +1744,15 @@ async fn assert_tools_are_discoverable(fx: &Fixture) {
 }
 
 async fn call_tool(fx: &Fixture, id: i64, name: &str, args: Value) -> Value {
-    let (mut rd, mut wr) = connect(&fx.socket_path).await;
-    handshake(&mut rd, &mut wr, &fx.raw_token).await;
-    send_frame(&mut wr, tools_call_frame(id, name, &fx.thread_id, args)).await;
-    recv_frame(&mut rd).await
+    call_tool_via_socket(
+        &fx.socket_path,
+        &fx.raw_token,
+        &fx.thread_id,
+        id,
+        name,
+        args,
+    )
+    .await
 }
 
 fn spec_identity(fx: &Fixture) -> ToolCallIdentity {

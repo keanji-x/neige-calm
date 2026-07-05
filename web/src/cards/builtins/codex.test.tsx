@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Suspense, type ComponentType, type ReactNode, type Ref } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../../app/theme';
+import { useState } from '../../shared/state';
 import type { ClaudeCardData, CodexCardData } from './codex';
 import type { KernelCard } from '../../api/wire';
 
@@ -38,6 +40,10 @@ vi.mock('../../util/debug', () => ({
 vi.mock('../../api/calm', () => ({
   getTerminalForCard: mocks.getTerminalForCard,
   restartClaudeCard: mocks.restartClaudeCard,
+  // `useCardOverlay` (status dot) reads the shared card-overlay snapshot
+  // via React Query; an empty list keeps the FSM dot on its runtime-derived
+  // fallback, which is what these tests assert on.
+  listAllOverlays: vi.fn(async () => []),
 }));
 
 vi.mock('../../api/events', () => ({
@@ -95,12 +101,25 @@ function Wrap({
   deletable?: boolean;
   card?: AgentCardData;
 }) {
+  // Fresh client per mount (lazy state so re-renders keep the same
+  // instance): `useCardOverlay` reads through React Query now
+  // (REST-seeded card overlay snapshot), so the card tree needs a
+  // provider; per-test isolation keeps cached overlay lists from leaking
+  // between cases.
+  const [client] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      }),
+  );
   return (
-    <ThemeProvider>
-      <CardInstanceProvider cardId={cardId} deletable={deletable} card={card}>
-        <Suspense fallback={<div>loading</div>}>{children}</Suspense>
-      </CardInstanceProvider>
-    </ThemeProvider>
+    <QueryClientProvider client={client}>
+      <ThemeProvider>
+        <CardInstanceProvider cardId={cardId} deletable={deletable} card={card}>
+          <Suspense fallback={<div>loading</div>}>{children}</Suspense>
+        </CardInstanceProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
   );
 }
 

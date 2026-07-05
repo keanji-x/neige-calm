@@ -693,7 +693,7 @@ pub async fn assert_expected(repo: &SqlxRepo, fixture: &Fixture) -> anyhow::Resu
         // id is the last one we inserted. Reuse `events_since(0)` to
         // grab the whole log in order (small fixtures only — replay
         // throughput target is 10k events per §6.4).
-        let log = repo.events_since(0, None).await?;
+        let log = repo.events_since(0, i64::MAX).await?;
         match log.last() {
             Some((_, _, _, ev)) => {
                 let actual = ev.kind_tag();
@@ -793,7 +793,7 @@ pub async fn derive_layout_positions(
     repo: &SqlxRepo,
     wave_id: &str,
 ) -> anyhow::Result<Option<serde_json::Map<String, serde_json::Value>>> {
-    let log = repo.events_since(0, None).await?;
+    let log = repo.events_since(0, i64::MAX).await?;
     Ok(fold_layout_positions(
         log.into_iter().map(|(_id, _ver, _scope, ev)| ev),
         wave_id,

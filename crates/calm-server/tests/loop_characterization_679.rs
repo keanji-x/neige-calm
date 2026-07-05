@@ -296,7 +296,7 @@ impl LoopFixture {
     /// push path appends nothing.
     async fn wave_audit_events(&self) -> Vec<Event> {
         self.repo
-            .events_since(0, None)
+            .events_since(0, i64::MAX)
             .await
             .unwrap()
             .into_iter()
@@ -795,7 +795,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     assert!(saw_working, "dispatcher must promote Dispatching → Working");
 
     let baseline_id = repo
-        .events_since(0, None)
+        .events_since(0, i64::MAX)
         .await
         .unwrap()
         .last()
@@ -870,7 +870,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
 
     // DB-level audit after the dispatcher reached Working: exactly one
     // kernel task.failed plus exactly one Working → Reviewing promotion.
-    let rows = repo.events_since(baseline_id, None).await.unwrap();
+    let rows = repo.events_since(baseline_id, i64::MAX).await.unwrap();
     let mut failed_events = Vec::new();
     let mut lifecycle_changes = Vec::new();
     for (id, _version, scope, event) in rows {

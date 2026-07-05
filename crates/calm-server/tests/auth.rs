@@ -237,7 +237,7 @@ async fn await_card_state(repo: &Arc<dyn Repo>, card_id: &str, expected_state: &
 }
 
 async fn assert_hook_event(repo: &Arc<dyn Repo>, card_id: &str, want_kind: &str) {
-    let rows = repo.events_since(0, None).await.unwrap();
+    let rows = repo.events_since(0, i64::MAX).await.unwrap();
     assert!(
         rows.iter().any(|(_, _, _, ev)| match ev {
             Event::ClaudeHook {

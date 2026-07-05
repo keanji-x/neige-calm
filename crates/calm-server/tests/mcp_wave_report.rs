@@ -916,11 +916,7 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
     // available that the row was persisted with the correct scope
     // columns. Filter to the WaveReportEdited rows for the report
     // card and assert the reconstructed scope matches.
-    let cursor_rows = boot
-        .repo
-        .events_since(0, Some(1000))
-        .await
-        .expect("events_since");
+    let cursor_rows = boot.repo.events_since(0, 1000).await.expect("events_since");
     let edited_rows: Vec<_> = cursor_rows
         .iter()
         .filter(|(_id, _ver, _scope, ev)| matches!(ev, Event::WaveReportEdited { .. }))

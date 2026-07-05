@@ -686,9 +686,12 @@ pub trait RepoEventWrite: RepoRead {
     /// relies on the strict-monotonic `events.id` to dedupe replay-vs-live
     /// at the boundary (design §2.2).
     ///
-    /// `limit = None` returns every row above `since_id`; `Some(n)`
-    /// truncates at the first `n` rows in id order (used by chunked
-    /// pagination if a future tuning splits very large historical windows).
+    /// `limit` is required — the events table grows for the lifetime of
+    /// the deployment (issue #854: 214k rows / 1.7 GB observed), so every
+    /// reader must state its bound. The window truncates at the first
+    /// `limit` rows in id order; non-positive limits return no rows. A
+    /// caller that genuinely wants the whole log (fixture asserts, boot
+    /// replay over a bounded fixture set) says so with `i64::MAX`.
     ///
     /// Rows whose payload fails to deserialize back into an `Event` variant
     /// are logged + skipped, not propagated as an error — corrupt history
@@ -706,8 +709,40 @@ pub trait RepoEventWrite: RepoRead {
     async fn events_since(
         &self,
         since_id: i64,
-        limit: Option<i64>,
+        limit: i64,
     ) -> Result<Vec<(i64, u32, EventScope, Event)>>;
+
+    /// Bounded probe over the RAW `events` window past `since_id`: returns
+    /// `(count, max_id)` for the first `probe_limit` rows with
+    /// `id > since_id` in id order (non-positive limits probe zero rows;
+    /// `max_id` is `None` when the window is empty).
+    ///
+    /// "Raw" is the load-bearing word (issue #854 review): this probes rows
+    /// *before* the payload/kind deserialization pass that
+    /// [`RepoEventWrite::events_since`] applies, which silently drops
+    /// malformed-payload and unknown-kind rows. A replay-cap decision made
+    /// on the *filtered* `events_since` length can undercount the pending
+    /// window — the filtered length sits at/below the cap while more raw
+    /// rows remain — so the caller would stream the surviving page and then
+    /// stamp `_replay_complete` at the server tip, permanently advancing
+    /// the client past events that were never sent. Over-cap routing must
+    /// therefore be decided on this raw count.
+    ///
+    /// `max_id` gives the caller the raw END of the probed window, so a
+    /// replay that reads the window with a separate (non-snapshot) query
+    /// can bound its cursor by what it actually accounted for — including
+    /// trailing rows the deserialization pass dropped — rather than by a
+    /// later `MAX(id)` that may cover rows committed in between (PR #867
+    /// round-2 review).
+    ///
+    /// Cost: an index-only scan of at most `probe_limit` ids (the
+    /// aggregates are taken over a `LIMIT`ed subquery), never a full-table
+    /// `COUNT(*)`.
+    async fn events_raw_window_since(
+        &self,
+        since_id: i64,
+        probe_limit: i64,
+    ) -> Result<(i64, Option<i64>)>;
 
     /// Read only selected event kinds scoped to one wave. This is for
     /// projection tools that need a bounded audit-log slice, not a replay

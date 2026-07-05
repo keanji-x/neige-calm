@@ -1265,7 +1265,7 @@ async fn bind_entry_emits_event_through_canonical_write_path() {
 
     registry.on_thread_started("T-history").await.unwrap();
 
-    let rows = repo.events_since(0, None).await.unwrap();
+    let rows = repo.events_since(0, i64::MAX).await.unwrap();
     assert!(
         rows.iter().any(|(id, _version, _scope, event)| {
             *id > 0 && matches!(event, Event::CardUpdated(card) if card.id.as_str() == card_id)

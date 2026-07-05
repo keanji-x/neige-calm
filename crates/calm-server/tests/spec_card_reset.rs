@@ -760,7 +760,7 @@ async fn send_spec_input_emits_audit_event() {
         .unwrap()
         .unwrap()
         .cove_id;
-    let events = boot.repo.events_since(0, None).await.unwrap();
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let found = events.iter().any(|(_id, _version, scope, event)| {
         matches!(
             (scope, event),
@@ -819,7 +819,7 @@ async fn send_spec_input_with_ai_codex_actor_emits_spec_session_audit_event() {
     .await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    let events = boot.repo.events_since(0, None).await.unwrap();
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let found = events.iter().any(|(_id, _v, _scope, event)| {
         matches!(
             event,
@@ -883,7 +883,7 @@ async fn send_spec_input_wave_missing_returns_404() {
         "body={body}"
     );
 
-    let events = boot.repo.events_since(0, None).await.unwrap();
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let any_user_msg = events.iter().any(|(_id, _v, _scope, event)| {
         matches!(
             event,
@@ -914,7 +914,7 @@ async fn send_spec_input_audit_char_count_counts_chars_not_bytes() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let events = boot.repo.events_since(0, None).await.unwrap();
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let count = events.iter().find_map(|(_id, _v, _scope, event)| {
         if let calm_server::event::Event::HarnessUserMessageEnqueued { char_count, .. } = event {
             Some(*char_count)
@@ -1239,7 +1239,7 @@ async fn send_spec_input_registry_miss_recovers_harness_and_enqueues() {
     // The route only emits the audit event after `observe` succeeded, so
     // this doubles as the "message actually enqueued" assertion without
     // racing the recovered harness's 250ms debounce-issued turn.
-    let events = boot.repo.events_since(0, None).await.unwrap();
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
     let found = events.iter().any(|(_id, _v, _scope, event)| {
         matches!(
             event,
