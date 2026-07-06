@@ -93,7 +93,8 @@ function makeFakeAdapter(
   return {
     setQuery: (pattern: string) => {
       paneMocks.setQuerySpies[kind](pattern);
-      onCount?.(pattern ? 1 : 0, pattern ? 3 : 0);
+      const total = pattern === 'missing' ? 0 : pattern ? 3 : 0;
+      onCount?.(total ? 1 : 0, total);
     },
     next: () => {
       paneMocks.nextSpies[kind]();
@@ -928,6 +929,21 @@ describe('FileViewerCard `/` search bar', () => {
 
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
     expect(paneMocks.prevSpies.code).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no match for a first search with zero matches', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'missing' } });
+
+    expect(await screen.findByText('no match')).toBeTruthy();
   });
 
   it('closes the bar when the file path changes', async () => {

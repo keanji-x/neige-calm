@@ -579,6 +579,7 @@ function LoadedFileContent({
   const [barOpen, setBarOpen] = useState(false);
   const [matchCurrent, setMatchCurrent] = useState(0);
   const [matchTotal, setMatchTotal] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
   const adapterRef = useRef<PaneSearchAdapter | null>(null);
   const barInputRef = useRef<HTMLInputElement | null>(null);
   const queryRef = useRef<string>('');
@@ -587,6 +588,7 @@ function LoadedFileContent({
     setBarOpen(false);
     setMatchCurrent(0);
     setMatchTotal(0);
+    setSearchQuery('');
     queryRef.current = '';
     adapterRef.current?.setQuery('');
   }, []);
@@ -683,9 +685,11 @@ function LoadedFileContent({
           inputRef={barInputRef}
           current={matchCurrent}
           total={matchTotal}
+          query={searchQuery}
           queryRef={queryRef}
           onChange={(value) => {
             queryRef.current = value;
+            setSearchQuery(value);
             adapterRef.current?.setQuery(value);
           }}
           onNext={() => adapterRef.current?.next()}
@@ -700,6 +704,7 @@ function LoadedFileContent({
 interface SearchBarProps {
   inputRef: RefObject<HTMLInputElement | null>;
   queryRef: RefObject<string>;
+  query: string;
   current: number;
   total: number;
   onChange: (value: string) => void;
@@ -711,6 +716,7 @@ interface SearchBarProps {
 function SearchBar({
   inputRef,
   queryRef,
+  query,
   current,
   total,
   onChange,
@@ -744,7 +750,7 @@ function SearchBar({
 
   const countLabel =
     total === 0
-      ? queryRef.current
+      ? query
         ? 'no match'
         : ''
       : `${current || 1}/${total}`;

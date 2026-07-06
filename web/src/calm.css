@@ -4272,12 +4272,14 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   flex-direction: column;
   position: relative;
 }
-/* MarkdownPane container needs a focusable outline suppressed — the pane
-   itself gets tabIndex=0 to receive the `/` keydown, but the browser's
-   default focus ring is noisy on a large content region. */
-.file-viewer-markdown-body:focus,
+/* MarkdownPane gets tabIndex=0 to receive the `/` keydown. Keep pointer
+   focus quiet, but give keyboard users a visible pane-level ring. */
+.file-viewer-markdown-body:focus {
+  outline: none;
+}
 .file-viewer-markdown-body:focus-visible {
   outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 /* Search bar — pinned to the bottom of the code-wrap. */
 .fv-search-bar {
@@ -4342,6 +4344,9 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 /* CodePane search matches — override @codemirror/search's defaults to
    share the same overlay tokens. */
+.file-viewer-code-wrap .cm-panels.fv-code-search-panels-empty {
+  display: none;
+}
 .file-viewer-code-wrap .cm-searchMatch {
   background-color: var(--overlay-search);
 }
@@ -4398,6 +4403,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-markdown-body {
   flex: 1 1 0;
   min-height: 0;
+  margin-top: var(--space-0);
   overflow: auto;
   padding: var(--space-4) var(--space-6);
   overflow-wrap: break-word;

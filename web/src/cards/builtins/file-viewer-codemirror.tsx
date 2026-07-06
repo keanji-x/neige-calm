@@ -6,10 +6,13 @@ import { EditorView, keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
 import {
   SearchQuery,
+  closeSearchPanel,
   findNext,
   findPrevious,
   getSearchQuery,
+  openSearchPanel,
   search,
+  searchPanelOpen,
   setSearchQuery,
 } from '@codemirror/search';
 import { useEffect, useMemo, useRef } from 'react';
@@ -40,7 +43,18 @@ export interface DiffPaneProps {
 // Empty DOM panel — passed to search() to suppress @codemirror/search's
 // built-in search UI. We render our own bar in React.
 function emptyPanel() {
-  return { dom: document.createElement('div') };
+  const dom = document.createElement('div');
+  dom.className = 'fv-code-search-panel-empty';
+  dom.setAttribute('aria-hidden', 'true');
+  return {
+    dom,
+    mount() {
+      dom.parentElement?.classList.add('fv-code-search-panels-empty');
+    },
+    destroy() {
+      dom.parentElement?.classList.remove('fv-code-search-panels-empty');
+    },
+  };
 }
 
 /**
@@ -81,8 +95,12 @@ function buildCodeSearchAdapter(
   return {
     setQuery(pattern) {
       const q = new SearchQuery({ search: pattern, caseSensitive: false });
+      if (pattern && !searchPanelOpen(view.state)) {
+        openSearchPanel(view);
+      }
       view.dispatch({ effects: setSearchQuery.of(q) });
       if (!pattern) {
+        closeSearchPanel(view);
         onCount(0, 0);
         return;
       }
@@ -103,6 +121,7 @@ function buildCodeSearchAdapter(
       view.dispatch({
         effects: setSearchQuery.of(new SearchQuery({ search: '' })),
       });
+      closeSearchPanel(view);
     },
   };
 }
