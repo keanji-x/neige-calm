@@ -4409,6 +4409,36 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-markdown-body input[type="checkbox"] {
   margin-right: var(--space-2);
 }
+/* Compact prose scale for file-viewer — report's 18px serif body reads
+   too airy inside a small card. Override .calm-prose here only; report
+   page keeps the original scale. */
+.file-viewer-markdown-body.calm-prose p,
+.file-viewer-markdown-body.calm-prose li {
+  font-size: var(--text-md);
+  line-height: var(--leading-base);
+}
+.file-viewer-markdown-body.calm-prose h1 {
+  margin-top: var(--space-10);
+  font-size: var(--text-xl);
+}
+.file-viewer-markdown-body.calm-prose h2 {
+  margin-top: var(--space-8);
+}
+.file-viewer-markdown-body.calm-prose h3 {
+  margin-top: var(--space-7);
+  font-size: var(--text-lg);
+}
+.file-viewer-markdown-body.calm-prose p,
+.file-viewer-markdown-body.calm-prose ul,
+.file-viewer-markdown-body.calm-prose ol,
+.file-viewer-markdown-body.calm-prose blockquote,
+.file-viewer-markdown-body.calm-prose pre,
+.file-viewer-markdown-body.calm-prose table {
+  margin-top: var(--space-5);
+}
+.file-viewer-markdown-body.calm-prose hr {
+  margin: var(--space-7) var(--space-0);
+}
 .file-viewer-banner {
   flex: 0 0 auto;
   padding: var(--space-2) var(--space-4);
