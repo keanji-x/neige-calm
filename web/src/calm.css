@@ -4442,6 +4442,9 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-markdown-body.calm-prose table {
   margin-top: var(--space-5);
 }
+.file-viewer-markdown-body.calm-prose table {
+  font-size: var(--text-md);
+}
 .file-viewer-markdown-body.calm-prose hr {
   margin: var(--space-7) var(--space-0);
 }
