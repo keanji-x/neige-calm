@@ -556,10 +556,15 @@ function LoadedFileContent({
 }) {
   const isMd = isMarkdownPath(path);
   const [mode, setMode] = useState<MarkdownMode>('preview');
-  // Non-markdown files always render through the CodeMirror pane; the toggle
-  // is only meaningful for `.md` / `.markdown`. If the user was viewing a
-  // markdown file and switched to a source file, we still want the source
-  // pane — `effectiveMode` collapses to 'source' when the file isn't md.
+  // Mode is a local useState — it survives Preview/Source toggling within
+  // the same loaded file, but resets to 'preview' when the file changes,
+  // because CodeTab returns a "Loading file…" placeholder between files
+  // (unmounting LoadedFileContent). That per-file reset is what we want:
+  // opening a new .md file should start on Preview by default.
+  //
+  // Non-markdown files force `effectiveMode` to 'source' so the pane still
+  // renders through CodeMirror even if we ever mount LoadedFileContent
+  // with a stale 'preview' mode.
   const effectiveMode: MarkdownMode = isMd ? mode : 'source';
   return (
     <div className="file-viewer-code-wrap">

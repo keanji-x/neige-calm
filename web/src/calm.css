@@ -4303,7 +4303,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   color: var(--text);
   font-size: var(--text-sm);
   line-height: var(--leading-base);
-  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .file-viewer-markdown > *:first-child { margin-top: var(--space-0); }
 .file-viewer-markdown > *:last-child { margin-bottom: var(--space-0); }
