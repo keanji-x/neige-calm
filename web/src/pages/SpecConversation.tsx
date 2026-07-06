@@ -144,7 +144,7 @@ function ConvoEntry({
     return (
       <section className="report-convo-entry report-convo-entry--agent">
         <EntryMeta author="Spec Agent" atMs={entry.atMs} />
-        <div className="report-prose report-convo-body">
+        <div className="report-prose report-convo-body calm-prose">
           <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>
             {entry.text}
           </ReactMarkdown>
