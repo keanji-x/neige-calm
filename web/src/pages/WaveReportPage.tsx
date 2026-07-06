@@ -192,7 +192,7 @@ function ReportContent({
 
 function ReportMarkdown({ body }: { body: string }) {
   return (
-    <div className="report-prose">
+    <div className="report-prose calm-prose">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
     </div>
   );

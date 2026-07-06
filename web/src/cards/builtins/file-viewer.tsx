@@ -1,4 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo, useRef } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  RefObject,
+} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import { CardHead } from '../CardHead';
@@ -17,6 +21,7 @@ import {
 } from '../../hooks/useOverlayState';
 import { useState } from '../../shared/state';
 import { dlog } from '../../util/debug';
+import type { PaneSearchAdapter } from './file-viewer-markdown';
 
 declare module '../../types' {
   interface WaveCardDataMap {
@@ -121,7 +126,7 @@ function writePersistedSidebarCollapsed(collapsed: boolean): void {
 function activeFileViewerPane(root: HTMLElement, tab: Tab): HTMLElement | null {
   if (tab === 'code') {
     return (
-      root.querySelector<HTMLElement>('.file-viewer-markdown') ??
+      root.querySelector<HTMLElement>('.file-viewer-markdown-body') ??
       root.querySelector<HTMLElement>('.cm-scroller') ??
       root.querySelector<HTMLElement>('.file-viewer-tree-list')
     );
@@ -566,6 +571,54 @@ function LoadedFileContent({
   // renders through CodeMirror even if we ever mount LoadedFileContent
   // with a stale 'preview' mode.
   const effectiveMode: MarkdownMode = isMd ? mode : 'source';
+
+  // Search state — see docs/superpowers/specs/2026-07-06-file-viewer-search-and-prose-design.md.
+  // Kept local: search never persists across file swaps, tab changes, or
+  // remounts. The active pane's adapter is registered via a callback prop
+  // and stored in a ref so callbacks stay stable.
+  const [barOpen, setBarOpen] = useState(false);
+  const [matchCurrent, setMatchCurrent] = useState(0);
+  const [matchTotal, setMatchTotal] = useState(0);
+  const [searchQuery, setSearchQuery] = useState('');
+  const adapterRef = useRef<PaneSearchAdapter | null>(null);
+  const barInputRef = useRef<HTMLInputElement | null>(null);
+  const queryRef = useRef<string>('');
+
+  const closeBar = useCallback(() => {
+    setBarOpen(false);
+    setMatchCurrent(0);
+    setMatchTotal(0);
+    setSearchQuery('');
+    queryRef.current = '';
+    adapterRef.current?.setQuery('');
+  }, []);
+
+  const openBar = useCallback(() => {
+    setBarOpen(true);
+  }, []);
+
+  // Reset the bar when the file identity changes.
+  useEffect(() => {
+    closeBar();
+  }, [path, closeBar]);
+
+  const onAdapter = useCallback(
+    (adapter: PaneSearchAdapter | null) => {
+      adapterRef.current = adapter;
+      if (adapter && queryRef.current) {
+        // If the pane remounted (e.g. Preview↔Source toggle) while a query
+        // was live, re-run it against the fresh adapter.
+        adapter.setQuery(queryRef.current);
+      }
+    },
+    [],
+  );
+
+  const onCount = useCallback((current: number, total: number) => {
+    setMatchCurrent(current);
+    setMatchTotal(total);
+  }, []);
+
   return (
     <div className="file-viewer-code-wrap">
       {truncated && (
@@ -605,15 +658,138 @@ function LoadedFileContent({
             <div className="file-viewer-state">Loading preview…</div>
           }
         >
-          <LazyMarkdownPane path={path} text={text} />
+          <LazyMarkdownPane
+            path={path}
+            text={text}
+            onSearchAdapterReady={onAdapter}
+            onSearchCount={onCount}
+            onSlashOpen={openBar}
+          />
         </Suspense>
       ) : (
         <Suspense
           fallback={<div className="file-viewer-state">Loading editor…</div>}
         >
-          <LazyCodePane path={path} text={text} theme={theme} />
+          <LazyCodePane
+            path={path}
+            text={text}
+            theme={theme}
+            onSearchAdapterReady={onAdapter}
+            onSearchCount={onCount}
+            onSlashOpen={openBar}
+          />
         </Suspense>
       )}
+      {barOpen && (
+        <SearchBar
+          inputRef={barInputRef}
+          current={matchCurrent}
+          total={matchTotal}
+          query={searchQuery}
+          queryRef={queryRef}
+          onChange={(value) => {
+            queryRef.current = value;
+            setSearchQuery(value);
+            adapterRef.current?.setQuery(value);
+          }}
+          onNext={() => adapterRef.current?.next()}
+          onPrev={() => adapterRef.current?.prev()}
+          onClose={closeBar}
+        />
+      )}
+    </div>
+  );
+}
+
+interface SearchBarProps {
+  inputRef: RefObject<HTMLInputElement | null>;
+  queryRef: RefObject<string>;
+  query: string;
+  current: number;
+  total: number;
+  onChange: (value: string) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onClose: () => void;
+}
+
+function SearchBar({
+  inputRef,
+  queryRef,
+  query,
+  current,
+  total,
+  onChange,
+  onNext,
+  onPrev,
+  onClose,
+}: SearchBarProps) {
+  useEffect(() => {
+    inputRef.current?.focus();
+    // Re-run the persisted query on remount so the highlights come back if
+    // the pane switched under us with a query still live.
+    if (queryRef.current) {
+      onChange(queryRef.current);
+    }
+    // We intentionally only mount-focus; not-in-deps below is deliberate.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onInputKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onClose();
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) onPrev();
+      else onNext();
+    }
+  };
+
+  const countLabel =
+    total === 0
+      ? query
+        ? 'no match'
+        : ''
+      : `${current || 1}/${total}`;
+
+  return (
+    <div className="fv-search-bar" role="search">
+      <input
+        ref={inputRef}
+        type="search"
+        aria-label="Search in file"
+        placeholder="Search…"
+        defaultValue={queryRef.current}
+        onChange={(e) => onChange(e.currentTarget.value)}
+        onKeyDown={onInputKey}
+      />
+      <span className="fv-search-count" aria-live="polite">
+        {countLabel}
+      </span>
+      <button
+        type="button"
+        aria-label="Previous match"
+        title="Previous match"
+        onClick={onPrev}
+        disabled={total === 0}
+      >
+        ↑
+      </button>
+      <button
+        type="button"
+        aria-label="Next match"
+        title="Next match"
+        onClick={onNext}
+        disabled={total === 0}
+      >
+        ↓
+      </button>
+      <button type="button" aria-label="Close search" title="Close search" onClick={onClose}>
+        ×
+      </button>
     </div>
   );
 }

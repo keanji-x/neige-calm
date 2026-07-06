@@ -30,12 +30,131 @@ vi.mock('../../util/debug', () => ({
   dlog: mocks.dlog,
 }));
 
+import { useEffect as reactUseEffect } from 'react';
+import type { PaneSearchAdapter } from './file-viewer-markdown';
+
+// Test-visible captures for the mocked panes. The mocks pretend to be a
+// real pane and hand the fake adapter up to LoadedFileContent via
+// `onSearchAdapterReady`, so the tests can drive next/prev/setQuery
+// without a live CodeMirror or CSS.highlights.
+const paneMocks = vi.hoisted(() => {
+  const adapters: { code: PaneSearchAdapter | null; markdown: PaneSearchAdapter | null } = {
+    code: null,
+    markdown: null,
+  };
+  const slashOpen: {
+    code: (() => void) | null;
+    markdown: (() => void) | null;
+  } = { code: null, markdown: null };
+  const setQuerySpies = {
+    code: vi.fn(),
+    markdown: vi.fn(),
+  };
+  const nextSpies = {
+    code: vi.fn(),
+    markdown: vi.fn(),
+  };
+  const prevSpies = {
+    code: vi.fn(),
+    markdown: vi.fn(),
+  };
+  const disposeSpies = {
+    code: vi.fn(),
+    markdown: vi.fn(),
+  };
+  return {
+    adapters,
+    slashOpen,
+    setQuerySpies,
+    nextSpies,
+    prevSpies,
+    disposeSpies,
+    reset() {
+      adapters.code = null;
+      adapters.markdown = null;
+      slashOpen.code = null;
+      slashOpen.markdown = null;
+      setQuerySpies.code.mockClear();
+      setQuerySpies.markdown.mockClear();
+      nextSpies.code.mockClear();
+      nextSpies.markdown.mockClear();
+      prevSpies.code.mockClear();
+      prevSpies.markdown.mockClear();
+      disposeSpies.code.mockClear();
+      disposeSpies.markdown.mockClear();
+    },
+  };
+});
+
+function makeFakeAdapter(
+  kind: 'code' | 'markdown',
+  onCount?: (current: number, total: number) => void,
+): PaneSearchAdapter {
+  return {
+    setQuery: (pattern: string) => {
+      paneMocks.setQuerySpies[kind](pattern);
+      const total = pattern === 'missing' ? 0 : pattern ? 3 : 0;
+      onCount?.(total ? 1 : 0, total);
+    },
+    next: () => {
+      paneMocks.nextSpies[kind]();
+      onCount?.(2, 3);
+    },
+    prev: () => {
+      paneMocks.prevSpies[kind]();
+      onCount?.(1, 3);
+    },
+    dispose: () => paneMocks.disposeSpies[kind](),
+  };
+}
+
 vi.mock('./file-viewer-codemirror', () => ({
-  CodePane: ({ path, text }: { path: string; text: string }) => (
-    <pre className="cm-scroller" data-testid="code-pane" data-path={path}>
-      {text}
-    </pre>
-  ),
+  CodePane: ({
+    path,
+    text,
+    onSearchAdapterReady,
+    onSearchCount,
+    onSlashOpen,
+  }: {
+    path: string;
+    text: string;
+    onSearchAdapterReady?: (adapter: PaneSearchAdapter | null) => void;
+    onSearchCount?: (current: number, total: number) => void;
+    onSlashOpen?: () => void;
+  }) => {
+    reactUseEffect(() => {
+      paneMocks.slashOpen.code = onSlashOpen ?? null;
+      const adapter = makeFakeAdapter('code', onSearchCount);
+      paneMocks.adapters.code = adapter;
+      onSearchAdapterReady?.(adapter);
+      return () => {
+        onSearchAdapterReady?.(null);
+        paneMocks.adapters.code = null;
+        paneMocks.slashOpen.code = null;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path, text]);
+    return (
+      /* eslint-disable jsx-a11y/no-noninteractive-element-interactions,
+                        jsx-a11y/no-noninteractive-tabindex */
+      <pre
+        className="cm-scroller"
+        data-testid="code-pane"
+        data-path={path}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === '/') {
+            e.preventDefault();
+            paneMocks.slashOpen.code?.();
+          }
+        }}
+      >
+        {text}
+      </pre>
+      /* eslint-enable jsx-a11y/no-noninteractive-element-interactions,
+                        jsx-a11y/no-noninteractive-tabindex */
+    );
+  },
   DiffPane: ({
     path,
     headText,
@@ -67,15 +186,52 @@ vi.mock('./file-viewer-markdown', async () => {
     // The real MarkdownPane pulls react-markdown, which is fine in jsdom, but
     // we stub it to keep the assertion surface simple and avoid coupling test
     // expectations to remark output.
-    MarkdownPane: ({ path, text }: { path: string; text: string }) => (
-      <div
-        className="file-viewer-markdown"
-        data-testid="markdown-pane"
-        data-path={path}
-      >
-        {text}
-      </div>
-    ),
+    MarkdownPane: ({
+      path,
+      text,
+      onSearchAdapterReady,
+      onSearchCount,
+      onSlashOpen,
+    }: {
+      path: string;
+      text: string;
+      onSearchAdapterReady?: (adapter: PaneSearchAdapter | null) => void;
+      onSearchCount?: (current: number, total: number) => void;
+      onSlashOpen?: () => void;
+    }) => {
+      reactUseEffect(() => {
+        paneMocks.slashOpen.markdown = onSlashOpen ?? null;
+        const adapter = makeFakeAdapter('markdown', onSearchCount);
+        paneMocks.adapters.markdown = adapter;
+        onSearchAdapterReady?.(adapter);
+        return () => {
+          onSearchAdapterReady?.(null);
+          paneMocks.adapters.markdown = null;
+          paneMocks.slashOpen.markdown = null;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [path, text]);
+      return (
+        /* eslint-disable jsx-a11y/no-static-element-interactions,
+                          jsx-a11y/no-noninteractive-tabindex */
+        <div
+          className="file-viewer-markdown-body calm-prose"
+          data-testid="markdown-pane"
+          data-path={path}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === '/') {
+              e.preventDefault();
+              paneMocks.slashOpen.markdown?.();
+            }
+          }}
+        >
+          {text}
+        </div>
+        /* eslint-enable jsx-a11y/no-static-element-interactions,
+                          jsx-a11y/no-noninteractive-tabindex */
+      );
+    },
   };
 });
 
@@ -196,6 +352,7 @@ describe('FileViewerCard rendering', () => {
     registerCard(FileViewerEntry);
     mocks.dlog.mockClear();
     overlayStore.clear();
+    paneMocks.reset();
     try {
       window.localStorage.clear();
     } catch {
@@ -628,5 +785,278 @@ describe('FileViewerCard rendering', () => {
       'data-path',
       '/repo/src/components/Button.tsx',
     );
+  });
+});
+
+describe('FileViewerCard `/` search bar', () => {
+  const overlayStore = new Map<string, KernelOverlay>();
+
+  beforeEach(() => {
+    __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
+    registerCard(FileViewerEntry);
+    overlayStore.clear();
+    paneMocks.reset();
+    try {
+      window.localStorage.clear();
+    } catch {
+      // ignore
+    }
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/src/main.ts' || path === '/repo/README.md') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo/src',
+        parent: '/repo',
+        entries: [{ name: 'main.ts', is_dir: false }],
+      };
+    });
+    vi.mocked(api.readFile).mockImplementation(async (path: string) => ({
+      path,
+      size: 20,
+      text: `contents of ${path}`,
+      truncated: false,
+    }));
+    vi.mocked(api.gitStatus).mockResolvedValue({
+      repo_root: '/repo',
+      files: [{ path: 'src/main.ts', status: 'modified' }],
+    });
+    vi.mocked(api.gitDiff).mockResolvedValue({
+      path: 'src/main.ts',
+      status: 'modified',
+      head_text: 'old\n',
+      working_text: 'new\n',
+      truncated: false,
+    });
+    vi.mocked(api.listOverlays).mockImplementation(async (entityKind, entityId) =>
+      [...overlayStore.values()].filter(
+        (overlay) =>
+          overlay.entity_kind === entityKind && overlay.entity_id === entityId,
+      ),
+    );
+    vi.mocked(api.upsertOverlay).mockImplementation(async (body: NewOverlayBody) => {
+      const overlay: KernelOverlay = {
+        id: 'ov-file-nav',
+        plugin_id: body.plugin_id,
+        entity_kind: body.entity_kind,
+        entity_id: body.entity_id,
+        kind: body.kind,
+        payload: body.payload,
+        updated_at: 1,
+      };
+      overlayStore.set(
+        `${body.plugin_id}:${body.entity_kind}:${body.entity_id}:${body.kind}`,
+        overlay,
+      );
+      return overlay;
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    __resetRegistryForTest();
+    __resetCardEntryResolverRegistryForTest();
+  });
+
+  it('opens the bar when `/` is pressed in the code pane', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    const code = await screen.findByTestId('code-pane');
+    expect(screen.queryByRole('search')).toBeNull();
+
+    fireEvent.keyDown(code, { key: '/' });
+
+    const bar = await screen.findByRole('search');
+    expect(bar).toBeTruthy();
+    const input = screen.getByLabelText('Search in file');
+    expect(input).toBeTruthy();
+  });
+
+  it('opens the bar when `/` is pressed in the markdown pane', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/README.md' }}
+      />,
+    );
+
+    const md = await screen.findByTestId('markdown-pane');
+    expect(screen.queryByRole('search')).toBeNull();
+
+    fireEvent.keyDown(md, { key: '/' });
+    expect(await screen.findByRole('search')).toBeTruthy();
+  });
+
+  it('closes the bar and clears highlights on Esc', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'foo' } });
+    await waitFor(() => expect(paneMocks.setQuerySpies.code).toHaveBeenCalledWith('foo'));
+
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('search')).toBeNull());
+    // On close, adapter is asked to clear its query (setQuery('')).
+    expect(paneMocks.setQuerySpies.code).toHaveBeenLastCalledWith('');
+  });
+
+  it('routes Enter → next and Shift+Enter → prev while input is focused', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'hi' } });
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(paneMocks.nextSpies.code).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+    expect(paneMocks.prevSpies.code).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows no match for a first search with zero matches', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'missing' } });
+
+    expect(await screen.findByText('no match')).toBeTruthy();
+  });
+
+  it('closes the bar when the file path changes', async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (
+        path === '/repo/src/main.ts' ||
+        path === '/repo/src/other.ts'
+      ) {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo/src',
+        parent: '/repo',
+        entries: [
+          { name: 'main.ts', is_dir: false },
+          { name: 'other.ts', is_dir: false },
+        ],
+      };
+    });
+
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    expect(await screen.findByRole('search')).toBeTruthy();
+
+    fireEvent.click(await screen.findByText('other.ts'));
+    await waitFor(() => expect(screen.queryByRole('search')).toBeNull());
+  });
+
+  it('does not open the bar for image files (no active pane)', async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/pic.png') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo',
+        parent: '/',
+        entries: [{ name: 'pic.png', is_dir: false }],
+      };
+    });
+
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/pic.png' }}
+      />,
+    );
+
+    await screen.findByRole('img', { name: '/repo/pic.png' });
+    // No pane means no `/` handler; the bar cannot be opened.
+    expect(screen.queryByRole('search')).toBeNull();
+    expect(paneMocks.slashOpen.code).toBeNull();
+    expect(paneMocks.slashOpen.markdown).toBeNull();
+  });
+
+  it('does not open the bar when the diff tab is active', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    await screen.findByTestId('code-pane');
+    fireEvent.click(screen.getByRole('tab', { name: 'Diff' }));
+    await screen.findByTestId('diff-pane');
+    // Diff pane has no `/` handler at all.
+    expect(paneMocks.slashOpen.code).toBeNull();
+    expect(paneMocks.slashOpen.markdown).toBeNull();
+    expect(screen.queryByRole('search')).toBeNull();
+  });
+
+  it('renders the markdown pane with the calm-prose typography class', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/README.md' }}
+      />,
+    );
+    const md = await screen.findByTestId('markdown-pane');
+    expect(md).toHaveClass('calm-prose');
+    expect(md).toHaveClass('file-viewer-markdown-body');
+  });
+});
+
+describe('createMarkdownSearchAdapter', () => {
+  it('no-ops gracefully when CSS.highlights is undefined', async () => {
+    const { createMarkdownSearchAdapter } =
+      await vi.importActual<typeof import('./file-viewer-markdown')>(
+        './file-viewer-markdown',
+      );
+
+    // jsdom does not implement CSS.highlights out of the box — assert the
+    // adapter builds, count callback fires with zeros, and next/prev do
+    // not crash even when Highlight is absent.
+    const container = document.createElement('div');
+    container.innerHTML = '<p>hello world</p>';
+    document.body.appendChild(container);
+    const counts: Array<[number, number]> = [];
+    const adapter = createMarkdownSearchAdapter(container, (cur, total) => {
+      counts.push([cur, total]);
+    });
+    expect(() => adapter.setQuery('world')).not.toThrow();
+    expect(() => adapter.next()).not.toThrow();
+    expect(() => adapter.prev()).not.toThrow();
+    expect(() => adapter.dispose()).not.toThrow();
+    // At minimum, setQuery pushed a zero count in the fallback path.
+    expect(counts.length).toBeGreaterThan(0);
+    document.body.removeChild(container);
   });
 });

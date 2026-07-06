@@ -176,6 +176,12 @@
   --overlay-hover-strong: oklch(0% 0 0 / 0.055);
   --overlay-active:       oklch(0% 0 0 / 0.05);
 
+  /* Search-match overlays — amber tint. Two tiers so the "current" hit is
+     more assertive than the ambient "all-hits" carpet. Dark-mode overrides
+     drop chroma and raise translucency in the dark block below. */
+  --overlay-search:        oklch(88% 0.14 90 / 0.35);
+  --overlay-search-strong: oklch(85% 0.16 85 / 0.55);
+
   /* Z-index scale — slice 4 of #165. Six semantic tiers that establish a
      SEMANTIC stacking order, not value preservation. Component selectors
      read through these tokens; raw integer z-index in component selectors
@@ -356,6 +362,8 @@
   --overlay-hover:        oklch(100% 0 0 / 0.05);
   --overlay-hover-strong: oklch(100% 0 0 / 0.06);
   --overlay-active:       oklch(100% 0 0 / 0.06);
+  --overlay-search:        oklch(78% 0.13 90 / 0.25);
+  --overlay-search-strong: oklch(76% 0.14 85 / 0.40);
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
 }
 /* stylelint-enable color-no-hex, declaration-property-value-disallowed-list */
@@ -1773,33 +1781,123 @@ select:-webkit-autofill {
   margin-top: var(--space-10);
   padding: var(--space-8);
 }
-.report-prose {
+/* Shared "calm prose" typography — used by wave report bodies, spec
+   conversation agent turns, and the file-viewer markdown preview. The
+   report-specific H2 decimal counter lives in .report-prose below and
+   is layered on top; anything visually shared belongs here. */
+.calm-prose {
   margin-top: var(--space-10);
   font-family: var(--font-serif);
   color: var(--text-2);
-  counter-reset: report-h2;
 }
-.report-prose > :first-child {
+.calm-prose > :first-child {
   margin-top: var(--space-0);
 }
-.report-prose h1,
-.report-prose h2,
-.report-prose h3 {
+.calm-prose h1,
+.calm-prose h2,
+.calm-prose h3 {
   color: var(--text);
   letter-spacing: var(--tracking-normal);
 }
-.report-prose h1 {
+.calm-prose h1 {
   margin: calc(var(--space-12) + var(--space-6)) var(--space-0) var(--space-0);
   font-size: var(--text-display-sm);
   line-height: var(--leading-tight);
   font-weight: var(--weight-medium);
 }
-.report-prose h2 {
+.calm-prose h2 {
   margin: calc(var(--space-12) + var(--space-4)) var(--space-0) var(--space-0);
   font-family: var(--font-sans);
   font-size: var(--text-md);
   line-height: var(--leading-snug);
   font-weight: var(--weight-semibold);
+}
+.calm-prose h3 {
+  margin: var(--space-10) var(--space-0) var(--space-0);
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+  font-weight: var(--weight-medium);
+}
+.calm-prose p,
+.calm-prose li {
+  font-size: var(--text-lg);
+  line-height: var(--leading-loose);
+}
+.calm-prose p,
+.calm-prose ul,
+.calm-prose ol,
+.calm-prose blockquote,
+.calm-prose pre,
+.calm-prose table {
+  margin: var(--space-8) var(--space-0) var(--space-0);
+}
+.calm-prose ul,
+.calm-prose ol {
+  padding-left: var(--space-10);
+}
+.calm-prose li + li {
+  margin-top: var(--space-3);
+}
+.calm-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: var(--space-1);
+}
+.calm-prose code {
+  font-family: var(--font-code);
+  font-size: 0.9em;
+  background: var(--surface-code);
+  padding: var(--space-0) var(--space-2);
+  border-radius: var(--radius-xs);
+}
+.calm-prose pre {
+  overflow: auto;
+  padding: var(--space-6);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+}
+.calm-prose pre code {
+  display: block;
+  padding: var(--space-0);
+  background: transparent;
+  border-radius: var(--radius-xs);
+}
+.calm-prose blockquote {
+  padding: var(--space-2) var(--space-0) var(--space-2) var(--space-7);
+  border-left: 2px solid var(--hairline-strong);
+  color: var(--text-3);
+}
+.calm-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+}
+.calm-prose th,
+.calm-prose td {
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+.calm-prose th {
+  background: var(--surface-card);
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+.calm-prose hr {
+  margin: var(--space-10) var(--space-0);
+  border: none;
+  border-top: 1px solid var(--hairline);
+}
+/* Wave-report-only overlay: decimal-leading-zero H2 counter. Consumers
+   opt in with `className="report-prose calm-prose"` — .calm-prose owns
+   typography, .report-prose owns the counter. */
+.report-prose {
+  counter-reset: report-h2;
+}
+.report-prose h2 {
   counter-increment: report-h2;
 }
 .report-prose h2::before {
@@ -1809,85 +1907,6 @@ select:-webkit-autofill {
   font-family: var(--font-mono);
   font-size: 0.72em;
   font-weight: var(--weight-semibold);
-}
-.report-prose h3 {
-  margin: var(--space-10) var(--space-0) var(--space-0);
-  font-size: var(--text-xl);
-  line-height: var(--leading-snug);
-  font-weight: var(--weight-medium);
-}
-.report-prose p,
-.report-prose li {
-  font-size: var(--text-lg);
-  line-height: var(--leading-loose);
-}
-.report-prose p,
-.report-prose ul,
-.report-prose ol,
-.report-prose blockquote,
-.report-prose pre,
-.report-prose table {
-  margin: var(--space-8) var(--space-0) var(--space-0);
-}
-.report-prose ul,
-.report-prose ol {
-  padding-left: var(--space-10);
-}
-.report-prose li + li {
-  margin-top: var(--space-3);
-}
-.report-prose a {
-  color: var(--accent);
-  text-decoration: underline;
-  text-underline-offset: var(--space-1);
-}
-.report-prose code {
-  font-family: var(--font-code);
-  font-size: 0.9em;
-  background: var(--surface-code);
-  padding: var(--space-0) var(--space-2);
-  border-radius: var(--radius-xs);
-}
-.report-prose pre {
-  overflow: auto;
-  padding: var(--space-6);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-lg);
-  background: var(--surface-card);
-}
-.report-prose pre code {
-  display: block;
-  padding: var(--space-0);
-  background: transparent;
-  border-radius: var(--radius-xs);
-}
-.report-prose blockquote {
-  padding: var(--space-2) var(--space-0) var(--space-2) var(--space-7);
-  border-left: 2px solid var(--hairline-strong);
-  color: var(--text-3);
-}
-.report-prose table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--font-sans);
-  font-size: var(--text-sm);
-}
-.report-prose th,
-.report-prose td {
-  padding: var(--space-4) var(--space-5);
-  border: 1px solid var(--hairline);
-  text-align: left;
-  vertical-align: top;
-}
-.report-prose th {
-  background: var(--surface-card);
-  color: var(--text);
-  font-weight: var(--weight-semibold);
-}
-.report-prose hr {
-  margin: var(--space-10) var(--space-0);
-  border: none;
-  border-top: 1px solid var(--hairline);
 }
 .report-code {
   height: auto;
@@ -4251,6 +4270,88 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-code-wrap {
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+/* MarkdownPane gets tabIndex=0 to receive the `/` keydown. Keep pointer
+   focus quiet, but give keyboard users a visible pane-level ring. */
+.file-viewer-markdown-body:focus {
+  outline: none;
+}
+.file-viewer-markdown-body:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+/* Search bar — pinned to the bottom of the code-wrap. */
+.fv-search-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-raised);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 28px;
+  padding: var(--space-0) var(--space-3);
+  background: var(--surface-card);
+  border-top: 1px solid var(--hairline);
+  font-size: var(--text-xs);
+  color: var(--text-2);
+}
+.fv-search-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 20px;
+  padding: var(--space-0) var(--space-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xs);
+  background: var(--paper);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-sans);
+}
+.fv-search-bar input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.fv-search-bar .fv-search-count {
+  flex: 0 0 auto;
+  min-width: 3.5em;
+  text-align: right;
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.fv-search-bar button {
+  flex: 0 0 auto;
+  padding: var(--space-0) var(--space-2);
+  height: 20px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.fv-search-bar button:hover:not(:disabled) { background: var(--overlay-hover); }
+.fv-search-bar button:disabled { color: var(--text-3); cursor: default; }
+/* CSS Custom Highlight API — MarkdownPane search matches. Safe on browsers
+   without ::highlight support: rule silently drops, adapter no-ops. */
+::highlight(fv-search-all) {
+  background-color: var(--overlay-search);
+}
+::highlight(fv-search-current) {
+  background-color: var(--overlay-search-strong);
+}
+/* CodePane search matches — override @codemirror/search's defaults to
+   share the same overlay tokens. */
+.file-viewer-code-wrap .cm-panels.fv-code-search-panels-empty {
+  display: none;
+}
+.file-viewer-code-wrap .cm-searchMatch {
+  background-color: var(--overlay-search);
+}
+.file-viewer-code-wrap .cm-searchMatch-selected {
+  background-color: var(--overlay-search-strong);
 }
 .file-viewer-image-wrap {
   display: flex;
@@ -4295,83 +4396,57 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .file-viewer-md-mode button:last-child { border-right: none; }
 .file-viewer-md-mode button.active { background: var(--text); color: var(--paper); }
-.file-viewer-markdown {
+/* Layout shell for the Markdown preview pane inside .file-viewer-code-wrap.
+   Typography (fonts, sizes, margins, code, tables, hr, blockquote, …) is
+   delegated to .calm-prose — this selector owns only the pane's positioning
+   and overflow behavior. */
+.file-viewer-markdown-body {
   flex: 1 1 0;
   min-height: 0;
+  margin-top: var(--space-0);
   overflow: auto;
   padding: var(--space-4) var(--space-6);
-  color: var(--text);
-  font-size: var(--text-sm);
-  line-height: var(--leading-base);
   overflow-wrap: break-word;
 }
-.file-viewer-markdown > *:first-child { margin-top: var(--space-0); }
-.file-viewer-markdown > *:last-child { margin-bottom: var(--space-0); }
-.file-viewer-markdown h1,
-.file-viewer-markdown h2,
-.file-viewer-markdown h3,
-.file-viewer-markdown h4,
-.file-viewer-markdown h5,
-.file-viewer-markdown h6 {
-  margin: var(--space-5) var(--space-0) var(--space-3);
-  line-height: var(--leading-snug);
-}
-.file-viewer-markdown h1 { font-size: var(--text-xl); }
-.file-viewer-markdown h2 { font-size: var(--text-lg); }
-.file-viewer-markdown h3 { font-size: var(--text-md); }
-.file-viewer-markdown p,
-.file-viewer-markdown ul,
-.file-viewer-markdown ol,
-.file-viewer-markdown blockquote,
-.file-viewer-markdown table,
-.file-viewer-markdown pre { margin: var(--space-3) var(--space-0); }
-.file-viewer-markdown ul,
-.file-viewer-markdown ol { padding-left: var(--space-6); }
-.file-viewer-markdown a { color: var(--accent); }
-.file-viewer-markdown code {
-  padding: var(--space-px) var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--overlay-hover);
-  font-family: var(--font-code);
-  font-size: var(--text-xs);
-}
-.file-viewer-markdown pre {
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-sm);
-  background: var(--surface-card);
-  overflow-x: auto;
-}
-.file-viewer-markdown pre code {
-  padding: var(--space-0);
-  background: transparent;
-  font-size: var(--text-sm);
-}
-.file-viewer-markdown blockquote {
-  padding-left: var(--space-4);
-  border-left: 3px solid var(--hairline-strong);
-  color: var(--text-2);
-}
-.file-viewer-markdown hr {
-  margin: var(--space-5) var(--space-0);
-  border: none;
-  border-top: 1px solid var(--hairline);
-}
-.file-viewer-markdown table {
-  border-collapse: collapse;
-  display: block;
-  overflow-x: auto;
-}
-.file-viewer-markdown th,
-.file-viewer-markdown td {
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--hairline);
-  text-align: left;
-}
-.file-viewer-markdown th { background: var(--surface-card); }
-.file-viewer-markdown img { max-width: 100%; }
-.file-viewer-markdown input[type="checkbox"] {
+.file-viewer-markdown-body > *:first-child { margin-top: var(--space-0); }
+.file-viewer-markdown-body > *:last-child { margin-bottom: var(--space-0); }
+.file-viewer-markdown-body table { display: block; overflow-x: auto; }
+.file-viewer-markdown-body img { max-width: 100%; }
+.file-viewer-markdown-body input[type="checkbox"] {
   margin-right: var(--space-2);
+}
+/* Compact prose scale for file-viewer — report's 18px serif body reads
+   too airy inside a small card. Override .calm-prose here only; report
+   page keeps the original scale. */
+.file-viewer-markdown-body.calm-prose p,
+.file-viewer-markdown-body.calm-prose li {
+  font-size: var(--text-md);
+  line-height: var(--leading-base);
+}
+.file-viewer-markdown-body.calm-prose h1 {
+  margin-top: var(--space-10);
+  font-size: var(--text-xl);
+}
+.file-viewer-markdown-body.calm-prose h2 {
+  margin-top: var(--space-8);
+}
+.file-viewer-markdown-body.calm-prose h3 {
+  margin-top: var(--space-7);
+  font-size: var(--text-lg);
+}
+.file-viewer-markdown-body.calm-prose p,
+.file-viewer-markdown-body.calm-prose ul,
+.file-viewer-markdown-body.calm-prose ol,
+.file-viewer-markdown-body.calm-prose blockquote,
+.file-viewer-markdown-body.calm-prose pre,
+.file-viewer-markdown-body.calm-prose table {
+  margin-top: var(--space-5);
+}
+.file-viewer-markdown-body.calm-prose table {
+  font-size: var(--text-md);
+}
+.file-viewer-markdown-body.calm-prose hr {
+  margin: var(--space-7) var(--space-0);
 }
 .file-viewer-banner {
   flex: 0 0 auto;
