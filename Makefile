@@ -89,6 +89,7 @@ PROD_PLUGINS_DATA_DIR ?= $(PROD_DATA_DIR)/plugins
 PROD_AUTH_USERNAME ?= owner
 PROD_AUTH_PASSWORD ?= dev
 PROD_DEV_AUTOLOGIN ?= false
+PROD_ALLOWED_ORIGIN ?= http://localhost:$(PROD_PORT)
 
 # Compose wrapper so every recipe picks up the same project name + file.
 COMPOSE := docker compose
@@ -343,7 +344,7 @@ prod: build prod-dirs prod-repair-codex-homes ## Run production locally without 
 	@# foreground calm-server stops, so Ctrl-C doesn't leave it dangling.
 	env \
 	  CALM_LISTEN="$(PROD_LISTEN)" \
-	  CALM_ALLOWED_ORIGIN="http://localhost:$(PROD_PORT)" \
+	  CALM_ALLOWED_ORIGIN="$(PROD_ALLOWED_ORIGIN)" \
 	  CALM_DB_URL="$(PROD_DB_URL)" \
 	  CALM_DATA_DIR="$(PROD_DATA_DIR)" \
 	  CALM_PLUGINS_DATA_DIR="$(PROD_PLUGINS_DATA_DIR)" \
