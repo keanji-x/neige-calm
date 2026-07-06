@@ -57,6 +57,28 @@ vi.mock('./file-viewer-codemirror', () => ({
   ),
 }));
 
+vi.mock('./file-viewer-markdown', async () => {
+  const actual =
+    await vi.importActual<typeof import('./file-viewer-markdown')>(
+      './file-viewer-markdown',
+    );
+  return {
+    ...actual,
+    // The real MarkdownPane pulls react-markdown, which is fine in jsdom, but
+    // we stub it to keep the assertion surface simple and avoid coupling test
+    // expectations to remark output.
+    MarkdownPane: ({ path, text }: { path: string; text: string }) => (
+      <div
+        className="file-viewer-markdown"
+        data-testid="markdown-pane"
+        data-path={path}
+      >
+        {text}
+      </div>
+    ),
+  };
+});
+
 vi.mock('../../api/calm', async () => {
   const actual =
     await vi.importActual<typeof import('../../api/calm')>('../../api/calm');
@@ -309,6 +331,61 @@ describe('FileViewerCard rendering', () => {
     });
     expect(api.readFile).not.toHaveBeenCalled();
     expect(img).toHaveAttribute('src', api.readFileRaw('/repo/assets/pixel.png'));
+  });
+
+  it('renders .md files as a Markdown preview by default, with a Source toggle back to CodeMirror', async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/README.md') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo',
+        parent: '/',
+        entries: [{ name: 'README.md', is_dir: false }],
+      };
+    });
+    vi.mocked(api.readFile).mockResolvedValue({
+      path: '/repo/README.md',
+      size: 40,
+      text: '# Hello\n\nA line of text.\n',
+      truncated: false,
+    });
+
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/README.md' }}
+      />,
+    );
+
+    const md = await screen.findByTestId('markdown-pane');
+    expect(md).toHaveAttribute('data-path', '/repo/README.md');
+    expect(md).toHaveTextContent('# Hello');
+    expect(screen.queryByTestId('code-pane')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
+    expect(await screen.findByTestId('code-pane')).toHaveAttribute(
+      'data-path',
+      '/repo/README.md',
+    );
+    expect(screen.queryByTestId('markdown-pane')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Preview' }));
+    expect(await screen.findByTestId('markdown-pane')).toBeTruthy();
+  });
+
+  it('does not show the Markdown mode toggle for non-markdown files', async () => {
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/src/main.ts' }}
+      />,
+    );
+
+    await screen.findByTestId('code-pane');
+    expect(screen.queryByRole('tab', { name: 'Preview' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Source' })).toBeNull();
+    expect(screen.queryByTestId('markdown-pane')).toBeNull();
   });
 
   it('keeps a canonicalized directory seed unselected', async () => {

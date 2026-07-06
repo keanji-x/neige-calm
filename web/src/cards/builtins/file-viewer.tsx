@@ -36,6 +36,9 @@ const LazyCodePane = lazy(() =>
 const LazyDiffPane = lazy(() =>
   import('./file-viewer-codemirror').then((m) => ({ default: m.DiffPane })),
 );
+const LazyMarkdownPane = lazy(() =>
+  import('./file-viewer-markdown').then((m) => ({ default: m.MarkdownPane })),
+);
 
 function createPaneRefSlot(): { current: HTMLElement | null } {
   return { current: null };
@@ -59,6 +62,7 @@ const IMAGE_EXTENSIONS = [
   '.ico',
   '.svg',
 ];
+const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
 
 type FileState =
   | { kind: 'idle' | 'loading' }
@@ -89,6 +93,11 @@ function isImagePath(path: string): boolean {
   return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
 }
 
+function isMarkdownPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  return MARKDOWN_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
 function readPersistedSidebarCollapsed(): boolean {
   try {
     const v = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
@@ -112,6 +121,7 @@ function writePersistedSidebarCollapsed(collapsed: boolean): void {
 function activeFileViewerPane(root: HTMLElement, tab: Tab): HTMLElement | null {
   if (tab === 'code') {
     return (
+      root.querySelector<HTMLElement>('.file-viewer-markdown') ??
       root.querySelector<HTMLElement>('.cm-scroller') ??
       root.querySelector<HTMLElement>('.file-viewer-tree-list')
     );
@@ -522,15 +532,88 @@ function CodeTab({
       );
   }
   return (
+    <LoadedFileContent
+      path={state.path}
+      text={state.text}
+      truncated={state.truncated}
+      theme={theme}
+    />
+  );
+}
+
+type MarkdownMode = 'preview' | 'source';
+
+function LoadedFileContent({
+  path,
+  text,
+  truncated,
+  theme,
+}: {
+  path: string;
+  text: string;
+  truncated: boolean;
+  theme: 'light' | 'dark';
+}) {
+  const isMd = isMarkdownPath(path);
+  const [mode, setMode] = useState<MarkdownMode>('preview');
+  // Mode is a local useState — it survives Preview/Source toggling within
+  // the same loaded file, but resets to 'preview' when the file changes,
+  // because CodeTab returns a "Loading file…" placeholder between files
+  // (unmounting LoadedFileContent). That per-file reset is what we want:
+  // opening a new .md file should start on Preview by default.
+  //
+  // Non-markdown files force `effectiveMode` to 'source' so the pane still
+  // renders through CodeMirror even if we ever mount LoadedFileContent
+  // with a stale 'preview' mode.
+  const effectiveMode: MarkdownMode = isMd ? mode : 'source';
+  return (
     <div className="file-viewer-code-wrap">
-      {state.truncated && (
+      {truncated && (
         <div className="file-viewer-banner">
           Showing the first 2 MiB of this file.
         </div>
       )}
-      <Suspense fallback={<div className="file-viewer-state">Loading editor…</div>}>
-        <LazyCodePane path={state.path} text={state.text} theme={theme} />
-      </Suspense>
+      {isMd && (
+        <div
+          className="file-viewer-md-mode"
+          role="tablist"
+          aria-label="Markdown view mode"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveMode === 'preview'}
+            className={effectiveMode === 'preview' ? 'active' : ''}
+            onClick={() => setMode('preview')}
+          >
+            Preview
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={effectiveMode === 'source'}
+            className={effectiveMode === 'source' ? 'active' : ''}
+            onClick={() => setMode('source')}
+          >
+            Source
+          </button>
+        </div>
+      )}
+      {effectiveMode === 'preview' ? (
+        <Suspense
+          fallback={
+            <div className="file-viewer-state">Loading preview…</div>
+          }
+        >
+          <LazyMarkdownPane path={path} text={text} />
+        </Suspense>
+      ) : (
+        <Suspense
+          fallback={<div className="file-viewer-state">Loading editor…</div>}
+        >
+          <LazyCodePane path={path} text={text} theme={theme} />
+        </Suspense>
+      )}
     </div>
   );
 }
