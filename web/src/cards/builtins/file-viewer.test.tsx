@@ -181,57 +181,78 @@ vi.mock('./file-viewer-markdown', async () => {
     await vi.importActual<typeof import('./file-viewer-markdown')>(
       './file-viewer-markdown',
     );
+  type TocHeading = import('./file-viewer-markdown-toc').TocHeading;
+  // The real MarkdownPane pulls react-markdown, which is fine in jsdom, but
+  // we stub it to keep the assertion surface simple and avoid coupling test
+  // expectations to remark output. The stub honors BOTH contracts:
+  //   1. Search adapter (register via `onSearchAdapterReady`, forward `/` via
+  //      `onSlashOpen`) — see the file-viewer search tests.
+  //   2. TOC (emit one fake heading via `onHeadingsChange`, attach the ref
+  //      via `onContainerRef`, render a real `<h1 id="md-h-0">` so the
+  //      TOC-click regression can spy on `scrollIntoView`).
+  function MockMarkdownPane({
+    path,
+    text,
+    onSearchAdapterReady,
+    onSearchCount,
+    onSlashOpen,
+    onHeadingsChange,
+    onContainerRef,
+  }: {
+    path: string;
+    text: string;
+    onSearchAdapterReady?: (adapter: PaneSearchAdapter | null) => void;
+    onSearchCount?: (current: number, total: number) => void;
+    onSlashOpen?: () => void;
+    onHeadingsChange?: (headings: TocHeading[]) => void;
+    onActiveHeadingChange?: (id: string | null) => void;
+    onContainerRef?: (el: HTMLElement | null) => void;
+  }) {
+    reactUseEffect(() => {
+      paneMocks.slashOpen.markdown = onSlashOpen ?? null;
+      const adapter = makeFakeAdapter('markdown', onSearchCount);
+      paneMocks.adapters.markdown = adapter;
+      onSearchAdapterReady?.(adapter);
+      return () => {
+        onSearchAdapterReady?.(null);
+        paneMocks.adapters.markdown = null;
+        paneMocks.slashOpen.markdown = null;
+      };
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path, text]);
+    reactUseEffect(() => {
+      onHeadingsChange?.([
+        { level: 1, text: `Heading of ${path}`, id: 'md-h-0' },
+      ]);
+    }, [onHeadingsChange, path]);
+    return (
+      /* eslint-disable jsx-a11y/no-static-element-interactions,
+                        jsx-a11y/no-noninteractive-tabindex */
+      <div
+        ref={onContainerRef}
+        className="file-viewer-markdown-body calm-prose"
+        data-testid="markdown-pane"
+        data-path={path}
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === '/') {
+            e.preventDefault();
+            paneMocks.slashOpen.markdown?.();
+          }
+        }}
+      >
+        <h1 id="md-h-0" data-testid="mock-pane-heading">
+          Heading of {path}
+        </h1>
+        {text}
+      </div>
+      /* eslint-enable jsx-a11y/no-static-element-interactions,
+                        jsx-a11y/no-noninteractive-tabindex */
+    );
+  }
   return {
     ...actual,
-    // The real MarkdownPane pulls react-markdown, which is fine in jsdom, but
-    // we stub it to keep the assertion surface simple and avoid coupling test
-    // expectations to remark output.
-    MarkdownPane: ({
-      path,
-      text,
-      onSearchAdapterReady,
-      onSearchCount,
-      onSlashOpen,
-    }: {
-      path: string;
-      text: string;
-      onSearchAdapterReady?: (adapter: PaneSearchAdapter | null) => void;
-      onSearchCount?: (current: number, total: number) => void;
-      onSlashOpen?: () => void;
-    }) => {
-      reactUseEffect(() => {
-        paneMocks.slashOpen.markdown = onSlashOpen ?? null;
-        const adapter = makeFakeAdapter('markdown', onSearchCount);
-        paneMocks.adapters.markdown = adapter;
-        onSearchAdapterReady?.(adapter);
-        return () => {
-          onSearchAdapterReady?.(null);
-          paneMocks.adapters.markdown = null;
-          paneMocks.slashOpen.markdown = null;
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [path, text]);
-      return (
-        /* eslint-disable jsx-a11y/no-static-element-interactions,
-                          jsx-a11y/no-noninteractive-tabindex */
-        <div
-          className="file-viewer-markdown-body calm-prose"
-          data-testid="markdown-pane"
-          data-path={path}
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === '/') {
-              e.preventDefault();
-              paneMocks.slashOpen.markdown?.();
-            }
-          }}
-        >
-          {text}
-        </div>
-        /* eslint-enable jsx-a11y/no-static-element-interactions,
-                          jsx-a11y/no-noninteractive-tabindex */
-      );
-    },
+    MarkdownPane: MockMarkdownPane,
   };
 });
 
@@ -519,6 +540,8 @@ describe('FileViewerCard rendering', () => {
     expect(md).toHaveAttribute('data-path', '/repo/README.md');
     expect(md).toHaveTextContent('# Hello');
     expect(screen.queryByTestId('code-pane')).toBeNull();
+    // TOC panel opens once the pane has emitted its heading list.
+    expect(await screen.findByLabelText('Outline')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Source' }));
     expect(await screen.findByTestId('code-pane')).toHaveAttribute(
@@ -526,9 +549,166 @@ describe('FileViewerCard rendering', () => {
       '/repo/README.md',
     );
     expect(screen.queryByTestId('markdown-pane')).toBeNull();
+    // TOC disappears alongside the preview pane in Source mode.
+    expect(screen.queryByLabelText('Outline')).toBeNull();
 
     fireEvent.click(screen.getByRole('tab', { name: 'Preview' }));
     expect(await screen.findByTestId('markdown-pane')).toBeTruthy();
+    expect(await screen.findByLabelText('Outline')).toBeTruthy();
+  });
+
+  it('collapses and re-expands the outline TOC without persisting the state', async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/README.md') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo',
+        parent: '/',
+        entries: [{ name: 'README.md', is_dir: false }],
+      };
+    });
+    vi.mocked(api.readFile).mockResolvedValue({
+      path: '/repo/README.md',
+      size: 40,
+      text: '# Hello\n',
+      truncated: false,
+    });
+
+    const Component = FileViewerEntry.Component;
+    const card = { type: 'file-viewer' as const, id: 'file_1', path: '/repo/README.md' };
+    const first = renderWithClient(<Component card={card} />);
+    await screen.findByTestId('markdown-pane');
+    await screen.findByLabelText('Outline');
+    // List is visible by default.
+    expect(
+      first.container.querySelector('.file-viewer-md-toc-list'),
+    ).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse outline' }));
+    expect(
+      first.container.querySelector('.file-viewer-md-toc-list'),
+    ).toBeNull();
+    expect(screen.getByRole('button', { name: 'Expand outline' })).toBeTruthy();
+
+    // TOC state is intentionally NOT persisted — a remount comes back expanded
+    // (unlike the file-tree sidebar which reads from localStorage).
+    first.unmount();
+    const second = renderWithClient(<Component card={card} />);
+    await screen.findByTestId('markdown-pane');
+    await screen.findByLabelText('Outline');
+    expect(
+      second.container.querySelector('.file-viewer-md-toc-list'),
+    ).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Expand outline' })).toBeNull();
+  });
+
+  it("scrolls a heading in this card's own pane, not a same-id element elsewhere in the document", async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/README.md') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo',
+        parent: '/',
+        entries: [{ name: 'README.md', is_dir: false }],
+      };
+    });
+    vi.mocked(api.readFile).mockResolvedValue({
+      path: '/repo/README.md',
+      size: 40,
+      text: '# Hello\n',
+      truncated: false,
+    });
+
+    // Decoy heading with the SAME id, appended to <body> BEFORE the card
+    // renders so `document.getElementById('md-h-0')` would resolve to the
+    // decoy under the old (buggy) implementation.
+    const decoy = document.createElement('h1');
+    decoy.id = 'md-h-0';
+    decoy.textContent = 'DECOY';
+    document.body.insertBefore(decoy, document.body.firstChild);
+    const decoyScroll = vi.fn();
+    decoy.scrollIntoView = decoyScroll;
+
+    try {
+      const Component = FileViewerEntry.Component;
+      renderWithClient(
+        <Component
+          card={{ type: 'file-viewer', id: 'file_1', path: '/repo/README.md' }}
+        />,
+      );
+
+      const paneHeading = await screen.findByTestId('mock-pane-heading');
+      const paneScroll = vi.fn();
+      paneHeading.scrollIntoView = paneScroll;
+      const tocEntry = await screen.findByRole('button', {
+        name: 'Heading of /repo/README.md',
+      });
+      // Sanity: paneHeading is inside the mock pane's container div, and
+      // getElementById would land on the decoy instead (proves the buggy
+      // path would misdirect the scroll).
+      const gotViaDocument = document.getElementById('md-h-0');
+      expect(gotViaDocument).toBe(decoy);
+      fireEvent.click(tocEntry);
+
+      expect(paneScroll).toHaveBeenCalledTimes(1);
+      expect(paneScroll).toHaveBeenCalledWith({
+        behavior: 'smooth',
+        block: 'start',
+      });
+      expect(decoyScroll).not.toHaveBeenCalled();
+    } finally {
+      decoy.remove();
+    }
+  });
+
+  it('re-emits headings for the next file after switching selection', async () => {
+    vi.mocked(api.listDir).mockImplementation(async (path?: string) => {
+      if (path === '/repo/A.md' || path === '/repo/B.md') {
+        throw new api.CalmApiError(400, 'bad_request', 'not a directory');
+      }
+      return {
+        path: '/repo',
+        parent: '/',
+        entries: [
+          { name: 'A.md', is_dir: false },
+          { name: 'B.md', is_dir: false },
+        ],
+      };
+    });
+    vi.mocked(api.readFile).mockImplementation(async (path: string) => ({
+      path,
+      size: 8,
+      text: `content of ${path}`,
+      truncated: false,
+    }));
+
+    const Component = FileViewerEntry.Component;
+    renderWithClient(
+      <Component
+        card={{ type: 'file-viewer', id: 'file_1', path: '/repo/A.md' }}
+      />,
+    );
+
+    await screen.findByTestId('markdown-pane');
+    expect(
+      await screen.findByRole('button', { name: 'Heading of /repo/A.md' }),
+    ).toBeTruthy();
+
+    fireEvent.click(await screen.findByText('B.md'));
+    await waitFor(() =>
+      expect(screen.getByTestId('markdown-pane')).toHaveAttribute(
+        'data-path',
+        '/repo/B.md',
+      ),
+    );
+    expect(
+      await screen.findByRole('button', { name: 'Heading of /repo/B.md' }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole('button', { name: 'Heading of /repo/A.md' }),
+    ).toBeNull();
   });
 
   it('does not show the Markdown mode toggle for non-markdown files', async () => {
@@ -543,6 +723,8 @@ describe('FileViewerCard rendering', () => {
     expect(screen.queryByRole('tab', { name: 'Preview' })).toBeNull();
     expect(screen.queryByRole('tab', { name: 'Source' })).toBeNull();
     expect(screen.queryByTestId('markdown-pane')).toBeNull();
+    // Non-md files do not carry the outline panel.
+    expect(screen.queryByLabelText('Outline')).toBeNull();
   });
 
   it('keeps a canonicalized directory seed unselected', async () => {
