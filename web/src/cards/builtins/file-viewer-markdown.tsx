@@ -1,7 +1,18 @@
-import { useEffect, useRef } from 'react';
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
-import ReactMarkdown from 'react-markdown';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  type HTMLAttributes,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import {
+  extractHeadings,
+  type TocHeading,
+  type TocLevel,
+} from './file-viewer-markdown-toc';
 
 /**
  * Adapter surface every pane implements so the shared SearchBar can drive
@@ -33,6 +44,18 @@ export interface MarkdownPaneProps {
    * style keymap here would require pulling CM into the markdown bundle.
    */
   onSlashOpen?: () => void;
+  /** TOC integration: emitted once per source-text change. */
+  onHeadingsChange?: (headings: TocHeading[]) => void;
+  /** Scrollspy: emits the DOM-order-first heading currently in the top zone. */
+  onActiveHeadingChange?: (id: string | null) => void;
+  /**
+   * Notified with the pane's scroll container element (or `null` on unmount).
+   * The caller uses this to scope TOC-click heading lookups to THIS pane —
+   * heading ids like `md-h-N` are not unique across multiple file-viewer
+   * cards mounted in the same wave, so `document.getElementById` would land
+   * on the first card's heading and misdirect the scroll.
+   */
+  onContainerRef?: (el: HTMLElement | null) => void;
 }
 
 // CSS Custom Highlight API guard. Stable in Chrome/Safari/Firefox (2025);
@@ -187,8 +210,18 @@ export function MarkdownPane({
   onSearchAdapterReady,
   onSearchCount,
   onSlashOpen,
+  onHeadingsChange,
+  onActiveHeadingChange,
+  onContainerRef,
 }: MarkdownPaneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const setContainerRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      containerRef.current = el;
+      onContainerRef?.(el);
+    },
+    [onContainerRef],
+  );
   const onSearchCountRef = useRef(onSearchCount);
   const onSlashOpenRef = useRef(onSlashOpen);
   const onSearchAdapterReadyRef = useRef(onSearchAdapterReady);
@@ -201,6 +234,92 @@ export function MarkdownPane({
   useEffect(() => {
     onSearchAdapterReadyRef.current = onSearchAdapterReady;
   }, [onSearchAdapterReady]);
+
+  const headings = useMemo(() => extractHeadings(text), [text]);
+
+  // Renders execute the component body top-down; resetting the counter here,
+  // before ReactMarkdown descends into its children, keeps the h1–h4 renderer
+  // in lockstep with `headings` (both derived from the same source text in
+  // document order).
+  const counterRef = useRef(0);
+  counterRef.current = 0;
+
+  const components = useMemo<Components>(() => {
+    function makeRenderer(level: TocLevel) {
+      const Tag = `h${level}` as const;
+      function HeadingRenderer({
+        children,
+        node: _node,
+        ...rest
+      }: HTMLAttributes<HTMLHeadingElement> & { node?: unknown }) {
+        const n = counterRef.current++;
+        const h = headings[n];
+        const id = h ? h.id : undefined;
+        return (
+          <Tag id={id} {...rest}>
+            {children}
+          </Tag>
+        );
+      }
+      HeadingRenderer.displayName = `MarkdownH${level}`;
+      return HeadingRenderer;
+    }
+    return {
+      h1: makeRenderer(1),
+      h2: makeRenderer(2),
+      h3: makeRenderer(3),
+      h4: makeRenderer(4),
+    };
+  }, [headings]);
+
+  useEffect(() => {
+    onHeadingsChange?.(headings);
+  }, [headings, onHeadingsChange]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (
+      !container ||
+      headings.length === 0 ||
+      typeof IntersectionObserver === 'undefined'
+    ) {
+      onActiveHeadingChange?.(null);
+      return;
+    }
+    const targets: HTMLElement[] = [];
+    for (const h of headings) {
+      // Attribute selector matches unambiguously in every engine; some
+      // (notably jsdom) mis-resolve `#dashed-digit-ids` in Element-scoped
+      // querySelector.
+      const el = container.querySelector<HTMLElement>(`[id="${h.id}"]`);
+      if (el) targets.push(el);
+    }
+    if (targets.length === 0) {
+      onActiveHeadingChange?.(null);
+      return;
+    }
+    const visibility = new Map<string, boolean>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          visibility.set(e.target.id, e.isIntersecting);
+        }
+        let firstActive: string | null = null;
+        for (const h of headings) {
+          if (visibility.get(h.id)) {
+            firstActive = h.id;
+            break;
+          }
+        }
+        onActiveHeadingChange?.(firstActive);
+      },
+      { root: container, rootMargin: '0px 0px -70% 0px', threshold: 0 },
+    );
+    for (const t of targets) observer.observe(t);
+    return () => observer.disconnect();
+    // headings identity changes only when text changes (useMemo above), so
+    // this effect recomputes exactly when the rendered heading DOM does.
+  }, [headings, onActiveHeadingChange]);
 
   // Build a fresh adapter whenever the file identity changes. The path/text
   // deps ensure that swapping to a new file disposes the previous adapter
@@ -245,7 +364,7 @@ export function MarkdownPane({
     /* eslint-disable jsx-a11y/no-noninteractive-element-interactions,
                       jsx-a11y/no-noninteractive-tabindex */
     <div
-      ref={containerRef}
+      ref={setContainerRef}
       className="file-viewer-markdown-body calm-prose"
       data-wheel-pane="markdown"
       data-path={path}
@@ -254,7 +373,9 @@ export function MarkdownPane({
       tabIndex={0}
       onKeyDown={onKeyDown}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {text}
+      </ReactMarkdown>
     </div>
     /* eslint-enable jsx-a11y/no-noninteractive-element-interactions,
                      jsx-a11y/no-noninteractive-tabindex */

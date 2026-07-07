@@ -22,6 +22,10 @@ import {
 import { useState } from '../../shared/state';
 import { dlog } from '../../util/debug';
 import type { PaneSearchAdapter } from './file-viewer-markdown';
+import {
+  MarkdownToc,
+  type TocHeading,
+} from './file-viewer-markdown-toc';
 
 declare module '../../types' {
   interface WaveCardDataMap {
@@ -619,6 +623,32 @@ function LoadedFileContent({
     setMatchTotal(total);
   }, []);
 
+  const [headings, setHeadings] = useState<TocHeading[]>([]);
+  const [activeHeadingId, setActiveHeadingId] = useState<string | null>(null);
+  // Intentional: not persisted. The TOC is a per-reading-session aid; a fresh
+  // open (or refresh) should always come back expanded.
+  const [tocCollapsed, setTocCollapsed] = useState(false);
+  // Scoped to THIS pane — heading ids like `md-h-N` are not unique across
+  // sibling file-viewer cards, so a global `document.getElementById` would
+  // land on the first card's heading and scroll the wrong one.
+  const paneContainerRef = useRef<HTMLElement | null>(null);
+  const handlePaneContainerRef = useCallback((el: HTMLElement | null) => {
+    paneContainerRef.current = el;
+  }, []);
+  const handleTocSelect = useCallback((h: TocHeading) => {
+    // Attribute-selector (not `#id`) so we scope the lookup to THIS pane's
+    // container. Element.querySelector('#…') has quirks in some engines when
+    // the id contains dashes-then-digits; `[id="…"]` matches unambiguously.
+    const el = paneContainerRef.current?.querySelector<HTMLElement>(
+      `[id="${h.id}"]`,
+    );
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+  // Also skip the TOC frame entirely when the document has no headings —
+  // avoids a first-paint flash of "No headings" while the lazy preview is
+  // still loading (headings arrive via callback only after the pane mounts).
+  const showToc =
+    isMd && effectiveMode === 'preview' && headings.length > 0;
   return (
     <div className="file-viewer-code-wrap">
       {truncated && (
@@ -653,19 +683,33 @@ function LoadedFileContent({
         </div>
       )}
       {effectiveMode === 'preview' ? (
-        <Suspense
-          fallback={
-            <div className="file-viewer-state">Loading preview…</div>
-          }
-        >
-          <LazyMarkdownPane
-            path={path}
-            text={text}
-            onSearchAdapterReady={onAdapter}
-            onSearchCount={onCount}
-            onSlashOpen={openBar}
-          />
-        </Suspense>
+        <div className="file-viewer-markdown-wrap">
+          <Suspense
+            fallback={
+              <div className="file-viewer-state">Loading preview…</div>
+            }
+          >
+            <LazyMarkdownPane
+              path={path}
+              text={text}
+              onSearchAdapterReady={onAdapter}
+              onSearchCount={onCount}
+              onSlashOpen={openBar}
+              onHeadingsChange={setHeadings}
+              onActiveHeadingChange={setActiveHeadingId}
+              onContainerRef={handlePaneContainerRef}
+            />
+          </Suspense>
+          {showToc && (
+            <MarkdownToc
+              headings={headings}
+              activeId={activeHeadingId}
+              collapsed={tocCollapsed}
+              onToggleCollapsed={() => setTocCollapsed((c) => !c)}
+              onSelect={handleTocSelect}
+            />
+          )}
+        </div>
       ) : (
         <Suspense
           fallback={<div className="file-viewer-state">Loading editor…</div>}

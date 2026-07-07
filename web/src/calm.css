@@ -4448,6 +4448,83 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .file-viewer-markdown-body.calm-prose hr {
   margin: var(--space-7) var(--space-0);
 }
+.file-viewer-markdown-wrap {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+}
+.file-viewer-md-toc {
+  flex: 0 0 220px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--hairline);
+  background: var(--surface-card);
+}
+.file-viewer-md-toc.collapsed { flex-basis: 32px; }
+.file-viewer-md-toc-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+}
+.file-viewer-md-toc.collapsed .file-viewer-md-toc-head { justify-content: center; }
+.file-viewer-md-toc-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+}
+.file-viewer-md-toc-toggle {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.file-viewer-md-toc-toggle:hover { background: var(--overlay-hover); }
+.file-viewer-md-toc-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--space-2) var(--space-0);
+}
+.file-viewer-md-toc-empty {
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.file-viewer-md-toc-entry {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--text-xs);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-viewer-md-toc-entry[data-level="1"] { padding-left: var(--space-3); }
+.file-viewer-md-toc-entry[data-level="2"] { padding-left: var(--space-5); }
+.file-viewer-md-toc-entry[data-level="3"] { padding-left: var(--space-7); }
+.file-viewer-md-toc-entry[data-level="4"] { padding-left: var(--space-9); }
+.file-viewer-md-toc-entry:hover { background: var(--overlay-hover); color: var(--text); }
+.file-viewer-md-toc-entry.active {
+  background: var(--overlay-active);
+  color: var(--text);
+}
 .file-viewer-banner {
   flex: 0 0 auto;
   padding: var(--space-2) var(--space-4);
