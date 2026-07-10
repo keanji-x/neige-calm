@@ -18,6 +18,19 @@ default = []
 # `write_with_event_typed` / `log_pure_event` instead. Integration
 # tests under `tests/*.rs` auto-enable this via the `[dev-dependencies]`
 # self-loop below.
+#
+# #840 e2 carve-out: the feature ALSO gates `test_seams::crash_point`,
+# the only fixtures-gated code *called from* a production module
+# (`operation/forge_action_adapter.rs`, pre-fence-commit). That call is
+# deliberate: the out-of-process crash-recovery tests spawn
+# `CARGO_BIN_EXE_calm-server` (a `cargo test` artifact, so fixtures is
+# on via the self-loop) and need a deterministic in-binary abort point.
+# The "MUST NOT enable" rule above still holds for release builds:
+# `crash_point` and its call site (statement + arguments) exist only
+# under `#[cfg(feature = "fixtures")]`, so without the feature release
+# builds compile zero seam code; with it the seam is still env-var
+# double-gated (`CALM_TEST_CRASH_AT`, one env lookup per completion
+# when unset). See `src/test_seams.rs` for the contract.
 fixtures = [
     "calm-proc-supervisor/test-support",
 ]

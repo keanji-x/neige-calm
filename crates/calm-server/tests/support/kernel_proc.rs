@@ -26,8 +26,9 @@
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 pub const CALM_SERVER_BIN: &str = env!("CARGO_BIN_EXE_calm-server");
@@ -152,7 +153,41 @@ pub fn spawn_kernel(
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
+    // RLIMIT_CORE=0: e2/e3 deliberately abort the kernel (SIGABRT); on hosts
+    // with a nonzero core limit that would otherwise dump a core file per run.
+    // SAFETY: setrlimit is async-signal-safe; nothing else runs pre-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            let limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     cmd.spawn().expect("spawn calm-server binary")
+}
+
+/// Block until the kernel exits on its own (e.g. an expected fixture abort),
+/// reap it, and return the `ExitStatus`. Panics on `timeout` — a kernel that
+/// was supposed to crash but keeps running is a test failure, and the guard's
+/// `Drop` then SIGKILLs it so nothing leaks.
+pub fn wait_exit_with_timeout(guard: &mut ChildGuard, timeout: Duration) -> ExitStatus {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match guard.child.try_wait() {
+            Ok(Some(status)) => return status,
+            Ok(None) => {}
+            Err(e) => panic!("wait for kernel exit: {e}"),
+        }
+        if Instant::now() >= deadline {
+            panic!("kernel did not exit within {timeout:?} (expected a fixture-induced crash)");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 /// Poll `GET /api/version` until it returns `200` with a `kernelVersion` body,
