@@ -18,8 +18,9 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::{
-    BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams, ThreadConfig,
-    bounded_exponential_backoff, drop_spawned_child_guard_for_test,
+    BackoffState, SPAWN_ENV_PASSTHROUGH, SharedCodexAppServer, SharedDaemonState,
+    SharedThreadStartParams, ThreadConfig, bounded_exponential_backoff,
+    drop_spawned_child_guard_for_test,
 };
 use clap::Parser;
 use serde_json::{Value, json};
@@ -140,13 +141,78 @@ async fn start_new_process_strips_per_card_env_keys() {
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
     let env = daemon.spawn_env_for_test().await.unwrap();
 
-    assert_eq!(env.get("NEIGE_CARD_ID"), Some(&None));
-    assert_eq!(env.get("NEIGE_HOOK_PROVIDER"), Some(&None));
-    assert_eq!(env.get("NEIGE_MCP_TOKEN"), Some(&None));
-    assert_eq!(env.get("NEIGE_HOOK_URL"), Some(&None));
+    // #863: `env_clear()` subsumes the old per-key `env_remove`; the stale
+    // per-card keys must be ABSENT from `get_envs()` (no explicit-removal
+    // `Some(&None)` marker, no explicit set).
+    for stale in [
+        "NEIGE_CARD_ID",
+        "NEIGE_HOOK_PROVIDER",
+        "NEIGE_MCP_TOKEN",
+        "NEIGE_HOOK_URL",
+    ] {
+        assert_eq!(
+            env.get(stale),
+            None,
+            "{stale} must be absent from the explicit spawn env"
+        );
+    }
     assert_eq!(
         env.get("NEIGE_CALM_BASE_URL").cloned().flatten().as_deref(),
         Some("http://expected")
+    );
+}
+
+/// #863 §5 — allow-list purity at the `get_envs()` seam: every explicitly-set
+/// key is either a computed key, a `SPAWN_ENV_PASSTHROUGH` entry, or (in this
+/// fixtures-enabled test build only) a fake-codex fixture-channel key.
+#[tokio::test]
+async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    repo.settings_upsert("http_proxy", "http://proxy.local:3128")
+        .await
+        .unwrap();
+    repo.settings_upsert("https_proxy", "http://secure-proxy.local:3129")
+        .await
+        .unwrap();
+    let mut cfg = cfg(&root);
+    cfg.codex_ingest_url = Some("http://127.0.0.1:8765".into());
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+    let env = daemon.spawn_env_for_test().await.unwrap();
+
+    let computed = [
+        "CODEX_HOME",
+        "NEIGE_CALM_BASE_URL",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    ];
+    for key in env.keys() {
+        let allowed = computed.contains(&key.as_str())
+            || SPAWN_ENV_PASSTHROUGH.contains(&key.as_str())
+            // Fixture channel: exists only because this test binary compiles
+            // calm-server with the `fixtures` feature; NOT part of the prod const.
+            || key.starts_with("FAKE_CODEX_")
+            || key == "NEIGE_OSC_TRACE_PATH";
+        assert!(
+            allowed,
+            "spawn env key {key} is outside the #863 allow-list; \
+             the child env must be a pure function of config"
+        );
+    }
+    assert!(env.contains_key("CODEX_HOME"));
+    assert!(env.contains_key("NEIGE_CALM_BASE_URL"));
+    assert_eq!(
+        env.get("HTTP_PROXY").cloned().flatten().as_deref(),
+        Some("http://proxy.local:3128"),
+        "settings proxy must be an explicit computed key"
     );
 }
 
@@ -199,7 +265,7 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
         cfg(&root).data_dir_resolved().join("codex-home").display()
     );
     assert!(
-        child_env.iter().any(|kv| *kv == expected_codex_home),
+        child_env.contains(&expected_codex_home),
         "sanity: child environ must carry the explicit CODEX_HOME pin; got {child_env:?}"
     );
 
@@ -214,6 +280,39 @@ async fn spawned_daemon_does_not_inherit_parent_canary_env() {
         "spawned codex app-server must not inherit ambient parent env \
          (child env must be a pure function of config); leaked: {leaks:?}"
     );
+
+    // #863 §5 allow-list purity: the child's key set must be a subset of
+    // {computed keys} ∪ SPAWN_ENV_PASSTHROUGH (∪ the fixture channel, which
+    // exists only in this fixtures-enabled build) — "no key outside the pure
+    // function".
+    let computed = [
+        "CODEX_HOME",
+        "NEIGE_CALM_BASE_URL",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    ];
+    for kv in &child_env {
+        let key = kv.split_once('=').map(|(k, _)| k).unwrap_or(kv.as_str());
+        let allowed = computed.contains(&key)
+            || SPAWN_ENV_PASSTHROUGH.contains(&key)
+            || key.starts_with("FAKE_CODEX_")
+            || key == "NEIGE_OSC_TRACE_PATH";
+        assert!(
+            allowed,
+            "child environ key {key} is outside the #863 allow-list \
+             (child env must be a pure function of config); full env: {child_env:?}"
+        );
+    }
+    // Positive outage canaries: the allow-list must actually pass the
+    // load-bearing vars through, not just drop everything.
+    for canary in ["PATH=", "HOME="] {
+        assert!(
+            child_env.iter().any(|kv| kv.starts_with(canary)),
+            "allow-list must pass {canary} through to the child; got {child_env:?}"
+        );
+    }
 }
 
 /// #863 red repro (TEST B): booting the shared app-server against a

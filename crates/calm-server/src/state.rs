@@ -861,6 +861,30 @@ impl AppState {
                 "shared CODEX_HOME seed failed; continuing; legacy per-card homes still functional"
             );
         }
+        // #863 one-time boot repair for historically-seeded homes: strip
+        // unexpected `[mcp_servers.*]` / `hooks` from config.toml and delete
+        // a leaked `.env`. Runs after seed and before ensure_daemon_mcp_config
+        // / the shared-daemon boot guard, so a legacy verbatim-seeded home
+        // converges without operator action. On failure the launch-time guard
+        // refuses the shared daemon; calm-server itself stays up.
+        match codex
+            .shared_codex_home
+            .sanitize_unexpected_mcp_servers(crate::shared_codex_home::EXPECTED_MCP_SERVERS)
+        {
+            Ok(removed) if !removed.is_empty() => {
+                tracing::warn!(
+                    ?removed,
+                    "sanitized shared CODEX_HOME: removed unexpected executable-vector entries"
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "shared CODEX_HOME sanitize failed; shared daemon boot guard may refuse launch"
+                );
+            }
+        }
 
         // PR7a (#136) — boot the kernel-as-MCP-server. Socket lives at
         // `<data_dir>/mcp/kernel.sock`; `neige-mcp-stdio-shim` is the

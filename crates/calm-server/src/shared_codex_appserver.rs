@@ -43,9 +43,61 @@ use crate::session_projection_lookup::{
     merge_active_shared_thread_attribution, resolve_active_thread_for_card, resolve_card_for_thread,
 };
 use crate::session_projection_repo::AgentProvider;
-use crate::shared_codex_home::SharedCodexHome;
+use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 
 pub type TurnId = String;
+
+/// #863 — ambient env keys forwarded verbatim into the spawned shared codex
+/// app-server. A const, not config: it is an implementation invariant of the
+/// spawn seam, not an operator choice; changing it is a code change with
+/// review + tests. Everything else in the parent env is dropped by
+/// `env_clear()`; computed keys (CODEX_HOME, NEIGE_CALM_BASE_URL, HTTP(S)
+/// proxies) are set explicitly in `apply_spawn_env`. Entry rationale cites
+/// the vendored codex source (`external/codex/codex-rs`).
+pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
+    // binary/tool resolution + codex arg0 PATH rewrite (codex-rs/arg0/src/lib.rs:146-153);
+    // MCP child commands are NOT which-resolved on unix — child PATH is used
+    // (codex-rs/rmcp-client/src/program_resolver.rs:22-29, utils.rs:130-142)
+    "PATH",
+    // default-home fallback + `~` expansion in config paths (codex-rs/utils/home-dir/src/lib.rs:52-61,
+    // codex-rs/utils/absolute-path/src/lib.rs:29); forwarded to MCP children (utils.rs:130-142)
+    "HOME",
+    // codex's own child allow-lists forward these (rmcp-client/src/utils.rs:130-142 for MCP;
+    // UNIX_CORE_ENV_VARS protocol/src/shell_environment.rs:113-116 for inherit=Core shells)
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    // reqwest env-proxy autodetect honors these for API traffic
+    // (codex-rs/login/src/auth/default_client.rs:222-229; not sandboxed → proxies active :250-251)
+    "NO_PROXY",
+    "no_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    // TLS custom CA (codex-rs/codex-client/src/custom_ca.rs:61-62, 373-386; SSL_CERT_DIR unused)
+    "CODEX_CA_CERTIFICATE",
+    "SSL_CERT_FILE",
+    // diagnostics (codex-rs/app-server/src/lib.rs:627,632 RUST_LOG; :112 LOG_FORMAT)
+    "RUST_LOG",
+    "LOG_FORMAT",
+    "RUST_BACKTRACE",
+    // API-key-mode auth fallbacks (codex-rs/login/src/auth/manager.rs:516-532;
+    // model-provider-info/src/lib.rs:340-347). Prod uses auth.json; kept so an
+    // API-key deployment doesn't silently break. Explicit pass-through, still an allow-list.
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -472,6 +524,16 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
+        // #863 boot guard — the resolved home is exactly what resumed threads
+        // will run against, on boot AND on takeover. Refuse before touching
+        // the process, and never strand a previously-live polluted daemon
+        // running unsupervised.
+        if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
+            self.reap_persisted_daemon_if_verified().await;
+            return Err(CalmError::CodexAppServer(format!(
+                "refusing to launch shared codex app-server: {guard_err}"
+            )));
+        }
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
         if self.try_takeover_live(&record).await? {
@@ -480,6 +542,41 @@ impl SharedCodexAppServer {
 
         self.start_new_process(false, None).await?;
         Ok(())
+    }
+
+    /// #863 — "no polluted survivor": when the boot guard refuses, the
+    /// persisted daemon (if still verified alive) is reaped before the error
+    /// propagates, so it cannot keep serving with its polluted env/home.
+    async fn reap_persisted_daemon_if_verified(&self) {
+        let record = match self.repo.shared_daemon_runtime_get().await {
+            Ok(record) => record,
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    error = %e,
+                    "boot guard refusal: failed reading persisted daemon runtime; skipping reap"
+                );
+                return;
+            }
+        };
+        let (Some(pid), Some(pgid), Some(start_time), Some(boot_id)) = (
+            record.pid,
+            record.pgid,
+            record.process_start_time,
+            record.boot_id.clone(),
+        ) else {
+            return;
+        };
+        if !verify_owned_pid(pid, start_time, &boot_id) {
+            return;
+        }
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            pid,
+            pgid,
+            "boot guard refused polluted CODEX_HOME; reaping verified persisted daemon before erroring"
+        );
+        reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
     }
 
     pub async fn thread_start_for_card(
@@ -787,6 +884,11 @@ impl SharedCodexAppServer {
         https_proxy: Option<&str>,
     ) -> String {
         let mut h = Sha256::new();
+        // #863 — schema-version salt. The first boot of an upgraded binary
+        // mismatches every pre-upgrade persisted signature, so the existing
+        // reap-for-respawn takeover path (`try_takeover_live`) is guaranteed
+        // to replace a daemon spawned with the old (leaky) inherited env.
+        h.update(b"env-schema-v2:863|");
         h.update(ingest_url.as_bytes());
         h.update(b"|");
         h.update(http_proxy.unwrap_or_default().as_bytes());
@@ -813,25 +915,71 @@ impl SharedCodexAppServer {
         ))
     }
 
+    /// Settings-first, parent-env-fallback proxy resolution — the same
+    /// resolution `compute_env_signature` hashes — shaped as explicit
+    /// (UPPER, lower, value) pairs for the spawn env. #863: with
+    /// `env_clear()`, the fallback must be SET explicitly instead of the old
+    /// implicit inheritance-when-settings-absent.
+    pub fn resolved_proxy_env_pairs(
+        http_settings: Option<&str>,
+        https_settings: Option<&str>,
+        lookup: impl Fn(&str) -> Option<String> + Copy,
+    ) -> Vec<(&'static str, &'static str, String)> {
+        let mut pairs = Vec::new();
+        if let Some(v) =
+            Self::effective_proxy_env_from(http_settings, &["HTTP_PROXY", "http_proxy"], lookup)
+                .filter(|v| !v.is_empty())
+        {
+            pairs.push(("HTTP_PROXY", "http_proxy", v));
+        }
+        if let Some(v) =
+            Self::effective_proxy_env_from(https_settings, &["HTTPS_PROXY", "https_proxy"], lookup)
+                .filter(|v| !v.is_empty())
+        {
+            pairs.push(("HTTPS_PROXY", "https_proxy", v));
+        }
+        pairs
+    }
+
+    /// #863 — the child env is a pure function of typed config: `env_clear()`
+    /// plus exactly [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (in
+    /// fixture builds only) the fake-codex fixture channel. The old
+    /// `env_remove` of per-card `NEIGE_*` keys is subsumed by `env_clear`.
     async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
-        for stale in [
-            "NEIGE_CARD_ID",
-            "NEIGE_HOOK_PROVIDER",
-            "NEIGE_MCP_TOKEN",
-            "NEIGE_HOOK_URL",
-        ] {
-            cmd.env_remove(stale);
+        cmd.env_clear();
+        for key in SPAWN_ENV_PASSTHROUGH {
+            // var_os: a non-UTF8 value must pass through, not be silently dropped
+            if let Some(value) = std::env::var_os(key) {
+                cmd.env(key, value);
+            }
+        }
+
+        // Fixture channel (test-only passthrough): the fake app-server reads
+        // `FAKE_CODEX_*` / `NEIGE_OSC_TRACE_PATH` from its own process env;
+        // integration tests set them on the test process and rely on them
+        // reaching the child through this real spawn path. Compiled out of
+        // production builds — these names must NEVER join the prod
+        // `SPAWN_ENV_PASSTHROUGH` const.
+        #[cfg(feature = "fixtures")]
+        for (key, value) in std::env::vars_os() {
+            let fixture_key = key
+                .to_str()
+                .is_some_and(|k| k.starts_with("FAKE_CODEX_") || k == "NEIGE_OSC_TRACE_PATH");
+            if fixture_key {
+                cmd.env(&key, value);
+            }
         }
 
         cmd.env("CODEX_HOME", self.home.path())
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 
         let settings = load_settings(self.repo.as_ref()).await?;
-        if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
-            cmd.env("HTTP_PROXY", p).env("http_proxy", p);
-        }
-        if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
-            cmd.env("HTTPS_PROXY", p).env("https_proxy", p);
+        for (upper, lower, value) in Self::resolved_proxy_env_pairs(
+            settings.http_proxy.as_deref(),
+            settings.https_proxy.as_deref(),
+            |key| std::env::var(key).ok(),
+        ) {
+            cmd.env(upper, &value).env(lower, value);
         }
 
         Ok(())
@@ -959,6 +1107,15 @@ impl SharedCodexAppServer {
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<LaunchedSharedDaemon> {
+        // #863 boot guard on EVERY spawn (crash-restart/respawn included):
+        // pollution written while running is caught at the next launch.
+        self.home
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .map_err(|e| {
+                CalmError::CodexAppServer(format!(
+                    "refusing to launch shared codex app-server: {e}"
+                ))
+            })?;
         std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(&self.log_dir)?;
         self.remove_stale_socket_before_spawn().await?;
@@ -2060,5 +2217,61 @@ mod tests {
     fn thread_id_from_started_accepts_flat_shape_for_compat() {
         let params = json!({"threadId": "thrd_xyz"});
         assert_eq!(thread_id_from_started(&params), Some("thrd_xyz"));
+    }
+
+    /// #863 — the v2 schema salt must change the signature for identical
+    /// inputs, so the first post-upgrade boot mismatches every pre-upgrade
+    /// persisted signature and forces exactly one normalize-respawn.
+    #[test]
+    fn env_signature_v2_salt_differs_from_pre_salt_signature() {
+        let ingest = "http://127.0.0.1:8765";
+        let mut h = Sha256::new();
+        h.update(ingest.as_bytes());
+        h.update(b"|");
+        h.update(b"|");
+        let pre_salt = hex::encode(h.finalize())[..16].to_string();
+
+        let v2 = SharedCodexAppServer::compute_env_signature(ingest, None, None);
+        assert_ne!(
+            v2, pre_salt,
+            "compute_env_signature must be salted (env-schema-v2:863)"
+        );
+    }
+
+    /// #863 — with `env_clear()`, a parent-env proxy must be RESOLVED and
+    /// set explicitly when settings are absent (the old behavior was
+    /// implicit inheritance). Settings still win over the parent env.
+    #[test]
+    fn resolved_proxy_pairs_settings_first_then_explicit_parent_env_fallback() {
+        let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(
+            Some("http://settings-proxy:3128"),
+            None,
+            |key| (key == "HTTP_PROXY").then(|| "http://env-proxy:8080".to_string()),
+        );
+        assert_eq!(
+            pairs,
+            vec![(
+                "HTTP_PROXY",
+                "http_proxy",
+                "http://settings-proxy:3128".to_string()
+            )]
+        );
+
+        let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(None, None, |key| {
+            (key == "HTTPS_PROXY").then(|| "http://env-secure:3129".to_string())
+        });
+        assert_eq!(
+            pairs,
+            vec![(
+                "HTTPS_PROXY",
+                "https_proxy",
+                "http://env-secure:3129".to_string()
+            )]
+        );
+
+        assert!(
+            SharedCodexAppServer::resolved_proxy_env_pairs(None, None, |_| None).is_empty(),
+            "no settings + no parent env => no proxy keys in the child env"
+        );
     }
 }
