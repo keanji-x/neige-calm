@@ -390,19 +390,25 @@ impl SharedCodexHome {
 /// convention.
 fn write_config_0600(cfg_path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp_path = cfg_path.with_extension("toml.tmp");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp_path)?;
-    // `mode(0o600)` only applies on create; enforce on a leftover temp from
-    // a crashed earlier write too.
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    if let Err(e) = fs::rename(&tmp_path, cfg_path) {
+    let write_and_rename = || -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        // `mode(0o600)` only applies on create; enforce on a leftover temp
+        // from a crashed earlier write too.
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp_path, cfg_path)
+    };
+    // #863 review R2-2: on ANY pre-rename failure (perms/write/fsync/rename)
+    // best-effort remove the temp file — it is 0600 but can carry the daemon
+    // MCP token, so it must not linger after a failed write.
+    if let Err(e) = write_and_rename() {
         let _ = fs::remove_file(&tmp_path);
         return Err(e);
     }

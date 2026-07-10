@@ -404,6 +404,162 @@ async fn boot_deletes_leaked_codex_home_env_file_before_spawn() {
     );
 }
 
+/// Deterministic shared home whose config.toml carries an unexpected
+/// `[mcp_servers.evil]` entry, so `start_or_takeover`'s boot guard refuses.
+/// Mirrors the setup of `boot_rejects_codex_home_with_unexpected_mcp_server_entry`.
+fn polluted_home(root: &tempfile::TempDir) -> calm_server::shared_codex_home::SharedCodexHome {
+    let cfg = cfg(root);
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed_from(None).unwrap();
+    let shim = McpShimConfig {
+        shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+        socket_path: root.path().join("mcp/kernel.sock"),
+    };
+    home.ensure_daemon_mcp_config(&shim, "daemon-token")
+        .unwrap();
+    let cfg_path = home.path().join("config.toml");
+    let mut polluted = std::fs::read_to_string(&cfg_path).unwrap();
+    polluted.push_str("\n[mcp_servers.evil]\ncommand = \"/usr/bin/evil-mcp\"\n");
+    std::fs::write(&cfg_path, &polluted).unwrap();
+    home
+}
+
+/// #863 review R2-3(b) — a boot-guard refusal against a VERIFIED persisted
+/// daemon must both reap the process and persist the reap: state=failed,
+/// identity tuple (pid/pgid/start_time/boot_id) cleared, last_error naming
+/// the offending guard error.
+#[tokio::test]
+async fn guard_refusal_reaps_verified_daemon_and_persists_failed_record() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for guard-refusal reap");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+
+    let daemon =
+        SharedCodexAppServer::new(&cfg(&root), Arc::new(polluted_home(&root)), repo.clone());
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot guard must refuse the polluted CODEX_HOME");
+    assert!(
+        err.to_string().contains("evil"),
+        "refusal must name the offender; got: {err}"
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("guard refusal must reap the verified persisted daemon")
+        .expect("wait reaped fake app-server");
+
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Failed,
+        "guard-refusal reap must persist state=failed"
+    );
+    assert_eq!(record.pid, None, "pid must be cleared after the reap");
+    assert_eq!(record.pgid, None, "pgid must be cleared after the reap");
+    assert_eq!(
+        record.process_start_time, None,
+        "process_start_time must be cleared after the reap"
+    );
+    assert_eq!(
+        record.boot_id, None,
+        "boot_id must be cleared after the reap"
+    );
+    let last_error = record
+        .last_error
+        .expect("guard-refusal reap must persist last_error");
+    assert!(
+        last_error.contains("evil"),
+        "persisted last_error must name the offending entry; got: {last_error}"
+    );
+}
+
+/// #863 review R2-3(a) / F3a — a persisted record whose pgid != pid is
+/// corrupt (spawn invariant: `process_group(0)` ⇒ pgid == pid); the
+/// guard-refusal reap must NOT signal it. The launcher/native split makes
+/// the liveness assertion meaningful: the record points pid at the native
+/// app-server and pgid at the launcher's (real, live) process group, so a
+/// regression that signals the recorded pgid kills both — the guard must
+/// leave them alive and the corrupt record untouched.
+#[tokio::test]
+async fn guard_refusal_skips_reap_when_persisted_pgid_mismatches_pid() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let (launcher, pgid, peer_pid) = spawn_launcher_with_fake_appserver(&sock, false, false).await;
+    let process_start_time = read_proc_start_time(peer_pid).expect("fake app-server start time");
+
+    let repo = repo().await;
+    // Mismatched identity tuple: pid = native app-server, pgid = launcher group.
+    persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
+
+    let daemon =
+        SharedCodexAppServer::new(&cfg(&root), Arc::new(polluted_home(&root)), repo.clone());
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot guard must still refuse the polluted CODEX_HOME");
+    assert!(
+        err.to_string().contains("evil"),
+        "refusal must name the offender; got: {err}"
+    );
+
+    // Any (buggy) reap is fully awaited inside `start_or_takeover`; add a
+    // short grace for signal delivery, then probe liveness.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    let peer_alive = unsafe { libc::kill(peer_pid, 0) } == 0;
+    let launcher_alive = unsafe { libc::kill(pgid, 0) } == 0;
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+
+    force_cleanup_process_group(launcher, pgid);
+
+    assert!(
+        peer_alive && launcher_alive,
+        "guard refusal must NOT signal a corrupt (pgid != pid) persisted record; \
+         peer_alive={peer_alive} launcher_alive={launcher_alive}"
+    );
+    // Skip path also means no failed-record rewrite: the corrupt record is
+    // left as-is for the operator (only the reap path persists Failed).
+    assert_eq!(
+        record.pid,
+        Some(peer_pid),
+        "corrupt record pid must be left untouched"
+    );
+    assert_eq!(
+        record.pgid,
+        Some(pgid),
+        "corrupt record pgid must be left untouched"
+    );
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "skip path must not rewrite the persisted state"
+    );
+}
+
 async fn persist_running_daemon(
     repo: &SqlxRepo,
     root: &tempfile::TempDir,

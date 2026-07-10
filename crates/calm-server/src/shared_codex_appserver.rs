@@ -524,6 +524,18 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
+        // #863 review R2-1 — the whole boot sequence is ONE serialized
+        // lifecycle transition: `transition_serial` is held from BEFORE the
+        // boot guard through the guard-refusal reap + Failed write AND
+        // through the takeover/spawn (#480 §C invariant). Acquiring it any
+        // later lets a concurrent transition (crash-restart, settings
+        // respawn) complete a spawn in between; the Failed write below would
+        // then overwrite that Running state in memory while its live child
+        // keeps running unsupervised. The downstream transitions
+        // (`try_takeover_live` → `start_new_process_typestate`,
+        // `start_new_process_locked`) are `_locked`-style callees that assume
+        // this guard instead of re-acquiring it — no double-lock.
+        let _serial = self.transition_serial.lock().await;
         // #863 boot guard — the resolved home is exactly what resumed threads
         // will run against, on boot AND on takeover. Refuse before touching
         // the process, and never strand a previously-live polluted daemon
@@ -533,10 +545,8 @@ impl SharedCodexAppServer {
             self.reap_persisted_daemon_if_verified(&msg).await;
             // #863 review F1 — surface the refusal in `status_snapshot()`:
             // mirror the typestate error arm of `start_new_process_typestate`
-            // (Failed under the core lock, holding `transition_serial` per
-            // the #480 §C invariant).
+            // (Failed under the core lock; `transition_serial` held above).
             {
-                let _serial = self.transition_serial.lock().await;
                 let mut core = self.core.lock().await;
                 core.state = SupervisorState::Failed {
                     last_error: msg.clone(),
@@ -551,7 +561,7 @@ impl SharedCodexAppServer {
             return Ok(());
         }
 
-        self.start_new_process(false, None).await?;
+        self.start_new_process_locked(false, None).await?;
         Ok(())
     }
 
@@ -1090,6 +1100,9 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
     }
 
+    /// **Invariant (#863 review R2-1)**: caller MUST hold `transition_serial`
+    /// (the takeover transition runs through `start_new_process_typestate`,
+    /// which assumes the guard is already held).
     async fn try_takeover_live(
         self: &Arc<Self>,
         record: &crate::db::SharedCodexDaemonRecord,
@@ -1185,6 +1198,39 @@ impl SharedCodexAppServer {
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<()> {
+        // Scoped so crash-restart/settings-respawn callers keep the pre-R2-1
+        // behavior: serialized spawn transition, thread resume outside it.
+        {
+            let _serial = self.transition_serial.lock().await;
+            self.spawn_process_transition(increment_restart_count, last_error)
+                .await?;
+        }
+        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
+        Ok(())
+    }
+
+    /// **Invariant (#863 review R2-1)**: caller MUST hold `transition_serial`.
+    /// Boot path (`start_or_takeover`) variant: the caller keeps ONE guard
+    /// across boot-guard + takeover probe + this spawn, so the thread resume
+    /// also runs inside the serialized section there.
+    async fn start_new_process_locked(
+        self: &Arc<Self>,
+        increment_restart_count: bool,
+        last_error: Option<String>,
+    ) -> Result<()> {
+        self.spawn_process_transition(increment_restart_count, last_error)
+            .await?;
+        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
+        Ok(())
+    }
+
+    /// Shared spawn-transition body. **Invariant**: caller MUST hold
+    /// `transition_serial`.
+    async fn spawn_process_transition(
+        self: &Arc<Self>,
+        increment_restart_count: bool,
+        last_error: Option<String>,
+    ) -> Result<()> {
         let this = Arc::clone(self);
         self.start_new_process_typestate(move |_| {
             let this = Arc::clone(&this);
@@ -1193,9 +1239,7 @@ impl SharedCodexAppServer {
                     .await
             }
         })
-        .await?;
-        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
-        Ok(())
+        .await
     }
 
     async fn launch_spawned_process(
@@ -1572,16 +1616,16 @@ impl SharedCodexAppServer {
     }
 
     /// #480 §C — typestate transition: begin/finish a fresh process spawn.
-    /// **Invariant**: must hold `transition_serial` for the duration.
-    /// PR5a stub: parallel-writes the new state but does NOT replace the
-    /// existing `start_new_process` impl. PR5b makes this the canonical
-    /// path.
+    /// **Invariant**: caller MUST hold `transition_serial` for the duration
+    /// (#863 review R2-1: acquisition moved to the callers so the boot path
+    /// can hold ONE guard across boot-guard + takeover/spawn without
+    /// re-locking here). Callers: `try_takeover_live` and
+    /// `spawn_process_transition`, both under a caller-held guard.
     pub(crate) async fn start_new_process_typestate<F, Fut>(&self, spawn: F) -> Result<()>
     where
         F: FnOnce(PathBuf) -> Fut + Send,
         Fut: std::future::Future<Output = Result<LaunchedSharedDaemon>> + Send,
     {
-        let _serial = self.transition_serial.lock().await;
         let socket_path = self.sock.clone();
         {
             let mut core = self.core.lock().await;
