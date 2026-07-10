@@ -97,7 +97,7 @@ fn attached_owner(
         registry,
         &ctx(&broadcaster, session_id),
     );
-    // Sanity: handshake must have succeeded with ResizePty + ServerHello.
+    // Sanity: handshake must have succeeded with ServerHello.
     assert!(
         effects
             .iter()
@@ -132,18 +132,12 @@ fn client_hello_returns_server_hello_with_snapshot() {
     assert_eq!(state.role(), Some(Role::Owner));
     assert_eq!(state.client_id(), Some(client_id));
     assert_eq!(registry.current_owner(), Some(client_id));
-    // ResizePty drives the daemon master to the desired client viewport.
-    let resize = effects
-        .iter()
-        .find(|e| matches!(e, Effect::ResizePty { .. }))
-        .expect("expected ResizePty");
-    assert!(matches!(
-        resize,
-        Effect::ResizePty {
-            cols: 132,
-            rows: 50
-        }
-    ));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::ResizePty { .. })),
+        "ClientHello must not destructively resize before recovery snapshot"
+    );
     // ServerHello carries the seeded snapshot bytes.
     let server_hello = effects
         .iter()

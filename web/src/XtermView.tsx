@@ -575,6 +575,11 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // `ResizeApplied` echo can be matched to its request (and stale
     // applies from a previous epoch ignored).
     let resizeEpoch = 0;
+    // Geometry captured by the successful mount-time fit. Keep it separate
+    // from `term.cols/rows`: ServerHello may resize the local xterm back to
+    // the authoritative PTY geometry before we decide whether first attach
+    // can be synchronized safely.
+    const mountDesired = { cols: term.cols, rows: term.rows };
     let lastCols = term.cols;
     let lastRows = term.rows;
     // Track the latest render_rev / pty_seq the daemon emitted. Future
@@ -601,8 +606,8 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
           terminal_id: terminalId,
           client_id: clientId,
           desired_size: {
-            cols: term.cols,
-            rows: term.rows,
+            cols: mountDesired.cols,
+            rows: mountDesired.rows,
             pixel_width: null,
             pixel_height: null,
           },
@@ -681,6 +686,26 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         term.write(Uint8Array.from(sh.snapshot.data), () => {
           term.scrollToBottom();
         });
+        // A pure expansion cannot clip the authoritative recovery model, so
+        // it is safe to apply after the snapshot write is queued. This keeps
+        // a fresh 80x24 renderer in sync with a larger first mount while
+        // refusing remount-time shrink or mixed-axis changes, either of which
+        // can destroy history and must wait for stable ResizeObserver intent.
+        const mountIsPureExpansion =
+          mountDesired.cols >= sh.pty_size.cols &&
+          mountDesired.rows >= sh.pty_size.rows &&
+          (mountDesired.cols > sh.pty_size.cols ||
+            mountDesired.rows > sh.pty_size.rows);
+        if (sh.client_role === 'Owner' && mountIsPureExpansion) {
+          resizeEpoch += 1;
+          send({
+            ResizeCommit: {
+              epoch: resizeEpoch,
+              cols: mountDesired.cols,
+              rows: mountDesired.rows,
+            },
+          });
+        }
         renderRev = sh.snapshot.render_rev;
         ptySeq = sh.snapshot.pty_seq;
         return;
@@ -900,7 +925,17 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // the terminal re-fits and re-renders constantly, which shows up as a
     // 1-2px shake on the inner canvas.
     let pending = false;
+    let sawInitialResizeObservation = false;
     const onResize = () => {
+      // ResizeObserver always delivers an initial observation. Mount-time
+      // fit already supplied ClientHello.desired_size, and ServerHello may
+      // meanwhile have restored xterm to a wider authoritative PTY size.
+      // Treating this first notification as user intent would immediately
+      // narrow the PTY again and recreate the remount data-loss bug.
+      if (!sawInitialResizeObservation) {
+        sawInitialResizeObservation = true;
+        return;
+      }
       if (pending) return;
       pending = true;
       requestAnimationFrame(() => {

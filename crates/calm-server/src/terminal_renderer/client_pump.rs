@@ -42,16 +42,11 @@ pub async fn run_client_pump(
         Some(first) => first,
         None => return Ok(()),
     };
-    let (desired_size, scrollback_request) = match &first {
+    let scrollback_request = match &first {
         ClientMsg::ClientHello {
-            desired_size,
-            initial_scrollback,
-            ..
-        } => (
-            Some(*desired_size),
-            Some(scrollback_request(*initial_scrollback)),
-        ),
-        _ => (None, None),
+            initial_scrollback, ..
+        } => Some(scrollback_request(*initial_scrollback)),
+        _ => None,
     };
 
     let first_effects = {
@@ -81,12 +76,7 @@ pub async fn run_client_pump(
                 }
             }
             Effect::SendToClient(msg) => {
-                let msg = rebuild_server_hello_snapshot(
-                    msg,
-                    &render_plane,
-                    desired_size,
-                    scrollback_request,
-                );
+                let msg = rebuild_server_hello_snapshot(msg, &render_plane, scrollback_request);
                 let sent_server_hello = matches!(msg, DaemonMsg::ServerHello { .. });
                 if outgoing_tx.send(msg).await.is_err() {
                     return Ok(());

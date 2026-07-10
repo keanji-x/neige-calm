@@ -38,6 +38,44 @@ fn model_resize_preserves_grid_within_bounds() {
 }
 
 #[test]
+fn model_narrow_mutation_then_widen_does_not_restore_stale_hidden_tail() {
+    let mut m = TerminalModel::new(80, 4, 100);
+    m.feed(b"prefix\x1b[1;61HTAIL-MARKER");
+
+    m.resize(40, 4);
+    m.feed(b"\rreplacement");
+
+    m.resize(80, 4);
+    let restored = m.snapshot_vt(80, 4);
+    assert!(
+        !String::from_utf8_lossy(&restored).contains("TAIL-MARKER"),
+        "widening must not resurrect a stale suffix clipped at narrow width"
+    );
+    assert!(String::from_utf8_lossy(&restored).contains("replacement"));
+}
+
+#[test]
+fn model_shorter_resize_keeps_bottom_output_and_scrolls_top() {
+    let mut m = TerminalModel::new(40, 6, 100);
+    m.feed(b"TOP-MARKER\x1b[6;1HBOTTOM-MARKER\x1b[1;1H");
+
+    // The cursor is deliberately at the top. The old implementation used
+    // that as a reason to pop bottom rows, deleting BOTTOM-MARKER.
+    m.resize(40, 3);
+
+    let viewport = m.snapshot_vt(40, 3);
+    assert!(
+        String::from_utf8_lossy(&viewport).contains("BOTTOM-MARKER"),
+        "shrinking must preserve the newest/bottom output"
+    );
+    let scrollback = m.scrollback_vt(ScrollbackLimit::All);
+    assert!(
+        String::from_utf8_lossy(&scrollback).contains("TOP-MARKER"),
+        "evicted top content should remain recoverable in scrollback"
+    );
+}
+
+#[test]
 fn render_rev_monotonic_only_on_state_change() {
     let mut m = TerminalModel::new(80, 24, 100);
     let r0 = m.rev();
