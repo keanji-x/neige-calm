@@ -927,12 +927,59 @@ mod tests {
             "calm.ratify.request",
             "reason:\"cap_exhausted\"",
             "root_cause",
+            // #891 slice ② — workflow-input ingest / repo cross-check /
+            // merge_policy semantics live in spec_instructions (agent
+            // policy, deliberately not kernel-enforced); pin their presence.
+            "Bound Workflow Input",
+            "gh.issue.view",
+            "reason:\"repo_mismatch\"",
+            "reason:\"merge_hold\"",
+            "also the semantics whenever merge_policy is absent",
         ] {
             assert!(
                 workflow.spec_instructions.contains(needle),
                 "spec_instructions missing {needle}"
             );
         }
+
+        // #891 slice ② — the shipped descriptor's input contract. Parsing
+        // via `Manifest::parse` already ran `validate()`, so reaching here
+        // proves the schema passes the slice-① subset validator.
+        let schema = workflow
+            .input_schema
+            .as_ref()
+            .expect("issue-development declares input_schema");
+        assert_eq!(schema["type"], "object");
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["issue_url", "repo", "issue_number"])
+        );
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+        assert_eq!(schema["properties"]["issue_url"]["type"], "string");
+        assert_eq!(schema["properties"]["repo"]["type"], "string");
+        // F8: integer-encoded only — the type must be the strict "integer".
+        assert_eq!(schema["properties"]["issue_number"]["type"], "integer");
+        assert_eq!(schema["properties"]["merge_policy"]["type"], "string");
+        assert_eq!(
+            schema["properties"]["merge_policy"]["enum"],
+            serde_json::json!(["hold-for-ratify", "auto-merge"])
+        );
+        // Documentation-only default (kernel never applies it; absent ⇒
+        // hold-for-ratify semantics are spelled out in spec_instructions).
+        assert_eq!(
+            schema["properties"]["merge_policy"]["default"],
+            "hold-for-ratify"
+        );
+        assert_eq!(schema["properties"]["notes"]["type"], "string");
+
+        // Plan-template tweak (§2.3): inspect-issue references the bound
+        // input instead of assuming a pasted goal.
+        let inspect = task(&tasks, "inspect-issue");
+        assert!(inspect.goal.contains("bound workflow input"));
+        assert!(inspect.goal.contains("gh.issue.view"));
+        assert!(inspect.goal.contains("input.repo"));
+        let acceptance = inspect.acceptance_criteria.as_deref().unwrap_or("");
+        assert!(acceptance.contains("origin remote matches input.repo"));
     }
 
     #[test]
