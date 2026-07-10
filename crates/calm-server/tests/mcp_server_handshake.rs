@@ -97,6 +97,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-handshake-test".into(),
             sort: None,

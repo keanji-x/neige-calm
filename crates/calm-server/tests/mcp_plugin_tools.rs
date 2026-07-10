@@ -236,6 +236,7 @@ async fn boot_fixture() -> Fixture {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-plugin-tools".into(),
             sort: None,

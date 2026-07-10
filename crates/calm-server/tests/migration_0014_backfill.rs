@@ -116,6 +116,7 @@ async fn backfill_mints_report_card_per_wave() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "legacy".into(),
             sort: None,
@@ -171,6 +172,7 @@ async fn backfill_skips_waves_that_already_have_a_report_card() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "already migrated".into(),
             sort: None,
@@ -210,6 +212,7 @@ async fn backfill_seeds_layout_overlay_when_absent() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "no-layout-yet".into(),
             sort: None,
@@ -262,6 +265,7 @@ async fn backfill_patches_existing_layout_overlay() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "already-has-layout".into(),
             sort: None,

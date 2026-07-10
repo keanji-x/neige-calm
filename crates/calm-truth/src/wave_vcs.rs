@@ -287,7 +287,7 @@ pub async fn backfill_existing_waves(pool: &SqlitePool) -> Result<usize> {
 async fn backfill_existing_waves_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<usize> {
     let waves: Vec<Wave> = sqlx::query_as::<_, crate::db::rows::WaveRow>(
         r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd,
-                  workflow_id, terminal_at, created_at, updated_at
+                  workflow_id, workflow_input, terminal_at, created_at, updated_at
            FROM waves
            WHERE id NOT IN (SELECT wave_id FROM wave_vcs_refs)
            ORDER BY created_at ASC, id ASC"#,
@@ -2424,7 +2424,7 @@ async fn load_wave_optional_tx(
 ) -> Result<Option<Wave>> {
     let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
         r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd,
-                  workflow_id, terminal_at, created_at, updated_at
+                  workflow_id, workflow_input, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(wave_id.as_str())
@@ -3414,6 +3414,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "wave".into(),
                 sort: None,
@@ -3478,6 +3479,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "wave".into(),
                 sort: None,
@@ -3538,6 +3540,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "wave".into(),
                 sort: None,

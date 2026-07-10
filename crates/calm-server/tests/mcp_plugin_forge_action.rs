@@ -658,6 +658,7 @@ async fn boot_fixture_with_role(mode: StubMode, role: CardRole) -> Fixture {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-plugin-forge-action".into(),
             sort: None,
@@ -759,6 +760,7 @@ async fn create_wave_caller(fx: &Fixture, role: CardRole) -> Caller {
     let wave = fx
         .repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: CoveId::from(fx.cove_id.clone()),
             title: "mcp-plugin-forge-action-extra".into(),
             sort: None,

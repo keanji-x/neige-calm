@@ -4420,6 +4420,13 @@
               "string",
               "null"
             ]
+          },
+          "workflow_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Issue #891 — JSON input for the bound workflow. Only accepted when\n`workflow_id` names a running trusted workflow whose descriptor\ndeclares an `input_schema`; the `POST /api/waves` route validates the\nvalue against that schema before any DB write. The kernel never\ninterprets the blob — it is persisted verbatim and injected into the\nspec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           }
         },
         "additionalProperties": false
@@ -5208,6 +5215,13 @@
               "null"
             ],
             "description": "`#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`."
+          },
+          "workflow_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Issue #891 — input JSON for the bound workflow, validated against the\ndescriptor's `input_schema` at create time and persisted verbatim; the\nkernel never interprets it. `#[serde(default)]` hydrates pre-#891\n`wave.updated` replays as `None` (same pattern as `workflow_id`).\nExplicit `unknown` override — see `Card.payload` for the rationale."
           }
         }
       },

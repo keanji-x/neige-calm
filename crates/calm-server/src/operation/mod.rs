@@ -969,6 +969,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             repo.as_ref(),
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "legacy compensation".into(),
                 sort: None,
@@ -1433,6 +1434,7 @@ mod tests {
             .unwrap();
         let wave = sqlx_repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "wave".into(),
                 sort: None,
@@ -1779,6 +1781,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             &sqlx_repo,
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "lease reclaim".into(),
                 sort: None,
@@ -1894,6 +1897,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             &sqlx_repo,
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "lease reclaim removal failure".into(),
                 sort: None,
@@ -2026,6 +2030,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             &sqlx_repo,
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "lease same boot".into(),
                 sort: None,
@@ -2142,6 +2147,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             &sqlx_repo,
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "lease recoverable".into(),
                 sort: None,
@@ -2306,6 +2312,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             &sqlx_repo,
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "lease releasing".into(),
                 sort: None,

@@ -74,6 +74,7 @@ async fn boot_with_registry_and_daemon_hash(
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-thread-identity-test".into(),
             sort: None,
@@ -247,6 +248,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "mcp-token-wrapper".into(),
             sort: None,
@@ -337,6 +339,7 @@ async fn remint_updates_one_worker_session_hash_row() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "mcp-token-remint".into(),
             sort: None,

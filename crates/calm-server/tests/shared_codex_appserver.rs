@@ -747,6 +747,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: format!("wave-{idx}"),
             sort: None,

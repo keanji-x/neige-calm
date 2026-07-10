@@ -487,6 +487,7 @@ async fn post_api_waves_rejects_non_absolute_cwd() {
 /// lifecycle test).
 async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::Wave {
     repo.wave_create(calm_server::model::NewWave {
+        workflow_input: None,
         cove_id: cove_id.into(),
         title: "lifecycle-test".into(),
         sort: None,

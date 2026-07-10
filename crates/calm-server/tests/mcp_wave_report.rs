@@ -141,6 +141,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "report wave".into(),
             sort: None,
@@ -1557,6 +1558,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
     let wave2 = boot
         .repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove2.id.clone(),
             title: "wave 2".into(),
             sort: None,

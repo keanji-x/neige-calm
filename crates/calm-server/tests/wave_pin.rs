@@ -25,6 +25,7 @@ async fn make_cove(repo: &SqlxRepo, name: &str) -> Cove {
 
 async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
     repo.wave_create(NewWave {
+        workflow_input: None,
         cove_id: cove_id.into(),
         title: title.into(),
         sort: None,

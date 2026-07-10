@@ -140,6 +140,7 @@ async fn hook_boot() -> HookBoot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "hook auth wave".into(),
             sort: None,

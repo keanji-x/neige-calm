@@ -98,6 +98,14 @@ export const waveSchema = z.object({
    */
   workflow_id: z.string().nullable().default(null),
   /**
+   * Issue #891 — opaque bound-workflow input JSON (kernel validates at
+   * create time; the frontend never interprets it). `z.unknown()` mirrors
+   * the `#[ts(type = "unknown")]` override on the Rust side (same pattern
+   * as `Card.payload`). Defaulted to `null` for pre-#891 replay payloads
+   * that omit the key — mirrors the server-side `#[serde(default)]`.
+   */
+  workflow_input: z.unknown().default(null),
+  /**
    * Issue #250 PR 2 — unix-ms stamp the wave most recently entered a
    * terminal lifecycle state (Done / Canceled / Failed), or `null`
    * while non-terminal. Defaulted to `null` so pre-#250 wire payloads

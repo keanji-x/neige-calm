@@ -36,6 +36,7 @@ async fn make_cove(repo: &SqlxRepo, name: &str) -> Cove {
 
 async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
     repo.wave_create(NewWave {
+        workflow_input: None,
         cove_id: cove_id.into(),
         title: title.into(),
         sort: None,
@@ -206,6 +207,7 @@ async fn wave_crud_round_trip() {
 
     let err = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: "no-such-cove".into(),
             title: "x".into(),
             sort: None,

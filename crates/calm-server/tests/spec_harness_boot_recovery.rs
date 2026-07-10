@@ -72,6 +72,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "boot".into(),
             sort: None,
@@ -157,6 +158,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "boot-unavailable".into(),
             sort: None,
@@ -239,6 +241,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "boot-deferred".into(),
             sort: None,
@@ -336,6 +339,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "boot-replay".into(),
             sort: None,
@@ -479,6 +483,7 @@ async fn boot_recovery_skips_terminal_waves() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "boot-terminal".into(),
             sort: None,
@@ -563,6 +568,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "boot-phantom".into(),
             sort: None,
@@ -652,6 +658,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "phase2 crash".into(),
                 sort: None,
@@ -869,6 +876,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "gate-replay".into(),
             sort: None,

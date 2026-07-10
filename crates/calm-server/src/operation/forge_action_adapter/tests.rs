@@ -680,6 +680,7 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "forge-action-adapter-test".into(),
             sort: None,

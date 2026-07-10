@@ -632,6 +632,7 @@ describe('WaveReportPage', () => {
           lifecycle: 'working',
           cwd: '/repo/neige-calm',
           workflow_id: null,
+          workflow_input: null,
           sort: 3,
           archived_at: null,
           pinned_at: new Date('2026-06-10T11:55:00Z').getTime(),
