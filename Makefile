@@ -255,26 +255,36 @@ proxy-forwarder-down: ## Remove the proxy forwarder container.
 # host prod. See scripts/e2e-isolated/run.sh header for the full model and
 # the smoke protocol. The e2e forwarder is a shared singleton (unix socket,
 # NO published ports) mirroring proxy-forwarder-up/down above.
+#
+# E2E_PROXY_FORWARDER_IMAGE is pinned BY DIGEST (the forwarder runs
+# --network host; a mutable tag there is a supply-chain hole). To bump:
+# `docker pull alpine/socat`, then `docker images --digests alpine/socat`,
+# update the digest here AND the default in scripts/e2e-isolated/run.sh,
+# then `make e2e-proxy-forwarder-down` so the next run recreates it.
 E2E_PROXY_FORWARDER_NAME ?= calm-e2e-proxy-forwarder
+E2E_PROXY_FORWARDER_IMAGE ?= alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
 E2E_PROXY_SOCK_DIR ?= /tmp/calm-e2e-proxy
-E2E_RUNNER_ENV = CALM_HOST_PROXY_HOST=$(CALM_HOST_PROXY_HOST) \
-	CALM_HOST_PROXY_PORT=$(CALM_HOST_PROXY_PORT) \
-	PROXY_FORWARDER_IMAGE=$(PROXY_FORWARDER_IMAGE) \
-	E2E_PROXY_FORWARDER_NAME=$(E2E_PROXY_FORWARDER_NAME) \
-	E2E_PROXY_SOCK_DIR=$(E2E_PROXY_SOCK_DIR)
+E2E_RUNNER_ENV = CALM_HOST_PROXY_HOST="$(CALM_HOST_PROXY_HOST)" \
+	CALM_HOST_PROXY_PORT="$(CALM_HOST_PROXY_PORT)" \
+	PROXY_FORWARDER_IMAGE="$(E2E_PROXY_FORWARDER_IMAGE)" \
+	E2E_PROXY_FORWARDER_NAME="$(E2E_PROXY_FORWARDER_NAME)" \
+	E2E_PROXY_SOCK_DIR="$(E2E_PROXY_SOCK_DIR)"
 
+# TEST travels via the environment (target-specific export) and is expanded
+# by the SHELL as "$$E2E_TEST" — never spliced into the command line by make
+# — so names with spaces/metacharacters cannot split or inject.
 .PHONY: e2e-codex-isolated
+e2e-codex-isolated: export E2E_TEST := $(TEST)
 e2e-codex-isolated: ## Run codex_forge_e2e docker-isolated (TEST=name for one test; DECOYS=1 for decoy telemetry).
-	$(E2E_RUNNER_ENV) scripts/e2e-isolated/run.sh $(if $(TEST),--test $(TEST))
+	$(E2E_RUNNER_ENV) scripts/e2e-isolated/run.sh $(if $(TEST),--test "$$E2E_TEST")
 
 .PHONY: e2e-proxy-forwarder-up
 e2e-proxy-forwarder-up: ## Ensure the e2e-tier unix-socket proxy forwarder is running.
 	$(E2E_RUNNER_ENV) scripts/e2e-isolated/run.sh --forwarder-only
 
 .PHONY: e2e-proxy-forwarder-down
-e2e-proxy-forwarder-down: ## Remove the e2e-tier proxy forwarder container + its socket dir.
-	-@docker rm -f $(E2E_PROXY_FORWARDER_NAME) >/dev/null 2>&1 && echo "  e2e forwarder removed" || echo "  e2e forwarder not present"
-	-@rm -rf $(E2E_PROXY_SOCK_DIR)
+e2e-proxy-forwarder-down: ## Remove the e2e-tier proxy forwarder container + its socket dir (guarded teardown in run.sh).
+	$(E2E_RUNNER_ENV) scripts/e2e-isolated/run.sh --forwarder-down
 
 SHELLCHECK ?= shellcheck
 .PHONY: e2e-codex-isolated-check

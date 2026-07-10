@@ -3,10 +3,17 @@
 # Runs run.sh --dry-run with a fully fake environment (needs NO docker daemon,
 # NO cargo, NO codex install) and asserts the security-critical shape of the
 # produced `docker run` argv. Wired as `make e2e-codex-isolated-check`.
+#
+# NOTE(future hardening idea, not built): put a fake `docker`/`cargo` shim
+# first on PATH that records+fails on any invocation — that would prove
+# "dry-run executes nothing" positively. Today it is proven by proxy: run.sh
+# exits 0 below with fake paths that would make any real docker/cargo call
+# fail loudly.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+set +e
 OUT="$(
     CARGO_TARGET_DIR=/fake/target \
     NEIGE_CODEX_BIN=/fake/codex/bin/codex \
@@ -17,6 +24,13 @@ OUT="$(
         --test-bin /fake/target/debug/deps/codex_forge_e2e-cafebabe \
         --test some_test_name 2>&1
 )"
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then
+    echo "FAIL: run.sh --dry-run exited rc=$RC; full output:"
+    printf '%s\n' "$OUT"
+    exit 1
+fi
 
 # The argv under test is only the run-container block (the forwarder container
 # legitimately uses --network host and is not part of this argv).
@@ -44,7 +58,7 @@ must_contain '--pids-limit=6000'
 must_contain '--memory=24g'
 must_contain '--memory-swap=24g'
 must_contain '--cpus=8'
-must_contain '--user '
+must_contain "--user $(id -u):$(id -g)"              # exact non-root uid:gid
 must_contain 'seccomp=unconfined'
 must_contain 'apparmor=unconfined'
 must_contain '--init'
@@ -52,17 +66,33 @@ must_contain '--rm'
 must_contain '/fake/target:/fake/target:ro'          # target dir ro mount
 must_contain '/fake/codex/bin/codex:/opt/codex/codex:ro'
 must_contain '/.codex/auth.json:ro'                  # single-file auth mount
+must_contain ':/sock:ro'                             # sock dir ro in the run container
 must_contain 'NEIGE_CODEX_PROXY=http://127.0.0.1:2081'
 must_contain 'NEIGE_CODEX_BIN=/opt/codex/codex'
 must_contain '--tmpfs'
+must_contain '\,exec\,'                              # tmpfs HOME must be exec (docker default is noexec); %q-escaped comma form
+must_contain 'scripts/e2e-isolated/entry.sh'
 
 # repo mounted ro at its identical host path
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 must_contain "$REPO_ROOT:$REPO_ROOT:ro"
 
+# the argv must END at the entry script — nothing may ride after it
+ARGV_LINE="$(printf '%s\n' "$ARGV" | grep '^docker run ' || true)"
+if [ -z "$ARGV_LINE" ]; then
+    echo "FAIL: no 'docker run ...' line inside the delimited argv block"
+    fail=1
+else
+    case "$ARGV_LINE" in
+        *scripts/e2e-isolated/entry.sh) : ;;
+        *) echo "FAIL: argv does not end at scripts/e2e-isolated/entry.sh"; fail=1 ;;
+    esac
+fi
+
 # -- forbidden: anything that would widen the blast radius --
 must_not_contain '--publish'
 must_not_contain ' -p '
+must_not_contain ' -P '
 must_not_contain '--cap-add'
 must_not_contain 'docker.sock'
 must_not_contain '--pid '                            # (substring-safe: does not match --pids-limit)
@@ -70,6 +100,12 @@ must_not_contain '--pid='
 must_not_contain '--privileged'
 must_not_contain '--network host'
 must_not_contain '--network bridge'
+must_not_contain '--network='
+must_not_contain ' --net '
+must_not_contain '--net='
+must_not_contain '--userns'
+must_not_contain '--ipc'
+must_not_contain '--uts'
 
 # dry-run must never execute docker: the printed argv line is the only place
 # the word `docker` may appear, and it must be the golden print, not output

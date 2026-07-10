@@ -21,15 +21,20 @@
 #      credential mounted (single file, ro — #897 keeps the rest out).
 #   3. The run container gets `--network none`: no IP path to prod
 #      :4040/:4041 by construction. Its only egress is loopback :2081 →
-#      (in-container socat) → /sock/proxy.sock → (host forwarder container,
-#      singleton `calm-e2e-proxy-forwarder`) → the host proxy
-#      CALM_HOST_PROXY_HOST:CALM_HOST_PROXY_PORT (sing-box).
-#   4. REQUIRED fence preflight before any codex runs: an HTTP GET to prod
-#      127.0.0.1:4040 and :4041 THROUGH that full chain must fail
-#      (timeout/refused/proxy 5xx are fine). Any origin-looking HTTP answer —
-#      especially a 200 with a version string — means sing-box routing would
-#      hand agents a path to prod: ABORT. The fence rests on sing-box config,
-#      so it is asserted every run, never assumed (design §B).
+#      (in-container socat) → /sock/proxy.sock (mounted ro; connect works,
+#      agents cannot scribble in the host dir) → (host forwarder container,
+#      singleton `calm-e2e-proxy-forwarder`, image digest-pinned) → the host
+#      proxy CALM_HOST_PROXY_HOST:CALM_HOST_PROXY_PORT (sing-box).
+#   4. REQUIRED fence preflight before any codex runs (entry.sh): first a
+#      REMOTE POSITIVE CANARY (a GET to a public URL through the full chain
+#      MUST succeed — a dead chain would make prod "unreachable" vacuously,
+#      i.e. fail-open; the canary makes the fence provable). Then HTTP GETs
+#      to prod 127.0.0.1:4040 and :4041 THROUGH that chain must fail
+#      (timeout/refused/proxy 5xx without prod's version marker are fine).
+#      Any origin-looking answer — any non-5xx status, or a 5xx whose body
+#      carries the prod /api/version marker — means sing-box routing would
+#      hand agents a path to prod: ABORT. The fence rests on sing-box
+#      config, so it is asserted every run, never assumed (design §B).
 #   5. Rails (proven scope values): --memory=24g --memory-swap=24g (no swap)
 #      --cpus=8 --pids-limit=6000, non-root --user, seccomp+apparmor
 #      unconfined (needed for codex's bwrap userns; NO SYS_ADMIN — verified
@@ -44,6 +49,9 @@
 #                                                    # fence + `--list` probe,
 #                                                    # no codex, then stop
 #   scripts/e2e-isolated/run.sh --forwarder-only     # ensure forwarder, stop
+#                                                    # (needs no credentials)
+#   scripts/e2e-isolated/run.sh --forwarder-down     # guarded teardown of the
+#                                                    # forwarder + socket dir
 #   scripts/e2e-isolated/run.sh --no-build           # reuse existing binary
 #   scripts/e2e-isolated/run.sh --test-bin PATH      # explicit test binary
 #   DECOYS=1 scripts/e2e-isolated/run.sh             # plant name-decoy
@@ -68,8 +76,17 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 # ---- configuration (Makefile variables / flags; no new implicit env knobs —
 # CARGO_TARGET_DIR and NEIGE_CODEX_BIN are pre-existing seams) ---------------
 CALM_HOST_PROXY_HOST="${CALM_HOST_PROXY_HOST:-127.0.0.1}"
-CALM_HOST_PROXY_PORT="${CALM_HOST_PROXY_PORT:-2080}"
-PROXY_FORWARDER_IMAGE="${PROXY_FORWARDER_IMAGE:-alpine/socat}"
+# Deliberately NO default port: an empty value must fail LOUDLY below — the
+# container has no other egress, so a silently-wrong default would strand it.
+# The Makefile injects the value from the host .env.
+CALM_HOST_PROXY_PORT="${CALM_HOST_PROXY_PORT:-}"
+# Forwarder image pinned BY DIGEST: it runs --network host, so a mutable tag
+# is a supply-chain hole. This is the digest of the alpine/socat image present
+# on this box (docker images --digests alpine/socat). To bump: `docker pull
+# alpine/socat`, re-run `docker images --digests alpine/socat`, update the
+# digest here AND in Makefile E2E_PROXY_FORWARDER_IMAGE, then
+# `make e2e-proxy-forwarder-down` so the next run recreates the forwarder.
+PROXY_FORWARDER_IMAGE="${PROXY_FORWARDER_IMAGE:-alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e}"
 E2E_PROXY_FORWARDER_NAME="${E2E_PROXY_FORWARDER_NAME:-calm-e2e-proxy-forwarder}"
 E2E_PROXY_SOCK_DIR="${E2E_PROXY_SOCK_DIR:-/tmp/calm-e2e-proxy}"
 E2E_IMAGE_TAG="${E2E_IMAGE_TAG:-calm-e2e:bookworm}"
@@ -89,6 +106,7 @@ PREFLIGHT_NAME="calm-e2e-preflight-$$"
 DRY_RUN=0
 NO_BUILD=0
 FORWARDER_ONLY=0
+FORWARDER_DOWN=0
 PREFLIGHT_ONLY=0
 TEST_FILTER=""
 TEST_BIN=""
@@ -96,11 +114,13 @@ TEST_BIN=""
 log() { printf '[e2e-isolated] %s\n' "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
 
+# ---- flag parsing: parse EVERYTHING first, validate combinations after ----
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=1 ;;
         --no-build) NO_BUILD=1 ;;
         --forwarder-only) FORWARDER_ONLY=1 ;;
+        --forwarder-down) FORWARDER_DOWN=1 ;;
         --preflight-only) PREFLIGHT_ONLY=1 ;;
         --test)
             [ $# -ge 2 ] || die "--test needs a value"
@@ -108,14 +128,22 @@ while [ $# -gt 0 ]; do
         --test-bin)
             [ $# -ge 2 ] || die "--test-bin needs a value"
             TEST_BIN="$2"; shift ;;
-        -h|--help) sed -n '2,66p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        # Help = the header block: from line 2 to the closing `# ===` fence.
+        -h|--help) sed -n '2,/^# ====/p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown flag: $1 (see --help)" ;;
     esac
     shift
 done
 
-[ -n "$CALM_HOST_PROXY_PORT" ] || die "CALM_HOST_PROXY_PORT is empty — the \
-container has no other egress; set it (host .env) or export it"
+if [ "$DRY_RUN" = 1 ] && { [ "$FORWARDER_ONLY" = 1 ] || [ "$FORWARDER_DOWN" = 1 ]; }; then
+    die "--dry-run is mutually exclusive with --forwarder-only/--forwarder-down (dry-run must execute nothing)"
+fi
+if [ "$FORWARDER_ONLY" = 1 ] && [ "$FORWARDER_DOWN" = 1 ]; then
+    die "--forwarder-only and --forwarder-down are mutually exclusive"
+fi
+if [ "$FORWARDER_DOWN" != 1 ] && [ -z "$CALM_HOST_PROXY_PORT" ]; then
+    die "CALM_HOST_PROXY_PORT is empty — the container has no other egress; set it (host .env) or export it"
+fi
 
 resolve() {
     # readlink -f, but tolerant of missing paths in --dry-run mode.
@@ -129,52 +157,100 @@ resolve() {
     fi
 }
 
-CODEX_REAL="$(resolve "$CODEX_BIN_RAW")"
-AUTH_REAL="$(resolve "$AUTH_RAW")"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
+# Credential/binary resolution is DEFERRED: only modes that actually print or
+# run the container argv need codex/auth; the forwarder lifecycle modes
+# (--forwarder-only / --forwarder-down) must work without credentials.
+CODEX_REAL=""
+AUTH_REAL=""
+resolve_inputs() {
+    CODEX_REAL="$(resolve "$CODEX_BIN_RAW")"
+    AUTH_REAL="$(resolve "$AUTH_RAW")"
+}
+
 # ---- host forwarder (shared singleton — mirrors Makefile proxy-forwarder-up;
-# torn down ONLY by `make e2e-proxy-forwarder-down`, never by a run's trap) --
+# torn down ONLY by `make e2e-proxy-forwarder-down` → --forwarder-down here,
+# never by a run's trap) ------------------------------------------------------
 ensure_forwarder() {
     local sock="$E2E_PROXY_SOCK_DIR/proxy.sock"
-    local spec="unix:$sock->$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT"
+    # Lockfile lives in the sock dir's PARENT (e.g. /tmp/calm-e2e-proxy.lock)
+    # so teardown can rm -rf the sock dir while still holding the lock.
+    local lock="${E2E_PROXY_SOCK_DIR%/}.lock"
+    local spec="unix:$sock->$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT image=$PROXY_FORWARDER_IMAGE"
     mkdir -p "$E2E_PROXY_SOCK_DIR"
     chmod 700 "$E2E_PROXY_SOCK_DIR"
-    if docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
-        local existing running
-        existing="$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo "")"
-        running="$(docker inspect -f '{{.State.Running}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo false)"
-        if [ "$existing" != "$spec" ]; then
-            log "forwarder spec changed ($existing -> $spec); recreating"
-            docker rm -f "$E2E_PROXY_FORWARDER_NAME" >/dev/null
-        elif [ "$running" != "true" ]; then
-            docker start "$E2E_PROXY_FORWARDER_NAME" >/dev/null
-            log "forwarder restarted: $spec"
-        else
-            log "forwarder already up: $spec"
+    # flock: concurrent runs race this inspect/create sequence; make it a
+    # critical section so exactly one run creates the singleton.
+    (
+        flock -w 60 9 || { log "FATAL: could not acquire forwarder lock $lock within 60s"; exit 1; }
+        if docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
+            local existing running
+            existing="$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo "")"
+            running="$(docker inspect -f '{{.State.Running}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo false)"
+            if [ "$existing" != "$spec" ]; then
+                # NEVER auto-recreate on mismatch: a concurrent run may be
+                # using the existing forwarder; cutting it would strand that
+                # run's egress mid-suite. Human decides.
+                log "FATAL: forwarder '$E2E_PROXY_FORWARDER_NAME' exists with a DIFFERENT config:"
+                log "  existing: ${existing:-<no spec label>}"
+                log "  wanted:   $spec"
+                log "refusing to recreate (a concurrent run may depend on it)."
+                log "if no isolated e2e run is live, run: make e2e-proxy-forwarder-down   (or scripts/e2e-isolated/run.sh --forwarder-down), then retry."
+                exit 1
+            elif [ "$running" != "true" ]; then
+                docker start "$E2E_PROXY_FORWARDER_NAME" >/dev/null
+                log "forwarder restarted: $spec"
+            else
+                log "forwarder already up: $spec"
+            fi
         fi
-    fi
-    if ! docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
-        # --network host: its 127.0.0.1 is the host's, so it can reach the
-        # host-loopback proxy. It publishes NO ports; its only listener is
-        # the unix socket in E2E_PROXY_SOCK_DIR (mode 600, our uid).
-        docker run -d --network host \
-            --name "$E2E_PROXY_FORWARDER_NAME" \
-            --user "$HOST_UID:$HOST_GID" \
-            --label "calm.proxy.spec=$spec" \
-            --restart unless-stopped \
-            -v "$E2E_PROXY_SOCK_DIR:/sock" \
-            "$PROXY_FORWARDER_IMAGE" \
-            "UNIX-LISTEN:/sock/proxy.sock,fork,mode=600,unlink-early" \
-            "TCP:$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT" >/dev/null
-        log "forwarder created: $spec"
-    fi
+        if ! docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
+            # --network host: its 127.0.0.1 is the host's, so it can reach the
+            # host-loopback proxy. It publishes NO ports; its only listener is
+            # the unix socket in E2E_PROXY_SOCK_DIR (mode 600, our uid).
+            docker run -d --network host \
+                --name "$E2E_PROXY_FORWARDER_NAME" \
+                --user "$HOST_UID:$HOST_GID" \
+                --label "calm.proxy.spec=$spec" \
+                --restart unless-stopped \
+                -v "$E2E_PROXY_SOCK_DIR:/sock" \
+                "$PROXY_FORWARDER_IMAGE" \
+                "UNIX-LISTEN:/sock/proxy.sock,fork,mode=600,unlink-early" \
+                "TCP:$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT" >/dev/null
+            log "forwarder created: $spec"
+        fi
+    ) 9>"$lock"
     for _ in $(seq 1 50); do
         [ -S "$sock" ] && return 0
         sleep 0.2
     done
     die "forwarder socket never appeared at $sock"
+}
+
+forwarder_down() {
+    # Guarded teardown: canonicalize the dir and require the owned prefix so
+    # a mis-set E2E_PROXY_SOCK_DIR can never turn the rm -rf destructive.
+    # The prefix check also structurally excludes "" and "/".
+    local dir lock
+    dir="$(readlink -f -- "$E2E_PROXY_SOCK_DIR" 2>/dev/null || true)"
+    case "$dir" in
+        /tmp/calm-e2e-proxy*) : ;;
+        *) die "refusing teardown: E2E_PROXY_SOCK_DIR='$E2E_PROXY_SOCK_DIR' canonicalizes to '${dir:-<unresolvable>}', outside the owned prefix /tmp/calm-e2e-proxy*" ;;
+    esac
+    lock="${dir%/}.lock"
+    (
+        flock -w 60 9 || { log "FATAL: could not acquire forwarder lock $lock within 60s"; exit 1; }
+        if docker rm -f "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
+            log "e2e forwarder removed: $E2E_PROXY_FORWARDER_NAME"
+        else
+            log "e2e forwarder not present: $E2E_PROXY_FORWARDER_NAME"
+        fi
+        rm -rf -- "$dir"
+        log "socket dir removed: $dir"
+    ) 9>"$lock"
+    rm -f -- "$lock"
 }
 
 # ---- test binary --------------------------------------------------------
@@ -186,7 +262,9 @@ build_test_bin() {
         cargo test --manifest-path "$REPO_ROOT/Cargo.toml" -p calm-server \
         --features codex-e2e,fixtures --test codex_forge_e2e --no-run \
         --message-format=json >"$json"
-    TEST_BIN="$(grep -o '"executable":"[^"]*/codex_forge_e2e-[^"]*"' "$json" | tail -1 | cut -d'"' -f4)"
+    # `|| true`: a no-match grep must fall through to the explicit die below
+    # (under pipefail the bare pipeline would kill the script wordlessly).
+    TEST_BIN="$(grep -o '"executable":"[^"]*/codex_forge_e2e-[^"]*"' "$json" | tail -1 | cut -d'"' -f4 || true)"
     rm -f "$json"
     [ -n "$TEST_BIN" ] || die "could not parse test executable from cargo JSON output"
     log "building neige-mcp-stdio-shim (target-dir sibling the binary execs) ..."
@@ -232,8 +310,13 @@ docker_run_args() {
         -v "$TARGET_DIR:$TARGET_DIR:ro"
         -v "$CODEX_REAL:$CODEX_MOUNT:ro"
         -v "$AUTH_REAL:$CONTAINER_HOME/.codex/auth.json:ro"
-        -v "$E2E_PROXY_SOCK_DIR:/sock"
-        --tmpfs "$CONTAINER_HOME:rw,uid=$HOST_UID,gid=$HOST_GID,mode=700"
+        # ro: connect(2) to a unix socket works on a read-only mount; agents
+        # must not be able to scribble in the host dir (entry.sh preflight
+        # proves the chain still works through it).
+        -v "$E2E_PROXY_SOCK_DIR:/sock:ro"
+        # exec: docker tmpfs defaults to noexec, but agent workspaces live
+        # under $HOME/.cache and must exec what they write (gates, hooks).
+        --tmpfs "$CONTAINER_HOME:rw,exec,uid=$HOST_UID,gid=$HOST_GID,mode=700"
         --workdir "$REPO_ROOT/crates/calm-server"
         -e "HOME=$CONTAINER_HOME"
         -e "NEIGE_CODEX_BIN=$CODEX_MOUNT"
@@ -257,10 +340,17 @@ print_argv() {
 }
 
 # =========================================================================
+if [ "$FORWARDER_DOWN" = 1 ]; then
+    forwarder_down
+    exit 0
+fi
+
 if [ "$FORWARDER_ONLY" = 1 ]; then
     ensure_forwarder
     exit 0
 fi
+
+resolve_inputs
 
 if [ -z "$TEST_BIN" ]; then
     if [ "$DRY_RUN" = 1 ] || [ "$NO_BUILD" = 1 ]; then
@@ -271,7 +361,8 @@ if [ -z "$TEST_BIN" ]; then
 fi
 
 if [ "$DRY_RUN" = 1 ]; then
-    # Print everything, execute NOTHING (no docker daemon, no cargo needed).
+    # Print everything, execute NOTHING (no docker daemon, no cargo, no
+    # state change of any kind — not even mkdir).
     docker_run_args run "$RUN_NAME"
     echo "--- dry-run: resolved inputs ---"
     echo "repo (ro mount)        : $REPO_ROOT"
@@ -279,8 +370,8 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "test binary            : $TEST_BIN"
     echo "codex (ro file mount)  : $CODEX_REAL -> $CODEX_MOUNT"
     echo "auth.json (ro file)    : $AUTH_REAL -> $CONTAINER_HOME/.codex/auth.json"
-    echo "forwarder socket dir   : $E2E_PROXY_SOCK_DIR (rw mount at /sock)"
-    echo "upstream proxy         : $CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT (via $E2E_PROXY_FORWARDER_NAME)"
+    echo "forwarder socket dir   : $E2E_PROXY_SOCK_DIR (ro mount at /sock)"
+    echo "upstream proxy         : $CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT (via $E2E_PROXY_FORWARDER_NAME, $PROXY_FORWARDER_IMAGE)"
     echo "timeout                : ${E2E_TIMEOUT}s; EXIT trap removes only $RUN_NAME"
     echo "--- dry-run: docker run argv (run container) ---"
     print_argv "${DOCKER_ARGS[@]}"
@@ -293,12 +384,27 @@ fi
 [ -f "$AUTH_REAL" ] || die "codex auth.json not found at $AUTH_REAL"
 [ -x "$CODEX_REAL" ] || die "codex binary not found/executable at $CODEX_REAL"
 
-# ---- killer-log baseline snapshot (design §5/§6) -------------------------
+# ---- cleanup trap FIRST, then anything it owns (design §E) ----------------
 KILLER_SNAP=""
+# shellcheck disable=SC2317  # invoked via the EXIT trap only
+cleanup() {
+    # ONLY the per-run containers. NEVER the shared forwarder (a concurrent
+    # run's egress would be cut) — it has its own explicit down mode.
+    docker rm -f "$RUN_NAME" >/dev/null 2>&1 || true
+    docker rm -f "$PREFLIGHT_NAME" >/dev/null 2>&1 || true
+    if [ -n "$KILLER_SNAP" ]; then
+        rm -f -- "$KILLER_SNAP"
+    fi
+}
+trap cleanup EXIT
+
+# ---- killer-log baseline snapshot (design §5/§6) -------------------------
 if [ -r "$KILLER_LOG" ]; then
     KILLER_SNAP="$(mktemp)"
     cp -- "$KILLER_LOG" "$KILLER_SNAP"
     log "killer-log snapshot: $(wc -l <"$KILLER_SNAP") lines baseline"
+else
+    log "NOTICE: killer log $KILLER_LOG missing/unreadable — the post-run kill-forensics diff will be SKIPPED"
 fi
 
 log "building image $E2E_IMAGE_TAG ..."
@@ -313,24 +419,16 @@ docker build --network host -f "$REPO_ROOT/docker/Dockerfile.e2e" -t "$E2E_IMAGE
     "$REPO_ROOT/docker" >/dev/null
 ensure_forwarder
 
-# shellcheck disable=SC2317  # invoked via the EXIT trap only
-cleanup() {
-    # ONLY the per-run containers. NEVER the shared forwarder (a concurrent
-    # run's egress would be cut) — it has its own explicit down target.
-    docker rm -f "$RUN_NAME" >/dev/null 2>&1 || true
-    docker rm -f "$PREFLIGHT_NAME" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
 # ---- preflight container: fence check + `--list` exec probe --------------
 # Same argv/mounts/posture as the real run; entry.sh in preflight mode
-# asserts the proxy chain CANNOT reach prod :4040/:4041, then proves the
-# host-built binary executes in-image (glibc/layout) via `--list`.
+# asserts the chain is LIVE (remote canary) yet CANNOT reach prod
+# :4040/:4041, then proves the host-built binary executes in-image
+# (glibc/layout) via `--list`.
 log "preflight: fence + exec probe (container $PREFLIGHT_NAME) ..."
 docker_run_args preflight "$PREFLIGHT_NAME"
-timeout 120 docker run "${DOCKER_ARGS[@]}" \
-    || die "preflight failed — fence breach or exec probe failure; NOT running codex"
-log "preflight OK: prod unreachable through the chain; binary executes in-image"
+timeout 180 docker run "${DOCKER_ARGS[@]}" \
+    || die "preflight failed — fence breach, dead chain, or exec probe failure; NOT running codex"
+log "preflight OK: chain live, prod unreachable through it; binary executes in-image"
 
 if [ "$PREFLIGHT_ONLY" = 1 ]; then
     log "--preflight-only: stopping before any codex runs"
@@ -347,7 +445,10 @@ NETMODE="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$RUN_NAME")"
 PIDMODE="$(docker inspect -f '{{.HostConfig.PidMode}}' "$RUN_NAME")"
 PRIVILEGED="$(docker inspect -f '{{.HostConfig.Privileged}}' "$RUN_NAME")"
 [ "$NETMODE" = "none" ] || die "container NetworkMode=$NETMODE (expected none)"
-[ -z "$PIDMODE" ] || die "container PidMode=$PIDMODE (expected private)"
+case "$PIDMODE" in
+    ""|private) : ;;  # both spellings mean an isolated PID namespace
+    *) die "container PidMode=$PIDMODE (expected private)" ;;
+esac
 [ "$PRIVILEGED" = "false" ] || die "container is privileged"
 log "inspect OK: network=none pid=private privileged=false"
 
@@ -369,7 +470,6 @@ if [ -n "$KILLER_SNAP" ] && [ -r "$KILLER_LOG" ]; then
         diff "$KILLER_SNAP" "$KILLER_LOG" >&2 || true
         [ "$RC" -eq 0 ] && RC=96
     fi
-    rm -f "$KILLER_SNAP"
 fi
 
 log "exit status: $RC"
