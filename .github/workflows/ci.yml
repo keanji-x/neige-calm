@@ -58,6 +58,17 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # #903 — link with mold. Default takeover mode: the action installs mold
+      # and symlinks /usr/local/bin/ld to it, so cc/rustc pick it up via PATH.
+      # Deliberately NOT via `RUSTFLAGS=-C link-arg=-fuse-ld=mold`: RUSTFLAGS
+      # feeds both cargo's fingerprint and rust-cache's env-hashed key, so a
+      # per-job RUSTFLAGS delta would split the shared `workspace` cache key
+      # across jobs and invalidate every cached artifact. The ld symlink is
+      # transparent to cargo fingerprints — cached dependency rlibs still hit;
+      # only the final link swaps tools. Added to every cargo-running job for
+      # tool consistency.
+      - uses: rui314/setup-mold@v1
+
       - uses: Swatinem/rust-cache@v2
         with:
           # Shared key so the openapi-drift job (which also builds the
@@ -276,6 +287,9 @@ jobs:
       # workspace cache populated by the `rust` job above.
       - uses: dtolnay/rust-toolchain@stable
 
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      - uses: rui314/setup-mold@v1
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace
@@ -360,6 +374,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      # mold supports ubuntu-22.04, and the release link of the large bins
+      # below benefits too. Linker choice doesn't affect the produced
+      # binary's glibc ABI, so the GLIBC pin rationale above is untouched.
+      - uses: rui314/setup-mold@v1
 
       # Reuse the shared workspace cargo cache populated by the `rust` job.
       # The rust job builds debug; this job needs release binaries (`make
@@ -488,6 +508,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      # Same ubuntu-22.04 / release-link notes as the chromium e2e job.
+      - uses: rui314/setup-mold@v1
+
       # Same cache key as the chromium e2e job: debug/release targets differ,
       # but the shared registry + git index still avoid a cold dependency run.
       - uses: Swatinem/rust-cache@v2
@@ -573,6 +597,9 @@ jobs:
           swap-storage: false
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
         with:
