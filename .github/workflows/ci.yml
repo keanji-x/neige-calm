@@ -153,21 +153,39 @@ jobs:
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
-      - name: cargo build --workspace --locked
-        run: cargo build --workspace --locked --features calm-server/codex-e2e
-
       - name: cargo test --workspace --locked
         # Feature enabled for compile-check coverage; codex-e2e tests self-skip when no codex binary is discoverable, the default in GHA runners.
+        # No separate `cargo build --workspace` step: the test build covers all
+        # bins (CARGO_BIN_EXE_*) plus the replay bin (required-features=fixtures,
+        # via calm-server's dev-dep self-loop — which also means fixtures is
+        # always ON here). Compile coverage of the not(fixtures) production cfg
+        # branches is carried by the chromium-e2e / stack-e2e release jobs
+        # (no fixtures, global RUSTFLAGS=-D warnings) on every PR.
         run: cargo test --workspace --locked --features calm-server/codex-e2e
 
       # #679 PR0-D — migration-replay gate, made explicit so a failure is
-      # attributable at a glance. Re-runs the (already compiled, ~10s)
-      # snapshot replay harness: every per-version stage→seed→replay stop
-      # must converge on the fresh-DB schema. The external-snapshot half
-      # self-skips while NEIGE_SNAPSHOT_DB is unset in CI; point it at a
-      # sanitized prod snapshot to extend the gate to real data.
+      # attributable at a glance. Re-runs the snapshot replay harness: every
+      # per-version stage→seed→replay stop must converge on the fresh-DB
+      # schema. This step MUST be invoked at workspace level, exactly like the
+      # main test step above, so it stays fully Fresh (no recompile). Two
+      # ingredients, both load-bearing:
+      #   1. Features aligned with the main test step: codex-e2e is an empty
+      #      feature (calm-provider's side is `[]`; it only gates `#![cfg]` in
+      #      tests/*.rs), so passing it here is purely build-fingerprint
+      #      alignment — without it, the feature flip re-compiled the
+      #      calm-provider→calm-server chain (~63s) on every run.
+      #   2. `--workspace` (NOT `-p calm-server`): any -p narrowing shrinks
+      #      cargo's feature-unification domain from the workspace to a single
+      #      package, so features that other workspace members enable on shared
+      #      deps (sqlx, rustls, …) disappear, flipping dependency fingerprints
+      #      and re-compiling ~53s of rustls→sqlx→calm-truth→calm-server. Do
+      #      not "simplify" this back to -p. `--test migration_replay_harness`
+      #      already selects only this test binary.
+      # The external-snapshot half self-skips while NEIGE_SNAPSHOT_DB is unset
+      # in CI; point it at a sanitized prod snapshot to extend the gate to
+      # real data.
       - name: migration replay gate (#679 PR0-D)
-        run: cargo test -p calm-server --locked --test migration_replay_harness
+        run: cargo test --workspace --locked --features calm-server/codex-e2e --test migration_replay_harness
 
   frozen-vectors:
     name: frozen security vectors freeze gate
