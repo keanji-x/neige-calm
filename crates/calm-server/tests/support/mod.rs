@@ -13,6 +13,9 @@ pub mod forge_env;
 pub mod gh_shim;
 #[allow(dead_code)]
 pub mod git_helpers;
+#[cfg(unix)]
+#[allow(dead_code)]
+pub mod kernel_proc;
 #[macro_use]
 #[allow(unused_macros)]
 pub mod macros;

@@ -79,11 +79,9 @@
 
 #![cfg(target_os = "linux")]
 
-use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+mod support;
+
+use std::path::PathBuf;
 
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
@@ -93,206 +91,15 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use serde_json::json;
+use support::kernel_proc::launch_kernel;
 use tempfile::TempDir;
-
-const CALM_SERVER_BIN: &str = env!("CARGO_BIN_EXE_calm-server");
 
 /// A machine boot id that can never match the host's real
 /// `/proc/sys/kernel/random/boot_id`, so the seeded lease is always treated as
 /// belonging to a *previous* (dead) machine boot and is reclaimed.
 const STALE_BOOT_ID: &str = "00000000-0000-0000-0000-000000000000";
 
-const READY_TIMEOUT: Duration = Duration::from_secs(30);
 const SNAPSHOT_WATERMARK: i64 = 42;
-
-/// Kills the spawned child on drop so a panic mid-test never leaks a real
-/// `calm-server` process. Explicit `sigkill()` is idempotent with this.
-struct ChildGuard {
-    child: Child,
-    port: u16,
-}
-
-impl ChildGuard {
-    fn pid(&self) -> i32 {
-        self.child.id() as i32
-    }
-
-    /// SIGKILL the kernel and reap it. Mirrors the fault-injection shape: the
-    /// out-of-process harness kills at an arbitrary instant while durable state
-    /// is live.
-    fn sigkill_and_reap(&mut self) {
-        // SAFETY: plain libc kill on our own child pid.
-        unsafe {
-            libc::kill(self.pid(), libc::SIGKILL);
-        }
-        let _ = self.child.wait();
-    }
-}
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        // Best-effort: if the test already reaped it this is a no-op.
-        if let Ok(None) = self.child.try_wait() {
-            unsafe {
-                libc::kill(self.pid(), libc::SIGKILL);
-            }
-            let _ = self.child.wait();
-        }
-    }
-}
-
-/// Grab a currently-free ephemeral loopback port by binding `:0` and reading
-/// the assigned port back. Returns `None` if the sandbox denies loopback bind
-/// (CI-safe skip). The listener is dropped immediately; the port may briefly
-/// sit in TIME_WAIT, which is why `launch_kernel` retries on an early bind
-/// failure with a fresh port (design fix #4 — driver-side rebind handling,
-/// production bind code untouched).
-fn free_port_or_skip(what: &str) -> Option<u16> {
-    match TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => Some(listener.local_addr().unwrap().port()),
-        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-            eprintln!("skipping kernel reboot harness ({what}): sandbox denied loopback bind: {e}");
-            None
-        }
-        Err(e) => panic!("bind 127.0.0.1:0 for {what}: {e}"),
-    }
-}
-
-/// Spawn the shipped `calm-server` binary against `tmp` on `port`, with every
-/// external dependency (codex/claude/supervisor/plugins/hook-fallback) pointed
-/// at throwaway paths inside `tmp` so no real agent, app-server, or prod
-/// artifact is ever touched.
-///
-/// The child environment is **cleared first** (`env_clear`) and rebuilt from a
-/// minimal allowlist, so no inherited `CALM_*` / `NEIGE_*` / `RECORD_SESSION`
-/// var from the developer's or CI's shell can bleed in — e.g. a stray
-/// `RECORD_SESSION` would append outside the tempdir (breaking isolation), and a
-/// malformed `CALM_SHARED_CODEX_APPSERVER_RESTART_*` could wedge boot. `HOME`
-/// and `TMPDIR` are redirected into `tmp` too, so any path the kernel derives
-/// from them also stays inside the throwaway dir.
-fn spawn_kernel(tmp: &Path, db_path: &Path, port: u16) -> Child {
-    // Bare essentials the binary/runtime need. `PATH` is passed through (fallen
-    // back to a sane default) so any incidental PATH lookup still resolves;
-    // everything else is an explicit fixture value.
-    let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
-
-    Command::new(CALM_SERVER_BIN)
-        .env_clear()
-        // ---- runtime essentials (allowlist) -------------------------------
-        .env("PATH", path)
-        .env("HOME", tmp)
-        .env("TMPDIR", tmp)
-        .env("RUST_LOG", "warn,calm_server=info")
-        .env("RUST_BACKTRACE", "1")
-        // ---- fixture config: DB + listener + all state under `tmp` --------
-        .env(
-            "CALM_DB_URL",
-            format!("sqlite://{}?mode=rwc", db_path.display()),
-        )
-        .env("CALM_LISTEN", format!("127.0.0.1:{port}"))
-        .env("CALM_DATA_DIR", tmp.join("data"))
-        .env("CALM_PLUGINS_DIR", tmp.join("plugins"))
-        .env("CALM_PLUGINS_DATA_DIR", tmp.join("plugins-data"))
-        .env("CALM_PROC_SUPERVISOR_SOCK", tmp.join("no-supervisor.sock"))
-        .env(
-            "CALM_SHARED_CODEX_APPSERVER_LOG_DIR",
-            tmp.join("codex-logs"),
-        )
-        .env("NEIGE_HOOK_FALLBACK_DIR", tmp.join("hook-fallback"))
-        // Point the agent binaries at non-existent paths: the shared codex
-        // app-server start fails fast, `boot_harnesses` swallows it and skips
-        // harness recovery — NO real codex is ever launched (prod-safety).
-        .env("CALM_CODEX_BIN", tmp.join("no-codex-binary"))
-        .env("CALM_CLAUDE_BIN", tmp.join("no-claude-binary"))
-        // Dev autologin so boot doesn't panic requiring an owner password; the
-        // `/api/version` readiness probe is public regardless.
-        .env("CALM_DEV_AUTOLOGIN", "true")
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("spawn calm-server binary")
-}
-
-/// Poll `GET /api/version` until it returns `200` with a `kernelVersion` body,
-/// which — because the listener binds only after ALL boot recovery completes —
-/// is a strictly-better ready signal than a bare port-open (there is no
-/// `/health` route on calm-server). Returns:
-///   * `Ok(())` when ready,
-///   * `Err(EarlyExit)` if the child died before becoming ready (so the caller
-///     can retry on a fresh port for a transient EADDRINUSE),
-///   * panics on a hard timeout.
-enum WaitErr {
-    EarlyExit,
-}
-
-fn wait_ready(child: &mut Child, port: u16) -> Result<(), WaitErr> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    while Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            eprintln!("calm-server exited before ready: {status:?}");
-            return Err(WaitErr::EarlyExit);
-        }
-        if probe_version_ok(port) {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!("calm-server never became ready on port {port} within {READY_TIMEOUT:?}");
-}
-
-/// One-shot `GET /api/version` over raw TCP (no HTTP client dep). Returns true
-/// only on a `200` whose body mentions `kernelVersion`.
-fn probe_version_ok(port: u16) -> bool {
-    let addr = format!("127.0.0.1:{port}");
-    let Ok(mut stream) = TcpStream::connect(&addr) else {
-        return false;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-    let req = "GET /api/version HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n";
-    if stream.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    let mut buf = String::new();
-    if stream.read_to_string(&mut buf).is_err() {
-        return false;
-    }
-    let status_line = buf.lines().next().unwrap_or_default();
-    status_line.contains("200") && buf.contains("kernelVersion")
-}
-
-/// Spawn + wait-ready with a driver-side bind-retry loop: pick a fresh free
-/// port each attempt so a SIGKILL'd socket sitting in TIME_WAIT (tokio's
-/// `TcpListener::bind` sets no `SO_REUSEADDR`) can't wedge the relaunch. This
-/// keeps production bind code untouched (design fix #4).
-fn launch_kernel(tmp: &Path, db_path: &Path, what: &str) -> Option<ChildGuard> {
-    for attempt in 0..5 {
-        let port = free_port_or_skip(what)?;
-        assert_ne!(port, 4040, "must never bind the prod calm-server port");
-        // Wrap the child in its `ChildGuard` IMMEDIATELY, before waiting on it.
-        // `wait_ready` can panic on a hard 30s timeout; because `guard` is a
-        // live local, unwinding drops it and `ChildGuard::drop` SIGKILLs+reaps
-        // the (possibly hung) kernel — so a wedged boot never leaks a real
-        // calm-server holding the tempdir. A bare `Child` would NOT be killed
-        // by its own `Drop`, which is the leak this guards against.
-        let mut guard = ChildGuard {
-            child: spawn_kernel(tmp, db_path, port),
-            port,
-        };
-        match wait_ready(&mut guard.child, port) {
-            Ok(()) => return Some(guard),
-            Err(WaitErr::EarlyExit) => {
-                // `guard` drops here and reaps the already-exited child (its
-                // `try_wait` sees `Some(status)`, so no redundant kill).
-                eprintln!(
-                    "{what}: relaunch attempt {attempt} on port {port} exited early; retrying on a fresh port"
-                );
-            }
-        }
-    }
-    panic!("{what}: calm-server failed to become ready after 5 fresh-port attempts");
-}
 
 // ---------------------------------------------------------------------------
 // Durable-state seeding (before the first boot) and post-reboot assertions.
@@ -500,7 +307,7 @@ async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_d
     let seeded = seed_durable_state(&db_url).await;
 
     // ---- boot 1: spawn the real binary, wait until fully booted -----------
-    let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "boot-1") else {
+    let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "boot-1", &[]) else {
         return; // sandbox denied loopback bind — CI-safe skip
     };
     assert_ne!(boot1.port, 4040);
@@ -514,7 +321,7 @@ async fn kernel_reboot_preserves_snapshot_and_reclaims_lease_without_duplicate_d
     // picks a fresh ephemeral port; we do NOT assert it differs from boot 1's,
     // because after the kill the OS allocator may legally hand back the same
     // port and a same-port reboot is perfectly valid.
-    let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2") else {
+    let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "boot-2", &[]) else {
         return;
     };
     boot2.sigkill_and_reap();
