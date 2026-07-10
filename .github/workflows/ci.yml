@@ -185,7 +185,8 @@ jobs:
       # in CI; point it at a sanitized prod snapshot to extend the gate to
       # real data.
       - name: migration replay gate (#679 PR0-D)
-        run: cargo test --workspace --locked --features calm-server/codex-e2e --test migration_suite migration_replay_harness::
+        run: |
+          cargo test --workspace --locked --features calm-server/codex-e2e --test migration_suite migration_replay_harness::
 
   frozen-vectors:
     name: frozen security vectors freeze gate
