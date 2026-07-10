@@ -556,6 +556,7 @@ pub mod spec_card;
 pub mod state;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
+pub mod test_seams;
 pub mod validation;
 pub mod wave_cove_cache;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).

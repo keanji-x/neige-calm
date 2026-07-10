@@ -313,6 +313,30 @@ pub async fn call_tool_via_socket(
     recv_frame(&mut rd).await
 }
 
+/// Fire-and-forget MCP `tools/call` (#840 e2): connect, handshake, send the
+/// call — and return WITHOUT ever awaiting the reply. Used to drive an
+/// operation whose kernel is expected to crash while (or racing) the response
+/// write; `call_tool_via_socket` would panic on EOF or its 5s `TEST_BUDGET`
+/// when the crash wins that race. The socket halves are returned so the caller
+/// can hold the connection open across the crash window instead of injecting
+/// an early client-side EOF; callers that don't care can drop them.
+pub async fn send_tool_call_without_reply(
+    socket_path: &std::path::Path,
+    token: &str,
+    thread_id: &str,
+    id: i64,
+    name: &str,
+    args: Value,
+) -> (
+    BufReader<tokio::net::unix::OwnedReadHalf>,
+    tokio::net::unix::OwnedWriteHalf,
+) {
+    let (mut rd, mut wr) = connect(socket_path).await;
+    handshake(&mut rd, &mut wr, token).await;
+    send_frame(&mut wr, tools_call_frame(id, name, thread_id, args)).await;
+    (rd, wr)
+}
+
 pub fn tools_call_frame(id: i64, name: &str, thread_id: &str, args: Value) -> Value {
     json!({
         "jsonrpc": "2.0",

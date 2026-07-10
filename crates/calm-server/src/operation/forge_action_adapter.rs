@@ -1856,6 +1856,21 @@ async fn complete_forge_op_succeeded(
             } else {
                 None
             };
+            // #840 e2 crash seam. The whole block (including the `format!`
+            // argument) is `#[cfg]`-gated on the test-only `fixtures` feature,
+            // which production builds never enable — a release binary compiles
+            // literally zero code here. In a fixtures build it fires only when
+            // `CALM_TEST_CRASH_AT` matches the event-kind-qualified point
+            // exactly (see `test_seams` for the full prod-safety contract); it
+            // cannot alter control flow otherwise. Placed immediately before
+            // the fence commit so a crash here proves the uncommitted fence
+            // UPDATE and the appended decision event both vanish together
+            // (exactly-once merge across a reboot).
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::crash_point(&format!(
+                "forge-pre-fence-commit:{}",
+                envelope.as_ref().map_or("none", |e| e.event.kind_tag())
+            ));
             tx.commit().await?;
             completion.complete(result);
             if let Some(envelope) = envelope {
