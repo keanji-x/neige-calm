@@ -7,6 +7,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import * as api from '../api/calm';
 import { CovePage } from './Cove';
 import type { Cove, Wave } from '../types';
 
@@ -439,5 +441,64 @@ describe('CovePage pin button on wave rows', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Unpin wave' }));
     expect(onPinWave).toHaveBeenCalledWith('w-cove', false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NewWaveDialog variant switch — issue #891 slice ③.
+//
+// The dialog hosts a two-button "Wave kind" toggle above NewTaskForm:
+// "Task" (default, plain wave) and "Issue dev" (workflow-bound wave).
+// The form itself is exercised in NewTaskForm.issueDev.test.tsx; here we
+// pin the dialog-level wiring — default tab, switch → issue-dev fields
+// appear, switch back → they're gone.
+// ---------------------------------------------------------------------------
+
+describe('CovePage NewWaveDialog variant switch (#891)', () => {
+  async function openNewWaveDialog() {
+    vi.spyOn(api, 'listCoves').mockResolvedValue([]);
+    const user = userEvent.setup();
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={qc}>
+        <CovePage
+          cove={makeCove()}
+          waves={[]}
+          onGo={() => {}}
+          onWaveCreated={() => {}}
+        />
+      </QueryClientProvider>,
+    );
+    await user.click(screen.getByRole('button', { name: 'New wave' }));
+    const dialog = await screen.findByRole('dialog', { name: 'New wave' });
+    return { user, dialog };
+  }
+
+  it('opens on the plain Task variant with the toggle visible', async () => {
+    const { dialog } = await openNewWaveDialog();
+    const tabs = within(dialog).getByRole('group', { name: 'Wave kind' });
+    expect(within(tabs).getByRole('button', { name: 'Task' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(
+      within(tabs).getByRole('button', { name: 'Issue dev' }),
+    ).toHaveAttribute('aria-pressed', 'false');
+    // Plain form, no issue-dev fields.
+    expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
+  });
+
+  it('switching to Issue dev shows the issue-dev form; switching back restores the plain form', async () => {
+    const { user, dialog } = await openNewWaveDialog();
+    await user.click(within(dialog).getByRole('button', { name: 'Issue dev' }));
+    expect(within(dialog).getByLabelText(/github issue url/i)).toBeInTheDocument();
+    expect(within(dialog).getByLabelText(/merge policy/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Task' }));
+    expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
+    expect(
+      within(dialog).getByRole('form', { name: /new task/i }),
+    ).toBeInTheDocument();
   });
 });

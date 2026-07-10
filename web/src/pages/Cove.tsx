@@ -448,6 +448,15 @@ function NewWaveDialog({
   // on the Dialog's Close button. Forwarding the ref makes the Dialog
   // do the focusing once, deterministically.
   const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  // Issue #891 slice ③ — which NewTaskForm variant the dialog hosts.
+  // 'task' is the plain wave path (unchanged); 'issue-dev' binds the
+  // wave to the shipped `issue-development` workflow from a GitHub
+  // issue URL. Reset to 'task' whenever the dialog closes so every
+  // open starts from the familiar default.
+  const [variant, setVariant] = useState<'task' | 'issue-dev'>('task');
+  useEffect(() => {
+    if (!open) setVariant('task');
+  }, [open]);
   return (
     <Dialog
       open={open}
@@ -456,12 +465,43 @@ function NewWaveDialog({
       initialFocusRef={titleRef}
     >
       {open && (
-        <NewTaskForm
-          defaultCoveId={defaultCoveId}
-          onCreated={onCreated}
-          onCancel={onClose}
-          initialFocusRef={titleRef}
-        />
+        <>
+          {/* Variant switch — toggle-button pair (aria-pressed) rather
+              than a tablist: there's no tabpanel relationship to
+              express, just two mutually exclusive form flavors.
+              Switching remounts NewTaskForm (key) so per-variant state
+              starts clean. */}
+          <div
+            role="group"
+            aria-label="Wave kind"
+            className="new-wave-kind-tabs"
+          >
+            <button
+              type="button"
+              className="new-wave-kind-tab"
+              aria-pressed={variant === 'task'}
+              onClick={() => setVariant('task')}
+            >
+              Task
+            </button>
+            <button
+              type="button"
+              className="new-wave-kind-tab"
+              aria-pressed={variant === 'issue-dev'}
+              onClick={() => setVariant('issue-dev')}
+            >
+              Issue dev
+            </button>
+          </div>
+          <NewTaskForm
+            key={variant}
+            variant={variant}
+            defaultCoveId={defaultCoveId}
+            onCreated={onCreated}
+            onCancel={onClose}
+            initialFocusRef={titleRef}
+          />
+        </>
       )}
     </Dialog>
   );

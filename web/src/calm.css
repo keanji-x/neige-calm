@@ -3426,6 +3426,67 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
+/* ===== Issue-dev wave variant (#891 slice ③) =====
+   Variant switch above NewTaskForm in the New-wave dialog: a two-button
+   segmented toggle (aria-pressed) that reads as tabs — underline on the
+   active choice, quiet text otherwise. */
+.new-wave-kind-tabs {
+  display: flex;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.new-wave-kind-tab {
+  font: inherit;
+  font-size: var(--text-base);
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+.new-wave-kind-tab:hover { color: var(--text); }
+.new-wave-kind-tab[aria-pressed='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* Raw workflow_input JSON escape hatch — collapsed <details> at the
+   bottom of the issue-dev form. */
+.new-task-form-rawjson {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.new-task-form-rawjson-summary {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+/* type+class selector so it out-ranks `textarea.new-task-form-input`'s
+   `font-family: inherit` (same specificity tier, later in the file). */
+textarea.new-task-form-rawjson-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  resize: vertical;
+}
+.new-task-form-rawjson-hint {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+.new-task-form-rawjson-reset {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-0);
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ===== Directory picker (SchemaForm `directory` field type) =====
    Two surfaces:
      - .dirpicker-field   the read-only path button shown inline in the
