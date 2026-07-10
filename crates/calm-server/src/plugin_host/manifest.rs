@@ -942,6 +942,12 @@ mod tests {
             // merge_hold lifecycle dance: ratify.request 400s unless the
             // wave is `working`, so the hold must route through it.
             "green checks, then move reviewing->working",
+            // #891 slice ② r2 — post-grant half of the merge_policy
+            // contract: the grant covers the already-converged head (no
+            // extra review round), and the wave resumes working->reviewing
+            // before merging per fence F4.
+            "no fresh review round is required for the hold itself",
+            "resume working->reviewing and call gh.pr.merge per fence F4",
         ] {
             assert!(
                 workflow.spec_instructions.contains(needle),

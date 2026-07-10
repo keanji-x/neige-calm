@@ -254,6 +254,13 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             .contains("workflow_input.issue_number"),
         "body={body}"
     );
+    // #891 slice ② r2 — partial-input 400 must also short-circuit before
+    // any DB write.
+    assert_eq!(
+        wave_count_by_title(&fx.repo, "bound with partial input").await,
+        0,
+        "partial-input 400 must not create a wave row"
+    );
 
     // Enum violation against the shipped merge_policy → 400 naming the field.
     let invalid_dir = short_tempdir("wf-input-invalid").expect("invalid input cwd");
@@ -329,6 +336,13 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             .unwrap_or("")
             .contains("does not declare"),
         "body={body}"
+    );
+    // #891 slice ② r2 — schema-less fail-closed 400 likewise leaves no
+    // wave row behind.
+    assert_eq!(
+        wave_count_by_title(&fx.repo, "input against schema-less workflow").await,
+        0,
+        "schema-less-input 400 must not create a wave row"
     );
 
     // Schema-less bound create without input stays valid (design §1.4 row 4).
