@@ -905,6 +905,8 @@ mod tests {
             "approved",
             "changes_requested",
             "cap is the fixed policy constant 8",
+            "previous cap plus exactly 2",
+            "cap = previous cap + 2",
             "Always re-review",
             "expected_head_sha",
             "calm.ratify.request",
