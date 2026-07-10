@@ -12,18 +12,42 @@ use serde_json::json;
 use support::mcp::{CardBoot, boot_with_role, wait_for_kind};
 
 fn neige_bin() -> PathBuf {
+    // Never set in practice: cargo only injects CARGO_BIN_EXE_* for bins of
+    // the package under test (calm-server), and `neige` lives in the separate
+    // neige-cli package. Kept in case the bin ever moves in-package.
     if let Some(path) = std::env::var_os("CARGO_BIN_EXE_neige") {
         return PathBuf::from(path);
     }
 
+    // cargo puts workspace bins next to the integration-test binary
+    // (target/{debug,release}/neige), so a workspace test build has already
+    // produced it — short-circuit before shelling out to cargo build.
+    //
+    // CI-only: exists() proves neither provenance nor freshness. In GHA
+    // (CI=true is always set) the workspace-level test build runs first in
+    // the same invocation, so the sibling bin is guaranteed current. Locally
+    // a developer may edit neige-cli and then run only this test file — that
+    // build doesn't touch neige-cli (not a calm-server dependency), and the
+    // short-circuit would silently pick up a stale bin. So unless CI=true we
+    // keep the original semantics: always rebuild via the cargo fallback.
+    if std::env::var("CI").is_ok_and(|v| v == "true") {
+        let mut candidate = std::env::current_exe().expect("current_exe");
+        candidate.pop(); // .../deps/
+        candidate.pop(); // .../debug/ or .../release/
+        candidate.push(format!("neige{}", std::env::consts::EXE_SUFFIX));
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = Command::new(cargo)
-        .args(["build", "-p", "neige-cli", "--bin", "neige"])
+        .args(["build", "-p", "neige-cli", "--bin", "neige", "--locked"])
         .status()
         .expect("build neige binary");
     assert!(
         status.success(),
-        "cargo build -p neige-cli --bin neige failed"
+        "cargo build -p neige-cli --bin neige --locked failed"
     );
 
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")

@@ -15,3 +15,11 @@ members = [
     "crates/neige-cli",
     "crates/neige-mcp-stdio-shim",
 ]
+
+[profile.dev]
+debug = 1
+incremental = false
+
+[profile.test]
+debug = 1
+incremental = false
