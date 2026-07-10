@@ -75,6 +75,10 @@ jobs:
           # workspace via `cargo run --bin emit-openapi`) reuses this cache.
           shared-key: workspace
 
+      # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
+      # .config/nextest.toml; CI uses --profile ci below.
+      - uses: taiki-e/install-action@nextest
+
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
 
@@ -178,22 +182,37 @@ jobs:
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
-      - name: cargo test --workspace --locked
-        # Feature enabled for compile-check coverage; codex-e2e tests self-skip when no codex binary is discoverable, the default in GHA runners.
-        # No separate `cargo build --workspace` step: the test build covers all
-        # bins (CARGO_BIN_EXE_*) plus the replay bin (required-features=fixtures,
-        # via calm-server's dev-dep self-loop — which also means fixtures is
-        # always ON here). Compile coverage of the not(fixtures) production cfg
-        # branches is carried by the chromium-e2e / stack-e2e release jobs
-        # (no fixtures, global RUSTFLAGS=-D warnings) on every PR.
-        run: cargo test --workspace --locked --features calm-server/codex-e2e
+      - name: cargo nextest run --workspace --locked
+        # #903 — nextest replaces `cargo test`: cross-binary test parallelism
+        # (the old runner executed the ~74 test binaries — post-#913 suite
+        # consolidation — serially). The build
+        # phase is equivalent to `cargo test --no-run`, so everything below
+        # still holds:
+        # - Feature enabled for compile-check coverage; codex-e2e tests
+        #   self-skip at runtime when no codex binary is discoverable (#868
+        #   resolver: unset NEIGE_CODEX_BIN → eprintln + early return, counted
+        #   as pass) — the default in GHA runners; unchanged under nextest.
+        # - No separate `cargo build --workspace` step: the test build covers
+        #   all bins (CARGO_BIN_EXE_*) plus the replay bin
+        #   (required-features=fixtures, via calm-server's dev-dep self-loop —
+        #   which also means fixtures is always ON here). Compile coverage of
+        #   the not(fixtures) production cfg branches is carried by the
+        #   chromium-e2e / stack-e2e release jobs (no fixtures, global
+        #   RUSTFLAGS=-D warnings) on every PR.
+        # - nextest does not run doctests, which loses nothing here: this repo
+        #   has 0 doctests — every doc fence carries a non-rust language tag
+        #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
+        #   are ever introduced, add a `cargo test --doc` step alongside.
+        run: cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci
 
       # #679 PR0-D — migration-replay gate, made explicit so a failure is
       # attributable at a glance. Re-runs the snapshot replay harness: every
       # per-version stage→seed→replay stop must converge on the fresh-DB
       # schema. This step MUST be invoked at workspace level, exactly like the
-      # main test step above, so it stays fully Fresh (no recompile). Two
-      # ingredients, both load-bearing:
+      # main nextest step above, so it stays fully Fresh (no recompile) —
+      # nextest's build phase is the same `cargo test --no-run` fingerprint,
+      # so the artifacts are shared verbatim. Two ingredients, both
+      # load-bearing:
       #   1. Features aligned with the main test step: codex-e2e is an empty
       #      feature (calm-provider's side is `[]`; it only gates `#![cfg]` in
       #      tests/*.rs), so passing it here is purely build-fingerprint
@@ -204,14 +223,31 @@ jobs:
       #      package, so features that other workspace members enable on shared
       #      deps (sqlx, rustls, …) disappear, flipping dependency fingerprints
       #      and re-compiling ~53s of rustls→sqlx→calm-truth→calm-server. Do
-      #      not "simplify" this back to -p. `--test migration_suite` plus
-      #      the module filter selects only the replay harness.
+      #      not "simplify" this back to -p. The `-E` filterset (binary
+      #      migration_suite ∩ the migration_replay_harness:: module) selects
+      #      only the replay harness.
+      # Deliberately NOT --profile ci: the ci profile writes its junit report
+      # to a fixed path (target/nextest/ci/junit.xml), so this small re-run
+      # would overwrite the full-suite timing report uploaded below. The
+      # default profile emits no junit; its default-filter only excludes
+      # export_bindings_* tests, which don't live in this binary.
       # The external-snapshot half self-skips while NEIGE_SNAPSHOT_DB is unset
       # in CI; point it at a sanitized prod snapshot to extend the gate to
       # real data.
       - name: migration replay gate (#679 PR0-D)
         run: |
-          cargo test --workspace --locked --features calm-server/codex-e2e --test migration_suite migration_replay_harness::
+          cargo nextest run --workspace --locked --features calm-server/codex-e2e -E 'binary(migration_suite) & test(/^migration_replay_harness::/)'
+
+      # #903 — per-test timing (junit.xml, written by the ci nextest profile),
+      # the input for the Slice C timing analysis.
+      - name: upload nextest junit timing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   frozen-vectors:
     name: frozen security vectors freeze gate
