@@ -10,7 +10,7 @@ use calm_server::db::sqlite::{
 use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
 };
-use calm_server::mcp_server::auth;
+use calm_server::mcp_server::{McpShimConfig, auth};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
@@ -147,6 +147,114 @@ async fn start_new_process_strips_per_card_env_keys() {
     assert_eq!(
         env.get("NEIGE_CALM_BASE_URL").cloned().flatten().as_deref(),
         Some("http://expected")
+    );
+}
+
+/// #863 red repro (TEST A): the spawned shared app-server must not inherit
+/// ambient parent env. `spawn_env_for_test` cannot catch this class of bug —
+/// `Command::get_envs()` only reports explicitly-set keys, never implicit
+/// inheritance — so this test boots the real spawn path
+/// (`start_or_takeover` → `launch_spawned_process`) against the fake codex
+/// binary and reads `/proc/<pid>/environ` of the live child directly.
+///
+/// RED today: `apply_spawn_env` never calls `env_clear()`, so parent-side
+/// canaries leak into the codex child. Turns green once the child env is an
+/// explicit allow-list (a pure function of config).
+#[tokio::test]
+async fn spawned_daemon_does_not_inherit_parent_canary_env() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("NEIGE_TEST_CANARY_LEAK", "863");
+        std::env::set_var("CLAUDE_CODE_EXECPATH", "/tmp/fake-claude-863");
+    }
+    let _canary = EnvGuard("NEIGE_TEST_CANARY_LEAK");
+    let _execpath = EnvGuard("CLAUDE_CODE_EXECPATH");
+    assert_eq!(
+        std::env::var("NEIGE_TEST_CANARY_LEAK").as_deref(),
+        Ok("863"),
+        "positive control: canary must be set in the parent before spawn"
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    // The fake app-server keeps serving its socket until the daemon drops
+    // it (kill_on_drop), so /proc/<pid>/environ stays readable here.
+    let pid = daemon
+        .status_snapshot()
+        .runtime
+        .expect("running spawned daemon")
+        .pid;
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).expect("read child /proc environ");
+    let child_env = raw
+        .split(|byte| *byte == 0)
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<String>>();
+
+    let expected_codex_home = format!(
+        "CODEX_HOME={}",
+        cfg(&root).data_dir_resolved().join("codex-home").display()
+    );
+    assert!(
+        child_env.iter().any(|kv| *kv == expected_codex_home),
+        "sanity: child environ must carry the explicit CODEX_HOME pin; got {child_env:?}"
+    );
+
+    let leaks = child_env
+        .iter()
+        .filter(|kv| {
+            kv.starts_with("NEIGE_TEST_CANARY_LEAK=") || kv.starts_with("CLAUDE_CODE_EXECPATH=")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leaks.is_empty(),
+        "spawned codex app-server must not inherit ambient parent env \
+         (child env must be a pure function of config); leaked: {leaks:?}"
+    );
+}
+
+/// #863 red repro (TEST B): booting the shared app-server against a
+/// CODEX_HOME whose config.toml carries an unexpected `[mcp_servers.*]`
+/// entry must be refused at launch. `seed()` copies host `~/.codex/`
+/// verbatim, so a host-level plugin registration lands in the shared home
+/// exactly like the pollution written below.
+///
+/// RED today: launch never inspects config.toml and boots happily.
+#[tokio::test]
+async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let cfg = cfg(&root);
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    // seed_from(None): deterministic empty home, no host ~/.codex copy.
+    home.seed_from(None).unwrap();
+    // Legitimate `calm` entry, as boot wiring (state.rs) writes it.
+    let shim = McpShimConfig {
+        shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+        socket_path: root.path().join("mcp/kernel.sock"),
+    };
+    home.ensure_daemon_mcp_config(&shim, "daemon-token")
+        .unwrap();
+    // Pollution: an extra MCP server beyond the expected `calm` one.
+    let cfg_path = home.path().join("config.toml");
+    let mut polluted = std::fs::read_to_string(&cfg_path).unwrap();
+    polluted.push_str("\n[mcp_servers.evil]\ncommand = \"/usr/bin/evil-mcp\"\n");
+    std::fs::write(&cfg_path, &polluted).unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+    let err = daemon.start_or_takeover().await.expect_err(
+        "boot must refuse a CODEX_HOME polluted with an unexpected [mcp_servers.*] entry",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("evil"),
+        "launch refusal must name the unexpected mcp server entry; got: {msg}"
     );
 }
 
