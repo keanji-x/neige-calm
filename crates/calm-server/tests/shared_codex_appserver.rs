@@ -355,6 +355,53 @@ async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
         msg.contains("evil"),
         "launch refusal must name the unexpected mcp server entry; got: {msg}"
     );
+
+    // #863 review F1 — the refusal must be visible on the status surface,
+    // not only in the boot error: state=Failed with last_error naming the
+    // offender.
+    let status = daemon.status_snapshot();
+    assert_eq!(
+        status.state,
+        SharedDaemonState::Failed,
+        "guard refusal must surface state=Failed in status_snapshot()"
+    );
+    let last_error = status
+        .last_error
+        .expect("guard refusal must surface last_error in status_snapshot()");
+    assert!(
+        last_error.contains("evil"),
+        "status last_error must name the unexpected mcp server entry; got: {last_error}"
+    );
+}
+
+/// #863 review F2 — a `.env` dropped into the shared CODEX_HOME after boot
+/// sanitize (e.g. while the daemon runs) would be injected into the daemon's
+/// own process env by codex arg0 `load_dotenv` at the next launch, bypassing
+/// the spawn allow-list. The launch guard treats it as derived-state
+/// pollution and DELETES it (warn, no outage) before the spawn — boot must
+/// succeed AND the file must be gone.
+#[tokio::test]
+async fn boot_deletes_leaked_codex_home_env_file_before_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo).await;
+    let env_path = daemon.codex_home_path().join(".env");
+    std::fs::write(&env_path, "INJECTED_AFTER_BOOT_SANITIZE=863\n").unwrap();
+
+    daemon
+        .start_or_takeover()
+        .await
+        .expect("boot must converge by deleting the leaked .env, not refuse");
+
+    assert!(
+        !env_path.exists(),
+        "launch guard must delete CODEX_HOME/.env before the daemon spawns"
+    );
+    assert_eq!(
+        daemon.status_snapshot().state,
+        SharedDaemonState::Running,
+        "daemon must be running after the .env repair"
+    );
 }
 
 async fn persist_running_daemon(

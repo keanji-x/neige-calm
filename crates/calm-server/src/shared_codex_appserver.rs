@@ -529,10 +529,21 @@ impl SharedCodexAppServer {
         // the process, and never strand a previously-live polluted daemon
         // running unsupervised.
         if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
-            self.reap_persisted_daemon_if_verified().await;
-            return Err(CalmError::CodexAppServer(format!(
-                "refusing to launch shared codex app-server: {guard_err}"
-            )));
+            let msg = format!("refusing to launch shared codex app-server: {guard_err}");
+            self.reap_persisted_daemon_if_verified(&msg).await;
+            // #863 review F1 — surface the refusal in `status_snapshot()`:
+            // mirror the typestate error arm of `start_new_process_typestate`
+            // (Failed under the core lock, holding `transition_serial` per
+            // the #480 §C invariant).
+            {
+                let _serial = self.transition_serial.lock().await;
+                let mut core = self.core.lock().await;
+                core.state = SupervisorState::Failed {
+                    last_error: msg.clone(),
+                    since: Instant::now(),
+                };
+            }
+            return Err(CalmError::CodexAppServer(msg));
         }
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
@@ -547,7 +558,7 @@ impl SharedCodexAppServer {
     /// #863 — "no polluted survivor": when the boot guard refuses, the
     /// persisted daemon (if still verified alive) is reaped before the error
     /// propagates, so it cannot keep serving with its polluted env/home.
-    async fn reap_persisted_daemon_if_verified(&self) {
+    async fn reap_persisted_daemon_if_verified(&self, guard_error: &str) {
         let record = match self.repo.shared_daemon_runtime_get().await {
             Ok(record) => record,
             Err(e) => {
@@ -565,8 +576,38 @@ impl SharedCodexAppServer {
             record.process_start_time,
             record.boot_id.clone(),
         ) else {
+            // #863 review F3b — a partial identity tuple is a corrupt record:
+            // say so instead of silently skipping. A fully-empty tuple is the
+            // normal "no daemon was ever persisted" state and stays silent.
+            if record.pid.is_some()
+                || record.pgid.is_some()
+                || record.process_start_time.is_some()
+                || record.boot_id.is_some()
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid = ?record.pid,
+                    pgid = ?record.pgid,
+                    process_start_time = ?record.process_start_time,
+                    boot_id = ?record.boot_id,
+                    "boot guard refusal: persisted daemon record has a partial identity tuple; skipping reap"
+                );
+            }
             return;
         };
+        // #863 review F3a — spawn always sets pgid = pid (`process_group(0)`);
+        // a mismatched persisted pgid is a corrupt record, and signaling a
+        // pgid we did not create risks killing unrelated processes. Never
+        // signal; warn and skip the reap.
+        if pgid != pid {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                pid,
+                pgid,
+                "boot guard refusal: persisted pgid does not match pid (spawn invariant pgid == pid); treating record as corrupt and skipping reap"
+            );
+            return;
+        }
         if !verify_owned_pid(pid, start_time, &boot_id) {
             return;
         }
@@ -577,6 +618,37 @@ impl SharedCodexAppServer {
             "boot guard refused polluted CODEX_HOME; reaping verified persisted daemon before erroring"
         );
         reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
+        // #863 review F3c — persist the reap so DB truth reflects it.
+        // `try_takeover_live`'s reap paths deliberately leave the record
+        // because a fresh spawn immediately follows and overwrites it
+        // (`persist_runtime_starting`); here NOTHING follows — the guard
+        // refusal aborts the boot — so a stale "running" row would misreport
+        // a daemon we just killed. Shape mirrors `restart_after_crash`'s
+        // failed-spawn arm; the env signature is cleared because there is no
+        // process for it to describe.
+        if let Err(e) = self
+            .repo
+            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                state: SharedDaemonState::Failed.as_db_str().to_string(),
+                pid: None,
+                pgid: None,
+                sock_path: Some(self.sock.display().to_string()),
+                codex_home_path: Some(self.home.path().display().to_string()),
+                process_start_time: None,
+                boot_id: None,
+                started_at: None,
+                last_error: Some(guard_error.to_string()),
+                increment_restart_count: false,
+                daemon_env_signature: None,
+            })
+            .await
+        {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                error = %e,
+                "failed persisting Failed daemon record after boot-guard reap"
+            );
+        }
     }
 
     pub async fn thread_start_for_card(
@@ -898,21 +970,34 @@ impl SharedCodexAppServer {
         hex[..16].to_string()
     }
 
-    async fn current_env_signature(&self) -> Result<String> {
+    /// #863 review F4 — one settings snapshot per spawn: both the child's
+    /// proxy env AND the persisted env signature must derive from the SAME
+    /// settings read, otherwise a settings change between two loads persists
+    /// a signature for an env the child never got.
+    async fn load_spawn_env_snapshot(&self) -> Result<SpawnEnvSnapshot> {
         let settings = load_settings(self.repo.as_ref()).await?;
-        let http_proxy = Self::effective_proxy_env(
-            settings.http_proxy.as_deref(),
-            &["HTTP_PROXY", "http_proxy"],
-        );
-        let https_proxy = Self::effective_proxy_env(
-            settings.https_proxy.as_deref(),
-            &["HTTPS_PROXY", "https_proxy"],
-        );
-        Ok(Self::compute_env_signature(
+        Ok(SpawnEnvSnapshot {
+            http_proxy: Self::effective_proxy_env(
+                settings.http_proxy.as_deref(),
+                &["HTTP_PROXY", "http_proxy"],
+            ),
+            https_proxy: Self::effective_proxy_env(
+                settings.https_proxy.as_deref(),
+                &["HTTPS_PROXY", "https_proxy"],
+            ),
+        })
+    }
+
+    fn env_signature_for_snapshot(&self, snapshot: &SpawnEnvSnapshot) -> String {
+        Self::compute_env_signature(
             &self.ingest_url,
-            http_proxy.as_deref(),
-            https_proxy.as_deref(),
-        ))
+            snapshot.http_proxy.as_deref(),
+            snapshot.https_proxy.as_deref(),
+        )
+    }
+
+    async fn current_env_signature(&self) -> Result<String> {
+        Ok(self.env_signature_for_snapshot(&self.load_spawn_env_snapshot().await?))
     }
 
     /// Settings-first, parent-env-fallback proxy resolution — the same
@@ -945,7 +1030,9 @@ impl SharedCodexAppServer {
     /// plus exactly [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (in
     /// fixture builds only) the fake-codex fixture channel. The old
     /// `env_remove` of per-card `NEIGE_*` keys is subsumed by `env_clear`.
-    async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
+    /// Proxies come from the caller's pre-resolved [`SpawnEnvSnapshot`] so
+    /// the spawn env and the persisted signature share one settings read.
+    fn apply_spawn_env(&self, cmd: &mut Command, snapshot: &SpawnEnvSnapshot) {
         cmd.env_clear();
         for key in SPAWN_ENV_PASSTHROUGH {
             // var_os: a non-UTF8 value must pass through, not be silently dropped
@@ -973,17 +1060,26 @@ impl SharedCodexAppServer {
         cmd.env("CODEX_HOME", self.home.path())
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 
-        let settings = load_settings(self.repo.as_ref()).await?;
+        // The snapshot values are already settings-first/parent-env-fallback
+        // resolved (`effective_proxy_env` in `load_spawn_env_snapshot`);
+        // `resolved_proxy_env_pairs` only applies the (UPPER, lower) pair
+        // shaping + empty filter here, so the lookup is inert.
         for (upper, lower, value) in Self::resolved_proxy_env_pairs(
-            settings.http_proxy.as_deref(),
-            settings.https_proxy.as_deref(),
-            |key| std::env::var(key).ok(),
+            snapshot.http_proxy.as_deref(),
+            snapshot.https_proxy.as_deref(),
+            |_| None,
         ) {
             cmd.env(upper, &value).env(lower, value);
         }
-
-        Ok(())
     }
+}
+
+/// #863 review F4 — a single-settings-read snapshot of the spawn-relevant
+/// runtime settings. Both the child's proxy env and the persisted
+/// `daemon_env_signature` are derived from one instance of this.
+struct SpawnEnvSnapshot {
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
 }
 
 // ===================== Process lifecycle / supervision =====================
@@ -1109,6 +1205,12 @@ impl SharedCodexAppServer {
     ) -> Result<LaunchedSharedDaemon> {
         // #863 boot guard on EVERY spawn (crash-restart/respawn included):
         // pollution written while running is caught at the next launch.
+        // Accepted residual (#863 review F6): the ConfigLock taken inside
+        // `verify_expected_mcp_servers` is released between this verification
+        // and the exec below, so a racing writer could re-pollute config.toml
+        // (or drop a fresh `.env`) in that window. Accepted because all
+        // legitimate writers run earlier in boot wiring (seed → sanitize →
+        // ensure_*), and the guard re-runs on every respawn.
         self.home
             .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .map_err(|e| {
@@ -1116,6 +1218,9 @@ impl SharedCodexAppServer {
                     "refusing to launch shared codex app-server: {e}"
                 ))
             })?;
+        // #863 review F4 — ONE settings read per spawn: the child env below
+        // and the persisted signature both derive from this snapshot.
+        let spawn_env_snapshot = self.load_spawn_env_snapshot().await?;
         std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(&self.log_dir)?;
         self.remove_stale_socket_before_spawn().await?;
@@ -1139,7 +1244,7 @@ impl SharedCodexAppServer {
             .stderr(Stdio::from(stderr))
             .process_group(0)
             .kill_on_drop(true);
-        self.apply_spawn_env(&mut cmd).await?;
+        self.apply_spawn_env(&mut cmd, &spawn_env_snapshot);
         let child = cmd.spawn().map_err(|e| {
             CalmError::CodexAppServer(format!("spawn shared codex app-server: {e}"))
         })?;
@@ -1153,7 +1258,7 @@ impl SharedCodexAppServer {
         let process_start_time = read_proc_start_time(pid).unwrap_or(0);
         let boot_id = read_boot_id().unwrap_or_default();
         let started_at = now_ms();
-        let daemon_env_signature = self.current_env_signature().await?;
+        let daemon_env_signature = self.env_signature_for_snapshot(&spawn_env_snapshot);
         let runtime = SharedDaemonRuntime {
             pid,
             pgid,
@@ -1805,8 +1910,9 @@ impl SharedCodexAppServer {
     pub async fn spawn_env_for_test(
         &self,
     ) -> Result<std::collections::BTreeMap<String, Option<String>>> {
+        let snapshot = self.load_spawn_env_snapshot().await?;
         let mut cmd = Command::new(&self.codex_bin);
-        self.apply_spawn_env(&mut cmd).await?;
+        self.apply_spawn_env(&mut cmd, &snapshot);
         Ok(cmd
             .as_std()
             .get_envs()

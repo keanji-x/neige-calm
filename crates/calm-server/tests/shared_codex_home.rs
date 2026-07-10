@@ -87,6 +87,12 @@ mod shared_codex_home {
             mode, 0o600,
             "shared config.toml must be 0600 (contains daemon token): got {mode:o}"
         );
+        // #863 review F5 — the atomic tmp+rename writer must not leave its
+        // sibling temp file behind after a successful write.
+        assert!(
+            !home.path().join("config.toml.tmp").exists(),
+            "atomic config writer must clean up its temp file via rename"
+        );
     }
 
     #[test]
@@ -678,6 +684,36 @@ args = ["--bar"]
             .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
             .expect_err("dotted-key mcp_servers pollution must be caught");
         assert!(err.to_string().contains("dotty"), "must name it: {err}");
+    }
+
+    /// #863 review F2 — the guard treats a leaked `<home>/.env` as
+    /// derived-state pollution: it DELETES it (converges without an outage)
+    /// instead of refusing, at every guard point (boot/takeover and every
+    /// respawn). Codex arg0 `load_dotenv` would otherwise inject it into the
+    /// daemon's own process env, bypassing the spawn allow-list.
+    #[test]
+    fn verify_expected_mcp_servers_deletes_leaked_dotenv_and_accepts_home() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        let shim = McpShimConfig {
+            shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+            socket_path: root.path().join("mcp/kernel.sock"),
+        };
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("write calm entry");
+        std::fs::write(home.path().join(".env"), "SECRET=leak\n").expect("write leaked .env");
+
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("guard must converge by deleting the leaked .env, not refuse");
+
+        assert!(
+            !home.path().join(".env").exists(),
+            "guard must delete the leaked .env"
+        );
+        // Idempotent: a clean home stays accepted.
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("clean home must keep passing the guard");
     }
 
     #[test]

@@ -122,13 +122,30 @@ impl SharedCodexHome {
     /// *missing* `calm` entry is a liveness concern owned elsewhere, not an
     /// integrity breach. Takes `ConfigLock` (races `ensure_config` writers)
     /// and enumerates via `as_table_like()` so inline tables / dotted keys
-    /// cannot evade it.
+    /// cannot evade it. Additionally deletes a leaked `<home>/.env` (with a
+    /// `warn!`) instead of refusing — it is derived state, so deletion
+    /// converges without an outage; this runs at every guard point, i.e. at
+    /// boot/takeover AND before every (re)spawn.
     pub fn verify_expected_mcp_servers(&self, expected: &[&str]) -> io::Result<()> {
         if !self.home.exists() {
             return Ok(());
         }
         let lock_path = self.home.join(".config.lock");
         let _lock = ConfigLock::acquire(&lock_path)?;
+        // #863 review F2 — a `<home>/.env` created while the daemon runs
+        // would be injected into the daemon's own process env by codex arg0
+        // `load_dotenv` at the next spawn, bypassing the spawn allow-list
+        // entirely. It is derived state (same argument as
+        // `sanitize_unexpected_mcp_servers`), so the guard DELETES it instead
+        // of refusing: deletion converges without an outage, matching the
+        // sanitize semantics. Runs under the same ConfigLock as the config
+        // verification below.
+        if self.remove_leaked_env_file()? {
+            tracing::warn!(
+                home = %self.home.display(),
+                "launch guard deleted leaked CODEX_HOME/.env before spawn"
+            );
+        }
         let cfg_path = self.home.join("config.toml");
         let text = match fs::read_to_string(&cfg_path) {
             Ok(text) => text,
@@ -189,10 +206,8 @@ impl SharedCodexHome {
     pub fn sanitize_unexpected_mcp_servers(&self, expected: &[&str]) -> io::Result<Vec<String>> {
         let mut removed: Vec<String> = Vec::new();
 
-        match fs::remove_file(self.home.join(".env")) {
-            Ok(()) => removed.push(".env".to_string()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
+        if self.remove_leaked_env_file()? {
+            removed.push(".env".to_string());
         }
 
         if !self.home.exists() {
@@ -245,6 +260,17 @@ impl SharedCodexHome {
         }
 
         Ok(removed)
+    }
+
+    /// Delete a leaked `<home>/.env` if present (codex arg0 `load_dotenv`
+    /// would inject it into the daemon's own process env at startup,
+    /// bypassing the spawn allow-list). Returns whether a file was removed.
+    fn remove_leaked_env_file(&self) -> io::Result<bool> {
+        match fs::remove_file(self.home.join(".env")) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// toml_edit round-trip idempotent writer for `<home>/config.toml`.
@@ -324,8 +350,11 @@ impl SharedCodexHome {
         let new_text = doc.to_string();
         if new_text != text {
             write_config_0600(&cfg_path, new_text.as_bytes())?;
-        }
-        if cfg_path.exists() {
+        } else if cfg_path.exists() {
+            // Unchanged content: the atomic writer didn't run, but a
+            // pre-existing config (e.g. hand-written) may carry loose perms;
+            // tighten in place. After a write this is redundant — the atomic
+            // helper already guarantees 0600.
             fs::set_permissions(&cfg_path, fs::Permissions::from_mode(0o600))?;
         }
 
@@ -352,18 +381,36 @@ impl SharedCodexHome {
     }
 }
 
-/// Write `<home>/config.toml` content with 0600 perms (it can carry the
-/// daemon MCP token) and fsync.
+/// Write `<home>/config.toml` content atomically with 0600 perms (it can
+/// carry the daemon MCP token): write a 0600 sibling temp file, fsync it,
+/// then `rename(2)` over the target — a crash mid-write can never leave a
+/// truncated config (#863 review F5). All callers hold `ConfigLock`, so the
+/// fixed temp name cannot collide with a concurrent writer. Best-effort
+/// directory fsync afterwards, matching `neige-app`'s `write_json_atomic`
+/// convention.
 fn write_config_0600(cfg_path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let tmp_path = cfg_path.with_extension("toml.tmp");
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
-        .open(cfg_path)?;
+        .open(&tmp_path)?;
+    // `mode(0o600)` only applies on create; enforce on a leftover temp from
+    // a crashed earlier write too.
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
     file.write_all(bytes)?;
     file.sync_all()?;
-    fs::set_permissions(cfg_path, fs::Permissions::from_mode(0o600))?;
+    drop(file);
+    if let Err(e) = fs::rename(&tmp_path, cfg_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+    if let Some(parent) = cfg_path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
     Ok(())
 }
 
