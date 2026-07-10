@@ -1,4 +1,5 @@
-use super::{derive_session_identity, is_sqlite_busy_code};
+use super::derive_session_identity;
+use super::infra::is_sqlite_busy_code;
 use crate::session_projection_repo::WorkerSessionKind;
 use calm_types::worker::{SessionMode, WorkerContract, WorkerProviderKind};
 
