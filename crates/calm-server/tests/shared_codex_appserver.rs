@@ -10,7 +10,7 @@ use calm_server::db::sqlite::{
 use calm_server::db::{
     Repo, RepoOutOfDomain, RepoRead, RepoSyncDomainRaw, SharedCodexDaemonUpdate,
 };
-use calm_server::mcp_server::auth;
+use calm_server::mcp_server::{McpShimConfig, auth};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::proc_identity::{read_boot_id, read_proc_start_time};
 use calm_server::routes::theme::RequestTheme;
@@ -18,8 +18,9 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::{
-    BackoffState, SharedCodexAppServer, SharedDaemonState, SharedThreadStartParams, ThreadConfig,
-    bounded_exponential_backoff, drop_spawned_child_guard_for_test,
+    BackoffState, SPAWN_ENV_PASSTHROUGH, SharedCodexAppServer, SharedDaemonState,
+    SharedThreadStartParams, ThreadConfig, bounded_exponential_backoff,
+    drop_spawned_child_guard_for_test,
 };
 use clap::Parser;
 use serde_json::{Value, json};
@@ -140,13 +141,422 @@ async fn start_new_process_strips_per_card_env_keys() {
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
     let env = daemon.spawn_env_for_test().await.unwrap();
 
-    assert_eq!(env.get("NEIGE_CARD_ID"), Some(&None));
-    assert_eq!(env.get("NEIGE_HOOK_PROVIDER"), Some(&None));
-    assert_eq!(env.get("NEIGE_MCP_TOKEN"), Some(&None));
-    assert_eq!(env.get("NEIGE_HOOK_URL"), Some(&None));
+    // #863: `env_clear()` subsumes the old per-key `env_remove`; the stale
+    // per-card keys must be ABSENT from `get_envs()` (no explicit-removal
+    // `Some(&None)` marker, no explicit set).
+    for stale in [
+        "NEIGE_CARD_ID",
+        "NEIGE_HOOK_PROVIDER",
+        "NEIGE_MCP_TOKEN",
+        "NEIGE_HOOK_URL",
+    ] {
+        assert_eq!(
+            env.get(stale),
+            None,
+            "{stale} must be absent from the explicit spawn env"
+        );
+    }
     assert_eq!(
         env.get("NEIGE_CALM_BASE_URL").cloned().flatten().as_deref(),
         Some("http://expected")
+    );
+}
+
+/// #863 §5 — allow-list purity at the `get_envs()` seam: every explicitly-set
+/// key is either a computed key, a `SPAWN_ENV_PASSTHROUGH` entry, or (in this
+/// fixtures-enabled test build only) a fake-codex fixture-channel key.
+#[tokio::test]
+async fn spawn_env_explicit_keys_stay_within_allow_list_and_computed_keys() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    repo.settings_upsert("http_proxy", "http://proxy.local:3128")
+        .await
+        .unwrap();
+    repo.settings_upsert("https_proxy", "http://secure-proxy.local:3129")
+        .await
+        .unwrap();
+    let mut cfg = cfg(&root);
+    cfg.codex_ingest_url = Some("http://127.0.0.1:8765".into());
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+    let env = daemon.spawn_env_for_test().await.unwrap();
+
+    let computed = [
+        "CODEX_HOME",
+        "NEIGE_CALM_BASE_URL",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    ];
+    for key in env.keys() {
+        let allowed = computed.contains(&key.as_str())
+            || SPAWN_ENV_PASSTHROUGH.contains(&key.as_str())
+            // Fixture channel: exists only because this test binary compiles
+            // calm-server with the `fixtures` feature; NOT part of the prod const.
+            || key.starts_with("FAKE_CODEX_")
+            || key == "NEIGE_OSC_TRACE_PATH";
+        assert!(
+            allowed,
+            "spawn env key {key} is outside the #863 allow-list; \
+             the child env must be a pure function of config"
+        );
+    }
+    assert!(env.contains_key("CODEX_HOME"));
+    assert!(env.contains_key("NEIGE_CALM_BASE_URL"));
+    assert_eq!(
+        env.get("HTTP_PROXY").cloned().flatten().as_deref(),
+        Some("http://proxy.local:3128"),
+        "settings proxy must be an explicit computed key"
+    );
+}
+
+/// #863 red repro (TEST A): the spawned shared app-server must not inherit
+/// ambient parent env. `spawn_env_for_test` cannot catch this class of bug —
+/// `Command::get_envs()` only reports explicitly-set keys, never implicit
+/// inheritance — so this test boots the real spawn path
+/// (`start_or_takeover` → `launch_spawned_process`) against the fake codex
+/// binary and reads `/proc/<pid>/environ` of the live child directly.
+///
+/// RED today: `apply_spawn_env` never calls `env_clear()`, so parent-side
+/// canaries leak into the codex child. Turns green once the child env is an
+/// explicit allow-list (a pure function of config).
+#[tokio::test]
+async fn spawned_daemon_does_not_inherit_parent_canary_env() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("NEIGE_TEST_CANARY_LEAK", "863");
+        std::env::set_var("CLAUDE_CODE_EXECPATH", "/tmp/fake-claude-863");
+    }
+    let _canary = EnvGuard("NEIGE_TEST_CANARY_LEAK");
+    let _execpath = EnvGuard("CLAUDE_CODE_EXECPATH");
+    assert_eq!(
+        std::env::var("NEIGE_TEST_CANARY_LEAK").as_deref(),
+        Ok("863"),
+        "positive control: canary must be set in the parent before spawn"
+    );
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    // The fake app-server keeps serving its socket until the daemon drops
+    // it (kill_on_drop), so /proc/<pid>/environ stays readable here.
+    let pid = daemon
+        .status_snapshot()
+        .runtime
+        .expect("running spawned daemon")
+        .pid;
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).expect("read child /proc environ");
+    let child_env = raw
+        .split(|byte| *byte == 0)
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| String::from_utf8_lossy(chunk).into_owned())
+        .collect::<Vec<String>>();
+
+    let expected_codex_home = format!(
+        "CODEX_HOME={}",
+        cfg(&root).data_dir_resolved().join("codex-home").display()
+    );
+    assert!(
+        child_env.contains(&expected_codex_home),
+        "sanity: child environ must carry the explicit CODEX_HOME pin; got {child_env:?}"
+    );
+
+    let leaks = child_env
+        .iter()
+        .filter(|kv| {
+            kv.starts_with("NEIGE_TEST_CANARY_LEAK=") || kv.starts_with("CLAUDE_CODE_EXECPATH=")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leaks.is_empty(),
+        "spawned codex app-server must not inherit ambient parent env \
+         (child env must be a pure function of config); leaked: {leaks:?}"
+    );
+
+    // #863 §5 allow-list purity: the child's key set must be a subset of
+    // {computed keys} ∪ SPAWN_ENV_PASSTHROUGH (∪ the fixture channel, which
+    // exists only in this fixtures-enabled build) — "no key outside the pure
+    // function".
+    let computed = [
+        "CODEX_HOME",
+        "NEIGE_CALM_BASE_URL",
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+    ];
+    for kv in &child_env {
+        let key = kv.split_once('=').map(|(k, _)| k).unwrap_or(kv.as_str());
+        let allowed = computed.contains(&key)
+            || SPAWN_ENV_PASSTHROUGH.contains(&key)
+            || key.starts_with("FAKE_CODEX_")
+            || key == "NEIGE_OSC_TRACE_PATH";
+        assert!(
+            allowed,
+            "child environ key {key} is outside the #863 allow-list \
+             (child env must be a pure function of config); full env: {child_env:?}"
+        );
+    }
+    // Positive outage canaries: the allow-list must actually pass the
+    // load-bearing vars through, not just drop everything.
+    for canary in ["PATH=", "HOME="] {
+        assert!(
+            child_env.iter().any(|kv| kv.starts_with(canary)),
+            "allow-list must pass {canary} through to the child; got {child_env:?}"
+        );
+    }
+}
+
+/// #863 red repro (TEST B): booting the shared app-server against a
+/// CODEX_HOME whose config.toml carries an unexpected `[mcp_servers.*]`
+/// entry must be refused at launch. `seed()` copies host `~/.codex/`
+/// verbatim, so a host-level plugin registration lands in the shared home
+/// exactly like the pollution written below.
+///
+/// RED today: launch never inspects config.toml and boots happily.
+#[tokio::test]
+async fn boot_rejects_codex_home_with_unexpected_mcp_server_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let cfg = cfg(&root);
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    // seed_from(None): deterministic empty home, no host ~/.codex copy.
+    home.seed_from(None).unwrap();
+    // Legitimate `calm` entry, as boot wiring (state.rs) writes it.
+    let shim = McpShimConfig {
+        shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+        socket_path: root.path().join("mcp/kernel.sock"),
+    };
+    home.ensure_daemon_mcp_config(&shim, "daemon-token")
+        .unwrap();
+    // Pollution: an extra MCP server beyond the expected `calm` one.
+    let cfg_path = home.path().join("config.toml");
+    let mut polluted = std::fs::read_to_string(&cfg_path).unwrap();
+    polluted.push_str("\n[mcp_servers.evil]\ncommand = \"/usr/bin/evil-mcp\"\n");
+    std::fs::write(&cfg_path, &polluted).unwrap();
+
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo);
+    let err = daemon.start_or_takeover().await.expect_err(
+        "boot must refuse a CODEX_HOME polluted with an unexpected [mcp_servers.*] entry",
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("evil"),
+        "launch refusal must name the unexpected mcp server entry; got: {msg}"
+    );
+
+    // #863 review F1 — the refusal must be visible on the status surface,
+    // not only in the boot error: state=Failed with last_error naming the
+    // offender.
+    let status = daemon.status_snapshot();
+    assert_eq!(
+        status.state,
+        SharedDaemonState::Failed,
+        "guard refusal must surface state=Failed in status_snapshot()"
+    );
+    let last_error = status
+        .last_error
+        .expect("guard refusal must surface last_error in status_snapshot()");
+    assert!(
+        last_error.contains("evil"),
+        "status last_error must name the unexpected mcp server entry; got: {last_error}"
+    );
+}
+
+/// #863 review F2 — a `.env` dropped into the shared CODEX_HOME after boot
+/// sanitize (e.g. while the daemon runs) would be injected into the daemon's
+/// own process env by codex arg0 `load_dotenv` at the next launch, bypassing
+/// the spawn allow-list. The launch guard treats it as derived-state
+/// pollution and DELETES it (warn, no outage) before the spawn — boot must
+/// succeed AND the file must be gone.
+#[tokio::test]
+async fn boot_deletes_leaked_codex_home_env_file_before_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo).await;
+    let env_path = daemon.codex_home_path().join(".env");
+    std::fs::write(&env_path, "INJECTED_AFTER_BOOT_SANITIZE=863\n").unwrap();
+
+    daemon
+        .start_or_takeover()
+        .await
+        .expect("boot must converge by deleting the leaked .env, not refuse");
+
+    assert!(
+        !env_path.exists(),
+        "launch guard must delete CODEX_HOME/.env before the daemon spawns"
+    );
+    assert_eq!(
+        daemon.status_snapshot().state,
+        SharedDaemonState::Running,
+        "daemon must be running after the .env repair"
+    );
+}
+
+/// Deterministic shared home whose config.toml carries an unexpected
+/// `[mcp_servers.evil]` entry, so `start_or_takeover`'s boot guard refuses.
+/// Mirrors the setup of `boot_rejects_codex_home_with_unexpected_mcp_server_entry`.
+fn polluted_home(root: &tempfile::TempDir) -> calm_server::shared_codex_home::SharedCodexHome {
+    let cfg = cfg(root);
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed_from(None).unwrap();
+    let shim = McpShimConfig {
+        shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+        socket_path: root.path().join("mcp/kernel.sock"),
+    };
+    home.ensure_daemon_mcp_config(&shim, "daemon-token")
+        .unwrap();
+    let cfg_path = home.path().join("config.toml");
+    let mut polluted = std::fs::read_to_string(&cfg_path).unwrap();
+    polluted.push_str("\n[mcp_servers.evil]\ncommand = \"/usr/bin/evil-mcp\"\n");
+    std::fs::write(&cfg_path, &polluted).unwrap();
+    home
+}
+
+/// #863 review R2-3(b) — a boot-guard refusal against a VERIFIED persisted
+/// daemon must both reap the process and persist the reap: state=failed,
+/// identity tuple (pid/pgid/start_time/boot_id) cleared, last_error naming
+/// the offending guard error.
+#[tokio::test]
+async fn guard_refusal_reaps_verified_daemon_and_persists_failed_record() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for guard-refusal reap");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, old_pid, old_pid, &sock, process_start_time).await;
+
+    let daemon =
+        SharedCodexAppServer::new(&cfg(&root), Arc::new(polluted_home(&root)), repo.clone());
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot guard must refuse the polluted CODEX_HOME");
+    assert!(
+        err.to_string().contains("evil"),
+        "refusal must name the offender; got: {err}"
+    );
+
+    tokio::time::timeout(Duration::from_secs(5), child.wait())
+        .await
+        .expect("guard refusal must reap the verified persisted daemon")
+        .expect("wait reaped fake app-server");
+
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Failed,
+        "guard-refusal reap must persist state=failed"
+    );
+    assert_eq!(record.pid, None, "pid must be cleared after the reap");
+    assert_eq!(record.pgid, None, "pgid must be cleared after the reap");
+    assert_eq!(
+        record.process_start_time, None,
+        "process_start_time must be cleared after the reap"
+    );
+    assert_eq!(
+        record.boot_id, None,
+        "boot_id must be cleared after the reap"
+    );
+    let last_error = record
+        .last_error
+        .expect("guard-refusal reap must persist last_error");
+    assert!(
+        last_error.contains("evil"),
+        "persisted last_error must name the offending entry; got: {last_error}"
+    );
+}
+
+/// #863 review R2-3(a) / F3a — a persisted record whose pgid != pid is
+/// corrupt (spawn invariant: `process_group(0)` ⇒ pgid == pid); the
+/// guard-refusal reap must NOT signal it. The launcher/native split makes
+/// the liveness assertion meaningful: the record points pid at the native
+/// app-server and pgid at the launcher's (real, live) process group, so a
+/// regression that signals the recorded pgid kills both — the guard must
+/// leave them alive and the corrupt record untouched.
+#[tokio::test]
+async fn guard_refusal_skips_reap_when_persisted_pgid_mismatches_pid() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let (launcher, pgid, peer_pid) = spawn_launcher_with_fake_appserver(&sock, false, false).await;
+    let process_start_time = read_proc_start_time(peer_pid).expect("fake app-server start time");
+
+    let repo = repo().await;
+    // Mismatched identity tuple: pid = native app-server, pgid = launcher group.
+    persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
+
+    let daemon =
+        SharedCodexAppServer::new(&cfg(&root), Arc::new(polluted_home(&root)), repo.clone());
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot guard must still refuse the polluted CODEX_HOME");
+    assert!(
+        err.to_string().contains("evil"),
+        "refusal must name the offender; got: {err}"
+    );
+
+    // Any (buggy) reap is fully awaited inside `start_or_takeover`; add a
+    // short grace for signal delivery, then probe liveness.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    let peer_alive = unsafe { libc::kill(peer_pid, 0) } == 0;
+    let launcher_alive = unsafe { libc::kill(pgid, 0) } == 0;
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+
+    force_cleanup_process_group(launcher, pgid);
+
+    assert!(
+        peer_alive && launcher_alive,
+        "guard refusal must NOT signal a corrupt (pgid != pid) persisted record; \
+         peer_alive={peer_alive} launcher_alive={launcher_alive}"
+    );
+    // Skip path also means no failed-record rewrite: the corrupt record is
+    // left as-is for the operator (only the reap path persists Failed).
+    assert_eq!(
+        record.pid,
+        Some(peer_pid),
+        "corrupt record pid must be left untouched"
+    );
+    assert_eq!(
+        record.pgid,
+        Some(pgid),
+        "corrupt record pgid must be left untouched"
+    );
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "skip path must not rewrite the persisted state"
     );
 }
 
