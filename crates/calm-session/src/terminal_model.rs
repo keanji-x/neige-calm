@@ -818,9 +818,9 @@ impl TerminalModel {
     }
 
     /// Resize the internal grid. Existing content is clipped (cols
-    /// reduced) or padded with blank cells (cols increased / rows
-    /// increased). Rows reduced evict the *top* lines into scrollback
-    /// (matches xterm). Cursor is clamped into the new geometry.
+    /// reduced) or padded with blank cells (cols increased). Rows reduced
+    /// preserve the active tail and evict older top lines into scrollback.
+    /// Cursor is clamped into the new geometry.
     /// Always bumps `rev` (caller expectation: any resize requires a
     /// fresh snapshot anyway).
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -833,7 +833,9 @@ impl TerminalModel {
             return;
         }
 
-        // 1. Adjust per-row width.
+        // 1. Adjust per-row width. Rows must remain exactly grid.cols wide:
+        // retaining hidden suffixes would let stale text reappear after a
+        // narrow-width edit followed by a widen.
         if new_cols != self.grid.cols {
             let new_cols_usize = new_cols as usize;
             for row in self.grid.rows.iter_mut() {
@@ -854,29 +856,27 @@ impl TerminalModel {
                 }
             }
             std::cmp::Ordering::Less => {
-                // Shrink rows. Two policies:
-                //   - If the cursor survives bottom-drop (cursor_row <
-                //     target_rows): discard bottom rows. Keeps the top
-                //     content (typical "tiny shell at top" case).
-                //   - Else: drop top rows into scrollback and shift the
-                //     cursor up by that many rows (xterm-style anchor-to-
-                //     bottom for an active prompt at/near bottom).
+                // Trim genuinely unused rows below the cursor first. If
+                // the bottom contains output (or the cursor), anchor to
+                // that active tail and evict from the top into scrollback.
+                // This preserves the common short prompt at top without
+                // ever deleting bottom output just because the cursor was
+                // moved elsewhere before a remount.
                 let to_drop = cur_rows - target_rows;
-                if (self.cursor.row as usize) < target_rows {
-                    for _ in 0..to_drop {
+                for _ in 0..to_drop {
+                    let last_idx = self.grid.rows.len().saturating_sub(1);
+                    let bottom_is_unused = last_idx > self.cursor.row as usize
+                        && self.grid.rows[last_idx].iter().all(Cell::is_blank);
+                    if bottom_is_unused {
                         self.grid.rows.pop();
-                    }
-                } else {
-                    for _ in 0..to_drop {
-                        if !self.grid.rows.is_empty() {
-                            let dropped = self.grid.rows.remove(0);
-                            self.scrollback.push_back(dropped);
-                            while self.scrollback.len() > self.scrollback_max_lines {
-                                self.scrollback.pop_front();
-                            }
+                    } else if !self.grid.rows.is_empty() {
+                        let dropped = self.grid.rows.remove(0);
+                        self.scrollback.push_back(dropped);
+                        while self.scrollback.len() > self.scrollback_max_lines {
+                            self.scrollback.pop_front();
                         }
+                        self.cursor.row = self.cursor.row.saturating_sub(1);
                     }
-                    self.cursor.row = self.cursor.row.saturating_sub(to_drop as u16);
                 }
             }
             std::cmp::Ordering::Equal => {}

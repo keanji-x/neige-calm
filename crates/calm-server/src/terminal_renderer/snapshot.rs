@@ -1,5 +1,5 @@
+use calm_session::DaemonMsg;
 use calm_session::terminal_model::ScrollbackLimit;
-use calm_session::{DaemonMsg, PtySize};
 
 use super::SharedRenderPlane;
 
@@ -15,7 +15,6 @@ pub fn scrollback_request(req: calm_session::InitialScrollback) -> ScrollbackLim
 pub fn rebuild_server_hello_snapshot(
     msg: DaemonMsg,
     render_plane: &SharedRenderPlane,
-    desired_size: Option<PtySize>,
     scrollback: Option<ScrollbackLimit>,
 ) -> DaemonMsg {
     match msg {
@@ -33,13 +32,11 @@ pub fn rebuild_server_hello_snapshot(
             history_gap,
             is_child_ready,
         } => {
-            let (cols, rows) = if client_role == calm_session::Role::Owner {
-                desired_size
-                    .map(|s| (s.cols, s.rows))
-                    .unwrap_or((pty_size.cols, pty_size.rows))
-            } else {
-                (pty_size.cols, pty_size.rows)
-            };
+            // Recovery always reflects the authoritative PTY/model geometry.
+            // ClientHello.desired_size may be a transient remount measurement;
+            // binding the snapshot to it would clip content before the user has
+            // made an explicit, stable ResizeCommit.
+            let (cols, rows) = (pty_size.cols, pty_size.rows);
             let limit = scrollback.unwrap_or(ScrollbackLimit::None);
             let snapshot = match render_plane.lock() {
                 Ok(rp) => rp.build_snapshot(cols, rows, limit),

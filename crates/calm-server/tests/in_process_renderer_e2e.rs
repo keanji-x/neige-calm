@@ -28,13 +28,16 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
     let entry = registry
         .ensure(RendererConfig {
             terminal_id: terminal_id.clone(),
-            cols: 80,
+            cols: 100,
             rows: 24,
             buffer_bytes: 1 << 20,
             terminal_fg: (216, 219, 226),
             terminal_bg: (15, 20, 24),
             program: "/bin/sh".into(),
-            args: vec!["-c".into(), "echo hello; sleep 30".into()],
+            args: vec![
+                "-c".into(),
+                "echo hello; printf '%085dWIDTH-MARKER\\n' 0; sleep 30".into(),
+            ],
             envs: std::env::vars().collect(),
             cwd: workspace_root().display().to_string(),
             supervisor_sock: control_sock.clone(),
@@ -79,9 +82,13 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
         .await
         .expect("server hello timeout")
         .expect("server hello channel closed");
+    let DaemonMsg::ServerHello { snapshot, .. } = hello else {
+        panic!("expected ServerHello");
+    };
+    assert_eq!((snapshot.cols, snapshot.rows), (100, 24));
     assert!(
-        matches!(hello, DaemonMsg::ServerHello { .. }),
-        "expected ServerHello, got {hello:?}"
+        String::from_utf8_lossy(&snapshot.data).contains("WIDTH-MARKER"),
+        "80-col remount desire must not clip marker from current 100-col model"
     );
 
     client_tx
