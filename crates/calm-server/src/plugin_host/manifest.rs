@@ -920,7 +920,9 @@ mod tests {
             "approved",
             "changes_requested",
             "cap is the fixed policy constant 8",
-            "previous cap plus exactly 2",
+            // #891 slice ② review fix — cap+2 is scoped to cap-exhaustion
+            // grants; a merge_hold/repo_mismatch grant licenses no raise.
+            "after a cap-exhaustion ratify grant it is the previous cap plus exactly 2",
             "cap = previous cap + 2",
             "Always re-review",
             "expected_head_sha",
@@ -932,9 +934,14 @@ mod tests {
             // policy, deliberately not kernel-enforced); pin their presence.
             "Bound Workflow Input",
             "gh.issue.view",
-            "reason:\"repo_mismatch\"",
-            "reason:\"merge_hold\"",
+            // Reason strings are a single free-form field on the kernel
+            // side; the descriptor prescribes prefix + detail encoding.
+            "reason:\"repo_mismatch: input.repo=",
+            "reason:\"merge_hold: pr #",
             "also the semantics whenever merge_policy is absent",
+            // merge_hold lifecycle dance: ratify.request 400s unless the
+            // wave is `working`, so the hold must route through it.
+            "green checks, then move reviewing->working",
         ] {
             assert!(
                 workflow.spec_instructions.contains(needle),
@@ -980,6 +987,16 @@ mod tests {
         assert!(inspect.goal.contains("input.repo"));
         let acceptance = inspect.acceptance_criteria.as_deref().unwrap_or("");
         assert!(acceptance.contains("origin remote matches input.repo"));
+
+        // #891 slice ② review fix — the merge task is policy-conditional:
+        // its goal must not push agents past the hold-for-ratify gate, and
+        // parking at the merge_hold ratify request is an accepted outcome.
+        let merge = task(&tasks, "merge");
+        assert!(merge.goal.contains("merge_policy-required ratify grant"));
+        assert!(merge.goal.contains("park at the merge_hold ratify request"));
+        let merge_acceptance = merge.acceptance_criteria.as_deref().unwrap_or("");
+        assert!(merge_acceptance.contains("policy-required ratify grant"));
+        assert!(merge_acceptance.contains("no merge performed"));
     }
 
     #[test]

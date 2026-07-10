@@ -220,6 +220,13 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     for field in ["issue_url", "repo", "issue_number"] {
         assert!(error.contains(field), "missing {field} in body={body}");
     }
+    // #891 slice ② review fix — the 400 must short-circuit before any DB
+    // write: no wave row may exist for the rejected create.
+    assert_eq!(
+        wave_count_by_title(&fx.repo, "bound without required input").await,
+        0,
+        "missing-input 400 must not create a wave row"
+    );
 
     // Input present but missing a required field → 400 naming it.
     let partial_dir = short_tempdir("wf-input-partial").expect("partial input cwd");
@@ -275,6 +282,13 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
             .unwrap_or("")
             .contains("workflow_input.merge_policy"),
         "body={body}"
+    );
+    // #891 slice ② review fix — schema-violation 400 likewise leaves no
+    // wave row behind.
+    assert_eq!(
+        wave_count_by_title(&fx.repo, "bound with invalid input").await,
+        0,
+        "schema-violation 400 must not create a wave row"
     );
 
     // #891 — F2 fail-closed still holds for schema-less descriptors: mutate
@@ -338,7 +352,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     fx.plugin_host.registry().insert(read_manifest(), None);
 
     let missing_dir = short_tempdir("wf-missing").expect("missing workflow cwd");
-    let (status, _body) = post_wave(
+    let (status, body) = post_wave(
         app.clone(),
         json!({
             "cove_id": fx.cove_id,
@@ -351,11 +365,20 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // #891 slice ② review fix — pin the trust-check wording so this case
+    // keeps discriminating the trust gate from input validation.
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("must reference a registered trusted workflow"),
+        "body={body}"
+    );
 
     drop(trusted);
     let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "other.plugin");
     let untrusted_dir = short_tempdir("wf-untrusted").expect("untrusted workflow cwd");
-    let (status, _body) = post_wave(
+    let (status, body) = post_wave(
         app,
         json!({
             "cove_id": fx.cove_id,
@@ -368,6 +391,14 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // #891 slice ② review fix — untrusted plugin hits the same trust gate.
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("must reference a registered trusted workflow"),
+        "body={body}"
+    );
 
     fx.plugin_host
         .stop(PLUGIN_ID)
@@ -1753,6 +1784,16 @@ async fn post_wave(app: axum::Router, body: Value) -> (StatusCode, Value) {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
+}
+
+// #891 slice ② review fix — rejected creates must leave zero wave rows;
+// titles are unique per case in this file, so a by-title count is decisive.
+async fn wave_count_by_title(repo: &SqlxRepo, title: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE title = ?1")
+        .bind(title)
+        .fetch_one(repo.pool())
+        .await
+        .expect("count waves by title")
 }
 
 async fn emit_workflow_registered_events_for_fixture(
