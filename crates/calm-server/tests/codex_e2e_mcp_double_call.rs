@@ -61,6 +61,8 @@
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
+mod support;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -85,19 +87,11 @@ use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use clap::Parser;
 use serde_json::{Value, json};
+// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
+// self-skip via `skip!`. Tests must never fall back to a PATH codex.
+use support::codex_fixture::resolve_codex_bin;
 
 const TEST_CWD: &str = "/tmp";
-
-fn codex_bin() -> String {
-    std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
-}
-
-fn codex_available(codex_bin: &str) -> bool {
-    std::process::Command::new(codex_bin)
-        .arg("--version")
-        .output()
-        .is_ok()
-}
 
 fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
     Config::parse_from(vec![
@@ -216,11 +210,12 @@ fn item_id(params: &Value) -> Option<&str> {
 #[tokio::test]
 #[ignore]
 async fn codex_mcp_double_call_both_complete() {
-    let codex_bin = codex_bin();
-    if !codex_available(&codex_bin) {
-        eprintln!("skipping: codex not on PATH and NEIGE_CODEX_BIN not usable");
-        return;
-    }
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
+    };
+    let codex_bin = codex_bin.display().to_string();
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(

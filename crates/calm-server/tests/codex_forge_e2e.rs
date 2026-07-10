@@ -35,8 +35,9 @@ use support::gh_shim::{seed_shim_issue_body, write_gh_shim};
 use support::git_helpers::*;
 use support::mcp::call_tool_via_socket;
 use support::oracle::{
-    OrderingEdge, RequiredEvent, SubjectKey, assert_converged_subject_has_merge,
-    assert_event_skeleton_superset, assert_ordering, assert_subject_keyed_cap_enforcement,
+    OrderingEdge, RequiredEvent, SubjectKey, assert_cap_extension_history,
+    assert_converged_subject_has_merge, assert_event_skeleton_superset, assert_ordering,
+    assert_subject_keyed_cap_enforcement,
 };
 use support::spec_turn::*;
 use tokio::time::{Instant, sleep};
@@ -844,11 +845,11 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 
     // Oracle phase 2 — PRIMARY resumption signal (independent checker's pin):
     // the real spec re-enters review, working->reviewing, after the grant.
-    // Wrinkle: the descriptor tells the spec to resume "blocked->working->
-    // reviewing", but the grant route ALREADY flipped blocked->working (actor
-    // User, same-tx above) — if the real spec attempts that first transition
-    // itself it fails as an illegal working->working edge; that is tolerated
-    // noise, resumption is proven by the working->reviewing edge alone.
+    // Since #888 the descriptor states the wave is already back in `working`
+    // after a grant and instructs a plain working->reviewing resume (the
+    // historical "blocked->working->reviewing" wording produced a tolerated
+    // illegal working->working attempt, now fixed); resumption is proven by
+    // the working->reviewing edge alone.
     let (_resume_id, resume_actor, resume_edge) =
         wait_for_wave_lifecycle_edge(&fx, resolved_id, "working", "reviewing", ratify_budget())
             .await;
@@ -857,10 +858,15 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
         "post-grant working->reviewing edge actor must be AiSpecSession, got {resume_actor:?} for {resume_edge}"
     );
 
-    // Post-grant convergence/merge is NOT asserted — kernel-impossible for
-    // this subject (next round would be n=9 > cap=8, rejected by the kernel):
-    // the recorded #840 cap-contradiction finding, a descriptor/kernel policy
-    // gap, not something this test papers over. Merge must still be absent.
+    // Post-grant convergence/merge is deliberately NOT asserted here: this
+    // subject is design-phase (pr_number: null — no PR exists in this
+    // fixture) and no post-grant channel verdicts are injected. The #888
+    // kernel cap-extension arm resolved the old cap contradiction (the next
+    // round n=9/cap=10 is now kernel-legal after the grant); the extension →
+    // convergence → merge finish is exercised by the R7c E2E
+    // (`real_spec_extends_cap_after_grant_converges_and_merges`) on a
+    // real-PR impl subject. Merge must still be absent — structurally
+    // impossible without a PR in this fixture.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
 
     assert!(
@@ -1356,6 +1362,672 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
         .await
         .expect("stop git-forge plugin");
     shutdown_shared_codex(&fx.shared).await;
+}
+
+// #888 R7c — post-grant cap extension to the F4 finish. The real spec,
+// cap-exhausted on a real-PR impl subject (seeded prior round n=7/cap=8, its
+// own cap round n=8/cap=8 non-converged), walks the full ASK-HUMAN chain; a
+// human grant (production HTTP route) then authorizes the descriptor's
+// "previous cap plus exactly 2" window, and the spec's SINGLE post-grant
+// round is both the extension AND the convergence (n=9, cap=10,
+// converged:true on the real branch tip — approved verdicts are injected
+// post-grant, before the spec's next round). Kernel acceptance of that
+// n=9/cap=10 row IS the E2E proof of the #888 extension arm and of
+// descriptor satisfiability; the merge then lands through the spec's own
+// gh.pr.merge (F4). In-window multi-round continuation after an extension is
+// unit-tested (review_ratify.rs t2), deliberately not E2E'd here.
+//
+// Composition = R7b's ratify flow ⊕ the d2 merge test's PR scaffolding. The
+// d2 seat caveat + construction W carry over verbatim: no scripted call to
+// `gh.pr.merge` exists in this file — scripted setup stops at
+// `gh.pr.create`/`gh.pr.checks` against this test's isolated fixture, so the
+// only possible emitter of `forge.pr.merged` is the real spec session's own
+// MCP `tools/call`. No dependency on #863: the spec executes gh.pr.merge
+// through its own MCP socket exactly as the merged d2 test does.
+#[tokio::test]
+async fn real_spec_extends_cap_after_grant_converges_and_merges() {
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!("no codex bin");
+    };
+
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+
+    let fx = match boot_forge_e2e_fixture(
+        FixtureSpec {
+            goal: None,
+            workflow_id: Some("issue-development".into()),
+            plan_source: PlanSource::RealSpecTurn,
+            issue_body: None,
+            mint_report_card: false,
+            require_task_gates: false,
+            descriptor_gate_cmd: None,
+            repo_seed: RepoSeed::ReadmeOnly,
+        },
+        codex_bin,
+    )
+    .await
+    {
+        Ok(fx) => fx,
+        Err(reason) => {
+            skip!("{reason}");
+        }
+    };
+    let repo_arg = fx.origin_repo.display().to_string();
+    let goal = extension_merge_goal(&repo_arg);
+
+    boot_spec_harness_via_start_op(&fx, goal).await;
+
+    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    assert!(
+        matches!(plan_actor, ActorId::AiSpecSession(_)),
+        "plan.updated actor must be the real spec session, got {plan_actor:?}"
+    );
+    // The review subject slice comes from the spec's OWN real plan so the
+    // seeded prior round matches the spec's mental model (R7a/d2 precedent).
+    let slice_id = plan["changed_keys"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
+        .to_string();
+
+    let harness = recover_spec_harness(&fx).await.expect("live spec harness");
+    // Settle the planning turn before setup/seeding (R6 causality guard).
+    wait_for_spec_turn_settled(&fx, &harness, spec_planning_budget()).await;
+
+    // Pre-position the wave at `reviewing` (R7a/R7b precedent).
+    fx.repo_dyn
+        .wave_update(
+            fx.wave_id.as_str(),
+            WavePatch {
+                lifecycle: Some(WaveLifecycle::Reviewing),
+                ..WavePatch::default()
+            },
+        )
+        .await
+        .expect("pre-position wave lifecycle to reviewing");
+
+    // Scripted REAL PR setup (d2 precedent; setup, not the proof): genuine
+    // forge.pr.opened/checks events back the injected observations.
+    let branch = "neige-r7c-impl-slice";
+    run_git(&fx.wave_cwd, ["checkout", "-B", branch, "origin/main"]);
+    stage_git_change(&fx.wave_cwd, "FORGE_E2E_R7C.md", "forge-e2e-r7c\n");
+    run_git(&fx.wave_cwd, ["commit", "-m", "r7c scripted impl commit"]);
+    let head_sha = run_git_capture(&fx.wave_cwd, ["rev-parse", "HEAD"]);
+    assert!(
+        is_hex_sha(&head_sha),
+        "scripted branch tip should be a 40-char hex sha, got {head_sha:?}"
+    );
+    run_git(&fx.wave_cwd, ["push", "-u", "origin", branch]);
+    run_git(&fx.wave_cwd, ["checkout", "main"]);
+
+    let spec_thread_id = spec_session_thread_id(&fx).await;
+    let create_resp = call_tool_via_socket(
+        &fx.socket_path,
+        &fx.daemon_token,
+        &spec_thread_id,
+        211,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": branch,
+            "base": "main",
+            "title": "r7c scripted impl PR",
+            "body": "Scripted setup PR for the #888 R7c cap-extension E2E"
+        }),
+    )
+    .await;
+    assert_forge_tool_accepted(&create_resp, "gh.pr.create");
+    let (opened_id, _, opened) = wait_for_wave_forge_event(
+        &fx,
+        "forge.pr.opened",
+        0,
+        review_budget(),
+        "scripted setup PR",
+        |payload| payload["head_sha"] == json!(head_sha),
+    )
+    .await;
+    let pr_number = opened["pr_number"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("forge.pr.opened missing pr_number: {opened}"));
+
+    let checks_resp = call_tool_via_socket(
+        &fx.socket_path,
+        &fx.daemon_token,
+        &spec_thread_id,
+        212,
+        PR_CHECKS_TOOL,
+        json!({ "repo": repo_arg, "pr": pr_number }),
+    )
+    .await;
+    assert_forge_tool_accepted(&checks_resp, "gh.pr.checks");
+    let (_checks_id, _, _checks) = wait_for_wave_forge_event(
+        &fx,
+        "forge.pr.checks",
+        opened_id,
+        review_budget(),
+        "scripted setup checks",
+        |payload| {
+            payload["pr_number"] == json!(pr_number) && payload["conclusion"] == json!("success")
+        },
+    )
+    .await;
+
+    // Seed both PR review channels changes_requested (runs/ pre-check each) —
+    // the pre-grant window is genuinely non-approving.
+    for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
+        seed_completed_task_pair(
+            &fx,
+            key,
+            json!({
+                "summary": "changes_requested",
+                "verdict": "changes_requested",
+                "channel": chan,
+            }),
+            "changes_requested",
+        )
+        .await;
+    }
+
+    // Seed ONE prior impl round n=7/cap=8 carrying the REAL branch tip +
+    // pr_number: the kernel then accepts only n=8 next on this subject.
+    seed_prior_impl_review_round(&fx, &slice_id, pr_number, &head_sha, 7, 8).await;
+
+    let floor = max_event_id(&fx.repo).await;
+    let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
+    assert_eq!(
+        pre_wake_rounds.len(),
+        1,
+        "exactly the one seeded review.round may exist pre-wake (proof-validity guard): {pre_wake_rounds:?}"
+    );
+    assert_eq!(
+        event_payloads(&fx.repo, "forge.pr.merged").await.len(),
+        0,
+        "proof-validity guard: no forge.pr.merged may exist pre-wake"
+    );
+
+    // Wake: dispatcher-shaped observations only (design D5; no dispatcher
+    // runs in the spec-harness E2E).
+    inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-a")).await;
+    inject_task_changes_requested(&harness, &task_id(&fx, "review-pr-b")).await;
+    inject_observation(
+        &harness,
+        Observation::ForgePrOpened {
+            wave_id: fx.wave_id.clone(),
+            pr_number,
+        },
+    )
+    .await;
+    inject_observation(
+        &harness,
+        Observation::ForgePrChecks {
+            wave_id: fx.wave_id.clone(),
+            pr_number,
+            conclusion: "success".into(),
+        },
+    )
+    .await;
+    inject_observation(
+        &harness,
+        Observation::ReviewRound {
+            wave_id: fx.wave_id.clone(),
+            phase: "impl".into(),
+            slice_id: slice_id.clone(),
+            pr_number: Some(pr_number),
+            head_sha: Some(head_sha.clone()),
+            n: 7,
+            cap: 8,
+            converged: false,
+        },
+    )
+    .await;
+
+    // Phase 1 (a) — the spec's own cap round n=8/cap=8, non-converged, on
+    // the seeded impl subject (R7b phase-1 oracle, impl-subject variant).
+    let (cap_round_id, cap_round_actor, cap_round) =
+        wait_for_impl_review_round_on_subject(&fx, floor, &slice_id, pr_number, review_budget())
+            .await;
+    assert!(
+        matches!(cap_round_actor, ActorId::AiSpecSession(_)),
+        "cap round actor must be AiSpecSession, got {cap_round_actor:?} for {cap_round}"
+    );
+    assert_eq!(
+        cap_round["n"],
+        json!(8),
+        "cap round must be n=8: {cap_round}"
+    );
+    assert_eq!(
+        cap_round["cap"],
+        json!(8),
+        "cap must be descriptor-fixed 8 in the first window: {cap_round}"
+    );
+    assert_eq!(
+        cap_round["converged"],
+        json!(false),
+        "cap round must be non-converged: {cap_round}"
+    );
+    assert!(
+        cap_round["channels"]
+            .as_array()
+            .is_some_and(|channels| channels.len() >= 2
+                && channels
+                    .iter()
+                    .any(|channel| channel["verdict"] == json!("changes_requested"))),
+        "cap round must carry >=2 channels with >=1 changes_requested: {cap_round}"
+    );
+
+    // Phase 1 (b) — the ordered ASK-HUMAN chain (rising floors, R7b oracle).
+    let (rw_id, rw_actor, rw_edge) =
+        wait_for_wave_lifecycle_edge(&fx, cap_round_id, "reviewing", "working", ratify_budget())
+            .await;
+    assert!(
+        matches!(rw_actor, ActorId::AiSpecSession(_)),
+        "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
+    );
+    let (wb_id, wb_actor, wb_edge) =
+        wait_for_wave_lifecycle_edge(&fx, rw_id, "working", "blocked", ratify_budget()).await;
+    assert!(
+        matches!(wb_actor, ActorId::AiSpecSession(_)),
+        "working->blocked edge actor must be AiSpecSession, got {wb_actor:?} for {wb_edge}"
+    );
+    let (req_id, req_actor, req) = wait_for_ratify_requested(&fx, wb_id, ratify_budget()).await;
+    assert!(
+        matches!(req_actor, ActorId::AiSpecSession(_)),
+        "ratify.requested actor must be AiSpecSession, got {req_actor:?} for {req}"
+    );
+
+    // Phase 1 (c) — parked, not merged.
+    assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
+    assert_eq!(
+        wave_lifecycle_row(&fx).await,
+        "blocked",
+        "wave row must be blocked while awaiting ratification"
+    );
+
+    // Grant = PRODUCTION HTTP route via in-process router-oneshot (R7b
+    // precedent): blocked->working + ratify.resolved{grant}, both User.
+    let app = fixture_router(&fx);
+    let body = serde_json::to_vec(&json!({ "decision": "grant" })).expect("grant body");
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{}/ratify", fx.spec_card_id))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .expect("grant request"),
+        )
+        .await
+        .expect("grant response");
+    let status = resp.status();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("grant response body")
+        .to_bytes();
+    let grant_body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "grant must succeed: {grant_body}");
+    assert_eq!(
+        wave_lifecycle_row(&fx).await,
+        "working",
+        "grant must flip the wave row blocked->working"
+    );
+    let resolved_rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, actor, payload FROM events WHERE kind = 'ratify.resolved' ORDER BY id ASC",
+    )
+    .fetch_all(fx.repo.pool())
+    .await
+    .expect("ratify.resolved rows");
+    assert_eq!(
+        resolved_rows.len(),
+        1,
+        "exactly one ratify.resolved after the grant: {resolved_rows:?}"
+    );
+    let (resolved_id, resolved_actor, resolved) = {
+        let (id, actor, payload) = &resolved_rows[0];
+        let actor: ActorId = serde_json::from_str(actor).expect("event actor json");
+        let payload: Value = serde_json::from_str(payload).expect("event payload json");
+        (*id, actor, payload)
+    };
+    assert_eq!(
+        resolved_actor,
+        ActorId::User,
+        "ratify.resolved actor must be User: {resolved}"
+    );
+    assert_eq!(resolved["decision"], json!("grant"), "{resolved}");
+    let grant_edges: Vec<(ActorId, Value)> =
+        lifecycle_changed_rows_between(&fx, req_id, resolved_id)
+            .await
+            .into_iter()
+            .filter(|(_, payload)| {
+                payload["from"] == json!("blocked")
+                    && payload["to"] == json!("working")
+                    && payload["id"] == json!(fx.wave_id.as_str())
+            })
+            .collect();
+    assert_eq!(
+        grant_edges.len(),
+        1,
+        "grant must emit exactly one blocked->working edge in-tx: {grant_edges:?}"
+    );
+    assert_eq!(
+        grant_edges[0].0,
+        ActorId::User,
+        "grant blocked->working edge actor must be User: {grant_edges:?}"
+    );
+
+    // Recovery wake + post-grant APPROVED verdicts for both channels,
+    // injected BEFORE the spec's next round so its single post-grant round is
+    // both the extension and the convergence (design C1 resolution;
+    // merge-test observation shapes).
+    inject_ratify_resolved_grant(&harness, &fx).await;
+    for (key, chan) in [("review-pr-a", "a"), ("review-pr-b", "b")] {
+        inject_observation(
+            &harness,
+            Observation::TaskCompleted {
+                idempotency_key: task_id(&fx, key),
+                result: json!({ "summary": "approved", "verdict": "approved", "channel": chan }),
+            },
+        )
+        .await;
+    }
+
+    // Oracle 1 — THE extension round: n=9 (= old cap + 1), cap=10 (= old cap
+    // + 2), converged, both channels approved, real branch tip, spec-authored.
+    // Kernel acceptance of this row is the E2E proof of the #888 arm.
+    let (ext_round_id, ext_round_actor, ext_round) = wait_for_impl_review_round_on_subject(
+        &fx,
+        resolved_id,
+        &slice_id,
+        pr_number,
+        review_budget(),
+    )
+    .await;
+    assert!(
+        matches!(ext_round_actor, ActorId::AiSpecSession(_)),
+        "extension round actor must be AiSpecSession, got {ext_round_actor:?} for {ext_round}"
+    );
+    assert_eq!(
+        ext_round["n"],
+        json!(9),
+        "extension round must be n=9 (= cap_old + 1): {ext_round}"
+    );
+    assert_eq!(
+        ext_round["cap"],
+        json!(10),
+        "extension round must carry cap=10 (= cap_old + 2): {ext_round}"
+    );
+    assert_eq!(
+        ext_round["converged"],
+        json!(true),
+        "extension round must be converged: {ext_round}"
+    );
+    assert_eq!(
+        ext_round["head_sha"],
+        json!(head_sha),
+        "extension round must carry the real branch tip: {ext_round}"
+    );
+    assert!(
+        ext_round["channels"]
+            .as_array()
+            .is_some_and(|channels| channels.len() >= 2
+                && channels
+                    .iter()
+                    .all(|channel| channel["verdict"] == json!("approved"))),
+        "extension round channels must all be approved: {ext_round}"
+    );
+
+    // Oracle 2 — the merge follows the extension round (F4 linkage),
+    // kernel-appended, head-matched, on the full impl subject.
+    let (merged_id, merged_actor, merged) = wait_for_wave_forge_event(
+        &fx,
+        "forge.pr.merged",
+        ext_round_id,
+        review_budget(),
+        "post-extension merge",
+        |_| true,
+    )
+    .await;
+    assert_eq!(
+        merged_actor,
+        ActorId::KernelDispatcher,
+        "forge.pr.merged is kernel-appended: {merged}"
+    );
+    assert_eq!(
+        merged["head_sha"],
+        json!(head_sha),
+        "merged head must equal the extension round's head_sha (F4): {merged}"
+    );
+    assert_eq!(merged["subject"]["phase"], json!("impl"), "{merged}");
+    assert_eq!(merged["subject"]["slice_id"], json!(slice_id), "{merged}");
+    assert_eq!(merged["subject"]["pr_number"], json!(pr_number), "{merged}");
+    assert_eq!(
+        event_payloads(&fx.repo, "forge.pr.merged").await.len(),
+        1,
+        "exactly one forge.pr.merged event"
+    );
+
+    // Oracle 3 — F4 op idem key: every gh.pr.merge forge-action row carries
+    // the WITH-sha shape from the spec seat (d2 oracle (b)).
+    let expected_merge_key = format!(
+        "{PLUGIN_ID}:{}:{}:gh.pr.merge:{}:{}:{}",
+        fx.wave_id.as_str(),
+        fx.spec_card_id.as_str(),
+        repo_arg,
+        pr_number,
+        head_sha
+    );
+    let merge_keys = forge_action_idem_keys_containing(&fx, ":gh.pr.merge:").await;
+    assert!(
+        !merge_keys.is_empty(),
+        "expected a parked forge-action gh.pr.merge operation row"
+    );
+    for key in &merge_keys {
+        assert_eq!(
+            key, &expected_merge_key,
+            "every gh.pr.merge forge-action op must carry the with-sha idempotency key (F4): {merge_keys:?}"
+        );
+    }
+
+    // Oracle 1 (exactly-once half) — exactly ONE post-grant review.round on
+    // the impl subject: the extension round itself.
+    let post_grant_rounds = event_rows(&fx.repo, "review.round")
+        .await
+        .into_iter()
+        .filter(|row| {
+            row.id > resolved_id && {
+                let subject = &row.payload["subject"];
+                subject["phase"] == json!("impl")
+                    && subject["slice_id"] == json!(slice_id)
+                    && subject["pr_number"] == json!(pr_number)
+            }
+        })
+        .count();
+    assert_eq!(
+        post_grant_rounds, 1,
+        "exactly one post-grant review.round on the impl subject (the extension round)"
+    );
+
+    // Oracle 4 — ordering by row id: cap round < ratify.requested <
+    // ratify.resolved{grant} < extension round < forge.pr.merged. (Oracle 5,
+    // actor shapes, is asserted at each wait above.)
+    assert!(
+        cap_round_id < req_id
+            && req_id < resolved_id
+            && resolved_id < ext_round_id
+            && ext_round_id < merged_id,
+        "ordering violated: cap_round={cap_round_id}, requested={req_id}, \
+         resolved={resolved_id}, extension={ext_round_id}, merged={merged_id}"
+    );
+
+    // Oracle 6 — full-history INV-CAP-EXT validation by adjacent pairs:
+    // exactly ONE extension on the impl subject, zero on every other subject.
+    let extensions = assert_cap_extension_history(&fx.repo, fx.wave_id.as_str()).await;
+    let impl_subject = SubjectKey {
+        phase: "impl".into(),
+        slice_id: slice_id.clone(),
+        pr_number: Some(pr_number),
+    };
+    assert_eq!(
+        extensions.get(&impl_subject).copied(),
+        Some(1),
+        "exactly one cap extension on the impl subject: {extensions:?}"
+    );
+    for (key, count) in &extensions {
+        if key != &impl_subject {
+            assert_eq!(
+                *count, 0,
+                "no cap extension may exist on any other subject: {key:?}"
+            );
+        }
+    }
+
+    // Oracle 7 — the plan was the spec's own.
+    assert!(
+        !fx.used_injected_plan(),
+        "RealSpecTurn must not use injected plan path"
+    );
+
+    shutdown_spec_harness_if_registered(&fx).await;
+    fx.plugin_host
+        .stop(PLUGIN_ID)
+        .await
+        .expect("stop git-forge plugin");
+    shutdown_shared_codex(&fx.shared).await;
+}
+
+/// R7c goal (#888): environment facts (repo selector) + descriptor-legal
+/// steering of the ASK-HUMAN branch (R7b precedent) + the restated merge
+/// trigger (d2 merge-test precedent, seat caveat carried over). The `+2`
+/// cap-extension rule itself is deliberately NOT restated: obeying it
+/// post-grant must come from the bound workflow descriptor.
+fn extension_merge_goal(repo_gitdir: &str) -> String {
+    format!(
+        "Drive the tail of the issue-development workflow. Environment facts: the `repo` \
+         argument for every gh.* MCP forge tool is exactly `{repo_gitdir}`. Implementation, \
+         the pull request, and both PR review channels are already complete for this wave; \
+         their results arrive as observations. If the impl review cannot converge at the \
+         review cap, ask for human ratification instead of giving up; do not fail the wave. \
+         Once the impl review round for the pull request reports converged, execute the \
+         merge step yourself with the MCP forge tools (gh.pr.merge); do not dispatch \
+         further tasks."
+    )
+}
+
+/// Seed ONE prior non-converged typed impl `review.round` at `n`/`cap`
+/// carrying the REAL branch tip + pr_number (#888 R7c; shape =
+/// `seed_prior_design_review_round` × the impl subject/idem-key shape of
+/// `seed_converged_impl_review_round`). Actor MUST be
+/// `ActorId::AiSpec(spec card)` with `EventScope::Wave`: role_gate rule 2.8
+/// makes review.round spec-only, and the seeded AiSpec row stays
+/// actor-distinguishable from the real spec's AiSpecSession rows.
+async fn seed_prior_impl_review_round(
+    fx: &Fixture,
+    slice_id: &str,
+    pr_number: u64,
+    head_sha: &str,
+    n: u32,
+    cap: u32,
+) {
+    let wave_scope = EventScope::Wave {
+        wave: fx.wave_id.clone(),
+        cove: fx.cove_id.clone(),
+    };
+    fx.repo
+        .log_pure_event(
+            ActorId::AiSpec(fx.spec_card_id.clone()),
+            wave_scope,
+            None,
+            &fx.events,
+            &fx.cache,
+            &fx.wave_cove_cache,
+            Event::ReviewRound {
+                wave_id: fx.wave_id.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: slice_id.into(),
+                    pr_number: Some(pr_number),
+                },
+                head_sha: Some(head_sha.to_string()),
+                n,
+                cap,
+                converged: false,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "pr-correctness".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                    ChannelVerdict {
+                        role: "pr-failure-path".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                ],
+                root_cause: None,
+                // Canonical shape from `review_round_idempotency_key`
+                // (mcp_server/tools/review.rs): PR subjects carry the pr
+                // number in the pr slot.
+                idempotency_key: format!(
+                    "review.round:{}:impl:{}:{}:{}",
+                    fx.wave_id.as_str(),
+                    slice_id,
+                    pr_number,
+                    n
+                ),
+            },
+        )
+        .await
+        .expect("log seeded prior impl review.round");
+}
+
+/// First post-floor `review.round` on the seeded impl subject (phase, slice
+/// AND pr_number — the kernel keys review history by the FULL subject, so a
+/// pr-less round is a different stream and must not be returned). Returns the
+/// event id so callers can pin ordering invariants against it.
+async fn wait_for_impl_review_round_on_subject(
+    fx: &Fixture,
+    floor: i64,
+    slice_id: &str,
+    pr_number: u64,
+    budget: Duration,
+) -> (i64, ActorId, Value) {
+    let deadline = Instant::now() + budget;
+    loop {
+        let rows: Vec<(i64, String, String)> = sqlx::query_as(
+            "SELECT id, actor, payload FROM events \
+             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
+        )
+        .bind(floor)
+        .fetch_all(fx.repo.pool())
+        .await
+        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
+        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
+            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
+            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+            let on_subject = {
+                let subject = &payload["subject"];
+                subject["phase"] == json!("impl")
+                    && subject["slice_id"] == json!(slice_id)
+                    && subject["pr_number"] == json!(pr_number)
+            };
+            on_subject.then_some((id, actor, payload))
+        });
+        if let Some(hit) = hit {
+            return hit;
+        }
+        if Instant::now() >= deadline {
+            panic_with_agent_diag(
+                fx,
+                format!(
+                    "timed out after {budget:?} waiting for post-floor impl review.round \
+                     on slice {slice_id} pr {pr_number} after event id {floor}"
+                ),
+            )
+            .await;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
 }
 
 // ======================= #840 CAPSTONE (S0–S13) =========================

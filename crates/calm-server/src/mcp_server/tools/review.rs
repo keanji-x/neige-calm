@@ -31,6 +31,10 @@ pub const TOOL_REVIEW_ROUND: &str = "calm.review.round";
 pub const TOOL_RATIFY_REQUEST: &str = "calm.ratify.request";
 
 const FIRST_REVIEW_ROUND_N: u32 = 1;
+/// Cap raise authorized by one post-exhaustion ratify grant. Must match the
+/// git-forge descriptor prose ("previous cap plus exactly 2",
+/// plugins/git-forge/manifest.json) pinned by the manifest needle test.
+const CAP_EXTENSION_PER_GRANT: u32 = 2;
 const REVIEW_ROUND_DUPLICATE_RACE: &str = "__review_round_duplicate_race__";
 
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -53,7 +57,9 @@ fn review_round_descriptor() -> ToolDescriptor {
              logical subject. Requires at least two channel verdicts, `n <= cap`, \
              and when `converged=true` every channel verdict must be `approved`. \
              Round numbers are strict-monotonic per subject starting at 1; an \
-             exact retry of an already-recorded round is a no-op."
+             exact retry of an already-recorded round is a no-op. Per subject, \
+             `cap` must not shrink and may rise by exactly 2 only after the \
+             previous window is exhausted (n == cap) with a fresh ratify grant."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -141,7 +147,7 @@ async fn review_round(
     let (_card, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
     let idempotency_key = review_round_idempotency_key(&wave.id, &args.subject, args.n);
 
-    let prior = review_rounds_for_subject(ctx.repo.as_ref(), &wave.id, &args.subject)
+    let prior = subject_review_history(ctx.repo.as_ref(), &wave.id, &args.subject)
         .await
         .map_err(|e| RpcError::internal(format!("review_round: query prior rounds: {e}")))?;
     match classify_review_round(&prior, &args, &idempotency_key) {
@@ -175,7 +181,7 @@ async fn review_round(
                 let args = args_for_tx.clone();
                 let idempotency_key = idempotency_key_for_tx.clone();
                 Box::pin(async move {
-                    let prior = review_rounds_for_subject_tx(tx, &wave_id, &subject).await?;
+                    let prior = subject_review_history_tx(tx, &wave_id, &subject).await?;
                     match classify_review_round(&prior, &args, &idempotency_key) {
                         ReviewRoundWriteDecision::DuplicateSame => {
                             return Err(CalmError::Conflict(
@@ -309,7 +315,9 @@ fn validate_review_round_args(args: &ReviewRoundArgs) -> Result<(), RpcError> {
     }
     if args.n > args.cap {
         return Err(RpcError::invalid_params(format!(
-            "review_round: n ({}) must be <= cap ({})",
+            "review_round: n ({}) must be <= cap ({}); a cap-exhausted subject may raise cap by \
+             exactly {CAP_EXTENSION_PER_GRANT} on its next round when a ratify grant postdates \
+             the exhausting round",
             args.n, args.cap
         )));
     }
@@ -368,13 +376,17 @@ enum ReviewRoundWriteDecision {
 }
 
 fn classify_review_round(
-    prior: &[Event],
+    history: &SubjectReviewHistory,
     args: &ReviewRoundArgs,
     idempotency_key: &str,
 ) -> ReviewRoundWriteDecision {
-    let mut max_n: Option<u32> = None;
+    // `prev` = the prior round with maximal n; among tied-n rows, the one with
+    // the greatest event row id (ties are impossible through this tool — the
+    // greatest-row-id pick is deterministic recovery behavior for non-tool
+    // writes; #888 design §3.1).
+    let mut prev: Option<(i64, u32, u32)> = None; // (row id, n, cap)
     let mut same_n_same_payload = false;
-    for event in prior {
+    for (row_id, event) in &history.rounds {
         let Event::ReviewRound {
             n,
             cap,
@@ -388,7 +400,9 @@ fn classify_review_round(
         else {
             continue;
         };
-        max_n = Some(max_n.map_or(*n, |max| max.max(*n)));
+        if prev.is_none_or(|(_, prev_n, _)| *n >= prev_n) {
+            prev = Some((*row_id, *n, *cap));
+        }
         if *n == args.n
             && *cap == args.cap
             && *converged == args.converged
@@ -405,7 +419,20 @@ fn classify_review_round(
         return ReviewRoundWriteDecision::DuplicateSame;
     }
 
-    let expected = max_n.map_or(FIRST_REVIEW_ROUND_N, |n| n.saturating_add(1));
+    let expected = match prev {
+        None => FIRST_REVIEW_ROUND_N,
+        Some((_, prev_n, _)) => match prev_n.checked_add(1) {
+            Some(next_n) => next_n,
+            // u32 space exhausted: a saturated expected-n would re-admit
+            // further distinct rows at n == u32::MAX (INV-CAP-EXT breach).
+            None => {
+                return ReviewRoundWriteDecision::Reject(format!(
+                    "review_round: round numbering exhausted for subject phase={} slice_id={} pr_number={:?}",
+                    args.subject.phase, args.subject.slice_id, args.subject.pr_number,
+                ));
+            }
+        },
+    };
     if args.n != expected {
         return ReviewRoundWriteDecision::Reject(format!(
             "review_round: stale/out-of-order round for subject phase={} slice_id={} pr_number={:?}: got n={}, expected n={expected}",
@@ -413,44 +440,130 @@ fn classify_review_round(
         ));
     }
 
+    // Cap-consistency arm (#888): per subject, cap must not shrink, and may
+    // rise only by exactly CAP_EXTENSION_PER_GRANT immediately after the
+    // previous window is exhausted (prev.n == prev.cap), backed by a
+    // `ratify.resolved { grant }` strictly newer than the exhausting round.
+    let Some((prev_id, prev_n, prev_cap)) = prev else {
+        // First round of the subject: cap unconstrained by the kernel (the
+        // descriptor pins the first-window cap).
+        return ReviewRoundWriteDecision::Append;
+    };
+    if args.cap == prev_cap {
+        return ReviewRoundWriteDecision::Append;
+    }
+    if args.cap < prev_cap {
+        return ReviewRoundWriteDecision::Reject(format!(
+            "review_round: cap must not shrink for subject phase={} slice_id={} pr_number={:?}: got cap={}, previous cap={prev_cap}",
+            args.subject.phase, args.subject.slice_id, args.subject.pr_number, args.cap,
+        ));
+    }
+    if prev_n != prev_cap {
+        return ReviewRoundWriteDecision::Reject(format!(
+            "review_round: cap extension for subject phase={} slice_id={} pr_number={:?} requires the previous window to be exhausted: latest n={prev_n} < previous cap={prev_cap}; continue reviewing within the current cap",
+            args.subject.phase, args.subject.slice_id, args.subject.pr_number,
+        ));
+    }
+    if history
+        .latest_grant_id
+        .is_none_or(|grant_id| grant_id <= prev_id)
+    {
+        return ReviewRoundWriteDecision::Reject(format!(
+            "review_round: cap extension for subject phase={} slice_id={} pr_number={:?} requires a ratify.resolved grant newer than the exhausting round",
+            args.subject.phase, args.subject.slice_id, args.subject.pr_number,
+        ));
+    }
+    // u32 space exhausted: a saturated expected-cap would accept a +1
+    // "extension" to u32::MAX from prev_cap == u32::MAX - 1 (INV-CAP-EXT
+    // breach — the raise must be exactly CAP_EXTENSION_PER_GRANT or nothing).
+    let Some(expected_cap) = prev_cap.checked_add(CAP_EXTENSION_PER_GRANT) else {
+        return ReviewRoundWriteDecision::Reject(format!(
+            "review_round: cap extension space exhausted for subject phase={} slice_id={} pr_number={:?}: previous cap={prev_cap} cannot rise by {CAP_EXTENSION_PER_GRANT}",
+            args.subject.phase, args.subject.slice_id, args.subject.pr_number,
+        ));
+    };
+    if args.cap != expected_cap {
+        return ReviewRoundWriteDecision::Reject(format!(
+            "review_round: cap extension for subject phase={} slice_id={} pr_number={:?} must raise cap by exactly {CAP_EXTENSION_PER_GRANT}: got cap={}, expected cap={expected_cap}",
+            args.subject.phase, args.subject.slice_id, args.subject.pr_number, args.cap,
+        ));
+    }
+
     ReviewRoundWriteDecision::Append
 }
 
-async fn review_rounds_for_subject(
+/// Subject-scoped review history + wave-scoped grant watermark, identically
+/// shaped on the pre-tx (RouteRepo) and in-tx (raw SQL) paths.
+struct SubjectReviewHistory {
+    /// `review.round` events for this subject, ascending event row id.
+    rounds: Vec<(i64, Event)>,
+    /// Max row id of any `ratify.resolved { decision: Grant }` in the wave.
+    /// Deny rows are ignored here (#888 design §3.7).
+    latest_grant_id: Option<i64>,
+}
+
+impl SubjectReviewHistory {
+    fn fold(&mut self, row_id: i64, event: Event, subject: &ReviewSubject) {
+        match &event {
+            Event::ReviewRound { .. } => {
+                if let Some(event) = review_round_for_subject(event, subject) {
+                    self.rounds.push((row_id, event));
+                }
+            }
+            Event::RatifyResolved {
+                decision: crate::event::RatifyDecision::Grant,
+                ..
+            } => {
+                let latest = self.latest_grant_id.get_or_insert(row_id);
+                *latest = (*latest).max(row_id);
+            }
+            _ => {}
+        }
+    }
+}
+
+async fn subject_review_history(
     repo: &dyn crate::db::RouteRepo,
     wave_id: &WaveId,
     subject: &ReviewSubject,
-) -> Result<Vec<Event>, CalmError> {
+) -> Result<SubjectReviewHistory, CalmError> {
     let rows = repo
-        .events_for_wave(wave_id.as_str(), &["review.round"], None)
+        .events_for_wave(wave_id.as_str(), &["review.round", "ratify.resolved"], None)
         .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| review_round_for_subject(row.event, subject))
-        .collect())
+    let mut history = SubjectReviewHistory {
+        rounds: Vec::new(),
+        latest_grant_id: None,
+    };
+    for row in rows {
+        history.fold(row.id, row.event, subject);
+    }
+    Ok(history)
 }
 
-async fn review_rounds_for_subject_tx(
+async fn subject_review_history_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
     subject: &ReviewSubject,
-) -> Result<Vec<Event>, CalmError> {
-    let rows: Vec<(String,)> = sqlx::query_as(
-        "SELECT payload FROM events WHERE scope_wave = ?1 AND kind = 'review.round' ORDER BY id ASC",
+) -> Result<SubjectReviewHistory, CalmError> {
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, kind, payload FROM events \
+         WHERE scope_wave = ?1 AND kind IN ('review.round', 'ratify.resolved') \
+         ORDER BY id ASC",
     )
     .bind(wave_id.as_str())
     .fetch_all(&mut **tx)
     .await?;
 
-    let mut out = Vec::new();
-    for (payload_text,) in rows {
+    let mut history = SubjectReviewHistory {
+        rounds: Vec::new(),
+        latest_grant_id: None,
+    };
+    for (row_id, kind, payload_text) in rows {
         let payload: Value = serde_json::from_str(&payload_text)?;
-        let event = Event::from_kind_and_payload("review.round", payload)?;
-        if let Some(event) = review_round_for_subject(event, subject) {
-            out.push(event);
-        }
+        let event = Event::from_kind_and_payload(&kind, payload)?;
+        history.fold(row_id, event, subject);
     }
-    Ok(out)
+    Ok(history)
 }
 
 fn review_round_for_subject(event: Event, subject: &ReviewSubject) -> Option<Event> {

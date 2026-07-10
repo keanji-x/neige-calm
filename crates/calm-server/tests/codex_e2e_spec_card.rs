@@ -50,6 +50,8 @@
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -68,34 +70,13 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+// #868: codex binary resolution goes through the shared no-fallback
+// resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒ self-skip. Tests must
+// never fall back to a PATH/home codex binary.
+use support::codex_fixture::resolve_codex_bin;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
-
-fn resolve_codex_bin() -> Option<PathBuf> {
-    let raw = std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
-    // Best-effort tilde expansion (skip the `shellexpand` dep — we
-    // only handle `~/...` since that's the documented shape).
-    let expanded = if let Some(stripped) = raw.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        PathBuf::from(home).join(stripped)
-    } else {
-        PathBuf::from(raw)
-    };
-    if !expanded.is_file() {
-        return None;
-    }
-    // Smoke-check the executable bit — symlinks to non-executables
-    // would otherwise pass `is_file`.
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::metadata(&expanded).ok()?;
-    if meta.permissions().mode() & 0o111 == 0 {
-        return None;
-    }
-    Some(expanded)
-}
 /// Issue #236 followup — locate the `neige-mcp-stdio-shim` binary the
 /// codex daemon will spawn for the spec card. Same sibling-of-test-bin
 /// resolver as the daemon helper above; depends on `cargo test
@@ -205,12 +186,9 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
 #[tokio::test]
 async fn spec_card_codex_daemon_env_contains_mcp_vars() {
     let Some(codex_bin) = resolve_codex_bin() else {
-        let raw =
-            std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
-        eprintln!(
-            "[codex-e2e] codex not found at {raw}; skipping (set NEIGE_CODEX_BIN to override)",
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
         );
-        return;
     };
     eprintln!("[codex-e2e] using codex binary at {codex_bin:?}");
 

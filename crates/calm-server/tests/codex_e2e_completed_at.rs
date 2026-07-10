@@ -43,6 +43,8 @@
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -52,47 +54,17 @@ use calm_server::codex_appserver::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
+// self-skip via `skip!`. Tests must never fall back to a PATH/home codex.
+use support::codex_fixture::resolve_codex_bin;
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
 const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
 const WS_URI: &str = "ws://localhost/";
-
-/// Resolve the codex binary the same way `codex_appserver_e2e.rs` does:
-/// `NEIGE_CODEX_BIN` override, tilde-expanded, must be an executable file.
-fn resolve_codex_bin() -> Option<PathBuf> {
-    let raw = std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
-    let expanded = if let Some(stripped) = raw.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        PathBuf::from(home).join(stripped)
-    } else {
-        PathBuf::from(raw)
-    };
-    if !expanded.is_file() {
-        return None;
-    }
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::metadata(&expanded).ok()?;
-    if meta.permissions().mode() & 0o111 == 0 {
-        return None;
-    }
-    Some(expanded)
-}
-
-/// Print a skip marker and bail out of the test successfully. Mirrors the
-/// `eprintln!`-and-return style of the existing codex-e2e gate so CI stays
-/// green when no codex binary / auth is present.
-macro_rules! skip {
-    ($($arg:tt)*) => {{
-        eprintln!("[codex-e2e-completed-at] SKIP: {}", format!($($arg)*));
-        return;
-    }};
-}
 
 /// Apply the proxy env (unless explicitly disabled) so spawned app-server
 /// model turns reach the upstream through `127.0.0.1:2080`.
@@ -265,7 +237,9 @@ fn last_turn_completed_at_is_null(result: &Value) -> Option<bool> {
 #[tokio::test]
 async fn thread_read_completed_at_null_only_when_died_mid_turn() {
     let Some(codex_bin) = resolve_codex_bin() else {
-        skip!("codex binary not found (set NEIGE_CODEX_BIN); CI has no codex");
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
     };
     eprintln!("[codex-e2e-completed-at] using codex at {codex_bin:?}");
 
