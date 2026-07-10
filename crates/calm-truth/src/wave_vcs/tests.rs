@@ -1,3 +1,4 @@
+use super::store::{CommitTreeMeta, commit_hash_for_tree};
 use super::*;
 use crate::db::prelude::*;
 use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
