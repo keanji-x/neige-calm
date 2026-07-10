@@ -80,6 +80,8 @@
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
+mod support;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -106,6 +108,9 @@ use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use clap::Parser;
 use serde_json::json;
+// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
+// self-skip via `skip!`. Tests must never fall back to a PATH codex.
+use support::codex_fixture::resolve_codex_bin;
 use tokio::time::timeout;
 
 const TEST_CWD: &str = "/tmp";
@@ -115,17 +120,6 @@ const TEST_CWD: &str = "/tmp";
 /// (`calm.task.complete`, rides channel 2 → GREEN, what codex_adapter
 /// ships). The shipped value is `true`; flip to `false` to re-capture RED.
 const WORKER_CODEX: bool = true;
-
-fn codex_bin() -> String {
-    std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| "codex".to_string())
-}
-
-fn codex_available(codex_bin: &str) -> bool {
-    std::process::Command::new(codex_bin)
-        .arg("--version")
-        .output()
-        .is_ok()
-}
 
 fn cfg(root: &std::path::Path, codex_bin: &str) -> Config {
     Config::parse_from(vec![
@@ -242,11 +236,12 @@ async fn seed_shared_worker_runtime(repo: &SqlxRepo, card_id: &str, thread_id: &
 #[tokio::test]
 #[ignore]
 async fn worker_completes_with_channel3_stripped() {
-    let codex_bin = codex_bin();
-    if !codex_available(&codex_bin) {
-        eprintln!("skipping: codex not on PATH and NEIGE_CODEX_BIN not usable");
-        return;
-    }
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
+    };
+    let codex_bin = codex_bin.display().to_string();
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
