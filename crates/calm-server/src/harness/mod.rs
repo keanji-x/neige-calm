@@ -271,6 +271,7 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "workspace replay".into(),
                 sort: None,
@@ -460,6 +461,7 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "review replay".into(),
                 sort: None,

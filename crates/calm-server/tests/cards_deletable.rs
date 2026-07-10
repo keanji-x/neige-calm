@@ -220,6 +220,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,

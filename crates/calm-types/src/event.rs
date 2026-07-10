@@ -2889,6 +2889,7 @@ mod scope_tests {
             lifecycle: WaveLifecycle::Draft,
             cwd: String::new(),
             workflow_id: None,
+            workflow_input: None,
             terminal_at: None,
             created_at: 0,
             updated_at: 0,

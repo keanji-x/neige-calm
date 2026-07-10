@@ -143,6 +143,35 @@ describe('wireEventSchema', () => {
     if (parsed.ev === 'wave.updated') {
       expect(parsed.data.agent_message).toBe('moving to dispatch');
       expect(parsed.data.lifecycle).toBe('dispatching');
+      // Pre-#891 payload: no `workflow_input` key — hydrates to the null
+      // default rather than failing the parse.
+      expect(parsed.data.workflow_input).toBeNull();
+    }
+  });
+
+  it('preserves workflow_input on wave.updated payloads (#891)', () => {
+    const workflowInput = { issue_url: 'https://github.com/o/r/issues/1', issue_number: 1 };
+    const parsed = wireEventSchema.parse({
+      ev: 'wave.updated',
+      data: {
+        id: 'wave_1',
+        cove_id: 'cove_1',
+        title: 'hello',
+        sort: 0,
+        archived_at: null,
+        pinned_at: null,
+        lifecycle: 'dispatching',
+        cwd: '/repo',
+        workflow_id: 'issue-development',
+        workflow_input: workflowInput,
+        terminal_at: null,
+        created_at: 1,
+        updated_at: 2,
+      },
+    });
+    expect(parsed.ev).toBe('wave.updated');
+    if (parsed.ev === 'wave.updated') {
+      expect(parsed.data.workflow_input).toEqual(workflowInput);
     }
   });
 

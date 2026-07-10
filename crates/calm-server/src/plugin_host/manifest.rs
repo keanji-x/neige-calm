@@ -232,6 +232,13 @@ pub struct WorkflowDescriptor {
     pub spec_instructions: String,
     #[serde(default)]
     pub card_kinds: Vec<String>,
+    /// #891 — optional JSON Schema (supported subset, see
+    /// `plugin_host::workflow_input`) declaring the shape of the
+    /// `workflow_input` a wave may carry when it binds this workflow.
+    /// Absent (`None`): the workflow does not accept `workflow_input`.
+    /// Field convention mirrors `ExposedTool::input_schema` above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
 }
 
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
@@ -477,6 +484,14 @@ impl WorkflowDescriptor {
                     format!("card kind `{kind}` collides with a built-in card kind"),
                 ));
             }
+        }
+
+        // #891 — `input_schema` must stay inside the supported subset so the
+        // kernel-side instance validator executes every declared constraint
+        // (fail-close at the authoring point, same spirit as plan_template).
+        if let Some(schema) = self.input_schema.as_ref() {
+            crate::plugin_host::workflow_input::validate_input_schema(schema)
+                .map_err(|e| ManifestError::invalid(path(&e.path), e.reason))?;
         }
 
         Ok(())
@@ -1061,6 +1076,90 @@ mod tests {
         assert!(
             matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
         );
+    }
+
+    #[test]
+    fn workflow_descriptor_accepts_subset_input_schema_and_defaults_to_none() {
+        // No input_schema (today's shipped manifests) → parses to None.
+        let manifest = parse_manifest_value(workflow_manifest_value()).expect("valid manifest");
+        assert!(manifest.workflows[0].input_schema.is_none());
+
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["input_schema"] = json!({
+            "type": "object",
+            "properties": {
+                "issue_url": { "type": "string", "description": "Canonical issue URL" },
+                "merge_policy": {
+                    "type": "string",
+                    "enum": ["hold-for-ratify", "auto-merge"],
+                    "default": "hold-for-ratify"
+                }
+            },
+            "required": ["issue_url"],
+            "additionalProperties": false
+        });
+        let manifest = parse_manifest_value(v).expect("subset input_schema accepted");
+        assert!(manifest.workflows[0].input_schema.is_some());
+    }
+
+    /// #891 — the subset validator runs at manifest parse; exhaustive
+    /// keyword/coherence coverage lives in `plugin_host::workflow_input`
+    /// (this pins the `workflows[i].input_schema…` field-path wiring).
+    #[test]
+    fn workflow_descriptor_rejects_out_of_subset_input_schema() {
+        let cases: [(&str, Value, &str); 5] = [
+            (
+                "hostile $ref keyword",
+                json!({
+                    "type": "object",
+                    "$ref": "#/defs/x",
+                    "additionalProperties": false
+                }),
+                "workflows[0].input_schema.$ref",
+            ),
+            (
+                "hostile property keyword (pattern)",
+                json!({
+                    "type": "object",
+                    "properties": { "u": { "type": "string", "pattern": ".*" } },
+                    "additionalProperties": false
+                }),
+                "workflows[0].input_schema.properties.u.pattern",
+            ),
+            (
+                "missing additionalProperties: false",
+                json!({ "type": "object", "properties": {} }),
+                "workflows[0].input_schema.additionalProperties",
+            ),
+            (
+                "required key not declared",
+                json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": ["ghost"],
+                    "additionalProperties": false
+                }),
+                "workflows[0].input_schema.required[0]",
+            ),
+            (
+                "enum riding a non-string type",
+                json!({
+                    "type": "object",
+                    "properties": { "n": { "type": "integer", "enum": [1] } },
+                    "additionalProperties": false
+                }),
+                "workflows[0].input_schema.properties.n.enum",
+            ),
+        ];
+        for (label, schema, expected_field) in cases {
+            let mut v = workflow_manifest_value();
+            v["workflows"][0]["input_schema"] = schema;
+            let err = parse_manifest_value(v).expect_err(label);
+            assert!(
+                matches!(&err, ManifestError::Invalid { field, .. } if field == expected_field),
+                "{label}: got {err:?}"
+            );
+        }
     }
 
     #[test]

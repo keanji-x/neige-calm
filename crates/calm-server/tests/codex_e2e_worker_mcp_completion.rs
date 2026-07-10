@@ -160,6 +160,7 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "worker-mcp-completion-wave".into(),
             sort: None,

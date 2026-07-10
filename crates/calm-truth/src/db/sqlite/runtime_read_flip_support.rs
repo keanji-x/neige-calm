@@ -86,6 +86,7 @@ pub(super) async fn create_card_in_tx(
     let wave = wave_create_tx(
         tx,
         NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: format!("read flip {label}"),
             sort: None,
@@ -194,6 +195,7 @@ pub(super) async fn seed_terminal_runtime(
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: format!("read flip {label}"),
             sort: None,
@@ -254,6 +256,7 @@ pub(super) async fn seed_codex_terminal_card(
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: format!("read flip {label}"),
             sort: None,

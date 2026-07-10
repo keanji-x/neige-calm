@@ -128,6 +128,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "initial".into(),
             sort: None,

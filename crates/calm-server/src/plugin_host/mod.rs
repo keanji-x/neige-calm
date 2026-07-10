@@ -28,6 +28,7 @@ pub mod process;
 pub mod registry;
 pub mod resources;
 pub mod version;
+pub mod workflow_input;
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;

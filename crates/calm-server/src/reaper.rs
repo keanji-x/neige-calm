@@ -677,6 +677,7 @@ mod tests {
         let wave = RepoSyncDomainRaw::wave_create(
             repo.as_ref(),
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "reaper-test".into(),
                 sort: None,

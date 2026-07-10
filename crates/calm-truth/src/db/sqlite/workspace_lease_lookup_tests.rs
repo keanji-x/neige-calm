@@ -17,6 +17,7 @@ async fn seed_wave(repo: &SqlxRepo) -> String {
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "workspace lease lookup".into(),
             sort: None,

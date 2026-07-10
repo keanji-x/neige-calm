@@ -2394,6 +2394,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "claude-timeout".into(),
                 sort: None,
@@ -2554,6 +2555,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "timeout-race".into(),
                 sort: None,

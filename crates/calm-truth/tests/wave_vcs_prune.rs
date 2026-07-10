@@ -47,6 +47,7 @@ async fn fresh_wave() -> (SqlxRepo, WaveId) {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "wave".into(),
             sort: None,
@@ -583,6 +584,7 @@ async fn sweep_preserves_live_objects_from_other_waves() {
         .expect("create cove");
     let wave_a = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "wave a".into(),
             sort: None,
@@ -595,6 +597,7 @@ async fn sweep_preserves_live_objects_from_other_waves() {
         .expect("create wave a");
     let wave_b = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "wave b".into(),
             sort: None,

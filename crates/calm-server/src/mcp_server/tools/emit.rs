@@ -729,6 +729,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "commit guard".into(),
                 sort: None,

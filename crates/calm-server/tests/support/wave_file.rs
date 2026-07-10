@@ -51,6 +51,7 @@ pub async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "wave file test".into(),
             sort: None,
@@ -99,6 +100,7 @@ pub async fn boot() -> Boot {
         .unwrap();
     let wave2 = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove2.id.clone(),
             title: "other wave".into(),
             sort: None,

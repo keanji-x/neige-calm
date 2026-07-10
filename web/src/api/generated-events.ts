@@ -384,6 +384,14 @@ cwd: string,
  */
 workflow_id: string | null, 
 /**
+ * Issue #891 — input JSON for the bound workflow, validated against the
+ * descriptor's `input_schema` at create time and persisted verbatim; the
+ * kernel never interprets it. `#[serde(default)]` hydrates pre-#891
+ * `wave.updated` replays as `None` (same pattern as `workflow_id`).
+ * Explicit `unknown` override — see `Card.payload` for the rationale.
+ */
+workflow_input: unknown, 
+/**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
  * or `None` while the wave is non-terminal. Stamped inside the
@@ -531,6 +539,14 @@ cwd: string,
  * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
  */
 workflow_id: string | null, 
+/**
+ * Issue #891 — input JSON for the bound workflow, validated against the
+ * descriptor's `input_schema` at create time and persisted verbatim; the
+ * kernel never interprets it. `#[serde(default)]` hydrates pre-#891
+ * `wave.updated` replays as `None` (same pattern as `workflow_id`).
+ * Explicit `unknown` override — see `Card.payload` for the rationale.
+ */
+workflow_input: unknown, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),

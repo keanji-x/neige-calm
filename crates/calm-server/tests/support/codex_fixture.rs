@@ -275,6 +275,7 @@ pub async fn boot_forge_e2e_fixture(
         .expect("create cove");
     let wave = repo_dyn
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,

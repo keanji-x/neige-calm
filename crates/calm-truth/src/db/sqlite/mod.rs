@@ -277,3 +277,6 @@ mod worker_flow_cursor_tests;
 
 #[cfg(test)]
 mod session_record_activity_tests;
+
+#[cfg(test)]
+mod wave_workflow_input_tests;

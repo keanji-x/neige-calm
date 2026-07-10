@@ -130,6 +130,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "reboot-e1".into(),
             sort: None,
