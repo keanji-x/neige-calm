@@ -14,6 +14,20 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: short
+  # #903 — dev profile debuginfo drops 1 → line-tables-only; test profile rises
+  # back to line-tables-only from #913's [profile.test] debug=0, restoring
+  # file:line in panic backtraces (RUST_BACKTRACE=short) while variable-level
+  # DWARF stays cut — CI has no debugger consumers.
+  # The TEST line mirrors the Cargo.toml [profile.test] rider (same value, kept
+  # in sync); the DEV line is CI-only on top of the manifest's dev debug=1, and
+  # the manifest's [profile.*.package."*"] debug=0 dep override outranks both.
+  # Both DEV and TEST are set explicitly (test inherits dev; double-write
+  # avoids inheritance ambiguity). Release profiles (debug=false) are
+  # unaffected. Set globally, not per-job, so the shared rust-cache key (env
+  # hash) doesn't split across jobs; the env change itself rotates all cache
+  # keys once (one cold-compile round, then warm).
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
   rust:
