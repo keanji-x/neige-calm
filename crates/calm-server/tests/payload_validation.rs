@@ -55,6 +55,7 @@ async fn boot_with_repo() -> (AppState, String, Arc<dyn Repo>) {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,

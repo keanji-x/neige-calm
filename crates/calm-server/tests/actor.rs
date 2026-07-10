@@ -334,6 +334,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
@@ -424,6 +425,7 @@ async fn create_card_stamps_full_scope_chain() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,

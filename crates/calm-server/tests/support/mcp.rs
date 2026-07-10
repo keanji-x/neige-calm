@@ -68,6 +68,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-test".into(),
             sort: None,

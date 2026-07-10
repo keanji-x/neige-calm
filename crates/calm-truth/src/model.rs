@@ -105,6 +105,17 @@ pub struct NewWave {
     pub cwd: String,
     #[serde(default)]
     pub workflow_id: Option<String>,
+    /// Issue #891 — JSON input for the bound workflow. Only accepted when
+    /// `workflow_id` names a running trusted workflow whose descriptor
+    /// declares an `input_schema`; the `POST /api/waves` route validates the
+    /// value against that schema before any DB write. The kernel never
+    /// interprets the blob — it is persisted verbatim and injected into the
+    /// spec harness developer instructions at thread-mint time.
+    /// `#[serde(default)]` keeps the field purely additive under
+    /// `deny_unknown_fields`.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub workflow_input: Option<serde_json::Value>,
     /// Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
     /// `cove_id` as a new folder, in the same transaction as the
     /// wave-create write". Default `false`: the cwd must already be

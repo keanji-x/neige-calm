@@ -171,6 +171,7 @@ async fn seed_wave(repo: &SqlxRepo) -> calm_server::model::Wave {
         .await
         .unwrap();
     repo.wave_create(NewWave {
+        workflow_input: None,
         cove_id: cove.id,
         title: "adapter goal".into(),
         sort: None,

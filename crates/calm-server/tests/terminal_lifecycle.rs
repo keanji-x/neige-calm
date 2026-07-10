@@ -155,6 +155,7 @@ async fn card_delete_reaps_terminal_process() {
         .unwrap();
     let wave = raw
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
@@ -254,6 +255,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
         .unwrap();
     let wave = raw
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
@@ -394,6 +396,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
         .unwrap();
     let wave = raw
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
@@ -509,6 +512,7 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
         .unwrap();
     let wave = raw
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,

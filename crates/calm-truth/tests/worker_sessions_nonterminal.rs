@@ -24,6 +24,7 @@ async fn seeded_repo() -> (SqlxRepo, WaveId) {
         .expect("seed cove");
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "worker-session-scan".into(),
             sort: None,

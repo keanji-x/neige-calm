@@ -325,6 +325,7 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
             lifecycle: calm_server::model::WaveLifecycle::Draft,
             cwd: String::new(),
             workflow_id: None,
+            workflow_input: None,
             terminal_at: None,
             created_at: 0,
             updated_at: 0,
@@ -392,6 +393,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                 let wave = wave_create_tx(
                     tx,
                     NewWave {
+                        workflow_input: None,
                         cove_id: cove.id.clone(),
                         title: "plural-wave".into(),
                         sort: None,
@@ -557,6 +559,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                 let wave = wave_create_tx(
                     tx,
                     NewWave {
+                        workflow_input: None,
                         cove_id: cove.id.clone(),
                         title: "gated-wave".into(),
                         sort: None,

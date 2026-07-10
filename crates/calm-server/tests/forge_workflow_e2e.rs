@@ -153,6 +153,170 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         .expect("select workflow_id");
     assert_eq!(stored.as_deref(), Some(WORKFLOW_ID));
 
+    // #891 — `workflow_input` without `workflow_id` is a 400 before any
+    // DB write.
+    let orphan_input_dir = short_tempdir("wf-input-orphan").expect("orphan input cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "input without workflow",
+            "cwd": orphan_input_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_input": { "issue_url": "https://github.com/o/r/issues/1" },
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"].as_str().unwrap_or("").contains("workflow_id"),
+        "body={body}"
+    );
+
+    // #891 — the shipped git-forge manifest declares no input_schema yet:
+    // a bound create carrying workflow_input fails closed (400), and the
+    // schema-less bound create above (no input) stays valid.
+    let no_schema_dir = short_tempdir("wf-input-noschema").expect("no-schema input cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "input against schema-less workflow",
+            "cwd": no_schema_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "workflow_input": { "issue_url": "https://github.com/o/r/issues/1" },
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not declare"),
+        "body={body}"
+    );
+
+    // #891 — mutate the fixture manifest in place with an input_schema
+    // (the shipped manifest gains one in slice ②) and re-insert it into the
+    // running registry: schema-validated input persists on the wave row.
+    let mut mutated = read_manifest();
+    mutated
+        .workflows
+        .iter_mut()
+        .find(|workflow| workflow.id == WORKFLOW_ID)
+        .expect("issue-development descriptor")
+        .input_schema = Some(json!({
+        "type": "object",
+        "properties": {
+            "issue_url": { "type": "string" },
+            "merge_policy": {
+                "type": "string",
+                "enum": ["hold-for-ratify", "auto-merge"],
+                "default": "hold-for-ratify"
+            }
+        },
+        "required": ["issue_url"],
+        "additionalProperties": false
+    }));
+    mutated
+        .validate()
+        .expect("mutated manifest passes subset validation");
+    // `install_path = None` keeps the registry's existing on-disk path.
+    fx.plugin_host.registry().insert(mutated, None);
+
+    // Required input now missing → 400 (fail before any DB write).
+    let required_dir = short_tempdir("wf-input-required").expect("required input cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "bound without required input",
+            "cwd": required_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("requires `workflow_input`"),
+        "body={body}"
+    );
+
+    // Schema violation → 400 naming the offending field.
+    let invalid_dir = short_tempdir("wf-input-invalid").expect("invalid input cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "bound with invalid input",
+            "cwd": invalid_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "workflow_input": {
+                "issue_url": "https://github.com/o/r/issues/1",
+                "merge_policy": "yolo-merge"
+            },
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("workflow_input.merge_policy"),
+        "body={body}"
+    );
+
+    // Conforming input → 201, persisted verbatim, and readable back through
+    // `GET /api/waves/{id}`.
+    let bound_input = json!({
+        "issue_url": "https://github.com/o/r/issues/1",
+        "merge_policy": "auto-merge"
+    });
+    let input_dir = short_tempdir("wf-input-ok").expect("valid input cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "bound with valid input",
+            "cwd": input_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "workflow_input": bound_input.clone(),
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["workflow_input"], bound_input);
+    let input_wave_id = body["id"].as_str().expect("created wave id");
+    let detail = get_wave_detail(app.clone(), input_wave_id).await;
+    assert_eq!(detail["wave"]["workflow_input"], bound_input);
+    let stored_input: Option<String> =
+        sqlx::query_scalar("SELECT workflow_input FROM waves WHERE id = ?1")
+            .bind(input_wave_id)
+            .fetch_one(fx.repo.pool())
+            .await
+            .expect("select workflow_input");
+    let stored_input: Value =
+        serde_json::from_str(stored_input.as_deref().expect("workflow_input column"))
+            .expect("stored workflow_input parses");
+    assert_eq!(stored_input, bound_input);
+
+    // Restore the shipped (schema-less) manifest for the remaining cases.
+    fx.plugin_host.registry().insert(read_manifest(), None);
+
     let missing_dir = short_tempdir("wf-missing").expect("missing workflow cwd");
     let (status, _body) = post_wave(
         app.clone(),
@@ -1264,6 +1428,7 @@ async fn boot_fixture() -> Fixture {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "forge-workflow-e2e".into(),
             sort: None,
@@ -1532,6 +1697,22 @@ fn app_router_for_fixture(fx: &Fixture) -> axum::Router {
             calm_server::actor::actor_middleware,
         ))
         .with_state(state)
+}
+
+async fn get_wave_detail(app: axum::Router, wave_id: &str) -> Value {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/waves/{wave_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).expect("wave detail json")
 }
 
 async fn post_wave(app: axum::Router, body: Value) -> (StatusCode, Value) {

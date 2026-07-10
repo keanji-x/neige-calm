@@ -93,6 +93,7 @@ impl TestBoot {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "forge-action".into(),
                 sort: None,

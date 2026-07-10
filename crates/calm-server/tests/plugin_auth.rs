@@ -318,6 +318,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "demo".into(),
             sort: None,

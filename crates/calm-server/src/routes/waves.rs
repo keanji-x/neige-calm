@@ -50,6 +50,8 @@ use crate::operation::workspace_lease::{
     wave_has_active_forge_action,
 };
 use crate::operation::{OperationKey, OperationOutcome};
+use crate::plugin_host::manifest::WorkflowDescriptor;
+use crate::plugin_host::workflow_input::validate_workflow_input;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
@@ -339,13 +341,21 @@ pub(crate) async fn create_wave(
     //    absolute-path shape → normalize → existing-claim resolution
     //    → optional folder attach. All branches that surface a 4xx
     //    short-circuit before any DB write.
-    if let Some(workflow_id) = p.workflow_id.as_deref()
-        && (workflow_id.trim().is_empty() || !registered_trusted_workflow(&s, workflow_id).await)
-    {
-        return Err(CalmError::BadRequest(format!(
-            "wave create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}`"
-        )));
-    }
+    let workflow_descriptor = match p.workflow_id.as_deref() {
+        Some(workflow_id) => match resolve_trusted_workflow(&s, workflow_id).await {
+            Some(descriptor) if !workflow_id.trim().is_empty() => Some(descriptor),
+            _ => {
+                return Err(CalmError::BadRequest(format!(
+                    "wave create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}`"
+                )));
+            }
+        },
+        None => None,
+    };
+    // #891 — `workflow_input` is only accepted against a bound descriptor
+    // that declares an `input_schema`; validated here, before any DB write,
+    // so the inner writer persists the blob verbatim.
+    validate_workflow_input_binding(workflow_descriptor.as_ref(), p.workflow_input.as_ref())?;
 
     if !p.cwd.starts_with('/') {
         return Err(CalmError::BadRequest(format!(
@@ -451,16 +461,65 @@ pub(crate) async fn create_wave(
     create_wave_with_spec_harness(s, actor, p, attach_folder, body_cove_id, normalized_cwd).await
 }
 
-async fn registered_trusted_workflow(s: &RouteState, workflow_id: &str) -> bool {
+/// Resolve `workflow_id` to its descriptor iff a running **trusted** plugin
+/// registers it — same filter as `bound_workflow_descriptor` on the spec
+/// harness side. `None` covers unknown, stopped, and untrusted workflows
+/// alike (the route deliberately does not distinguish them in the 400).
+async fn resolve_trusted_workflow(s: &RouteState, workflow_id: &str) -> Option<WorkflowDescriptor> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
-    s.plugin.registry().list().into_iter().any(|manifest| {
-        running_plugin_ids.contains(&manifest.id)
-            && trusted_forge_plugin(&manifest.id)
-            && manifest
-                .workflows
-                .iter()
-                .any(|workflow| workflow.id == workflow_id)
-    })
+    s.plugin
+        .registry()
+        .list()
+        .into_iter()
+        .filter(|manifest| {
+            running_plugin_ids.contains(&manifest.id) && trusted_forge_plugin(&manifest.id)
+        })
+        .flat_map(|manifest| manifest.workflows)
+        .find(|workflow| workflow.id == workflow_id)
+}
+
+/// #891 — create-time `workflow_input` validation matrix (design §1.4).
+/// Fail-closed: input is only accepted when the bound descriptor declares an
+/// `input_schema`, and a schema with required fields makes input mandatory.
+/// The kernel never applies schema `default`s — the value persists exactly
+/// as the caller sent it.
+fn validate_workflow_input_binding(
+    descriptor: Option<&WorkflowDescriptor>,
+    input: Option<&serde_json::Value>,
+) -> Result<()> {
+    let Some(descriptor) = descriptor else {
+        if input.is_some() {
+            return Err(CalmError::BadRequest(
+                "wave create: `workflow_input` requires `workflow_id`".into(),
+            ));
+        }
+        return Ok(());
+    };
+    let workflow_id = &descriptor.id;
+    match (descriptor.input_schema.as_ref(), input) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(CalmError::BadRequest(format!(
+            "wave create: workflow `{workflow_id}` does not declare an input_schema; \
+             `workflow_input` is not accepted"
+        ))),
+        (Some(schema), None) => {
+            let required: Vec<&str> = schema
+                .get("required")
+                .and_then(serde_json::Value::as_array)
+                .map(|keys| keys.iter().filter_map(serde_json::Value::as_str).collect())
+                .unwrap_or_default();
+            if required.is_empty() {
+                Ok(())
+            } else {
+                Err(CalmError::BadRequest(format!(
+                    "wave create: workflow `{workflow_id}` requires `workflow_input` \
+                     (required: {required:?})"
+                )))
+            }
+        }
+        (Some(schema), Some(input)) => validate_workflow_input(schema, input)
+            .map_err(|reason| CalmError::BadRequest(format!("wave create: {reason}"))),
+    }
 }
 
 #[allow(deprecated)]
@@ -1139,5 +1198,107 @@ mod tests {
             .expect("layout overlay.set payload must carry a full positions object");
         assert!(positions.contains_key("spec-1"));
         assert!(positions.contains_key("report-1"));
+    }
+
+    /// #891 — the create-time `workflow_input` validation matrix (design
+    /// §1.4). Schema-conformance details are pinned in
+    /// `plugin_host::workflow_input`; this covers the binding combinations.
+    mod workflow_input_binding {
+        use super::super::validate_workflow_input_binding;
+        use crate::error::CalmError;
+        use crate::plugin_host::manifest::WorkflowDescriptor;
+        use serde_json::{Value, json};
+
+        fn descriptor(input_schema: Option<Value>) -> WorkflowDescriptor {
+            WorkflowDescriptor {
+                id: "issue-development".into(),
+                plan_template: vec![],
+                gates: vec![],
+                spec_instructions: String::new(),
+                card_kinds: vec![],
+                input_schema,
+            }
+        }
+
+        fn schema(required: Value) -> Value {
+            json!({
+                "type": "object",
+                "properties": {
+                    "issue_url": { "type": "string" },
+                    "merge_policy": {
+                        "type": "string",
+                        "enum": ["hold-for-ratify", "auto-merge"]
+                    }
+                },
+                "required": required,
+                "additionalProperties": false
+            })
+        }
+
+        fn expect_bad_request(
+            descriptor: Option<&WorkflowDescriptor>,
+            input: Option<&Value>,
+            needle: &str,
+        ) {
+            match validate_workflow_input_binding(descriptor, input) {
+                Err(CalmError::BadRequest(message)) => {
+                    assert!(message.contains(needle), "message `{message}` ∌ `{needle}`");
+                }
+                other => panic!("expected BadRequest containing `{needle}`, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn input_without_workflow_id_is_rejected() {
+            expect_bad_request(None, Some(&json!({ "x": 1 })), "requires `workflow_id`");
+        }
+
+        #[test]
+        fn no_workflow_no_input_is_ok() {
+            validate_workflow_input_binding(None, None).expect("plain wave create unchanged");
+        }
+
+        #[test]
+        fn input_against_schema_less_descriptor_is_rejected_fail_closed() {
+            let d = descriptor(None);
+            expect_bad_request(Some(&d), Some(&json!({ "x": 1 })), "does not declare");
+        }
+
+        #[test]
+        fn schema_less_binding_without_input_stays_valid() {
+            // Today's git-forge binding (no input_schema yet) — slice ① must
+            // not change its behavior.
+            let d = descriptor(None);
+            validate_workflow_input_binding(Some(&d), None).expect("bound create unchanged");
+        }
+
+        #[test]
+        fn missing_input_with_required_schema_is_rejected() {
+            let d = descriptor(Some(schema(json!(["issue_url"]))));
+            expect_bad_request(Some(&d), None, "requires `workflow_input`");
+            expect_bad_request(Some(&d), None, "issue_url");
+        }
+
+        #[test]
+        fn missing_input_with_no_required_fields_is_ok() {
+            let d = descriptor(Some(schema(json!([]))));
+            validate_workflow_input_binding(Some(&d), None).expect("optional input omitted");
+        }
+
+        #[test]
+        fn input_is_validated_against_the_schema() {
+            let d = descriptor(Some(schema(json!(["issue_url"]))));
+            validate_workflow_input_binding(
+                Some(&d),
+                Some(&json!({ "issue_url": "u", "merge_policy": "auto-merge" })),
+            )
+            .expect("conforming input accepted");
+            // Failure names the offending field.
+            expect_bad_request(
+                Some(&d),
+                Some(&json!({ "issue_url": "u", "merge_policy": "yolo" })),
+                "workflow_input.merge_policy",
+            );
+        }
     }
 }

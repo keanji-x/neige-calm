@@ -60,6 +60,7 @@ async fn user_prompt_card_first_turn_true_binary() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "e2e-user-prompt".into(),
             sort: None,

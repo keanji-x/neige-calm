@@ -83,6 +83,7 @@ async fn boot_with_registry(
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "transport-vector-test".into(),
             sort: None,
@@ -565,6 +566,7 @@ impl PrincipalFixture {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "principal-delta".into(),
                 sort: None,

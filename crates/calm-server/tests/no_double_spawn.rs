@@ -353,6 +353,7 @@ async fn boot_with_counted_spawn() -> Boot {
         .unwrap();
     let wave = repo_dyn
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "operations-test".into(),
             sort: None,
@@ -463,6 +464,7 @@ async fn boot_codex_with_counted_spawn() -> Boot {
         .unwrap();
     let wave = repo_dyn
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "codex-operations-test".into(),
             sort: None,
@@ -593,6 +595,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
         .unwrap();
     let wave = repo_dyn
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "claude-operations-test".into(),
             sort: None,

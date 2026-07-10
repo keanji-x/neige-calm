@@ -197,6 +197,7 @@ async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str)
     let wave = fixture
         .repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: format!("scrollback-{label}"),
             sort: None,

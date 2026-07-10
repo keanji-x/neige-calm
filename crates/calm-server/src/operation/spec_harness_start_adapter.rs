@@ -127,7 +127,7 @@ impl SpecHarnessStartAdapter {
         }
     }
 
-    async fn bound_workflow_descriptor(&self, wave_id: &str) -> Result<Option<WorkflowDescriptor>> {
+    async fn bound_workflow(&self, wave_id: &str) -> Result<Option<BoundWorkflow>> {
         let wave = match self.repo.wave_get(wave_id).await {
             Ok(wave) => wave,
             Err(error) => {
@@ -161,9 +161,15 @@ impl SpecHarnessStartAdapter {
                 .into_iter()
                 .find(|workflow| workflow.id == workflow_id)
             {
-                return Ok(Some(workflow));
+                return Ok(Some(BoundWorkflow {
+                    descriptor: workflow,
+                    input: wave.workflow_input.clone(),
+                }));
             }
         }
+        // Descriptor unresolved (plugin stopped / trust revoked): fail-safe
+        // to the vanilla prompt — the persisted workflow_input is dropped
+        // along with the descriptor rather than injected without context.
         tracing::error!(
             target: "spec_harness::workflow_binding",
             wave_id,
@@ -172,6 +178,14 @@ impl SpecHarnessStartAdapter {
         );
         Ok(None)
     }
+}
+
+/// #891 — a resolved workflow binding: the descriptor from the running
+/// trusted plugin plus the wave row's persisted `workflow_input` (already
+/// schema-validated at create time).
+struct BoundWorkflow {
+    descriptor: WorkflowDescriptor,
+    input: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -195,6 +209,7 @@ pub struct SpecHarnessStartOperationPayload {
 fn render_spec_developer_instructions(
     wave_id: &str,
     workflow_descriptor: Option<&WorkflowDescriptor>,
+    workflow_input: Option<&serde_json::Value>,
 ) -> String {
     let mut instructions = crate::spec_card::render_system_prompt(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
@@ -225,6 +240,17 @@ fn render_spec_developer_instructions(
         let gates_json =
             serde_json::to_string_pretty(&workflow_descriptor.gates).expect("GateInput serializes");
         instructions.push_str(&gates_json);
+        instructions.push_str("\n```");
+    }
+    // #891 — the wave's validated workflow_input, verbatim. Deliberately
+    // NOT passed through `render_system_prompt`: user-controlled JSON must
+    // not have literal `{wave_id}` substituted (same raw-JSON precedent as
+    // the plan_template / gates sections above).
+    if let Some(input) = workflow_input {
+        instructions.push_str("\n\n## Bound Workflow Input\n");
+        instructions.push_str("```json\n");
+        instructions
+            .push_str(&serde_json::to_string_pretty(input).expect("workflow_input serializes"));
         instructions.push_str("\n```");
     }
     instructions
@@ -461,9 +487,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             thread_id
         } else {
-            let workflow_descriptor = self.bound_workflow_descriptor(&wave_id).await?;
-            let developer_instructions =
-                render_spec_developer_instructions(&wave_id, workflow_descriptor.as_ref());
+            let bound_workflow = self.bound_workflow(&wave_id).await?;
+            let developer_instructions = render_spec_developer_instructions(
+                &wave_id,
+                bound_workflow.as_ref().map(|bound| &bound.descriptor),
+                bound_workflow
+                    .as_ref()
+                    .and_then(|bound| bound.input.as_ref()),
+            );
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
@@ -1006,9 +1037,10 @@ mod tests {
                 }],
             }],
             card_kinds: vec![],
+            input_schema: None,
         };
 
-        let out = render_spec_developer_instructions("wave-abc", Some(&workflow));
+        let out = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
 
         assert!(out.contains("Follow workflow instructions for wave wave-abc."));
         assert!(!out.contains("{wave_id}"));
@@ -1041,9 +1073,10 @@ mod tests {
             plan_template: vec![plan_task("review-a", "codex", &[])],
             gates: vec![],
             card_kinds: vec![],
+            input_schema: None,
         };
 
-        let out = render_spec_developer_instructions("wave-abc", Some(&workflow));
+        let out = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
 
         assert!(!out.contains("## Bound Workflow Instructions"));
         assert!(out.contains("## Bound Workflow Plan Template"));
@@ -1057,9 +1090,51 @@ mod tests {
             "wave-abc",
         );
 
-        let out = render_spec_developer_instructions("wave-abc", None);
+        let out = render_spec_developer_instructions("wave-abc", None, None);
 
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn spec_developer_instructions_append_workflow_input_when_present() {
+        let workflow = WorkflowDescriptor {
+            id: "issue-development".into(),
+            spec_instructions: "Follow workflow instructions for wave {wave_id}.".into(),
+            plan_template: vec![plan_task("review-a", "codex", &[])],
+            gates: vec![GateInput {
+                cwd: Some("/workspace/repo".into()),
+                timeout_secs: Some(300),
+                steps: vec![GateStepInput {
+                    name: "fmt".into(),
+                    cmd: "cargo fmt --all --check".into(),
+                }],
+            }],
+            card_kinds: vec![],
+            input_schema: None,
+        };
+        let input = json!({
+            "issue_url": "https://github.com/o/r/issues/1",
+            "notes": "literal {wave_id} must survive"
+        });
+
+        let out = render_spec_developer_instructions("wave-abc", Some(&workflow), Some(&input));
+
+        // Section renders after the Gates section, fenced as JSON.
+        let input_at = out
+            .find("## Bound Workflow Input")
+            .expect("workflow input section");
+        let gates_at = out.find("## Bound Workflow Gates").expect("gates section");
+        assert!(gates_at < input_at, "input section must follow gates");
+        assert!(out[input_at..].contains("```json"));
+        assert!(out[input_at..].contains(r#""issue_url": "https://github.com/o/r/issues/1""#));
+        // User JSON is injected verbatim — no `{wave_id}` template substitution
+        // (the spec_instructions section above it IS substituted).
+        assert!(out[input_at..].contains("literal {wave_id} must survive"));
+        assert!(out.contains("Follow workflow instructions for wave wave-abc."));
+
+        // input = None renders no section at all.
+        let without = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
+        assert!(!without.contains("## Bound Workflow Input"));
     }
 
     #[tokio::test]
@@ -1071,8 +1146,10 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite repo"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some(WORKFLOW_ID)).await;
-        let unbound_wave = make_wave(repo.as_ref(), None).await;
+        let bound_input = json!({ "issue_url": "https://github.com/o/r/issues/1" });
+        let bound_wave =
+            make_wave(repo.as_ref(), Some(WORKFLOW_ID), Some(bound_input.clone())).await;
+        let unbound_wave = make_wave(repo.as_ref(), None, None).await;
 
         let (trusted_running_host, trusted_running_tmp) =
             plugin_host_with_workflow(repo.clone(), &trusted_plugin_id, true).await;
@@ -1082,19 +1159,21 @@ mod tests {
             .expect("spawn trusted plugin");
         wait_for_running(&trusted_running_host, &trusted_plugin_id).await;
         let trusted_running_adapter = adapter_for(repo.clone(), trusted_running_host.clone());
-        let descriptor = trusted_running_adapter
-            .bound_workflow_descriptor(bound_wave.id.as_str())
+        let bound = trusted_running_adapter
+            .bound_workflow(bound_wave.id.as_str())
             .await
             .expect("resolve trusted running descriptor")
-            .expect("descriptor");
-        assert_eq!(descriptor.id, WORKFLOW_ID);
+            .expect("bound workflow");
+        assert_eq!(bound.descriptor.id, WORKFLOW_ID);
+        // The wave row's persisted workflow_input rides along with the descriptor.
+        assert_eq!(bound.input.as_ref(), Some(&bound_input));
 
         let (trusted_stopped_host, _trusted_stopped_tmp) =
             plugin_host_with_workflow(repo.clone(), &trusted_plugin_id, false).await;
         let trusted_stopped_adapter = adapter_for(repo.clone(), trusted_stopped_host);
         assert!(
             trusted_stopped_adapter
-                .bound_workflow_descriptor(bound_wave.id.as_str())
+                .bound_workflow(bound_wave.id.as_str())
                 .await
                 .expect("trusted stopped lookup")
                 .is_none()
@@ -1110,7 +1189,7 @@ mod tests {
         let untrusted_running_adapter = adapter_for(repo.clone(), untrusted_running_host.clone());
         assert!(
             untrusted_running_adapter
-                .bound_workflow_descriptor(bound_wave.id.as_str())
+                .bound_workflow(bound_wave.id.as_str())
                 .await
                 .expect("untrusted running lookup")
                 .is_none()
@@ -1118,7 +1197,7 @@ mod tests {
 
         assert!(
             trusted_running_adapter
-                .bound_workflow_descriptor(unbound_wave.id.as_str())
+                .bound_workflow(unbound_wave.id.as_str())
                 .await
                 .expect("unbound lookup")
                 .is_none()
@@ -1159,7 +1238,11 @@ mod tests {
         candidate
     }
 
-    async fn make_wave(repo: &SqlxRepo, workflow_id: Option<&str>) -> crate::model::Wave {
+    async fn make_wave(
+        repo: &SqlxRepo,
+        workflow_id: Option<&str>,
+        workflow_input: Option<serde_json::Value>,
+    ) -> crate::model::Wave {
         let cove = repo
             .cove_create(NewCove {
                 name: format!("cove-{workflow_id:?}"),
@@ -1169,6 +1252,7 @@ mod tests {
             .await
             .expect("create cove");
         repo.wave_create(NewWave {
+            workflow_input,
             cove_id: cove.id,
             title: "workflow resolver".into(),
             sort: None,
