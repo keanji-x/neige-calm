@@ -194,8 +194,24 @@ fn tool_names_from_response(resp: &Value) -> Vec<String> {
     names
 }
 
+/// #868: the unix socket below must fit sockaddr_un's 108-byte cap, so the
+/// tempdir goes under a short base, never the repo cwd — deep
+/// checkouts/worktrees overflow the cap. `env::temp_dir()` honors `TMPDIR`,
+/// which can itself be deep, so fall back to literal `/tmp` when the ambient
+/// base is long (same guard as `forge_merge_crash_reboot::socket_safe_tempdir`
+/// and `support::codex_fixture::short_tempdir`, which is codex-e2e-gated).
+fn socket_safe_tempdir() -> std::io::Result<TempDir> {
+    let ambient = std::env::temp_dir();
+    let base = if ambient.as_os_str().len() <= 40 {
+        ambient
+    } else {
+        PathBuf::from("/tmp")
+    };
+    tempfile::Builder::new().prefix("mcpt").tempdir_in(base)
+}
+
 async fn boot_fixture() -> Fixture {
-    let tmp = tempfile::tempdir_in(std::env::current_dir().expect("cwd")).expect("tempdir");
+    let tmp = socket_safe_tempdir().expect("tempdir");
     let socket_path = tmp.path().join("mcp").join("kernel.sock");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
