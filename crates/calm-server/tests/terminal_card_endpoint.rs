@@ -96,6 +96,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "endpoint-test".into(),
             sort: None,
@@ -249,6 +250,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "endpoint-test".into(),
             sort: None,

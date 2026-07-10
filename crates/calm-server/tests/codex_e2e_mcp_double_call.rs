@@ -132,6 +132,7 @@ async fn seed_spec_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (St
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "double-call-wave".into(),
             sort: None,

@@ -82,6 +82,7 @@ async fn seed_worker_in_wave(
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: wave_title.into(),
             sort: None,
@@ -519,6 +520,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,

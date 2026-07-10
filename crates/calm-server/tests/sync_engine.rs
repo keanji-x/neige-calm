@@ -156,6 +156,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                 let _w = wave_create_tx(
                     tx,
                     NewWave {
+                        workflow_input: None,
                         cove_id,
                         title: "doomed".into(),
                         sort: None,
@@ -325,6 +326,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                 let wave = wave_create_tx(
                     tx,
                     NewWave {
+                        workflow_input: None,
                         cove_id,
                         title: "w1".into(),
                         sort: None,
@@ -439,6 +441,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                     let w = wave_create_tx(
                         tx,
                         NewWave {
+                            workflow_input: None,
                             cove_id,
                             title,
                             sort: None,
@@ -510,6 +513,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                     let w = wave_create_tx(
                         tx,
                         NewWave {
+                            workflow_input: None,
                             cove_id,
                             title: "during-replay".into(),
                             sort: None,
@@ -645,6 +649,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                         let w = wave_create_tx(
                             tx,
                             NewWave {
+                                workflow_input: None,
                                 cove_id,
                                 title,
                                 sort: None,

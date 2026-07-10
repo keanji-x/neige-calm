@@ -160,6 +160,7 @@ impl TestFixture {
         let wave = self
             .repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "ws-resolve-e2e".into(),
                 sort: None,

@@ -29,6 +29,7 @@ async fn fresh() -> (axum::Router, Arc<SqlxRepo>, String) {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "thread map".into(),
             sort: None,

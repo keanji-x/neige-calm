@@ -133,7 +133,7 @@ async fn wave_get_tx(
     wave_id: &crate::ids::WaveId,
 ) -> Result<Wave, CalmError> {
     sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(wave_id.as_str())

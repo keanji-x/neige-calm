@@ -633,6 +633,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "worker report preserve".into(),
                 sort: None,
@@ -760,6 +761,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "shadow wave".into(),
                 sort: None,
@@ -887,6 +889,7 @@ mod tests {
             .expect("create cove");
         let wave = repo
             .wave_create(NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "root wave".into(),
                 sort: None,

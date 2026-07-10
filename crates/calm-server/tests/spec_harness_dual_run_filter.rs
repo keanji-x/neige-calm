@@ -35,6 +35,7 @@ async fn harness_drops_foreign_thread_notifications() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "dual".into(),
             sort: None,
@@ -135,6 +136,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "harness-route".into(),
             sort: None,
@@ -291,6 +293,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "harness-full".into(),
             sort: None,

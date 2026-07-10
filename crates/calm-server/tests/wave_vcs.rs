@@ -52,6 +52,7 @@ async fn make_cove(repo: &SqlxRepo) -> calm_server::model::Cove {
 
 async fn make_wave(repo: &SqlxRepo, cove_id: &str) -> calm_server::model::Wave {
     repo.wave_create(NewWave {
+        workflow_input: None,
         cove_id: CoveId::from(cove_id),
         title: "wave".into(),
         sort: None,

@@ -1,0 +1,36 @@
+mod.rs	1	18
+mod.rs	4160	4166
+mod.rs	68	92
+mod.rs	94	185
+mod.rs	262	284
+infra.rs	337	374
+infra.rs	391	478
+events.rs	187	260
+events.rs	286	335
+events.rs	6023	6606
+cove.rs	480	714
+wave.rs	716	889
+wave.rs	1540	1582
+task.rs	891	1500
+card.rs	376	389
+card.rs	1584	1918
+card_composite.rs	1920	2527
+session_row.rs	1502	1538
+session_row.rs	2529	3076
+session_mirror.rs	3078	3668
+session_projection.rs	3670	4036
+session_projection.rs	4938	5059
+overlay.rs	4038	4158
+read.rs	4167	4936
+session_repo_impl.rs	5061	5402
+out_of_domain.rs	5404	6021
+tests.rs	6610	6674	dedent4
+task_liveness_deadline_tests.rs	6679	6823	dedent4
+workspace_lease_lookup_tests.rs	6828	6944	dedent4	6874-6877
+write_path_gate_wiring_tests.rs	6949	7087	dedent4
+runtime_read_flip_support.rs	7092	7551	dedent4
+runtime_read_flip_parity_tests.rs	7552	8006	dedent4
+runtime_read_flip_projection_tests.rs	8007	8474	dedent4	8255-8256,8431-8432
+worker_flow_items_tests.rs	8479	8694	dedent4
+worker_flow_cursor_tests.rs	8699	8831	dedent4
+session_record_activity_tests.rs	8836	9082	dedent4

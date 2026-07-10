@@ -139,6 +139,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                 let wave = wave_create_tx(
                     tx,
                     NewWave {
+                        workflow_input: None,
                         cove_id,
                         title: "w".into(),
                         sort: None,

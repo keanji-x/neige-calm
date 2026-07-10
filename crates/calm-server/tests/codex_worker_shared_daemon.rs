@@ -129,6 +129,7 @@ async fn boot(start_shared: bool) -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "worker-shared".into(),
             sort: None,
@@ -568,6 +569,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "worker recovery".into(),
             sort: None,

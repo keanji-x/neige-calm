@@ -81,6 +81,7 @@ where
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "codex-endpoint".into(),
             sort: None,
