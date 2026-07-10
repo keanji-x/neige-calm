@@ -342,14 +342,22 @@ pub(crate) async fn create_wave(
     //    → optional folder attach. All branches that surface a 4xx
     //    short-circuit before any DB write.
     let workflow_descriptor = match p.workflow_id.as_deref() {
-        Some(workflow_id) => match resolve_trusted_workflow(&s, workflow_id).await {
-            Some(descriptor) if !workflow_id.trim().is_empty() => Some(descriptor),
-            _ => {
-                return Err(CalmError::BadRequest(format!(
+        Some(workflow_id) => {
+            let unknown_workflow = || {
+                CalmError::BadRequest(format!(
                     "wave create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}`"
-                )));
+                ))
+            };
+            // Whitespace-only ids short-circuit before the registry lookup
+            // (pre-#891 local-guard shape) and share the unknown-id 400.
+            if workflow_id.trim().is_empty() {
+                return Err(unknown_workflow());
             }
-        },
+            let descriptor = resolve_trusted_workflow(&s, workflow_id)
+                .await
+                .ok_or_else(unknown_workflow)?;
+            Some(descriptor)
+        }
         None => None,
     };
     // #891 — `workflow_input` is only accepted against a bound descriptor

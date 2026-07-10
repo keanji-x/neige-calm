@@ -91,6 +91,12 @@ pub fn validate_input_schema(schema: &Value) -> Result<(), SchemaError> {
         ));
     }
 
+    if let Some(description) = root.get("description")
+        && !description.is_string()
+    {
+        return Err(SchemaError::new(path(".description"), "must be a string"));
+    }
+
     // `additionalProperties: false` must be explicit — absence would smuggle
     // in JSON Schema's open-world default, which the instance validator
     // (deliberately) does not implement.
@@ -173,6 +179,12 @@ fn validate_property(_name: &str, spec: &Value) -> Result<(), SchemaError> {
                 ),
             ));
         }
+    }
+
+    if let Some(description) = spec.get("description")
+        && !description.is_string()
+    {
+        return Err(SchemaError::new(".description", "must be a string"));
     }
 
     let ty = spec
@@ -276,14 +288,24 @@ fn check_value(value: &Value, spec: &Map<String, Value>) -> Result<(), String> {
     let ty = spec.get("type").and_then(Value::as_str).unwrap_or("string");
     let ok = match ty {
         "string" => value.is_string(),
-        // JSON has one number type; "integer" additionally rejects
-        // fractional values.
+        // Deliberate deviation from JSON Schema `integer` semantics
+        // (design doc §决策记录): only integer-*encoded* JSON numbers are
+        // accepted — ANY float-encoded value is rejected, including `1.0`,
+        // not just fractional ones. Fail-closed: re-deriving integrality
+        // from an f64 hits precision edge cases (`1e300`, values past
+        // 2^53). Conforming clients are unaffected — JS
+        // `JSON.stringify(1.0)` emits `"1"`.
         "integer" => value.is_i64() || value.is_u64(),
         "number" => value.is_number(),
         "boolean" => value.is_boolean(),
         _ => false,
     };
     if !ok {
+        if ty == "integer" {
+            return Err("expected type `integer` (an integer-encoded JSON number; \
+                 float-encoded values such as `1.0` are rejected)"
+                .to_string());
+        }
         return Err(format!("expected type `{ty}`"));
     }
     if let Some(members) = spec.get("enum").and_then(Value::as_array)
@@ -426,6 +448,32 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_string_root_description() {
+        let mut v = schema();
+        v["description"] = json!(false);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.description");
+
+        let mut v = schema();
+        v["description"] = json!({ "oneOf": [] });
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.description");
+    }
+
+    #[test]
+    fn rejects_non_string_property_description() {
+        let mut v = schema();
+        v["properties"]["issue_url"]["description"] = json!(false);
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.issue_url.description");
+
+        let mut v = schema();
+        v["properties"]["issue_url"]["description"] = json!({ "oneOf": [] });
+        let err = validate_input_schema(&v).unwrap_err();
+        assert_eq!(err.path, "input_schema.properties.issue_url.description");
+    }
+
+    #[test]
     fn rejects_default_that_violates_own_constraints() {
         // default outside its own enum
         let mut v = schema();
@@ -485,6 +533,23 @@ mod tests {
             validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.5 }))
                 .unwrap_err();
         assert!(err.starts_with("workflow_input.issue_number:"), "{err}");
+    }
+
+    #[test]
+    fn integer_accepts_integer_encoded_value() {
+        validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1 }))
+            .expect("integer-encoded 1 accepted");
+    }
+
+    #[test]
+    fn integer_rejects_float_encoded_value_even_when_whole() {
+        // Deliberate strictness (see check_value): `1.0` is float-encoded,
+        // so it is rejected even though it is numerically integral.
+        let err =
+            validate_workflow_input(&schema(), &json!({ "issue_url": "u", "issue_number": 1.0 }))
+                .unwrap_err();
+        assert!(err.starts_with("workflow_input.issue_number:"), "{err}");
+        assert!(err.contains("float-encoded"), "{err}");
     }
 
     #[test]
