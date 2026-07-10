@@ -381,7 +381,22 @@ async fn spawn_live_counter_action(
             Ok(())
         });
     }
-    let child = cmd.spawn().expect("spawn live fake action");
+    // The script was just written by this multi-threaded test process: a child
+    // forked on another thread can hold a fork-inherited write fd (CLOEXEC only
+    // closes at exec), making a direct spawn fail ETXTBSY — retry until released.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let child = loop {
+        match cmd.spawn() {
+            Ok(child) => break child,
+            Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                if std::time::Instant::now() >= deadline {
+                    panic!("live fake action {action:?} still ETXTBSY after 10s of retries: {err}");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(err) => panic!("spawn live fake action {action:?}: {err}"),
+        }
+    };
     let pid = child.id().expect("child pid") as i32;
     let artifacts = SpawnArtifacts {
         pid,

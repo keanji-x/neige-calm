@@ -33,13 +33,13 @@ pub fn write_gh_shim(dir: &Path) {
 /// with ETXTBSY until that child execs or exits. Retrying the spawn is the
 /// only reliable fix — fsync or write-to-temp+rename do not release the fd.
 pub fn run_gh(gh: &Path, args: &[&str]) -> std::process::Output {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match std::process::Command::new(gh).args(args).output() {
             Ok(output) => return output,
             Err(err) if err.kind() == std::io::ErrorKind::ExecutableFileBusy => {
                 if Instant::now() >= deadline {
-                    panic!("gh shim {gh:?} still ETXTBSY after 2s of retries: {err}");
+                    panic!("gh shim {gh:?} still ETXTBSY after 10s of retries: {err}");
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }

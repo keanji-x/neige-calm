@@ -3019,7 +3019,9 @@ fn gh_shim_issue_view_prefers_seeded_body_file() {
 /// shim's inode until it execs, so a direct spawn can fail ETXTBSY. Model
 /// that race deterministically with a held write fd: the raw spawn must fail
 /// with ExecutableFileBusy, and `run_gh` must retry until the fd is released
-/// and then succeed.
+/// and then succeed. Linux-only: the repro relies on the kernel enforcing
+/// ETXTBSY at execve of a file open for writing, which macOS does not.
+#[cfg(target_os = "linux")]
 #[test]
 fn gh_shim_spawn_retries_transient_etxtbsy() {
     let tmp = tempfile::tempdir().expect("tempdir");
