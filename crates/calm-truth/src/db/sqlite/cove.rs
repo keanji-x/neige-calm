@@ -183,7 +183,8 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
     Ok(())
 }
 
-/// Issue #250 PR 2 — in-tx variant of [`SqlxRepo::cove_folder_create`].
+/// Issue #250 PR 2 — in-tx variant of
+/// [`SqlxRepo::cove_folder_create`](crate::db::RepoOutOfDomain::cove_folder_create).
 ///
 /// Needed because the wave-create path with `attach_folder = true`
 /// claims a folder and writes the wave row in the **same** transaction:
