@@ -110,6 +110,11 @@ FORWARDER_DOWN=0
 PREFLIGHT_ONLY=0
 TEST_FILTER=""
 TEST_BIN=""
+# Presence flags: `--test ''` / `--test-bin ''` must still count as "flag
+# given" for the lifecycle-mode rejection below (nonempty checks would let
+# an explicit empty value slip past).
+TEST_FILTER_SET=0
+TEST_BIN_SET=0
 
 log() { printf '[e2e-isolated] %s\n' "$*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -124,10 +129,10 @@ while [ $# -gt 0 ]; do
         --preflight-only) PREFLIGHT_ONLY=1 ;;
         --test)
             [ $# -ge 2 ] || die "--test needs a value"
-            TEST_FILTER="$2"; shift ;;
+            TEST_FILTER="$2"; TEST_FILTER_SET=1; shift ;;
         --test-bin)
             [ $# -ge 2 ] || die "--test-bin needs a value"
-            TEST_BIN="$2"; shift ;;
+            TEST_BIN="$2"; TEST_BIN_SET=1; shift ;;
         # Help = the header block: from line 2 to the closing `# ===` fence.
         -h|--help) sed -n '2,/^# ====/p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) die "unknown flag: $1 (see --help)" ;;
@@ -155,10 +160,10 @@ if [ "$FORWARDER_ONLY" = 1 ] || [ "$FORWARDER_DOWN" = 1 ]; then
     if [ "$PREFLIGHT_ONLY" = 1 ]; then
         die "$LIFECYCLE_MODE is a lifecycle mode: --preflight-only does not apply (preflight belongs to an execution run)"
     fi
-    if [ -n "$TEST_FILTER" ]; then
+    if [ "$TEST_FILTER_SET" = 1 ]; then
         die "$LIFECYCLE_MODE is a lifecycle mode: --test does not apply (no suite runs in this mode)"
     fi
-    if [ -n "$TEST_BIN" ]; then
+    if [ "$TEST_BIN_SET" = 1 ]; then
         die "$LIFECYCLE_MODE is a lifecycle mode: --test-bin does not apply (no suite runs in this mode)"
     fi
     if [ "$NO_BUILD" = 1 ]; then
