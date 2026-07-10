@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::ids::ActorId;
 use serde_json::Value;
 
 use super::event_queries::{EventRow, event_rows};
@@ -34,6 +35,10 @@ pub fn review_subject_key(row: &EventRow) -> SubjectKey {
 
 pub fn review_round_n(row: &EventRow) -> u32 {
     row.payload["n"].as_u64().expect("review n") as u32
+}
+
+pub fn review_round_cap(row: &EventRow) -> u32 {
+    row.payload["cap"].as_u64().expect("review cap") as u32
 }
 
 pub fn review_round_converged(row: &EventRow) -> bool {
@@ -134,6 +139,104 @@ pub async fn assert_subject_keyed_cap_enforcement(repo: &SqlxRepo, wave_id: &str
             "unconverged max-n subject {key:?} must not reach done later"
         );
     }
+}
+
+/// Direct executable form of INV-CAP-EXT (#888 design §3.3/§7c′), validating
+/// the wave's `review.round` rows however they were written: per subject, in
+/// event-row-id order, every adjacent pair `(prev, next)` must satisfy
+/// `n(next) == n(prev) + 1` and either `cap(next) == cap(prev)` (in-window) or
+/// all of `cap(next) == cap(prev) + 2` AND `n(prev) == cap(prev)` (prev
+/// exhausted) AND an intervening `ratify.resolved { grant }` witness row with
+/// `prev.id < g.id < next.id` authored by `ActorId::User` (role_gate 2.9 —
+/// the User-actor condition keeps the audit claim honest even against a
+/// malformed/test-seeded non-User grant). Grant non-reuse follows
+/// observationally: two extensions of one subject bracket witnesses in
+/// disjoint id intervals.
+///
+/// Returns per-subject extension counts so callers can pin exact totals.
+pub async fn assert_cap_extension_history(
+    repo: &SqlxRepo,
+    wave_id: &str,
+) -> HashMap<SubjectKey, usize> {
+    let rounds: Vec<EventRow> = event_rows(repo, "review.round")
+        .await
+        .into_iter()
+        .filter(|row| row.scope_wave.as_deref() == Some(wave_id))
+        .collect();
+
+    let resolved_rows: Vec<(i64, String, Option<String>, String)> = sqlx::query_as(
+        "SELECT id, actor, scope_wave, payload FROM events \
+         WHERE kind = 'ratify.resolved' ORDER BY id ASC",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .expect("ratify.resolved rows");
+    let user_grant_ids: Vec<i64> = resolved_rows
+        .into_iter()
+        .filter_map(|(id, actor, scope_wave, payload)| {
+            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
+            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+            (scope_wave.as_deref() == Some(wave_id)
+                && payload["decision"] == "grant"
+                && actor == ActorId::User)
+                .then_some(id)
+        })
+        .collect();
+
+    let mut by_subject: HashMap<SubjectKey, Vec<EventRow>> = HashMap::new();
+    for round in rounds {
+        by_subject
+            .entry(review_subject_key(&round))
+            .or_default()
+            .push(round);
+    }
+
+    let mut extensions: HashMap<SubjectKey, usize> = HashMap::new();
+    for (key, mut group) in by_subject {
+        group.sort_by_key(|row| row.id);
+        let mut count = 0usize;
+        for pair in group.windows(2) {
+            let (prev, next) = (&pair[0], &pair[1]);
+            let (prev_n, prev_cap) = (review_round_n(prev), review_round_cap(prev));
+            let (next_n, next_cap) = (review_round_n(next), review_round_cap(next));
+            assert_eq!(
+                next_n,
+                prev_n + 1,
+                "INV-CAP-EXT: n must rise by exactly 1 for {key:?}: n={prev_n} (id {}) -> n={next_n} (id {})",
+                prev.id,
+                next.id
+            );
+            if next_cap == prev_cap {
+                continue;
+            }
+            assert_eq!(
+                next_cap,
+                prev_cap + 2,
+                "INV-CAP-EXT: a cap change must be exactly +2 for {key:?}: cap={prev_cap} (id {}) -> cap={next_cap} (id {})",
+                prev.id,
+                next.id
+            );
+            assert_eq!(
+                prev_n, prev_cap,
+                "INV-CAP-EXT: an extension requires the previous round to exhaust its window \
+                 for {key:?}: n={prev_n}, cap={prev_cap} (id {})",
+                prev.id
+            );
+            assert!(
+                user_grant_ids
+                    .iter()
+                    .any(|grant_id| prev.id < *grant_id && *grant_id < next.id),
+                "INV-CAP-EXT: an extension requires a User-authored ratify.resolved{{grant}} \
+                 witness strictly between id {} and id {} for {key:?}; user grant ids: \
+                 {user_grant_ids:?}",
+                prev.id,
+                next.id
+            );
+            count += 1;
+        }
+        extensions.insert(key, count);
+    }
+    extensions
 }
 
 /// First (smallest) event id among rows matching `pred`, if any.

@@ -10,8 +10,10 @@ use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
 use calm_server::error::CalmError;
-use calm_server::event::{Event, EventBus, RatifyDecision};
-use calm_server::ids::{CardId, CoveId, WaveId};
+use calm_server::event::{
+    ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision, ReviewSubject,
+};
+use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::review::{TOOL_RATIFY_REQUEST, TOOL_REVIEW_ROUND};
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -37,6 +39,10 @@ struct Boot {
     cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
+    // Exposed for tests that seed events via `log_pure_event` (#888 t10).
+    events: EventBus,
+    card_role_cache: CardRoleCache,
+    wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
 }
 
 fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
@@ -171,8 +177,11 @@ async fn boot() -> Boot {
         wave_vcs: repo
             .sqlite_pool()
             .map(calm_truth::wave_vcs_repo::SqlxWaveVcsRepo::shared),
-        events,
-        write: calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        events: events.clone(),
+        write: calm_server::state::WriteContext::new(
+            card_role_cache.clone(),
+            wave_cove_cache.clone(),
+        ),
         daemon_token_hash: None,
         gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
         plugin_host: Arc::new(tokio::sync::OnceCell::new()),
@@ -189,6 +198,9 @@ async fn boot() -> Boot {
         cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
+        events,
+        card_role_cache,
+        wave_cove_cache,
     }
 }
 
@@ -781,6 +793,343 @@ async fn ratify_route_grant_emits_resolved_and_flips_blocked_to_working() {
         ),
         "{events:?}",
     );
+}
+
+// ===================== #888 post-grant cap extension =====================
+//
+// The kernel accepts a per-subject cap raise only immediately after genuine
+// exhaustion (prev n == prev cap), only when backed by a `ratify.resolved
+// { grant }` strictly newer than the exhausting round, and only by exactly
+// CAP_EXTENSION_PER_GRANT = 2 (INV-CAP-EXT, #888 design §3).
+
+/// `valid_round_args` variant with explicit n/cap/converged on the standard
+/// impl subject. Non-converged rounds carry changes_requested verdicts
+/// (converged=true requires all-approved).
+fn round_args(n: u32, cap: u32, converged: bool) -> Value {
+    round_args_for_subject(
+        json!({ "phase": "impl", "slice_id": "5b", "pr_number": 760 }),
+        n,
+        cap,
+        converged,
+    )
+}
+
+fn round_args_for_subject(subject: Value, n: u32, cap: u32, converged: bool) -> Value {
+    let verdict = if converged {
+        "approved"
+    } else {
+        "changes_requested"
+    };
+    json!({
+        "subject": subject,
+        "head_sha": "abc123",
+        "n": n,
+        "cap": cap,
+        "converged": converged,
+        "channels": [
+            { "role": "reviewer-a", "verdict": verdict },
+            { "role": "reviewer-b", "verdict": verdict }
+        ]
+    })
+}
+
+async fn emit_round(boot: &Boot, args: Value) {
+    let out = call_tool(boot, TOOL_REVIEW_ROUND, args)
+        .await
+        .expect("review round accepted");
+    assert_eq!(out["emitted"], json!(true), "{out}");
+}
+
+/// Drive the standard impl subject to exhaustion: rounds n=1..=cap at `cap`,
+/// all non-converged.
+async fn exhaust_subject(boot: &Boot, cap: u32) {
+    for n in 1..=cap {
+        emit_round(boot, round_args(n, cap, false)).await;
+    }
+}
+
+/// Reject helper: INVALID_PARAMS + message fragment + no event appended.
+async fn expect_round_reject(boot: &Boot, args: Value, fragment: &str) {
+    let before = events_for_wave(boot, &["review.round"]).await.len();
+    let err = call_tool(boot, TOOL_REVIEW_ROUND, args)
+        .await
+        .expect_err("review round must be rejected");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(err.message.contains(fragment), "{err:?}");
+    let after = events_for_wave(boot, &["review.round"]).await.len();
+    assert_eq!(after, before, "rejected round must not append");
+}
+
+/// working -> blocked (request) -> working (grant).
+async fn request_and_grant(boot: &Boot, reason: &str) {
+    request_ratification(boot, reason)
+        .await
+        .expect("ratify request");
+    let (status, body) = post_ratify(boot, "grant").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+// t1 — no grant at all: exhaustion alone does not authorize an extension.
+#[tokio::test]
+async fn review_round_cap_extension_without_grant_rejected() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    expect_round_reject(
+        &boot,
+        round_args(4, 5, false),
+        "requires a ratify.resolved grant",
+    )
+    .await;
+}
+
+// t2 — fresh grant: exactly-+2 extension accepted, in-window continuation
+// accepted, extended window re-exhausts at the static guard.
+#[tokio::test]
+async fn review_round_cap_extension_with_fresh_grant_accepted() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+
+    emit_round(&boot, round_args(4, 5, false)).await;
+    // In-window continuation after an extension (unit-only coverage; the R7c
+    // E2E's single post-grant round both extends and converges).
+    emit_round(&boot, round_args(5, 5, false)).await;
+    // The extended window re-exhausts: n=6 > cap=5 hits the static guard.
+    expect_round_reject(&boot, round_args(6, 5, false), "must be <=").await;
+
+    let events = events_for_wave(&boot, &["review.round"]).await;
+    assert_eq!(events.len(), 5, "{events:?}");
+}
+
+// t3 — the non-reuse theorem, executable form: the first grant's row id
+// precedes the new exhausting round, so a second extension needs a FRESH
+// grant.
+#[tokio::test]
+async fn review_round_second_extension_requires_fresh_grant() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+    emit_round(&boot, round_args(4, 5, false)).await;
+    emit_round(&boot, round_args(5, 5, false)).await;
+
+    // The old grant is now STALE: its row id < id(round n=5), the new
+    // exhausting round.
+    expect_round_reject(
+        &boot,
+        round_args(6, 7, false),
+        "requires a ratify.resolved grant",
+    )
+    .await;
+
+    request_and_grant(&boot, "cap_exhausted again").await;
+    emit_round(&boot, round_args(6, 7, false)).await;
+}
+
+// t4 — cap must never shrink.
+#[tokio::test]
+async fn review_round_cap_shrink_rejected() {
+    let boot = boot().await;
+    emit_round(&boot, round_args(1, 3, false)).await;
+    expect_round_reject(&boot, round_args(2, 2, false), "must not shrink").await;
+}
+
+// t5 — a deny is not a grant.
+#[tokio::test]
+async fn review_round_deny_does_not_authorize_extension() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_ratification(&boot, "cap_exhausted")
+        .await
+        .expect("ratify request");
+    let (status, body) = post_ratify(&boot, "deny").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The wave stays blocked, but calm.review.round has no lifecycle guard —
+    // the reject below is the CAP arm's doing, not a lifecycle side effect.
+    expect_round_reject(
+        &boot,
+        round_args(4, 5, false),
+        "requires a ratify.resolved grant",
+    )
+    .await;
+}
+
+// t5b — a later deny does NOT revoke an earlier grant's extension
+// authorization (#888 design §3.7 decided semantics; also pins the cap arm's
+// lifecycle-independence: the wave is `blocked` when the extension lands).
+#[tokio::test]
+async fn review_round_deny_after_grant_does_not_revoke_extension() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+    // Grant restored `working`, so a second (free-form) request is legal.
+    request_ratification(&boot, "second thoughts")
+        .await
+        .expect("second ratify request");
+    let (status, body) = post_ratify(&boot, "deny").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let out = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(4, 5, false))
+        .await
+        .expect("extension backed by the earlier grant");
+    assert_eq!(out["emitted"], json!(true), "{out}");
+}
+
+// t6 — a grant does not license mid-stream inflation: the previous window
+// must be exhausted first.
+#[tokio::test]
+async fn review_round_extension_before_exhaustion_rejected() {
+    let boot = boot().await;
+    emit_round(&boot, round_args(1, 3, false)).await;
+    emit_round(&boot, round_args(2, 3, false)).await;
+    request_and_grant(&boot, "early ask").await;
+    expect_round_reject(
+        &boot,
+        round_args(3, 5, false),
+        "requires the previous window to be exhausted",
+    )
+    .await;
+}
+
+// t7 — the delta is exactly +2: over- and under-raise both rejected.
+#[tokio::test]
+async fn review_round_extension_wrong_delta_rejected() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+    expect_round_reject(&boot, round_args(4, 6, false), "exactly").await;
+    expect_round_reject(&boot, round_args(4, 4, false), "exactly").await;
+    // Sanity tail: the exact +2 raise is accepted.
+    emit_round(&boot, round_args(4, 5, false)).await;
+}
+
+// t8 — byte-identical crash-retry of an extension round is a no-op
+// (DuplicateSame precedes the cap arm; grant freshness is not re-litigated).
+#[tokio::test]
+async fn review_round_extension_duplicate_resubmit_noop() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+    emit_round(&boot, round_args(4, 5, false)).await;
+
+    let before = events_for_wave(&boot, &["review.round"]).await.len();
+    let out = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(4, 5, false))
+        .await
+        .expect("byte-identical resubmit is idempotent");
+    assert_eq!(out["emitted"], json!(false), "{out}");
+    let after = events_for_wave(&boot, &["review.round"]).await.len();
+    assert_eq!(after, before, "duplicate must not append");
+}
+
+// t8b — DuplicateSame equality is byte-identical and order-sensitive
+// (pre-existing semantics, honestly pinned): a resubmit with the channel
+// verdicts swapped is NOT a duplicate and fails the n check.
+#[tokio::test]
+async fn review_round_extension_resubmit_reordered_channels_rejected() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+    emit_round(&boot, round_args(4, 5, false)).await;
+
+    let mut reordered = round_args(4, 5, false);
+    let channels = reordered["channels"]
+        .as_array_mut()
+        .expect("channels array");
+    channels.swap(0, 1);
+    expect_round_reject(&boot, reordered, "expected n=5").await;
+}
+
+// t9 — Q1 breadth (#888 design §3.6): ONE grant authorizes one +2 extension
+// for EVERY subject of the wave that was already exhausted when it landed.
+#[tokio::test]
+async fn review_round_one_grant_extends_each_subject_exhausted_before_it() {
+    let boot = boot().await;
+    let impl_subject = json!({ "phase": "impl", "slice_id": "5b", "pr_number": 760 });
+    let design_subject = json!({ "phase": "design", "slice_id": "5b" });
+    for n in 1..=3 {
+        emit_round(
+            &boot,
+            round_args_for_subject(impl_subject.clone(), n, 3, false),
+        )
+        .await;
+        emit_round(
+            &boot,
+            round_args_for_subject(design_subject.clone(), n, 3, false),
+        )
+        .await;
+    }
+    request_and_grant(&boot, "cap_exhausted").await;
+
+    emit_round(&boot, round_args_for_subject(impl_subject, 4, 5, false)).await;
+    emit_round(&boot, round_args_for_subject(design_subject, 4, 5, false)).await;
+}
+
+// t10 — tied-n recovery pick (#888 design §3.1): among tied max-n rows,
+// `prev` is the one with the greatest event row id. Ties cannot arise through
+// the tool; seed one via `log_pure_event` (events carry no idempotency
+// uniqueness index; role_gate 2.8 admits AiSpec(spec card)).
+#[tokio::test]
+async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+
+    // Seed a SECOND n=3 row with cap=5 (distinct idem-key suffix): the
+    // greatest-row-id tied row now says cap=5, n=3 (NOT exhausted for cap 5).
+    boot.repo
+        .log_pure_event(
+            ActorId::AiSpec(boot.spec_card_id.clone()),
+            EventScope::Wave {
+                wave: boot.wave_id.clone(),
+                cove: boot.cove_id.clone(),
+            },
+            None,
+            &boot.events,
+            &boot.card_role_cache,
+            &boot.wave_cove_cache,
+            Event::ReviewRound {
+                wave_id: boot.wave_id.clone(),
+                subject: ReviewSubject {
+                    phase: "impl".into(),
+                    slice_id: "5b".into(),
+                    pr_number: Some(760),
+                },
+                head_sha: Some("seed-tied".into()),
+                n: 3,
+                cap: 5,
+                converged: false,
+                channels: vec![
+                    ChannelVerdict {
+                        role: "reviewer-a".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                    ChannelVerdict {
+                        role: "reviewer-b".into(),
+                        verdict: ChannelVerdictKind::ChangesRequested,
+                    },
+                ],
+                root_cause: None,
+                idempotency_key: format!("review.round:{}:impl:5b:760:3:seed", boot.wave_id),
+            },
+        )
+        .await
+        .expect("seed tied review.round");
+
+    // n=4/cap=5 with NO grant: accepted iff `prev` is the seeded greatest-
+    // row-id row (equal cap, rule row 4). Picking the older tied row
+    // (n=3=cap=3, exhausted) would instead demand a grant (E3).
+    emit_round(&boot, round_args(4, 5, false)).await;
+}
+
+// t11 — rule-table order: a request wrong on BOTH axes reports the n error
+// (rows 3 before 4-9), preserving the existing re-sync signal.
+#[tokio::test]
+async fn review_round_wrong_n_and_cap_reports_n_error() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+    request_and_grant(&boot, "cap_exhausted").await;
+    expect_round_reject(&boot, round_args(5, 5, false), "expected n=4").await;
 }
 
 #[tokio::test]

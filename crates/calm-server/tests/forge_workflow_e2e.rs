@@ -992,9 +992,11 @@ async fn cap_exhausted_ask_human_pauses_then_resumes() {
         "resume review after grant",
     )
     .await;
+    // Post-grant extension round (#888): the kernel accepts exactly
+    // previous cap + 2 (cap 1 -> 3), backed by the fresh grant above.
     let converged = emit_review_round(
         &fx,
-        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 2, 8, true),
+        &ReviewRoundInput::impl_round("760", pr.pr_number, &pr.head_sha, 2, 3, true),
     )
     .await;
     let merged = merge_reviewed_pr(&fx, 64, &pr, "760").await;
