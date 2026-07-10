@@ -92,14 +92,19 @@ export interface NewTaskFormProps {
   /** Fired when the user dismisses the form (Esc, Cancel). Caller
    *  collapses the inline panel back to a CTA button. */
   onCancel: () => void;
-  /** Optional ref forwarded to the title textarea. When provided, the
-   *  caller (typically a host `<Dialog>`) uses this to claim initial
-   *  focus on the title input — the form skips its own
-   *  `queueMicrotask(focus)` mount effect to avoid racing against the
-   *  Dialog's rAF "focus first focusable" pass, which otherwise lands
-   *  focus on the Dialog's Close button. When omitted, the form falls
-   *  back to focusing the title field itself on mount. */
-  initialFocusRef?: RefObject<HTMLTextAreaElement | null>;
+  /** Optional ref the form binds to its variant's FIRST field — the
+   *  title textarea for `'task'`, the GitHub issue URL input for
+   *  `'issue-dev'` (#891 review: initial focus must be
+   *  variant-appropriate). When provided, the caller (typically a host
+   *  `<Dialog>`) uses this to claim initial focus on that field — the
+   *  form skips its own `queueMicrotask(focus)` mount effect to avoid
+   *  racing against the Dialog's rAF "focus first focusable" pass,
+   *  which otherwise lands focus on the Dialog's Close button. When
+   *  omitted, the form falls back to focusing its first field itself
+   *  on mount. Typed `HTMLElement` (not a concrete element type)
+   *  because which element it points at is variant-dependent; Dialog's
+   *  own `initialFocusRef` is `HTMLElement` too. */
+  initialFocusRef?: RefObject<HTMLElement | null>;
   /** Issue #891 slice ③ — form variant. `'task'` (default) is the plain
    *  wave path, untouched. `'issue-dev'` binds the created wave to the
    *  shipped `issue-development` workflow: the user supplies a GitHub
@@ -150,6 +155,7 @@ export function NewTaskForm({
   const issueUrlId = useId();
   const mergePolicyId = useId();
   const notesId = useId();
+  const rawJsonId = useId();
 
   const [title, setTitle] = useState('');
   const [cwd, setCwd] = useState('');
@@ -218,21 +224,43 @@ export function NewTaskForm({
   const modalView = useModalView();
 
   const localTitleRef = useRef<HTMLTextAreaElement | null>(null);
-  // When a caller forwards `initialFocusRef`, use it as the title
-  // textarea's ref — the host Dialog will own initial focus. Otherwise
-  // fall back to our own ref + the mount-time focus effect below.
-  const titleRef = initialFocusRef ?? localTitleRef;
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
+  // The variant's FIRST field carries `initialFocusRef` (when the caller
+  // forwarded one) so the host Dialog's initial-focus pass — and the
+  // caller's variant-toggle refocus — land on the right element: the
+  // issue-URL input in 'issue-dev', the title textarea in 'task'.
+  // Callback refs bridge the typing (the shared ref is `HTMLElement`,
+  // the elements are concrete input/textarea types — a plain ref-object
+  // handoff would trip TS property variance). `isIssueDev` is fixed for
+  // the lifetime of a mount (Cove.tsx remounts the form via `key` on
+  // variant switch), so each callback binds at most one element.
+  const titleFieldRef = useCallback(
+    (el: HTMLTextAreaElement | null) => {
+      localTitleRef.current = el;
+      if (!isIssueDev && initialFocusRef) initialFocusRef.current = el;
+    },
+    [isIssueDev, initialFocusRef],
+  );
+  const urlFieldRef = useCallback(
+    (el: HTMLInputElement | null) => {
+      urlInputRef.current = el;
+      if (isIssueDev && initialFocusRef) initialFocusRef.current = el;
+    },
+    [isIssueDev, initialFocusRef],
+  );
   const cwdRef = useRef<HTMLInputElement | null>(null);
-  // Focus the title field on mount — opening the form should land the
-  // caret in the first meaningful input without an extra click. Skipped
-  // when the caller forwarded `initialFocusRef`: the Dialog's own
-  // rAF-deferred focus pass would race against this microtask and
-  // sometimes win (landing on the Dialog Close button), so the contract
-  // is "Dialog focuses for us, we don't double-focus".
+  // Focus the variant's first field on mount — opening the form should
+  // land the caret in the first meaningful input without an extra
+  // click. Skipped when the caller forwarded `initialFocusRef`: the
+  // Dialog's own rAF-deferred focus pass would race against this
+  // microtask and sometimes win (landing on the Dialog Close button),
+  // so the contract is "Dialog focuses for us, we don't double-focus".
   useEffect(() => {
     if (initialFocusRef) return;
-    queueMicrotask(() => localTitleRef.current?.focus());
-  }, [initialFocusRef]);
+    queueMicrotask(() =>
+      (isIssueDev ? urlInputRef.current : localTitleRef.current)?.focus(),
+    );
+  }, [initialFocusRef, isIssueDev]);
 
   // Latest cwd at commit-time. The resolve effect captures `cwd` via
   // closure, but the in-flight `api.resolveCovePath` Promise may resolve
@@ -546,6 +574,7 @@ export function NewTaskForm({
             </label>
             <input
               id={issueUrlId}
+              ref={urlFieldRef}
               type="text"
               className="new-task-form-input"
               value={issueUrl}
@@ -576,7 +605,7 @@ export function NewTaskForm({
         </label>
         <textarea
           id={titleId}
-          ref={titleRef}
+          ref={titleFieldRef}
           className="new-task-form-input"
           rows={3}
           value={title}
@@ -721,8 +750,14 @@ export function NewTaskForm({
             future workflows get raw mode first, a thin form later. */}
         {isIssueDev && (
           <details className="new-task-form-rawjson">
+            {/* The override state is surfaced on the always-visible
+                <summary>, not just inside the collapsible body: once the
+                user edits the raw JSON and collapses the section, a stale
+                raw blob would otherwise ship with no visible indicator
+                that the form fields above are being ignored. */}
             <summary className="new-task-form-rawjson-summary">
               Raw workflow_input JSON
+              {rawJson !== null ? ' — overriding form fields' : ''}
             </summary>
             <textarea
               aria-label="Raw workflow_input JSON"
@@ -732,8 +767,18 @@ export function NewTaskForm({
               value={rawJsonText}
               onChange={(e) => setRawJson(e.target.value)}
               aria-invalid={rawJsonError !== null}
+              // While the JSON is invalid, AT users hear the parse error
+              // as the textarea's description. The error <p> stays a
+              // plain paragraph — role="alert" is reserved for the
+              // submit/server error surface below.
+              aria-describedby={rawJsonError !== null ? `${rawJsonId}-err` : undefined}
             />
-            {rawJson !== null && rawJsonError === null && (
+            {/* Reset renders whenever raw mode is active — including
+                while the JSON is malformed or the textarea is empty.
+                Gating it on validity would strand the user: the only way
+                out of a broken raw edit would be hand-repairing the
+                JSON. */}
+            {rawJson !== null && (
               <p className="new-task-form-rawjson-hint">
                 Raw JSON overrides the fields above.{' '}
                 <button
@@ -746,7 +791,7 @@ export function NewTaskForm({
               </p>
             )}
             {rawJsonError && (
-              <p className="new-task-form-fielderr" data-testid="rawjson-error">
+              <p id={`${rawJsonId}-err`} className="new-task-form-fielderr">
                 Invalid JSON: {rawJsonError}
               </p>
             )}

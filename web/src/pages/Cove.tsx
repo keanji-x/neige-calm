@@ -440,14 +440,17 @@ function NewWaveDialog({
   onClose: () => void;
   onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
 }) {
-  // Shared ref between the host Dialog and the NewTaskForm title
-  // textarea so the Dialog's initial-focus pass lands directly on the
-  // description field. Without this, NewTaskForm's mount-time
+  // Shared ref between the host Dialog and the NewTaskForm's first
+  // field so the Dialog's initial-focus pass lands directly on the
+  // right input. Without this, NewTaskForm's mount-time
   // queueMicrotask(focus) would race against Dialog's rAF "focus first
   // focusable" — and the rAF, scheduled later, would win and land focus
   // on the Dialog's Close button. Forwarding the ref makes the Dialog
-  // do the focusing once, deterministically.
-  const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  // do the focusing once, deterministically. Typed `HTMLElement`
+  // because which element NewTaskForm binds it to is variant-dependent
+  // (#891 review): the title textarea in the 'task' variant, the
+  // GitHub-issue-URL input in 'issue-dev'.
+  const initialFieldRef = useRef<HTMLElement | null>(null);
   // Issue #891 slice ③ — which NewTaskForm variant the dialog hosts.
   // 'task' is the plain wave path (unchanged); 'issue-dev' binds the
   // wave to the shipped `issue-development` workflow from a GitHub
@@ -457,12 +460,25 @@ function NewWaveDialog({
   useEffect(() => {
     if (!open) setVariant('task');
   }, [open]);
+  // Variant-appropriate focus after toggle activation (#891 review).
+  // Dialog's initial-focus pass only runs when `open` flips true, so
+  // switching the wave kind (which remounts NewTaskForm via `key`)
+  // would otherwise leave focus on the toggle button while the new
+  // variant's first field sits unfocused. NewTaskForm rebinds
+  // `initialFieldRef` to the new variant's first field during the
+  // remount commit (refs attach before effects run), so this effect
+  // just re-focuses it. On the initial open it targets the same element
+  // as Dialog's rAF pass — a harmless double focus of one element.
+  useEffect(() => {
+    if (!open) return;
+    initialFieldRef.current?.focus();
+  }, [open, variant]);
   return (
     <Dialog
       open={open}
       onClose={onClose}
       title="New wave"
-      initialFocusRef={titleRef}
+      initialFocusRef={initialFieldRef}
     >
       {open && (
         <>
@@ -499,7 +515,7 @@ function NewWaveDialog({
             defaultCoveId={defaultCoveId}
             onCreated={onCreated}
             onCancel={onClose}
-            initialFocusRef={titleRef}
+            initialFocusRef={initialFieldRef}
           />
         </>
       )}

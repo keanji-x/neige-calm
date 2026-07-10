@@ -52,6 +52,34 @@ describe('parseGitHubIssueUrl — accepted', () => {
       'my-org/repo.name_x',
     );
   });
+
+  it('accepts an uppercase scheme+host and normalizes issue_url to lowercase', () => {
+    expect(parseGitHubIssueUrl('HTTPS://GITHUB.COM/o/r/issues/12')).toEqual({
+      repo: 'o/r',
+      issue_number: 12,
+      issue_url: 'https://github.com/o/r/issues/12',
+    });
+  });
+
+  it('lowercases only scheme+host — owner/repo case is preserved', () => {
+    expect(parseGitHubIssueUrl('hTtPs://GiThUb.CoM/MyOrg/Repo.Name/issues/3')).toEqual({
+      repo: 'MyOrg/Repo.Name',
+      issue_number: 3,
+      issue_url: 'https://github.com/MyOrg/Repo.Name/issues/3',
+    });
+  });
+
+  it('accepts Number.MAX_SAFE_INTEGER as an issue number (string-digit boundary)', () => {
+    // 9007199254740991 === Number.MAX_SAFE_INTEGER; asserted via string
+    // digits so float precision can't silently pass a rounded neighbor.
+    const parsed = parseGitHubIssueUrl(
+      'https://github.com/o/r/issues/9007199254740991',
+    );
+    expect(parsed?.issue_number).toBe(Number.MAX_SAFE_INTEGER);
+    expect(parsed?.issue_url).toBe(
+      'https://github.com/o/r/issues/9007199254740991',
+    );
+  });
 });
 
 describe('parseGitHubIssueUrl — rejected', () => {
@@ -70,8 +98,19 @@ describe('parseGitHubIssueUrl — rejected', () => {
     ['owner with slash-encoded tricks', 'https://github.com/o%2Fx/r/issues/1'],
     ['owner with spaces', 'https://github.com/o wner/r/issues/1'],
     ['issue number 0', 'https://github.com/o/r/issues/0'],
+    ['leading-zero issue number (reject, not normalize)', 'https://github.com/o/r/issues/07'],
     ['digits followed by junk in the number segment', 'https://github.com/o/r/issues/12abc'],
     ['extra path before issues', 'https://github.com/o/r/x/issues/12'],
+    ['suffix path after the issue number', 'https://github.com/o/r/issues/12/pull/99'],
+    ['suffix segment after the issue number', 'https://github.com/o/r/issues/12/comments'],
+    ['double trailing slash', 'https://github.com/o/r/issues/12//'],
+    ['uppercase issues path segment (path is not case-folded)', 'https://github.com/o/r/ISSUES/12'],
+    ['`.` as the repo segment (path traversal, not a repo)', 'https://github.com/o/./issues/5'],
+    ['`..` as the repo segment (path traversal, not a repo)', 'https://github.com/o/../issues/5'],
+    ['percent-encoded owner', 'https://github.com/o%20wner/r/issues/1'],
+    ['percent-encoded repo', 'https://github.com/o/re%2Fpo/issues/1'],
+    ['empty owner segment', 'https://github.com//r/issues/1'],
+    ['unicode owner', 'https://github.com/オーナー/r/issues/1'],
   ])('rejects %s', (_label, input) => {
     expect(parseGitHubIssueUrl(input)).toBeNull();
   });
@@ -79,6 +118,14 @@ describe('parseGitHubIssueUrl — rejected', () => {
   it('rejects an issue number beyond the safe-integer range', () => {
     expect(
       parseGitHubIssueUrl('https://github.com/o/r/issues/999999999999999999999'),
+    ).toBeNull();
+  });
+
+  it('rejects Number.MAX_SAFE_INTEGER + 1 (string digits, so float rounding cannot sneak it through)', () => {
+    // 9007199254740992 — one past MAX_SAFE_INTEGER, spelled out as
+    // digits rather than computed, because the float would round.
+    expect(
+      parseGitHubIssueUrl('https://github.com/o/r/issues/9007199254740992'),
     ).toBeNull();
   });
 });

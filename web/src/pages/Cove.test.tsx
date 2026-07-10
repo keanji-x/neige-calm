@@ -5,7 +5,7 @@
 // restore) but renders as a styled <h1> instead of a plain span.
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, act, fireEvent, within } from '@testing-library/react';
+import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as api from '../api/calm';
@@ -500,5 +500,59 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     expect(
       within(dialog).getByRole('form', { name: /new task/i }),
     ).toBeInTheDocument();
+  });
+
+  it('focuses the variant-appropriate first field: title on open, URL input after toggling to Issue dev, title again after toggling back', async () => {
+    const { user, dialog } = await openNewWaveDialog();
+    // Dialog's initial-focus pass lands on the task variant's first
+    // field — the title textarea (via the shared initialFieldRef).
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(dialog).getByLabelText(/task description/i),
+      );
+    });
+    // Toggling remounts NewTaskForm; the new variant's first required
+    // field (the issue URL input) must receive focus — Dialog's
+    // open-time pass doesn't re-run, so this pins the toggle effect.
+    await user.click(within(dialog).getByRole('button', { name: 'Issue dev' }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(dialog).getByLabelText(/github issue url/i),
+      );
+    });
+    await user.click(within(dialog).getByRole('button', { name: 'Task' }));
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        within(dialog).getByLabelText(/task description/i),
+      );
+    });
+  });
+
+  it('a manual title edit latches against re-prefill; switching variant (remount) un-latches', async () => {
+    const { user, dialog } = await openNewWaveDialog();
+    await user.click(within(dialog).getByRole('button', { name: 'Issue dev' }));
+    const title = () =>
+      within(dialog).getByLabelText(/task description/i) as HTMLTextAreaElement;
+    const urlInput = within(dialog).getByLabelText(/github issue url/i);
+    await user.type(urlInput, 'https://github.com/o/r/issues/7');
+    await waitFor(() => expect(title().value).toBe('dev #7'));
+    // Manual edit latches the title…
+    await user.clear(title());
+    await user.type(title(), 'my custom title');
+    // …so re-pointing the URL must not clobber it.
+    await user.clear(urlInput);
+    await user.type(urlInput, 'https://github.com/o/r/issues/8');
+    expect(title().value).toBe('my custom title');
+    // Switching variant remounts NewTaskForm (key={variant}) — all
+    // per-variant state resets, including the latch: prefill follows
+    // the URL again in the fresh mount.
+    await user.click(within(dialog).getByRole('button', { name: 'Task' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Issue dev' }));
+    expect(title().value).toBe('');
+    await user.type(
+      within(dialog).getByLabelText(/github issue url/i),
+      'https://github.com/o/r/issues/9',
+    );
+    await waitFor(() => expect(title().value).toBe('dev #9'));
   });
 });

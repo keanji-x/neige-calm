@@ -292,7 +292,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     expect(createSpy.mock.calls[0][0].workflow_id).toBe('issue-development');
   });
 
-  it('invalid raw JSON shows an inline error and disables submit; reset restores the derived value', async () => {
+  it('invalid raw JSON shows an inline error (wired via aria-describedby) and disables submit; reset works directly from the malformed state', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -306,17 +306,82 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     await user.clear(ta);
     await user.click(ta);
     await user.paste('{"broken":');
-    expect(screen.getByTestId('rawjson-error').textContent).toMatch(/invalid json/i);
+    // The parse error is a plain paragraph (role="alert" stays reserved
+    // for the submit/server error surface) referenced as the textarea's
+    // accessible description while invalid.
+    const err = screen.getByText(/invalid json/i);
+    expect(ta.getAttribute('aria-invalid')).toBe('true');
+    expect(err.id).toBeTruthy();
+    expect(ta.getAttribute('aria-describedby')).toBe(err.id);
     expect(screen.getByRole('button', { name: /create task/i })).toBeDisabled();
 
-    // A valid edit exposes the reset affordance; clicking it un-dirties
-    // the textarea back to the live-derived mirror and re-enables submit.
+    // Reset is reachable straight from the malformed state — the user
+    // must never have to hand-repair broken JSON to get back to the
+    // derived form values.
+    await user.click(screen.getByRole('button', { name: /reset to form values/i }));
+    expect(JSON.parse(ta.value).issue_number).toBe(891);
+    expect(screen.queryByText(/invalid json/i)).toBeNull();
+    expect(ta.getAttribute('aria-describedby')).toBeNull();
+    expect(ta.getAttribute('aria-invalid')).toBe('false');
+    expect(screen.getByRole('button', { name: /create task/i })).toBeEnabled();
+  });
+
+  it('reset is also reachable from an emptied textarea (empty string is raw mode, not "no override")', async () => {
+    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderForm({ defaultCoveId: 'cove-1' });
+
+    await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
+    await fillCwd(user);
+
+    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
     await user.clear(ta);
-    await user.click(ta);
-    await user.paste('{"ok": true}');
+    // '' does not parse — submit is gated, but the way out is one click.
+    expect(screen.getByText(/invalid json/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /create task/i })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: /reset to form values/i }));
     expect(JSON.parse(ta.value).issue_number).toBe(891);
     expect(screen.getByRole('button', { name: /create task/i })).toBeEnabled();
+  });
+
+  it('a stale raw override outlives later form edits: the summary flags it and the OLD blob ships', async () => {
+    vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
+    vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
+    const createSpy = mockCreatedWave();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    renderForm({ defaultCoveId: 'cove-1' });
+
+    const urlInput = screen.getByLabelText(/github issue url/i);
+    await user.type(urlInput, ISSUE_URL);
+    await fillCwd(user);
+    // Pre-override, the always-visible summary carries no override flag.
+    expect(screen.queryByText(/overriding form fields/i)).toBeNull();
+
+    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
+    const raw = {
+      issue_url: 'https://github.com/o/r/issues/7',
+      repo: 'o/r',
+      issue_number: 7,
+      merge_policy: 'auto-merge',
+    };
+    await user.clear(ta);
+    await user.click(ta);
+    await user.paste(JSON.stringify(raw));
+    // The override indicator lives on the <summary>, which stays visible
+    // even when the <details> is collapsed — a stale raw blob must never
+    // ship silently.
+    expect(
+      screen.getByText(/raw workflow_input json — overriding form fields/i),
+    ).toBeTruthy();
+
+    // Now edit the URL field. Raw-wins is design-sanctioned: the derived
+    // input changes underneath, but the OLD raw blob is what ships.
+    await user.clear(urlInput);
+    await user.type(urlInput, 'https://github.com/other/repo/issues/999');
+    await user.click(screen.getByRole('button', { name: /create task/i }));
+    await waitFor(() => expect(createSpy).toHaveBeenCalled());
+    expect(createSpy.mock.calls[0][0].workflow_input).toEqual(raw);
   });
 });
 
