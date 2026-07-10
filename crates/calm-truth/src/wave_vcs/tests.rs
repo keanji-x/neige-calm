@@ -1,3 +1,8 @@
+use super::gc::{
+    DEFAULT_WAVE_HISTORY_PRUNE_KEEP, WAVE_HISTORY_PRUNE_INTERVAL,
+    WAVE_HISTORY_PRUNE_INTERVAL_SECS_ENV, WAVE_HISTORY_PRUNE_KEEP_ENV,
+    wave_history_pruner_config_from_env,
+};
 use super::store::{CommitTreeMeta, commit_hash_for_tree};
 use super::*;
 use crate::db::prelude::*;
@@ -5,6 +10,7 @@ use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::event::ForgeMergeSubject;
 use crate::model::{NewCove, NewWave, RequestTheme};
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use std::time::Duration;
 
 #[test]
 fn commit_hash_ignores_author_metadata() {
