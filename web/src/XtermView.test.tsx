@@ -354,6 +354,12 @@ function resizeCommitFrames(ws: FakeWS): ResizeCommitFrame[] {
 function connectOwnerTerminalAtSize(cols: number, rows: number): FakeWS {
   mockFitSize = { cols, rows };
   render(<XtermView terminalId="t-a" />);
+  // Consume ResizeObserver's mandatory initial notification. XtermView
+  // deliberately ignores it because mount-time fit already established
+  // ClientHello.desired_size.
+  act(() => {
+    MockResizeObserver.instances.at(-1)!.trigger();
+  });
   const ws = currentWs();
   act(() => {
     ws.fireOpen();
@@ -617,6 +623,81 @@ describe('XtermView v4 handshake', () => {
     expect(Array.from(firstWriteArg)).toEqual([104, 105]);
     // The 'connected' state hides the handshaking overlay.
     expect(screen.queryByText(/handshaking/i)).not.toBeInTheDocument();
+  });
+
+  it('ignores initial ResizeObserver after wider ServerHello recovery', () => {
+    mockFitSize = { cols: 80, rows: 24 };
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+      ws.push(
+        serverHello({
+          pty_size: {
+            cols: 100,
+            rows: 30,
+            pixel_width: null,
+            pixel_height: null,
+          },
+          snapshot: {
+            render_rev: 1,
+            pty_seq: 0,
+            cols: 100,
+            rows: 30,
+            encoding: 'Vt',
+            data: [104, 105],
+            scrollback: null,
+          },
+        }),
+      );
+    });
+
+    expect(mockTerm.write).toHaveBeenCalled();
+    const rafSpy = vi
+      .spyOn(window, 'requestAnimationFrame')
+      .mockImplementation((cb) => {
+        cb(0);
+        return 1;
+      });
+    try {
+      // Although fit() would return the remount's narrower 80 columns,
+      // the initial observer notification is not a stable resize intent.
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+      expect(resizeCommitFrames(ws)).toHaveLength(0);
+
+      // A later, real layout change still follows the normal commit path.
+      mockFitSize = { cols: 90, rows: 26 };
+      act(() => {
+        MockResizeObserver.instances.at(-1)!.trigger();
+      });
+      expect(resizeCommitFrames(ws).at(-1)?.ResizeCommit).toMatchObject({
+        cols: 90,
+        rows: 26,
+      });
+    } finally {
+      rafSpy.mockRestore();
+    }
+  });
+
+  it('commits a safe pure expansion on first attach despite only initial RO', () => {
+    mockFitSize = { cols: 120, rows: 40 };
+    render(<XtermView terminalId="term_test" />);
+    const ws = currentWs();
+    act(() => {
+      ws.fireOpen();
+      ws.push(serverHello()); // authoritative fresh renderer is 80x24
+      MockResizeObserver.instances.at(-1)!.trigger();
+    });
+
+    const commits = resizeCommitFrames(ws);
+    expect(commits).toHaveLength(1);
+    expect(commits[0]!.ResizeCommit).toEqual({
+      epoch: 1,
+      cols: 120,
+      rows: 40,
+    });
   });
 
   it('does not mutate local xterm while container is degenerate (wave-switch transient)', () => {
