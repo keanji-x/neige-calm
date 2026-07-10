@@ -31,7 +31,7 @@ use support::agent_diag::panic_with_agent_diag;
 use support::codex_fixture::*;
 use support::event_queries::*;
 use support::forge_env::FORGE_ENV_LOCK;
-use support::gh_shim::{seed_shim_issue_body, write_gh_shim};
+use support::gh_shim::{run_gh, seed_shim_issue_body, write_gh_shim};
 use support::git_helpers::*;
 use support::mcp::call_tool_via_socket;
 use support::oracle::{
@@ -2979,8 +2979,9 @@ fn gh_shim_issue_view_prefers_seeded_body_file() {
     let repo_arg = repo.display().to_string();
     seed_shim_issue_body(&repo, CAPSTONE_ISSUE_NUMBER, CAPSTONE_ISSUE_BODY);
 
-    let seeded = std::process::Command::new(&gh)
-        .args([
+    let seeded = run_gh(
+        &gh,
+        &[
             "issue",
             "view",
             &CAPSTONE_ISSUE_NUMBER.to_string(),
@@ -2990,9 +2991,8 @@ fn gh_shim_issue_view_prefers_seeded_body_file() {
             "body",
             "--jq",
             ".body",
-        ])
-        .output()
-        .expect("run gh shim (seeded)");
+        ],
+    );
     assert!(seeded.status.success());
     assert_eq!(
         String::from_utf8_lossy(&seeded.stdout),
@@ -3000,17 +3000,64 @@ fn gh_shim_issue_view_prefers_seeded_body_file() {
         "seeded issue body file must be served verbatim"
     );
 
-    let fallback = std::process::Command::new(&gh)
-        .args([
+    let fallback = run_gh(
+        &gh,
+        &[
             "issue", "view", "9999", "--repo", &repo_arg, "--json", "body", "--jq", ".body",
-        ])
-        .output()
-        .expect("run gh shim (fallback)");
+        ],
+    );
     assert!(fallback.status.success());
     assert_eq!(
         String::from_utf8_lossy(&fallback.stdout),
         "# Issue 9999\n\nFake issue body for issue-development ingestion.\n",
         "unseeded issues must keep the historical hardcoded body (behavior-preserving)"
+    );
+}
+
+/// #900 regression: in a multi-threaded test process, a child forked by
+/// another thread can hold a fork-inherited write fd to the freshly written
+/// shim's inode until it execs, so a direct spawn can fail ETXTBSY. Model
+/// that race deterministically with a held write fd: the raw spawn must fail
+/// with ExecutableFileBusy, and `run_gh` must retry until the fd is released
+/// and then succeed.
+#[test]
+fn gh_shim_spawn_retries_transient_etxtbsy() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_gh_shim(tmp.path());
+    let gh = tmp.path().join("gh");
+    let repo_arg = tmp.path().join("origin.git").display().to_string();
+    let args = [
+        "issue", "view", "1234", "--repo", &repo_arg, "--json", "body", "--jq", ".body",
+    ];
+
+    let held = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&gh)
+        .expect("open write fd on gh shim");
+
+    // Repro gate: with the write fd held, the raw exec fails ETXTBSY.
+    let raw_err = std::process::Command::new(&gh)
+        .args(args)
+        .output()
+        .expect_err("raw spawn must fail while a write fd is held");
+    assert_eq!(
+        raw_err.kind(),
+        std::io::ErrorKind::ExecutableFileBusy,
+        "raw spawn under a held write fd must fail ETXTBSY, got: {raw_err}"
+    );
+
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(held);
+    });
+
+    let out = run_gh(&gh, &args);
+    releaser.join().expect("join fd releaser thread");
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "# Issue 1234\n\nFake issue body for issue-development ingestion.\n",
+        "run_gh must succeed with the expected shim output once the fd is released"
     );
 }
 
