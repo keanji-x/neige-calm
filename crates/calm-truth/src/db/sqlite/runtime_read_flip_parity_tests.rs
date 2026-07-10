@@ -7,6 +7,8 @@ use super::*;
 use crate::model::new_id;
 use crate::session_projection_repo::{AgentProvider, WorkerSessionKind};
 
+use calm_types::worker::WorkerSessionState;
+
 use super::runtime_read_flip_support::*;
 
 #[tokio::test]

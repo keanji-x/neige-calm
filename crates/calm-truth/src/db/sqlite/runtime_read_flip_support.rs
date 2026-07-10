@@ -5,6 +5,7 @@ use crate::session_projection_repo::{
     AgentProvider, RuntimeId, Tx as WorkerSessionProjectionTx, WorkerSessionInit,
     WorkerSessionKind, WorkerSessionProjection,
 };
+use calm_types::worker::WorkerSessionState;
 use serde_json::json;
 use sqlx::SqlitePool;
 
