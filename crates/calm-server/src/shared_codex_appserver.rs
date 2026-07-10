@@ -43,9 +43,61 @@ use crate::session_projection_lookup::{
     merge_active_shared_thread_attribution, resolve_active_thread_for_card, resolve_card_for_thread,
 };
 use crate::session_projection_repo::AgentProvider;
-use crate::shared_codex_home::SharedCodexHome;
+use crate::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 
 pub type TurnId = String;
+
+/// #863 — ambient env keys forwarded verbatim into the spawned shared codex
+/// app-server. A const, not config: it is an implementation invariant of the
+/// spawn seam, not an operator choice; changing it is a code change with
+/// review + tests. Everything else in the parent env is dropped by
+/// `env_clear()`; computed keys (CODEX_HOME, NEIGE_CALM_BASE_URL, HTTP(S)
+/// proxies) are set explicitly in `apply_spawn_env`. Entry rationale cites
+/// the vendored codex source (`external/codex/codex-rs`).
+pub const SPAWN_ENV_PASSTHROUGH: &[&str] = &[
+    // binary/tool resolution + codex arg0 PATH rewrite (codex-rs/arg0/src/lib.rs:146-153);
+    // MCP child commands are NOT which-resolved on unix — child PATH is used
+    // (codex-rs/rmcp-client/src/program_resolver.rs:22-29, utils.rs:130-142)
+    "PATH",
+    // default-home fallback + `~` expansion in config paths (codex-rs/utils/home-dir/src/lib.rs:52-61,
+    // codex-rs/utils/absolute-path/src/lib.rs:29); forwarded to MCP children (utils.rs:130-142)
+    "HOME",
+    // codex's own child allow-lists forward these (rmcp-client/src/utils.rs:130-142 for MCP;
+    // UNIX_CORE_ENV_VARS protocol/src/shell_environment.rs:113-116 for inherit=Core shells)
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    // reqwest env-proxy autodetect honors these for API traffic
+    // (codex-rs/login/src/auth/default_client.rs:222-229; not sandboxed → proxies active :250-251)
+    "NO_PROXY",
+    "no_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    // TLS custom CA (codex-rs/codex-client/src/custom_ca.rs:61-62, 373-386; SSL_CERT_DIR unused)
+    "CODEX_CA_CERTIFICATE",
+    "SSL_CERT_FILE",
+    // diagnostics (codex-rs/app-server/src/lib.rs:627,632 RUST_LOG; :112 LOG_FORMAT)
+    "RUST_LOG",
+    "LOG_FORMAT",
+    "RUST_BACKTRACE",
+    // API-key-mode auth fallbacks (codex-rs/login/src/auth/manager.rs:516-532;
+    // model-provider-info/src/lib.rs:340-347). Prod uses auth.json; kept so an
+    // API-key deployment doesn't silently break. Explicit pass-through, still an allow-list.
+    "OPENAI_API_KEY",
+    "CODEX_API_KEY",
+    "CODEX_ACCESS_TOKEN",
+    "OPENAI_ORGANIZATION",
+    "OPENAI_PROJECT",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -472,14 +524,141 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
+        // #863 review R2-1 — the whole boot sequence is ONE serialized
+        // lifecycle transition: `transition_serial` is held from BEFORE the
+        // boot guard through the guard-refusal reap + Failed write AND
+        // through the takeover/spawn (#480 §C invariant). Acquiring it any
+        // later lets a concurrent transition (crash-restart, settings
+        // respawn) complete a spawn in between; the Failed write below would
+        // then overwrite that Running state in memory while its live child
+        // keeps running unsupervised. The downstream transitions
+        // (`try_takeover_live` → `start_new_process_typestate`,
+        // `start_new_process_locked`) are `_locked`-style callees that assume
+        // this guard instead of re-acquiring it — no double-lock.
+        let _serial = self.transition_serial.lock().await;
+        // #863 boot guard — the resolved home is exactly what resumed threads
+        // will run against, on boot AND on takeover. Refuse before touching
+        // the process, and never strand a previously-live polluted daemon
+        // running unsupervised.
+        if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
+            let msg = format!("refusing to launch shared codex app-server: {guard_err}");
+            self.reap_persisted_daemon_if_verified(&msg).await;
+            // #863 review F1 — surface the refusal in `status_snapshot()`:
+            // mirror the typestate error arm of `start_new_process_typestate`
+            // (Failed under the core lock; `transition_serial` held above).
+            {
+                let mut core = self.core.lock().await;
+                core.state = SupervisorState::Failed {
+                    last_error: msg.clone(),
+                    since: Instant::now(),
+                };
+            }
+            return Err(CalmError::CodexAppServer(msg));
+        }
         self.rebuild_thread_cache_from_db().await?;
         let record = self.repo.shared_daemon_runtime_get().await?;
         if self.try_takeover_live(&record).await? {
             return Ok(());
         }
 
-        self.start_new_process(false, None).await?;
+        self.start_new_process_locked(false, None).await?;
         Ok(())
+    }
+
+    /// #863 — "no polluted survivor": when the boot guard refuses, the
+    /// persisted daemon (if still verified alive) is reaped before the error
+    /// propagates, so it cannot keep serving with its polluted env/home.
+    async fn reap_persisted_daemon_if_verified(&self, guard_error: &str) {
+        let record = match self.repo.shared_daemon_runtime_get().await {
+            Ok(record) => record,
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    error = %e,
+                    "boot guard refusal: failed reading persisted daemon runtime; skipping reap"
+                );
+                return;
+            }
+        };
+        let (Some(pid), Some(pgid), Some(start_time), Some(boot_id)) = (
+            record.pid,
+            record.pgid,
+            record.process_start_time,
+            record.boot_id.clone(),
+        ) else {
+            // #863 review F3b — a partial identity tuple is a corrupt record:
+            // say so instead of silently skipping. A fully-empty tuple is the
+            // normal "no daemon was ever persisted" state and stays silent.
+            if record.pid.is_some()
+                || record.pgid.is_some()
+                || record.process_start_time.is_some()
+                || record.boot_id.is_some()
+            {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid = ?record.pid,
+                    pgid = ?record.pgid,
+                    process_start_time = ?record.process_start_time,
+                    boot_id = ?record.boot_id,
+                    "boot guard refusal: persisted daemon record has a partial identity tuple; skipping reap"
+                );
+            }
+            return;
+        };
+        // #863 review F3a — spawn always sets pgid = pid (`process_group(0)`);
+        // a mismatched persisted pgid is a corrupt record, and signaling a
+        // pgid we did not create risks killing unrelated processes. Never
+        // signal; warn and skip the reap.
+        if pgid != pid {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                pid,
+                pgid,
+                "boot guard refusal: persisted pgid does not match pid (spawn invariant pgid == pid); treating record as corrupt and skipping reap"
+            );
+            return;
+        }
+        if !verify_owned_pid(pid, start_time, &boot_id) {
+            return;
+        }
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            pid,
+            pgid,
+            "boot guard refused polluted CODEX_HOME; reaping verified persisted daemon before erroring"
+        );
+        reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
+        // #863 review F3c — persist the reap so DB truth reflects it.
+        // `try_takeover_live`'s reap paths deliberately leave the record
+        // because a fresh spawn immediately follows and overwrites it
+        // (`persist_runtime_starting`); here NOTHING follows — the guard
+        // refusal aborts the boot — so a stale "running" row would misreport
+        // a daemon we just killed. Shape mirrors `restart_after_crash`'s
+        // failed-spawn arm; the env signature is cleared because there is no
+        // process for it to describe.
+        if let Err(e) = self
+            .repo
+            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                state: SharedDaemonState::Failed.as_db_str().to_string(),
+                pid: None,
+                pgid: None,
+                sock_path: Some(self.sock.display().to_string()),
+                codex_home_path: Some(self.home.path().display().to_string()),
+                process_start_time: None,
+                boot_id: None,
+                started_at: None,
+                last_error: Some(guard_error.to_string()),
+                increment_restart_count: false,
+                daemon_env_signature: None,
+            })
+            .await
+        {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                error = %e,
+                "failed persisting Failed daemon record after boot-guard reap"
+            );
+        }
     }
 
     pub async fn thread_start_for_card(
@@ -787,6 +966,11 @@ impl SharedCodexAppServer {
         https_proxy: Option<&str>,
     ) -> String {
         let mut h = Sha256::new();
+        // #863 — schema-version salt. The first boot of an upgraded binary
+        // mismatches every pre-upgrade persisted signature, so the existing
+        // reap-for-respawn takeover path (`try_takeover_live`) is guaranteed
+        // to replace a daemon spawned with the old (leaky) inherited env.
+        h.update(b"env-schema-v2:863|");
         h.update(ingest_url.as_bytes());
         h.update(b"|");
         h.update(http_proxy.unwrap_or_default().as_bytes());
@@ -796,46 +980,116 @@ impl SharedCodexAppServer {
         hex[..16].to_string()
     }
 
-    async fn current_env_signature(&self) -> Result<String> {
+    /// #863 review F4 — one settings snapshot per spawn: both the child's
+    /// proxy env AND the persisted env signature must derive from the SAME
+    /// settings read, otherwise a settings change between two loads persists
+    /// a signature for an env the child never got.
+    async fn load_spawn_env_snapshot(&self) -> Result<SpawnEnvSnapshot> {
         let settings = load_settings(self.repo.as_ref()).await?;
-        let http_proxy = Self::effective_proxy_env(
-            settings.http_proxy.as_deref(),
-            &["HTTP_PROXY", "http_proxy"],
-        );
-        let https_proxy = Self::effective_proxy_env(
-            settings.https_proxy.as_deref(),
-            &["HTTPS_PROXY", "https_proxy"],
-        );
-        Ok(Self::compute_env_signature(
-            &self.ingest_url,
-            http_proxy.as_deref(),
-            https_proxy.as_deref(),
-        ))
+        Ok(SpawnEnvSnapshot {
+            http_proxy: Self::effective_proxy_env(
+                settings.http_proxy.as_deref(),
+                &["HTTP_PROXY", "http_proxy"],
+            ),
+            https_proxy: Self::effective_proxy_env(
+                settings.https_proxy.as_deref(),
+                &["HTTPS_PROXY", "https_proxy"],
+            ),
+        })
     }
 
-    async fn apply_spawn_env(&self, cmd: &mut Command) -> Result<()> {
-        for stale in [
-            "NEIGE_CARD_ID",
-            "NEIGE_HOOK_PROVIDER",
-            "NEIGE_MCP_TOKEN",
-            "NEIGE_HOOK_URL",
-        ] {
-            cmd.env_remove(stale);
+    fn env_signature_for_snapshot(&self, snapshot: &SpawnEnvSnapshot) -> String {
+        Self::compute_env_signature(
+            &self.ingest_url,
+            snapshot.http_proxy.as_deref(),
+            snapshot.https_proxy.as_deref(),
+        )
+    }
+
+    async fn current_env_signature(&self) -> Result<String> {
+        Ok(self.env_signature_for_snapshot(&self.load_spawn_env_snapshot().await?))
+    }
+
+    /// Settings-first, parent-env-fallback proxy resolution — the same
+    /// resolution `compute_env_signature` hashes — shaped as explicit
+    /// (UPPER, lower, value) pairs for the spawn env. #863: with
+    /// `env_clear()`, the fallback must be SET explicitly instead of the old
+    /// implicit inheritance-when-settings-absent.
+    pub fn resolved_proxy_env_pairs(
+        http_settings: Option<&str>,
+        https_settings: Option<&str>,
+        lookup: impl Fn(&str) -> Option<String> + Copy,
+    ) -> Vec<(&'static str, &'static str, String)> {
+        let mut pairs = Vec::new();
+        if let Some(v) =
+            Self::effective_proxy_env_from(http_settings, &["HTTP_PROXY", "http_proxy"], lookup)
+                .filter(|v| !v.is_empty())
+        {
+            pairs.push(("HTTP_PROXY", "http_proxy", v));
+        }
+        if let Some(v) =
+            Self::effective_proxy_env_from(https_settings, &["HTTPS_PROXY", "https_proxy"], lookup)
+                .filter(|v| !v.is_empty())
+        {
+            pairs.push(("HTTPS_PROXY", "https_proxy", v));
+        }
+        pairs
+    }
+
+    /// #863 — the child env is a pure function of typed config: `env_clear()`
+    /// plus exactly [`SPAWN_ENV_PASSTHROUGH`], the computed keys, and (in
+    /// fixture builds only) the fake-codex fixture channel. The old
+    /// `env_remove` of per-card `NEIGE_*` keys is subsumed by `env_clear`.
+    /// Proxies come from the caller's pre-resolved [`SpawnEnvSnapshot`] so
+    /// the spawn env and the persisted signature share one settings read.
+    fn apply_spawn_env(&self, cmd: &mut Command, snapshot: &SpawnEnvSnapshot) {
+        cmd.env_clear();
+        for key in SPAWN_ENV_PASSTHROUGH {
+            // var_os: a non-UTF8 value must pass through, not be silently dropped
+            if let Some(value) = std::env::var_os(key) {
+                cmd.env(key, value);
+            }
+        }
+
+        // Fixture channel (test-only passthrough): the fake app-server reads
+        // `FAKE_CODEX_*` / `NEIGE_OSC_TRACE_PATH` from its own process env;
+        // integration tests set them on the test process and rely on them
+        // reaching the child through this real spawn path. Compiled out of
+        // production builds — these names must NEVER join the prod
+        // `SPAWN_ENV_PASSTHROUGH` const.
+        #[cfg(feature = "fixtures")]
+        for (key, value) in std::env::vars_os() {
+            let fixture_key = key
+                .to_str()
+                .is_some_and(|k| k.starts_with("FAKE_CODEX_") || k == "NEIGE_OSC_TRACE_PATH");
+            if fixture_key {
+                cmd.env(&key, value);
+            }
         }
 
         cmd.env("CODEX_HOME", self.home.path())
             .env("NEIGE_CALM_BASE_URL", &self.ingest_url);
 
-        let settings = load_settings(self.repo.as_ref()).await?;
-        if let Some(p) = settings.http_proxy.as_deref().filter(|s| !s.is_empty()) {
-            cmd.env("HTTP_PROXY", p).env("http_proxy", p);
+        // The snapshot values are already settings-first/parent-env-fallback
+        // resolved (`effective_proxy_env` in `load_spawn_env_snapshot`);
+        // `resolved_proxy_env_pairs` only applies the (UPPER, lower) pair
+        // shaping + empty filter here, so the lookup is inert.
+        for (upper, lower, value) in Self::resolved_proxy_env_pairs(
+            snapshot.http_proxy.as_deref(),
+            snapshot.https_proxy.as_deref(),
+            |_| None,
+        ) {
+            cmd.env(upper, &value).env(lower, value);
         }
-        if let Some(p) = settings.https_proxy.as_deref().filter(|s| !s.is_empty()) {
-            cmd.env("HTTPS_PROXY", p).env("https_proxy", p);
-        }
-
-        Ok(())
     }
+}
+
+/// #863 review F4 — a single-settings-read snapshot of the spawn-relevant
+/// runtime settings. Both the child's proxy env and the persisted
+/// `daemon_env_signature` are derived from one instance of this.
+struct SpawnEnvSnapshot {
+    http_proxy: Option<String>,
+    https_proxy: Option<String>,
 }
 
 // ===================== Process lifecycle / supervision =====================
@@ -846,6 +1100,9 @@ impl SharedCodexAppServer {
             .ok_or_else(|| CalmError::CodexAppServer("shared app-server is not connected".into()))
     }
 
+    /// **Invariant (#863 review R2-1)**: caller MUST hold `transition_serial`
+    /// (the takeover transition runs through `start_new_process_typestate`,
+    /// which assumes the guard is already held).
     async fn try_takeover_live(
         self: &Arc<Self>,
         record: &crate::db::SharedCodexDaemonRecord,
@@ -941,6 +1198,39 @@ impl SharedCodexAppServer {
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<()> {
+        // Scoped so crash-restart/settings-respawn callers keep the pre-R2-1
+        // behavior: serialized spawn transition, thread resume outside it.
+        {
+            let _serial = self.transition_serial.lock().await;
+            self.spawn_process_transition(increment_restart_count, last_error)
+                .await?;
+        }
+        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
+        Ok(())
+    }
+
+    /// **Invariant (#863 review R2-1)**: caller MUST hold `transition_serial`.
+    /// Boot path (`start_or_takeover`) variant: the caller keeps ONE guard
+    /// across boot-guard + takeover probe + this spawn, so the thread resume
+    /// also runs inside the serialized section there.
+    async fn start_new_process_locked(
+        self: &Arc<Self>,
+        increment_restart_count: bool,
+        last_error: Option<String>,
+    ) -> Result<()> {
+        self.spawn_process_transition(increment_restart_count, last_error)
+            .await?;
+        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
+        Ok(())
+    }
+
+    /// Shared spawn-transition body. **Invariant**: caller MUST hold
+    /// `transition_serial`.
+    async fn spawn_process_transition(
+        self: &Arc<Self>,
+        increment_restart_count: bool,
+        last_error: Option<String>,
+    ) -> Result<()> {
         let this = Arc::clone(self);
         self.start_new_process_typestate(move |_| {
             let this = Arc::clone(&this);
@@ -949,9 +1239,7 @@ impl SharedCodexAppServer {
                     .await
             }
         })
-        .await?;
-        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
-        Ok(())
+        .await
     }
 
     async fn launch_spawned_process(
@@ -959,6 +1247,24 @@ impl SharedCodexAppServer {
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<LaunchedSharedDaemon> {
+        // #863 boot guard on EVERY spawn (crash-restart/respawn included):
+        // pollution written while running is caught at the next launch.
+        // Accepted residual (#863 review F6): the ConfigLock taken inside
+        // `verify_expected_mcp_servers` is released between this verification
+        // and the exec below, so a racing writer could re-pollute config.toml
+        // (or drop a fresh `.env`) in that window. Accepted because all
+        // legitimate writers run earlier in boot wiring (seed → sanitize →
+        // ensure_*), and the guard re-runs on every respawn.
+        self.home
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .map_err(|e| {
+                CalmError::CodexAppServer(format!(
+                    "refusing to launch shared codex app-server: {e}"
+                ))
+            })?;
+        // #863 review F4 — ONE settings read per spawn: the child env below
+        // and the persisted signature both derive from this snapshot.
+        let spawn_env_snapshot = self.load_spawn_env_snapshot().await?;
         std::fs::create_dir_all(self.sock.parent().unwrap_or_else(|| Path::new(".")))?;
         std::fs::create_dir_all(&self.log_dir)?;
         self.remove_stale_socket_before_spawn().await?;
@@ -982,7 +1288,7 @@ impl SharedCodexAppServer {
             .stderr(Stdio::from(stderr))
             .process_group(0)
             .kill_on_drop(true);
-        self.apply_spawn_env(&mut cmd).await?;
+        self.apply_spawn_env(&mut cmd, &spawn_env_snapshot);
         let child = cmd.spawn().map_err(|e| {
             CalmError::CodexAppServer(format!("spawn shared codex app-server: {e}"))
         })?;
@@ -996,7 +1302,7 @@ impl SharedCodexAppServer {
         let process_start_time = read_proc_start_time(pid).unwrap_or(0);
         let boot_id = read_boot_id().unwrap_or_default();
         let started_at = now_ms();
-        let daemon_env_signature = self.current_env_signature().await?;
+        let daemon_env_signature = self.env_signature_for_snapshot(&spawn_env_snapshot);
         let runtime = SharedDaemonRuntime {
             pid,
             pgid,
@@ -1310,16 +1616,16 @@ impl SharedCodexAppServer {
     }
 
     /// #480 §C — typestate transition: begin/finish a fresh process spawn.
-    /// **Invariant**: must hold `transition_serial` for the duration.
-    /// PR5a stub: parallel-writes the new state but does NOT replace the
-    /// existing `start_new_process` impl. PR5b makes this the canonical
-    /// path.
+    /// **Invariant**: caller MUST hold `transition_serial` for the duration
+    /// (#863 review R2-1: acquisition moved to the callers so the boot path
+    /// can hold ONE guard across boot-guard + takeover/spawn without
+    /// re-locking here). Callers: `try_takeover_live` and
+    /// `spawn_process_transition`, both under a caller-held guard.
     pub(crate) async fn start_new_process_typestate<F, Fut>(&self, spawn: F) -> Result<()>
     where
         F: FnOnce(PathBuf) -> Fut + Send,
         Fut: std::future::Future<Output = Result<LaunchedSharedDaemon>> + Send,
     {
-        let _serial = self.transition_serial.lock().await;
         let socket_path = self.sock.clone();
         {
             let mut core = self.core.lock().await;
@@ -1648,8 +1954,9 @@ impl SharedCodexAppServer {
     pub async fn spawn_env_for_test(
         &self,
     ) -> Result<std::collections::BTreeMap<String, Option<String>>> {
+        let snapshot = self.load_spawn_env_snapshot().await?;
         let mut cmd = Command::new(&self.codex_bin);
-        self.apply_spawn_env(&mut cmd).await?;
+        self.apply_spawn_env(&mut cmd, &snapshot);
         Ok(cmd
             .as_std()
             .get_envs()
@@ -2060,5 +2367,61 @@ mod tests {
     fn thread_id_from_started_accepts_flat_shape_for_compat() {
         let params = json!({"threadId": "thrd_xyz"});
         assert_eq!(thread_id_from_started(&params), Some("thrd_xyz"));
+    }
+
+    /// #863 — the v2 schema salt must change the signature for identical
+    /// inputs, so the first post-upgrade boot mismatches every pre-upgrade
+    /// persisted signature and forces exactly one normalize-respawn.
+    #[test]
+    fn env_signature_v2_salt_differs_from_pre_salt_signature() {
+        let ingest = "http://127.0.0.1:8765";
+        let mut h = Sha256::new();
+        h.update(ingest.as_bytes());
+        h.update(b"|");
+        h.update(b"|");
+        let pre_salt = hex::encode(h.finalize())[..16].to_string();
+
+        let v2 = SharedCodexAppServer::compute_env_signature(ingest, None, None);
+        assert_ne!(
+            v2, pre_salt,
+            "compute_env_signature must be salted (env-schema-v2:863)"
+        );
+    }
+
+    /// #863 — with `env_clear()`, a parent-env proxy must be RESOLVED and
+    /// set explicitly when settings are absent (the old behavior was
+    /// implicit inheritance). Settings still win over the parent env.
+    #[test]
+    fn resolved_proxy_pairs_settings_first_then_explicit_parent_env_fallback() {
+        let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(
+            Some("http://settings-proxy:3128"),
+            None,
+            |key| (key == "HTTP_PROXY").then(|| "http://env-proxy:8080".to_string()),
+        );
+        assert_eq!(
+            pairs,
+            vec![(
+                "HTTP_PROXY",
+                "http_proxy",
+                "http://settings-proxy:3128".to_string()
+            )]
+        );
+
+        let pairs = SharedCodexAppServer::resolved_proxy_env_pairs(None, None, |key| {
+            (key == "HTTPS_PROXY").then(|| "http://env-secure:3129".to_string())
+        });
+        assert_eq!(
+            pairs,
+            vec![(
+                "HTTPS_PROXY",
+                "https_proxy",
+                "http://env-secure:3129".to_string()
+            )]
+        );
+
+        assert!(
+            SharedCodexAppServer::resolved_proxy_env_pairs(None, None, |_| None).is_empty(),
+            "no settings + no parent env => no proxy keys in the child env"
+        );
     }
 }

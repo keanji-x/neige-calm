@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use calm_server::mcp_server::McpShimConfig;
-use calm_server::shared_codex_home::SharedCodexHome;
+use calm_server::shared_codex_home::{EXPECTED_MCP_SERVERS, SharedCodexHome};
 
 mod shared_codex_home {
     use super::*;
@@ -86,6 +86,12 @@ mod shared_codex_home {
         assert_eq!(
             mode, 0o600,
             "shared config.toml must be 0600 (contains daemon token): got {mode:o}"
+        );
+        // #863 review F5 — the atomic tmp+rename writer must not leave its
+        // sibling temp file behind after a successful write.
+        assert!(
+            !home.path().join("config.toml.tmp").exists(),
+            "atomic config writer must clean up its temp file via rename"
         );
     }
 
@@ -502,6 +508,291 @@ args = ["--bar"]
         let text = read_config(&home);
         assert!(text.contains("# User says hello"));
         assert!(text.contains("# important"));
+    }
+
+    /// #863 §3.3 — seed is an explicit two-file sanitized import: host
+    /// `mcp_servers`/`hooks` are stripped from the imported config.toml, and
+    /// nothing besides auth.json + config.toml is copied (no plugins/,
+    /// skills/, sessions/, sqlite state, or `.env`).
+    #[test]
+    fn seed_imports_sanitized_config_and_auth_only() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let host = tempfile::tempdir().expect("host codex tempdir");
+        std::fs::write(host.path().join("auth.json"), r#"{"token":"host"}"#).expect("host auth");
+        std::fs::write(
+            host.path().join("config.toml"),
+            concat!(
+                "model = \"gpt-5.5\"\n",
+                "model_reasoning_effort = \"high\"\n",
+                "[mcp_servers.gravity_town]\n",
+                "command = \"/usr/bin/gravity-town\"\n",
+                "[hooks]\n",
+                "notify = \"beep\"\n",
+            ),
+        )
+        .expect("host config");
+        std::fs::write(host.path().join(".env"), "SECRET=leak\n").expect("host .env");
+        std::fs::create_dir_all(host.path().join("plugins/ghidra")).expect("host plugins");
+        std::fs::write(host.path().join("plugins/ghidra/plugin.toml"), "x").expect("plugin file");
+        std::fs::create_dir_all(host.path().join("skills")).expect("host skills");
+        std::fs::create_dir_all(host.path().join("sessions")).expect("host sessions");
+        std::fs::write(host.path().join("state_5.sqlite"), "db").expect("host sqlite");
+        let home = shared_home(&root);
+
+        home.seed_from(Some(host.path())).expect("seed");
+
+        assert_eq!(
+            std::fs::read_to_string(home.path().join("auth.json")).expect("auth imported"),
+            r#"{"token":"host"}"#
+        );
+        let config = parsed_config(&home);
+        assert_eq!(
+            config.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.5"),
+            "operator model config must import"
+        );
+        assert_eq!(
+            config
+                .get("model_reasoning_effort")
+                .and_then(|v| v.as_str()),
+            Some("high")
+        );
+        assert!(
+            config.get("mcp_servers").is_none(),
+            "host mcp_servers must be stripped from the import"
+        );
+        assert!(
+            config.get("hooks").is_none(),
+            "host hooks must be stripped from the import"
+        );
+        for leaked in ["plugins", "skills", "sessions", ".env", "state_5.sqlite"] {
+            assert!(
+                !home.path().join(leaked).exists(),
+                "seed must not copy host {leaked}"
+            );
+        }
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("freshly seeded home must pass the boot guard");
+    }
+
+    #[test]
+    fn seed_skips_config_import_when_host_config_is_invalid_toml() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let host = tempfile::tempdir().expect("host codex tempdir");
+        std::fs::write(host.path().join("auth.json"), "{}").expect("host auth");
+        std::fs::write(host.path().join("config.toml"), "not [ valid toml").expect("host config");
+        let home = shared_home(&root);
+
+        home.seed_from(Some(host.path()))
+            .expect("seed must tolerate unparseable host config");
+
+        assert!(
+            !home.path().join("config.toml").exists(),
+            "unparseable host config must not be imported verbatim"
+        );
+        assert!(home.path().join("auth.json").exists());
+    }
+
+    #[test]
+    fn verify_expected_mcp_servers_accepts_missing_empty_and_calm_only_configs() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        // Home directory absent entirely.
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("missing home is ok");
+        // Home exists, config.toml missing.
+        home.seed_from(None).expect("seed empty");
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("missing config.toml is ok");
+        // Empty config.
+        std::fs::write(home.path().join("config.toml"), "").expect("write empty config");
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("empty config is ok");
+        // calm-only (with env/tools sub-tables) as boot wiring writes it.
+        let shim = McpShimConfig {
+            shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+            socket_path: root.path().join("mcp/kernel.sock"),
+        };
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("write calm entry");
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("calm-only config is ok (subset policy: missing calm would also be ok)");
+    }
+
+    #[test]
+    fn verify_expected_mcp_servers_rejects_unexpected_entry_naming_it() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[mcp_servers.evil]\ncommand = \"/usr/bin/evil-mcp\"\n",
+        )
+        .expect("write polluted config");
+
+        let err = home
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect_err("unexpected mcp server entry must be refused");
+        assert!(
+            err.to_string().contains("evil"),
+            "error must name the offender: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_expected_mcp_servers_rejects_hooks_table() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        std::fs::write(
+            home.path().join("config.toml"),
+            "[hooks]\nnotify = \"beep\"\n",
+        )
+        .expect("write hooks config");
+
+        let err = home
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect_err("hooks table must be refused (same executable-vector class)");
+        assert!(
+            err.to_string().contains("hooks"),
+            "error must name hooks: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_expected_mcp_servers_catches_inline_table_and_dotted_key_pollution() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+
+        std::fs::write(
+            home.path().join("config.toml"),
+            "mcp_servers = { sneaky = { command = \"/bin/sneaky\" } }\n",
+        )
+        .expect("write inline-table pollution");
+        let err = home
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect_err("inline-table mcp_servers pollution must be caught");
+        assert!(err.to_string().contains("sneaky"), "must name it: {err}");
+
+        std::fs::write(
+            home.path().join("config.toml"),
+            "mcp_servers.dotty.command = \"/bin/dotty\"\n",
+        )
+        .expect("write dotted-key pollution");
+        let err = home
+            .verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect_err("dotted-key mcp_servers pollution must be caught");
+        assert!(err.to_string().contains("dotty"), "must name it: {err}");
+    }
+
+    /// #863 review F2 — the guard treats a leaked `<home>/.env` as
+    /// derived-state pollution: it DELETES it (converges without an outage)
+    /// instead of refusing, at every guard point (boot/takeover and every
+    /// respawn). Codex arg0 `load_dotenv` would otherwise inject it into the
+    /// daemon's own process env, bypassing the spawn allow-list.
+    #[test]
+    fn verify_expected_mcp_servers_deletes_leaked_dotenv_and_accepts_home() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        let shim = McpShimConfig {
+            shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+            socket_path: root.path().join("mcp/kernel.sock"),
+        };
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("write calm entry");
+        std::fs::write(home.path().join(".env"), "SECRET=leak\n").expect("write leaked .env");
+
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("guard must converge by deleting the leaked .env, not refuse");
+
+        assert!(
+            !home.path().join(".env").exists(),
+            "guard must delete the leaked .env"
+        );
+        // Idempotent: a clean home stays accepted.
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("clean home must keep passing the guard");
+    }
+
+    #[test]
+    fn sanitize_removes_offenders_hooks_and_dotenv_preserving_calm() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        let shim = McpShimConfig {
+            shim_bin: root.path().join("bin/neige-mcp-stdio-shim"),
+            socket_path: root.path().join("mcp/kernel.sock"),
+        };
+        home.ensure_daemon_mcp_config(&shim, "daemon-token")
+            .expect("write calm entry");
+        let cfg_path = home.path().join("config.toml");
+        let mut polluted = std::fs::read_to_string(&cfg_path).expect("read config");
+        polluted.push_str(concat!(
+            "[mcp_servers.gravity_town]\n",
+            "command = \"/usr/bin/gravity-town\"\n",
+            "[hooks]\n",
+            "notify = \"beep\"\n",
+        ));
+        std::fs::write(&cfg_path, &polluted).expect("write polluted config");
+        std::fs::write(home.path().join(".env"), "SECRET=leak\n").expect("write leaked .env");
+
+        let removed = home
+            .sanitize_unexpected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("sanitize");
+
+        let mut removed_sorted = removed.clone();
+        removed_sorted.sort();
+        assert_eq!(
+            removed_sorted,
+            vec![
+                ".env".to_string(),
+                "hooks".to_string(),
+                "mcp_servers.gravity_town".to_string()
+            ],
+            "sanitize must report exactly what it removed"
+        );
+        assert!(!home.path().join(".env").exists(), ".env must be deleted");
+        let config = parsed_config(&home);
+        assert!(config.get("hooks").is_none());
+        let mcp = config.get("mcp_servers").expect("mcp_servers survives");
+        assert!(mcp.get("gravity_town").is_none());
+        let calm = mcp.get("calm").expect("calm entry preserved");
+        assert_eq!(
+            calm.get("env")
+                .and_then(|env| env.get("NEIGE_MCP_DAEMON_TOKEN"))
+                .and_then(|v| v.as_str()),
+            Some("daemon-token"),
+            "calm env sub-table must be preserved intact"
+        );
+        home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("sanitized home must pass the boot guard");
+
+        // Idempotent: a second run removes nothing.
+        let removed_again = home
+            .sanitize_unexpected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect("second sanitize");
+        assert!(removed_again.is_empty(), "got {removed_again:?}");
+    }
+
+    #[test]
+    fn sanitize_deletes_dotenv_even_when_config_is_unparseable() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = shared_home(&root);
+        home.seed_from(None).expect("seed empty");
+        std::fs::write(home.path().join("config.toml"), "not [ valid toml")
+            .expect("write broken config");
+        std::fs::write(home.path().join(".env"), "SECRET=leak\n").expect("write leaked .env");
+
+        let err = home
+            .sanitize_unexpected_mcp_servers(EXPECTED_MCP_SERVERS)
+            .expect_err("unparseable config must surface an error for the boot warn");
+        assert!(err.to_string().contains("not valid TOML"), "got {err}");
+        assert!(
+            !home.path().join(".env").exists(),
+            ".env deletion must not depend on config.toml parseability"
+        );
     }
 
     #[test]
