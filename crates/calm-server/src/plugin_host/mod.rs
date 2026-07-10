@@ -51,6 +51,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::db::RouteRepo;
 use crate::event::{Event, EventBus, EventScope};
+use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::ActorId;
 use crate::state::WriteContext;
 
@@ -331,6 +332,29 @@ impl PluginHost {
                 err.actual,
             );
             return Err(HostError::KernelTooOld(err));
+        }
+
+        // #891 slice ④ — registration-time workflow-id uniqueness: refuse to
+        // spawn a trusted plugin whose workflow id another RUNNING trusted
+        // plugin already registers. Uniqueness is enforced over the same
+        // "running ∧ trusted" set every workflow resolver filters on
+        // (`resolve_trusted_workflow`, `bound_workflow`, the MCP per-wave
+        // tool scope), so a stopped plugin never squats on a workflow id.
+        // Ordered before the token mint below so a refusal — like the
+        // min-kernel check above — has zero side effects; the autospawn
+        // loop's per-plugin tolerance logs and moves on.
+        if let Some(conflict) = find_workflow_conflict(
+            &manifest,
+            self.registry.list(),
+            &self.running_plugin_ids().await,
+            &trusted_forge_plugin,
+        ) {
+            tracing::warn!(
+                plugin_id = %id,
+                error = %conflict,
+                "refusing to spawn plugin with a conflicting workflow id"
+            );
+            return Err(conflict);
         }
 
         let install_path = self
@@ -796,6 +820,48 @@ impl PluginHost {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// #891 slice ④ — pure core of the registration-time workflow-id uniqueness
+/// check `PluginHost::spawn` runs. Returns the [`HostError::WorkflowConflict`]
+/// for the first workflow id of `manifest` that another **running trusted**
+/// candidate manifest already declares; `None` when the spawn may proceed.
+///
+/// Rules (design §4.4):
+/// * only fires when the spawning plugin itself is trusted — untrusted
+///   plugins never enter the workflow resolution set, so their (unreachable)
+///   duplicate ids are tolerated;
+/// * only running ∧ trusted candidates count — a stopped plugin does not
+///   hold its workflow ids;
+/// * the spawning plugin's own registry entry is skipped (respawn path).
+///
+/// The trust predicate is injected because the trusted set is
+/// env-configured (`NEIGE_TRUSTED_FORGE_PLUGINS`), which keeps this core
+/// unit-testable without mutating process env.
+fn find_workflow_conflict(
+    manifest: &Manifest,
+    candidates: impl IntoIterator<Item = Manifest>,
+    running_ids: &BTreeSet<String>,
+    is_trusted: &dyn Fn(&str) -> bool,
+) -> Option<HostError> {
+    if !is_trusted(&manifest.id) {
+        return None;
+    }
+    for other in candidates {
+        if other.id == manifest.id || !running_ids.contains(&other.id) || !is_trusted(&other.id) {
+            continue;
+        }
+        for workflow in &manifest.workflows {
+            if other.workflows.iter().any(|held| held.id == workflow.id) {
+                return Some(HostError::WorkflowConflict {
+                    plugin_id: manifest.id.clone(),
+                    workflow_id: workflow.id.clone(),
+                    held_by: other.id.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
 /// Slice C router: drains the inbound MCP request channel and dispatches each
 /// `neige.*` call to `callbacks::dispatch`. Also drains the notification
 /// channel — currently log-and-drop, since the design doc reserves
@@ -885,4 +951,113 @@ fn spawn_methodnotfound_drainer(
         }
         tracing::debug!(plugin_id = %plugin_id, "inbound request channel closed (no-callbacks)");
     })
+}
+
+#[cfg(test)]
+mod workflow_conflict_tests {
+    use super::*;
+
+    fn manifest_with_workflow(id: &str, workflow_id: &str) -> Manifest {
+        let json = serde_json::json!({
+            "manifest_version": 1,
+            "id": id,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Workflow Conflict Stub",
+            "entrypoint": { "command": "bin/stub" },
+            "workflows": [
+                {
+                    "id": workflow_id,
+                    "plan_template": [],
+                    "gates": [],
+                    "spec_instructions": "",
+                    "card_kinds": []
+                }
+            ],
+            "permissions": {}
+        });
+        Manifest::parse(&json.to_string()).expect("manifest parses")
+    }
+
+    fn running(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn duplicate_workflow_on_running_trusted_plugin_conflicts() {
+        let incoming = manifest_with_workflow("dev.second", "issue-development");
+        let holder = manifest_with_workflow("dev.first", "issue-development");
+        let trusted = |_: &str| true;
+        let conflict =
+            find_workflow_conflict(&incoming, [holder], &running(&["dev.first"]), &trusted)
+                .expect("duplicate workflow id must conflict");
+        match conflict {
+            HostError::WorkflowConflict {
+                plugin_id,
+                workflow_id,
+                held_by,
+            } => {
+                assert_eq!(plugin_id, "dev.second");
+                assert_eq!(workflow_id, "issue-development");
+                assert_eq!(held_by, "dev.first");
+            }
+            other => panic!("expected WorkflowConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stopped_holder_does_not_squat_on_workflow_id() {
+        let incoming = manifest_with_workflow("dev.second", "issue-development");
+        let holder = manifest_with_workflow("dev.first", "issue-development");
+        let trusted = |_: &str| true;
+        assert!(
+            find_workflow_conflict(&incoming, [holder], &running(&[]), &trusted).is_none(),
+            "a stopped plugin must not hold the workflow id"
+        );
+    }
+
+    #[test]
+    fn untrusted_duplicates_are_tolerated() {
+        let incoming = manifest_with_workflow("dev.second", "issue-development");
+        let holder = manifest_with_workflow("dev.first", "issue-development");
+        let running_ids = running(&["dev.first"]);
+
+        // Untrusted spawner: never enters the resolution set — no conflict.
+        let only_first_trusted = |id: &str| id == "dev.first";
+        assert!(
+            find_workflow_conflict(
+                &incoming,
+                [holder.clone()],
+                &running_ids,
+                &only_first_trusted
+            )
+            .is_none()
+        );
+
+        // Untrusted holder: its workflows are unresolvable — no conflict.
+        let only_second_trusted = |id: &str| id == "dev.second";
+        assert!(
+            find_workflow_conflict(&incoming, [holder], &running_ids, &only_second_trusted)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn respawn_skips_own_registry_entry_and_distinct_ids_pass() {
+        let incoming = manifest_with_workflow("dev.first", "issue-development");
+        let own_entry = manifest_with_workflow("dev.first", "issue-development");
+        let trusted = |_: &str| true;
+        assert!(
+            find_workflow_conflict(&incoming, [own_entry], &running(&["dev.first"]), &trusted)
+                .is_none(),
+            "respawn must not conflict with the plugin's own registry entry"
+        );
+
+        let other = manifest_with_workflow("dev.other", "different-workflow");
+        assert!(
+            find_workflow_conflict(&incoming, [other], &running(&["dev.other"]), &trusted)
+                .is_none(),
+            "distinct workflow ids must not conflict"
+        );
+    }
 }

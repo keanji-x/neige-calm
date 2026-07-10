@@ -42,6 +42,7 @@ use crate::mcp_server::registry::{
     AppContext, CardIdentity, ConnectionIdentity, ToolCallIdentity, ToolDescriptor, ToolRegistry,
     require_role_any,
 };
+use crate::mcp_server::tool_visibility::{WavePluginScope, plugin_scope_for_wave};
 use crate::model::CardRole;
 use crate::model::{new_id, now_ms};
 use crate::operation::forge_action_adapter::{
@@ -421,30 +422,47 @@ async fn dispatch_request(
                         .ok()
                     {
                         Some(identity) => {
+                            // #891 slice ④ — plugin tools are scoped to the
+                            // resolved thread's wave (bound workflow ⇒ owning
+                            // plugin only).
+                            let scope =
+                                plugin_scope_for_wave(ctx, identity.wave_id.as_deref()).await;
                             let mut descriptors = registry.descriptors_for_role(identity.role);
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
                                 &mut descriptors,
                                 identity.role,
+                                &scope,
                             )
                             .await;
                             descriptors
                         }
                         None => {
+                            // Unresolvable threadId: no wave context, so the
+                            // shared scope function yields the union (F7 —
+                            // "discovery wide, dispatch strict"); tools/call
+                            // still resolves + enforces per-thread identity
+                            // and per-wave scope.
+                            let scope = plugin_scope_for_wave(ctx, None).await;
                             let mut descriptors =
                                 registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
-                            descriptors.extend(plugin_tool_descriptors(ctx).await);
+                            descriptors.extend(plugin_tool_descriptors(ctx, &scope).await);
                             descriptors
                         }
                     },
                     // Shared-daemon Codex sessions may send tools/list before
                     // a thread is attributed. Discovery can safely return the
                     // role-visible union because tools/call still resolves and
-                    // enforces the exact per-thread identity.
+                    // enforces the exact per-thread identity (and, per #891
+                    // slice ④, the per-wave plugin scope). With no wave to
+                    // key on, the shared scope function deliberately keeps the
+                    // union here (决策记录 F7): the residual exposure is tool
+                    // *names* only.
                     None => {
+                        let scope = plugin_scope_for_wave(ctx, None).await;
                         let mut descriptors =
                             registry.descriptors_visible_to_any_role(PLUGIN_TOOL_ROLES);
-                        descriptors.extend(plugin_tool_descriptors(ctx).await);
+                        descriptors.extend(plugin_tool_descriptors(ctx, &scope).await);
                         descriptors
                     }
                 },
@@ -454,11 +472,14 @@ async fn dispatch_request(
                         .ok()
                     {
                         Some(identity) if same_bound_session(&identity, bound) => {
+                            let scope =
+                                plugin_scope_for_wave(ctx, identity.wave_id.as_deref()).await;
                             let mut descriptors = registry.descriptors_for_role(identity.role);
                             extend_plugin_tool_descriptors_for_role(
                                 ctx,
                                 &mut descriptors,
                                 identity.role,
+                                &scope,
                             )
                             .await;
                             descriptors
@@ -470,10 +491,19 @@ async fn dispatch_request(
                         _ => Vec::new(),
                     },
                     None => {
-                        ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
+                        // The bound card's identity carries the wave the
+                        // per-wave plugin scope keys on — no extra query.
+                        let card =
+                            ensure_card_bound_session_active(ctx, bound, "tools/list").await?;
+                        let scope = plugin_scope_for_wave(ctx, Some(card.wave_id.as_str())).await;
                         let mut descriptors = registry.descriptors_for_role(bound.role);
-                        extend_plugin_tool_descriptors_for_role(ctx, &mut descriptors, bound.role)
-                            .await;
+                        extend_plugin_tool_descriptors_for_role(
+                            ctx,
+                            &mut descriptors,
+                            bound.role,
+                            &scope,
+                        )
+                        .await;
                         descriptors
                     }
                 },
@@ -509,13 +539,20 @@ async fn extend_plugin_tool_descriptors_for_role(
     ctx: &Arc<AppContext>,
     descriptors: &mut Vec<ToolDescriptor>,
     role: CardRole,
+    scope: &WavePluginScope,
 ) {
     if PLUGIN_TOOL_ROLES.contains(&role) {
-        descriptors.extend(plugin_tool_descriptors(ctx).await);
+        descriptors.extend(plugin_tool_descriptors(ctx, scope).await);
     }
 }
 
-async fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
+/// Plugin tool descriptors visible under `scope` (#891 slice ④). Kernel
+/// `calm.*` registry descriptors never route through here — they stay
+/// purely role-gated.
+async fn plugin_tool_descriptors(
+    ctx: &Arc<AppContext>,
+    scope: &WavePluginScope,
+) -> Vec<ToolDescriptor> {
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
         return Vec::new();
     };
@@ -524,7 +561,7 @@ async fn plugin_tool_descriptors(ctx: &Arc<AppContext>) -> Vec<ToolDescriptor> {
     let mut descriptors = Vec::new();
     for manifest in plugin_host.registry().list() {
         let plugin_id = manifest.id;
-        if !running_ids.contains(&plugin_id) {
+        if !running_ids.contains(&plugin_id) || !scope.allows(&plugin_id) {
             continue;
         }
         for entry in manifest.exposes_tools {
@@ -630,6 +667,17 @@ async fn dispatch_plugin_tools_call(
     };
 
     let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+    // #891 slice ④ — dispatch-side per-wave scope enforcement (the strict
+    // half of "discovery wide, dispatch strict"): a wave bound to a workflow
+    // may only call the owning plugin's tools. Rejected with
+    // `method_not_found` — the same code an unknown tool gets — so a bound
+    // wave cannot probe for the existence of other plugins' tools.
+    if !plugin_scope_for_wave(ctx, identity.wave_id.as_deref())
+        .await
+        .allows(&plugin_id)
+    {
+        return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
+    }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     match kind {
         None => {
