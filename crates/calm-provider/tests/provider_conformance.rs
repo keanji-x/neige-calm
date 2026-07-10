@@ -28,10 +28,8 @@ async fn claude_provider_conformance_unknown_without_supervisor() {
 #[tokio::test]
 async fn codex_provider_conformance_unknown_without_supervisor() {
     let Some(_codex_bin) = resolve_codex_bin() else {
-        let raw =
-            std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
         eprintln!(
-            "[codex-e2e] codex not found at {raw}; skipping (set NEIGE_CODEX_BIN to override)",
+            "[codex-e2e] SKIP: codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
         );
         return;
     };
@@ -46,12 +44,13 @@ async fn codex_provider_conformance_unknown_without_supervisor() {
     calm_truth_test_harness::provider_conformance(CodexProvider::new(sock, daemon)).await;
 }
 
-#[cfg(all(unix, feature = "codex-e2e"))]
-const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
-
+/// #868: local copy of calm-server's `support::codex_fixture::resolve_codex_bin`
+/// (different crate, so the shared test-support module is unreachable) with
+/// the SAME no-fallback semantics — env `NEIGE_CODEX_BIN` only, `None` ⇒
+/// self-skip. Tests must never fall back to a PATH/home codex binary.
 #[cfg(all(unix, feature = "codex-e2e"))]
 fn resolve_codex_bin() -> Option<PathBuf> {
-    let raw = std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
+    let raw = std::env::var("NEIGE_CODEX_BIN").ok()?;
     let expanded = if let Some(stripped) = raw.strip_prefix("~/")
         && let Ok(home) = std::env::var("HOME")
     {

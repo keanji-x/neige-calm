@@ -25,9 +25,9 @@
 //!
 //! ## Self-skip (must NOT fail when codex/auth is absent)
 //!
-//! The test resolves the codex binary via `NEIGE_CODEX_BIN` (falling back
-//! to the documented nvm path) exactly like `codex_e2e_spec_card.rs`. If
-//! the binary is missing it prints a skip marker and returns success. It
+//! The test resolves the codex binary via `NEIGE_CODEX_BIN` only (#868 —
+//! no PATH/home fallback) exactly like `codex_e2e_spec_card.rs`. If the
+//! env var is unset or unusable it prints a skip marker and returns. It
 //! also self-skips (not fails) if the app-server fails to boot or the WS
 //! handshake fails — both indicate an environment without a usable codex
 //! (e.g. no auth), which is the CI condition this gate exists for. Only an
@@ -44,47 +44,19 @@
 
 #![cfg(all(unix, feature = "codex-e2e"))]
 
-use std::path::PathBuf;
+mod support;
+
 use std::process::Stdio;
 use std::time::Duration;
 
 use calm_server::codex_appserver::{ClientInfo, CodexAppServer, InputItem, Notification};
+// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
+// self-skip via `skip!`. Tests must never fall back to a PATH/home codex.
+use support::codex_fixture::resolve_codex_bin;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-const DEFAULT_CODEX_BIN: &str = "~/.nvm/versions/node/v24.4.1/bin/codex";
 const DEFAULT_PROXY: &str = "http://127.0.0.1:2080";
-
-/// Resolve the codex binary the same way `codex_e2e_spec_card.rs` does:
-/// `NEIGE_CODEX_BIN` override, tilde-expanded, must be an executable file.
-fn resolve_codex_bin() -> Option<PathBuf> {
-    let raw = std::env::var("NEIGE_CODEX_BIN").unwrap_or_else(|_| DEFAULT_CODEX_BIN.to_string());
-    let expanded = if let Some(stripped) = raw.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        PathBuf::from(home).join(stripped)
-    } else {
-        PathBuf::from(raw)
-    };
-    if !expanded.is_file() {
-        return None;
-    }
-    use std::os::unix::fs::PermissionsExt;
-    let meta = std::fs::metadata(&expanded).ok()?;
-    if meta.permissions().mode() & 0o111 == 0 {
-        return None;
-    }
-    Some(expanded)
-}
-
-/// Print a skip marker and bail out of the test successfully. Mirrors the
-/// `eprintln!`-and-return style of the existing codex-e2e gate.
-macro_rules! skip {
-    ($($arg:tt)*) => {{
-        eprintln!("[codex-appserver-e2e] SKIP: {}", format!($($arg)*));
-        return;
-    }};
-}
 
 /// Apply the proxy env (unless explicitly disabled) so spawned app-server
 /// model turns reach the upstream through `127.0.0.1:2080`.
@@ -101,7 +73,9 @@ fn apply_proxy(cmd: &mut Command) {
 #[tokio::test]
 async fn appserver_client_drives_live_turn_and_second_client_resumes() {
     let Some(codex_bin) = resolve_codex_bin() else {
-        skip!("codex binary not found (set NEIGE_CODEX_BIN); CI has no codex");
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
     };
     eprintln!("[codex-appserver-e2e] using codex at {codex_bin:?}");
 

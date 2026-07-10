@@ -1041,6 +1041,19 @@ describe('FileViewerCard `/` search bar', () => {
     __resetCardEntryResolverRegistryForTest();
   });
 
+  // The mock panes register their `/` handler (`paneMocks.slashOpen.*`) in a
+  // passive effect, which flushes in a scheduler task that can lose the race
+  // against RTL's findBy* polling under CPU contention (#885). Wait for the
+  // handler before firing `/`, then wait for the bar to actually open.
+  async function openSearchBar(kind: 'code' | 'markdown') {
+    const pane = await screen.findByTestId(
+      kind === 'code' ? 'code-pane' : 'markdown-pane',
+    );
+    await waitFor(() => expect(paneMocks.slashOpen[kind]).not.toBeNull());
+    fireEvent.keyDown(pane, { key: '/' });
+    await screen.findByRole('search');
+  }
+
   it('opens the bar when `/` is pressed in the code pane', async () => {
     const Component = FileViewerEntry.Component;
     renderWithClient(
@@ -1049,12 +1062,12 @@ describe('FileViewerCard `/` search bar', () => {
       />,
     );
 
-    const code = await screen.findByTestId('code-pane');
+    await screen.findByTestId('code-pane');
     expect(screen.queryByRole('search')).toBeNull();
 
-    fireEvent.keyDown(code, { key: '/' });
+    await openSearchBar('code');
 
-    const bar = await screen.findByRole('search');
+    const bar = screen.getByRole('search');
     expect(bar).toBeTruthy();
     const input = screen.getByLabelText('Search in file');
     expect(input).toBeTruthy();
@@ -1068,11 +1081,11 @@ describe('FileViewerCard `/` search bar', () => {
       />,
     );
 
-    const md = await screen.findByTestId('markdown-pane');
+    await screen.findByTestId('markdown-pane');
     expect(screen.queryByRole('search')).toBeNull();
 
-    fireEvent.keyDown(md, { key: '/' });
-    expect(await screen.findByRole('search')).toBeTruthy();
+    await openSearchBar('markdown');
+    expect(screen.getByRole('search')).toBeTruthy();
   });
 
   it('closes the bar and clears highlights on Esc', async () => {
@@ -1083,7 +1096,7 @@ describe('FileViewerCard `/` search bar', () => {
       />,
     );
 
-    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    await openSearchBar('code');
     const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'foo' } });
     await waitFor(() => expect(paneMocks.setQuerySpies.code).toHaveBeenCalledWith('foo'));
@@ -1102,7 +1115,7 @@ describe('FileViewerCard `/` search bar', () => {
       />,
     );
 
-    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    await openSearchBar('code');
     const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'hi' } });
 
@@ -1121,7 +1134,7 @@ describe('FileViewerCard `/` search bar', () => {
       />,
     );
 
-    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
+    await openSearchBar('code');
     const input = (await screen.findByLabelText('Search in file')) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'missing' } });
 
@@ -1153,8 +1166,8 @@ describe('FileViewerCard `/` search bar', () => {
       />,
     );
 
-    fireEvent.keyDown(await screen.findByTestId('code-pane'), { key: '/' });
-    expect(await screen.findByRole('search')).toBeTruthy();
+    await openSearchBar('code');
+    expect(screen.getByRole('search')).toBeTruthy();
 
     fireEvent.click(await screen.findByText('other.ts'));
     await waitFor(() => expect(screen.queryByRole('search')).toBeNull());
