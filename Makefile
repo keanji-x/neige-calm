@@ -182,7 +182,7 @@ CALM_TERMINALS_DIR := $(HOME)/.local/share/neige-calm/terminals
 .PHONY: help
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} \
-	  /^[a-zA-Z_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	  /^[a-zA-Z0-9_-]+:.*?##/ { printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo ""
 	@echo "Dev port:  $(CALM_PORT) (auto from PORT_BASE=$(PORT_BASE); override: CALM_PORT=18080 make dev)"
 	@echo "Worktree:  $(WORKTREE) (override: WORKTREE=/path/to/other-worktree make dev)"
@@ -248,6 +248,39 @@ proxy-forwarder-up: ## Ensure the host-loopback → docker0 proxy forwarder cont
 .PHONY: proxy-forwarder-down
 proxy-forwarder-down: ## Remove the proxy forwarder container.
 	-@docker rm -f $(PROXY_FORWARDER_NAME) >/dev/null 2>&1 && echo "  Forwarder removed" || echo "  Forwarder not present"
+
+# ---- docker-isolated codex-e2e tier (#863) ------------------------------
+# Runs the real-codex codex_forge_e2e suite fully contained in Docker
+# (--network none + PID namespace + cgroup rails) so agents can never touch
+# host prod. See scripts/e2e-isolated/run.sh header for the full model and
+# the smoke protocol. The e2e forwarder is a shared singleton (unix socket,
+# NO published ports) mirroring proxy-forwarder-up/down above.
+E2E_PROXY_FORWARDER_NAME ?= calm-e2e-proxy-forwarder
+E2E_PROXY_SOCK_DIR ?= /tmp/calm-e2e-proxy
+E2E_RUNNER_ENV = CALM_HOST_PROXY_HOST=$(CALM_HOST_PROXY_HOST) \
+	CALM_HOST_PROXY_PORT=$(CALM_HOST_PROXY_PORT) \
+	PROXY_FORWARDER_IMAGE=$(PROXY_FORWARDER_IMAGE) \
+	E2E_PROXY_FORWARDER_NAME=$(E2E_PROXY_FORWARDER_NAME) \
+	E2E_PROXY_SOCK_DIR=$(E2E_PROXY_SOCK_DIR)
+
+.PHONY: e2e-codex-isolated
+e2e-codex-isolated: ## Run codex_forge_e2e docker-isolated (TEST=name for one test; DECOYS=1 for decoy telemetry).
+	$(E2E_RUNNER_ENV) scripts/e2e-isolated/run.sh $(if $(TEST),--test $(TEST))
+
+.PHONY: e2e-proxy-forwarder-up
+e2e-proxy-forwarder-up: ## Ensure the e2e-tier unix-socket proxy forwarder is running.
+	$(E2E_RUNNER_ENV) scripts/e2e-isolated/run.sh --forwarder-only
+
+.PHONY: e2e-proxy-forwarder-down
+e2e-proxy-forwarder-down: ## Remove the e2e-tier proxy forwarder container + its socket dir.
+	-@docker rm -f $(E2E_PROXY_FORWARDER_NAME) >/dev/null 2>&1 && echo "  e2e forwarder removed" || echo "  e2e forwarder not present"
+	-@rm -rf $(E2E_PROXY_SOCK_DIR)
+
+SHELLCHECK ?= shellcheck
+.PHONY: e2e-codex-isolated-check
+e2e-codex-isolated-check: ## shellcheck + dry-run golden assertions for the isolated tier (no docker daemon needed).
+	$(SHELLCHECK) -x scripts/e2e-isolated/run.sh scripts/e2e-isolated/entry.sh scripts/e2e-isolated/check_dry_run.sh
+	scripts/e2e-isolated/check_dry_run.sh
 
 .PHONY: dev
 dev: proxy-forwarder-up build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
