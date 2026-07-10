@@ -2,7 +2,9 @@ use sqlx::Sqlite;
 use sqlx::Transaction;
 
 use super::infra::next_sort_scoped_in_tx;
-use super::{WorkerSessionDeleteScope, clear_wave_root_session_refs_for_worker_session_delete_tx};
+use super::session_row::{
+    WorkerSessionDeleteScope, clear_wave_root_session_refs_for_worker_session_delete_tx,
+};
 use crate::error::{CalmError, Result};
 use crate::model::*;
 

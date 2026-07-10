@@ -1,5 +1,10 @@
+use super::session_projection::runtime_get_projectable_for_card_from_pool;
 use super::*;
 use crate::model::{CardRole, NewCard, NewCove, NewWave, RequestTheme, new_id};
+use crate::session_projection_repo::{
+    AgentProvider, RuntimeId, Tx as WorkerSessionProjectionTx, WorkerSessionInit,
+    WorkerSessionKind, WorkerSessionProjection,
+};
 use serde_json::json;
 use sqlx::SqlitePool;
 

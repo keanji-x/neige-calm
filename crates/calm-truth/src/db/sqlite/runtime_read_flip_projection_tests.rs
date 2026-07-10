@@ -1,6 +1,15 @@
+use super::session_projection::{
+    runtime_active_shared_thread_attribution_from_pool, runtime_current_status_tx,
+    runtime_get_active_by_session_from_pool, runtime_get_active_by_thread_from_pool,
+    runtime_get_active_for_card_from_pool, runtime_get_by_id_from_pool,
+    runtime_get_projectable_for_card_from_pool, runtime_get_projectable_for_cards_from_pool,
+    runtimes_active_for_kind_from_pool,
+};
 use super::*;
 use crate::model::new_id;
-use crate::session_projection_repo::WorkerSessionProjectionRepoError;
+use crate::session_projection_repo::{
+    AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionProjectionRepoError,
+};
 
 use super::runtime_read_flip_support::*;
 
