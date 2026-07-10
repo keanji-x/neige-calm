@@ -135,11 +135,41 @@ while [ $# -gt 0 ]; do
     shift
 done
 
-if [ "$DRY_RUN" = 1 ] && { [ "$FORWARDER_ONLY" = 1 ] || [ "$FORWARDER_DOWN" = 1 ]; }; then
-    die "--dry-run is mutually exclusive with --forwarder-only/--forwarder-down (dry-run must execute nothing)"
-fi
+# ---- mode matrix -----------------------------------------------------------
+# lifecycle : --forwarder-only / --forwarder-down   (forwarder state only; no
+#             build, no credentials, no run container)
+# execution : default run / --preflight-only        (build+fence+container)
+# modifiers : --dry-run / --test / --test-bin / --no-build / DECOYS=1
+# Lifecycle modes accept NO execution flags and NO modifiers. --dry-run and
+# --preflight-only conflict: dry-run prints and executes nothing, while
+# preflight-only exists to execute the fence check — pick one.
 if [ "$FORWARDER_ONLY" = 1 ] && [ "$FORWARDER_DOWN" = 1 ]; then
-    die "--forwarder-only and --forwarder-down are mutually exclusive"
+    die "--forwarder-only and --forwarder-down are mutually exclusive lifecycle modes"
+fi
+if [ "$FORWARDER_ONLY" = 1 ] || [ "$FORWARDER_DOWN" = 1 ]; then
+    LIFECYCLE_MODE="--forwarder-only"
+    if [ "$FORWARDER_DOWN" = 1 ]; then LIFECYCLE_MODE="--forwarder-down"; fi
+    if [ "$DRY_RUN" = 1 ]; then
+        die "$LIFECYCLE_MODE is a lifecycle mode: --dry-run does not apply (dry-run previews the run-container argv only)"
+    fi
+    if [ "$PREFLIGHT_ONLY" = 1 ]; then
+        die "$LIFECYCLE_MODE is a lifecycle mode: --preflight-only does not apply (preflight belongs to an execution run)"
+    fi
+    if [ -n "$TEST_FILTER" ]; then
+        die "$LIFECYCLE_MODE is a lifecycle mode: --test does not apply (no suite runs in this mode)"
+    fi
+    if [ -n "$TEST_BIN" ]; then
+        die "$LIFECYCLE_MODE is a lifecycle mode: --test-bin does not apply (no suite runs in this mode)"
+    fi
+    if [ "$NO_BUILD" = 1 ]; then
+        die "$LIFECYCLE_MODE is a lifecycle mode: --no-build does not apply (this mode never builds)"
+    fi
+    if [ "$DECOYS" != 0 ]; then
+        die "$LIFECYCLE_MODE is a lifecycle mode: DECOYS=$DECOYS does not apply (decoys ride the execution run)"
+    fi
+fi
+if [ "$DRY_RUN" = 1 ] && [ "$PREFLIGHT_ONLY" = 1 ]; then
+    die "--dry-run and --preflight-only conflict: dry-run prints and executes nothing, preflight-only executes the fence check"
 fi
 if [ "$FORWARDER_DOWN" != 1 ] && [ -z "$CALM_HOST_PROXY_PORT" ]; then
     die "CALM_HOST_PROXY_PORT is empty — the container has no other egress; set it (host .env) or export it"
@@ -176,15 +206,20 @@ resolve_inputs() {
 ensure_forwarder() {
     local sock="$E2E_PROXY_SOCK_DIR/proxy.sock"
     # Lockfile lives in the sock dir's PARENT (e.g. /tmp/calm-e2e-proxy.lock)
-    # so teardown can rm -rf the sock dir while still holding the lock.
+    # so teardown can rm -rf the sock dir while still holding the lock. It is
+    # NEVER unlinked (see forwarder_down): a waiter blocked on the old inode
+    # while a third process locks a freshly-created file would split-brain
+    # the critical section.
     local lock="${E2E_PROXY_SOCK_DIR%/}.lock"
     local spec="unix:$sock->$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT image=$PROXY_FORWARDER_IMAGE"
-    mkdir -p "$E2E_PROXY_SOCK_DIR"
-    chmod 700 "$E2E_PROXY_SOCK_DIR"
-    # flock: concurrent runs race this inspect/create sequence; make it a
-    # critical section so exactly one run creates the singleton.
+    # flock: concurrent runs race this mkdir/inspect/create sequence; make it
+    # a critical section so exactly one run creates the singleton. ALL shared
+    # sock-dir mutations happen only under this lock (a concurrent teardown's
+    # rm -rf must never interleave with our mkdir/chmod).
     (
         flock -w 60 9 || { log "FATAL: could not acquire forwarder lock $lock within 60s"; exit 1; }
+        mkdir -p "$E2E_PROXY_SOCK_DIR"
+        chmod 700 "$E2E_PROXY_SOCK_DIR"
         if docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
             local existing running
             existing="$(docker inspect -f '{{index .Config.Labels "calm.proxy.spec"}}' "$E2E_PROXY_FORWARDER_NAME" 2>/dev/null || echo "")"
@@ -250,7 +285,10 @@ forwarder_down() {
         rm -rf -- "$dir"
         log "socket dir removed: $dir"
     ) 9>"$lock"
-    rm -f -- "$lock"
+    # The lockfile itself is deliberately LEFT IN PLACE: unlinking it would
+    # let a waiter holding the old inode and a third process locking a fresh
+    # file both enter the critical section (split-brain). It lives outside
+    # the removed dir, so leaving a 0-byte file behind is harmless.
 }
 
 # ---- test binary --------------------------------------------------------

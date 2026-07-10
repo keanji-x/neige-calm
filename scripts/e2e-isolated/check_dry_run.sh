@@ -77,16 +77,49 @@ must_contain 'scripts/e2e-isolated/entry.sh'
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 must_contain "$REPO_ROOT:$REPO_ROOT:ro"
 
-# the argv must END at the entry script — nothing may ride after it
+# -- exact-token assertions: parse the argv line back into an array --------
+# The line is run.sh's own `printf ' %q'` output (a controlled helper we
+# fully own), so eval-ing it is the faithful inverse of %q: it reconstructs
+# the exact argv tokens with all escaping undone. The raw must_contain /
+# must_not_contain substring checks above stay as belt-and-suspenders.
 ARGV_LINE="$(printf '%s\n' "$ARGV" | grep '^docker run ' || true)"
 if [ -z "$ARGV_LINE" ]; then
     echo "FAIL: no 'docker run ...' line inside the delimited argv block"
     fail=1
 else
-    case "$ARGV_LINE" in
-        *scripts/e2e-isolated/entry.sh) : ;;
-        *) echo "FAIL: argv does not end at scripts/e2e-isolated/entry.sh"; fail=1 ;;
-    esac
+    declare -a argv=()
+    # shellcheck disable=SC2086  # eval of our own %q-printed line IS the parse
+    eval "argv=( ${ARGV_LINE#docker run } )"
+    n=${#argv[@]}
+    if [ "$n" -lt 2 ]; then
+        echo "FAIL: parsed argv has only $n tokens"
+        fail=1
+    else
+        user_val="<missing>"
+        tmpfs_val="<missing>"
+        for ((i = 0; i < n - 1; i++)); do
+            case "${argv[i]}" in
+                --user)  user_val="${argv[i + 1]}" ;;
+                --tmpfs) tmpfs_val="${argv[i + 1]}" ;;
+            esac
+        done
+        # --user must be followed by exactly UID:GID (non-root, no extras)
+        want_user="$(id -u):$(id -g)"
+        if [ "$user_val" != "$want_user" ]; then
+            echo "FAIL: --user value is '$user_val' (want exactly '$want_user')"
+            fail=1
+        fi
+        # tmpfs HOME must carry exec after unescaping (docker default: noexec)
+        case "$tmpfs_val" in
+            *,exec,*) : ;;
+            *) echo "FAIL: --tmpfs value '$tmpfs_val' lacks ',exec,' after unescaping"; fail=1 ;;
+        esac
+        # the argv must END at the entry script — nothing may ride after it
+        if [ "${argv[n - 1]}" != "$REPO_ROOT/scripts/e2e-isolated/entry.sh" ]; then
+            echo "FAIL: argv does not end at $REPO_ROOT/scripts/e2e-isolated/entry.sh (last token: '${argv[n - 1]}')"
+            fail=1
+        fi
+    fi
 fi
 
 # -- forbidden: anything that would widen the blast radius --
