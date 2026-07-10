@@ -1,5 +1,15 @@
-//! #840 slice (e2) — SIGABRT inside the "gh merge landed, fence not yet
-//! committed" window must not double-merge (danger-point-2).
+//! #840 slices (e2, e3) — real-kernel crash windows around the forge merge.
+//!
+//! e2 — SIGABRT inside the "gh merge landed, fence not yet committed" window
+//! must not double-merge (danger-point-2).
+//!
+//! e3 — SIGABRT inside the "op parked + wrapper spawned + go token NOT yet
+//! written" window (danger-point-3): the held launcher exits 75, the gh
+//! action never runs, and reboot resolves the parked op via the read-only
+//! probe without ever re-launching (see
+//! `kernel_abort_pre_go_token_then_reboot_never_runs_action`).
+//!
+//! The e2 story:
 //!
 //! The in-process analog (`git_forge_merge_crash_recovers_once_via_probe`,
 //! forge_workflow_e2e.rs) already proves the recovery *code path*; this test's
@@ -68,12 +78,17 @@ const PLUGIN_ID: &str = "dev.neige.git-forge";
 const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_MERGE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.merge";
 const CRASH_POINT: &str = "forge-pre-fence-commit:forge.pr.merged";
+const PRE_GO_CRASH_POINT: &str = "forge-pre-go-token:forge.pr.merged";
 
 /// How long boot#1 gets to run the merge action and hit the abort seam, and
 /// how long boot#2's recovery gets to reach `succeeded`. Generous: the real
 /// binary path is plugin lower → wrapper spawn → gh shim → observer.
 const CRASH_TIMEOUT: Duration = Duration::from_secs(30);
 const ORACLE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long the reparented (subreaper-owned) wrapper gets to hit stdin EOF
+/// and exit 75 after the kernel abort. Normally near-instant.
+const WRAPPER_REAP_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
@@ -285,6 +300,306 @@ async fn kernel_abort_pre_fence_commit_then_reboot_merges_exactly_once() {
         query_event_rows(repo.pool(), "forge.pr.merged").await.len(),
         1,
         "forge.pr.merged count must still be exactly one after boot#2 was reaped"
+    );
+}
+
+/// #840 slice (e3), danger-point-3: abort the kernel in the "op durably
+/// parked + wrapper spawned + go token NOT yet written" window
+/// (`forge-pre-go-token:forge.pr.merged`, the first statement of the observer
+/// future in `spawn_side_effect`). The exit-75 held launcher is still blocked
+/// on `read -r _go`; kernel death closes the go pipe's only write end, so the
+/// wrapper reads EOF and exits 75 — every result-file write in the wrapper
+/// comes after a successful read, so it leaves ZERO artifacts and gh never
+/// runs. Boot#2 must resolve the parked op WITHOUT re-launching anything.
+///
+/// Recovery chain pinned by this test (boot#2, NOT the deadline sweep):
+/// `abandoned_running_operations_on_boot` includes `'parked'` →
+/// `plan_recovery_for` yields `RecoveryItem::VerifyParked` (applied BEFORE
+/// `sweep_parked_for_boot`) → spawn artifacts dead →
+/// `recover_parked(alive=false, RecoveryMode::Boot)` → no result file → the
+/// read-only `gh pr view --json state` probe (the merge call deliberately
+/// omits `expected_head_sha`: the head-match probe shape would use
+/// `--json state,headRefOid`, which the shim rejects with exit 2 → the probe's
+/// `|| exit 3` → Unknown → `gate-infra` instead of the class under test) →
+/// shim reports `OPEN` → probe exit 1 → `NotLanded` → op `failed` with
+/// `last_error_class == "action-not-landed"`. No recovery path ever re-spawns
+/// a wrapper or writes a go token; the only recovery gh invocation is the
+/// read-only, uncounted `pr view` probe.
+///
+/// Subreaper oracle: `PR_SET_CHILD_SUBREAPER` on the test process (BEFORE
+/// boot#1) makes the setsid'd wrapper reparent to us at kernel death, so
+/// `waitpid(wrapper_pid)` reads the actual exit status — 75 proves the
+/// wrapper existed, was blocked on `read`, and died on the EOF path (a
+/// written go token would have run gh: shim count > 0, different exit code).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_abort_pre_go_token_then_reboot_never_runs_action() {
+    // Subreaper FIRST, before any kernel (and thus any wrapper) exists, so
+    // the reparenting guarantee covers the whole run. Process-wide — see
+    // `become_subreaper` for why this coexists safely with the e2 test
+    // running concurrently in this same process.
+    become_subreaper();
+
+    // ---- prod-safety hard guards (never touch the real DB / port) ---------
+    let tmp: TempDir = socket_safe_tempdir().expect("tempdir");
+    let tmp_path: PathBuf = tmp.path().to_path_buf();
+    let db_path = tmp_path.join("calm.db");
+    let db_str = db_path.to_string_lossy().to_string();
+    assert!(
+        !db_str.contains("/.local/share/neige-calm"),
+        "test DB must never be the prod DB: {db_str}"
+    );
+    assert!(
+        tmp_path.starts_with(std::env::temp_dir())
+            || tmp_path.to_string_lossy().starts_with("/tmp"),
+        "test tmpdir must live under the system temp dir: {}",
+        tmp_path.display()
+    );
+    let db_url = format!("sqlite://{db_str}?mode=rwc");
+
+    // ---- world seeding (before boot#1) -------------------------------------
+    let wave_cwd = tmp_path.join("wave-cwd");
+    std::fs::create_dir_all(&wave_cwd).expect("create wave cwd");
+    let origin_repo = tmp_path.join("origin.git");
+    init_bare_origin(&origin_repo, &tmp_path.join("seed"));
+    clone_for_wave(&origin_repo, &wave_cwd);
+
+    let shim_dir = tmp_path.join("shim-bin");
+    std::fs::create_dir_all(&shim_dir).expect("create gh shim dir");
+    write_gh_shim(&shim_dir);
+
+    install_git_forge_plugin_files(&tmp_path);
+
+    let repo = Arc::new(SqlxRepo::open(&db_url).await.expect("open file db"));
+    let seeded = seed_world(&repo, &wave_cwd).await;
+    seed_plugin_row(&repo, &tmp_path).await;
+    provision_worker_worktree(
+        &wave_cwd,
+        &seeded.wave_id,
+        &seeded.card_id,
+        &seeded.lease_abs,
+    );
+
+    let path_value = prepend_to_path(&shim_dir);
+    // Same base_env on BOTH boots: the recovery probe's `gh` must resolve to
+    // the shim on boot#2 too (`apply_forge_subprocess_env` re-reads the
+    // kernel's PATH).
+    let base_env: Vec<(&str, OsString)> = vec![
+        ("PATH", path_value),
+        ("NEIGE_TRUSTED_FORGE_PLUGINS", OsString::from(PLUGIN_ID)),
+    ];
+    let mut crash_env = base_env.clone();
+    crash_env.push(("CALM_TEST_CRASH_AT", OsString::from(PRE_GO_CRASH_POINT)));
+
+    // ---- boot#1: pre-go crash seam armed ------------------------------------
+    // The seam is event-kind-qualified, so the setup `gh.pr.create` op (same
+    // observer path, kind `forge.pr.opened`) sails through it.
+    let Some(mut boot1) = launch_kernel(&tmp_path, &db_path, "e3-boot-1", &crash_env) else {
+        return; // sandbox denied loopback bind — CI-safe skip
+    };
+    assert_ne!(boot1.port, 4040);
+
+    let socket_path = tmp_path.join("data").join("mcp").join("kernel.sock");
+    let repo_arg = origin_repo.display().to_string();
+    let head = "slice-840-e3-pre-go";
+
+    run_git(&seeded.lease_abs, ["checkout", "-b", head]);
+    stage_git_change(&seeded.lease_abs, "pre-go-crash.txt", "pre-go crash e3\n");
+    run_git(&seeded.lease_abs, ["commit", "-m", "pre-go crash e3"]);
+    run_git(&seeded.lease_abs, ["push", "-u", "origin", head]);
+
+    let create_resp = call_tool_via_socket(
+        &socket_path,
+        &seeded.raw_token,
+        &seeded.thread_id,
+        31,
+        PR_CREATE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "head": head,
+            "base": "main",
+            "title": "Pre-go-token crash reboot E2E",
+            "body": "Created by #840 e3 pre-go-token crash reboot test"
+        }),
+    )
+    .await;
+    assert_tool_succeeded(&create_resp, "gh.pr.create");
+    // Anti-vacuity for every later `== 0` assert: the opened event proves the
+    // shim state dir is live and counting.
+    let opened = wait_for_event_rows(repo.pool(), "forge.pr.opened", 1, ORACLE_TIMEOUT).await;
+    let pr_number = opened[0]["pr_number"].as_u64().expect("pr number");
+
+    // Send the merge WITHOUT awaiting the reply (the abort races the response
+    // write) and WITHOUT `expected_head_sha` (keeps the recovery probe on the
+    // shim-supported `--json state` shape — see the doc comment).
+    let _merge_conn = send_tool_call_without_reply(
+        &socket_path,
+        &seeded.raw_token,
+        &seeded.thread_id,
+        32,
+        PR_MERGE_TOOL,
+        json!({
+            "repo": repo_arg,
+            "pr": pr_number,
+            "phase": "impl",
+            "slice_id": "840"
+        }),
+    )
+    .await;
+    let merge_idem_key = format!(
+        "{PLUGIN_ID}:{}:{}:gh.pr.merge:{repo_arg}:{pr_number}",
+        seeded.wave_id, seeded.card_id
+    );
+    let op_id = wait_for_operation_id(repo.pool(), &merge_idem_key, ORACLE_TIMEOUT).await;
+
+    // ---- the crash: SIGABRT from the seam, nothing else --------------------
+    // Anti-vacuity: a clean exit, any other signal, or a 30s survival all fail
+    // here — the seam demonstrably fired in the harness-spawned binary. This
+    // also REAPS boot#1, so from here on the orphaned wrapper is already
+    // reparented to us (reparenting happens at parent death, not at reap).
+    let status = wait_exit_with_timeout(&mut boot1, CRASH_TIMEOUT);
+    assert_eq!(
+        status.signal(),
+        Some(libc::SIGABRT),
+        "boot#1 must die by the CALM_TEST_CRASH_AT abort seam, got {status:?}"
+    );
+
+    // ---- crash-window oracle (kernel dead; direct file-DB + shim state) ----
+    // Spawn artifacts are recorded durably in `spawn_side_effect` BEFORE the
+    // driver parks and spawns the observer — their presence proves the wrapper
+    // spawn preceded the seam (the crash window is real, not pre-spawn).
+    let artifacts = spawn_artifacts_json(repo.pool(), &op_id).await;
+    let wrapper_pid = i32::try_from(artifacts["pid"].as_i64().expect("wrapper pid"))
+        .expect("wrapper pid fits i32");
+    assert!(wrapper_pid > 0, "durable wrapper pid must be recorded");
+    let result_path = PathBuf::from(
+        artifacts["extra"]["result_path"]
+            .as_str()
+            .expect("forge result_path in spawn artifacts"),
+    );
+    assert!(
+        result_path.starts_with(tmp_path.join("data")),
+        "forge result file must live inside the throwaway data dir: {}",
+        result_path.display()
+    );
+
+    assert_eq!(
+        query_operation_phase(repo.pool(), &op_id).await,
+        "parked",
+        "crash window: the pre-go abort must leave the merge op parked (park \
+         committed before the observer — and thus the seam — ever ran)"
+    );
+
+    // Reap the wrapper NOW — this is BOTH the sharpest oracle and a HARD
+    // ordering invariant. Oracle: exit code 75 is the `read -r _go || exit 75`
+    // EOF path — the wrapper existed, was held, and was never released.
+    // Ordering: an unreaped zombie keeps its /proc/<pid>/stat entry with the
+    // original starttime, so boot#2's `parked_artifacts_alive` would report
+    // the wrapper ALIVE and VerifyParked would take the reattach branch and
+    // poll forever while we hold the zombie — the phase-`failed` wait below
+    // would time out. Reaping first guarantees recovery sees dead artifacts.
+    let wrapper_code = wait_reparented_exit(wrapper_pid, WRAPPER_REAP_TIMEOUT);
+    assert_eq!(
+        wrapper_code, 75,
+        "held launcher must die on the `read -r _go || exit 75` EOF path"
+    );
+
+    assert_no_result_files(&result_path, "crash window");
+    let shim_state = PathBuf::from(format!("{repo_arg}.shimstate"));
+    assert_eq!(
+        shim_counter(&shim_state.join("pr_merge_count")),
+        0,
+        "crash window: gh merge must never have run"
+    );
+    // Counter-absence is not vacuous: the PR's own state file must exist (the
+    // create op wrote it) and still read `false`.
+    let merged_file = shim_state
+        .join("prs")
+        .join(pr_number.to_string())
+        .join("merged");
+    assert_eq!(
+        std::fs::read_to_string(&merged_file)
+            .unwrap_or_else(|e| panic!(
+                "crash window: shim PR state {} must exist ({e})",
+                merged_file.display()
+            ))
+            .trim(),
+        "false",
+        "crash window: the PR must still be unmerged in the shim state"
+    );
+    assert_eq!(
+        query_event_rows(repo.pool(), "forge.pr.merged").await.len(),
+        0,
+        "crash window: no forge.pr.merged event may exist"
+    );
+
+    // ---- boot#2: same tempdir, seam unarmed, shim PATH still present --------
+    let Some(mut boot2) = launch_kernel(&tmp_path, &db_path, "e3-boot-2", &base_env) else {
+        return;
+    };
+    wait_for_operation_phase(repo.pool(), &op_id, "failed", ORACLE_TIMEOUT).await;
+    let detail_raw: String = query_scalar_retry(
+        repo.pool(),
+        "SELECT phase_detail_json FROM operations WHERE id = ?1",
+        &op_id,
+    )
+    .await;
+    let detail: Value = serde_json::from_str(&detail_raw).expect("phase_detail_json parses");
+    assert_eq!(
+        detail["last_error_class"],
+        json!("action-not-landed"),
+        "boot#2 must resolve via the read-only probe verdict, got {detail:#?}"
+    );
+    assert_eq!(detail["from_phase"], json!("parked"));
+    let last_error: String = query_scalar_retry(
+        repo.pool(),
+        "SELECT last_error FROM operations WHERE id = ?1",
+        &op_id,
+    )
+    .await;
+    assert!(
+        last_error.contains("probe reports not landed"),
+        "last_error must carry the NotLanded probe reason, got: {last_error}"
+    );
+    boot2.sigkill_and_reap();
+
+    // ---- final oracle: the held action never ran, and never will ------------
+    assert_eq!(
+        query_event_rows(repo.pool(), "forge.pr.merged").await.len(),
+        0,
+        "zero forge.pr.merged events across crash + reboot"
+    );
+    assert_eq!(
+        shim_counter(&shim_state.join("pr_merge_count")),
+        0,
+        "recovery must never re-run gh merge"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&merged_file)
+            .expect("shim PR state readable")
+            .trim(),
+        "false",
+        "the PR must still be unmerged after recovery"
+    );
+    assert_no_result_files(&result_path, "final");
+    let merge_ops: i64 = query_scalar_retry(
+        repo.pool(),
+        "SELECT COUNT(*) FROM operations WHERE idempotency_key = ?1",
+        &merge_idem_key,
+    )
+    .await;
+    assert_eq!(
+        merge_ops, 1,
+        "exactly one operations row for the merge idempotency key (no blind re-launch)"
+    );
+    let artifacts_after = spawn_artifacts_json(repo.pool(), &op_id).await;
+    assert_eq!(
+        artifacts_after["pid"], artifacts["pid"],
+        "recovery must not have spawned a new wrapper"
+    );
+    assert_eq!(
+        query_event_rows(repo.pool(), "forge.pr.opened").await.len(),
+        1,
+        "the setup forge.pr.opened event must be untouched"
     );
 }
 
@@ -696,6 +1011,116 @@ fn assert_tool_succeeded(resp: &Value, label: &str) {
             .as_str()
             .is_some(),
         "{label} response must carry op_id: {resp:#?}"
+    );
+}
+
+/// Make this test process a child subreaper (e3): when a kernel dies, its
+/// setsid'd forge wrapper reparents HERE instead of to init, so the test can
+/// `waitpid` the wrapper's real exit status (75).
+///
+/// This flag is process-wide and therefore shared with the e2 test running
+/// concurrently in this same test binary. That coexistence is safe under ONE
+/// discipline: nothing in this process may ever call `waitpid(-1, ..)` (in
+/// any form, including a WNOHANG "drain") — a wildcard wait could steal e2's
+/// aborted kernel between its SIGABRT and its own `wait_exit_with_timeout`
+/// reap, making that `try_wait` fail with ECHILD and panic. Only ever waitpid
+/// a specific pid. The cost of that discipline is a few unreaped zombies
+/// (e.g. plugin stubs reparented at kernel death) that the OS clears when the
+/// test process exits — bounded and harmless.
+fn become_subreaper() {
+    // SAFETY: plain prctl(2) on our own process; no pointer arguments.
+    let rc = unsafe {
+        libc::prctl(
+            libc::PR_SET_CHILD_SUBREAPER,
+            1 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    };
+    assert_eq!(
+        rc,
+        0,
+        "PR_SET_CHILD_SUBREAPER failed: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+/// Reap the reparented wrapper — a SPECIFIC pid only (see `become_subreaper`)
+/// — and return its exit code.
+///
+/// ECHILD is asserted loudly at once, never retried to the deadline: the
+/// kernel that owned the wrapper was already reaped (`wait_exit_with_timeout`
+/// runs first), and reparenting happens at parent DEATH, not at reap — so
+/// with that ordering ECHILD can only mean the subreaper prctl never applied
+/// and the wrapper went to init instead. Retrying would just convert a real
+/// bug into a slow timeout.
+fn wait_reparented_exit(pid: i32, timeout: Duration) -> i32 {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut status: libc::c_int = 0;
+        // SAFETY: waitpid(2) on a specific pid with a valid status pointer.
+        let rc = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        match rc {
+            0 => {} // still running (EOF delivery / exit in flight)
+            -1 => {
+                let err = std::io::Error::last_os_error();
+                panic!(
+                    "waitpid({pid}) failed — ECHILD here means PR_SET_CHILD_SUBREAPER \
+                     never applied (the wrapper reparented to init, not to this test): {err}"
+                );
+            }
+            _ => {
+                assert_eq!(rc, pid, "waitpid({pid}) reaped unexpected pid {rc}");
+                assert!(
+                    libc::WIFEXITED(status),
+                    "wrapper {pid} must exit normally (expected code 75), raw status {status:#x}"
+                );
+                return libc::WEXITSTATUS(status);
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("wrapper {pid} did not exit within {timeout:?} after the kernel abort");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Durable `operations.spawn_artifacts_json` for an op — written by
+/// `spawn_side_effect` BEFORE the driver parks (and thus before the pre-go
+/// seam can fire), so it is readable while the kernel is dead.
+async fn spawn_artifacts_json(pool: &SqlitePool, op_id: &str) -> Value {
+    let raw: String = query_scalar_retry(
+        pool,
+        "SELECT spawn_artifacts_json FROM operations WHERE id = ?1",
+        op_id,
+    )
+    .await;
+    serde_json::from_str(&raw).expect("spawn_artifacts_json parses")
+}
+
+/// Assert the exit-75 wrapper left ZERO result artifacts for this op: every
+/// write in the rendered wrapper (`.stdout` redirect, `.code` tmp+rename)
+/// comes only after `read -r _go` succeeds, so the EOF path must leave the
+/// results dir clean of anything with this op's result-path stem (including
+/// `.tmp.$$` staging names). The dir itself was create_dir_all'd by
+/// `spawn_side_effect`, so it must exist — its absence would be its own bug.
+fn assert_no_result_files(result_path: &Path, when: &str) {
+    let dir = result_path.parent().expect("forge result dir");
+    let stem = result_path
+        .file_name()
+        .expect("forge result file name")
+        .to_string_lossy()
+        .into_owned();
+    let leftovers: Vec<String> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{when}: read forge results dir {}: {e}", dir.display()))
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(&stem))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "{when}: the held wrapper must leave ZERO result artifacts, found {leftovers:?}"
     );
 }
 

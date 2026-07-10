@@ -2237,6 +2237,28 @@ impl ProviderAdapter for ForgeActionAdapter {
         let observer_artifacts = artifacts.clone();
         let observer_repo = ctx.repo.clone();
         let observer = Box::pin(async move {
+            // #840 e3 crash seam. The whole statement (including the `format!`
+            // argument) is `#[cfg]`-gated on the test-only `fixtures` feature,
+            // which production builds never enable — a release binary compiles
+            // literally zero code here. In a fixtures build it fires only when
+            // `CALM_TEST_CRASH_AT` matches the event-kind-qualified point
+            // exactly (see `test_seams` for the full prod-safety contract); it
+            // cannot alter control flow otherwise. Placed as the FIRST
+            // statement of the observer future — the driver spawns this task
+            // only after `set_parked` commits, and the go-token `write_all`
+            // below is the only thing that ever releases the held wrapper —
+            // so an abort here freezes the exact danger-point-3 window: op
+            // durably parked + wrapper spawned (spawn artifacts recorded) +
+            // go token NOT yet written. The wrapper's `read -r _go` then hits
+            // EOF at kernel death and exits 75 without ever running gh.
+            #[cfg(feature = "fixtures")]
+            crate::test_seams::crash_point(&format!(
+                "forge-pre-go-token:{}",
+                observer_frozen
+                    .event_spec
+                    .as_ref()
+                    .map_or("none", |s| s.event_kind.as_str())
+            ));
             let release = async {
                 let mut stdin = child.stdin.take().ok_or_else(|| {
                     CalmError::Internal("forge wrapper stdin handle missing".into())
