@@ -1,5 +1,8 @@
-#![cfg(feature = "codex-e2e")]
+#![cfg(all(unix, feature = "codex-e2e"))]
 
+mod support;
+
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,21 +17,17 @@ use calm_server::shared_codex_appserver::{
 };
 use clap::Parser;
 use serde_json::json;
+// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
+// self-skip via `skip!`. Tests must never probe/spawn a PATH codex.
+use support::codex_fixture::resolve_codex_bin;
 
-fn codex_available() -> bool {
-    std::process::Command::new("codex")
-        .arg("--version")
-        .output()
-        .is_ok()
-}
-
-fn cfg(root: &tempfile::TempDir) -> Config {
+fn cfg(root: &tempfile::TempDir, codex_bin: &Path) -> Config {
     Config::parse_from([
         "calm-server",
         "--data-dir",
         root.path().to_str().unwrap(),
         "--codex-bin",
-        "codex",
+        codex_bin.to_str().expect("utf-8 codex bin path"),
         // Test codex daemons must NEVER post hooks to the default listen address —
         // that is the production calm-server port on shared boxes (production-kill
         // incident, 2026-07-04); tests do not consume hook ingest.
@@ -76,8 +75,12 @@ async fn repo_and_card() -> (Arc<SqlxRepo>, String) {
     (repo, card_id)
 }
 
-async fn daemon(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCodexAppServer> {
-    let cfg = cfg(root);
+async fn daemon(
+    root: &tempfile::TempDir,
+    repo: Arc<dyn Repo>,
+    codex_bin: &Path,
+) -> Arc<SharedCodexAppServer> {
+    let cfg = cfg(root, codex_bin);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
@@ -89,13 +92,14 @@ async fn daemon(root: &tempfile::TempDir, repo: Arc<dyn Repo>) -> Arc<SharedCode
 #[tokio::test]
 #[ignore]
 async fn shared_appserver_two_threads_true_binary() {
-    if !codex_available() {
-        eprintln!("skipping: codex binary not available");
-        return;
-    }
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
+    };
     let root = tempfile::tempdir().unwrap();
     let (repo, card_id) = repo_and_card().await;
-    let d = daemon(&root, repo.clone()).await;
+    let d = daemon(&root, repo.clone(), &codex_bin).await;
     if let Err(e) = d.start_or_takeover().await {
         eprintln!("skipping: shared app-server did not boot in this environment: {e}");
         return;
@@ -145,13 +149,14 @@ async fn shared_appserver_two_threads_true_binary() {
 #[tokio::test]
 #[ignore]
 async fn shared_appserver_restart_resumes_thread() {
-    if !codex_available() {
-        eprintln!("skipping: codex binary not available");
-        return;
-    }
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
+    };
     let root = tempfile::tempdir().unwrap();
     let (repo, card_id) = repo_and_card().await;
-    let d = daemon(&root, repo.clone()).await;
+    let d = daemon(&root, repo.clone(), &codex_bin).await;
     if let Err(e) = d.start_or_takeover().await {
         eprintln!("skipping: shared app-server did not boot in this environment: {e}");
         return;

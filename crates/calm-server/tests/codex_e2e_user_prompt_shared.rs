@@ -1,6 +1,8 @@
 #![cfg(all(unix, feature = "codex-e2e"))]
 
-use std::path::PathBuf;
+mod support;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -17,22 +19,18 @@ use calm_server::state::{AppState, CodexClient, DaemonClient};
 use clap::Parser;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
+// #868: shared no-fallback resolver — env `NEIGE_CODEX_BIN` only, `None` ⇒
+// self-skip via `skip!`. Tests must never probe/spawn a PATH codex.
+use support::codex_fixture::resolve_codex_bin;
 use tower::ServiceExt;
 
-fn codex_available() -> bool {
-    std::process::Command::new("codex")
-        .arg("--version")
-        .output()
-        .is_ok()
-}
-
-fn cfg(root: &tempfile::TempDir) -> Config {
+fn cfg(root: &tempfile::TempDir, codex_bin: &Path) -> Config {
     Config::parse_from([
         "calm-server",
         "--data-dir",
         root.path().to_str().unwrap(),
         "--codex-bin",
-        "codex",
+        codex_bin.to_str().expect("utf-8 codex bin path"),
         // Test codex daemons must NEVER post hooks to the default listen address —
         // that is the production calm-server port on shared boxes (production-kill
         // incident, 2026-07-04); tests do not consume hook ingest.
@@ -44,10 +42,11 @@ fn cfg(root: &tempfile::TempDir) -> Config {
 #[tokio::test]
 #[ignore]
 async fn user_prompt_card_first_turn_true_binary() {
-    if !codex_available() {
-        eprintln!("skipping: codex binary not available");
-        return;
-    }
+    let Some(codex_bin) = resolve_codex_bin() else {
+        skip!(
+            "codex binary not resolved (NEIGE_CODEX_BIN unset, or not an executable file); CI has no codex"
+        );
+    };
 
     let tmp = tempfile::tempdir().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -71,7 +70,7 @@ async fn user_prompt_card_first_turn_true_binary() {
         })
         .await
         .unwrap();
-    let cfg = cfg(&tmp);
+    let cfg = cfg(&tmp, &codex_bin);
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
