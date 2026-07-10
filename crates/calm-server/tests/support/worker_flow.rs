@@ -95,6 +95,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "wave".into(),
             sort: None,
@@ -141,6 +142,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "wave".into(),
             sort: None,

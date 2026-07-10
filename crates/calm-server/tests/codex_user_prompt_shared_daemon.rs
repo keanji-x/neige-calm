@@ -80,6 +80,7 @@ async fn boot_with_shared_daemon(start_appserver: bool) -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "prompt-shared".into(),
             sort: None,

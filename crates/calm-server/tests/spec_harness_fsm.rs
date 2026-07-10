@@ -33,6 +33,7 @@ async fn seed_card(repo: &SqlxRepo) -> calm_server::model::Card {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "goal".into(),
             sort: None,

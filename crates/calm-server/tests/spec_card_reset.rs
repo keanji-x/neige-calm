@@ -158,6 +158,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "reset route auth".into(),
             sort: None,
@@ -226,6 +227,7 @@ async fn boot_shared() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "shared reset goal".into(),
             sort: None,

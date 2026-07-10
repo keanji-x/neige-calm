@@ -749,8 +749,8 @@ pub async fn wave_create_tx(
     // by construction; `WaveLifecycle::is_terminal` returns false for it).
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, NULL, ?8, ?9)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, NULL, ?9, ?10)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
@@ -759,6 +759,7 @@ pub async fn wave_create_tx(
     .bind(lifecycle.as_db_str())
     .bind(&p.cwd)
     .bind(p.workflow_id.as_deref())
+    .bind(p.workflow_input.as_ref().map(|v| v.to_string()))
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -779,6 +780,7 @@ pub async fn wave_create_tx(
         lifecycle,
         cwd: p.cwd,
         workflow_id: p.workflow_id,
+        workflow_input: p.workflow_input,
         terminal_at: None,
         created_at: now,
         updated_at: now,
@@ -791,7 +793,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)
@@ -4255,7 +4257,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -4266,7 +4268,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -4289,7 +4291,7 @@ impl RepoRead for SqlxRepo {
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
         let mut sql = String::from(
-            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, \
+            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, \
              terminal_at, created_at, updated_at FROM waves",
         );
         let mut where_clauses: Vec<&str> = Vec::new();
@@ -4328,7 +4330,7 @@ impl RepoRead for SqlxRepo {
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -6844,6 +6846,7 @@ mod workspace_lease_lookup_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "workspace lease lookup".into(),
                 sort: None,
@@ -6976,6 +6979,7 @@ mod write_path_gate_wiring_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: format!("hp1-b-i {label}"),
                 sort: None,
@@ -7172,6 +7176,7 @@ mod runtime_read_flip_tests {
         let wave = wave_create_tx(
             tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: format!("read flip {label}"),
                 sort: None,
@@ -7280,6 +7285,7 @@ mod runtime_read_flip_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: format!("read flip {label}"),
                 sort: None,
@@ -7340,6 +7346,7 @@ mod runtime_read_flip_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: format!("read flip {label}"),
                 sort: None,
@@ -8509,6 +8516,7 @@ mod worker_flow_items_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "w".into(),
                 sort: None,
@@ -8715,6 +8723,7 @@ mod worker_flow_cursor_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "w".into(),
                 sort: None,
@@ -8880,6 +8889,7 @@ mod session_record_activity_tests {
         let wave = wave_create_tx(
             &mut tx,
             NewWave {
+                workflow_input: None,
                 cove_id: cove.id.clone(),
                 title: "w".into(),
                 sort: None,
@@ -9079,5 +9089,85 @@ mod session_record_activity_tests {
             "unknown thread must not bleed onto another session"
         );
         assert!(after.last_thread_status.is_none());
+    }
+}
+
+#[cfg(test)]
+mod wave_workflow_input_tests {
+    use super::{SqlxRepo, cove_create_tx, wave_create_tx};
+    use crate::db::RepoRead;
+    use crate::model::{NewCove, NewWave, RequestTheme};
+    use serde_json::json;
+
+    /// #891 — `workflow_input` INSERT → SELECT round-trip: the JSON blob
+    /// persists verbatim (TEXT column, `#[sqlx(json(nullable))]` decode) and
+    /// a `None` input stays `None`.
+    #[tokio::test]
+    async fn wave_create_round_trips_workflow_input() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
+        let mut tx = repo.pool().begin().await.expect("begin tx");
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "workflow input round trip".into(),
+                color: "#202020".into(),
+                sort: None,
+            },
+        )
+        .await
+        .expect("create cove");
+        let input = json!({
+            "issue_url": "https://github.com/o/r/issues/891",
+            "issue_number": 891,
+            "merge_policy": "hold-for-ratify"
+        });
+        let with_input = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id.clone(),
+                title: "with input".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                workflow_id: Some("issue-development".into()),
+                workflow_input: Some(input.clone()),
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .expect("create wave with input");
+        assert_eq!(with_input.workflow_input.as_ref(), Some(&input));
+        let without_input = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "without input".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                workflow_id: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .expect("create wave without input");
+        tx.commit().await.expect("commit tx");
+
+        let stored = repo
+            .wave_get(with_input.id.as_str())
+            .await
+            .expect("get wave")
+            .expect("wave exists");
+        assert_eq!(stored.workflow_input.as_ref(), Some(&input));
+
+        let stored_none = repo
+            .wave_get(without_input.id.as_str())
+            .await
+            .expect("get wave")
+            .expect("wave exists");
+        assert_eq!(stored_none.workflow_input, None);
     }
 }

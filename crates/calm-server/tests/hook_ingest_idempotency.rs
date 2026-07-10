@@ -26,6 +26,7 @@ async fn duplicate_codex_hook_is_acked_without_second_event() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,

@@ -2314,6 +2314,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             &repo,
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "lease fixture".into(),
                 sort: None,

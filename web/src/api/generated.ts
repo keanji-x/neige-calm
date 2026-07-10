@@ -1434,6 +1434,17 @@ export interface components {
             theme: components["schemas"]["RequestTheme"];
             title: string;
             workflow_id?: string | null;
+            /**
+             * @description Issue #891 — JSON input for the bound workflow. Only accepted when
+             *     `workflow_id` names a running trusted workflow whose descriptor
+             *     declares an `input_schema`; the `POST /api/waves` route validates the
+             *     value against that schema before any DB write. The kernel never
+             *     interprets the blob — it is persisted verbatim and injected into the
+             *     spec harness developer instructions at thread-mint time.
+             *     `#[serde(default)]` keeps the field purely additive under
+             *     `deny_unknown_fields`.
+             */
+            workflow_input?: Record<string, never> | null;
         };
         Overlay: {
             entity_id: string;
@@ -1837,6 +1848,14 @@ export interface components {
             updated_at: number;
             /** @description `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`. */
             workflow_id?: string | null;
+            /**
+             * @description Issue #891 — input JSON for the bound workflow, validated against the
+             *     descriptor's `input_schema` at create time and persisted verbatim; the
+             *     kernel never interprets it. `#[serde(default)]` hydrates pre-#891
+             *     `wave.updated` replays as `None` (same pattern as `workflow_id`).
+             *     Explicit `unknown` override — see `Card.payload` for the rationale.
+             */
+            workflow_input?: Record<string, never> | null;
         };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and

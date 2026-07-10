@@ -57,6 +57,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "initial".into(),
             sort: None,
@@ -299,6 +300,7 @@ async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
     let fresh = boot
         .repo
         .wave_create(calm_server::model::NewWave {
+            workflow_input: None,
             cove_id: boot.cove_id.clone(),
             title: "defaults".into(),
             sort: None,

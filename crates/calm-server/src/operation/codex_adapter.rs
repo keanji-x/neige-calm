@@ -1928,6 +1928,7 @@ mod tests {
         let wave = crate::db::RepoSyncDomainRaw::wave_create(
             repo.as_ref(),
             crate::model::NewWave {
+                workflow_input: None,
                 cove_id: cove.id,
                 title: "workspace leases".into(),
                 sort: None,

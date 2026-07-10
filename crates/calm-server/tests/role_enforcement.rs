@@ -49,6 +49,7 @@ async fn spec_card_can_update_wave() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
@@ -146,6 +147,7 @@ async fn ai_codex_cannot_update_wave() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id.clone(),
             title: "w".into(),
             sort: None,
@@ -291,6 +293,7 @@ async fn public_card_create_writes_worker_role() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "w".into(),
             sort: None,
@@ -334,6 +337,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
+            workflow_input: None,
             cove_id: cove.id,
             title: "w".into(),
             sort: None,
