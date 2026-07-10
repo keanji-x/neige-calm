@@ -419,7 +419,20 @@ fn classify_review_round(
         return ReviewRoundWriteDecision::DuplicateSame;
     }
 
-    let expected = prev.map_or(FIRST_REVIEW_ROUND_N, |(_, n, _)| n.saturating_add(1));
+    let expected = match prev {
+        None => FIRST_REVIEW_ROUND_N,
+        Some((_, prev_n, _)) => match prev_n.checked_add(1) {
+            Some(next_n) => next_n,
+            // u32 space exhausted: a saturated expected-n would re-admit
+            // further distinct rows at n == u32::MAX (INV-CAP-EXT breach).
+            None => {
+                return ReviewRoundWriteDecision::Reject(format!(
+                    "review_round: round numbering exhausted for subject phase={} slice_id={} pr_number={:?}",
+                    args.subject.phase, args.subject.slice_id, args.subject.pr_number,
+                ));
+            }
+        },
+    };
     if args.n != expected {
         return ReviewRoundWriteDecision::Reject(format!(
             "review_round: stale/out-of-order round for subject phase={} slice_id={} pr_number={:?}: got n={}, expected n={expected}",
@@ -460,7 +473,15 @@ fn classify_review_round(
             args.subject.phase, args.subject.slice_id, args.subject.pr_number,
         ));
     }
-    let expected_cap = prev_cap.saturating_add(CAP_EXTENSION_PER_GRANT);
+    // u32 space exhausted: a saturated expected-cap would accept a +1
+    // "extension" to u32::MAX from prev_cap == u32::MAX - 1 (INV-CAP-EXT
+    // breach — the raise must be exactly CAP_EXTENSION_PER_GRANT or nothing).
+    let Some(expected_cap) = prev_cap.checked_add(CAP_EXTENSION_PER_GRANT) else {
+        return ReviewRoundWriteDecision::Reject(format!(
+            "review_round: cap extension space exhausted for subject phase={} slice_id={} pr_number={:?}: previous cap={prev_cap} cannot rise by {CAP_EXTENSION_PER_GRANT}",
+            args.subject.phase, args.subject.slice_id, args.subject.pr_number,
+        ));
+    };
     if args.cap != expected_cap {
         return ReviewRoundWriteDecision::Reject(format!(
             "review_round: cap extension for subject phase={} slice_id={} pr_number={:?} must raise cap by exactly {CAP_EXTENSION_PER_GRANT}: got cap={}, expected cap={expected_cap}",

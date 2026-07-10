@@ -199,9 +199,12 @@ pub async fn assert_cap_extension_history(
             let (prev, next) = (&pair[0], &pair[1]);
             let (prev_n, prev_cap) = (review_round_n(prev), review_round_cap(prev));
             let (next_n, next_cap) = (review_round_n(next), review_round_cap(next));
+            // checked_add: on adversarial history at the u32 boundary the
+            // successor does not exist — fail the assertion cleanly (None !=
+            // Some) instead of panicking on arithmetic overflow.
             assert_eq!(
-                next_n,
-                prev_n + 1,
+                Some(next_n),
+                prev_n.checked_add(1),
                 "INV-CAP-EXT: n must rise by exactly 1 for {key:?}: n={prev_n} (id {}) -> n={next_n} (id {})",
                 prev.id,
                 next.id
@@ -210,8 +213,8 @@ pub async fn assert_cap_extension_history(
                 continue;
             }
             assert_eq!(
-                next_cap,
-                prev_cap + 2,
+                Some(next_cap),
+                prev_cap.checked_add(2),
                 "INV-CAP-EXT: a cap change must be exactly +2 for {key:?}: cap={prev_cap} (id {}) -> cap={next_cap} (id {})",
                 prev.id,
                 next.id

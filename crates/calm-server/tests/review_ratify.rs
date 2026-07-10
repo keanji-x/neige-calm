@@ -39,7 +39,7 @@ struct Boot {
     cove_id: CoveId,
     wave_id: WaveId,
     spec_card_id: CardId,
-    // Exposed for tests that seed events via `log_pure_event` (#888 t10).
+    // Exposed for tests that seed events via `log_pure_event` (#888 t10/t12/t13).
     events: EventBus,
     card_role_cache: CardRoleCache,
     wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
@@ -1066,17 +1066,12 @@ async fn review_round_one_grant_extends_each_subject_exhausted_before_it() {
     emit_round(&boot, round_args_for_subject(design_subject, 4, 5, false)).await;
 }
 
-// t10 — tied-n recovery pick (#888 design §3.1): among tied max-n rows,
-// `prev` is the one with the greatest event row id. Ties cannot arise through
-// the tool; seed one via `log_pure_event` (events carry no idempotency
-// uniqueness index; role_gate 2.8 admits AiSpec(spec card)).
-#[tokio::test]
-async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
-    let boot = boot().await;
-    exhaust_subject(&boot, 3).await;
-
-    // Seed a SECOND n=3 row with cap=5 (distinct idem-key suffix): the
-    // greatest-row-id tied row now says cap=5, n=3 (NOT exhausted for cap 5).
+/// Seed a `review.round` row for the standard impl subject directly via
+/// `log_pure_event`, bypassing the tool's kernel (events carry no idempotency
+/// uniqueness index; role_gate 2.8 admits AiSpec(spec card)). Used for
+/// histories the tool cannot produce: tied-n rows (t10) and u32-boundary
+/// n/cap values (t12/t13 — the only way there without ~4B tool calls).
+async fn seed_pure_round(boot: &Boot, n: u32, cap: u32, tag: &str) {
     boot.repo
         .log_pure_event(
             ActorId::AiSpec(boot.spec_card_id.clone()),
@@ -1095,9 +1090,9 @@ async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
                     slice_id: "5b".into(),
                     pr_number: Some(760),
                 },
-                head_sha: Some("seed-tied".into()),
-                n: 3,
-                cap: 5,
+                head_sha: Some(format!("seed-{tag}")),
+                n,
+                cap,
                 converged: false,
                 channels: vec![
                     ChannelVerdict {
@@ -1110,11 +1105,24 @@ async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
                     },
                 ],
                 root_cause: None,
-                idempotency_key: format!("review.round:{}:impl:5b:760:3:seed", boot.wave_id),
+                idempotency_key: format!("review.round:{}:impl:5b:760:{n}:{tag}", boot.wave_id),
             },
         )
         .await
-        .expect("seed tied review.round");
+        .expect("seed review.round");
+}
+
+// t10 — tied-n recovery pick (#888 design §3.1): among tied max-n rows,
+// `prev` is the one with the greatest event row id. Ties cannot arise through
+// the tool; seed one via `log_pure_event`.
+#[tokio::test]
+async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
+    let boot = boot().await;
+    exhaust_subject(&boot, 3).await;
+
+    // Seed a SECOND n=3 row with cap=5 (distinct idem-key suffix): the
+    // greatest-row-id tied row now says cap=5, n=3 (NOT exhausted for cap 5).
+    seed_pure_round(&boot, 3, 5, "tied").await;
 
     // n=4/cap=5 with NO grant: accepted iff `prev` is the seeded greatest-
     // row-id row (equal cap, rule row 4). Picking the older tied row
@@ -1122,14 +1130,72 @@ async fn review_round_tied_n_prev_pick_is_greatest_row_id() {
     emit_round(&boot, round_args(4, 5, false)).await;
 }
 
-// t11 — rule-table order: a request wrong on BOTH axes reports the n error
-// (rows 3 before 4-9), preserving the existing re-sync signal.
+// t11 — rule-table order, discriminating form: at prev n=3=cap=3 with a
+// fresh grant, submit n=5/cap=6. cap=6 is a cap the cap arm would
+// independently E4-reject ("must raise cap by exactly 2": the legal
+// extension cap is 5), and n=5 is wrong (expected n=4) — so which message
+// surfaces discriminates the ordering. Asserting the n-message AND the
+// absence of the E4 "exactly" message proves rows 3 (n check) fire before
+// rows 4-9 (cap arm), preserving the existing re-sync signal. (A n=5/cap=5
+// probe would be vacuous here: cap=5 is the LEGAL extension cap, so both
+// orderings report "expected n=4".)
 #[tokio::test]
 async fn review_round_wrong_n_and_cap_reports_n_error() {
     let boot = boot().await;
     exhaust_subject(&boot, 3).await;
     request_and_grant(&boot, "cap_exhausted").await;
-    expect_round_reject(&boot, round_args(5, 5, false), "expected n=4").await;
+
+    let before = events_for_wave(&boot, &["review.round"]).await.len();
+    let err = call_tool(&boot, TOOL_REVIEW_ROUND, round_args(5, 6, false))
+        .await
+        .expect_err("wrong-n + wrong-cap round must be rejected");
+    assert_eq!(
+        err.code,
+        calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
+    );
+    assert!(err.message.contains("expected n=4"), "{err:?}");
+    assert!(
+        !err.message.contains("exactly"),
+        "n check must fire before the cap arm's E4 reject: {err:?}"
+    );
+    let after = events_for_wave(&boot, &["review.round"]).await.len();
+    assert_eq!(after, before, "rejected round must not append");
+}
+
+// t12 — u32 boundary on expected-n (INV-CAP-EXT): once a subject's numbering
+// reaches n=u32::MAX, NO further round is accepted — a saturated expected-n
+// would re-admit further distinct rows at the same n. Seeded via
+// `log_pure_event` (the only way to reach the boundary without ~4B tool
+// calls). The distinct-payload resubmit at n=u32::MAX is exactly the row a
+// saturating expected-n would have accepted; zero events appended.
+#[tokio::test]
+async fn review_round_n_at_u32_max_rejects_further_rounds() {
+    let boot = boot().await;
+    seed_pure_round(&boot, u32::MAX, u32::MAX, "nmax").await;
+    expect_round_reject(
+        &boot,
+        round_args(u32::MAX, u32::MAX, false),
+        "round numbering exhausted",
+    )
+    .await;
+}
+
+// t13 — u32 boundary on the extension cap (INV-CAP-EXT): with prev
+// n=cap=u32::MAX-1 exhausted and a FRESH grant, the exactly-+2 target does
+// not exist in u32 — the raise to u32::MAX (what a saturating expected-cap
+// would have "expected" and accepted) is a +1 extension and must be
+// rejected; zero events appended.
+#[tokio::test]
+async fn review_round_cap_extension_at_u32_boundary_rejected() {
+    let boot = boot().await;
+    seed_pure_round(&boot, u32::MAX - 1, u32::MAX - 1, "capmax").await;
+    request_and_grant(&boot, "cap_exhausted at u32 boundary").await;
+    expect_round_reject(
+        &boot,
+        round_args(u32::MAX, u32::MAX, false),
+        "cap extension space exhausted",
+    )
+    .await;
 }
 
 #[tokio::test]
