@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 import { WaveRow } from '../shared/components/WaveRow';
+import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { NewTaskForm } from '../shared/components/NewTaskForm';
 import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { PlusIcon } from '../shared/components/PlusIcon';
@@ -513,13 +514,31 @@ function NewWaveDialog({
               value={variant}
               onChange={(e) => setVariant(e.target.value as 'task' | 'issue-dev')}
             >
+              {/* Custom trigger (base-select): <selectedcontent> clones
+                  the checked option's DOM into the button, and CSS
+                  hides the description span there — the closed select
+                  shows the NAME only, in the same type style as the
+                  drawer rows. The stroke chevron replaces the UA
+                  triangle (::picker-icon is display:none). Fallback
+                  engines don't render non-option select children, so
+                  this whole button is inert there. */}
+              <button className="new-wave-kind-trigger">
+                <selectedcontent className="new-wave-kind-selected" />
+                <span className="new-wave-kind-chevron" aria-hidden="true">
+                  <ChevronIcon />
+                </span>
+              </button>
+              {/* Option rows: name + muted description, differentiated
+                  purely by type (no literal separator); the {' '} text
+                  node keeps the flattened fallback/AT text readable
+                  ("None plain wave"). */}
               <option value="task">
-                None
-                <span className="new-wave-kind-opt-desc"> — plain wave</span>
+                <span className="new-wave-kind-opt-name">None</span>{' '}
+                <span className="new-wave-kind-opt-desc">plain wave</span>
               </option>
               <option value="issue-dev">
-                Issue dev
-                <span className="new-wave-kind-opt-desc"> — issue → PR autoflow</span>
+                <span className="new-wave-kind-opt-name">Issue dev</span>{' '}
+                <span className="new-wave-kind-opt-desc">issue → PR autoflow</span>
               </option>
             </select>
           </div>

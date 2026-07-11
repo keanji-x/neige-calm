@@ -3450,20 +3450,58 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
     appearance: base-select;
   }
   /* Trigger (closed select): .new-task-form-input already provides the
-     field border/padding/bg/focus-ring; base-select replaces the OS
-     chrome, so lay the content + UA picker-icon out ourselves. */
+     field border/padding/bg/focus-ring. Typography matches the drawer
+     rows' name style so trigger + panel read as one system. The custom
+     <button><selectedcontent> child clones the checked option's DOM —
+     the description span is hidden here, name only. */
   .new-wave-kind-select {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--text-2);
+  }
+  /* UA picker icon (solid triangle) is off — the stroke ChevronIcon
+     inside the trigger button is the app's icon language. */
+  .new-wave-kind-select::picker-icon { display: none; }
+  .new-wave-kind-trigger {
+    flex: 1 1 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-4);
+    min-width: 0;
+    padding: var(--space-0);
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
     cursor: pointer;
   }
-  .new-wave-kind-select::picker-icon {
+  .new-wave-kind-select selectedcontent {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  /* Name only in the closed state — the cloned description is noise
+     next to the field label. */
+  .new-wave-kind-select selectedcontent .new-wave-kind-opt-desc {
+    display: none;
+  }
+  /* Right-chevron SVG (stroke, currentColor, 1em) rotated to point
+     down; 270deg when open keeps the spin direction continuous for the
+     same 180° flip the UA icon had. */
+  .new-wave-kind-chevron {
+    flex: none;
+    display: inline-flex;
     color: var(--text-3);
+    font-size: var(--text-sm);
+    rotate: 90deg;
     transition: rotate var(--motion-quick);
   }
-  .new-wave-kind-select:open::picker-icon { rotate: 180deg; }
+  .new-wave-kind-select:open .new-wave-kind-chevron { rotate: 270deg; }
   /* Picker panel: card-like — same surface/hairline/shadow vocabulary
      as .modal-panel, dropped var(--space-1) under the trigger. */
   .new-wave-kind-select::picker(select) {
@@ -3484,9 +3522,9 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   @starting-style {
     .new-wave-kind-select::picker(select) { opacity: 0; }
   }
-  /* Option rows: name + muted one-line description. Hover = subtle
-     fill, checked = soft accent fill; the UA checkmark takes the
-     accent color. */
+  /* Option rows: name + muted one-line description, differentiated
+     purely by type (no separator glyph, no selected fill). Hover =
+     subtle transient fill; checked = checkmark only (accent). */
   .new-wave-kind-select option {
     display: flex;
     align-items: center;
@@ -3501,10 +3539,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
     background: var(--overlay-hover);
     color: var(--text);
   }
-  .new-wave-kind-select option:checked {
-    background: var(--accent-soft);
-    color: var(--text);
-  }
+  .new-wave-kind-select option:checked { color: var(--text); }
   .new-wave-kind-select option::checkmark { color: var(--accent); }
   .new-wave-kind-opt-desc {
     font-size: var(--text-xs);
