@@ -76,11 +76,25 @@ fail() { local code="$1"; shift; log "FATAL: $*"; exit "$code"; }
 # mistaken for a refusal. HTTP/1.1 CONNECT is what codex speaks to
 # NEIGE_CODEX_PROXY; short idle timeouts because an established tunnel then sits
 # silent (we send no TLS) and a 403 closes at once.
+# Strict status-line parse: echo the 3-digit code ONLY when the FIRST line is a
+# well-formed `HTTP/1.0 NNN ...` or `HTTP/1.1 NNN ...`; anything else echoes ""
+# so a malformed/garbage line can NEVER be mistaken for our gate's 403 (the
+# deny-by-construction verdict must come from a real status line, not a loose
+# field split). Only the first line counts — a later "403" cannot rescue junk.
+parse_http_status() {
+    # $1 = raw response. Take line 1, strip a trailing CR, regex-match the grammar.
+    local first="${1%%$'\n'*}"
+    first="${first%$'\r'}"
+    if [[ "$first" =~ ^HTTP/1\.[01]\ ([0-9][0-9][0-9])($|\ ) ]]; then
+        printf '%s' "${BASH_REMATCH[1]}"
+    fi
+}
+
 proxy_connect() {
     local hostport="$1"
     RESP="$(printf 'CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n' "$hostport" "$hostport" \
         | timeout 25 socat -t 3 -T 3 - "TCP:127.0.0.1:${PROXY_PORT}" 2>/dev/null)" || true
-    STATUS="$(printf '%s' "$RESP" | head -n1 | awk '/^HTTP\//{print $2}')"
+    STATUS="$(parse_http_status "$RESP")"
     [ "${STATUS:-}" = 200 ]
 }
 

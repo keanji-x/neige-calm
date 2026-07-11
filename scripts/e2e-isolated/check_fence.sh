@@ -42,6 +42,24 @@ proxy_connect() {
 # Make the canary retry-sleep instant so the dead-chain case does not stall.
 sleep() { :; }
 
+# ---- parser: parse_http_status accepts ONLY a well-formed first status line -
+# Exercises the REAL parse (not a stubbed STATUS): a malformed/garbage first
+# line must yield "" so it can never be mistaken for our gate's 403.
+check_parse() { # $1 label  $2 raw-response  $3 want-code
+    local got; got="$(parse_http_status "$2")"
+    if [ "$got" = "$3" ]; then ok "parse: $1 -> '${got:-empty}'"
+    else bad "parse: $1: want '${3:-empty}', got '${got:-empty}'"; fi
+}
+check_parse "well-formed 403"        "$(printf 'HTTP/1.1 403 Forbidden\r\n\r\n')"            403
+check_parse "well-formed 200"        "$(printf 'HTTP/1.0 200 Connection established\r\n')"   200
+check_parse "garbage version"        "$(printf 'HTTP/garbage 403\r\n')"                      ""
+check_parse "2-digit code"           "$(printf 'HTTP/1.1 40 x\r\n')"                         ""
+check_parse "4-digit not 403"        "$(printf 'HTTP/1.1 4030\r\n')"                         ""
+check_parse "empty response"         ""                                                      ""
+check_parse "junk first, 403 later"  "$(printf 'garbage\r\nHTTP/1.1 403 Forbidden\r\n')"     ""
+check_parse "wrong proto"            "$(printf 'ICAP/1.0 403 x\r\n')"                         ""
+check_parse "code-with-trailer"      "$(printf 'HTTP/1.1 403\r\n')"                          403
+
 # ---- verdict: fence_assert_denied passes ONLY on an explicit 403 ----------
 for s in "" 400 502 200; do
     STUB_DENY="$s"
