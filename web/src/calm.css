@@ -3427,15 +3427,75 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
 /* ===== Issue-dev wave variant (#891 slice ③) =====
-   Variant switch above NewTaskForm in the New-wave dialog: a labeled
-   native <select> (label + control reuse the new-task-form field
-   styles) — one option per wave type, so future workflows extend the
-   list instead of adding tabs. */
+   Wave-type selector above NewTaskForm in the New-wave dialog: an
+   in-card radio-pill group (signoff round 2 — the native <select>'s
+   OS popup read as foreign chrome on the calm card). Native radios,
+   visually hidden via .sr-only, wrapped in pill labels; selected and
+   focus states reuse the accent tokens (--accent / --accent-soft)
+   that theme correctly in both light and dark.
+
+   NB: the fieldset stays display:block — browsers give <fieldset> a
+   special layout box and flex on it is unreliable; the inner
+   .new-wave-kind-pills row carries the flex. */
 .new-wave-kind {
+  margin: var(--space-0) var(--space-0) var(--space-5);
+  padding: var(--space-0);
+  border: none;
+  min-width: 0;
+}
+.new-wave-kind-legend {
+  padding: var(--space-0);
+  margin-bottom: var(--space-3);
+}
+.new-wave-kind-pills {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.new-wave-kind-pill { display: inline-flex; cursor: pointer; }
+.new-wave-kind-pill-face {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-5);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  transition:
+    background var(--motion-quick),
+    border-color var(--motion-quick),
+    color var(--motion-quick);
+}
+.new-wave-kind-pill:hover .new-wave-kind-pill-face {
+  color: var(--text);
+  border-color: var(--text-3);
+}
+/* Selected pill — accent border + soft accent fill, same pairing the
+   input focus ring uses; both tokens carry dark-theme overrides. Kept
+   after the hover rule so a hovered selected pill stays accented. */
+.new-wave-kind-pill input:checked + .new-wave-kind-pill-face {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+/* Keyboard focus lands on the (visually hidden) radio; surface it on
+   the pill with the app-wide focus-visible ring. */
+.new-wave-kind-pill input:focus-visible + .new-wave-kind-pill-face {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* One cohesive card (#891 signoff round 2): hosted in the New-wave
+   dialog (title row suppressed), the form drops its inline-panel
+   chrome — the modal panel itself is the card, so a second border +
+   inset padding would read as a card-in-card. The standalone
+   .new-task-form styles above stay for any inline (non-dialog) host. */
+.modal-body > .new-task-form {
+  border: none;
+  padding: var(--space-0);
+  margin-top: var(--space-0);
+  background: transparent;
 }
 
 /* Raw workflow_input JSON escape hatch — collapsed <details> at the

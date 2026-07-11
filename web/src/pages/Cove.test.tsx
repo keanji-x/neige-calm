@@ -445,14 +445,17 @@ describe('CovePage pin button on wave rows', () => {
 });
 
 // ---------------------------------------------------------------------------
-// NewWaveDialog variant switch — issue #891 slice ③ (signoff rework:
-// wave-TYPE <select> replaced the earlier toggle-button pair).
+// NewWaveDialog variant switch — issue #891 slice ③ (signoff round 2:
+// in-card radio-pill group; earlier rounds shipped a toggle pair, then
+// a native <select> whose OS popup read as foreign chrome).
 //
-// The dialog hosts a labeled "Wave type" select above NewTaskForm:
-// "Task" (default, plain wave) and "Issue dev" (workflow-bound wave).
-// The form itself is exercised in NewTaskForm.issueDev.test.tsx; here we
-// pin the dialog-level wiring — default option, switch → issue-dev
-// fields appear, switch back → they're gone.
+// The dialog hosts a "Wave type" radiogroup (fieldset + legend, native
+// radios in pill labels) above NewTaskForm: "Task" (default, plain
+// wave) and "Issue dev" (workflow-bound wave). The dialog itself has NO
+// visible title row — it's named via aria-label ("New wave") only. The
+// form is exercised in NewTaskForm.issueDev.test.tsx; here we pin the
+// dialog-level wiring — default option, switch → issue-dev fields
+// appear, switch back → they're gone.
 // ---------------------------------------------------------------------------
 
 describe('CovePage NewWaveDialog variant switch (#891)', () => {
@@ -477,35 +480,36 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     return { user, dialog };
   }
 
-  /** The labeled wave-type <select> hosted above NewTaskForm. */
-  function waveTypeSelect(dialog: HTMLElement) {
-    return within(dialog).getByRole('combobox', {
+  /** One wave-type radio pill inside the "Wave type" radiogroup. */
+  function waveTypeRadio(dialog: HTMLElement, name: 'Task' | 'Issue dev') {
+    const group = within(dialog).getByRole('radiogroup', {
       name: 'Wave type',
-    }) as HTMLSelectElement;
+    });
+    return within(group).getByRole('radio', { name }) as HTMLInputElement;
   }
 
-  it('opens on the plain Task variant with the wave-type select visible', async () => {
+  it('opens on the plain Task variant with the wave-type radio pills visible, and no visible title row', async () => {
     const { dialog } = await openNewWaveDialog();
-    const select = waveTypeSelect(dialog);
-    expect(select.value).toBe('task');
-    // Both wave types are offered as options (extensibility seam:
-    // future workflows land here as new options, not new tabs).
-    expect(
-      within(select).getByRole('option', { name: 'Task' }),
-    ).toHaveValue('task');
-    expect(
-      within(select).getByRole('option', { name: 'Issue dev' }),
-    ).toHaveValue('issue-dev');
+    // Both wave types are offered as radios (extensibility seam:
+    // future workflows land here as new pills, not new tabs).
+    expect(waveTypeRadio(dialog, 'Task').checked).toBe(true);
+    expect(waveTypeRadio(dialog, 'Issue dev').checked).toBe(false);
+    // Signoff round 2: the dialog reads as one cohesive card — no
+    // visible "New wave" title row (and no head × button); the name
+    // lives on the dialog's aria-label (already asserted by the
+    // findByRole in openNewWaveDialog).
+    expect(within(dialog).queryByText('New wave')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: 'Close' })).toBeNull();
     // Plain form, no issue-dev fields.
     expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
   });
 
   it('selecting Issue dev shows the issue-dev form; selecting Task restores the plain form', async () => {
     const { user, dialog } = await openNewWaveDialog();
-    await user.selectOptions(waveTypeSelect(dialog), 'issue-dev');
+    await user.click(waveTypeRadio(dialog, 'Issue dev'));
     expect(within(dialog).getByLabelText(/github issue url/i)).toBeInTheDocument();
     expect(within(dialog).getByLabelText(/merge policy/i)).toBeInTheDocument();
-    await user.selectOptions(waveTypeSelect(dialog), 'task');
+    await user.click(waveTypeRadio(dialog, 'Task'));
     expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
     expect(
       within(dialog).getByRole('form', { name: /new task/i }),
@@ -521,17 +525,17 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
         within(dialog).getByLabelText(/task description/i),
       );
     });
-    // Changing the select remounts NewTaskForm; the new variant's
+    // Activating a type radio remounts NewTaskForm; the new variant's
     // first required field (the issue URL input) must receive focus —
     // Dialog's open-time pass doesn't re-run, so this pins the
     // variant-change effect.
-    await user.selectOptions(waveTypeSelect(dialog), 'issue-dev');
+    await user.click(waveTypeRadio(dialog, 'Issue dev'));
     await waitFor(() => {
       expect(document.activeElement).toBe(
         within(dialog).getByLabelText(/github issue url/i),
       );
     });
-    await user.selectOptions(waveTypeSelect(dialog), 'task');
+    await user.click(waveTypeRadio(dialog, 'Task'));
     await waitFor(() => {
       expect(document.activeElement).toBe(
         within(dialog).getByLabelText(/task description/i),
@@ -541,7 +545,7 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
 
   it('a manual title edit latches against re-prefill; switching variant (remount) un-latches', async () => {
     const { user, dialog } = await openNewWaveDialog();
-    await user.selectOptions(waveTypeSelect(dialog), 'issue-dev');
+    await user.click(waveTypeRadio(dialog, 'Issue dev'));
     const title = () =>
       within(dialog).getByLabelText(/task description/i) as HTMLTextAreaElement;
     const urlInput = within(dialog).getByLabelText(/github issue url/i);
@@ -557,8 +561,8 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     // Switching variant remounts NewTaskForm (key={variant}) — all
     // per-variant state resets, including the latch: prefill follows
     // the URL again in the fresh mount.
-    await user.selectOptions(waveTypeSelect(dialog), 'task');
-    await user.selectOptions(waveTypeSelect(dialog), 'issue-dev');
+    await user.click(waveTypeRadio(dialog, 'Task'));
+    await user.click(waveTypeRadio(dialog, 'Issue dev'));
     expect(title().value).toBe('');
     await user.type(
       within(dialog).getByLabelText(/github issue url/i),

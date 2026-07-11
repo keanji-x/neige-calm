@@ -160,3 +160,59 @@ describe('Dialog child-view stack contract', () => {
     expect(document.activeElement).toBe(pushBtn);
   });
 });
+
+// ---------------------------------------------------------------------------
+// hideTitleRow (#891 signoff round 2) — the New-wave dialog drops its
+// visible title row so the content reads as one cohesive card, but the
+// dialog must NEVER go nameless: `title` keeps flowing into the panel's
+// aria-label. Pushed child views are exempt — they always render the
+// head (their title + the close affordance for the sub-flow).
+// ---------------------------------------------------------------------------
+
+describe('Dialog hideTitleRow contract', () => {
+  it('suppresses the visible head but keeps the aria-label name', async () => {
+    render(
+      <Dialog open onClose={() => {}} title="Outer" hideTitleRow>
+        <PushingChild />
+      </Dialog>,
+    );
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+
+    // Accessible name intact…
+    const dialog = screen.getByRole('dialog', { name: 'Outer' });
+    // …but no visible title text and no head × button.
+    expect(dialog.querySelector('.modal-head')).toBeNull();
+    expect(screen.queryByText('Outer')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+  });
+
+  it('a pushed child view still renders the head with its own title', async () => {
+    render(
+      <Dialog open onClose={() => {}} title="Outer" hideTitleRow>
+        <PushingChild />
+      </Dialog>,
+    );
+    await act(async () => {
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('push'));
+    });
+    // The pushed view owns the dialog name AND gets the visible head
+    // back — the browse-style sub-flow needs its title + close button.
+    const inner = screen.getByRole('dialog', { name: 'Inner' });
+    expect(inner.querySelector('.modal-head')).toBeTruthy();
+    expect(screen.getByText('Inner')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy();
+
+    // Popping the view returns to the headless base state.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('back'));
+    });
+    const outer = screen.getByRole('dialog', { name: 'Outer' });
+    expect(outer.querySelector('.modal-head')).toBeNull();
+  });
+});

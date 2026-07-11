@@ -457,14 +457,16 @@ function NewWaveDialog({
   // issue URL. Reset to 'task' whenever the dialog closes so every
   // open starts from the familiar default.
   const [variant, setVariant] = useState<'task' | 'issue-dev'>('task');
-  const variantSelectId = useId();
+  // Groups the wave-type radios; unique per dialog mount so a future
+  // second instance on the page can't cross-talk.
+  const variantRadioName = useId();
   useEffect(() => {
     if (!open) setVariant('task');
   }, [open]);
   // Variant-appropriate focus after a wave-type change (#891 review).
   // Dialog's initial-focus pass only runs when `open` flips true, so
   // switching the wave type (which remounts NewTaskForm via `key`)
-  // would otherwise leave focus on the <select> while the new
+  // would otherwise leave focus on the type radio while the new
   // variant's first field sits unfocused. NewTaskForm rebinds
   // `initialFieldRef` to the new variant's first field during the
   // remount commit (refs attach before effects run), so this effect
@@ -478,31 +480,55 @@ function NewWaveDialog({
     <Dialog
       open={open}
       onClose={onClose}
+      // Names the dialog (aria-label) without rendering the title row:
+      // the owner wants the dialog to read as one cohesive card (#891
+      // signoff round 2), so the visible "New wave" head is gone but
+      // the accessible name stays. Dismissal: the form's Cancel button,
+      // Esc, and overlay-click.
       title="New wave"
+      hideTitleRow
       initialFocusRef={initialFieldRef}
     >
       {open && (
         <>
-          {/* Variant switch — a labeled native <select> (#891 signoff
-              rework). A select scales to future workflows: each new
-              workflow becomes one more <option>, not another tab.
-              Native select semantics need no custom aria. Changing it
-              remounts NewTaskForm (key) so per-variant state starts
-              clean. */}
-          <div className="new-wave-kind">
-            <label htmlFor={variantSelectId} className="new-task-form-label">
+          {/* Wave-type selector — in-card radio-pill group (#891
+              signoff round 2: the native <select>'s OS popup read as
+              foreign chrome on the calm card, so no overlay of any
+              kind). Semantically a form field, not tabs: native radios
+              (visually hidden, sr-only) wrapped in pill-styled labels
+              inside a radiogroup fieldset named by its legend — arrow
+              keys move within the group for free. Extensible: future
+              workflows become new pills. Changing it remounts
+              NewTaskForm (key) so per-variant state starts clean. */}
+          <fieldset className="new-wave-kind" role="radiogroup">
+            <legend className="new-task-form-label new-wave-kind-legend">
               Wave type
-            </label>
-            <select
-              id={variantSelectId}
-              className="new-task-form-input"
-              value={variant}
-              onChange={(e) => setVariant(e.target.value as 'task' | 'issue-dev')}
-            >
-              <option value="task">Task</option>
-              <option value="issue-dev">Issue dev</option>
-            </select>
-          </div>
+            </legend>
+            <div className="new-wave-kind-pills">
+              <label className="new-wave-kind-pill">
+                <input
+                  type="radio"
+                  className="sr-only"
+                  name={variantRadioName}
+                  value="task"
+                  checked={variant === 'task'}
+                  onChange={() => setVariant('task')}
+                />
+                <span className="new-wave-kind-pill-face">Task</span>
+              </label>
+              <label className="new-wave-kind-pill">
+                <input
+                  type="radio"
+                  className="sr-only"
+                  name={variantRadioName}
+                  value="issue-dev"
+                  checked={variant === 'issue-dev'}
+                  onChange={() => setVariant('issue-dev')}
+                />
+                <span className="new-wave-kind-pill-face">Issue dev</span>
+              </label>
+            </div>
+          </fieldset>
           <NewTaskForm
             key={variant}
             variant={variant}
