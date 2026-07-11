@@ -226,6 +226,12 @@ pub struct WorkflowDescriptor {
     pub id: String,
     #[serde(default)]
     pub plan_template: Vec<PlanTaskInput>,
+    /// Advisory, prompt-only gate guidance — NOT an executable contract.
+    /// Rendered into the Spec prompt's `## Bound Workflow Gates` section
+    /// (`operation::spec_harness_start_adapter`) and NEVER executed as a
+    /// shell command nor wired into a task's `gate_json`/execution. The Spec
+    /// authors each task's real, re-runnable `gate` from the target repo's
+    /// toolchain via `calm.plan.upsert`.
     #[serde(default)]
     pub gates: Vec<GateInput>,
     #[serde(default)]
@@ -948,12 +954,19 @@ mod tests {
             // before merging per fence F4.
             "no fresh review round is required for the hold itself",
             "resume working->reviewing and call gh.pr.merge per fence F4",
+            // #925 — the gate guidance is repo-agnostic (detect the target
+            // toolchain), no longer a Rust-specific `cargo test`.
+            "detect it (Cargo / npm / pytest / go / Make, etc.)",
         ] {
             assert!(
                 workflow.spec_instructions.contains(needle),
                 "spec_instructions missing {needle}"
             );
         }
+
+        // #925 — the shipped gate is now repo-agnostic guidance, not the
+        // Rust-specific `cargo test`; lock the de-hardcoding at the source.
+        assert_ne!(workflow.gates[0].steps[0].cmd, "cargo test");
 
         // #891 slice ② — the shipped descriptor's input contract. Parsing
         // via `Manifest::parse` already ran `validate()`, so reaching here
