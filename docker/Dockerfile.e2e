@@ -1,0 +1,33 @@
+# Runtime image for the docker-isolated codex-e2e tier (#863).
+#
+# Standalone (NOT layered on the compose server image, whose tag is
+# compose-project-scoped and drags python3). The test binary, calm-server
+# under test, and the codex CLI are all host-built and bind-mounted read-only
+# at their identical host paths by scripts/e2e-isolated/run.sh — this image
+# only supplies the runtime tools the contained stack needs:
+#
+#   git          — fixture repos + worker agents shell out to git.
+#   ca-certificates — TLS verify for the codex API through the proxy chain
+#                  (SSL_CERT_FILE is in the #897 spawn-env allow-list).
+#   bubblewrap   — codex execs `bwrap` for every sandboxed local_shell call
+#                  (workspace-write posture; the container grants
+#                  seccomp/apparmor unconfined so userns creation works).
+#   socat        — in-container proxy stub: loopback TCP :2081 → the host
+#                  forwarder's unix socket (the container runs --network none;
+#                  this is its only egress). Also the fence-preflight client.
+#   procps       — pgrep, for the opt-in DECOYS=1 diagnostic mode.
+#
+# No rust toolchain (host-compile model, see docker/Dockerfile.server), no gh
+# (the fixture shims it), no python3 (only the chromium TUI e2e needs it).
+#
+# apt honours the standard proxy env vars; declared as build args so the
+# runner can pass them through when the host needs a proxy for Debian mirrors
+# (default empty -> direct connection). Base must track the host's glibc
+# (Debian 12 / 2.36 today); run.sh's `--list` exec probe catches drift.
+FROM debian:bookworm-slim
+ARG http_proxy=
+ARG https_proxy=
+ARG no_proxy=
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates bubblewrap socat procps \
+ && rm -rf /var/lib/apt/lists/*
