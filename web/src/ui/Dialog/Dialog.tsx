@@ -43,6 +43,16 @@ export interface DialogProps {
   open: boolean;
   onClose: () => void;
   title?: string;
+  /** Suppress the visible title row (`modal-head`) for the dialog's
+   *  base state so the content reads as one cohesive card (#891
+   *  signoff). `title` still names the dialog — it keeps flowing into
+   *  the panel's `aria-label` — so the dialog is never nameless; only
+   *  the visual chrome (title text + × button) is dropped. Callers
+   *  opting in must provide their own dismiss affordance (Esc and
+   *  overlay-click still work). Pushed child views are unaffected:
+   *  they always render the head, which carries their title and the
+   *  close affordance for the sub-flow. */
+  hideTitleRow?: boolean;
   children?: React.ReactNode;
   /** Render the dialog with the wider/taller panel variant (same sizing
    *  pushed child views get). Used when the dialog's *direct* content is
@@ -129,6 +139,7 @@ export function Dialog({
   open,
   onClose,
   title,
+  hideTitleRow,
   children,
   wide,
   initialFocusRef,
@@ -360,7 +371,7 @@ export function Dialog({
           onMouseDown={(e) => e.stopPropagation()}
           onKeyDown={onPanelKeyDown}
         >
-          {headerTitle && (
+          {headerTitle && (showingView || !hideTitleRow) && (
             <div className="modal-head">
               <span className="modal-title">{headerTitle}</span>
               <button

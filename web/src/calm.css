@@ -3426,6 +3426,217 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
+/* ===== .calm-select — themed dropdown drawer (#891 slice ③) =====
+   Reusable customizable-select treatment for native <select>s (live
+   design exploration; currently applied to the New-wave dialog's
+   Workflow + Cove selects — one popup system per card). In Chromium,
+   `appearance: base-select` on both the select and its
+   `::picker(select)` opts into an in-page, fully-stylable dropdown
+   drawer themed with the app tokens; every other browser ignores the
+   @supports block and keeps the OS popup.
+
+   Usage: `<select class="new-task-form-input calm-select">` (the form
+   field class provides the trigger's border/padding/bg/focus-ring)
+   with a first child
+     <button class="calm-select-trigger">
+       <selectedcontent class="calm-select-selected" />
+       <span class="calm-select-chevron" aria-hidden><ChevronIcon/></span>
+     </button>
+   Options may be plain text, or rich two-part rows via
+   `.calm-select-opt-name` + `.calm-select-opt-desc` spans (the desc is
+   hidden in the cloned trigger content; fallback engines flatten it to
+   inline text, so keep descriptions short). */
+/* Workflow field wrapper (label + select column) in the New-wave
+   dialog. */
+.new-wave-kind {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  min-width: 0;
+}
+@supports (appearance: base-select) {
+  .calm-select,
+  .calm-select::picker(select) {
+    appearance: base-select;
+  }
+  /* Trigger (closed select): .new-task-form-input already provides the
+     field border/padding/bg/focus-ring. Typography matches the drawer
+     rows' name style so trigger + panel read as one system. The custom
+     <button><selectedcontent> child clones the checked option's DOM —
+     the description span is hidden here, name only. */
+  .calm-select {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-size: var(--text-sm);
+    color: var(--text-2);
+  }
+  /* UA picker icon (solid triangle) is off — the stroke ChevronIcon
+     inside the trigger button is the app's icon language. */
+  .calm-select::picker-icon { display: none; }
+  .calm-select-trigger {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    min-width: 0;
+    padding: var(--space-0);
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .calm-select selectedcontent {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  /* Name only in the closed state — the cloned description is noise
+     next to the field label. */
+  .calm-select selectedcontent .calm-select-opt-desc {
+    display: none;
+  }
+  /* Right-chevron SVG (stroke, currentColor, 1em) rotated to point
+     down; 270deg when open keeps the spin direction continuous for the
+     same 180° flip the UA icon had. */
+  .calm-select-chevron {
+    flex: none;
+    display: inline-flex;
+    color: var(--text-3);
+    font-size: var(--text-sm);
+    rotate: 90deg;
+    transition: rotate var(--motion-quick);
+  }
+  .calm-select:open .calm-select-chevron { rotate: 270deg; }
+  /* Picker panel: card-like — same surface/hairline/shadow vocabulary
+     as .modal-panel, dropped var(--space-1) under the trigger. */
+  .calm-select::picker(select) {
+    background: var(--paper);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow);
+    padding: var(--space-2);
+    margin-top: var(--space-1);
+    /* Fade-in on open: display/overlay need allow-discrete so the
+       transition can run on the popover show. */
+    opacity: 1;
+    transition:
+      opacity var(--motion-quick),
+      display var(--motion-quick) allow-discrete,
+      overlay var(--motion-quick) allow-discrete;
+  }
+  @starting-style {
+    .calm-select::picker(select) { opacity: 0; }
+  }
+  /* Option rows: name + muted one-line description, differentiated
+     purely by type (no separator glyph, no selected fill). Hover =
+     subtle transient fill; checked = checkmark only (accent). */
+  .calm-select option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--text-2);
+    transition: background var(--motion-quick), color var(--motion-quick);
+  }
+  .calm-select option:hover {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+  .calm-select option:checked { color: var(--text); }
+  .calm-select option::checkmark { color: var(--accent); }
+  .calm-select-opt-desc {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+}
+
+/* One cohesive card (#891 signoff round 2): hosted in the New-wave
+   dialog (title row suppressed), the form drops its inline-panel
+   chrome — the modal panel itself is the card, so a second border +
+   inset padding would read as a card-in-card. The standalone
+   .new-task-form styles above stay for any inline (non-dialog) host. */
+.modal-body > .new-task-form {
+  border: none;
+  padding: var(--space-0);
+  margin-top: var(--space-0);
+  background: transparent;
+}
+
+/* Auto-merge checkbox (#891 signoff r3) — binary merge_policy as a
+   native checkbox row + one-line muted hint. accent-color themes the
+   native glyph with the same token the selected workflow row uses. */
+.new-task-form-automerge {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.new-task-form-automerge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  align-self: flex-start;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.new-task-form-automerge-label:hover { color: var(--text); }
+.new-task-form-automerge-box {
+  margin: var(--space-0);
+  accent-color: var(--accent);
+}
+.new-task-form-automerge-box:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.new-task-form-automerge-hint {
+  margin: var(--space-0);
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+
+/* Raw workflow_input JSON escape hatch — collapsed <details> at the
+   bottom of the issue-dev form. */
+.new-task-form-rawjson {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.new-task-form-rawjson-summary {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+/* type+class selector so it out-ranks `textarea.new-task-form-input`'s
+   `font-family: inherit` (same specificity tier, later in the file). */
+textarea.new-task-form-rawjson-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  resize: vertical;
+}
+.new-task-form-rawjson-hint {
+  margin: var(--space-0);
+  font-size: var(--text-sm);
+  color: var(--text-3);
+}
+.new-task-form-rawjson-reset {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-0);
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 /* ===== Directory picker (SchemaForm `directory` field type) =====
    Two surfaces:
      - .dirpicker-field   the read-only path button shown inline in the

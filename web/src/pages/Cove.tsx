@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef } from 'react';
 import { useState } from '../shared/state';
 import { WaveRow } from '../shared/components/WaveRow';
+import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { NewTaskForm } from '../shared/components/NewTaskForm';
 import type { NewTaskFormResult } from '../shared/components/NewTaskForm';
 import { PlusIcon } from '../shared/components/PlusIcon';
@@ -440,28 +441,125 @@ function NewWaveDialog({
   onClose: () => void;
   onCreated: (wave: NewTaskFormResult) => void | Promise<void>;
 }) {
-  // Shared ref between the host Dialog and the NewTaskForm title
-  // textarea so the Dialog's initial-focus pass lands directly on the
-  // description field. Without this, NewTaskForm's mount-time
+  // Shared ref between the host Dialog and the NewTaskForm's first
+  // field so the Dialog's initial-focus pass lands directly on the
+  // right input. Without this, NewTaskForm's mount-time
   // queueMicrotask(focus) would race against Dialog's rAF "focus first
   // focusable" — and the rAF, scheduled later, would win and land focus
   // on the Dialog's Close button. Forwarding the ref makes the Dialog
-  // do the focusing once, deterministically.
-  const titleRef = useRef<HTMLTextAreaElement | null>(null);
+  // do the focusing once, deterministically. Typed `HTMLElement`
+  // because which element NewTaskForm binds it to is variant-dependent
+  // (#891 review): the title textarea in the 'task' variant, the
+  // GitHub-issue-URL input in 'issue-dev'.
+  const initialFieldRef = useRef<HTMLElement | null>(null);
+  // Issue #891 slice ③ — which NewTaskForm variant the dialog hosts.
+  // 'task' is the plain wave path (unchanged); 'issue-dev' binds the
+  // wave to the shipped `issue-development` workflow from a GitHub
+  // issue URL. Reset to 'task' whenever the dialog closes so every
+  // open starts from the familiar default.
+  const [variant, setVariant] = useState<'task' | 'issue-dev'>('task');
+  // Labels the Workflow select; unique per dialog mount.
+  const variantSelectId = useId();
+  useEffect(() => {
+    if (!open) setVariant('task');
+  }, [open]);
+  // Variant-appropriate focus after a workflow change (#891 review).
+  // Dialog's initial-focus pass only runs when `open` flips true, so
+  // switching the workflow (which remounts NewTaskForm via `key`)
+  // would otherwise leave focus on the type radio while the new
+  // variant's first field sits unfocused. NewTaskForm rebinds
+  // `initialFieldRef` to the new variant's first field during the
+  // remount commit (refs attach before effects run), so this effect
+  // just re-focuses it. On the initial open it targets the same element
+  // as Dialog's rAF pass — a harmless double focus of one element.
+  useEffect(() => {
+    if (!open) return;
+    initialFieldRef.current?.focus();
+  }, [open, variant]);
   return (
     <Dialog
       open={open}
       onClose={onClose}
+      // Names the dialog (aria-label) without rendering the title row:
+      // the owner wants the dialog to read as one cohesive card (#891
+      // signoff round 2), so the visible "New wave" head is gone but
+      // the accessible name stays. Dismissal: the form's Cancel button,
+      // Esc, and overlay-click.
       title="New wave"
-      initialFocusRef={titleRef}
+      hideTitleRow
+      initialFocusRef={initialFieldRef}
     >
       {open && (
-        <NewTaskForm
-          defaultCoveId={defaultCoveId}
-          onCreated={onCreated}
-          onCancel={onClose}
-          initialFocusRef={titleRef}
-        />
+        <>
+          {/* Workflow selector — native <select> with the
+              customizable-select progressive enhancement (#891 live
+              design exploration; supersedes the r3 radio rows).
+              `appearance: base-select` + `::picker(select)` in
+              calm.css gives Chromium an in-theme dropdown drawer;
+              other browsers gracefully fall back to the OS popup. The
+              field binds `workflow_id`: "None" is a plain wave, other
+              options are shipped workflows. Options carry two-part
+              content — name + muted one-line description span (rich
+              option content is a base-select capability; fallback
+              popups flatten it to inline text, which is why the
+              description is kept short). Changing it remounts
+              NewTaskForm (key) so per-variant state starts clean. */}
+          <div className="new-wave-kind">
+            <label htmlFor={variantSelectId} className="new-task-form-label">
+              Workflow
+            </label>
+            <select
+              id={variantSelectId}
+              className="new-task-form-input calm-select"
+              value={variant}
+              onChange={(e) => setVariant(e.target.value as 'task' | 'issue-dev')}
+            >
+              {/* Custom trigger (base-select): <selectedcontent> clones
+                  the checked option's DOM into the button, and CSS
+                  hides the description span there — the closed select
+                  shows the NAME only, in the same type style as the
+                  drawer rows. The stroke chevron replaces the UA
+                  triangle (::picker-icon is display:none). Fallback
+                  engines don't render non-option select children, so
+                  this whole button is inert there.
+
+                  Intentionally a named-but-non-focusable button: the
+                  <select> owns focus + semantics (base-select), so the
+                  trigger is never a tab stop. In Chromium it still
+                  surfaces in the AX button tree NAMED BY the cloned
+                  option content — do NOT aria-hidden it (that risks
+                  stripping the subtree Chrome announces as the selected
+                  value); instead, in-dialog button locators must be
+                  specific (exact names). */}
+              <button className="calm-select-trigger">
+                <selectedcontent className="calm-select-selected" />
+                <span className="calm-select-chevron" aria-hidden="true">
+                  <ChevronIcon />
+                </span>
+              </button>
+              {/* Option rows: name + muted description, differentiated
+                  purely by type (no literal separator); the {' '} text
+                  node keeps the flattened fallback/AT text readable
+                  ("None plain wave"). */}
+              <option value="task">
+                <span className="calm-select-opt-name">None</span>{' '}
+                <span className="calm-select-opt-desc">plain wave</span>
+              </option>
+              <option value="issue-dev">
+                <span className="calm-select-opt-name">Issue dev</span>{' '}
+                <span className="calm-select-opt-desc">issue → PR autoflow</span>
+              </option>
+            </select>
+          </div>
+          <NewTaskForm
+            key={variant}
+            variant={variant}
+            defaultCoveId={defaultCoveId}
+            onCreated={onCreated}
+            onCancel={onClose}
+            initialFocusRef={initialFieldRef}
+          />
+        </>
       )}
     </Dialog>
   );

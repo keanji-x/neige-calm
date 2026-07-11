@@ -92,7 +92,19 @@ export type WireEvent = GeneratedEvent;
 export type NewCoveBody   = Schemas['NewCove'];
 export type CovePatchBody = Schemas['CovePatch'];
 
-export type NewWaveBody   = Schemas['NewWave'];
+/**
+ * `workflow_input` override mirrors `NewCardBody.payload` below: the Rust
+ * side is `Option<serde_json::Value>` (kernel validates it against the bound
+ * workflow's `input_schema` at create time, #891), which utoipa's
+ * `value_type = Option<Object>` emits as `Record<string, never>` — an empty
+ * object no caller could actually populate. The read side needs no override:
+ * `Wave.workflow_input` reaches the UI via `generated-events.ts` (ts-rs,
+ * `#[ts(type = "unknown")]` → `unknown`) and no consumer reads it off the
+ * OpenAPI `Wave` shape today.
+ */
+export type NewWaveBody   = Omit<Schemas['NewWave'], 'workflow_input'> & {
+  workflow_input?: unknown;
+};
 export type WavePatchBody = Schemas['WavePatch'];
 
 /**
