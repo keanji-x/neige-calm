@@ -30,12 +30,16 @@
 #      MUST succeed — a dead chain would make prod "unreachable" vacuously,
 #      i.e. fail-open; the canary makes the fence provable). Then a
 #      FAIL-CLOSED ALLOWLIST: three distinct improbable-dead ports
-#      (127.0.0.1:1/:9/:65533) are probed twice each through the same chain
-#      and must ALL agree — a consensus calibration of the proxy's own
-#      unreachable-destination FINGERPRINT (status line + header shape +
-#      body, stable dimensions only; any disagreement, incl. body size,
-#      aborts 73); prod 127.0.0.1:4040/:4041 may answer
-#      ONLY with that exact fingerprint, or not at all. ANY other answer,
+#      (127.0.0.1:1/:9/:65533) are probed twice each through the same chain.
+#      Both a NO-ANSWER and a fingerprint-matching RESPONSE prove a target
+#      unreachable, so a dead port that times out on one probe and 502s on
+#      another under proxy jitter is NOT a disagreement (#923 defect 2). The
+#      RESPONSE probes calibrate the proxy's own unreachable-destination
+#      FINGERPRINT (status line + header shape + body, stable dims only) and
+#      must be mutually identical; two DIFFERENT responses are the real
+#      "cannot calibrate" -> abort 73. Accept-set for prod 127.0.0.1:4040/:4041
+#      = {no-answer} ∪ {response matching the fingerprint}; if EVERY dead-port
+#      probe was no-answer, the accept-set is no-answer only. ANY other answer,
 #      regardless of status class, means sing-box routing would hand agents
 #      a path to prod: ABORT. The fence rests on sing-box config, so it is
 #      asserted every run, never assumed (design §B).
@@ -446,10 +450,17 @@ cleanup() {
 trap cleanup EXIT
 
 # ---- killer-log baseline snapshot (design §5/§6) -------------------------
+# Snapshot ONLY the real capture signal, not the whole file: a genuine kill is
+# recorded by the WIDE probe as a line containing `sig=` (e.g. "... sig=15 ...").
+# The broken old neige-killer-trace.bt probe continuously appends `str() ERROR`
+# bpftrace compile-error spam to the SAME file, so diffing total file content
+# false-alarms "killer-log CHANGED" -> exit 96 even when the suite PASSED
+# (#923 defect 1). Comparing only `sig=` records ignores that non-capture noise
+# while still failing loud the instant a real kill record appears.
 if [ -r "$KILLER_LOG" ]; then
     KILLER_SNAP="$(mktemp)"
-    cp -- "$KILLER_LOG" "$KILLER_SNAP"
-    log "killer-log snapshot: $(wc -l <"$KILLER_SNAP") lines baseline"
+    grep -a 'sig=' -- "$KILLER_LOG" >"$KILLER_SNAP" 2>/dev/null || true
+    log "killer-log snapshot: $(wc -l <"$KILLER_SNAP") sig= capture record(s) baseline"
 else
     log "NOTICE: killer log $KILLER_LOG missing/unreadable — the post-run kill-forensics diff will be SKIPPED"
 fi
@@ -508,15 +519,21 @@ if [ "$RC" -eq 124 ]; then
     log "TIMED OUT after ${E2E_TIMEOUT}s — container will be force-removed"
 fi
 
-# ---- post-run killer-log diff ---------------------------------------------
+# ---- post-run killer-log diff (sig= capture records only, see baseline) ----
+# Compare only the `sig=` capture signal so unrelated compile-error spam can't
+# false-alarm; a NEW sig= record is a genuine kill -> keep the loud exit 96.
 if [ -n "$KILLER_SNAP" ] && [ -r "$KILLER_LOG" ]; then
-    if diff -q "$KILLER_SNAP" "$KILLER_LOG" >/dev/null 2>&1; then
-        log "killer-log diff: EMPTY (no prod kills observed)"
+    KILLER_NOW="$(mktemp)"
+    grep -a 'sig=' -- "$KILLER_LOG" >"$KILLER_NOW" 2>/dev/null || true
+    NEW_SIG="$(diff -- "$KILLER_SNAP" "$KILLER_NOW" 2>/dev/null | grep -c '^>' || true)"
+    if [ "${NEW_SIG:-0}" -eq 0 ]; then
+        log "killer-log diff: no new sig= capture records (no prod kills observed)"
     else
-        log "killer-log CHANGED during the run — READ IT:"
-        diff "$KILLER_SNAP" "$KILLER_LOG" >&2 || true
+        log "killer-log gained $NEW_SIG new sig= capture record(s) during the run — REAL KILL SIGNAL, READ IT:"
+        diff -- "$KILLER_SNAP" "$KILLER_NOW" 2>/dev/null | grep '^>' >&2 || true
         [ "$RC" -eq 0 ] && RC=96
     fi
+    rm -f -- "$KILLER_NOW"
 fi
 
 log "exit status: $RC"

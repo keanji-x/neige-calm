@@ -16,6 +16,13 @@
 #                  forwarder's unix socket (the container runs --network none;
 #                  this is its only egress). Also the fence-preflight client.
 #   procps       — pgrep, for the opt-in DECOYS=1 diagnostic mode.
+#   ripgrep      — real codex spec-agents shell out to `rg` for code search
+#                  (the model prompt prefers `rg`/`rg --files`); without it the
+#                  agent's search/plan returns empty and the test fails (#923
+#                  defect 3). Audited the vendored codex prompts + git-forge
+#                  fixture: `rg` is the only agent-facing CLI missing from base
+#                  — `jq` is consumed inside the shimmed `gh` (never a separate
+#                  process), and fd/ast-grep/bat/tree/node/python are unused.
 #
 # No rust toolchain (host-compile model, see docker/Dockerfile.server), no gh
 # (the fixture shims it), no python3 (only the chromium TUI e2e needs it).
@@ -29,5 +36,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates bubblewrap socat procps \
+ && apt-get install -y --no-install-recommends git ca-certificates bubblewrap socat procps ripgrep \
  && rm -rf /var/lib/apt/lists/*

@@ -13,19 +13,24 @@
 #      (b) FINGERPRINT CALIBRATION — probe THREE distinct improbable ports
 #          (127.0.0.1:1/:9/:65533, see DEAD_TARGETS) through the same chain
 #          TWICE each. The chain tunnels to the proxy's remote egress point,
-#          so "dead" must hold THERE and no single port can be trusted:
-#          all six probes must yield the SAME fingerprint (consensus).
-#          Whatever they agree on is by definition the proxy's own
-#          unreachable-destination behavior; only empirically-STABLE
-#          dimensions (status line, header shape, body) are enforced.
-#          ANY disagreement — presence, status, headers, or body SIZE —
-#          → cannot calibrate = cannot prove the fence → ABORT (73). A
-#          single hijacked/listening "dead" port thus breaks consensus and
-#          fails closed instead of poisoning the allowlist.
+#          so "dead" must hold THERE. Each probe yields one of two outcomes:
+#          NO-ANSWER or a RESPONSE (status line + header shape + body). BOTH
+#          no-answer AND a fingerprint-matching response prove the target
+#          unreachable, so a dead port that times out on one probe and 502s
+#          on another under proxy jitter is NOT a disagreement (#923 defect
+#          2). The RESPONSE probes calibrate the proxy's own unreachable-
+#          destination fingerprint; only empirically-STABLE dimensions
+#          (status line, header shape, body-hash-or-size) are enforced, and
+#          the responses must be MUTUALLY IDENTICAL on them. Two DIFFERENT
+#          responses (a 'dead' port that may be live at egress) → cannot
+#          calibrate = cannot prove the fence → ABORT (73). No-answer probes
+#          never count as disagreement. If EVERY probe was no-answer, the
+#          accept-set below is no-answer only.
 #      (c) prod 127.0.0.1:4040/:4041 probed through the chain. FAIL-CLOSED
-#          ALLOWLIST: no HTTP answer at all = unreachable = OK; an answer
-#          matching the dead-destination fingerprint in every stable
-#          dimension = the proxy's own error = OK; ANY other answer,
+#          ALLOWLIST = {no-answer} ∪ {response matching the calibrated
+#          fingerprint in every stable dimension}: no HTTP answer = OK; an
+#          answer matching the fingerprint = the proxy's own error = OK; ANY
+#          other answer (or ANY answer when the accept-set is no-answer only),
 #          regardless of status class, = something reachable answered →
 #          ABORT (71). (No marker heuristic: prod's /api/version marker is
 #          kept only as an extra loud confirmation on breach.)
@@ -50,14 +55,15 @@ CANARY_HOST=example.com
 # Dead destinations for fingerprint calibration. The chain tunnels loopback
 # CONNECTs to the proxy's remote egress point, so "dead" must hold THERE —
 # a box we cannot inspect. Instead of trusting any single port, calibrate
-# against THREE distinct improbable ports and require full consensus
-# (fp_calibrate):
+# against THREE distinct improbable ports. A no-answer and a fingerprint-
+# matching response BOTH prove unreachability, so presence need not be stable;
+# only the RESPONSE probes must mutually agree on the fingerprint (fp_calibrate):
 #   :1     tcpmux (RFC 1078; archaic, never deployed) — also the fixture's
 #          dead-ingest port on this host
 #   :9     discard protocol (RFC 863; archaic, never deployed)
 #   :65533 top of the dynamic range — improbable static listener
 # A live listener on any one of them answers differently from the proxy's
-# own error on the others → consensus breaks → exit 73 (fail closed).
+# own error on the others → the response probes disagree → exit 73 (fail closed).
 DEAD_TARGETS=(127.0.0.1:1 127.0.0.1:9 127.0.0.1:65533)
 # Same path for calibration and prod probes: if the proxy error echoes the
 # URL, the echoes differ only by target host:port, which resp_body_norm()
@@ -162,9 +168,13 @@ resp_body_norm() {
 }
 body_sha() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
 
-FP_PRESENT="" FP_STATUS_LINE="" FP_HEADERS="" FP_BODY_MODE="" FP_BODY_HASH="" FP_BODY_SIZE=""
+# FP_HAS_RESPONSE=1 iff ANY dead-port probe returned an HTTP response; when so,
+# FP_STATUS_LINE/FP_HEADERS/FP_BODY_* hold the calibrated fingerprint. When 0,
+# every dead-port probe was no-answer and the accept-set is no-answer only.
+FP_HAS_RESPONSE=0
+FP_STATUS_LINE="" FP_HEADERS="" FP_BODY_MODE="" FP_BODY_HASH="" FP_BODY_SIZE=""
 fp_calibrate() {
-    local target i n=0 total=$(( ${#DEAD_TARGETS[@]} * 2 ))
+    local target i n=0 nresp=0 total=$(( ${#DEAD_TARGETS[@]} * 2 ))
     local -a c_target=() c_present=() c_status=() c_hdrs=() c_body=() c_size=()
     for target in "${DEAD_TARGETS[@]}"; do
         for _ in 1 2; do
@@ -184,63 +194,71 @@ fp_calibrate() {
             fi
         done
     done
-    # CONSENSUS: every probe of every port must agree, and only dimensions
-    # stable across ALL of them are enforceable. Unstable presence/status/
-    # headers/body-size → we cannot say what "the proxy's own error" looks
-    # like → cannot prove the fence → ABORT (73). A single hijacked or
-    # listening "dead" port answers differently from the proxy's own error
-    # on the other ports, so it lands here — fail closed — instead of
-    # poisoning the allowlist with a reachable service's answer.
-    for i in $(seq 2 "$n"); do
-        if [ "${c_present[i]}" != "${c_present[1]}" ]; then
-            log "FATAL: dead-destination probes disagree on whether an HTTP answer comes back at all (http://${c_target[1]}$FENCE_PATH vs http://${c_target[i]}$FENCE_PATH) — no consensus (a 'dead' port may be live at the chain's egress), cannot calibrate = cannot prove fence."
-            exit 73
-        fi
+    # No-answer-safe calibration (#923 defect 2): a NO-ANSWER and a fingerprint-
+    # matching RESPONSE BOTH prove a target unreachable, so presence need NOT be
+    # stable across probes — a dead port that times out on one probe and 502s on
+    # another under proxy jitter is not a disagreement. We calibrate the
+    # fingerprint off the RESPONSE probes only and require THOSE to be mutually
+    # identical on the stable dims; two DIFFERENT responses are the genuine
+    # "cannot calibrate" (a 'dead' port may be live at the chain's egress) →
+    # ABORT (73). No-answer probes never count as disagreement.
+    local ref=0
+    for i in $(seq 1 "$n"); do
+        [ "${c_present[i]}" = 1 ] && nresp=$((nresp + 1))
+        [ "$ref" = 0 ] && [ "${c_present[i]}" = 1 ] && ref="$i"
     done
-    FP_PRESENT="${c_present[1]}"
-    if [ "$FP_PRESENT" = 0 ]; then
-        log "fingerprint calibrated: all $n probes over ${#DEAD_TARGETS[@]} dead ports (${DEAD_TARGETS[*]}) yield NO HTTP answer through this chain — ANY HTTP answer from a prod probe is a breach."
+    if [ "$ref" = 0 ]; then
+        # ALL dead-port probes were no-answer → accept-set is no-answer only.
+        FP_HAS_RESPONSE=0
+        log "fingerprint calibrated: all $n probes over ${#DEAD_TARGETS[@]} dead ports (${DEAD_TARGETS[*]}) yield NO HTTP answer through this chain — accept-set is NO-ANSWER only; ANY HTTP answer from a prod probe is a breach."
         return 0
     fi
-    for i in $(seq 2 "$n"); do
-        if [ "${c_status[i]}" != "${c_status[1]}" ]; then
-            log "FATAL: dead-destination status lines disagree: http://${c_target[1]}$FENCE_PATH -> '${c_status[1]}' vs http://${c_target[i]}$FENCE_PATH -> '${c_status[i]}' — no consensus (a 'dead' port may be live at the chain's egress), cannot calibrate = cannot prove fence."
+    FP_HAS_RESPONSE=1
+    # Every OTHER response probe must match the reference on the stable dims.
+    for i in $(seq 1 "$n"); do
+        [ "$i" = "$ref" ] && continue
+        [ "${c_present[i]}" = 1 ] || continue   # no-answer never disagrees
+        if [ "${c_status[i]}" != "${c_status[ref]}" ]; then
+            log "FATAL: dead-destination RESPONSES disagree on status line: http://${c_target[ref]}$FENCE_PATH -> '${c_status[ref]}' vs http://${c_target[i]}$FENCE_PATH -> '${c_status[i]}' — a 'dead' port may be live at the chain's egress, cannot calibrate = cannot prove fence."
             exit 73
         fi
-        if [ "${c_hdrs[i]}" != "${c_hdrs[1]}" ]; then
-            log "FATAL: dead-destination header shapes disagree (http://${c_target[1]}$FENCE_PATH vs http://${c_target[i]}$FENCE_PATH) — no consensus (a 'dead' port may be live at the chain's egress), cannot calibrate = cannot prove fence."
-            log "shape 1 (${c_target[1]}):"; printf '%s\n' "${c_hdrs[1]}" | sed 's/^/[e2e-entry]   /' >&2
+        if [ "${c_hdrs[i]}" != "${c_hdrs[ref]}" ]; then
+            log "FATAL: dead-destination RESPONSE header shapes disagree (http://${c_target[ref]}$FENCE_PATH vs http://${c_target[i]}$FENCE_PATH) — a 'dead' port may be live at the chain's egress, cannot calibrate = cannot prove fence."
+            log "shape ref (${c_target[ref]}):"; printf '%s\n' "${c_hdrs[ref]}" | sed 's/^/[e2e-entry]   /' >&2
             log "shape $i (${c_target[i]}):"; printf '%s\n' "${c_hdrs[i]}" | sed 's/^/[e2e-entry]   /' >&2
             exit 73
         fi
     done
-    FP_STATUS_LINE="${c_status[1]}"
-    FP_HEADERS="${c_hdrs[1]}"
-    FP_BODY_SIZE="${c_size[1]}"
+    FP_STATUS_LINE="${c_status[ref]}"
+    FP_HEADERS="${c_hdrs[ref]}"
+    FP_BODY_SIZE="${c_size[ref]}"
+    # Body dimension across the RESPONSE probes only.
     local body_identical=1 size_identical=1
-    for i in $(seq 2 "$n"); do
-        [ "${c_body[i]}" = "${c_body[1]}" ] || body_identical=0
-        [ "${c_size[i]}" = "${c_size[1]}" ] || size_identical=0
+    for i in $(seq 1 "$n"); do
+        [ "$i" = "$ref" ] && continue
+        [ "${c_present[i]}" = 1 ] || continue
+        [ "${c_body[i]}" = "${c_body[ref]}" ] || body_identical=0
+        [ "${c_size[i]}" = "${c_size[ref]}" ] || size_identical=0
     done
     if [ "$body_identical" = 1 ]; then
         FP_BODY_MODE="hash"
-        FP_BODY_HASH="$(body_sha "${c_body[1]}")"
+        FP_BODY_HASH="$(body_sha "${c_body[ref]}")"
     elif [ "$size_identical" = 1 ]; then
         # Byte drift with STABLE size (e.g. an embedded timestamp) — size
         # joins the fingerprint, exact bytes are excluded. Logged loudly.
         FP_BODY_MODE="size"
-        log "NOTICE: dead-destination bodies differ byte-wise but ALL $n agree on size — only size ($FP_BODY_SIZE) joins the fingerprint (unstable bytes excluded)."
+        log "NOTICE: dead-destination response bodies differ byte-wise but ALL agree on size — only size ($FP_BODY_SIZE) joins the fingerprint (unstable bytes excluded)."
     else
-        # Fail-closed: a body whose SIZE moves between calibration probes
-        # leaves the fence no enforceable body dimension — that is an
-        # unstable fingerprint, not a weaker one to limp along with.
-        log "FATAL: dead-destination body sizes disagree across probes ($(printf '%s ' "${c_size[@]}" | sed 's/ $//') bytes) — unstable body, no consensus, cannot calibrate = cannot prove fence."
+        # Fail-closed: a body whose SIZE moves between response probes leaves
+        # the fence no enforceable body dimension — that is an unstable
+        # fingerprint, not a weaker one to limp along with.
+        log "FATAL: dead-destination RESPONSE body sizes disagree across probes — unstable body, cannot calibrate = cannot prove fence."
         exit 73
     fi
-    log "fingerprint calibrated (consensus of $n probes over ${#DEAD_TARGETS[@]} dead ports: ${DEAD_TARGETS[*]}): status='$FP_STATUS_LINE' body-mode=$FP_BODY_MODE${FP_BODY_HASH:+ sha256=$FP_BODY_HASH}${FP_BODY_SIZE:+ size=$FP_BODY_SIZE}"
+    log "fingerprint calibrated ($nresp of $n dead-port probes answered; no-answer probes also accepted as unreachable): status='$FP_STATUS_LINE' body-mode=$FP_BODY_MODE${FP_BODY_HASH:+ sha256=$FP_BODY_HASH}${FP_BODY_SIZE:+ size=$FP_BODY_SIZE}"
     log "fingerprint header shape:"
     printf '%s\n' "$FP_HEADERS" | sed 's/^/[e2e-entry]   /' >&2
-    log "fingerprint body head: $(printf '%s' "${c_body[1]}" | head -c 160 | tr -d '\r\n')"
+    log "fingerprint body head: $(printf '%s' "${c_body[ref]}" | head -c 160 | tr -d '\r\n')"
 }
 fp_calibrate
 
@@ -259,8 +277,8 @@ fence_probe() {
     h="$(resp_header_shape)"
     b="$(resp_body_norm "$target")"
     bs="$(printf '%s' "$b" | wc -c)"
-    if [ "$FP_PRESENT" = 0 ]; then
-        why="dead destinations yield NO HTTP answer through this chain, yet $target answered"
+    if [ "$FP_HAS_RESPONSE" = 0 ]; then
+        why="dead destinations yield NO HTTP answer through this chain (accept-set is no-answer only), yet $target answered"
     elif [ "$s" != "$FP_STATUS_LINE" ]; then
         why="status line '$s' != fingerprint '$FP_STATUS_LINE'"
     elif [ "$h" != "$FP_HEADERS" ]; then
