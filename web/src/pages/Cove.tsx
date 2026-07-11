@@ -510,7 +510,7 @@ function NewWaveDialog({
             </label>
             <select
               id={variantSelectId}
-              className="new-task-form-input new-wave-kind-select"
+              className="new-task-form-input calm-select"
               value={variant}
               onChange={(e) => setVariant(e.target.value as 'task' | 'issue-dev')}
             >
@@ -522,9 +522,9 @@ function NewWaveDialog({
                   triangle (::picker-icon is display:none). Fallback
                   engines don't render non-option select children, so
                   this whole button is inert there. */}
-              <button className="new-wave-kind-trigger">
-                <selectedcontent className="new-wave-kind-selected" />
-                <span className="new-wave-kind-chevron" aria-hidden="true">
+              <button className="calm-select-trigger">
+                <selectedcontent className="calm-select-selected" />
+                <span className="calm-select-chevron" aria-hidden="true">
                   <ChevronIcon />
                 </span>
               </button>
@@ -533,12 +533,12 @@ function NewWaveDialog({
                   node keeps the flattened fallback/AT text readable
                   ("None plain wave"). */}
               <option value="task">
-                <span className="new-wave-kind-opt-name">None</span>{' '}
-                <span className="new-wave-kind-opt-desc">plain wave</span>
+                <span className="calm-select-opt-name">None</span>{' '}
+                <span className="calm-select-opt-desc">plain wave</span>
               </option>
               <option value="issue-dev">
-                <span className="new-wave-kind-opt-name">Issue dev</span>{' '}
-                <span className="new-wave-kind-opt-desc">issue → PR autoflow</span>
+                <span className="calm-select-opt-name">Issue dev</span>{' '}
+                <span className="calm-select-opt-desc">issue → PR autoflow</span>
               </option>
             </select>
           </div>

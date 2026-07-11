@@ -73,6 +73,7 @@ import {
 } from '../../api/queries';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../../api/themeRgb';
 import type { CoveResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
+import { ChevronIcon } from './ChevronIcon';
 import { DirectoryBrowser } from './DirectoryPicker';
 import { parseGitHubIssueUrl } from './issueUrl';
 import { useModalView } from '../../ui/Dialog/Dialog';
@@ -959,12 +960,26 @@ function CoveSection({
         </label>
       </div>
       {mode === 'existing' && coves.length > 0 ? (
+        /* .calm-select (#891): the themed base-select drawer, same
+           treatment as the Workflow select in the New-wave dialog so
+           the card has ONE popup system. The custom trigger button
+           (selectedcontent + stroke chevron) makes the closed field
+           render identically to the Workflow trigger; options are
+           plain text, so they just get the row/hover/checkmark
+           treatment. Fallback engines ignore the button child and
+           keep the OS popup. */
         <select
           id={coveSelectId}
-          className="new-task-form-input"
+          className="new-task-form-input calm-select"
           value={coveChoice.mode === 'existing' ? coveChoice.coveId : ''}
           onChange={(e) => setCoveChoice({ mode: 'existing', coveId: e.target.value })}
         >
+          <button className="calm-select-trigger">
+            <selectedcontent className="calm-select-selected" />
+            <span className="calm-select-chevron" aria-hidden="true">
+              <ChevronIcon />
+            </span>
+          </button>
           {coves.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}

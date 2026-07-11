@@ -3426,14 +3426,28 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
-/* ===== Issue-dev wave variant (#891 slice ③) =====
-   Workflow selector above NewTaskForm in the New-wave dialog: a native
-   <select> with the customizable-select progressive enhancement (live
-   design exploration). In Chromium, `appearance: base-select` on both
-   the select and its `::picker(select)` opts into an in-page,
-   fully-stylable dropdown drawer themed with the app tokens; every
-   other browser ignores the @supports block and keeps the OS popup.
-   The trigger reuses the .new-task-form-input field look. */
+/* ===== .calm-select — themed dropdown drawer (#891 slice ③) =====
+   Reusable customizable-select treatment for native <select>s (live
+   design exploration; currently applied to the New-wave dialog's
+   Workflow + Cove selects — one popup system per card). In Chromium,
+   `appearance: base-select` on both the select and its
+   `::picker(select)` opts into an in-page, fully-stylable dropdown
+   drawer themed with the app tokens; every other browser ignores the
+   @supports block and keeps the OS popup.
+
+   Usage: `<select class="new-task-form-input calm-select">` (the form
+   field class provides the trigger's border/padding/bg/focus-ring)
+   with a first child
+     <button class="calm-select-trigger">
+       <selectedcontent class="calm-select-selected" />
+       <span class="calm-select-chevron" aria-hidden><ChevronIcon/></span>
+     </button>
+   Options may be plain text, or rich two-part rows via
+   `.calm-select-opt-name` + `.calm-select-opt-desc` spans (the desc is
+   hidden in the cloned trigger content; fallback engines flatten it to
+   inline text, so keep descriptions short). */
+/* Workflow field wrapper (label + select column) in the New-wave
+   dialog. */
 .new-wave-kind {
   display: flex;
   flex-direction: column;
@@ -3441,12 +3455,9 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   margin-bottom: var(--space-5);
   min-width: 0;
 }
-/* Fallback engines flatten option markup to inline text, so the
-   description span reads as "None — plain wave" in the OS popup; no
-   styling needed outside the base-select block. */
 @supports (appearance: base-select) {
-  .new-wave-kind-select,
-  .new-wave-kind-select::picker(select) {
+  .calm-select,
+  .calm-select::picker(select) {
     appearance: base-select;
   }
   /* Trigger (closed select): .new-task-form-input already provides the
@@ -3454,7 +3465,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
      rows' name style so trigger + panel read as one system. The custom
      <button><selectedcontent> child clones the checked option's DOM —
      the description span is hidden here, name only. */
-  .new-wave-kind-select {
+  .calm-select {
     display: flex;
     align-items: center;
     cursor: pointer;
@@ -3463,8 +3474,8 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   }
   /* UA picker icon (solid triangle) is off — the stroke ChevronIcon
      inside the trigger button is the app's icon language. */
-  .new-wave-kind-select::picker-icon { display: none; }
-  .new-wave-kind-trigger {
+  .calm-select::picker-icon { display: none; }
+  .calm-select-trigger {
     flex: 1 1 auto;
     display: flex;
     align-items: center;
@@ -3478,7 +3489,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
     font: inherit;
     cursor: pointer;
   }
-  .new-wave-kind-select selectedcontent {
+  .calm-select selectedcontent {
     display: flex;
     align-items: center;
     min-width: 0;
@@ -3487,13 +3498,13 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   }
   /* Name only in the closed state — the cloned description is noise
      next to the field label. */
-  .new-wave-kind-select selectedcontent .new-wave-kind-opt-desc {
+  .calm-select selectedcontent .calm-select-opt-desc {
     display: none;
   }
   /* Right-chevron SVG (stroke, currentColor, 1em) rotated to point
      down; 270deg when open keeps the spin direction continuous for the
      same 180° flip the UA icon had. */
-  .new-wave-kind-chevron {
+  .calm-select-chevron {
     flex: none;
     display: inline-flex;
     color: var(--text-3);
@@ -3501,10 +3512,10 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
     rotate: 90deg;
     transition: rotate var(--motion-quick);
   }
-  .new-wave-kind-select:open .new-wave-kind-chevron { rotate: 270deg; }
+  .calm-select:open .calm-select-chevron { rotate: 270deg; }
   /* Picker panel: card-like — same surface/hairline/shadow vocabulary
      as .modal-panel, dropped var(--space-1) under the trigger. */
-  .new-wave-kind-select::picker(select) {
+  .calm-select::picker(select) {
     background: var(--paper);
     border: 1px solid var(--hairline-strong);
     border-radius: var(--radius-md);
@@ -3520,12 +3531,12 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
       overlay var(--motion-quick) allow-discrete;
   }
   @starting-style {
-    .new-wave-kind-select::picker(select) { opacity: 0; }
+    .calm-select::picker(select) { opacity: 0; }
   }
   /* Option rows: name + muted one-line description, differentiated
      purely by type (no separator glyph, no selected fill). Hover =
      subtle transient fill; checked = checkmark only (accent). */
-  .new-wave-kind-select option {
+  .calm-select option {
     display: flex;
     align-items: center;
     gap: var(--space-3);
@@ -3535,13 +3546,13 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
     color: var(--text-2);
     transition: background var(--motion-quick), color var(--motion-quick);
   }
-  .new-wave-kind-select option:hover {
+  .calm-select option:hover {
     background: var(--overlay-hover);
     color: var(--text);
   }
-  .new-wave-kind-select option:checked { color: var(--text); }
-  .new-wave-kind-select option::checkmark { color: var(--accent); }
-  .new-wave-kind-opt-desc {
+  .calm-select option:checked { color: var(--text); }
+  .calm-select option::checkmark { color: var(--accent); }
+  .calm-select-opt-desc {
     font-size: var(--text-xs);
     color: var(--text-3);
   }
