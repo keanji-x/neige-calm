@@ -290,9 +290,10 @@ e2e-proxy-forwarder-down: ## Remove the e2e-tier proxy forwarder container + its
 
 SHELLCHECK ?= shellcheck
 .PHONY: e2e-codex-isolated-check
-e2e-codex-isolated-check: ## shellcheck + dry-run golden assertions for the isolated tier (no docker daemon needed).
-	$(SHELLCHECK) -x scripts/e2e-isolated/run.sh scripts/e2e-isolated/entry.sh scripts/e2e-isolated/check_dry_run.sh
+e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence fail-closed regression for the isolated tier (no docker daemon needed).
+	$(SHELLCHECK) -x scripts/e2e-isolated/run.sh scripts/e2e-isolated/entry.sh scripts/e2e-isolated/check_dry_run.sh scripts/e2e-isolated/check_fence.sh
 	scripts/e2e-isolated/check_dry_run.sh
+	scripts/e2e-isolated/check_fence.sh
 
 .PHONY: dev
 dev: proxy-forwarder-up build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).

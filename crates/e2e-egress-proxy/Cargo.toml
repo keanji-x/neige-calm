@@ -34,6 +34,9 @@ tokio = { version = "1", features = [
     "macros",
     "io-util",
     "net",
+    # `time` for the per-connection timeouts (client head read / upstream
+    # handshake) that keep a slow-loris or hung upstream from pinning a task.
+    "time",
 ] }
 
 [dev-dependencies]

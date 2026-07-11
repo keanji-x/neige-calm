@@ -37,6 +37,7 @@
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::Ipv6Addr;
+use std::time::Duration;
 
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
@@ -54,12 +55,24 @@ pub const DEFAULT_UPSTREAM: &str = "127.0.0.1:2080";
 /// terminator cannot make us allocate without limit.
 const MAX_HEAD_BYTES: usize = 16 * 1024;
 
+/// How long we wait for the client to finish sending its CONNECT head before
+/// giving up (408). A silent / slow-loris client cannot pin a task past this.
+const CLIENT_HEAD_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the whole upstream CONNECT handshake (dial + request + response
+/// head) may take before we give up (504). A hung sing-box cannot pin a task.
+const UPSTREAM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+
 // Fixed responses. `Connection: close` on the error responses so a client that
 // pipelines does not wait for a keep-alive that will never come.
 const RESP_200: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
 const RESP_400: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const RESP_403: &[u8] = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const RESP_408: &[u8] =
+    b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const RESP_502: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const RESP_504: &[u8] =
+    b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
 // ---------------------------------------------------------------------------
 // The load-bearing positive gate.
@@ -92,10 +105,18 @@ pub fn is_allowed_host(host: &str) -> bool {
 /// Split a CONNECT authority (`host:port`) into a normalized host and its port.
 ///
 /// Normalization mirrors codex `policy.rs::normalize_host`: strip one layer of
-/// IPv6 brackets (`[::1]` -> `::1`), lowercase, strip a single trailing dot.
-/// The port is the substring after the FINAL `:` (CONNECT always carries an
-/// explicit port). Returns `None` for anything that does not parse to
-/// `host:u16` — the caller treats that as a hard deny (fail closed).
+/// IPv6 brackets (`[::1]` -> `::1`), lowercase, strip trailing dots. The port is
+/// the substring after the FINAL `:` (CONNECT always carries an explicit port).
+/// Returns `None` for anything that does not parse to `host:u16` — the caller
+/// treats that as a hard deny (fail closed).
+///
+/// Host CHARSET is validated here (design §2 — deny by construction, #923 F5):
+/// a bare hostname is `[A-Za-z0-9.-]` only. Without this, [`is_allowed_host`]'s
+/// raw `ends_with(".chatgpt.com")` would string-match injection authorities like
+/// `127.0.0.1:4040#.chatgpt.com` / `/a/b?x=.chatgpt.com` (and Cyrillic homographs
+/// / embedded NUL), ADMIT them, and forward them verbatim upstream — trusting
+/// sing-box/Go's parser to reject them. The whole point of this gate is to NOT
+/// depend on the upstream parser's leniency, so we reject the charset ourselves.
 pub fn parse_connect_target(authority: &str) -> Option<(String, u16)> {
     let authority = authority.trim();
     let (host_raw, port_raw) = authority.rsplit_once(':')?;
@@ -106,7 +127,16 @@ pub fn parse_connect_target(authority: &str) -> Option<(String, u16)> {
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(host_raw);
     let host = host_raw.trim_end_matches('.').to_ascii_lowercase();
-    if host.is_empty() {
+    // Reject empty AND any byte outside the bare-hostname charset: this drops
+    // ':' '#' '@' '/' '?' whitespace and all non-ASCII (homograph / NUL) before
+    // is_allowed_host ever sees the host. IPv6 literals (which carry ':') are
+    // rejected here too — they are never on the allowlist, so denying them is
+    // correct, and it keeps "admit" strictly to real dot-anchored hostnames.
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+    {
         return None;
     }
     Some((host, port))
@@ -224,13 +254,27 @@ where
     let mut chunk = [0u8; 1024];
     loop {
         if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+            // The terminator must COMPLETE within the cap. A terminator whose
+            // end lands past MAX_HEAD_BYTES means the head is oversize; accepting
+            // it (the old bug) let a >16 KiB head through whenever its terminator
+            // happened to arrive in the chunk that crossed the cap.
+            if pos + 4 > MAX_HEAD_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "HTTP head terminator lands beyond the 16 KiB cap",
+                ));
+            }
             let leftover = buf.split_off(pos + 4);
             return Ok((buf, leftover));
         }
-        if buf.len() > MAX_HEAD_BYTES {
+        // No terminator within the cap window: once we have buffered the cap's
+        // worth of bytes without one, any terminator that could still arrive
+        // would necessarily end past the cap, so reject now (before reading more
+        // — a peer that never terminates cannot make us buffer without limit).
+        if buf.len() >= MAX_HEAD_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "HTTP head exceeded 16 KiB without a CRLFCRLF terminator",
+                "HTTP head reached the 16 KiB cap without a terminator within it",
             ));
         }
         let n = reader.read(&mut chunk).await?;
@@ -245,16 +289,30 @@ where
 }
 
 /// Extract the CONNECT target authority (`host:port`) from an HTTP head, or
-/// `None` if the first line is not a `CONNECT <authority> ...` request line.
+/// `None` if the first line is not a well-formed `CONNECT <authority>
+/// <version>` request line.
+///
+/// The request line MUST be EXACTLY three tokens (#923 F4): method
+/// `CONNECT` (case-insensitive, as codex speaks), an authority, and a version in
+/// `{HTTP/1.0, HTTP/1.1}`. A missing version, a fourth token, or an unknown
+/// version is rejected — we do not silently ignore trailing garbage on the line.
 pub fn connect_target_from_head(head: &[u8]) -> Option<String> {
     let line_end = find_subslice(head, b"\r\n")?;
     let line = std::str::from_utf8(&head[..line_end]).ok()?;
     let mut parts = line.split_whitespace();
     let method = parts.next()?;
+    let authority = parts.next()?;
+    let version = parts.next()?;
+    // Exactly three tokens: a fourth (or more) is malformed -> reject.
+    if parts.next().is_some() {
+        return None;
+    }
     if !method.eq_ignore_ascii_case("CONNECT") {
         return None;
     }
-    let authority = parts.next()?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
+        return None;
+    }
     Some(authority.to_string())
 }
 
@@ -279,26 +337,65 @@ fn is_benign_disconnect(e: &std::io::Error) -> bool {
     )
 }
 
+/// Why the upstream CONNECT handshake failed, so the surrounding timeout wrapper
+/// stays OUT of the client-write path (a timeout cancellation must never tear a
+/// half-written client response).
+enum UpstreamError {
+    Connect(std::io::Error),
+    Io(std::io::Error),
+    BadStatus(Option<u16>),
+}
+
 /// Serve one client connection end to end: read its CONNECT, apply [`gate`],
 /// and on allow chain `CONNECT <hostname>:443` to `upstream_addr` and splice.
 ///
-/// Returns `Ok(())` for every *handled* outcome (400/403/502 refusal or a
-/// cleanly-torn-down tunnel); `Err` only for an unexpected I/O failure worth
+/// Returns `Ok(())` for every *handled* outcome (400/403/408/502/504 refusal or
+/// a cleanly-torn-down tunnel); `Err` only for an unexpected I/O failure worth
 /// logging. Generic over the client stream so the integration tests can drive
 /// it over a real unix socket.
-pub async fn serve_client<C>(mut client: C, upstream_addr: &str) -> std::io::Result<()>
+pub async fn serve_client<C>(client: C, upstream_addr: &str) -> std::io::Result<()>
 where
     C: AsyncRead + AsyncWrite + Unpin,
 {
-    // 1. Read the client's CONNECT head without over-reading tunnel bytes.
-    let (head, client_leftover) = match read_http_head(&mut client).await {
-        Ok(v) => v,
-        Err(_) => {
-            let _ = client.write_all(RESP_400).await;
-            let _ = client.flush().await;
-            return Ok(());
-        }
-    };
+    serve_client_inner(
+        client,
+        upstream_addr,
+        CLIENT_HEAD_TIMEOUT,
+        UPSTREAM_HANDSHAKE_TIMEOUT,
+    )
+    .await
+}
+
+/// [`serve_client`] with the two timeouts injected, so tests can drive the
+/// slow-loris and hung-upstream paths in milliseconds instead of the production
+/// seconds. The public entry point pins the production values.
+async fn serve_client_inner<C>(
+    mut client: C,
+    upstream_addr: &str,
+    client_head_timeout: Duration,
+    upstream_handshake_timeout: Duration,
+) -> std::io::Result<()>
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+{
+    // 1. Read the client's CONNECT head without over-reading tunnel bytes,
+    //    bounded by a timeout so a silent / slow-loris client cannot pin the
+    //    task. Distinguish a timeout (408) from a parse/oversize/EOF error (400).
+    let (head, client_leftover) =
+        match tokio::time::timeout(client_head_timeout, read_http_head(&mut client)).await {
+            Err(_elapsed) => {
+                eprintln!("[e2e-egress-proxy] client CONNECT head read timed out -> 408");
+                let _ = client.write_all(RESP_408).await;
+                let _ = client.flush().await;
+                return Ok(());
+            }
+            Ok(Err(_)) => {
+                let _ = client.write_all(RESP_400).await;
+                let _ = client.flush().await;
+                return Ok(());
+            }
+            Ok(Ok(v)) => v,
+        };
 
     let authority = match connect_target_from_head(&head) {
         Some(a) => a,
@@ -321,44 +418,57 @@ where
         }
     };
 
-    // 3. Admitted: chain to the upstream sing-box proxy. Send the HOSTNAME,
-    //    port fixed to 443 (the gate rejected any other port).
-    let mut upstream = match TcpStream::connect(upstream_addr).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[e2e-egress-proxy] upstream {upstream_addr} connect failed: {e} -> 502");
-            let _ = client.write_all(RESP_502).await;
-            let _ = client.flush().await;
-            return Ok(());
-        }
-    };
-
+    // 3. Admitted: chain to the upstream sing-box proxy, bounded by a timeout so
+    //    a hung upstream cannot pin the task. The handshake touches ONLY the
+    //    upstream socket (never `client`), so its cancellation on timeout can
+    //    never leave the client mid-write. Send the HOSTNAME, port fixed to 443.
     let upstream_req = format!("CONNECT {hostname}:443 HTTP/1.1\r\nHost: {hostname}:443\r\n\r\n");
-    upstream.write_all(upstream_req.as_bytes()).await?;
-    upstream.flush().await?;
-
-    let (up_head, up_leftover) = match read_http_head(&mut upstream).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 head read failed: {e} -> 502"
-            );
-            let _ = client.write_all(RESP_502).await;
-            let _ = client.flush().await;
-            return Ok(());
+    let handshake = async {
+        let mut upstream = TcpStream::connect(upstream_addr)
+            .await
+            .map_err(UpstreamError::Connect)?;
+        upstream
+            .write_all(upstream_req.as_bytes())
+            .await
+            .map_err(UpstreamError::Io)?;
+        upstream.flush().await.map_err(UpstreamError::Io)?;
+        let (up_head, up_leftover) = read_http_head(&mut upstream)
+            .await
+            .map_err(UpstreamError::Io)?;
+        match status_code_from_head(&up_head) {
+            Some(200) => Ok::<_, UpstreamError>((upstream, up_leftover)),
+            other => Err(UpstreamError::BadStatus(other)),
         }
     };
-    match status_code_from_head(&up_head) {
-        Some(200) => {}
-        other => {
-            eprintln!(
-                "[e2e-egress-proxy] upstream refused CONNECT {hostname}:443 (status {other:?}) -> 502"
-            );
-            let _ = client.write_all(RESP_502).await;
-            let _ = client.flush().await;
-            return Ok(());
-        }
-    }
+
+    let (mut upstream, up_leftover) =
+        match tokio::time::timeout(upstream_handshake_timeout, handshake).await {
+            Err(_elapsed) => {
+                eprintln!(
+                    "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 handshake timed out -> 504"
+                );
+                let _ = client.write_all(RESP_504).await;
+                let _ = client.flush().await;
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                match e {
+                    UpstreamError::Connect(err) => eprintln!(
+                        "[e2e-egress-proxy] upstream {upstream_addr} connect failed: {err} -> 502"
+                    ),
+                    UpstreamError::Io(err) => eprintln!(
+                        "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 head read failed: {err} -> 502"
+                    ),
+                    UpstreamError::BadStatus(other) => eprintln!(
+                        "[e2e-egress-proxy] upstream refused CONNECT {hostname}:443 (status {other:?}) -> 502"
+                    ),
+                }
+                let _ = client.write_all(RESP_502).await;
+                let _ = client.flush().await;
+                return Ok(());
+            }
+            Ok(Ok(v)) => v,
+        };
 
     // 4. Tunnel established. Tell the client, flush any pre-read leftovers, splice.
     client.write_all(RESP_200).await?;
@@ -422,10 +532,9 @@ mod tests {
             parse_connect_target("chatgpt.com.:443"),
             Some(("chatgpt.com".to_string(), 443))
         );
-        assert_eq!(
-            parse_connect_target("[::1]:443"),
-            Some(("::1".to_string(), 443))
-        );
+        // IPv6 literals carry ':', outside the bare-hostname charset -> rejected
+        // (they are never on the allowlist, so denying them is correct — F5).
+        assert_eq!(parse_connect_target("[::1]:443"), None);
         assert_eq!(
             parse_connect_target("127.0.0.1:4040"),
             Some(("127.0.0.1".to_string(), 4040))
@@ -433,6 +542,37 @@ mod tests {
         assert_eq!(parse_connect_target("chatgpt.com"), None); // no port
         assert_eq!(parse_connect_target("chatgpt.com:https"), None); // non-numeric
         assert_eq!(parse_connect_target(":443"), None); // empty host
+    }
+
+    // ---- host charset gate (deny by construction, not upstream leniency) ----
+
+    #[test]
+    fn parse_connect_target_rejects_non_hostname_charset() {
+        // Authorities whose RAW suffix would string-match the allowlist (or a
+        // homograph) but whose host carries injection chars / non-ASCII. The
+        // charset gate must reject them at parse time (#923 F5) so is_allowed_host
+        // never sees them and they are never forwarded upstream verbatim.
+        for authority in [
+            "127.0.0.1:4040#.chatgpt.com:443",
+            "127.0.0.1:4040.chatgpt.com:443",
+            "user@127.0.0.1:4040#.chatgpt.com:443",
+            "/a/b?x=.chatgpt.com:443",
+            "\u{0441}hatgpt.com:443", // Cyrillic 'с' homograph
+            "chatgpt.com\u{0000}:443", // embedded NUL
+            "chat gpt.com:443",       // whitespace
+            "[::1]:443",              // IPv6 literal (colons)
+        ] {
+            assert_eq!(
+                parse_connect_target(authority),
+                None,
+                "charset gate must reject {authority:?}"
+            );
+        }
+        // And the gate turns such an authority into an explicit Deny, not Allow.
+        assert_eq!(
+            gate("127.0.0.1:4040#.chatgpt.com:443"),
+            Gate::Deny("unparseable CONNECT authority")
+        );
     }
 
     // ---- the gate (order + INVARIANT) --------------------------------------
@@ -480,6 +620,25 @@ mod tests {
     #[test]
     fn gate_denies_unparseable() {
         assert_eq!(gate("garbage"), Gate::Deny("unparseable CONNECT authority"));
+    }
+
+    #[test]
+    fn gate_allows_trailing_dot_exact_host_as_intentional() {
+        // A trailing-dot FQDN normalizes to the same host (matches codex
+        // chatgpt_hosts behavior); this locks it as INTENTIONALLY allowed (F4).
+        assert_eq!(
+            gate("auth.openai.com.:443"),
+            Gate::Allow("auth.openai.com".to_string())
+        );
+        assert_eq!(
+            gate("chatgpt.com.:443"),
+            Gate::Allow("chatgpt.com".to_string())
+        );
+        // A trailing-dot subdomain also normalizes and is admitted by the suffix.
+        assert_eq!(
+            gate("ab.chatgpt.com.:443"),
+            Gate::Allow("ab.chatgpt.com".to_string())
+        );
     }
 
     // ---- is_non_public_ip (log-only tripwire; parity with codex policy.rs) --
@@ -537,6 +696,29 @@ mod tests {
     }
 
     #[test]
+    fn connect_target_requires_exactly_three_tokens_and_known_version() {
+        // Exactly three tokens, `CONNECT <authority> HTTP/1.{0,1}` (F4).
+        assert_eq!(
+            connect_target_from_head(b"CONNECT a:443 HTTP/1.1\r\n\r\n").as_deref(),
+            Some("a:443")
+        );
+        assert_eq!(
+            connect_target_from_head(b"CONNECT a:443 HTTP/1.0\r\n\r\n").as_deref(),
+            Some("a:443")
+        );
+        // Missing the version token (two tokens) -> reject.
+        assert_eq!(connect_target_from_head(b"CONNECT a:443\r\n\r\n"), None);
+        // A fourth token -> reject (no silently-ignored trailing garbage).
+        assert_eq!(
+            connect_target_from_head(b"CONNECT a:443 HTTP/1.1 extra\r\n\r\n"),
+            None
+        );
+        // Unknown / unsupported versions -> reject.
+        assert_eq!(connect_target_from_head(b"CONNECT a:443 HTTP/2.0\r\n\r\n"), None);
+        assert_eq!(connect_target_from_head(b"CONNECT a:443 xyz\r\n\r\n"), None);
+    }
+
+    #[test]
     fn status_code_parses_response_line() {
         assert_eq!(
             status_code_from_head(b"HTTP/1.1 200 Connection established\r\n\r\n"),
@@ -557,5 +739,133 @@ mod tests {
         let (head, leftover) = read_http_head(&mut cur).await.unwrap();
         assert!(head.ends_with(b"\r\n\r\n"));
         assert_eq!(&leftover, b"TUNNEL");
+    }
+
+    // ---- HTTP head cap enforcement (#923 F2) --------------------------------
+
+    #[tokio::test]
+    async fn read_http_head_accepts_head_exactly_at_cap() {
+        use std::io::Cursor;
+        // A head whose total size INCLUDING the CRLFCRLF is exactly the cap is
+        // accepted — the defined boundary.
+        let mut data = vec![b'a'; MAX_HEAD_BYTES];
+        let n = data.len();
+        data[n - 4..].copy_from_slice(b"\r\n\r\n");
+        let mut cur = Cursor::new(data);
+        let (head, leftover) = read_http_head(&mut cur).await.unwrap();
+        assert_eq!(head.len(), MAX_HEAD_BYTES);
+        assert!(head.ends_with(b"\r\n\r\n"));
+        assert!(leftover.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_http_head_rejects_oversize_head_with_late_terminator() {
+        use std::io::Cursor;
+        // 17 KiB of header bytes THEN the terminator: the buffer reaches the cap
+        // with no terminator within it, so it is rejected — the late terminator
+        // (well past the cap) is never accepted.
+        let mut data = vec![b'a'; 17 * 1024];
+        data.extend_from_slice(b"\r\n\r\n");
+        let mut cur = Cursor::new(data);
+        let err = read_http_head(&mut cur).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn read_http_head_rejects_terminator_straddling_cap() {
+        // The exact bug: a terminator that lands in the chunk crossing the cap
+        // must be rejected by the `pos + 4 > cap` check, not accepted. Drive it
+        // with a reader that lands the buffer one byte under the cap and then
+        // delivers a chunk whose terminator ends past the cap.
+        use std::collections::VecDeque;
+        use std::pin::Pin;
+        use std::task::{Context, Poll};
+        use tokio::io::ReadBuf;
+
+        struct Scripted(VecDeque<Vec<u8>>);
+        impl AsyncRead for Scripted {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<std::io::Result<()>> {
+                if let Some(front) = self.0.front_mut() {
+                    let n = front.len().min(buf.remaining());
+                    buf.put_slice(&front[..n]);
+                    front.drain(..n);
+                    if front.is_empty() {
+                        self.0.pop_front();
+                    }
+                }
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        // MAX_HEAD_BYTES-1 filler (buffer lands 1 under the cap), then "aa\r\n\r\n":
+        // the terminator starts at index cap+1, so pos+4 = cap+5 > cap -> reject.
+        let mut chunks = VecDeque::new();
+        chunks.push_back(vec![b'a'; MAX_HEAD_BYTES - 1]);
+        chunks.push_back(b"aa\r\n\r\n".to_vec());
+        let mut reader = Scripted(chunks);
+        let err = read_http_head(&mut reader).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    // ---- per-connection timeouts (#923 F3) ----------------------------------
+
+    #[tokio::test]
+    async fn serve_client_times_out_silent_client_with_408() {
+        // A client that connects but never sends its CONNECT head must not pin
+        // the task: the head-read timeout fires, we answer 408, and return Ok.
+        let (client, mut peer) = tokio::io::duplex(1024);
+        // Keep `peer` alive (never write) so the read pends rather than EOFs.
+        let res = serve_client_inner(
+            client,
+            "127.0.0.1:9",
+            Duration::from_millis(50),
+            Duration::from_secs(30),
+        )
+        .await;
+        assert!(res.is_ok(), "handler must return Ok on client timeout");
+        let mut got = Vec::new();
+        peer.read_to_end(&mut got).await.unwrap();
+        assert!(
+            got.starts_with(b"HTTP/1.1 408"),
+            "expected 408, got {:?}",
+            String::from_utf8_lossy(&got)
+        );
+    }
+
+    #[tokio::test]
+    async fn serve_client_times_out_hung_upstream_with_504() {
+        // Upstream that accepts but never answers the CONNECT -> the handshake
+        // timeout fires and we answer 504.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _accepted = listener.accept().await; // hold it, never respond
+            std::future::pending::<()>().await;
+        });
+        let (client, mut peer) = tokio::io::duplex(4096);
+        // Client sends a VALID, allowlisted CONNECT so the gate admits and we
+        // dial the (hung) upstream.
+        peer.write_all(b"CONNECT chatgpt.com:443 HTTP/1.1\r\nHost: chatgpt.com:443\r\n\r\n")
+            .await
+            .unwrap();
+        let res = serve_client_inner(
+            client,
+            &addr,
+            Duration::from_secs(30),
+            Duration::from_millis(50),
+        )
+        .await;
+        assert!(res.is_ok(), "handler must return Ok on upstream timeout");
+        let mut got = Vec::new();
+        peer.read_to_end(&mut got).await.unwrap();
+        assert!(
+            got.starts_with(b"HTTP/1.1 504"),
+            "expected 504, got {:?}",
+            String::from_utf8_lossy(&got)
+        );
     }
 }

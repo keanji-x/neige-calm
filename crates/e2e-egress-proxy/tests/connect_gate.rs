@@ -156,6 +156,31 @@ async fn denies_dot_anchor_tricks() {
 }
 
 #[tokio::test]
+async fn denies_host_charset_injection_authorities() {
+    // #923 F5: authorities whose RAW suffix string-matches the allowlist (or a
+    // homograph) but whose host carries injection chars (`:` `#` `@` `/` `?`) or
+    // non-ASCII. "Deny by construction" must reject these at OUR charset gate,
+    // never forwarding them verbatim upstream on the bet that sing-box/Go's
+    // parser happens to choke on them.
+    let up = spawn_stub_upstream().await;
+    let (_dir, sock) = spawn_proxy(up.addr.clone()).await;
+    for t in [
+        "127.0.0.1:4040#.chatgpt.com:443",
+        "127.0.0.1:4040.chatgpt.com:443",
+        "user@127.0.0.1:4040#.chatgpt.com:443",
+        "/a/b?x=.chatgpt.com:443",
+        "\u{0441}hatgpt.com:443", // Cyrillic 'с' homograph of chatgpt.com
+    ] {
+        assert_eq!(connect_status(&sock, t).await, Some(403), "want 403 for {t:?}");
+    }
+    assert_eq!(
+        up.connects.load(Ordering::SeqCst),
+        0,
+        "charset-injection CONNECTs must never reach upstream"
+    );
+}
+
+#[tokio::test]
 async fn denies_allowlisted_host_on_wrong_port() {
     let up = spawn_stub_upstream().await;
     let (_dir, sock) = spawn_proxy(up.addr.clone()).await;

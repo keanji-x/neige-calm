@@ -44,10 +44,19 @@ SOCK=/sock/proxy.sock
 # Positive canary: an allowlisted host whose CONNECT must tunnel (200) through
 # the full chain. Overridable only for the sourced-function regression path.
 FENCE_CANARY="${FENCE_CANARY:-chatgpt.com:443}"
-# Targets our gate MUST refuse: prod (wrong port) + RFC1918 / link-local
-# (wrong host) on :443. All are denied by the gate's positive allowlist before
-# it dials upstream, so refusal is deterministic.
-FENCE_DENY_TARGETS=(127.0.0.1:4040 127.0.0.1:4041 10.0.0.1:443 169.254.169.254:443)
+# Targets our gate MUST refuse with an EXPLICIT 403: prod (wrong port) + RFC1918
+# / link-local (wrong host) on :443, plus a parsing-trick authority whose raw
+# suffix string-matches the allowlist but whose host carries injection chars
+# (`:` `#`). The last one proves the deny is by construction (charset + host +
+# port gate), NOT by the upstream parser's leniency. All are denied before the
+# gate dials upstream, so refusal is deterministic.
+FENCE_DENY_TARGETS=(
+    127.0.0.1:4040
+    127.0.0.1:4041
+    10.0.0.1:443
+    169.254.169.254:443
+    '127.0.0.1:4040#.chatgpt.com:443'
+)
 # Field distinctive of calm-server's GET /api/version body. NOT a pass/fail
 # criterion (the gate's 403 is): kept only to make a breach message conclusive.
 PROD_MARKER=kernelVersion
@@ -59,27 +68,34 @@ fail() { local code="$1"; shift; log "FATAL: $*"; exit "$code"; }
 
 # ---- fence primitives (sourceable) -----------------------------------------
 # CONNECT $1 (host:port) through the in-container chain (:2081 → /sock → host
-# gate → sing-box). Sets RESP (raw response) + STATUS (numeric HTTP code, "" on
-# no answer). Returns 0 iff the tunnel was ESTABLISHED (gate replied 200); a
-# refused CONNECT (403) or no answer returns non-zero. HTTP/1.1 CONNECT is what
-# codex itself speaks to NEIGE_CODEX_PROXY; short idle timeouts because an
-# established tunnel then sits silent (we send no TLS) and a 403 closes at once.
+# gate → sing-box). Sets RESP (raw response) + STATUS (numeric HTTP code parsed
+# from the "HTTP/1.1 NNN" status line, "" on no answer/timeout). STATUS is THE
+# verdict source: our gate answers a deterministic 403 for a denied target and
+# 200 for an established tunnel. Returns 0 iff STATUS==200 (used by the positive
+# canary); the negative path reads STATUS directly so a NON-answer can never be
+# mistaken for a refusal. HTTP/1.1 CONNECT is what codex speaks to
+# NEIGE_CODEX_PROXY; short idle timeouts because an established tunnel then sits
+# silent (we send no TLS) and a 403 closes at once.
 proxy_connect() {
     local hostport="$1"
     RESP="$(printf 'CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n' "$hostport" "$hostport" \
         | timeout 25 socat -t 3 -T 3 - "TCP:127.0.0.1:${PROXY_PORT}" 2>/dev/null)" || true
     STATUS="$(printf '%s' "$RESP" | head -n1 | awk '/^HTTP\//{print $2}')"
-    [ "$STATUS" = 200 ]
+    [ "${STATUS:-}" = 200 ]
 }
 
+# Positive canary: PASS iff our gate ESTABLISHED the tunnel (200). Anything else
+# (403 / timeout / empty) is a canary failure.
 fence_assert_allowed() { proxy_connect "$1"; }
 
+# Negative assertion: PASS (return 0) ONLY on our gate's deterministic 403.
+# FAIL CLOSED — a timeout, empty answer, 400/502, a DOWN proxy, OR an established
+# 200 all leave STATUS != 403 and return non-zero, so the caller treats them as
+# a fence failure instead of silently reading "no answer" as "refused" (the old
+# fail-OPEN bug: any non-200 counted as denied, so even a dead proxy "passed").
 fence_assert_denied() {
-    # Established (reachable) = FAIL; refused / no answer = OK.
-    if proxy_connect "$1"; then
-        return 1
-    fi
-    return 0
+    proxy_connect "$1" || true
+    [ "${STATUS:-}" = 403 ]
 }
 
 fence_preflight() {
@@ -96,21 +112,33 @@ fence_preflight() {
     done
     [ "$ok" = 1 ] || fail 72 "positive canary never succeeded — chain not live or allowlist broke; CANNOT PROVE FENCE, aborting before any codex runs"
 
-    # (b) NEGATIVE (deterministic): the gate must REFUSE prod + private targets.
+    # (b) NEGATIVE (deterministic): the gate must REFUSE prod + private targets
+    #     with an EXPLICIT 403. A 403 is the ONLY pass. An established 200 is a
+    #     breach; ANYTHING else (timeout/empty/400/502/dead proxy) leaves the
+    #     denial UNPROVEN. Both abort 71 — the fence fails closed and never
+    #     silently accepts a non-answer as "refused".
     local t
     for t in "${FENCE_DENY_TARGETS[@]}"; do
         if fence_assert_denied "$t"; then
-            log "fence: CONNECT $t -> refused (${STATUS:-no answer}) by our gate — OK"
+            log "fence: CONNECT $t -> 403 refused by our gate (deterministic deny) — OK"
             continue
         fi
-        log "FENCE BREACH: CONNECT $t was ESTABLISHED (status $STATUS) through the chain — the gate admitted a path to prod."
-        if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
-            log "FENCE BREACH: response carries '$PROD_MARKER' — PROVEN prod response."
+        if [ "${STATUS:-}" = 200 ]; then
+            log "FENCE BREACH: CONNECT $t was ESTABLISHED (status 200) through the chain — the gate admitted a path to prod."
+            if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
+                log "FENCE BREACH: response carries '$PROD_MARKER' — PROVEN prod response."
+            fi
+            printf '%s\n' "$RESP" | head -n 8 >&2
+            fail 71 "FENCE BREACH: $t reachable through the forwarder — ABORTING before any codex runs"
         fi
+        # Neither a clean 403 nor an established 200: we could not obtain our
+        # gate's deterministic denial, so the fence cannot PROVE prod is
+        # unreachable. Indeterminate == broken == abort (fail closed).
+        log "FENCE INDETERMINATE: CONNECT $t -> '${STATUS:-no answer}' (expected our gate's 403). The chain/gate is broken or unreachable — the fence cannot prove denial."
         printf '%s\n' "$RESP" | head -n 8 >&2
-        fail 71 "FENCE BREACH: $t reachable through the forwarder — ABORTING before any codex runs"
+        fail 71 "FENCE INDETERMINATE: $t did not return our gate's 403 (got '${STATUS:-no answer}') — fence broken, ABORTING before any codex runs"
     done
-    log "fence preflight OK: chain live; prod :4040/:4041 (+ RFC1918/link-local) refused by our gate (deny by construction)"
+    log "fence preflight OK: chain live; prod :4040/:4041 (+ RFC1918/link-local + parse-trick) refused by our gate with an explicit 403 (deny by construction)"
 }
 
 # ---- egress chain (sourceable) ---------------------------------------------
