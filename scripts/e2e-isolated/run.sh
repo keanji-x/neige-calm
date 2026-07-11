@@ -22,27 +22,26 @@
 #   3. The run container gets `--network none`: no IP path to prod
 #      :4040/:4041 by construction. Its only egress is loopback :2081 →
 #      (in-container socat) → /sock/proxy.sock (mounted ro; connect works,
-#      agents cannot scribble in the host dir) → (host forwarder container,
-#      singleton `calm-e2e-proxy-forwarder`, image digest-pinned) → the host
-#      proxy CALM_HOST_PROXY_HOST:CALM_HOST_PROXY_PORT (sing-box).
-#   4. REQUIRED fence preflight before any codex runs (entry.sh): first a
-#      REMOTE POSITIVE CANARY (a GET to a public URL through the full chain
-#      MUST succeed — a dead chain would make prod "unreachable" vacuously,
-#      i.e. fail-open; the canary makes the fence provable). Then a
-#      FAIL-CLOSED ALLOWLIST: three distinct improbable-dead ports
-#      (127.0.0.1:1/:9/:65533) are probed twice each through the same chain.
-#      Both a NO-ANSWER and a fingerprint-matching RESPONSE prove a target
-#      unreachable, so a dead port that times out on one probe and 502s on
-#      another under proxy jitter is NOT a disagreement (#923 defect 2). The
-#      RESPONSE probes calibrate the proxy's own unreachable-destination
-#      FINGERPRINT (status line + header shape + body, stable dims only) and
-#      must be mutually identical; two DIFFERENT responses are the real
-#      "cannot calibrate" -> abort 73. Accept-set for prod 127.0.0.1:4040/:4041
-#      = {no-answer} ∪ {response matching the fingerprint}; if EVERY dead-port
-#      probe was no-answer, the accept-set is no-answer only. ANY other answer,
-#      regardless of status class, means sing-box routing would hand agents
-#      a path to prod: ABORT. The fence rests on sing-box config, so it is
-#      asserted every run, never assumed (design §B).
+#      agents cannot scribble in the host dir) → OUR host-side gate
+#      `e2e-egress-proxy` (the SOLE terminator of that socket; singleton
+#      forwarder container `calm-e2e-proxy-forwarder`, --network host, image
+#      digest-pinned, running our bind-mounted binary) → sing-box
+#      CALM_HOST_PROXY_HOST:CALM_HOST_PROXY_PORT. The gate DENIES every CONNECT
+#      whose host is not on a dot-anchored chatgpt/openai allowlist or whose
+#      port is not 443, so prod (:4040/:4041, wrong port + wrong host) is
+#      unreachable by construction — a rogue codex that connect(2)s /sock
+#      directly still hits our gate (#923 defect 2, design §4).
+#   4. REQUIRED fence preflight before any codex runs (entry.sh): a
+#      DETERMINISTIC assertion, not an inference. POSITIVE canary: a CONNECT to
+#      an allowlisted host (chatgpt.com:443) through the full chain MUST return
+#      200 (chain live + allowlist admits + sing-box reachable) — a dead chain
+#      would make prod "unreachable" vacuously, so the canary makes the fence
+#      provable (dead -> abort 72). NEGATIVE: CONNECT 127.0.0.1:4040/:4041 and
+#      10.0.0.1:443 through the SAME chain MUST be REFUSED (403) by our gate,
+#      which decides the denial BEFORE ever dialing sing-box, so the outcome is
+#      immune to sing-box jitter/routing. Any prod CONNECT that is NOT refused
+#      is a breach -> abort 71. No fingerprint, no calibration: deny is by
+#      construction (design §5).
 #   5. Rails (proven scope values): --memory=24g --memory-swap=24g (no swap)
 #      --cpus=8 --pids-limit=6000, non-root --user, seccomp+apparmor
 #      unconfined (needed for codex's bwrap userns; NO SYS_ADMIN — verified
@@ -88,13 +87,16 @@ CALM_HOST_PROXY_HOST="${CALM_HOST_PROXY_HOST:-127.0.0.1}"
 # container has no other egress, so a silently-wrong default would strand it.
 # The Makefile injects the value from the host .env.
 CALM_HOST_PROXY_PORT="${CALM_HOST_PROXY_PORT:-}"
-# Forwarder image pinned BY DIGEST: it runs --network host, so a mutable tag
-# is a supply-chain hole. This is the digest of the alpine/socat image present
-# on this box (docker images --digests alpine/socat). To bump: `docker pull
-# alpine/socat`, re-run `docker images --digests alpine/socat`, update the
-# digest here AND in Makefile E2E_PROXY_FORWARDER_IMAGE, then
+# Forwarder runtime image pinned BY DIGEST: the forwarder runs --network host,
+# so a mutable tag is a supply-chain hole. The forwarder is no longer a dumb
+# socat relay — it runs OUR host-compiled `e2e-egress-proxy` gate (bind-mounted
+# in), so the image is just a glibc runtime shell. It is debian:bookworm-slim,
+# the SAME base as docker/Dockerfile.e2e, so the host-compiled glibc binary is
+# guaranteed to run (identical host-compile model to the test binary). To bump:
+# `docker pull debian:bookworm-slim`, re-run `docker images --digests debian`,
+# update the digest here AND in Makefile E2E_PROXY_FORWARDER_IMAGE, then
 # `make e2e-proxy-forwarder-down` so the next run recreates the forwarder.
-PROXY_FORWARDER_IMAGE="${PROXY_FORWARDER_IMAGE:-alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e}"
+PROXY_FORWARDER_IMAGE="${PROXY_FORWARDER_IMAGE:-debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df}"
 E2E_PROXY_FORWARDER_NAME="${E2E_PROXY_FORWARDER_NAME:-calm-e2e-proxy-forwarder}"
 E2E_PROXY_SOCK_DIR="${E2E_PROXY_SOCK_DIR:-/tmp/calm-e2e-proxy}"
 E2E_IMAGE_TAG="${E2E_IMAGE_TAG:-calm-e2e:bookworm}"
@@ -105,6 +107,10 @@ TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 CODEX_BIN_RAW="${NEIGE_CODEX_BIN:-$HOME/.local/bin/codex}"
 AUTH_RAW="$HOME/.codex/auth.json"
 KILLER_LOG=/home/kenji/neige-killer.log
+# The host-compiled deterministic egress gate. THE forwarder is this binary
+# (bind-mounted into the --network host forwarder container); deterministic
+# path of a workspace bin crate (no deps/ hash like the test binary).
+PROXY_BIN="$TARGET_DIR/debug/e2e-egress-proxy"
 
 CONTAINER_HOME=/home/e2e
 CODEX_MOUNT=/opt/codex/codex
@@ -213,10 +219,31 @@ resolve_inputs() {
     AUTH_REAL="$(resolve "$AUTH_RAW")"
 }
 
+# ---- egress-proxy binary (THE forwarder — host-compiled, bind-mounted) ------
+# The forwarder is no longer a dumb socat relay: it is our own gate binary.
+# Host-compile it (glibc tracks the host, same model as the test binary) so it
+# can be bind-mounted into the --network host forwarder container. Built OUTSIDE
+# the forwarder flock (cargo has its own target lock) and cached on the warm
+# shared target, so `--forwarder-only` and full runs alike stay cheap.
+ensure_proxy_bin() {
+    if [ "$NO_BUILD" = 1 ] && [ -x "$PROXY_BIN" ]; then
+        log "reusing existing egress proxy binary: $PROXY_BIN"
+        return 0
+    fi
+    log "host-compiling egress proxy (cargo build -p e2e-egress-proxy) ..."
+    RUSTC_WRAPPER='' CARGO_BUILD_JOBS=4 nice -n 10 \
+        cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
+        -p e2e-egress-proxy --bin e2e-egress-proxy
+    [ -x "$PROXY_BIN" ] || die "egress proxy binary missing after build at $PROXY_BIN"
+}
+
 # ---- host forwarder (shared singleton — mirrors Makefile proxy-forwarder-up;
 # torn down ONLY by `make e2e-proxy-forwarder-down` → --forwarder-down here,
-# never by a run's trap) ------------------------------------------------------
+# never by a run's trap). It now runs OUR host-compiled `e2e-egress-proxy` gate
+# (bind-mounted read-only) as the SOLE terminator of /sock/proxy.sock, dialing
+# sing-box upstream only for CONNECTs it admits (design §4). --------------------
 ensure_forwarder() {
+    ensure_proxy_bin
     local sock="$E2E_PROXY_SOCK_DIR/proxy.sock"
     # Lockfile lives in the sock dir's PARENT (e.g. /tmp/calm-e2e-proxy.lock)
     # so teardown can rm -rf the sock dir while still holding the lock. It is
@@ -224,7 +251,12 @@ ensure_forwarder() {
     # while a third process locks a freshly-created file would split-brain
     # the critical section.
     local lock="${E2E_PROXY_SOCK_DIR%/}.lock"
-    local spec="unix:$sock->$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT image=$PROXY_FORWARDER_IMAGE"
+    # The `egress-proxy:` prefix (vs the old dumb-relay `unix:` spec) guarantees
+    # a stale alpine/socat forwarder mismatches this spec -> the singleton guard
+    # refuses to reuse it and prints the --forwarder-down remedy (correct: the
+    # old dumb relay is a fence bypass). bin= pins WHICH gate binary path backs
+    # it; after rebuilding the proxy you must --forwarder-down to pick it up.
+    local spec="egress-proxy:$sock->$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT bin=$PROXY_BIN image=$PROXY_FORWARDER_IMAGE"
     # flock: concurrent runs race this mkdir/inspect/create sequence; make it
     # a critical section so exactly one run creates the singleton. ALL shared
     # sock-dir mutations happen only under this lock (a concurrent teardown's
@@ -255,18 +287,21 @@ ensure_forwarder() {
             fi
         fi
         if ! docker inspect "$E2E_PROXY_FORWARDER_NAME" >/dev/null 2>&1; then
-            # --network host: its 127.0.0.1 is the host's, so it can reach the
-            # host-loopback proxy. It publishes NO ports; its only listener is
-            # the unix socket in E2E_PROXY_SOCK_DIR (mode 600, our uid).
+            # --network host: its 127.0.0.1 is the host's, so our gate dials the
+            # host-loopback sing-box directly (and has a resolver). It publishes
+            # NO ports; its only listener is the unix socket our binary binds in
+            # E2E_PROXY_SOCK_DIR (the binary sets mode 600, our uid). The gate
+            # binary is bind-mounted read-only; args = <listen-sock> <upstream>.
             docker run -d --network host \
                 --name "$E2E_PROXY_FORWARDER_NAME" \
                 --user "$HOST_UID:$HOST_GID" \
                 --label "calm.proxy.spec=$spec" \
                 --restart unless-stopped \
                 -v "$E2E_PROXY_SOCK_DIR:/sock" \
+                -v "$PROXY_BIN:/usr/local/bin/e2e-egress-proxy:ro" \
                 "$PROXY_FORWARDER_IMAGE" \
-                "UNIX-LISTEN:/sock/proxy.sock,fork,mode=600,unlink-early" \
-                "TCP:$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT" >/dev/null
+                /usr/local/bin/e2e-egress-proxy /sock/proxy.sock \
+                "$CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT" >/dev/null
             log "forwarder created: $spec"
         fi
     ) 9>"$lock"
@@ -422,7 +457,8 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "codex (ro file mount)  : $CODEX_REAL -> $CODEX_MOUNT"
     echo "auth.json (ro file)    : $AUTH_REAL -> $CONTAINER_HOME/.codex/auth.json"
     echo "forwarder socket dir   : $E2E_PROXY_SOCK_DIR (ro mount at /sock)"
-    echo "upstream proxy         : $CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT (via $E2E_PROXY_FORWARDER_NAME, $PROXY_FORWARDER_IMAGE)"
+    echo "egress gate (forwarder): $PROXY_BIN -> /sock/proxy.sock (bind-mounted into $E2E_PROXY_FORWARDER_NAME, $PROXY_FORWARDER_IMAGE)"
+    echo "upstream proxy         : $CALM_HOST_PROXY_HOST:$CALM_HOST_PROXY_PORT (sing-box, dialed by the gate for admitted CONNECTs only)"
     echo "timeout                : ${E2E_TIMEOUT}s; EXIT trap removes only $RUN_NAME"
     echo "--- dry-run: docker run argv (run container) ---"
     print_argv "${DOCKER_ARGS[@]}"
@@ -479,9 +515,9 @@ ensure_forwarder
 
 # ---- preflight container: fence check + `--list` exec probe --------------
 # Same argv/mounts/posture as the real run; entry.sh in preflight mode
-# asserts the chain is LIVE (remote canary) yet CANNOT reach prod
-# :4040/:4041, then proves the host-built binary executes in-image
-# (glibc/layout) via `--list`.
+# asserts the chain is LIVE (an allowlisted-host CONNECT returns 200) yet our
+# gate REFUSES prod :4040/:4041 (+ RFC1918) with a deterministic 403, then
+# proves the host-built binary executes in-image (glibc/layout) via `--list`.
 log "preflight: fence + exec probe (container $PREFLIGHT_NAME) ..."
 docker_run_args preflight "$PREFLIGHT_NAME"
 timeout 180 docker run "${DOCKER_ARGS[@]}" \

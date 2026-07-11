@@ -3,359 +3,216 @@
 # Invoked by scripts/e2e-isolated/run.sh inside the `--network none` run
 # container (the repo is mounted read-only at its host path, so this file is
 # executed straight off that mount). Responsibilities, in order:
-#   1. Bring up the only egress: socat loopback TCP :2081 → /sock/proxy.sock
-#      (→ host forwarder → host proxy). NEIGE_CODEX_PROXY points here.
-#   2. REQUIRED fence preflight, three steps, all before any codex process:
-#      (a) REMOTE POSITIVE CANARY — a GET to a public URL through the SAME
-#          chain MUST succeed. Without it a dead chain would make prod
-#          "unreachable" vacuously and the fence would pass fail-open;
-#          the canary makes the fence provable. Chain dead → ABORT (72).
-#      (b) FINGERPRINT CALIBRATION — probe THREE distinct improbable ports
-#          (127.0.0.1:1/:9/:65533, see DEAD_TARGETS) through the same chain
-#          TWICE each. The chain tunnels to the proxy's remote egress point,
-#          so "dead" must hold THERE. Each probe yields one of two outcomes:
-#          NO-ANSWER or a RESPONSE (status line + header shape + body). BOTH
-#          no-answer AND a fingerprint-matching response prove the target
-#          unreachable, so a dead port that times out on one probe and 502s
-#          on another under proxy jitter is NOT a disagreement (#923 defect
-#          2). The RESPONSE probes calibrate the proxy's own unreachable-
-#          destination fingerprint; only empirically-STABLE dimensions
-#          (status line, header shape, body-hash-or-size) are enforced, and
-#          the responses must be MUTUALLY IDENTICAL on them. Two DIFFERENT
-#          responses (a 'dead' port that may be live at egress) → cannot
-#          calibrate = cannot prove the fence → ABORT (73). No-answer probes
-#          never count as disagreement. If EVERY probe was no-answer, the
-#          accept-set below is no-answer only.
-#      (c) prod 127.0.0.1:4040/:4041 probed through the chain. FAIL-CLOSED
-#          ALLOWLIST = {no-answer} ∪ {response matching the calibrated
-#          fingerprint in every stable dimension}: no HTTP answer = OK; an
-#          answer matching the fingerprint = the proxy's own error = OK; ANY
-#          other answer (or ANY answer when the accept-set is no-answer only),
-#          regardless of status class, = something reachable answered →
-#          ABORT (71). (No marker heuristic: prod's /api/version marker is
-#          kept only as an extra loud confirmation on breach.)
+#   1. Bring up the only egress: socat loopback TCP :2081 → /sock/proxy.sock.
+#      That socket is terminated HOST-SIDE by our deterministic gate
+#      `e2e-egress-proxy` (the sole terminator; run.sh forwarder), which forwards
+#      only allowlisted CONNECTs upstream to sing-box. NEIGE_CODEX_PROXY points
+#      at :2081. The in-container socat is a dumb relay INTO our gate — it makes
+#      no policy decision (a rogue codex could connect(2) /sock directly, so the
+#      gate, not this relay, is the boundary; design §4).
+#   2. REQUIRED fence preflight, a DETERMINISTIC assertion (design §5), before
+#      any codex process:
+#      (a) POSITIVE CANARY — a CONNECT to an allowlisted host (chatgpt.com:443)
+#          through the SAME chain MUST return 200. It proves the chain is live
+#          (socat → gate → sing-box) and the allowlist admits; without it a dead
+#          chain would make prod "unreachable" vacuously (fail-open). Dead → 72.
+#      (b) NEGATIVE ASSERTION — CONNECT 127.0.0.1:4040/:4041 (prod) + 10.0.0.1
+#          /169.254.169.254:443 (RFC1918 / link-local) through the chain MUST be
+#          REFUSED (403). Our gate decides the denial BEFORE it ever dials
+#          sing-box (prod fails the positive host+port allowlist: wrong port
+#          and/or wrong host), so the outcome is deterministic regardless of
+#          sing-box jitter/routing. Any prod CONNECT that is ESTABLISHED is a
+#          breach → 71. No fingerprint, no calibration, no DEAD_TARGETS: deny is
+#          by construction, not inference. (Defense in depth: if a refused
+#          target ever leaks a body containing the prod marker, shout louder.)
 #   3. E2E_MODE=preflight → `--list` exec probe (glibc/mount-layout proof),
 #      then exit. E2E_MODE=run → optional DECOYS, then the suite.
 #   4. DECOYS=1: plant /bin/sleep copies named like prod processes; if any
 #      dies during the run, the agent stack still emits name-based kills —
 #      loud regression telemetry (exit 97), even though the PID namespace
 #      already contains it.
+#
+# Structure: config + functions are defined at top level; the procedural flow
+# lives in main(), run only when EXECUTED (`bash entry.sh`), not when SOURCED
+# (BASH_SOURCE exec guard at the end) — so a regression test can source this
+# file, stub proxy_connect, and drive fence_preflight in isolation. (The
+# security boundary itself is unit-tested in crates/e2e-egress-proxy.)
 set -euo pipefail
 
-E2E_MODE="${E2E_MODE:-run}"
-E2E_TEST_BIN="${E2E_TEST_BIN:?E2E_TEST_BIN must be set by run.sh}"
-E2E_TEST_FILTER="${E2E_TEST_FILTER:-}"
-DECOYS="${DECOYS:-0}"
 PROXY_PORT=2081
 SOCK=/sock/proxy.sock
-# A public URL the chain must be able to fetch (plain-http absolute-form GET
-# — what socat speaks cleanly; TLS/CONNECT is exercised later by codex
-# itself). Any 2xx/3xx proves the socat→forwarder→proxy chain is live.
-CANARY_HOST=example.com
-# Dead destinations for fingerprint calibration. The chain tunnels loopback
-# CONNECTs to the proxy's remote egress point, so "dead" must hold THERE —
-# a box we cannot inspect. Instead of trusting any single port, calibrate
-# against THREE distinct improbable ports. A no-answer and a fingerprint-
-# matching response BOTH prove unreachability, so presence need not be stable;
-# only the RESPONSE probes must mutually agree on the fingerprint (fp_calibrate):
-#   :1     tcpmux (RFC 1078; archaic, never deployed) — also the fixture's
-#          dead-ingest port on this host
-#   :9     discard protocol (RFC 863; archaic, never deployed)
-#   :65533 top of the dynamic range — improbable static listener
-# A live listener on any one of them answers differently from the proxy's
-# own error on the others → the response probes disagree → exit 73 (fail closed).
-DEAD_TARGETS=(127.0.0.1:1 127.0.0.1:9 127.0.0.1:65533)
-# Same path for calibration and prod probes: if the proxy error echoes the
-# URL, the echoes differ only by target host:port, which resp_body_norm()
-# masks before comparison.
-FENCE_PATH=/api/version
-# Field name distinctive of calm-server's GET /api/version JSON body. NOT a
-# pass/fail criterion anymore (the fingerprint allowlist subsumes it); kept
-# only to make a breach message conclusive when it matches.
+# Positive canary: an allowlisted host whose CONNECT must tunnel (200) through
+# the full chain. Overridable only for the sourced-function regression path.
+FENCE_CANARY="${FENCE_CANARY:-chatgpt.com:443}"
+# Targets our gate MUST refuse: prod (wrong port) + RFC1918 / link-local
+# (wrong host) on :443. All are denied by the gate's positive allowlist before
+# it dials upstream, so refusal is deterministic.
+FENCE_DENY_TARGETS=(127.0.0.1:4040 127.0.0.1:4041 10.0.0.1:443 169.254.169.254:443)
+# Field distinctive of calm-server's GET /api/version body. NOT a pass/fail
+# criterion (the gate's 403 is): kept only to make a breach message conclusive.
 PROD_MARKER=kernelVersion
 
-log() { printf '[e2e-entry] %s\n' "$*" >&2; }
-die() { log "FATAL: $*"; exit 70; }
+log()  { printf '[e2e-entry] %s\n' "$*" >&2; }
+die()  { log "FATAL: $*"; exit 70; }
+# Fence exits carry their own code (72 chain-not-live, 71 breach).
+fail() { local code="$1"; shift; log "FATAL: $*"; exit "$code"; }
 
-# ---- mount-layout assertions (catches bind/tmpfs ordering regressions) ----
-[ -S "$SOCK" ] || die "forwarder unix socket missing at $SOCK"
-[ -r "$HOME/.codex/auth.json" ] || die "auth.json not mounted at \$HOME/.codex/auth.json"
-[ -x /opt/codex/codex ] || die "codex binary not mounted at /opt/codex/codex"
-[ -x "$E2E_TEST_BIN" ] || die "test binary not visible at $E2E_TEST_BIN"
-
-# ---- 1. proxy chain --------------------------------------------------------
-socat "TCP-LISTEN:${PROXY_PORT},bind=127.0.0.1,fork,reuseaddr" "UNIX-CONNECT:${SOCK}" &
-SOCAT_PID=$!
-# Explicit lifecycle for the backgrounded stub: tini (--init) would collapse
-# the namespace on exit anyway, but be explicit so no path leaves it behind.
-trap 'kill "$SOCAT_PID" 2>/dev/null || true' EXIT
-ready=0
-for _ in $(seq 1 50); do
-    if (exec 3<>"/dev/tcp/127.0.0.1/${PROXY_PORT}") 2>/dev/null; then
-        ready=1
-        break
-    fi
-    sleep 0.2
-done
-[ "$ready" = 1 ] || die "in-container socat proxy stub never came up on :${PROXY_PORT}"
-log "proxy chain up: 127.0.0.1:${PROXY_PORT} -> ${SOCK}"
-
-# ---- 2. fence preflight (design §B — asserted EVERY run, never assumed) ----
-# HTTP client via socat (in-image; no curl): absolute-form GET through the
-# proxy, HTTP/1.0 + Connection: close so the exchange self-terminates.
-proxy_get() {
-    # GET http://$1$2 through the in-container stub.
-    # Sets RESP (raw response) and STATUS ("" when no HTTP answer came back).
-    local host="$1" path="$2"
-    RESP="$(printf 'GET http://%s%s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n' "$host" "$path" "$host" \
-        | timeout 20 socat -t 15 -T 15 - "TCP:127.0.0.1:${PROXY_PORT}" 2>/dev/null)" || true
+# ---- fence primitives (sourceable) -----------------------------------------
+# CONNECT $1 (host:port) through the in-container chain (:2081 → /sock → host
+# gate → sing-box). Sets RESP (raw response) + STATUS (numeric HTTP code, "" on
+# no answer). Returns 0 iff the tunnel was ESTABLISHED (gate replied 200); a
+# refused CONNECT (403) or no answer returns non-zero. HTTP/1.1 CONNECT is what
+# codex itself speaks to NEIGE_CODEX_PROXY; short idle timeouts because an
+# established tunnel then sits silent (we send no TLS) and a 403 closes at once.
+proxy_connect() {
+    local hostport="$1"
+    RESP="$(printf 'CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n' "$hostport" "$hostport" \
+        | timeout 25 socat -t 3 -T 3 - "TCP:127.0.0.1:${PROXY_PORT}" 2>/dev/null)" || true
     STATUS="$(printf '%s' "$RESP" | head -n1 | awk '/^HTTP\//{print $2}')"
+    [ "$STATUS" = 200 ]
 }
 
-# (a) remote positive canary — REQUIRED to succeed, else the fence below
-# proves nothing (a broken chain must not pass as "prod unreachable").
-canary_ok=0
-for attempt in 1 2 3; do
-    proxy_get "$CANARY_HOST" /
-    case "$STATUS" in
-        2??|3??)
-            canary_ok=1
-            log "fence canary OK: http://$CANARY_HOST/ -> HTTP $STATUS through the chain (chain is live)"
+fence_assert_allowed() { proxy_connect "$1"; }
+
+fence_assert_denied() {
+    # Established (reachable) = FAIL; refused / no answer = OK.
+    if proxy_connect "$1"; then
+        return 1
+    fi
+    return 0
+}
+
+fence_preflight() {
+    # (a) POSITIVE: an allowlisted host must CONNECT (chain live + allowlist OK).
+    local attempt ok=0
+    for attempt in 1 2 3; do
+        if fence_assert_allowed "$FENCE_CANARY"; then
+            ok=1
+            log "fence canary OK: CONNECT $FENCE_CANARY -> 200 through the chain (chain live, allowlist admits)"
             break
-            ;;
-    esac
-    log "fence canary attempt $attempt/3: http://$CANARY_HOST/ -> '${STATUS:-no HTTP answer}' — retrying"
-    sleep 2
-done
-if [ "$canary_ok" != 1 ]; then
-    log "FATAL: remote canary never succeeded — chain not live, CANNOT PROVE FENCE; aborting before any codex runs."
-    exit 72
-fi
+        fi
+        log "fence canary attempt $attempt/3: CONNECT $FENCE_CANARY -> '${STATUS:-no answer}' — retrying"
+        sleep 2
+    done
+    [ "$ok" = 1 ] || fail 72 "positive canary never succeeded — chain not live or allowlist broke; CANNOT PROVE FENCE, aborting before any codex runs"
 
-# (b) calibrate the proxy-error FINGERPRINT off a guaranteed-dead destination.
-# Rationale (fail-closed allowlist): instead of classifying prod answers by
-# what they LACK (the old marker-absence blocklist — spoofable by any error
-# page that happens not to say kernelVersion), we learn what the proxy's own
-# unreachable-destination behavior IS, and later accept ONLY that. Anything
-# else answering on a prod port is, by elimination, not the proxy erroring —
-# it is something reachable.
-resp_status_line() { printf '%s' "$RESP" | head -n1 | tr -d '\r'; }
-resp_header_shape() {
-    # "Shape" = sorted lowercase NAMES of all headers (values like Date vary
-    # legitimately between two probes) + the full lowercased Server / Via /
-    # Proxy-* lines (they identify the answering software and must not move).
-    local hdrs
-    hdrs="$(printf '%s' "$RESP" | tr -d '\r' | sed -n '2,/^$/p' | sed '/^$/d' | tr '[:upper:]' '[:lower:]')"
-    printf '%s\n' "$hdrs" | sed -n 's/^\([^:[:space:]]*\):.*$/name:\1/p' | sort
-    printf '%s\n' "$hdrs" | grep -E '^(server|via|proxy-)[^:]*:' | sort || true
+    # (b) NEGATIVE (deterministic): the gate must REFUSE prod + private targets.
+    local t
+    for t in "${FENCE_DENY_TARGETS[@]}"; do
+        if fence_assert_denied "$t"; then
+            log "fence: CONNECT $t -> refused (${STATUS:-no answer}) by our gate — OK"
+            continue
+        fi
+        log "FENCE BREACH: CONNECT $t was ESTABLISHED (status $STATUS) through the chain — the gate admitted a path to prod."
+        if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
+            log "FENCE BREACH: response carries '$PROD_MARKER' — PROVEN prod response."
+        fi
+        printf '%s\n' "$RESP" | head -n 8 >&2
+        fail 71 "FENCE BREACH: $t reachable through the forwarder — ABORTING before any codex runs"
+    done
+    log "fence preflight OK: chain live; prod :4040/:4041 (+ RFC1918/link-local) refused by our gate (deny by construction)"
 }
-resp_body_norm() {
-    # Body with the probed target masked: a proxy error page legitimately
-    # echoes the destination it failed to reach; masking makes bodies
-    # comparable across the different calibration ports and against the prod
-    # probes; every other byte must match.
-    # The mask is GLOBAL (every occurrence of the exact "host:port" string),
-    # broader than the URL-shaped/diagnostic contexts that actually need it —
-    # a context-scoped mask is awkward in portable shell, and global is safe
-    # because it cannot HIDE a breach: masking "127.0.0.1:4040" cannot erase
-    # the kernelVersion marker nor make a prod body byte/size-match the
-    # proxy's error page, and the prod ports differ from every calibration
-    # port, so a response crafted to abuse the mask would still have to match
-    # the calibrated fingerprint in every other dimension.
-    local target="$1" body
-    body="$(printf '%s' "$RESP" | sed -e '1,/^\r\{0,1\}$/d')"
-    printf '%s' "${body//"$target"/<TARGET>}"
-}
-body_sha() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
 
-# FP_HAS_RESPONSE=1 iff ANY dead-port probe returned an HTTP response; when so,
-# FP_STATUS_LINE/FP_HEADERS/FP_BODY_* hold the calibrated fingerprint. When 0,
-# every dead-port probe was no-answer and the accept-set is no-answer only.
-FP_HAS_RESPONSE=0
-FP_STATUS_LINE="" FP_HEADERS="" FP_BODY_MODE="" FP_BODY_HASH="" FP_BODY_SIZE=""
-fp_calibrate() {
-    local target i n=0 nresp=0 total=$(( ${#DEAD_TARGETS[@]} * 2 ))
-    local -a c_target=() c_present=() c_status=() c_hdrs=() c_body=() c_size=()
-    for target in "${DEAD_TARGETS[@]}"; do
-        for _ in 1 2; do
-            n=$((n + 1))
-            c_target[n]="$target"
-            proxy_get "$target" "$FENCE_PATH"
-            if [ -z "$STATUS" ]; then
-                c_present[n]=0 c_status[n]="" c_hdrs[n]="" c_body[n]="" c_size[n]=0
-                log "fingerprint probe $n/$total: http://$target$FENCE_PATH -> no HTTP answer"
+# ---- egress chain (sourceable) ---------------------------------------------
+# Bring up the in-container relay and block until it accepts. Sets SOCAT_PID and
+# installs the EXIT trap that reaps it.
+SOCAT_PID=""
+start_egress_chain() {
+    socat "TCP-LISTEN:${PROXY_PORT},bind=127.0.0.1,fork,reuseaddr" "UNIX-CONNECT:${SOCK}" &
+    SOCAT_PID=$!
+    # Explicit lifecycle for the backgrounded stub: tini (--init) would collapse
+    # the namespace on exit anyway, but be explicit so no path leaves it behind.
+    trap 'kill "$SOCAT_PID" 2>/dev/null || true' EXIT
+    local _ ready=0
+    for _ in $(seq 1 50); do
+        if (exec 3<>"/dev/tcp/127.0.0.1/${PROXY_PORT}") 2>/dev/null; then
+            ready=1
+            break
+        fi
+        sleep 0.2
+    done
+    [ "$ready" = 1 ] || die "in-container socat proxy stub never came up on :${PROXY_PORT}"
+    log "proxy chain up: 127.0.0.1:${PROXY_PORT} -> ${SOCK} (terminated host-side by e2e-egress-proxy)"
+}
+
+# ---- suite (sourceable) ----------------------------------------------------
+run_suite() {
+    local test_bin="$1" test_filter="$2" decoys="$3"
+
+    # ---- decoys (opt-in) ----------------------------------------------------
+    declare -A DECOY_PIDS=()
+    if [ "$decoys" = 1 ]; then
+        mkdir -p /tmp/decoys
+        local name
+        for name in neige-app calm-server neige-session-daemon; do
+            cp /bin/sleep "/tmp/decoys/$name"
+            "/tmp/decoys/$name" 100000 &
+            DECOY_PIDS[$name]=$!
+            log "decoy planted: $name (pid ${DECOY_PIDS[$name]})"
+        done
+    fi
+
+    # The egress stub must still be alive right before the suite starts — a dead
+    # socat here would strand every codex API call mid-run.
+    kill -0 "$SOCAT_PID" 2>/dev/null || die "in-container socat egress stub died between fence preflight and suite start"
+    local args=(--test-threads=1 --nocapture)
+    if [ -n "$test_filter" ]; then
+        args=("$test_filter" --exact "${args[@]}")
+    fi
+    log "running: $test_bin ${args[*]}"
+    local rc
+    set +e
+    "$test_bin" "${args[@]}"
+    rc=$?
+    set -e
+    log "suite exit: $rc"
+
+    if [ "$decoys" = 1 ]; then
+        local dead=0 name
+        for name in neige-app calm-server neige-session-daemon; do
+            if kill -0 "${DECOY_PIDS[$name]}" 2>/dev/null; then
+                log "decoy survived: $name"
             else
-                c_present[n]=1
-                c_status[n]="$(resp_status_line)"
-                c_hdrs[n]="$(resp_header_shape)"
-                c_body[n]="$(resp_body_norm "$target")"
-                c_size[n]="$(printf '%s' "${c_body[n]}" | wc -c)"
-                log "fingerprint probe $n/$total: http://$target$FENCE_PATH -> '${c_status[n]}' (${c_size[n]} body bytes)"
+                log "DECOY KILLED: $name — the agent stack still emits name-based kills (contained by the PID namespace, but FIX IT)"
+                dead=1
             fi
         done
-    done
-    # No-answer-safe calibration (#923 defect 2): a NO-ANSWER and a fingerprint-
-    # matching RESPONSE BOTH prove a target unreachable, so presence need NOT be
-    # stable across probes — a dead port that times out on one probe and 502s on
-    # another under proxy jitter is not a disagreement. We calibrate the
-    # fingerprint off the RESPONSE probes only and require THOSE to be mutually
-    # identical on the stable dims; two DIFFERENT responses are the genuine
-    # "cannot calibrate" (a 'dead' port may be live at the chain's egress) →
-    # ABORT (73). No-answer probes never count as disagreement.
-    local ref=0
-    for i in $(seq 1 "$n"); do
-        [ "${c_present[i]}" = 1 ] && nresp=$((nresp + 1))
-        [ "$ref" = 0 ] && [ "${c_present[i]}" = 1 ] && ref="$i"
-    done
-    if [ "$ref" = 0 ]; then
-        # ALL dead-port probes were no-answer → accept-set is no-answer only.
-        FP_HAS_RESPONSE=0
-        log "fingerprint calibrated: all $n probes over ${#DEAD_TARGETS[@]} dead ports (${DEAD_TARGETS[*]}) yield NO HTTP answer through this chain — accept-set is NO-ANSWER only; ANY HTTP answer from a prod probe is a breach."
-        return 0
-    fi
-    FP_HAS_RESPONSE=1
-    # Every OTHER response probe must match the reference on the stable dims.
-    for i in $(seq 1 "$n"); do
-        [ "$i" = "$ref" ] && continue
-        [ "${c_present[i]}" = 1 ] || continue   # no-answer never disagrees
-        if [ "${c_status[i]}" != "${c_status[ref]}" ]; then
-            log "FATAL: dead-destination RESPONSES disagree on status line: http://${c_target[ref]}$FENCE_PATH -> '${c_status[ref]}' vs http://${c_target[i]}$FENCE_PATH -> '${c_status[i]}' — a 'dead' port may be live at the chain's egress, cannot calibrate = cannot prove fence."
-            exit 73
+        log "pgrep -c sleep-decoys: $(pgrep -c -f /tmp/decoys 2>/dev/null || echo 0) still running"
+        if [ "$dead" = 1 ] && [ "$rc" -eq 0 ]; then
+            rc=97
         fi
-        if [ "${c_hdrs[i]}" != "${c_hdrs[ref]}" ]; then
-            log "FATAL: dead-destination RESPONSE header shapes disagree (http://${c_target[ref]}$FENCE_PATH vs http://${c_target[i]}$FENCE_PATH) — a 'dead' port may be live at the chain's egress, cannot calibrate = cannot prove fence."
-            log "shape ref (${c_target[ref]}):"; printf '%s\n' "${c_hdrs[ref]}" | sed 's/^/[e2e-entry]   /' >&2
-            log "shape $i (${c_target[i]}):"; printf '%s\n' "${c_hdrs[i]}" | sed 's/^/[e2e-entry]   /' >&2
-            exit 73
-        fi
-    done
-    FP_STATUS_LINE="${c_status[ref]}"
-    FP_HEADERS="${c_hdrs[ref]}"
-    FP_BODY_SIZE="${c_size[ref]}"
-    # Body dimension across the RESPONSE probes only.
-    local body_identical=1 size_identical=1
-    for i in $(seq 1 "$n"); do
-        [ "$i" = "$ref" ] && continue
-        [ "${c_present[i]}" = 1 ] || continue
-        [ "${c_body[i]}" = "${c_body[ref]}" ] || body_identical=0
-        [ "${c_size[i]}" = "${c_size[ref]}" ] || size_identical=0
-    done
-    if [ "$body_identical" = 1 ]; then
-        FP_BODY_MODE="hash"
-        FP_BODY_HASH="$(body_sha "${c_body[ref]}")"
-    elif [ "$size_identical" = 1 ]; then
-        # Byte drift with STABLE size (e.g. an embedded timestamp) — size
-        # joins the fingerprint, exact bytes are excluded. Logged loudly.
-        FP_BODY_MODE="size"
-        log "NOTICE: dead-destination response bodies differ byte-wise but ALL agree on size — only size ($FP_BODY_SIZE) joins the fingerprint (unstable bytes excluded)."
-    else
-        # Fail-closed: a body whose SIZE moves between response probes leaves
-        # the fence no enforceable body dimension — that is an unstable
-        # fingerprint, not a weaker one to limp along with.
-        log "FATAL: dead-destination RESPONSE body sizes disagree across probes — unstable body, cannot calibrate = cannot prove fence."
-        exit 73
     fi
-    log "fingerprint calibrated ($nresp of $n dead-port probes answered; no-answer probes also accepted as unreachable): status='$FP_STATUS_LINE' body-mode=$FP_BODY_MODE${FP_BODY_HASH:+ sha256=$FP_BODY_HASH}${FP_BODY_SIZE:+ size=$FP_BODY_SIZE}"
-    log "fingerprint header shape:"
-    printf '%s\n' "$FP_HEADERS" | sed 's/^/[e2e-entry]   /' >&2
-    log "fingerprint body head: $(printf '%s' "${c_body[ref]}" | head -c 160 | tr -d '\r\n')"
+
+    return "$rc"
 }
-fp_calibrate
 
-# (c) prod must be unreachable through the (proven-live, now calibrated)
-# chain. ALLOWLIST: OK is only "no HTTP answer" or "answer == fingerprint in
-# every stable dimension". Any other answer aborts, whatever its status.
-fence_probe() {
-    local target="$1"
-    proxy_get "$target" "$FENCE_PATH"
-    if [ -z "$STATUS" ]; then
-        log "fence: $target -> no HTTP answer (unreachable through the chain) — OK"
-        return 0
+# ---- main (executed, not sourced) ------------------------------------------
+main() {
+    E2E_MODE="${E2E_MODE:-run}"
+    E2E_TEST_BIN="${E2E_TEST_BIN:?E2E_TEST_BIN must be set by run.sh}"
+    E2E_TEST_FILTER="${E2E_TEST_FILTER:-}"
+    DECOYS="${DECOYS:-0}"
+
+    # ---- mount-layout assertions (catches bind/tmpfs ordering regressions) --
+    [ -S "$SOCK" ] || die "forwarder unix socket missing at $SOCK"
+    [ -r "$HOME/.codex/auth.json" ] || die "auth.json not mounted at \$HOME/.codex/auth.json"
+    [ -x /opt/codex/codex ] || die "codex binary not mounted at /opt/codex/codex"
+    [ -x "$E2E_TEST_BIN" ] || die "test binary not visible at $E2E_TEST_BIN"
+
+    start_egress_chain
+    fence_preflight
+
+    # ---- preflight mode: exec probe only ------------------------------------
+    if [ "$E2E_MODE" = preflight ]; then
+        local count
+        count="$("$E2E_TEST_BIN" --list 2>&1 | tail -n1)" || die "test binary --list failed (glibc/layout drift?)"
+        log "exec probe OK: $count"
+        exit 0
     fi
-    local s h b bs why=""
-    s="$(resp_status_line)"
-    h="$(resp_header_shape)"
-    b="$(resp_body_norm "$target")"
-    bs="$(printf '%s' "$b" | wc -c)"
-    if [ "$FP_HAS_RESPONSE" = 0 ]; then
-        why="dead destinations yield NO HTTP answer through this chain (accept-set is no-answer only), yet $target answered"
-    elif [ "$s" != "$FP_STATUS_LINE" ]; then
-        why="status line '$s' != fingerprint '$FP_STATUS_LINE'"
-    elif [ "$h" != "$FP_HEADERS" ]; then
-        why="header shape differs from fingerprint"
-    elif [ "$FP_BODY_MODE" = hash ] && [ "$(body_sha "$b")" != "$FP_BODY_HASH" ]; then
-        why="body sha256 differs from fingerprint (sizes: $bs vs $FP_BODY_SIZE)"
-    elif [ "$FP_BODY_MODE" = size ] && [ "$bs" != "$FP_BODY_SIZE" ]; then
-        why="body size $bs != fingerprint size $FP_BODY_SIZE"
-    fi
-    if [ -z "$why" ]; then
-        log "fence: $target -> '$s' matches the dead-destination proxy-error fingerprint — OK"
-        return 0
-    fi
-    log "FENCE BREACH: $target answered through the proxy chain, and the answer is NOT the proxy's own dead-destination error: $why."
-    if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
-        log "FENCE BREACH: response carries '$PROD_MARKER' — PROVEN prod response."
-    fi
-    if [ "$h" != "$FP_HEADERS" ]; then
-        log "observed header shape:"; printf '%s\n' "$h" | sed 's/^/[e2e-entry]   /' >&2
-        log "fingerprint header shape:"; printf '%s\n' "$FP_HEADERS" | sed 's/^/[e2e-entry]   /' >&2
-    fi
-    printf '%s\n' "$RESP" | head -n 12 >&2
-    log "sing-box routing would hand agents a path to prod — ABORTING before any codex runs."
-    return 1
+
+    run_suite "$E2E_TEST_BIN" "$E2E_TEST_FILTER" "$DECOYS"
 }
-fence_probe 127.0.0.1:4040 || exit 71
-fence_probe 127.0.0.1:4041 || exit 71
-log "fence preflight OK: chain live, prod :4040/:4041 answer only as the proxy's own dead-destination error (or not at all)"
 
-# ---- 3. preflight mode: exec probe only ------------------------------------
-if [ "$E2E_MODE" = preflight ]; then
-    count="$("$E2E_TEST_BIN" --list 2>&1 | tail -n1)" || die "test binary --list failed (glibc/layout drift?)"
-    log "exec probe OK: $count"
-    exit 0
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
 fi
-
-# ---- 4. decoys (opt-in) -----------------------------------------------------
-declare -A DECOY_PIDS=()
-if [ "$DECOYS" = 1 ]; then
-    mkdir -p /tmp/decoys
-    for name in neige-app calm-server neige-session-daemon; do
-        cp /bin/sleep "/tmp/decoys/$name"
-        "/tmp/decoys/$name" 100000 &
-        DECOY_PIDS[$name]=$!
-        log "decoy planted: $name (pid ${DECOY_PIDS[$name]})"
-    done
-fi
-
-# ---- 5. the suite -----------------------------------------------------------
-# The egress stub must still be alive right before the suite starts — a dead
-# socat here would strand every codex API call mid-run.
-kill -0 "$SOCAT_PID" 2>/dev/null || die "in-container socat egress stub died between fence preflight and suite start"
-args=(--test-threads=1 --nocapture)
-if [ -n "$E2E_TEST_FILTER" ]; then
-    args=("$E2E_TEST_FILTER" --exact "${args[@]}")
-fi
-log "running: $E2E_TEST_BIN ${args[*]}"
-set +e
-"$E2E_TEST_BIN" "${args[@]}"
-rc=$?
-set -e
-log "suite exit: $rc"
-
-if [ "$DECOYS" = 1 ]; then
-    dead=0
-    for name in neige-app calm-server neige-session-daemon; do
-        if kill -0 "${DECOY_PIDS[$name]}" 2>/dev/null; then
-            log "decoy survived: $name"
-        else
-            log "DECOY KILLED: $name — the agent stack still emits name-based kills (contained by the PID namespace, but FIX IT)"
-            dead=1
-        fi
-    done
-    log "pgrep -c sleep-decoys: $(pgrep -c -f /tmp/decoys 2>/dev/null || echo 0) still running"
-    if [ "$dead" = 1 ] && [ "$rc" -eq 0 ]; then
-        rc=97
-    fi
-fi
-
-exit "$rc"

@@ -1,0 +1,52 @@
+[package]
+name = "e2e-egress-proxy"
+version = "0.1.0"
+edition = "2024"
+
+# Host-side deterministic CONNECT gate for the #863 docker-isolated codex-e2e
+# tier (#923 defect 2). It is the SOLE terminator of the container's egress
+# unix socket (/sock/proxy.sock): a rogue codex process can connect(2) that
+# socket directly (a read-only bind mount does not block connect), so whatever
+# terminates it IS the security boundary. This binary REFUSES every CONNECT
+# whose host is not on a dot-anchored chatgpt/openai allowlist or whose port is
+# not 443 — turning the tier's fence from a probabilistic fingerprint inference
+# into a deterministic assertion (design docs/_923-l7-egress-forwarder-design).
+#
+# Host-compiled + bind-mounted into the --network host forwarder container
+# (glibc tracks the host, same model as the test binary), NOT run inside the
+# --network none codex run container. Its 127.0.0.1 is the host's, so it dials
+# the host sing-box proxy (127.0.0.1:2080) for admitted traffic.
+
+[lib]
+name = "e2e_egress_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "e2e-egress-proxy"
+path = "src/main.rs"
+
+[dependencies]
+# CONNECT parsing + splice only: no rt "full", no TLS (end-to-end TLS is opaque
+# to us, tunneled through sing-box). net for Unix/Tcp streams, io-util for the
+# AsyncRead/Write ext traits + copy_bidirectional.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "net",
+] }
+
+[dev-dependencies]
+# Integration tests spin up an in-process stub upstream (a tiny TCP listener
+# acting as sing-box) + our proxy over a real unix socket — fully hermetic, no
+# real network. time for bounded per-probe reads; tempfile (forced under /tmp)
+# for a short-path socket dir (SUN_LEN ~108).
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "net",
+    "time",
+    "sync",
+] }
+tempfile = "3"

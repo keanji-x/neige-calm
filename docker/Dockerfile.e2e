@@ -20,9 +20,15 @@
 #                  (the model prompt prefers `rg`/`rg --files`); without it the
 #                  agent's search/plan returns empty and the test fails (#923
 #                  defect 3). Audited the vendored codex prompts + git-forge
-#                  fixture: `rg` is the only agent-facing CLI missing from base
-#                  — `jq` is consumed inside the shimmed `gh` (never a separate
-#                  process), and fd/ast-grep/bat/tree/node/python are unused.
+#                  fixture: `rg` and `zstd` are the only agent-/worker-facing
+#                  CLIs missing from base — `jq` is consumed inside the shimmed
+#                  `gh` (never a separate process), and fd/ast-grep/bat/tree/
+#                  node/python are unused.
+#   zstd         — the worker rollout reader shells out to `zstd -dc` to read
+#                  compressed codex rollout files (crates/calm-server/src/
+#                  worker_flow/codex_rollout.rs). Not tier-triggered by today's
+#                  two passing tests, but a genuine runtime dependency of the
+#                  worker path the suite exercises (#923 defect 3).
 #
 # No rust toolchain (host-compile model, see docker/Dockerfile.server), no gh
 # (the fixture shims it), no python3 (only the chromium TUI e2e needs it).
@@ -36,5 +42,5 @@ ARG http_proxy=
 ARG https_proxy=
 ARG no_proxy=
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates bubblewrap socat procps ripgrep \
+ && apt-get install -y --no-install-recommends git ca-certificates bubblewrap socat procps ripgrep zstd \
  && rm -rf /var/lib/apt/lists/*
