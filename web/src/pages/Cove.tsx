@@ -457,13 +457,14 @@ function NewWaveDialog({
   // issue URL. Reset to 'task' whenever the dialog closes so every
   // open starts from the familiar default.
   const [variant, setVariant] = useState<'task' | 'issue-dev'>('task');
+  const variantSelectId = useId();
   useEffect(() => {
     if (!open) setVariant('task');
   }, [open]);
-  // Variant-appropriate focus after toggle activation (#891 review).
+  // Variant-appropriate focus after a wave-type change (#891 review).
   // Dialog's initial-focus pass only runs when `open` flips true, so
-  // switching the wave kind (which remounts NewTaskForm via `key`)
-  // would otherwise leave focus on the toggle button while the new
+  // switching the wave type (which remounts NewTaskForm via `key`)
+  // would otherwise leave focus on the <select> while the new
   // variant's first field sits unfocused. NewTaskForm rebinds
   // `initialFieldRef` to the new variant's first field during the
   // remount commit (refs attach before effects run), so this effect
@@ -482,32 +483,25 @@ function NewWaveDialog({
     >
       {open && (
         <>
-          {/* Variant switch — toggle-button pair (aria-pressed) rather
-              than a tablist: there's no tabpanel relationship to
-              express, just two mutually exclusive form flavors.
-              Switching remounts NewTaskForm (key) so per-variant state
-              starts clean. */}
-          <div
-            role="group"
-            aria-label="Wave kind"
-            className="new-wave-kind-tabs"
-          >
-            <button
-              type="button"
-              className="new-wave-kind-tab"
-              aria-pressed={variant === 'task'}
-              onClick={() => setVariant('task')}
+          {/* Variant switch — a labeled native <select> (#891 signoff
+              rework). A select scales to future workflows: each new
+              workflow becomes one more <option>, not another tab.
+              Native select semantics need no custom aria. Changing it
+              remounts NewTaskForm (key) so per-variant state starts
+              clean. */}
+          <div className="new-wave-kind">
+            <label htmlFor={variantSelectId} className="new-task-form-label">
+              Wave type
+            </label>
+            <select
+              id={variantSelectId}
+              className="new-task-form-input"
+              value={variant}
+              onChange={(e) => setVariant(e.target.value as 'task' | 'issue-dev')}
             >
-              Task
-            </button>
-            <button
-              type="button"
-              className="new-wave-kind-tab"
-              aria-pressed={variant === 'issue-dev'}
-              onClick={() => setVariant('issue-dev')}
-            >
-              Issue dev
-            </button>
+              <option value="task">Task</option>
+              <option value="issue-dev">Issue dev</option>
+            </select>
           </div>
           <NewTaskForm
             key={variant}

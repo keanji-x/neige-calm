@@ -3427,29 +3427,15 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
 /* ===== Issue-dev wave variant (#891 slice ③) =====
-   Variant switch above NewTaskForm in the New-wave dialog: a two-button
-   segmented toggle (aria-pressed) that reads as tabs — underline on the
-   active choice, quiet text otherwise. */
-.new-wave-kind-tabs {
+   Variant switch above NewTaskForm in the New-wave dialog: a labeled
+   native <select> (label + control reuse the new-task-form field
+   styles) — one option per wave type, so future workflows extend the
+   list instead of adding tabs. */
+.new-wave-kind {
   display: flex;
-  gap: var(--space-4);
+  flex-direction: column;
+  gap: var(--space-2);
   margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--hairline-strong);
-}
-.new-wave-kind-tab {
-  font: inherit;
-  font-size: var(--text-base);
-  padding: var(--space-2) var(--space-4);
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-}
-.new-wave-kind-tab:hover { color: var(--text); }
-.new-wave-kind-tab[aria-pressed='true'] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
 }
 
 /* Raw workflow_input JSON escape hatch — collapsed <details> at the

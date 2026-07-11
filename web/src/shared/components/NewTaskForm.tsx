@@ -154,7 +154,6 @@ export function NewTaskForm({
   const headingId = useId();
   const issueUrlId = useId();
   const mergePolicyId = useId();
-  const notesId = useId();
   const rawJsonId = useId();
 
   const [title, setTitle] = useState('');
@@ -164,7 +163,6 @@ export function NewTaskForm({
   const isIssueDev = variant === 'issue-dev';
   const [issueUrl, setIssueUrl] = useState('');
   const [mergePolicy, setMergePolicy] = useState<MergePolicy>('hold-for-ratify');
-  const [notes, setNotes] = useState('');
   // Raw JSON escape hatch: `null` = not overridden (the textarea mirrors
   // the derived workflow_input); a string = the user has taken over and
   // their JSON is what gets POSTed (schema-level validation stays
@@ -227,7 +225,7 @@ export function NewTaskForm({
   const urlInputRef = useRef<HTMLInputElement | null>(null);
   // The variant's FIRST field carries `initialFocusRef` (when the caller
   // forwarded one) so the host Dialog's initial-focus pass — and the
-  // caller's variant-toggle refocus — land on the right element: the
+  // caller's variant-change refocus — land on the right element: the
   // issue-URL input in 'issue-dev', the title textarea in 'task'.
   // Callback refs bridge the typing (the shared ref is `HTMLElement`,
   // the elements are concrete input/textarea types — a plain ref-object
@@ -364,20 +362,20 @@ export function NewTaskForm({
     setTitle(`dev #${parsedIssue.issue_number}`);
   }, [parsedIssue]);
 
-  /** The `workflow_input` derived from the structured fields — exactly
-   *  the shape design §3.2 pins: notes omitted when empty, merge_policy
-   *  always present. `null` until the URL parses. */
+  /** The `workflow_input` derived from the structured fields —
+   *  merge_policy always present. `null` until the URL parses. The
+   *  schema's optional `notes` key has no form field (#891 signoff:
+   *  it duplicated the task-description free-text) — the raw-JSON
+   *  escape hatch is the way to send one. */
   const derivedWorkflowInput = useMemo(() => {
     if (!parsedIssue) return null;
-    const trimmedNotes = notes.trim();
     return {
       issue_url: parsedIssue.issue_url,
       repo: parsedIssue.repo,
       issue_number: parsedIssue.issue_number,
       merge_policy: mergePolicy,
-      ...(trimmedNotes ? { notes: trimmedNotes } : {}),
     };
-  }, [parsedIssue, mergePolicy, notes]);
+  }, [parsedIssue, mergePolicy]);
 
   // What the raw-JSON textarea shows: the user's override once they've
   // edited, otherwise a live mirror of the derived input.
@@ -616,9 +614,11 @@ export function NewTaskForm({
           placeholder="What should the agent do?"
         />
 
-        {/* Merge policy + notes — issue-dev variant only. merge_policy
-            is always sent (kernel doesn't apply schema defaults, design
-            F6); notes is omitted from the body when empty. */}
+        {/* Merge policy — issue-dev variant only. Always sent (kernel
+            doesn't apply schema defaults, design F6). The schema's
+            optional `notes` deliberately has no field here (#891
+            signoff: it duplicated the task-description free-text);
+            the raw-JSON escape hatch below still carries it. */}
         {isIssueDev && (
           <>
             <label htmlFor={mergePolicyId} className="new-task-form-label">
@@ -637,18 +637,6 @@ export function NewTaskForm({
                 auto-merge — merge as soon as the merge fence converges
               </option>
             </select>
-
-            <label htmlFor={notesId} className="new-task-form-label">
-              Notes (optional)
-            </label>
-            <textarea
-              id={notesId}
-              className="new-task-form-input"
-              rows={2}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Extra context for the agent (never overrides the issue or the gates)"
-            />
           </>
         )}
 

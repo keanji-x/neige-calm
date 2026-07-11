@@ -74,14 +74,17 @@ afterEach(() => {
 });
 
 describe('NewTaskForm issue-dev — fields + prefill', () => {
-  it('renders the issue-dev fields (URL, merge policy, notes, raw JSON) with the variant heading', () => {
+  it('renders the issue-dev fields (URL, merge policy, raw JSON) with the variant heading — and NO notes field', () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([]);
     renderForm();
     expect(screen.getByRole('form', { name: /new issue-dev task/i })).toBeTruthy();
     expect(screen.getByLabelText(/github issue url/i)).toBeTruthy();
     expect(screen.getByLabelText(/merge policy/i)).toBeTruthy();
-    expect(screen.getByLabelText(/notes/i)).toBeTruthy();
     expect(screen.getByText(/raw workflow_input json/i)).toBeTruthy();
+    // #891 signoff: no notes textarea — it duplicated the
+    // task-description free-text. notes stays schema-only; the raw-JSON
+    // escape hatch is the way to send one.
+    expect(screen.queryByLabelText(/notes/i)).toBeNull();
     // The plain fields are still here — cwd flow is reused untouched.
     expect(screen.getByLabelText(/working directory/i)).toBeTruthy();
   });
@@ -162,7 +165,7 @@ describe('NewTaskForm issue-dev — validation gating', () => {
 });
 
 describe('NewTaskForm issue-dev — submit body', () => {
-  it('pins the exact create body: workflow_id + derived workflow_input, notes omitted when empty', async () => {
+  it('pins the exact create body: workflow_id + derived workflow_input, no notes key ever', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
@@ -174,9 +177,10 @@ describe('NewTaskForm issue-dev — submit body', () => {
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
 
-    // Design §3.2 — the exact wire shape, pinned with toEqual (no extra
-    // keys, no missing keys). merge_policy is always sent; notes is
-    // absent because the field was left empty.
+    // The exact wire shape, pinned with toEqual (no extra keys, no
+    // missing keys). merge_policy is always sent; notes is NEVER
+    // emitted by the form (#891 signoff dropped the field) — only the
+    // raw-JSON escape hatch can carry it.
     expect(createSpy.mock.calls[0][0]).toEqual({
       cove_id: 'cove-1',
       title: 'dev #891',
@@ -194,7 +198,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 
-  it('sends the selected merge policy and includes trimmed notes when non-empty', async () => {
+  it('sends the selected merge policy — still with no notes key', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
@@ -203,7 +207,6 @@ describe('NewTaskForm issue-dev — submit body', () => {
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await user.selectOptions(screen.getByLabelText(/merge policy/i), 'auto-merge');
-    await user.type(screen.getByLabelText(/notes/i), '  focus on the parser  ');
     await fillCwd(user);
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
@@ -213,7 +216,6 @@ describe('NewTaskForm issue-dev — submit body', () => {
       repo: 'keanji-x/neige-calm',
       issue_number: 891,
       merge_policy: 'auto-merge',
-      notes: 'focus on the parser',
     });
   });
 
@@ -262,7 +264,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     expect(JSON.parse(ta.value).merge_policy).toBe('auto-merge');
   });
 
-  it('an edited raw JSON overrides the derived fields in the submit body', async () => {
+  it('an edited raw JSON overrides the derived fields in the submit body — including a notes key, which raw JSON alone can carry (#891 signoff)', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
