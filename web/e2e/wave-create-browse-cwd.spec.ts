@@ -94,14 +94,16 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   await expect(form).toBeVisible();
 
   // Step 3 — click Browse… next to the cwd input. The button's
-  // accessible name is its visible text ("Browse…"). EXACT name, not a
-  // /browse/i regex: the cove select's `.calm-select-trigger` button
-  // (#891) is named by its cloned selected-option content — here the
-  // cove "E2E browse cove ..." — and a substring regex strict-mode
-  // collides with it. Same rule for every in-dialog button locator:
-  // calm-select triggers surface as buttons named by the selected
-  // option, so match button names exactly.
-  const browseBtn = dialog.getByRole('button', { name: 'Browse…' });
+  // accessible name is its visible text "Browse…" (U+2026), matched
+  // with `exact: true`. NOT a /browse/i regex: the cove select's
+  // `.calm-select-trigger` button (#891) surfaces in Chromium's AX
+  // tree named by its cloned selected-option content — here the cove
+  // "E2E browse cove ..." — which strict-mode-collides a substring
+  // match. `exact: true` is the regression sentinel: it also excludes
+  // any future button whose name merely CONTAINS "Browse…". Same rule
+  // for every in-dialog button locator — calm-select triggers are
+  // buttons named by the selected option, so match names exactly.
+  const browseBtn = dialog.getByRole('button', { name: 'Browse…', exact: true });
   await expect(browseBtn).toBeVisible();
   await browseBtn.click();
 

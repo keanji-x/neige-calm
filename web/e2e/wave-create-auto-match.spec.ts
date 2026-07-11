@@ -122,7 +122,7 @@ test('NewTaskForm auto-matches cwd to claiming cove (not surrounding cove)', asy
   // Step 5 — submit. The form should route through `coveChoice.mode
   // === 'auto'`, posting the wave with cove_id = A (attach_folder
   // intentionally false because the cwd is already covered).
-  await form.getByRole('button', { name: 'Create task' }).click();
+  await form.getByRole('button', { name: 'Create task', exact: true }).click();
 
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/, { timeout: 10_000 });
   const waveId = new URL(page.url()).pathname.split('/').pop()!;

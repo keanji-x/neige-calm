@@ -969,24 +969,22 @@ function CoveSection({
            treatment. Fallback engines ignore the button child and
            keep the OS popup.
 
-           aria-hidden + tabIndex=-1 on the trigger: purely
-           presentational. In Chromium it is otherwise exposed as an
-           AX button named by the cloned option content — i.e. the
-           selected COVE NAME — which strict-mode-collided with the
-           browse e2e's /browse/i button locator (cove "E2E browse
-           cove"). The <select> is the focusable, semantic control;
-           tabIndex=-1 keeps axe's aria-hidden-focus rule green. */
+           The trigger is intentionally a named-but-non-focusable
+           button: the <select> owns focus + semantics (base-select).
+           In Chromium the trigger still surfaces in the AX button tree
+           named by the cloned option content — i.e. the selected COVE
+           NAME. We do NOT aria-hidden it (that risks stripping the
+           subtree Chrome announces as the selected value); the cove
+           name in the button surface is why in-dialog button e2e
+           locators must use exact names (a substring /browse/i once
+           collided with a cove named "E2E browse cove"). */
         <select
           id={coveSelectId}
           className="new-task-form-input calm-select"
           value={coveChoice.mode === 'existing' ? coveChoice.coveId : ''}
           onChange={(e) => setCoveChoice({ mode: 'existing', coveId: e.target.value })}
         >
-          <button
-            className="calm-select-trigger"
-            aria-hidden="true"
-            tabIndex={-1}
-          >
+          <button className="calm-select-trigger">
             <selectedcontent className="calm-select-selected" />
             <span className="calm-select-chevron" aria-hidden="true">
               <ChevronIcon />
