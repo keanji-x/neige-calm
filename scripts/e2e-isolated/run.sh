@@ -66,6 +66,16 @@
 #                                                    # survive (regression
 #                                                    # telemetry, design §F)
 #
+# Opt-in budget overrides (env — for slow/loaded boxes where the suite trips
+# `timed out after 240s waiting for plan.updated` under contention). They are
+# read by the test fixture (crates/calm-server/tests/support/codex_fixture.rs);
+# because the run container is env-cleared to a fixed `-e` allowlist (#897),
+# they reach it ONLY when forwarded here, and ONLY when set in the runner's env
+# (explicit named knobs, NOT a blanket ambient passthrough). Unset -> the
+# fixture's built-in defaults apply:
+#   NEIGE_SPEC_PLANNING_BUDGET=<sec>    spec plan.updated wait         (def 240)
+#   NEIGE_CODEX_FORGE_E2E_BUDGET=<sec>  worker/worktree.committed wait (def 180)
+#
 # Make wrappers: `make e2e-codex-isolated` / `e2e-proxy-forwarder-up|down` /
 # `e2e-codex-isolated-check` (shellcheck + dry-run golden, no docker needed).
 #
@@ -451,6 +461,24 @@ docker_run_args() {
         -e "E2E_TEST_BIN=$TEST_BIN"
         -e "E2E_TEST_FILTER=$TEST_FILTER"
         -e "DECOYS=$DECOYS"
+    )
+    # ---- opt-in budget overrides (see header "Opt-in budget overrides") -----
+    # Forward these named test-tuning knobs into the --network none container
+    # ONLY when set+non-empty in the runner's env. The #897 allowlist forwards
+    # NO ambient host env, so without this the fixture always sees its built-in
+    # 240s/180s defaults. Unset -> nothing is appended, so the default CI argv
+    # (and the check_dry_run.sh golden) stays byte-identical. Named, intentional,
+    # opt-in — this stays inside the explicit-allowlist philosophy.
+    if [ -n "${NEIGE_SPEC_PLANNING_BUDGET:-}" ]; then
+        DOCKER_ARGS+=(-e "NEIGE_SPEC_PLANNING_BUDGET=$NEIGE_SPEC_PLANNING_BUDGET")
+    fi
+    if [ -n "${NEIGE_CODEX_FORGE_E2E_BUDGET:-}" ]; then
+        DOCKER_ARGS+=(-e "NEIGE_CODEX_FORGE_E2E_BUDGET=$NEIGE_CODEX_FORGE_E2E_BUDGET")
+    fi
+    # Image + command MUST stay last: check_dry_run.sh asserts the argv ends at
+    # entry.sh, and any docker flag placed after the image would be parsed as a
+    # command arg rather than a `docker run` flag.
+    DOCKER_ARGS+=(
         "$E2E_IMAGE_TAG"
         bash "$REPO_ROOT/scripts/e2e-isolated/entry.sh"
     )
