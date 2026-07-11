@@ -448,12 +448,16 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
 
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
-    // Seed ONE prior round at n=7/cap=8 (design D2): the kernel's monotonic
-    // check reads max(n) from the event log, so the only acceptable next
-    // round on this subject is n=8, and n=9 is then unreachable (n<=cap).
-    // role_gate rule 2.8 makes AiSpec(spec card) the ONLY legal author for
-    // review.round — KernelDispatcher (R6's seed actor) is rejected.
-    seed_prior_design_review_round(&fx, &slice_id, 7, 8).await;
+    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8, design D2): the
+    // kernel's monotonic check reads max(n) from the event log, so no further
+    // round is legal on this subject (n=9 > cap is rejected; n=8 is a duplicate
+    // key). The real agent therefore cannot run "one more round" and must
+    // escalate directly — the give-up branch under test. (#943: seeding n=7
+    // deadlocks this dispatcher-less spec-harness, because the agent correctly
+    // re-dispatches a legitimate round-8 whose reviewer tasks nothing here can
+    // complete.) role_gate rule 2.8 makes AiSpec(spec card) the ONLY legal
+    // author for review.round — KernelDispatcher (R6's seed actor) is rejected.
+    seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
 
     let floor = max_event_id(&fx.repo).await;
     let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
@@ -468,65 +472,17 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // push them (design D5; no dispatcher runs in the spec-harness E2E).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
-    inject_design_review_round_observation(&harness, &fx, &slice_id, 7, 8, false).await;
+    inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle (a): the spec's own round 8/8, non-converged, on the seeded
-    // subject. The kernel guarantees n==8 is the only accepted next round.
-    let (round_id, round_actor, round) =
-        wait_for_design_review_round_on_subject(&fx, floor, &slice_id, review_budget()).await;
-    assert!(
-        matches!(round_actor, ActorId::AiSpecSession(_)),
-        "cap round actor must be AiSpecSession, got {round_actor:?} for {round}"
-    );
-    assert_eq!(round["n"], json!(8), "cap round must be n=8: {round}");
-    assert_eq!(
-        round["cap"],
-        json!(8),
-        "cap must be descriptor-fixed 8: {round}"
-    );
-    assert_eq!(
-        round["converged"],
-        json!(false),
-        "cap round must be non-converged: {round}"
-    );
-    assert!(
-        round
-            .pointer("/subject/pr_number")
-            .is_none_or(Value::is_null),
-        "design review.round subject must omit/null pr_number: {round}"
-    );
-    let channels = round["channels"]
-        .as_array()
-        .unwrap_or_else(|| panic!("cap round channels must be an array: {round}"));
-    assert!(
-        channels.len() >= 2,
-        "cap round must carry at least two channels: {round}"
-    );
-    let roles: std::collections::BTreeSet<&str> = channels
-        .iter()
-        .map(|channel| {
-            channel["role"]
-                .as_str()
-                .unwrap_or_else(|| panic!("cap round channel missing role: {channel}"))
-        })
-        .collect();
-    assert!(
-        roles.len() >= 2,
-        "cap round channels must have at least two distinct roles: {round}"
-    );
-    assert!(
-        channels
-            .iter()
-            .any(|channel| channel["verdict"] == json!("changes_requested")),
-        "cap round must carry at least one changes_requested verdict: {round}"
-    );
-
-    // Oracle (b): the FSM's give-up edge, spec-only-legal. The *edge* is in
-    // the static prompt, but the *when* (at cap, instead of ratifying) comes
-    // only from the descriptor. Waiting from the cap round's event id (not
-    // the original floor) pins the ordering invariant: the give-up must
-    // FOLLOW the cap round, so a fail-first-record-later turn cannot pass.
-    let (edge_actor, edge) = wait_for_wave_failed_edge(&fx, round_id, review_budget()).await;
+    // Oracle (a): the FSM's give-up edge, spec-only-legal. The *edge* lives in
+    // the static prompt, but the *when* — escalate at the cap instead of
+    // ratifying — comes only from the descriptor. The subject is seeded already
+    // at the cap (n=8/cap=8), so no further review.round is kernel-legal and the
+    // agent must escalate directly; we wait from the pre-wake `floor` (there is
+    // no spec-authored cap round to pin ordering against). #943: seeding n=7
+    // deadlocks here — the agent re-dispatches a legitimate round-8 whose
+    // reviewers the dispatcher-less harness can never complete.
+    let (edge_actor, edge) = wait_for_wave_failed_edge(&fx, floor, review_budget()).await;
     assert_eq!(
         edge["from"],
         json!("reviewing"),
@@ -538,7 +494,7 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
         "give-up edge actor must be AiSpecSession, got {edge_actor:?} for {edge}"
     );
 
-    // Oracle (c): the waves row landed on the terminal lifecycle.
+    // Oracle (b): the waves row landed on the terminal lifecycle.
     let lifecycle: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id = ?1")
         .bind(fx.wave_id.as_str())
         .fetch_one(fx.repo.pool())
@@ -546,7 +502,7 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
         .expect("select wave lifecycle");
     assert_eq!(lifecycle, "failed", "wave row lifecycle must be failed");
 
-    // Oracle (d): branch purity, asserted AFTER the give-up edge (terminal
+    // Oracle (c): branch purity, asserted AFTER the give-up edge (terminal
     // state + teardown follows, so no window ambiguity): the steered run
     // must neither merge nor ask for ratification.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
@@ -647,10 +603,14 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 
     seed_design_channel_changes_requested(&fx, "review-design-a", "a").await;
     seed_design_channel_changes_requested(&fx, "review-design-b", "b").await;
-    // Seed ONE prior round at n=7/cap=8 (design D2): the kernel's monotonic
-    // check reads max(n) from the event log, so the only acceptable next
-    // round on this subject is n=8, and n=9 is then unreachable (n<=cap).
-    seed_prior_design_review_round(&fx, &slice_id, 7, 8).await;
+    // Seed ONE prior round ALREADY AT the cap (n=8/cap=8, design D2): the
+    // kernel's monotonic check reads max(n) from the event log, so no further
+    // round is legal on this subject (n=9 > cap is rejected; n=8 is a duplicate
+    // key). The real agent therefore cannot run "one more round" and must
+    // escalate directly to the ask-human branch under test. (#943: seeding n=7
+    // deadlocks this dispatcher-less spec-harness — the agent re-dispatches a
+    // legitimate round-8 whose reviewer tasks nothing here can complete.)
+    seed_prior_design_review_round(&fx, &slice_id, 8, 8).await;
 
     let floor = max_event_id(&fx.repo).await;
     let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
@@ -665,68 +625,19 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // push them (design D5; no dispatcher runs in the spec-harness E2E).
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-a")).await;
     inject_task_changes_requested(&harness, &task_id(&fx, "review-design-b")).await;
-    inject_design_review_round_observation(&harness, &fx, &slice_id, 7, 8, false).await;
+    inject_design_review_round_observation(&harness, &fx, &slice_id, 8, 8, false).await;
 
-    // Oracle phase 1 (a): the spec's own round 8/8, non-converged, on the
-    // seeded subject. The kernel guarantees n==8 is the only accepted next
-    // round.
-    let (round_id, round_actor, round) =
-        wait_for_design_review_round_on_subject(&fx, floor, &slice_id, review_budget()).await;
-    assert!(
-        matches!(round_actor, ActorId::AiSpecSession(_)),
-        "cap round actor must be AiSpecSession, got {round_actor:?} for {round}"
-    );
-    assert_eq!(round["n"], json!(8), "cap round must be n=8: {round}");
-    assert_eq!(
-        round["cap"],
-        json!(8),
-        "cap must be descriptor-fixed 8: {round}"
-    );
-    assert_eq!(
-        round["converged"],
-        json!(false),
-        "cap round must be non-converged: {round}"
-    );
-    assert!(
-        round
-            .pointer("/subject/pr_number")
-            .is_none_or(Value::is_null),
-        "design review.round subject must omit/null pr_number: {round}"
-    );
-    let channels = round["channels"]
-        .as_array()
-        .unwrap_or_else(|| panic!("cap round channels must be an array: {round}"));
-    assert!(
-        channels.len() >= 2,
-        "cap round must carry at least two channels: {round}"
-    );
-    let roles: std::collections::BTreeSet<&str> = channels
-        .iter()
-        .map(|channel| {
-            channel["role"]
-                .as_str()
-                .unwrap_or_else(|| panic!("cap round channel missing role: {channel}"))
-        })
-        .collect();
-    assert!(
-        roles.len() >= 2,
-        "cap round channels must have at least two distinct roles: {round}"
-    );
-    assert!(
-        channels
-            .iter()
-            .any(|channel| channel["verdict"] == json!("changes_requested")),
-        "cap round must carry at least one changes_requested verdict: {round}"
-    );
-
-    // Oracle phase 1 (b): the ordered ASK-HUMAN chain, every floor rising so
-    // each edge must FOLLOW the cap round (a fail-first-record-later turn
-    // cannot pass). `calm.ratify.request` demands lifecycle==Working, so the
-    // spec must first leave `reviewing`; the tool then emits working->blocked
-    // + ratify.requested in ONE tx (mcp_server/tools/review.rs), so both must
-    // appear.
+    // Oracle phase 1 (a): the ordered ASK-HUMAN chain. The subject is seeded
+    // already at the cap (n=8/cap=8), so no further review.round is kernel-legal
+    // and the spec must escalate directly rather than run another round; we wait
+    // from the pre-wake `floor` and the edges still rise monotonically below.
+    // #943: seeding n=7 deadlocks here — the agent re-dispatches a legitimate
+    // round-8 the dispatcher-less harness can never complete.
+    // `calm.ratify.request` demands lifecycle==Working, so the spec must first
+    // leave `reviewing`; the tool then emits working->blocked + ratify.requested
+    // in ONE tx (mcp_server/tools/review.rs), so both must appear.
     let (rw_id, rw_actor, rw_edge) =
-        wait_for_wave_lifecycle_edge(&fx, round_id, "reviewing", "working", ratify_budget()).await;
+        wait_for_wave_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
         matches!(rw_actor, ActorId::AiSpecSession(_)),
         "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
@@ -753,7 +664,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     );
     assert_eq!(req["wave_id"], json!(fx.wave_id.as_str()));
 
-    // Oracle phase 1 (c): parked, not merged.
+    // Oracle phase 1 (b): parked, not merged.
     assert_eq!(event_payloads(&fx.repo, "forge.pr.merged").await.len(), 0);
     assert_eq!(
         wave_lifecycle_row(&fx).await,
@@ -1373,8 +1284,9 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 }
 
 // #888 R7c — post-grant cap extension to the F4 finish. The real spec,
-// cap-exhausted on a real-PR impl subject (seeded prior round n=7/cap=8, its
-// own cap round n=8/cap=8 non-converged), walks the full ASK-HUMAN chain; a
+// cap-exhausted on a real-PR impl subject (seeded prior round already AT the
+// cap, n=8/cap=8 non-converged, so no further pre-grant round is kernel-legal
+// and the spec escalates directly — #943), walks the full ASK-HUMAN chain; a
 // human grant (production HTTP route) then authorizes the descriptor's
 // "previous cap plus exactly 2" window, and the spec's SINGLE post-grant
 // round is both the extension AND the convergence (n=9, cap=10,
@@ -1535,9 +1447,14 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
         .await;
     }
 
-    // Seed ONE prior impl round n=7/cap=8 carrying the REAL branch tip +
-    // pr_number: the kernel then accepts only n=8 next on this subject.
-    seed_prior_impl_review_round(&fx, &slice_id, pr_number, &head_sha, 7, 8).await;
+    // Seed ONE prior impl round ALREADY AT the cap (n=8/cap=8) carrying the REAL
+    // branch tip + pr_number: no further round is kernel-legal pre-grant (n=9 >
+    // cap), so the spec must escalate to ask-human directly rather than run
+    // another round. (#943: seeding n=7 deadlocks — the agent re-dispatches a
+    // legitimate round-8 the dispatcher-less harness cannot complete.) The
+    // post-grant cap extension (+2) still makes n=9/cap=10 the single legal
+    // round, so the extension oracle below is unchanged.
+    seed_prior_impl_review_round(&fx, &slice_id, pr_number, &head_sha, 8, 8).await;
 
     let floor = max_event_id(&fx.repo).await;
     let pre_wake_rounds = actor_payload_rows(&fx.repo, "review.round").await;
@@ -1581,51 +1498,22 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
             slice_id: slice_id.clone(),
             pr_number: Some(pr_number),
             head_sha: Some(head_sha.clone()),
-            n: 7,
+            n: 8,
             cap: 8,
             converged: false,
         },
     )
     .await;
 
-    // Phase 1 (a) — the spec's own cap round n=8/cap=8, non-converged, on
-    // the seeded impl subject (R7b phase-1 oracle, impl-subject variant).
-    let (cap_round_id, cap_round_actor, cap_round) =
-        wait_for_impl_review_round_on_subject(&fx, floor, &slice_id, pr_number, review_budget())
-            .await;
-    assert!(
-        matches!(cap_round_actor, ActorId::AiSpecSession(_)),
-        "cap round actor must be AiSpecSession, got {cap_round_actor:?} for {cap_round}"
-    );
-    assert_eq!(
-        cap_round["n"],
-        json!(8),
-        "cap round must be n=8: {cap_round}"
-    );
-    assert_eq!(
-        cap_round["cap"],
-        json!(8),
-        "cap must be descriptor-fixed 8 in the first window: {cap_round}"
-    );
-    assert_eq!(
-        cap_round["converged"],
-        json!(false),
-        "cap round must be non-converged: {cap_round}"
-    );
-    assert!(
-        cap_round["channels"]
-            .as_array()
-            .is_some_and(|channels| channels.len() >= 2
-                && channels
-                    .iter()
-                    .any(|channel| channel["verdict"] == json!("changes_requested"))),
-        "cap round must carry >=2 channels with >=1 changes_requested: {cap_round}"
-    );
-
-    // Phase 1 (b) — the ordered ASK-HUMAN chain (rising floors, R7b oracle).
+    // Phase 1 (a) — the ordered ASK-HUMAN chain (rising floors, R7b oracle).
+    // The subject is seeded already at the cap (n=8/cap=8), so no further round
+    // is kernel-legal pre-grant and the spec escalates directly; we wait from
+    // the pre-wake `floor`. #943: seeding n=7 deadlocks here — the agent
+    // re-dispatches a legitimate round-8 the dispatcher-less harness cannot
+    // complete. The single spec-authored round is the post-grant extension
+    // (n=9/cap=10), asserted below.
     let (rw_id, rw_actor, rw_edge) =
-        wait_for_wave_lifecycle_edge(&fx, cap_round_id, "reviewing", "working", ratify_budget())
-            .await;
+        wait_for_wave_lifecycle_edge(&fx, floor, "reviewing", "working", ratify_budget()).await;
     assert!(
         matches!(rw_actor, ActorId::AiSpecSession(_)),
         "reviewing->working edge actor must be AiSpecSession, got {rw_actor:?} for {rw_edge}"
@@ -1857,16 +1745,13 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
         "exactly one post-grant review.round on the impl subject (the extension round)"
     );
 
-    // Oracle 4 — ordering by row id: cap round < ratify.requested <
-    // ratify.resolved{grant} < extension round < forge.pr.merged. (Oracle 5,
-    // actor shapes, is asserted at each wait above.)
+    // Oracle 4 — ordering by row id: ratify.requested < ratify.resolved{grant}
+    // < extension round < forge.pr.merged. (Oracle 5, actor shapes, is asserted
+    // at each wait above.)
     assert!(
-        cap_round_id < req_id
-            && req_id < resolved_id
-            && resolved_id < ext_round_id
-            && ext_round_id < merged_id,
-        "ordering violated: cap_round={cap_round_id}, requested={req_id}, \
-         resolved={resolved_id}, extension={ext_round_id}, merged={merged_id}"
+        req_id < resolved_id && resolved_id < ext_round_id && ext_round_id < merged_id,
+        "ordering violated: requested={req_id}, resolved={resolved_id}, \
+         extension={ext_round_id}, merged={merged_id}"
     );
 
     // Oracle 6 — full-history INV-CAP-EXT validation by adjacent pairs:
@@ -3412,59 +3297,6 @@ async fn seed_prior_design_review_round(fx: &Fixture, slice_id: &str, n: u32, ca
         )
         .await
         .expect("log seeded prior review.round");
-}
-
-/// First post-floor `review.round` on the seeded design subject (phase,
-/// slice AND null/absent pr_number — a hypothetical `{design, S, Some(pr)}`
-/// subject is a different review stream and must not be returned). Rounds on
-/// other subjects are tolerated (the kernel keeps them internally monotone);
-/// on the seeded subject the kernel only accepts n=8 next, so the first hit
-/// IS the cap round. Returns the event id so callers can pin ordering
-/// invariants against it.
-async fn wait_for_design_review_round_on_subject(
-    fx: &Fixture,
-    floor: i64,
-    slice_id: &str,
-    budget: Duration,
-) -> (i64, ActorId, Value) {
-    let deadline = Instant::now() + budget;
-    loop {
-        let rows: Vec<(i64, String, String)> = sqlx::query_as(
-            "SELECT id, actor, payload FROM events \
-             WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
-        )
-        .bind(floor)
-        .fetch_all(fx.repo.pool())
-        .await
-        .unwrap_or_else(|e| panic!("review.round event rows after floor {floor}: {e}"));
-        let hit = rows.into_iter().find_map(|(id, actor, payload)| {
-            let actor: ActorId = serde_json::from_str(&actor).expect("event actor json");
-            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
-            let on_subject = {
-                let subject = &payload["subject"];
-                subject["phase"] == json!("design")
-                    && subject["slice_id"] == json!(slice_id)
-                    && subject.get("pr_number").is_none_or(Value::is_null)
-            };
-            on_subject.then_some((id, actor, payload))
-        });
-        if let Some(hit) = hit {
-            return hit;
-        }
-        if Instant::now() >= deadline {
-            let subjects = review_round_subjects_after(fx, floor).await;
-            panic_with_agent_diag(
-                fx,
-                format!(
-                    "timed out after {budget:?} waiting for post-floor design review.round \
-                     on slice {slice_id} after event id {floor}; review.round subjects \
-                     observed after floor: {subjects:?}"
-                ),
-            )
-            .await;
-        }
-        sleep(Duration::from_millis(250)).await;
-    }
 }
 
 /// First post-floor `wave.lifecycle_changed` landing on `failed` for the
