@@ -73,7 +73,9 @@ import {
 } from '../../api/queries';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB } from '../../api/themeRgb';
 import type { CoveResolveBody, FolderConflictBody, KernelWave } from '../../api/wire';
+import { ChevronIcon } from './ChevronIcon';
 import { DirectoryBrowser } from './DirectoryPicker';
+import { parseGitHubIssueUrl } from './issueUrl';
 import { useModalView } from '../../ui/Dialog/Dialog';
 
 /** Result handed back to the caller on successful POST `/api/waves`. */
@@ -91,15 +93,42 @@ export interface NewTaskFormProps {
   /** Fired when the user dismisses the form (Esc, Cancel). Caller
    *  collapses the inline panel back to a CTA button. */
   onCancel: () => void;
-  /** Optional ref forwarded to the title textarea. When provided, the
-   *  caller (typically a host `<Dialog>`) uses this to claim initial
-   *  focus on the title input — the form skips its own
-   *  `queueMicrotask(focus)` mount effect to avoid racing against the
-   *  Dialog's rAF "focus first focusable" pass, which otherwise lands
-   *  focus on the Dialog's Close button. When omitted, the form falls
-   *  back to focusing the title field itself on mount. */
-  initialFocusRef?: RefObject<HTMLTextAreaElement | null>;
+  /** Optional ref the form binds to its variant's FIRST field — the
+   *  title textarea for `'task'`, the GitHub issue URL input for
+   *  `'issue-dev'` (#891 review: initial focus must be
+   *  variant-appropriate). When provided, the caller (typically a host
+   *  `<Dialog>`) uses this to claim initial focus on that field — the
+   *  form skips its own `queueMicrotask(focus)` mount effect to avoid
+   *  racing against the Dialog's rAF "focus first focusable" pass,
+   *  which otherwise lands focus on the Dialog's Close button. When
+   *  omitted, the form falls back to focusing its first field itself
+   *  on mount. Typed `HTMLElement` (not a concrete element type)
+   *  because which element it points at is variant-dependent; Dialog's
+   *  own `initialFocusRef` is `HTMLElement` too. */
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  /** Issue #891 slice ③ — form variant. `'task'` (default) is the plain
+   *  wave path, untouched. `'issue-dev'` binds the created wave to the
+   *  shipped `issue-development` workflow: the user supplies a GitHub
+   *  issue URL (plus the same cwd/cove flow), the form derives
+   *  `{repo, issue_number, issue_url}` client-side and POSTs them as
+   *  `workflow_input` alongside `workflow_id: "issue-development"`. */
+  variant?: 'task' | 'issue-dev';
 }
+
+/** #891 (design §6 F5) — v1 has no `GET /api/workflows` discovery
+ *  endpoint, so the issue-dev variant hardcodes the shipped workflow id.
+ *  If the git-forge plugin isn't running, the create POST 400s with a
+ *  readable message that the normal submit-error path surfaces. */
+const ISSUE_DEV_WORKFLOW_ID = 'issue-development';
+
+/** Allowed `workflow_input.merge_policy` values — mirrors the enum in the
+ *  shipped `issue-development` input_schema (git-forge manifest, #891 ②).
+ *  The default mirrors the schema's documentary `default`: kernel doesn't
+ *  apply defaults (design F6), so the form always sends the value. The
+ *  policy is binary, so the UI is an "Auto-merge" checkbox (#891 signoff
+ *  r3 — kills the last OS dropdown popup): unchecked = 'hold-for-ratify',
+ *  checked = 'auto-merge'. The wire shape is unchanged. */
+type MergePolicy = 'hold-for-ratify' | 'auto-merge';
 
 /** Debounce window for the cwd → resolve API call. 300ms balances
  *  "feels live" against "didn't fire a request after every keypress". */
@@ -120,15 +149,32 @@ export function NewTaskForm({
   onCreated,
   onCancel,
   initialFocusRef,
+  variant = 'task',
 }: NewTaskFormProps) {
   const titleId = useId();
   const cwdId = useId();
   const coveSelectId = useId();
   const newCoveNameId = useId();
   const headingId = useId();
+  const issueUrlId = useId();
+  const mergePolicyId = useId();
+  const rawJsonId = useId();
 
   const [title, setTitle] = useState('');
   const [cwd, setCwd] = useState('');
+  // ---- issue-dev variant state (#891 ③). Inert in the 'task' variant:
+  // nothing below reads it and the submit body spreads nothing in.
+  const isIssueDev = variant === 'issue-dev';
+  const [issueUrl, setIssueUrl] = useState('');
+  const [mergePolicy, setMergePolicy] = useState<MergePolicy>('hold-for-ratify');
+  // Raw JSON escape hatch: `null` = not overridden (the textarea mirrors
+  // the derived workflow_input); a string = the user has taken over and
+  // their JSON is what gets POSTed (schema-level validation stays
+  // server-side — a 400 surfaces through the normal error path).
+  const [rawJson, setRawJson] = useState<string | null>(null);
+  // Title prefill ("dev #<n>") only runs while the user hasn't typed a
+  // title of their own — one manual edit latches the field.
+  const titleEditedRef = useRef(false);
   const [resolveState, setResolveState] = useState<
     | { kind: 'idle' }
     | { kind: 'resolving' }
@@ -180,21 +226,43 @@ export function NewTaskForm({
   const modalView = useModalView();
 
   const localTitleRef = useRef<HTMLTextAreaElement | null>(null);
-  // When a caller forwards `initialFocusRef`, use it as the title
-  // textarea's ref — the host Dialog will own initial focus. Otherwise
-  // fall back to our own ref + the mount-time focus effect below.
-  const titleRef = initialFocusRef ?? localTitleRef;
+  const urlInputRef = useRef<HTMLInputElement | null>(null);
+  // The variant's FIRST field carries `initialFocusRef` (when the caller
+  // forwarded one) so the host Dialog's initial-focus pass — and the
+  // caller's variant-change refocus — land on the right element: the
+  // issue-URL input in 'issue-dev', the title textarea in 'task'.
+  // Callback refs bridge the typing (the shared ref is `HTMLElement`,
+  // the elements are concrete input/textarea types — a plain ref-object
+  // handoff would trip TS property variance). `isIssueDev` is fixed for
+  // the lifetime of a mount (Cove.tsx remounts the form via `key` on
+  // variant switch), so each callback binds at most one element.
+  const titleFieldRef = useCallback(
+    (el: HTMLTextAreaElement | null) => {
+      localTitleRef.current = el;
+      if (!isIssueDev && initialFocusRef) initialFocusRef.current = el;
+    },
+    [isIssueDev, initialFocusRef],
+  );
+  const urlFieldRef = useCallback(
+    (el: HTMLInputElement | null) => {
+      urlInputRef.current = el;
+      if (isIssueDev && initialFocusRef) initialFocusRef.current = el;
+    },
+    [isIssueDev, initialFocusRef],
+  );
   const cwdRef = useRef<HTMLInputElement | null>(null);
-  // Focus the title field on mount — opening the form should land the
-  // caret in the first meaningful input without an extra click. Skipped
-  // when the caller forwarded `initialFocusRef`: the Dialog's own
-  // rAF-deferred focus pass would race against this microtask and
-  // sometimes win (landing on the Dialog Close button), so the contract
-  // is "Dialog focuses for us, we don't double-focus".
+  // Focus the variant's first field on mount — opening the form should
+  // land the caret in the first meaningful input without an extra
+  // click. Skipped when the caller forwarded `initialFocusRef`: the
+  // Dialog's own rAF-deferred focus pass would race against this
+  // microtask and sometimes win (landing on the Dialog Close button),
+  // so the contract is "Dialog focuses for us, we don't double-focus".
   useEffect(() => {
     if (initialFocusRef) return;
-    queueMicrotask(() => localTitleRef.current?.focus());
-  }, [initialFocusRef]);
+    queueMicrotask(() =>
+      (isIssueDev ? urlInputRef.current : localTitleRef.current)?.focus(),
+    );
+  }, [initialFocusRef, isIssueDev]);
 
   // Latest cwd at commit-time. The resolve effect captures `cwd` via
   // closure, but the in-flight `api.resolveCovePath` Promise may resolve
@@ -279,11 +347,66 @@ export function NewTaskForm({
     ? 'Path must be absolute (start with `/`).'
     : null;
 
+  // ---- issue-dev derivations (#891 ③) -------------------------------
+  const parsedIssue = useMemo(
+    () => (isIssueDev ? parseGitHubIssueUrl(issueUrl) : null),
+    [isIssueDev, issueUrl],
+  );
+  const issueUrlError =
+    isIssueDev && issueUrl.trim().length > 0 && !parsedIssue
+      ? 'Must be a GitHub issue URL (https://github.com/owner/repo/issues/123).'
+      : null;
+
+  // Prefill title as `dev #<n>` once the URL parses. Editable: a manual
+  // title edit latches `titleEditedRef` and the prefill stops following
+  // the URL. `setTitle` from here doesn't fire the textarea's onChange,
+  // so the latch only trips on real user input.
+  useEffect(() => {
+    if (!parsedIssue || titleEditedRef.current) return;
+    setTitle(`dev #${parsedIssue.issue_number}`);
+  }, [parsedIssue]);
+
+  /** The `workflow_input` derived from the structured fields —
+   *  merge_policy always present. `null` until the URL parses. The
+   *  schema's optional `notes` key has no form field (#891 signoff:
+   *  it duplicated the task-description free-text) — the raw-JSON
+   *  escape hatch is the way to send one. */
+  const derivedWorkflowInput = useMemo(() => {
+    if (!parsedIssue) return null;
+    return {
+      issue_url: parsedIssue.issue_url,
+      repo: parsedIssue.repo,
+      issue_number: parsedIssue.issue_number,
+      merge_policy: mergePolicy,
+    };
+  }, [parsedIssue, mergePolicy]);
+
+  // What the raw-JSON textarea shows: the user's override once they've
+  // edited, otherwise a live mirror of the derived input.
+  const rawJsonText =
+    rawJson ?? (derivedWorkflowInput ? JSON.stringify(derivedWorkflowInput, null, 2) : '');
+  const rawJsonError = useMemo(() => {
+    if (rawJson === null) return null;
+    try {
+      JSON.parse(rawJson);
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : 'not valid JSON';
+    }
+  }, [rawJson]);
+
   const canSubmit = canSubmitForm({
     cwd,
     cwdError,
     coveChoice,
     submitting,
+    issueDev: isIssueDev
+      ? {
+          parsedOk: parsedIssue !== null,
+          rawOverride: rawJson !== null,
+          rawValid: rawJsonError === null,
+        }
+      : null,
   });
 
   const handleSubmit = useCallback(
@@ -324,12 +447,26 @@ export function NewTaskForm({
           // mutation's onSuccess invalidate. No extra work here.
         }
 
+        // issue-dev variant (#891 ③): bind the wave to the shipped
+        // workflow and carry the input JSON. The raw-JSON override wins
+        // when the user has edited it (canSubmit already gated on it
+        // parsing); otherwise the derived structured fields go out. The
+        // plain 'task' variant spreads nothing — its body stays
+        // byte-identical to pre-#891.
+        const workflowFields = isIssueDev
+          ? {
+              workflow_id: ISSUE_DEV_WORKFLOW_ID,
+              workflow_input:
+                rawJson !== null ? (JSON.parse(rawJson) as unknown) : derivedWorkflowInput,
+            }
+          : {};
         const wave = await createWave.mutateAsync({
           cove_id: coveId,
           title: title.trim(),
           cwd: finalCwd,
           attach_folder: attachFolder,
           theme: readHostThemeRgb(),
+          ...workflowFields,
         });
         // Belt-and-suspenders cache invalidate — useCreateWaveMutation
         // already kicks ['waves', cove_id], but a brand-new cove also
@@ -344,7 +481,20 @@ export function NewTaskForm({
         setSubmitting(false);
       }
     },
-    [canSubmit, coveChoice, coves, createCove, createWave, cwd, onCreated, qc, title],
+    [
+      canSubmit,
+      coveChoice,
+      coves,
+      createCove,
+      createWave,
+      cwd,
+      derivedWorkflowInput,
+      isIssueDev,
+      onCreated,
+      qc,
+      rawJson,
+      title,
+    ],
   );
 
   // Escape from anywhere inside the form cancels. Submit-on-Enter is
@@ -400,7 +550,7 @@ export function NewTaskForm({
       className="new-task-form"
     >
       <h2 id={headingId} className="new-task-form-heading">
-        New task
+        {isIssueDev ? 'New issue-dev task' : 'New task'}
       </h2>
       {/* Form-level Escape listener cancels the inline panel. The
           rule warns because <form> is not in a11y's "interactive"
@@ -414,24 +564,99 @@ export function NewTaskForm({
         }}
         onKeyDown={handleKeyDown}
       >
+        {/* Issue URL — issue-dev variant only (#891 ③). The one
+            user-facing required field besides cwd: everything else in
+            the workflow_input is derived from it client-side
+            (parseGitHubIssueUrl). Inline error + disabled submit on a
+            malformed URL, same pattern as the cwd field below. */}
+        {isIssueDev && (
+          <>
+            <label htmlFor={issueUrlId} className="new-task-form-label">
+              GitHub issue URL<span className="new-task-form-required"> *</span>
+            </label>
+            <input
+              id={issueUrlId}
+              ref={urlFieldRef}
+              type="text"
+              className="new-task-form-input"
+              value={issueUrl}
+              onChange={(e) => setIssueUrl(e.target.value)}
+              placeholder="https://github.com/owner/repo/issues/123"
+              aria-invalid={issueUrlError !== null}
+              aria-describedby={issueUrlError ? `${issueUrlId}-err` : undefined}
+              required
+            />
+            {issueUrlError && (
+              <p id={`${issueUrlId}-err`} className="new-task-form-fielderr">
+                {issueUrlError}
+              </p>
+            )}
+          </>
+        )}
+
         {/* Task description ↔ wave.title. Textarea so the user can
             paste a multi-line ask without us truncating. Enter is
             *not* submit here — newlines in the description are
             valid; submit is the explicit "Create task" button.
             Empty is also valid: the spec daemon boots with no
-            auto-submitted prompt. */}
+            auto-submitted prompt. In the issue-dev variant it's
+            prefilled `dev #<n>` from the parsed URL; a manual edit
+            latches it (titleEditedRef). */}
         <label htmlFor={titleId} className="new-task-form-label">
           Task description
         </label>
         <textarea
           id={titleId}
-          ref={titleRef}
+          ref={titleFieldRef}
           className="new-task-form-input"
           rows={3}
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
+          onChange={(e) => {
+            titleEditedRef.current = true;
+            setTitle(e.target.value);
+          }}
           placeholder="What should the agent do?"
         />
+
+        {/* Merge policy — issue-dev variant only, surfaced as an
+            "Auto-merge" checkbox because the policy is binary (#891
+            signoff r3; a <select> here was the last OS popup on the
+            card). Unchecked (default) = 'hold-for-ratify', checked =
+            'auto-merge'; the derived merge_policy is always sent
+            (kernel doesn't apply schema defaults, design F6). Native
+            checkbox — the app has no switch primitive, and a real
+            <input type="checkbox"> needs no custom aria; the one-line
+            hint is wired as its accessible description. The schema's
+            optional `notes` deliberately has no field here (#891
+            signoff: it duplicated the task-description free-text);
+            the raw-JSON escape hatch below still carries it. */}
+        {isIssueDev && (
+          <div className="new-task-form-automerge">
+            <label
+              htmlFor={mergePolicyId}
+              className="new-task-form-automerge-label"
+            >
+              <input
+                id={mergePolicyId}
+                type="checkbox"
+                className="new-task-form-automerge-box"
+                checked={mergePolicy === 'auto-merge'}
+                onChange={(e) =>
+                  setMergePolicy(e.target.checked ? 'auto-merge' : 'hold-for-ratify')
+                }
+                aria-describedby={`${mergePolicyId}-hint`}
+              />
+              Auto-merge
+            </label>
+            <p
+              id={`${mergePolicyId}-hint`}
+              className="new-task-form-automerge-hint"
+            >
+              Off, the merge waits for your approval; on, it merges
+              automatically once the fence converges and checks are green.
+            </p>
+          </div>
+        )}
 
         {/* cwd — absolute path. Submit-on-Enter lives here because the
             common path is "type the cwd, press Enter"; cwd is the
@@ -520,6 +745,64 @@ export function NewTaskForm({
             }
           }}
         />
+
+        {/* Raw JSON escape hatch — issue-dev variant only (#891 ③,
+            design §3.1). Collapsed by default; shows the exact
+            `workflow_input` the form will POST (live-derived from the
+            fields above until the user edits, at which point the raw
+            value takes over). Local JSON.parse gates submit; the
+            schema-level validation stays server-side and a 400 lands in
+            the normal error alert below. This is the generic seam:
+            future workflows get raw mode first, a thin form later. */}
+        {isIssueDev && (
+          <details className="new-task-form-rawjson">
+            {/* The override state is surfaced on the always-visible
+                <summary>, not just inside the collapsible body: once the
+                user edits the raw JSON and collapses the section, a stale
+                raw blob would otherwise ship with no visible indicator
+                that the form fields above are being ignored. */}
+            <summary className="new-task-form-rawjson-summary">
+              Raw workflow_input JSON
+              {rawJson !== null ? ' — overriding form fields' : ''}
+            </summary>
+            <textarea
+              aria-label="Raw workflow_input JSON"
+              className="new-task-form-input new-task-form-rawjson-text"
+              rows={8}
+              spellCheck={false}
+              value={rawJsonText}
+              onChange={(e) => setRawJson(e.target.value)}
+              aria-invalid={rawJsonError !== null}
+              // While the JSON is invalid, AT users hear the parse error
+              // as the textarea's description. The error <p> stays a
+              // plain paragraph — role="alert" is reserved for the
+              // submit/server error surface below.
+              aria-describedby={rawJsonError !== null ? `${rawJsonId}-err` : undefined}
+            />
+            {/* Reset renders whenever raw mode is active — including
+                while the JSON is malformed or the textarea is empty.
+                Gating it on validity would strand the user: the only way
+                out of a broken raw edit would be hand-repairing the
+                JSON. */}
+            {rawJson !== null && (
+              <p className="new-task-form-rawjson-hint">
+                Raw JSON overrides the fields above.{' '}
+                <button
+                  type="button"
+                  className="new-task-form-rawjson-reset"
+                  onClick={() => setRawJson(null)}
+                >
+                  Reset to form values
+                </button>
+              </p>
+            )}
+            {rawJsonError && (
+              <p id={`${rawJsonId}-err`} className="new-task-form-fielderr">
+                Invalid JSON: {rawJsonError}
+              </p>
+            )}
+          </details>
+        )}
 
         {errorMsg && (
           <p className="new-task-form-err" role="alert">
@@ -677,12 +960,36 @@ function CoveSection({
         </label>
       </div>
       {mode === 'existing' && coves.length > 0 ? (
+        /* .calm-select (#891): the themed base-select drawer, same
+           treatment as the Workflow select in the New-wave dialog so
+           the card has ONE popup system. The custom trigger button
+           (selectedcontent + stroke chevron) makes the closed field
+           render identically to the Workflow trigger; options are
+           plain text, so they just get the row/hover/checkmark
+           treatment. Fallback engines ignore the button child and
+           keep the OS popup.
+
+           The trigger is intentionally a named-but-non-focusable
+           button: the <select> owns focus + semantics (base-select).
+           In Chromium the trigger still surfaces in the AX button tree
+           named by the cloned option content — i.e. the selected COVE
+           NAME. We do NOT aria-hidden it (that risks stripping the
+           subtree Chrome announces as the selected value); the cove
+           name in the button surface is why in-dialog button e2e
+           locators must use exact names (a substring /browse/i once
+           collided with a cove named "E2E browse cove"). */
         <select
           id={coveSelectId}
-          className="new-task-form-input"
+          className="new-task-form-input calm-select"
           value={coveChoice.mode === 'existing' ? coveChoice.coveId : ''}
           onChange={(e) => setCoveChoice({ mode: 'existing', coveId: e.target.value })}
         >
+          <button className="calm-select-trigger">
+            <selectedcontent className="calm-select-selected" />
+            <span className="calm-select-chevron" aria-hidden="true">
+              <ChevronIcon />
+            </span>
+          </button>
           {coves.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -745,17 +1052,32 @@ function canSubmitForm({
   cwdError,
   coveChoice,
   submitting,
+  issueDev,
 }: {
   cwd: string;
   cwdError: string | null;
   coveChoice: CoveChoice;
   submitting: boolean;
+  /** `null` in the plain 'task' variant. In 'issue-dev' (#891 ③) the
+   *  workflow_input must be produceable: either the raw-JSON override
+   *  is active and parses, or the issue URL parsed into the derived
+   *  fields. A valid raw override deliberately unblocks submit even
+   *  with an unparsed URL — it's the escape hatch (server-side schema
+   *  validation is the final arbiter). */
+  issueDev: { parsedOk: boolean; rawOverride: boolean; rawValid: boolean } | null;
 }): boolean {
   if (submitting) return false;
   if (!isAbsolutePath(cwd.trim())) return false;
   if (cwdError) return false;
   if (coveChoice.mode === 'existing' && !coveChoice.coveId) return false;
   if (coveChoice.mode === 'new' && !coveChoice.name.trim()) return false;
+  if (issueDev) {
+    if (issueDev.rawOverride) {
+      if (!issueDev.rawValid) return false;
+    } else if (!issueDev.parsedOk) {
+      return false;
+    }
+  }
   return true;
 }
 

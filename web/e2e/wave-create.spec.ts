@@ -93,7 +93,7 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   // Submit via the Create task button. (Pressing Enter on the cwd
   // input would also submit — the keyboard variant lives in the a11y
   // spec.)
-  await form.getByRole('button', { name: /create task/i }).click();
+  await form.getByRole('button', { name: 'Create task', exact: true }).click();
 
   // Step 4 — URL transitions to /calm/wave/<id> and the wave page
   // mounts. We allow up to ~10s for the round-trip (kernel insert +
