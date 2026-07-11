@@ -163,10 +163,66 @@ struct RunningPlugin {
 /// released (any failure between admission and the swap). The existing
 /// [`PluginRuntimeStatus::Spawning`] state is reused to report reserved ids
 /// via `status`/`list_running`, so no new status vocabulary is introduced.
+/// The table is guarded by a **`std::sync::Mutex`**, not a tokio one: every
+/// critical section is short, synchronous, and never held across an `.await`
+/// (verified per site), which is exactly the case where tokio's own docs
+/// recommend the std mutex. The synchronous lock is what makes
+/// [`AdmissionGuard`]'s `Drop` able to release a reservation on task
+/// abort/panic without needing an async context.
 #[derive(Default)]
 struct ProcessTable {
     live: HashMap<String, RunningPlugin>,
     spawning: BTreeSet<String>,
+}
+
+/// RAII admission reservation (#891 r2 review fix). Constructed under the
+/// admission lock the moment `spawn` inserts its `spawning` reservation, and
+/// held across the whole `spawn_admitted` future. Release paths:
+///
+/// * **success** — the atomic reservation→live swap removes the reservation
+///   itself and calls [`AdmissionGuard::disarm`] under the same lock, so a
+///   later `Drop` is a no-op (and can never release a *newer* reservation
+///   for the same id);
+/// * **everything else** — `Err` returns, the calling task being
+///   aborted/dropped mid-`.await`, and panic unwinds all run `Drop`, which
+///   synchronously re-locks the table and removes the reservation. Without
+///   this, a cancelled spawn would leave the id `Spawning` forever: same-id
+///   spawns would get `AlreadyRunning` and the reserved workflow ids would
+///   squat indefinitely.
+///
+/// Deadlock safety: `Drop` only locks when still armed, and the only place a
+/// guard is consumed while the table lock is held is `disarm` — which flips
+/// the flag without locking, so its own `Drop` skips the lock. No code path
+/// drops an *armed* guard while holding the table lock.
+struct AdmissionGuard {
+    host: Arc<PluginHost>,
+    id: String,
+    armed: bool,
+}
+
+impl AdmissionGuard {
+    fn new(host: Arc<PluginHost>, id: String) -> Self {
+        Self {
+            host,
+            id,
+            armed: true,
+        }
+    }
+
+    /// Consume the guard without releasing the reservation — called ONLY
+    /// inside the success path's reservation→live swap (which removes the
+    /// reservation itself, under the same lock).
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.host.lock_table().spawning.remove(&self.id);
+        }
+    }
 }
 
 impl ProcessTable {
@@ -224,7 +280,8 @@ pub struct PluginHost {
     events_arc: Arc<EventBus>,
     /// #480 PR2 — write-surface caches shared with REST/worker paths.
     write: WriteContext,
-    processes: Mutex<ProcessTable>,
+    /// See [`ProcessTable`] for why this is a std (not tokio) mutex.
+    processes: std::sync::Mutex<ProcessTable>,
 }
 
 #[allow(deprecated)]
@@ -255,13 +312,24 @@ impl PluginHost {
             events: Some(events),
             events_arc,
             write,
-            processes: Mutex::new(ProcessTable::default()),
+            processes: std::sync::Mutex::new(ProcessTable::default()),
         }
     }
 
     /// Convenience accessor — most call sites only need the registry handle.
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry
+    }
+
+    /// Lock the process table. Poison recovery via `into_inner`: the guarded
+    /// critical sections are short and allocation-only, so a panic mid-hold
+    /// leaves the table structurally sound; recovering (instead of
+    /// propagating) matters because [`AdmissionGuard::drop`] must be able to
+    /// release a reservation during a panic unwind without double-panicking.
+    fn lock_table(&self) -> std::sync::MutexGuard<'_, ProcessTable> {
+        self.processes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn write(&self) -> &WriteContext {
@@ -379,8 +447,8 @@ impl PluginHost {
         // Ordered before the token mint so a refusal — like the min-kernel
         // check above — has zero side effects on plugin state; the autospawn
         // loop's per-plugin tolerance logs and moves on.
-        let conflict = {
-            let mut table = self.processes.lock().await;
+        let admission = {
+            let mut table = self.lock_table();
             if table.spawning.contains(id) {
                 return Err(HostError::AlreadyRunning(id.to_string()));
             }
@@ -400,47 +468,50 @@ impl PluginHost {
                 &table.workflow_holder_ids(),
                 &trusted_forge_plugin,
             ) {
-                Some(conflict) => Some(conflict),
+                Some(conflict) => Err(conflict),
                 None => {
                     table.spawning.insert(id.to_string());
-                    None
+                    // r2 review fix: the reservation's lifetime is owned by
+                    // this RAII guard, not by manual bookkeeping — an `Err`
+                    // return, a task abort/drop at ANY `.await` inside
+                    // `spawn_admitted`, or a panic unwind all release it via
+                    // `Drop`; only the success path's atomic swap disarms.
+                    Ok(AdmissionGuard::new(Arc::clone(self), id.to_string()))
                 }
             }
         };
-        if let Some(conflict) = conflict {
-            tracing::warn!(
-                plugin_id = %id,
-                error = %conflict,
-                "refusing to spawn plugin with a conflicting workflow id"
-            );
-            // #891 review fix (design §4.4 "该插件进 Failed"): surface the
-            // refusal as a failed `PluginState` event so operators see WHY
-            // the plugin isn't running instead of it silently looking
-            // stopped. Boot-loop tolerance is unchanged: autospawn logs and
-            // continues; the enable route maps this to a structured 409.
-            self.emit_crashed(id, &conflict.to_string()).await;
-            return Err(conflict);
-        }
+        let guard = match admission {
+            Ok(guard) => guard,
+            Err(conflict) => {
+                tracing::warn!(
+                    plugin_id = %id,
+                    error = %conflict,
+                    "refusing to spawn plugin with a conflicting workflow id"
+                );
+                // #891 review fix (design §4.4 "该插件进 Failed"): surface the
+                // refusal as a failed `PluginState` event so operators see WHY
+                // the plugin isn't running instead of it silently looking
+                // stopped. Boot-loop tolerance is unchanged: autospawn logs and
+                // continues; the enable route maps this to a structured 409.
+                self.emit_crashed(id, &conflict.to_string()).await;
+                return Err(conflict);
+            }
+        };
 
-        // Reservation held from here on: every failure in `spawn_admitted`
-        // must release it, success swaps it for the live entry atomically.
-        let result = self.spawn_admitted(id, &manifest).await;
-        if result.is_err() {
-            self.processes.lock().await.spawning.remove(id);
-        }
-        result
+        self.spawn_admitted(id, &manifest, guard).await
     }
 
     /// Everything downstream of a successful admission reservation: token
     /// mint, process exec, MCP handshake, router + supervisor wiring, and
     /// the final swap of the reservation for the live `Running` entry (one
-    /// lock). Split out of [`PluginHost::spawn`] so its single call site can
-    /// release the admission reservation on EVERY failure path with one
-    /// `is_err()` check instead of per-`return` bookkeeping.
+    /// lock). Owns the [`AdmissionGuard`]: every failure exit — `Err`
+    /// return, task abort/drop at any `.await`, panic — drops the guard,
+    /// which releases the reservation; the success swap disarms it.
     async fn spawn_admitted(
         self: &Arc<Self>,
         id: &str,
         manifest: &Manifest,
+        guard: AdmissionGuard,
     ) -> Result<(), HostError> {
         let install_path = self
             .registry
@@ -487,8 +558,9 @@ impl PluginHost {
                     let reason = "auth handshake failed";
                     // Drop any stale live entry so list_running / status
                     // don't report a stale Running state. (The admission
-                    // reservation is released by `spawn` on this Err.)
-                    let _ = self.processes.lock().await.live.remove(id);
+                    // reservation is released by the guard's Drop on this
+                    // Err return.)
+                    let _ = self.lock_table().live.remove(id);
                     self.emit_crashed(id, reason).await;
                     return Err(HostError::AuthMismatch(id.to_string()));
                 }
@@ -550,17 +622,21 @@ impl PluginHost {
 
         // Park the running record, atomically swapping the admission
         // reservation for the live entry so no interleaving ever sees
-        // "neither reserved nor running". We preserve any pre-existing
+        // "neither reserved nor running". The guard is disarmed under the
+        // SAME lock: after this block a same-id respawn may legitimately
+        // create a new reservation, and a still-armed guard dropped later
+        // would wrongly release it. We preserve any pre-existing
         // crash-window counters (carried by `Crashed → Spawning` recovery
         // paths) so the crash-loop disable threshold counts the actual rate,
         // not just the restarts within one spawn lifetime.
         {
-            let mut table = self.processes.lock().await;
+            let mut table = self.lock_table();
             let (crashes_in_window, window_started) = match table.live.get(id) {
                 Some(prev) => (prev.crashes_in_window, prev.window_started),
                 None => (0, Instant::now()),
             };
             table.spawning.remove(id);
+            guard.disarm();
             table.live.insert(
                 id.to_string(),
                 RunningPlugin {
@@ -587,7 +663,7 @@ impl PluginHost {
     /// won't respawn, sends SIGTERM via PluginProcess::stop, awaits exit.
     pub async fn stop(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
         let (process, supervisor, subs) = {
-            let mut table = self.processes.lock().await;
+            let mut table = self.lock_table();
             let rp = table
                 .live
                 .get_mut(id)
@@ -631,7 +707,7 @@ impl PluginHost {
         }
 
         {
-            let mut table = self.processes.lock().await;
+            let mut table = self.lock_table();
             table.live.remove(id);
         }
 
@@ -653,7 +729,7 @@ impl PluginHost {
     /// Snapshot current status for one plugin. An admission-reserved id
     /// (mid-spawn, no live entry yet) reports as `Spawning` with no pid.
     pub async fn status(&self, id: &str) -> Option<PluginHostStatus> {
-        let table = self.processes.lock().await;
+        let table = self.lock_table();
         if table.spawning.contains(id) {
             return Some(PluginHostStatus {
                 id: id.to_string(),
@@ -672,7 +748,7 @@ impl PluginHost {
     /// once Slice D wires it. Admission-reserved ids report as `Spawning`
     /// (they shadow any stale crashed live entry, matching `status`).
     pub async fn list_running(&self) -> Vec<PluginHostStatus> {
-        let table = self.processes.lock().await;
+        let table = self.lock_table();
         let mut out: Vec<PluginHostStatus> = table
             .spawning
             .iter()
@@ -700,7 +776,7 @@ impl PluginHost {
     /// (`Spawning`) ids are deliberately NOT included: tool visibility and
     /// dispatch must not expose a plugin before its handshake completed.
     pub async fn running_plugin_ids(&self) -> BTreeSet<String> {
-        let table = self.processes.lock().await;
+        let table = self.lock_table();
         table
             .live
             .iter()
@@ -712,14 +788,14 @@ impl PluginHost {
     /// Most-recent stderr lines, oldest → newest. `n` clamps to the ring
     /// capacity inside `PluginProcess`.
     pub async fn stderr_tail(&self, id: &str, n: usize) -> Option<Vec<String>> {
-        let table = self.processes.lock().await;
+        let table = self.lock_table();
         table.live.get(id).map(|rp| rp.process.stderr_tail(n))
     }
 
     /// Borrow the live MCP client. Slice C calls this to issue `tools/list`
     /// or to drive other outbound RPC.
     pub async fn mcp_client(&self, id: &str) -> Option<Arc<McpClient>> {
-        let table = self.processes.lock().await;
+        let table = self.lock_table();
         table
             .live
             .get(id)
@@ -753,7 +829,7 @@ impl PluginHost {
         call_id: Option<&str>,
     ) -> Result<serde_json::Value, RpcError> {
         let (mcp, subscriptions) = {
-            let table = self.processes.lock().await;
+            let table = self.lock_table();
             let rp = table
                 .live
                 .get(plugin_id)
@@ -837,7 +913,7 @@ impl PluginHost {
         let exit_result = child.wait().await;
         // Was this a graceful stop? Look at the map; if `stopping=true`, yes.
         let stopping = {
-            let table = self.processes.lock().await;
+            let table = self.lock_table();
             table.live.get(&id).map(|rp| rp.stopping).unwrap_or(true)
         };
 
@@ -854,7 +930,7 @@ impl PluginHost {
 
         // Snapshot stderr tail so the crash event carries useful detail.
         let tail = {
-            let table = self.processes.lock().await;
+            let table = self.lock_table();
             table
                 .live
                 .get(&id)
@@ -869,7 +945,7 @@ impl PluginHost {
 
         // Crash-window bookkeeping.
         let (attempts, exceeded) = {
-            let mut table = self.processes.lock().await;
+            let mut table = self.lock_table();
             let entry = match table.live.get_mut(&id) {
                 Some(e) => e,
                 None => {
@@ -903,7 +979,7 @@ impl PluginHost {
             // supervisor task ends here; an explicit `spawn(id)` revives.
             // We do, however, remove the process arc so its file descriptors
             // (already-closed pipes mostly) get reaped.
-            let mut table = self.processes.lock().await;
+            let mut table = self.lock_table();
             if let Some(rp) = table.live.get_mut(&id) {
                 rp.supervisor = None;
             }
@@ -927,7 +1003,7 @@ impl PluginHost {
         // Drop the old entry's process/mcp before respawning so the channels
         // close before we open new ones.
         {
-            let mut table = self.processes.lock().await;
+            let mut table = self.lock_table();
             table.live.remove(&id);
         }
         if let Err(e) = self.spawn(&id).await {

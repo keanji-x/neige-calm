@@ -241,6 +241,91 @@ async fn concurrent_duplicate_workflow_spawns_admit_exactly_one() {
     host.stop(loser).await.expect("stop loser");
 }
 
+/// #891 r2 review fix — the admission reservation must be cancellation-safe.
+/// A spawn whose future is aborted mid-flight (here: parked inside the MCP
+/// handshake against an entrypoint that never answers `initialize`) must
+/// release its `Spawning` reservation via the RAII guard's `Drop`; otherwise
+/// the id squats as `Spawning` forever (same-id spawns get `AlreadyRunning`,
+/// the workflow id stays held). Asserts all three recoveries: no status
+/// squat, same-workflow spawn by ANOTHER plugin succeeds, and a same-id
+/// respawn succeeds once the entrypoint is fixed.
+#[tokio::test]
+async fn aborted_spawn_releases_admission_reservation() {
+    let _env_lock = FORGE_ENV_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let _trusted = EnvGuard::set(
+        "NEIGE_TRUSTED_FORGE_PLUGINS",
+        format!("{TRUSTED_A},{TRUSTED_B}"),
+    );
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let host = boot_host(&repo, tmp.path(), EventBus::new()).await;
+
+    // Repoint A's entrypoint at `cat`: it holds stdin open and never writes
+    // an `initialize` response, so `spawn` parks inside the handshake await
+    // (10s client timeout — far beyond the abort below).
+    let stub = tmp.path().join("plugins").join(TRUSTED_A).join("bin/stub");
+    std::fs::remove_file(&stub).expect("remove echo stub symlink");
+    std::os::unix::fs::symlink("/bin/cat", &stub).expect("symlink cat stub");
+
+    let hanging_spawn = tokio::spawn({
+        let host = Arc::clone(&host);
+        async move { host.spawn(TRUSTED_A).await }
+    });
+    // Admission is observable as a synthesized `Spawning` status; wait for it
+    // so the abort lands strictly after the reservation was inserted.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(s) = host.status(TRUSTED_A).await
+            && matches!(s.status, PluginRuntimeStatus::Spawning)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "spawn never reached the admission reservation"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+    hanging_spawn.abort();
+    let join = hanging_spawn.await;
+    assert!(
+        join.is_err() || join.as_ref().is_ok_and(|r| r.is_err()),
+        "hanging spawn must not have completed successfully: {join:?}"
+    );
+
+    // Guard Drop must have released the reservation: no `Spawning` squat.
+    assert!(
+        host.status(TRUSTED_A).await.is_none(),
+        "aborted spawn must not leave a Spawning reservation behind"
+    );
+
+    // The workflow id is free again: another trusted plugin declaring the
+    // same id spawns.
+    host.spawn(TRUSTED_B)
+        .await
+        .expect("workflow id must be free after the aborted spawn");
+    wait_for_running(&host, TRUSTED_B).await;
+    host.stop(TRUSTED_B).await.expect("stop second trusted");
+
+    // And the same id is spawnable again once its entrypoint behaves —
+    // i.e. no leaked reservation answering `AlreadyRunning`.
+    std::fs::remove_file(&stub).expect("remove cat stub symlink");
+    std::os::unix::fs::symlink(Path::new(ECHO_BIN), &stub).expect("restore echo stub");
+    host.spawn(TRUSTED_A)
+        .await
+        .expect("same-id spawn must succeed after the aborted attempt");
+    wait_for_running(&host, TRUSTED_A).await;
+    host.stop(TRUSTED_A).await.expect("stop first trusted");
+}
+
 async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<PluginHost> {
     let plugins_dir = root.join("plugins");
     let plugins_data_dir = root.join("plugins-data");
