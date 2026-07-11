@@ -29,10 +29,12 @@
 #      REMOTE POSITIVE CANARY (a GET to a public URL through the full chain
 #      MUST succeed — a dead chain would make prod "unreachable" vacuously,
 #      i.e. fail-open; the canary makes the fence provable). Then a
-#      FAIL-CLOSED ALLOWLIST: a guaranteed-dead destination (127.0.0.1:1)
-#      is probed twice through the same chain to calibrate the proxy's own
+#      FAIL-CLOSED ALLOWLIST: three distinct improbable-dead ports
+#      (127.0.0.1:1/:9/:65533) are probed twice each through the same chain
+#      and must ALL agree — a consensus calibration of the proxy's own
 #      unreachable-destination FINGERPRINT (status line + header shape +
-#      body, stable dimensions only); prod 127.0.0.1:4040/:4041 may answer
+#      body, stable dimensions only; any disagreement, incl. body size,
+#      aborts 73); prod 127.0.0.1:4040/:4041 may answer
 #      ONLY with that exact fingerprint, or not at all. ANY other answer,
 #      regardless of status class, means sing-box routing would hand agents
 #      a path to prod: ABORT. The fence rests on sing-box config, so it is
