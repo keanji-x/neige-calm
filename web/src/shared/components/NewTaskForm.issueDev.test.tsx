@@ -74,12 +74,16 @@ afterEach(() => {
 });
 
 describe('NewTaskForm issue-dev — fields + prefill', () => {
-  it('renders the issue-dev fields (URL, merge policy, raw JSON) with the variant heading — and NO notes field', () => {
+  it('renders the issue-dev fields (URL, auto-merge checkbox, raw JSON) with the variant heading — and NO notes field', () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([]);
     renderForm();
     expect(screen.getByRole('form', { name: /new issue-dev task/i })).toBeTruthy();
     expect(screen.getByLabelText(/github issue url/i)).toBeTruthy();
-    expect(screen.getByLabelText(/merge policy/i)).toBeTruthy();
+    // merge_policy is binary → an "Auto-merge" checkbox (#891 signoff
+    // r3), not a select. Its one-line hint is the accessible
+    // description.
+    const autoMerge = screen.getByRole('checkbox', { name: /auto-merge/i });
+    expect(autoMerge).toHaveAccessibleDescription(/waits for your approval/i);
     expect(screen.getByText(/raw workflow_input json/i)).toBeTruthy();
     // #891 signoff: no notes textarea — it duplicated the
     // task-description free-text. notes stays schema-only; the raw-JSON
@@ -101,19 +105,21 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
     );
     expect(screen.getByRole('form', { name: /new task/i })).toBeTruthy();
     expect(screen.queryByLabelText(/github issue url/i)).toBeNull();
-    expect(screen.queryByLabelText(/merge policy/i)).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /auto-merge/i })).toBeNull();
     expect(screen.queryByText(/raw workflow_input json/i)).toBeNull();
   });
 
-  it('prefills the title as dev #<n> once the URL parses, and defaults merge policy to hold-for-ratify', async () => {
+  it('prefills the title as dev #<n> once the URL parses, and defaults to hold-for-ratify (auto-merge unchecked)', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([]);
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     const title = screen.getByLabelText(/task description/i) as HTMLTextAreaElement;
     await waitFor(() => expect(title.value).toBe('dev #891'));
-    const policy = screen.getByLabelText(/merge policy/i) as HTMLSelectElement;
-    expect(policy.value).toBe('hold-for-ratify');
+    const autoMerge = screen.getByRole('checkbox', {
+      name: /auto-merge/i,
+    }) as HTMLInputElement;
+    expect(autoMerge.checked).toBe(false);
   });
 
   it('stops prefilling after the user edits the title (latch)', async () => {
@@ -198,7 +204,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
   });
 
-  it('sends the selected merge policy — still with no notes key', async () => {
+  it('checking Auto-merge sends merge_policy auto-merge — still with no notes key', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
@@ -206,7 +212,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     renderForm({ defaultCoveId: 'cove-1' });
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
-    await user.selectOptions(screen.getByLabelText(/merge policy/i), 'auto-merge');
+    await user.click(screen.getByRole('checkbox', { name: /auto-merge/i }));
     await fillCwd(user);
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
@@ -259,9 +265,13 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
       issue_number: 891,
       merge_policy: 'hold-for-ratify',
     });
-    // Still derived: flipping the merge policy updates the mirror.
-    await user.selectOptions(screen.getByLabelText(/merge policy/i), 'auto-merge');
+    // Still derived: toggling the Auto-merge checkbox updates the
+    // mirror — both wire values pass through it.
+    const autoMerge = screen.getByRole('checkbox', { name: /auto-merge/i });
+    await user.click(autoMerge);
     expect(JSON.parse(ta.value).merge_policy).toBe('auto-merge');
+    await user.click(autoMerge);
+    expect(JSON.parse(ta.value).merge_policy).toBe('hold-for-ratify');
   });
 
   it('an edited raw JSON overrides the derived fields in the submit body — including a notes key, which raw JSON alone can carry (#891 signoff)', async () => {

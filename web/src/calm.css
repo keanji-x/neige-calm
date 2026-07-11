@@ -3427,16 +3427,18 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
 .new-task-form-cwd-browse:hover { color: var(--text); border-color: var(--text-3); }
 
 /* ===== Issue-dev wave variant (#891 slice ③) =====
-   Wave-type selector above NewTaskForm in the New-wave dialog: an
-   in-card radio-pill group (signoff round 2 — the native <select>'s
-   OS popup read as foreign chrome on the calm card). Native radios,
-   visually hidden via .sr-only, wrapped in pill labels; selected and
-   focus states reuse the accent tokens (--accent / --accent-soft)
-   that theme correctly in both light and dark.
+   Workflow selector above NewTaskForm in the New-wave dialog: vertical
+   radio rows (signoff r3 — horizontal pills crowd beyond ~4 options; a
+   vertical list grows naturally, and like the pills it needs no
+   overlay). Native radios, visually hidden via .sr-only, with the
+   whole row as the click target; each row pairs the workflow name
+   with a one-line muted description. Selected and focus states reuse
+   the accent tokens (--accent / --accent-soft) that theme correctly
+   in both light and dark.
 
    NB: the fieldset stays display:block — browsers give <fieldset> a
    special layout box and flex on it is unreliable; the inner
-   .new-wave-kind-pills row carries the flex. */
+   .new-wave-kind-rows column carries the flex. */
 .new-wave-kind {
   margin: var(--space-0) var(--space-0) var(--space-5);
   padding: var(--space-0);
@@ -3447,41 +3449,52 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   padding: var(--space-0);
   margin-bottom: var(--space-3);
 }
-.new-wave-kind-pills {
+.new-wave-kind-rows {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: var(--space-3);
 }
-.new-wave-kind-pill { display: inline-flex; cursor: pointer; }
-.new-wave-kind-pill-face {
-  display: inline-flex;
-  align-items: center;
-  padding: var(--space-2) var(--space-5);
+.new-wave-kind-row { display: flex; cursor: pointer; }
+.new-wave-kind-row-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-5);
   border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-md);
   background: transparent;
-  color: var(--text-2);
-  font-size: var(--text-sm);
   transition:
     background var(--motion-quick),
-    border-color var(--motion-quick),
-    color var(--motion-quick);
+    border-color var(--motion-quick);
 }
-.new-wave-kind-pill:hover .new-wave-kind-pill-face {
-  color: var(--text);
+.new-wave-kind-row-name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-2);
+}
+.new-wave-kind-row-desc {
+  font-size: var(--text-xs);
+  color: var(--text-3);
+}
+.new-wave-kind-row:hover .new-wave-kind-row-body {
   border-color: var(--text-3);
 }
-/* Selected pill — accent border + soft accent fill, same pairing the
+.new-wave-kind-row:hover .new-wave-kind-row-name { color: var(--text); }
+/* Selected row — accent border + soft accent fill, same pairing the
    input focus ring uses; both tokens carry dark-theme overrides. Kept
-   after the hover rule so a hovered selected pill stays accented. */
-.new-wave-kind-pill input:checked + .new-wave-kind-pill-face {
+   after the hover rules so a hovered selected row stays accented. */
+.new-wave-kind-row input:checked + .new-wave-kind-row-body {
   background: var(--accent-soft);
   border-color: var(--accent);
+}
+.new-wave-kind-row input:checked + .new-wave-kind-row-body .new-wave-kind-row-name {
   color: var(--text);
 }
 /* Keyboard focus lands on the (visually hidden) radio; surface it on
-   the pill with the app-wide focus-visible ring. */
-.new-wave-kind-pill input:focus-visible + .new-wave-kind-pill-face {
+   the row with the app-wide focus-visible ring. */
+.new-wave-kind-row input:focus-visible + .new-wave-kind-row-body {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -3496,6 +3509,38 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   padding: var(--space-0);
   margin-top: var(--space-0);
   background: transparent;
+}
+
+/* Auto-merge checkbox (#891 signoff r3) — binary merge_policy as a
+   native checkbox row + one-line muted hint. accent-color themes the
+   native glyph with the same token the selected workflow row uses. */
+.new-task-form-automerge {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.new-task-form-automerge-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  align-self: flex-start;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  cursor: pointer;
+}
+.new-task-form-automerge-label:hover { color: var(--text); }
+.new-task-form-automerge-box {
+  margin: var(--space-0);
+  accent-color: var(--accent);
+}
+.new-task-form-automerge-box:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.new-task-form-automerge-hint {
+  margin: var(--space-0);
+  font-size: var(--text-xs);
+  color: var(--text-3);
 }
 
 /* Raw workflow_input JSON escape hatch — collapsed <details> at the

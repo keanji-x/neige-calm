@@ -445,17 +445,19 @@ describe('CovePage pin button on wave rows', () => {
 });
 
 // ---------------------------------------------------------------------------
-// NewWaveDialog variant switch — issue #891 slice ③ (signoff round 2:
-// in-card radio-pill group; earlier rounds shipped a toggle pair, then
-// a native <select> whose OS popup read as foreign chrome).
+// NewWaveDialog variant switch — issue #891 slice ③ (signoff r3:
+// vertical "Workflow" radio rows; earlier rounds shipped a toggle
+// pair, a native <select> whose OS popup read as foreign chrome, then
+// horizontal pills that would crowd beyond ~4 options).
 //
-// The dialog hosts a "Wave type" radiogroup (fieldset + legend, native
-// radios in pill labels) above NewTaskForm: "Task" (default, plain
-// wave) and "Issue dev" (workflow-bound wave). The dialog itself has NO
-// visible title row — it's named via aria-label ("New wave") only. The
-// form is exercised in NewTaskForm.issueDev.test.tsx; here we pin the
-// dialog-level wiring — default option, switch → issue-dev fields
-// appear, switch back → they're gone.
+// The dialog hosts a "Workflow" radiogroup (fieldset + legend, native
+// sr-only radios in full-row labels, each with a name + muted
+// description) above NewTaskForm: "None" (default — plain wave, no
+// workflow) and "Issue dev" (workflow-bound wave). The dialog itself
+// has NO visible title row — it's named via aria-label ("New wave")
+// only. The form is exercised in NewTaskForm.issueDev.test.tsx; here we
+// pin the dialog-level wiring — default option, switch → issue-dev
+// fields appear, switch back → they're gone.
 // ---------------------------------------------------------------------------
 
 describe('CovePage NewWaveDialog variant switch (#891)', () => {
@@ -480,20 +482,28 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     return { user, dialog };
   }
 
-  /** One wave-type radio pill inside the "Wave type" radiogroup. */
-  function waveTypeRadio(dialog: HTMLElement, name: 'Task' | 'Issue dev') {
+  /** One workflow radio row inside the "Workflow" radiogroup. */
+  function workflowRadio(dialog: HTMLElement, name: 'None' | 'Issue dev') {
     const group = within(dialog).getByRole('radiogroup', {
-      name: 'Wave type',
+      name: 'Workflow',
     });
     return within(group).getByRole('radio', { name }) as HTMLInputElement;
   }
 
-  it('opens on the plain Task variant with the wave-type radio pills visible, and no visible title row', async () => {
+  it('opens on the plain "None" workflow with the radio rows visible, and no visible title row', async () => {
     const { dialog } = await openNewWaveDialog();
-    // Both wave types are offered as radios (extensibility seam:
-    // future workflows land here as new pills, not new tabs).
-    expect(waveTypeRadio(dialog, 'Task').checked).toBe(true);
-    expect(waveTypeRadio(dialog, 'Issue dev').checked).toBe(false);
+    // Both workflows are offered as radios (extensibility seam:
+    // future workflows land here as new rows, not new tabs). Each row
+    // pairs the workflow name with a muted one-line description wired
+    // as the radio's accessible description.
+    expect(workflowRadio(dialog, 'None').checked).toBe(true);
+    expect(workflowRadio(dialog, 'Issue dev').checked).toBe(false);
+    expect(workflowRadio(dialog, 'None')).toHaveAccessibleDescription(
+      /plain wave — no workflow attached/i,
+    );
+    expect(workflowRadio(dialog, 'Issue dev')).toHaveAccessibleDescription(
+      /from github issue to pr/i,
+    );
     // Signoff round 2: the dialog reads as one cohesive card — no
     // visible "New wave" title row (and no head × button); the name
     // lives on the dialog's aria-label (already asserted by the
@@ -504,19 +514,21 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
   });
 
-  it('selecting Issue dev shows the issue-dev form; selecting Task restores the plain form', async () => {
+  it('selecting Issue dev shows the issue-dev form; selecting None restores the plain form', async () => {
     const { user, dialog } = await openNewWaveDialog();
-    await user.click(waveTypeRadio(dialog, 'Issue dev'));
+    await user.click(workflowRadio(dialog, 'Issue dev'));
     expect(within(dialog).getByLabelText(/github issue url/i)).toBeInTheDocument();
-    expect(within(dialog).getByLabelText(/merge policy/i)).toBeInTheDocument();
-    await user.click(waveTypeRadio(dialog, 'Task'));
+    expect(
+      within(dialog).getByRole('checkbox', { name: /auto-merge/i }),
+    ).toBeInTheDocument();
+    await user.click(workflowRadio(dialog, 'None'));
     expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
     expect(
       within(dialog).getByRole('form', { name: /new task/i }),
     ).toBeInTheDocument();
   });
 
-  it('focuses the variant-appropriate first field: title on open, URL input after selecting Issue dev, title again after selecting Task', async () => {
+  it('focuses the variant-appropriate first field: title on open, URL input after selecting Issue dev, title again after selecting None', async () => {
     const { user, dialog } = await openNewWaveDialog();
     // Dialog's initial-focus pass lands on the task variant's first
     // field — the title textarea (via the shared initialFieldRef).
@@ -529,13 +541,13 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     // first required field (the issue URL input) must receive focus —
     // Dialog's open-time pass doesn't re-run, so this pins the
     // variant-change effect.
-    await user.click(waveTypeRadio(dialog, 'Issue dev'));
+    await user.click(workflowRadio(dialog, 'Issue dev'));
     await waitFor(() => {
       expect(document.activeElement).toBe(
         within(dialog).getByLabelText(/github issue url/i),
       );
     });
-    await user.click(waveTypeRadio(dialog, 'Task'));
+    await user.click(workflowRadio(dialog, 'None'));
     await waitFor(() => {
       expect(document.activeElement).toBe(
         within(dialog).getByLabelText(/task description/i),
@@ -545,7 +557,7 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
 
   it('a manual title edit latches against re-prefill; switching variant (remount) un-latches', async () => {
     const { user, dialog } = await openNewWaveDialog();
-    await user.click(waveTypeRadio(dialog, 'Issue dev'));
+    await user.click(workflowRadio(dialog, 'Issue dev'));
     const title = () =>
       within(dialog).getByLabelText(/task description/i) as HTMLTextAreaElement;
     const urlInput = within(dialog).getByLabelText(/github issue url/i);
@@ -561,8 +573,8 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     // Switching variant remounts NewTaskForm (key={variant}) — all
     // per-variant state resets, including the latch: prefill follows
     // the URL again in the fresh mount.
-    await user.click(waveTypeRadio(dialog, 'Task'));
-    await user.click(waveTypeRadio(dialog, 'Issue dev'));
+    await user.click(workflowRadio(dialog, 'None'));
+    await user.click(workflowRadio(dialog, 'Issue dev'));
     expect(title().value).toBe('');
     await user.type(
       within(dialog).getByLabelText(/github issue url/i),

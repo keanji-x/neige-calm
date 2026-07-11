@@ -123,7 +123,10 @@ const ISSUE_DEV_WORKFLOW_ID = 'issue-development';
 /** Allowed `workflow_input.merge_policy` values — mirrors the enum in the
  *  shipped `issue-development` input_schema (git-forge manifest, #891 ②).
  *  The default mirrors the schema's documentary `default`: kernel doesn't
- *  apply defaults (design F6), so the form always sends the value. */
+ *  apply defaults (design F6), so the form always sends the value. The
+ *  policy is binary, so the UI is an "Auto-merge" checkbox (#891 signoff
+ *  r3 — kills the last OS dropdown popup): unchecked = 'hold-for-ratify',
+ *  checked = 'auto-merge'. The wire shape is unchanged. */
 type MergePolicy = 'hold-for-ratify' | 'auto-merge';
 
 /** Debounce window for the cwd → resolve API call. 300ms balances
@@ -614,30 +617,44 @@ export function NewTaskForm({
           placeholder="What should the agent do?"
         />
 
-        {/* Merge policy — issue-dev variant only. Always sent (kernel
-            doesn't apply schema defaults, design F6). The schema's
+        {/* Merge policy — issue-dev variant only, surfaced as an
+            "Auto-merge" checkbox because the policy is binary (#891
+            signoff r3; a <select> here was the last OS popup on the
+            card). Unchecked (default) = 'hold-for-ratify', checked =
+            'auto-merge'; the derived merge_policy is always sent
+            (kernel doesn't apply schema defaults, design F6). Native
+            checkbox — the app has no switch primitive, and a real
+            <input type="checkbox"> needs no custom aria; the one-line
+            hint is wired as its accessible description. The schema's
             optional `notes` deliberately has no field here (#891
             signoff: it duplicated the task-description free-text);
             the raw-JSON escape hatch below still carries it. */}
         {isIssueDev && (
-          <>
-            <label htmlFor={mergePolicyId} className="new-task-form-label">
-              Merge policy
-            </label>
-            <select
-              id={mergePolicyId}
-              className="new-task-form-input"
-              value={mergePolicy}
-              onChange={(e) => setMergePolicy(e.target.value as MergePolicy)}
+          <div className="new-task-form-automerge">
+            <label
+              htmlFor={mergePolicyId}
+              className="new-task-form-automerge-label"
             >
-              <option value="hold-for-ratify">
-                hold-for-ratify — pause for a human grant before merging
-              </option>
-              <option value="auto-merge">
-                auto-merge — merge as soon as the merge fence converges
-              </option>
-            </select>
-          </>
+              <input
+                id={mergePolicyId}
+                type="checkbox"
+                className="new-task-form-automerge-box"
+                checked={mergePolicy === 'auto-merge'}
+                onChange={(e) =>
+                  setMergePolicy(e.target.checked ? 'auto-merge' : 'hold-for-ratify')
+                }
+                aria-describedby={`${mergePolicyId}-hint`}
+              />
+              Auto-merge
+            </label>
+            <p
+              id={`${mergePolicyId}-hint`}
+              className="new-task-form-automerge-hint"
+            >
+              Off, the merge waits for your approval; on, it merges
+              automatically once the fence converges and checks are green.
+            </p>
+          </div>
         )}
 
         {/* cwd — absolute path. Submit-on-Enter lives here because the
