@@ -45,6 +45,15 @@ use tower::ServiceExt;
 
 const PR_CREATE_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.create";
 const PR_CHECKS_TOOL: &str = "plugin.dev.neige.git-forge_gh.pr.checks";
+/// #937: the review-subject `slice_id` is agent-chosen and drifts *within a run*
+/// (e.g. `marker-file` -> `inspect-issue/design`). The kernel keys review-round
+/// `n` strictly per `{phase, slice_id, pr_number}` subject, so a seeded prior
+/// round only lines up if the agent emits on the SAME slug. We therefore pin the
+/// slug via the goal and seed/wait on this exact constant. This fixes only an
+/// incidental name — the give-up/ask-human/merge decisions under test stay
+/// autonomous. Must not collide with any plan task key (inspect-issue,
+/// review-design-a/b, open-pr, review-pr-a/b, merge) and must not be a file path.
+const STEERED_REVIEW_SLICE: &str = "marker-slice";
 /// The d2 test's source issue. Purely an environment fact: the gh shim keeps
 /// per-repo issue state keyed by number, and any number works.
 const D2_ISSUE_NUMBER: u64 = 840;
@@ -378,10 +387,15 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // ASK-HUMAN are mutually exclusive terminal branches of one wave, so the
     // goal fixes coverage on this branch; branch choice is descriptor-legal
     // either way and the protocol mechanics stay autonomous.
-    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+    let goal = format!(
+        "Plan the smallest issue-development workflow for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
-                cap, give up and fail the wave; do not request ratification."
-        .to_string();
+                cap, give up and fail the wave; do not request ratification. For every \
+                calm.review.round you record for the design phase of this wave, set \
+                subject.slice_id to exactly the literal string `{STEERED_REVIEW_SLICE}` \
+                (that exact value, verbatim — no prefix, suffix, phase qualifier, or \
+                derived variant)."
+    );
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
@@ -405,17 +419,15 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
 
     boot_spec_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
     assert!(
         matches!(plan_actor, ActorId::AiSpecSession(_)),
         "plan.updated actor must be the real spec session, got {plan_actor:?}"
     );
-    // The review subject slice comes from the spec's OWN real plan so the
-    // seeded prior round matches the spec's mental model (design D2).
-    let slice_id = plan["changed_keys"][0]
-        .as_str()
-        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
-        .to_string();
+    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
+    // agent emits — they are different namespaces and the agent's slug drifts.
+    let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_spec_harness(&fx).await.expect("live spec harness");
     // Settle the planning turn before seeding (R6 causality guard): the
@@ -575,10 +587,15 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // ASK-HUMAN are mutually exclusive terminal branches of one wave, so the
     // goal fixes coverage on this branch; branch choice is descriptor-legal
     // either way and the protocol mechanics stay autonomous.
-    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+    let goal = format!(
+        "Plan the smallest issue-development workflow for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
-                cap, ask for human ratification instead of giving up; do not fail the wave."
-        .to_string();
+                cap, ask for human ratification instead of giving up; do not fail the wave. \
+                For every calm.review.round you record for the design phase of this wave, \
+                set subject.slice_id to exactly the literal string \
+                `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, \
+                phase qualifier, or derived variant)."
+    );
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
@@ -602,17 +619,15 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
 
     boot_spec_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
     assert!(
         matches!(plan_actor, ActorId::AiSpecSession(_)),
         "plan.updated actor must be the real spec session, got {plan_actor:?}"
     );
-    // The review subject slice comes from the spec's OWN real plan so the
-    // seeded prior round matches the spec's mental model (design D2).
-    let slice_id = plan["changed_keys"][0]
-        .as_str()
-        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
-        .to_string();
+    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
+    // agent emits — they are different namespaces and the agent's slug drifts.
+    let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_spec_harness(&fx).await.expect("live spec harness");
     // Settle the planning turn before seeding (R6 causality guard): the
@@ -954,17 +969,15 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
 
     boot_spec_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
     assert!(
         matches!(plan_actor, ActorId::AiSpecSession(_)),
         "plan.updated actor must be the real spec session, got {plan_actor:?}"
     );
-    // The review subject slice comes from the spec's OWN real plan so the
-    // seeded converged round matches the spec's mental model (R7a precedent).
-    let slice_id = plan["changed_keys"][0]
-        .as_str()
-        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
-        .to_string();
+    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
+    // agent emits — they are different namespaces and the agent's slug drifts.
+    let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_spec_harness(&fx).await.expect("live spec harness");
     // Settle the planning turn before setup/seeding (R6 causality guard): the
@@ -1420,17 +1433,15 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
 
     boot_spec_harness_via_start_op(&fx, goal).await;
 
-    let (plan_actor, plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
+    let (plan_actor, _plan) = wait_for_plan_updated(&fx, spec_planning_budget()).await;
     assert!(
         matches!(plan_actor, ActorId::AiSpecSession(_)),
         "plan.updated actor must be the real spec session, got {plan_actor:?}"
     );
-    // The review subject slice comes from the spec's OWN real plan so the
-    // seeded prior round matches the spec's mental model (R7a/d2 precedent).
-    let slice_id = plan["changed_keys"][0]
-        .as_str()
-        .unwrap_or_else(|| panic!("plan.updated changed_keys[0] must be a string: {plan}"))
-        .to_string();
+    // #937: pin the review subject to the steered slug (see STEERED_REVIEW_SLICE).
+    // `changed_keys[0]` is the first plan TASK key, not the review SUBJECT slug the
+    // agent emits — they are different namespaces and the agent's slug drifts.
+    let slice_id = STEERED_REVIEW_SLICE.to_string();
 
     let harness = recover_spec_harness(&fx).await.expect("live spec harness");
     // Settle the planning turn before setup/seeding (R6 causality guard).
@@ -1737,6 +1748,8 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
     // Oracle 1 — THE extension round: n=9 (= old cap + 1), cap=10 (= old cap
     // + 2), converged, both channels approved, real branch tip, spec-authored.
     // Kernel acceptance of this row is the E2E proof of the #888 arm.
+    // #937: this oracle requires the steered slug to survive the grant re-wake,
+    // the exact boundary where the within-run review-subject drift was observed.
     let (ext_round_id, ext_round_actor, ext_round) = wait_for_impl_review_round_on_subject(
         &fx,
         resolved_id,
@@ -1912,7 +1925,10 @@ fn extension_merge_goal(repo_gitdir: &str) -> String {
          review cap, ask for human ratification instead of giving up; do not fail the wave. \
          Once the impl review round for the pull request reports converged, execute the \
          merge step yourself with the MCP forge tools (gh.pr.merge); do not dispatch \
-         further tasks."
+         further tasks. For every calm.review.round you record for the impl phase of this \
+         wave, set subject.slice_id to exactly the literal string \
+         `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, phase \
+         qualifier, or derived variant)."
     )
 }
 
@@ -1981,6 +1997,34 @@ async fn seed_prior_impl_review_round(
         .expect("log seeded prior impl review.round");
 }
 
+/// #937 timeout diagnostic for review-round subjects observed after a floor.
+async fn review_round_subjects_after(fx: &Fixture, floor: i64) -> Vec<String> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT payload FROM events \
+         WHERE kind = 'review.round' AND id > ?1 ORDER BY id ASC",
+    )
+    .bind(floor)
+    .fetch_all(fx.repo.pool())
+    .await
+    .unwrap_or_else(|e| panic!("review.round diagnostic rows after floor {floor}: {e}"));
+    let mut subjects: Vec<String> = rows
+        .into_iter()
+        .map(|payload| {
+            let payload: Value = serde_json::from_str(&payload).expect("event payload json");
+            format!(
+                "{}/{}",
+                payload["subject"]["phase"].as_str().unwrap_or("<missing>"),
+                payload["subject"]["slice_id"]
+                    .as_str()
+                    .unwrap_or("<missing>")
+            )
+        })
+        .collect();
+    subjects.sort();
+    subjects.dedup();
+    subjects
+}
+
 /// First post-floor `review.round` on the seeded impl subject (phase, slice
 /// AND pr_number — the kernel keys review history by the FULL subject, so a
 /// pr-less round is a different stream and must not be returned). Returns the
@@ -2017,11 +2061,13 @@ async fn wait_for_impl_review_round_on_subject(
             return hit;
         }
         if Instant::now() >= deadline {
+            let subjects = review_round_subjects_after(fx, floor).await;
             panic_with_agent_diag(
                 fx,
                 format!(
                     "timed out after {budget:?} waiting for post-floor impl review.round \
-                     on slice {slice_id} pr {pr_number} after event id {floor}"
+                     on slice {slice_id} pr {pr_number} after event id {floor}; \
+                     review.round subjects observed after floor: {subjects:?}"
                 ),
             )
             .await;
@@ -3406,11 +3452,13 @@ async fn wait_for_design_review_round_on_subject(
             return hit;
         }
         if Instant::now() >= deadline {
+            let subjects = review_round_subjects_after(fx, floor).await;
             panic_with_agent_diag(
                 fx,
                 format!(
                     "timed out after {budget:?} waiting for post-floor design review.round \
-                     on slice {slice_id} after event id {floor}"
+                     on slice {slice_id} after event id {floor}; review.round subjects \
+                     observed after floor: {subjects:?}"
                 ),
             )
             .await;
@@ -3835,7 +3883,10 @@ fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
          their results arrive as observations. Once the impl review round for the pull \
          request reports converged, execute the merge step yourself with the MCP forge \
          tools (gh.pr.merge, then gh.issue.close for issue #{issue_number}); do not \
-         dispatch further tasks."
+         dispatch further tasks. For every calm.review.round you record for the impl phase \
+         of this wave, set subject.slice_id to exactly the literal string \
+         `{STEERED_REVIEW_SLICE}` (that exact value, verbatim — no prefix, suffix, phase \
+         qualifier, or derived variant)."
     )
 }
 
