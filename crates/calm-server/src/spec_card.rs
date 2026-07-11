@@ -95,7 +95,7 @@ writes are transactional.
      keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
      drop a pending task. Use `calm.plan.list` to inspect plan status.
    * Every codex or claude task should declare a verification `gate` with \
-     re-runnable commands (fmt/clippy/tests as appropriate). Waves with \
+     re-runnable commands (fmt/linters/tests as appropriate). Waves with \
      `require_task_gates` reject ungated agent/code tasks unless you provide \
      `no_gate_reason`; terminal tasks are exempt. Gate cwd defaults task cwd → wave cwd; set \
      `gate.cwd` when the worker's checkout differs. Gates may run more \

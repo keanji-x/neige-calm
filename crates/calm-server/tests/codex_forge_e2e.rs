@@ -222,7 +222,6 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -310,7 +309,6 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -388,7 +386,6 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -585,7 +582,6 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -935,7 +931,6 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -1401,7 +1396,6 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -2074,8 +2068,8 @@ async fn wait_for_impl_review_round_on_subject(
 // `feedback_real_codex_e2e_crashes_harness`). In deterministic contexts this
 // test self-skips (no NEIGE_CODEX_BIN).
 //
-// Report card: minted by the fixture (`mint_report_card: true`); route parity
-// is a documented carve-out — the report card is setup, not proof.
+// Report card: the fixture now always mints it (production `create_wave` mints
+// it atomically for every wave); it is setup, not proof.
 //
 // Steering vs autonomy: the wave goal carries environment facts (repo
 // selector = the CLONE gitdir, issue number, base sha — `forge_pr_goal`
@@ -2117,7 +2111,6 @@ async fn real_spec_drives_issue_to_close_capstone() {
                 number: CAPSTONE_ISSUE_NUMBER,
                 body: CAPSTONE_ISSUE_BODY.into(),
             }),
-            mint_report_card: true,
             require_task_gates: true,
             descriptor_gate_cmd: Some(CAPSTONE_GATE_CMD.into()),
             repo_seed: RepoSeed::RustMicroCrate,
@@ -2910,12 +2903,14 @@ fn capstone_gate_script_is_hermetic_and_cargo_free() {
     );
 }
 
-/// The descriptor patch replaces the production `cargo test` gate before
-/// `Manifest::parse`, the boot guard rejects cargo gate cmds, and the
-/// UNPATCHED manifest still carries the cargo gate (i.e. the guard is live,
-/// not vacuous).
+/// The descriptor patch rewrites the shipped gate cmd to the hermetic
+/// capstone script before `Manifest::parse`, the boot guard rejects cargo
+/// gate cmds, and the UNPATCHED shipped gate cmd differs from the capstone
+/// cmd (i.e. the patch is live, not vacuous). #925: the shipped gate is now
+/// repo-agnostic prose, so non-vacuity is proven by `cmd != CAPSTONE_GATE_CMD`,
+/// not a `cargo` substring.
 #[test]
-fn descriptor_gate_patch_removes_cargo_and_guard_is_live() {
+fn descriptor_gate_patch_neutralizes_shipped_gate_and_guard_is_live() {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
 
     let patched = patch_manifest_gate_cmd(&raw, CAPSTONE_GATE_CMD);
@@ -2955,15 +2950,20 @@ fn descriptor_gate_patch_removes_cargo_and_guard_is_live() {
         "gate-cmd patch must not disturb anything else in the manifest"
     );
 
+    // #925 — the shipped gate no longer pins `cargo test`, so patch
+    // liveness is proven by "shipped cmd != the hermetic capstone cmd"
+    // rather than a `cargo` substring. `.all()` at the step level means a
+    // future multi-step gate that is only partially patched (some step
+    // already == CAPSTONE_GATE_CMD) cannot satisfy the liveness proof.
     let unpatched = Manifest::parse(&raw).expect("production manifest parses");
-    let has_cargo_gate = unpatched.workflows.iter().any(|w| {
+    let patch_is_live = unpatched.workflows.iter().any(|w| {
         w.gates
             .iter()
-            .any(|g| g.steps.iter().any(|s| s.cmd.contains("cargo")))
+            .any(|g| g.steps.iter().all(|s| s.cmd != CAPSTONE_GATE_CMD))
     });
     assert!(
-        has_cargo_gate,
-        "production manifest gate baseline moved (no cargo gate found); \
+        patch_is_live,
+        "shipped gate cmd already equals the capstone cmd; patch is vacuous — \
          re-evaluate the capstone patch + #863-B posture"
     );
 }
