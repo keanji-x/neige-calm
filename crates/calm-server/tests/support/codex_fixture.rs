@@ -65,7 +65,6 @@ pub struct FixtureSpec {
     pub workflow_id: Option<String>,
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,
-    pub mint_report_card: bool,
     pub require_task_gates: bool,
     /// #840 capstone (P1): when `Some`, every workflow gate step `cmd` in the
     /// git-forge manifest is replaced with this command BEFORE
@@ -190,7 +189,6 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
             workflow_id: None,
             plan_source: PlanSource::Injected,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: true,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -353,23 +351,27 @@ pub async fn boot_forge_e2e_fixture(
             .await
             .expect("persist spec card DB role");
     }
-    if spec.mint_report_card {
-        let report_card = repo_dyn
-            .card_create(NewCard {
-                wave_id: wave.id.clone(),
-                kind: "wave-report".into(),
-                sort: Some(-1.0),
-                payload: serde_json::to_value(WaveReportPayload::initial())
-                    .expect("wave report payload"),
-            })
-            .await
-            .expect("create report card");
-        cache.insert(
-            report_card.id.clone(),
-            CardRole::ReportCard,
-            wave.id.clone(),
-        );
-    }
+    // Production `routes::waves::create_wave` atomically mints the wave-report
+    // card alongside the spec card for EVERY wave (waves.rs) — no production
+    // wave ever lacks one. This fixture bypasses that route (direct
+    // `repo.wave_create` above), so it mints the report card here to match;
+    // otherwise the spec agent's `calm.report.write` trips the
+    // `wave has no wave-report card (invariant violation)` guard.
+    let report_card = repo_dyn
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial())
+                .expect("wave report payload"),
+        })
+        .await
+        .expect("create report card");
+    cache.insert(
+        report_card.id.clone(),
+        CardRole::ReportCard,
+        wave.id.clone(),
+    );
     if matches!(spec.plan_source, PlanSource::Injected) {
         seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
     }

@@ -111,6 +111,16 @@ KILLER_LOG=/home/kenji/neige-killer.log
 # (bind-mounted into the --network host forwarder container); deterministic
 # path of a workspace bin crate (no deps/ hash like the test binary).
 PROXY_BIN="$TARGET_DIR/debug/e2e-egress-proxy"
+# The `neige` shell CLI (crates/neige-cli, bin name `neige`) — the SPEC agent's
+# ONLY wave-read channel: the production prompt (crates/calm-server/src/
+# spec_card.rs) tells it to run `neige state`/`neige ls`/`neige cat` EACH TURN
+# ("This is your ground truth"); writes go through the calm.* MCP tools. Like
+# codex and the stdio-shim it is host-compiled and bind-mounted (NOT an apt
+# package — it's a workspace bin crate), at the same deterministic target path
+# as the proxy. Bind-mounted onto the run container's PATH at /usr/local/bin so
+# the agent's env-cleared exec-shell can resolve the bare `neige` command
+# (without it: `neige: command not found`, and the spec agent stalls at step 1).
+NEIGE_BIN="$TARGET_DIR/debug/neige"
 
 CONTAINER_HOME=/home/e2e
 CODEX_MOUNT=/opt/codex/codex
@@ -357,6 +367,24 @@ build_test_bin() {
     RUSTC_WRAPPER='' CARGO_BUILD_JOBS=4 nice -n 10 \
         cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
         -p neige-mcp-stdio-shim --bin neige-mcp-stdio-shim
+    ensure_neige_bin
+}
+
+# ---- neige CLI (SPEC agent's wave-read channel — host-compiled, PATH-mounted)
+# Built here alongside the test binary + shim (same host-compile model, same
+# warm shared target): a run-container dependency compiled from source, NOT an
+# apt package. The bind-mount that puts it on the container PATH lives in
+# docker_run_args; connectivity is free — the real spec/worker spawn already
+# injects NEIGE_MCP_SOCKET+NEIGE_MCP_TOKEN into the exec-shell via
+# shell_environment_policy.set (crates/calm-server/src/mcp_server/wiring.rs),
+# pointing at the SAME in-container kernel socket the stdio-shim reaches. So the
+# only thing the container lacks is the binary on PATH.
+ensure_neige_bin() {
+    log "building neige CLI (agent shells out bare \`neige\` for wave reads) ..."
+    RUSTC_WRAPPER='' CARGO_BUILD_JOBS=4 nice -n 10 \
+        cargo build --manifest-path "$REPO_ROOT/Cargo.toml" \
+        -p neige-cli --bin neige
+    [ -x "$NEIGE_BIN" ] || die "neige CLI binary missing after build at $NEIGE_BIN"
 }
 
 discover_test_bin() {
@@ -396,6 +424,15 @@ docker_run_args() {
         -v "$TARGET_DIR:$TARGET_DIR:ro"
         -v "$CODEX_REAL:$CODEX_MOUNT:ro"
         -v "$AUTH_REAL:$CONTAINER_HOME/.codex/auth.json:ro"
+        # The `neige` CLI on the run container's PATH — the SPEC agent's only
+        # wave-read channel (bare `neige state`/`cat`/`ls`, spec_card.rs prompt).
+        # /usr/local/bin is on the exec-shell PATH (container-default PATH is
+        # forwarded live through the env-cleared daemon spawn — SPAWN_ENV_PASS-
+        # THROUGH "PATH" — then codex inherit=Core passes it to exec-shells;
+        # proven by the agent resolving bare `rg` at /usr/bin, same PATH source).
+        # ro like every other binary mount; the host file is 0755 so a non-root
+        # --user can exec it. NOT apt-installed — see docker/Dockerfile.e2e.
+        -v "$NEIGE_BIN:/usr/local/bin/neige:ro"
         # ro: connect(2) to a unix socket works on a read-only mount; agents
         # must not be able to scribble in the host dir (entry.sh preflight
         # proves the chain still works through it).
@@ -455,6 +492,7 @@ if [ "$DRY_RUN" = 1 ]; then
     echo "cargo target (ro mount): $TARGET_DIR"
     echo "test binary            : $TEST_BIN"
     echo "codex (ro file mount)  : $CODEX_REAL -> $CODEX_MOUNT"
+    echo "neige CLI (ro file)    : $NEIGE_BIN -> /usr/local/bin/neige"
     echo "auth.json (ro file)    : $AUTH_REAL -> $CONTAINER_HOME/.codex/auth.json"
     echo "forwarder socket dir   : $E2E_PROXY_SOCK_DIR (ro mount at /sock)"
     echo "egress gate (forwarder): $PROXY_BIN -> /sock/proxy.sock (bind-mounted into $E2E_PROXY_FORWARDER_NAME, $PROXY_FORWARDER_IMAGE)"
@@ -468,6 +506,10 @@ fi
 
 [ -x "$TEST_BIN" ] || die "test binary not executable: $TEST_BIN"
 [ -x "$TARGET_DIR/debug/neige-mcp-stdio-shim" ] || die "neige-mcp-stdio-shim missing beside the test binary (build it first)"
+# Bind-mounting a missing source silently creates a directory in the container
+# (docker), so fail loud here instead: without the binary the spec agent's
+# `neige state`/`neige cat` reads hit `neige: command not found`.
+[ -x "$NEIGE_BIN" ] || die "neige CLI missing at $NEIGE_BIN (build it first, or drop --no-build)"
 [ -f "$AUTH_REAL" ] || die "codex auth.json not found at $AUTH_REAL"
 [ -x "$CODEX_REAL" ] || die "codex binary not found/executable at $CODEX_REAL"
 
