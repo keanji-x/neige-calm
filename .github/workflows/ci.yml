@@ -377,6 +377,17 @@ jobs:
       # Playwright browsers aren't bundled with `@playwright/test`; the
       # binary must be downloaded once per runner. `--with-deps` also
       # installs the system libraries chromium needs on ubuntu-latest.
+      #
+      # #903 — cache the browser download. The install step stays as-is: on a
+      # cache hit `npx playwright install` sees the browser and skips the
+      # download in seconds, and only the --with-deps apt portion still runs
+      # (~29s → ~10s).
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+
       - name: install playwright chromium
         run: npx playwright install --with-deps chromium
 
@@ -424,6 +435,13 @@ jobs:
     # compose up + 2 specs (~30s each with retries). 30 minutes is comfortable
     # headroom; bump if cold-cache cargo build pushes us over.
     timeout-minutes: 30
+    # #903 — e2e verifies behavior, not performance: opt-level 1 is behaviorally
+    # equivalent and nearly halves the release build (~4m13s of the ~6min job).
+    # Must match stack-e2e-tier-1's value or the shared rust-cache key's dep
+    # fingerprints split. Tradeoff: CI e2e binaries aren't bit-identical to
+    # production's opt-3; to revert, delete this env block in both jobs.
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -517,6 +535,14 @@ jobs:
           docker compose logs
           exit 1
 
+      # #903 — cache the browser download; see the web job's cache step for
+      # rationale (install stays: cache hit skips the download, apt still runs).
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+
       - name: install playwright chromium
         working-directory: web
         run: npx playwright install --with-deps chromium
@@ -557,6 +583,12 @@ jobs:
     # binaries remain ABI-compatible with the bookworm-slim runtime image.
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    # #903 — e2e verifies behavior, not performance: opt-level 1 nearly halves
+    # the dominant release build. Must stay identical to chromium-e2e's value
+    # or the shared rust-cache key's dep fingerprints split; see the rationale
+    # and revert note on that job.
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
 
