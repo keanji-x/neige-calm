@@ -457,10 +457,8 @@ function NewWaveDialog({
   // issue URL. Reset to 'task' whenever the dialog closes so every
   // open starts from the familiar default.
   const [variant, setVariant] = useState<'task' | 'issue-dev'>('task');
-  // Groups the workflow radios (and seeds their labelledby/describedby
-  // ids); unique per dialog mount so a future second instance on the
-  // page can't cross-talk.
-  const variantRadioName = useId();
+  // Labels the Workflow select; unique per dialog mount.
+  const variantSelectId = useId();
   useEffect(() => {
     if (!open) setVariant('task');
   }, [open]);
@@ -492,80 +490,39 @@ function NewWaveDialog({
     >
       {open && (
         <>
-          {/* Workflow selector — vertical radio rows (#891 signoff r3;
-              r2 shipped horizontal pills, which crowd beyond ~4
-              options — a vertical list grows naturally and still needs
-              no overlay). The field is named "Workflow" because that's
-              what it binds: `workflow_id` on the created wave —
-              "None" is a plain wave, other options are shipped
-              workflows. Semantically a form field, not tabs: native
-              radios (visually hidden, sr-only) with full-row click
-              targets inside a radiogroup fieldset named by its legend
-              — arrow keys move within the group for free. Each radio's
-              accessible name is the workflow name (aria-labelledby)
-              and the muted one-liner is its description
-              (aria-describedby), so AT hears "None — Plain wave…" the
-              way sighted users read the row. Changing it remounts
+          {/* Workflow selector — native <select> with the
+              customizable-select progressive enhancement (#891 live
+              design exploration; supersedes the r3 radio rows).
+              `appearance: base-select` + `::picker(select)` in
+              calm.css gives Chromium an in-theme dropdown drawer;
+              other browsers gracefully fall back to the OS popup. The
+              field binds `workflow_id`: "None" is a plain wave, other
+              options are shipped workflows. Options carry two-part
+              content — name + muted one-line description span (rich
+              option content is a base-select capability; fallback
+              popups flatten it to inline text, which is why the
+              description is kept short). Changing it remounts
               NewTaskForm (key) so per-variant state starts clean. */}
-          <fieldset className="new-wave-kind" role="radiogroup">
-            <legend className="new-task-form-label new-wave-kind-legend">
+          <div className="new-wave-kind">
+            <label htmlFor={variantSelectId} className="new-task-form-label">
               Workflow
-            </legend>
-            <div className="new-wave-kind-rows">
-              <label className="new-wave-kind-row">
-                <input
-                  type="radio"
-                  className="sr-only"
-                  name={variantRadioName}
-                  value="task"
-                  checked={variant === 'task'}
-                  onChange={() => setVariant('task')}
-                  aria-labelledby={`${variantRadioName}-task-name`}
-                  aria-describedby={`${variantRadioName}-task-desc`}
-                />
-                <span className="new-wave-kind-row-body">
-                  <span
-                    id={`${variantRadioName}-task-name`}
-                    className="new-wave-kind-row-name"
-                  >
-                    None
-                  </span>
-                  <span
-                    id={`${variantRadioName}-task-desc`}
-                    className="new-wave-kind-row-desc"
-                  >
-                    Plain wave — no workflow attached
-                  </span>
-                </span>
-              </label>
-              <label className="new-wave-kind-row">
-                <input
-                  type="radio"
-                  className="sr-only"
-                  name={variantRadioName}
-                  value="issue-dev"
-                  checked={variant === 'issue-dev'}
-                  onChange={() => setVariant('issue-dev')}
-                  aria-labelledby={`${variantRadioName}-issuedev-name`}
-                  aria-describedby={`${variantRadioName}-issuedev-desc`}
-                />
-                <span className="new-wave-kind-row-body">
-                  <span
-                    id={`${variantRadioName}-issuedev-name`}
-                    className="new-wave-kind-row-name"
-                  >
-                    Issue dev
-                  </span>
-                  <span
-                    id={`${variantRadioName}-issuedev-desc`}
-                    className="new-wave-kind-row-desc"
-                  >
-                    Automated dev flow from GitHub issue to PR
-                  </span>
-                </span>
-              </label>
-            </div>
-          </fieldset>
+            </label>
+            <select
+              id={variantSelectId}
+              className="new-task-form-input new-wave-kind-select"
+              value={variant}
+              onChange={(e) => setVariant(e.target.value as 'task' | 'issue-dev')}
+            >
+              <option value="task">
+                None
+                <span className="new-wave-kind-opt-desc"> — plain wave</span>
+              </option>
+              <option value="issue-dev">
+                Issue dev
+                <span className="new-wave-kind-opt-desc"> — issue → PR autoflow</span>
+              </option>
+            </select>
+          </div>
           <NewTaskForm
             key={variant}
             variant={variant}
