@@ -135,4 +135,21 @@ pub enum HostError {
     /// 4xx so callers see the typed reason rather than a generic 500.
     #[error(transparent)]
     KernelTooOld(#[from] KernelTooOld),
+
+    /// #891 slice ④ — registration-time workflow-id uniqueness. A trusted
+    /// plugin declares a workflow id another **running trusted** plugin
+    /// already registers; spawning it would make the workflow resolvers
+    /// (`routes::waves::resolve_trusted_workflow`, the spec harness's
+    /// `bound_workflow`, the MCP per-wave tool scope) ambiguous. Like
+    /// `KernelTooOld` this fires before any process spawn or token mint, so
+    /// no half-spawned state is left behind; the boot autospawn loop's
+    /// per-plugin tolerance logs and continues.
+    #[error(
+        "plugin `{plugin_id}` declares workflow `{workflow_id}`, which running trusted plugin `{held_by}` already registers"
+    )]
+    WorkflowConflict {
+        plugin_id: String,
+        workflow_id: String,
+        held_by: String,
+    },
 }
