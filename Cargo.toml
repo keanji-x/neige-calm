@@ -14,6 +14,7 @@ members = [
     "crates/neige-app",
     "crates/neige-cli",
     "crates/neige-mcp-stdio-shim",
+    "crates/e2e-egress-proxy",
 ]
 
 [profile.dev]
