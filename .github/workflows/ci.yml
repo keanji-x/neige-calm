@@ -316,8 +316,52 @@ jobs:
           fi
           echo "OK: all vector-touching commits carry FROZEN-VECTOR-CHANGE:"
 
-  web:
-    name: web (build + test + a11y)
+  # #903 — the `web (build + test + a11y)` job split into a parallel pair
+  # (this `web-unit` + `a11y` below) to kill the serial bottleneck: vitest
+  # (~64s) + the replay build (~47s) + a11y (~149s) used to run back-to-back
+  # in one job. This half is pure JS — the tsc/vite build + vitest — and
+  # carries NO rust dependency, so it skips the rust-toolchain / mold /
+  # rust-cache setup that only the `a11y` half needs.
+  web-unit:
+    name: web-unit (build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # TODO(#2): drop --legacy-peer-deps once the TypeScript downgrade lands
+      # on main. The current pin (`typescript: ~6.0.2`) is ahead of what
+      # several @types/* packages accept, so a strict `npm ci` rejects the
+      # tree on peer-dependency grounds. --legacy-peer-deps matches the
+      # behavior developers use locally today.
+      - name: npm ci
+        run: npm ci --legacy-peer-deps
+
+      # `npm run build` = tsc -b (type-check gate) + vite build (production
+      # bundle gate). Pure JS; no rust artifacts involved.
+      - name: npm run build
+        run: npm run build
+
+      - name: npm run test
+        run: npm run test
+
+  # #903 — the rust-dependent half of the `web (build + test + a11y)` split
+  # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).
+  # It builds the replay bin the Playwright setup hook needs. Deliberately
+  # has NO `npm run build` step: a11y runs against the Vite DEV server
+  # (playwright.config.ts webServer: `npx vite`), never the production
+  # bundle — dropping that build is the core time saving of the split.
+  a11y:
+    name: a11y (replay + playwright)
     runs-on: ubuntu-latest
     # a11y suite locally takes ~10s; cold cargo build for the replay binary
     # is the dominant factor (~25-60s with cache, longer cold). 20 minutes
@@ -348,19 +392,9 @@ jobs:
         with:
           shared-key: workspace
 
-      # TODO(#2): drop --legacy-peer-deps once the TypeScript downgrade lands
-      # on main. The current pin (`typescript: ~6.0.2`) is ahead of what
-      # several @types/* packages accept, so a strict `npm ci` rejects the
-      # tree on peer-dependency grounds. --legacy-peer-deps matches the
-      # behavior developers use locally today.
+      # See note above on --legacy-peer-deps.
       - name: npm ci
         run: npm ci --legacy-peer-deps
-
-      - name: npm run build
-        run: npm run build
-
-      - name: npm run test
-        run: npm run test
 
       # Pre-build the replay binary so the cargo invocation inside the
       # Playwright setup hook (`replay-server.setup.ts`) is effectively a
@@ -399,6 +433,10 @@ jobs:
       # is the `color-anchor` project (color-system-anchor snapshot). The
       # replay binary + Vite dev server are spawned automatically by
       # playwright.config.ts (`replay-setup` project + `webServer` block).
+      #
+      # `npm run a11y` chains `npm run lint` first (lint:js = `eslint .`,
+      # lint:css = `stylelint`), so all JS/CSS linting runs in THIS job —
+      # not in `web-unit`.
       - name: npm run a11y
         run: npm run a11y
         env:
@@ -468,7 +506,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # See note above on --legacy-peer-deps in the `web` job.
+      # See note above on --legacy-peer-deps in the `web-unit` job.
       - name: npm ci
         working-directory: web
         run: npm ci --legacy-peer-deps
@@ -535,7 +573,7 @@ jobs:
           docker compose logs
           exit 1
 
-      # #903 — cache the browser download; see the web job's cache step for
+      # #903 — cache the browser download; see the a11y job's cache step for
       # rationale (install stays: cache hit skips the download, apt still runs).
       - name: cache playwright browsers
         uses: actions/cache@v4
@@ -610,7 +648,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      # See note above on --legacy-peer-deps in the `web` job.
+      # See note above on --legacy-peer-deps in the `web-unit` job.
       - name: npm ci
         working-directory: web
         run: npm ci --legacy-peer-deps
