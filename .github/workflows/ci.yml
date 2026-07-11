@@ -14,41 +14,53 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
   RUST_BACKTRACE: short
+  # #903 — dev profile debuginfo drops 1 → line-tables-only; test profile rises
+  # back to line-tables-only from #913's [profile.test] debug=0, restoring
+  # file:line in panic backtraces (RUST_BACKTRACE=short) while variable-level
+  # DWARF stays cut — CI has no debugger consumers.
+  # The TEST line mirrors the Cargo.toml [profile.test] rider (same value, kept
+  # in sync); the DEV line is CI-only on top of the manifest's dev debug=1, and
+  # the manifest's [profile.*.package."*"] debug=0 dep override outranks both.
+  # Both DEV and TEST are set explicitly (test inherits dev; double-write
+  # avoids inheritance ambiguity). Release profiles (debug=false) are
+  # unaffected. Set globally, not per-job, so the shared rust-cache key (env
+  # hash) doesn't split across jobs; the env change itself rotates all cache
+  # keys once (one cold-compile round, then warm).
+  CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+  CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
 
 jobs:
-  rust:
-    name: rust (fmt + clippy + build + test)
+  # #903 — fmt + grep ratchets + clippy split off the critical path: none of
+  # them consume the test build, so they run as a parallel job instead of
+  # serializing ~2.5min in front of the test step.
+  lint:
+    name: lint (fmt + ratchets + clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # Free ~20GB (Android SDK / .NET / Haskell / pre-pulled docker images) so the
-      # `cargo test --workspace --locked` link stage doesn't intermittently die with
-      # `collect2: ld terminated with signal 7 [Bus error]` — tmpfs object-file
-      # truncation / ENOSPC at the temp dir under runner disk pressure when linking the
-      # many test binaries. Mirrors the `openapi drift` job's mitigation (#634). Keep
-      # `tool-cache` (Node) and runner swap; skip slow `large-packages`.
-      - name: free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
 
       # Workspace is edition = "2024" → needs Rust >= 1.85.
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      # clippy is check-mode and links nothing, so mold is idle here — kept
+      # purely for tool consistency across cargo jobs; safe to drop.
+      - uses: rui314/setup-mold@v1
+
       - uses: Swatinem/rust-cache@v2
         with:
-          # Shared key so the openapi-drift job (which also builds the
-          # workspace via `cargo run --bin emit-openapi`) reuses this cache.
-          shared-key: workspace
+          # Deliberately NOT the shared `workspace` key: clippy (check-mode)
+          # produces mostly rmeta artifacts, disjoint from the test job's
+          # dependency rlibs. rust-cache skips saving when the primary key
+          # already exists — with a shared key, whichever job finishes first
+          # saves and the rest are discarded, so a faster lint job would
+          # persist an rmeta-only cache and the test job would cold-compile
+          # its rlib deps for minutes on the next round. A separate key costs
+          # one extra cache entry (within the GH 10GB quota) and keeps both
+          # jobs warm.
+          shared-key: lint
 
       - name: cargo fmt --all --check
         run: cargo fmt --all --check
@@ -153,22 +165,84 @@ jobs:
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 
-      - name: cargo test --workspace --locked
-        # Feature enabled for compile-check coverage; codex-e2e tests self-skip when no codex binary is discoverable, the default in GHA runners.
-        # No separate `cargo build --workspace` step: the test build covers all
-        # bins (CARGO_BIN_EXE_*) plus the replay bin (required-features=fixtures,
-        # via calm-server's dev-dep self-loop — which also means fixtures is
-        # always ON here). Compile coverage of the not(fixtures) production cfg
-        # branches is carried by the chromium-e2e / stack-e2e release jobs
-        # (no fixtures, global RUSTFLAGS=-D warnings) on every PR.
-        run: cargo test --workspace --locked --features calm-server/codex-e2e
+  rust:
+    name: rust (test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Free ~20GB (Android SDK / .NET / Haskell / pre-pulled docker images) so the
+      # `cargo test --workspace --locked` link stage doesn't intermittently die with
+      # `collect2: ld terminated with signal 7 [Bus error]` — tmpfs object-file
+      # truncation / ENOSPC at the temp dir under runner disk pressure when linking the
+      # many test binaries. Mirrors the `openapi drift` job's mitigation (#634). Keep
+      # `tool-cache` (Node) and runner swap; skip slow `large-packages`.
+      - name: free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      # Workspace is edition = "2024" → needs Rust >= 1.85.
+      - uses: dtolnay/rust-toolchain@stable
+
+      # #903 — link with mold. Default takeover mode: the action installs mold
+      # and symlinks /usr/local/bin/ld to it, so cc/rustc pick it up via PATH.
+      # Deliberately NOT via `RUSTFLAGS=-C link-arg=-fuse-ld=mold`: RUSTFLAGS
+      # feeds both cargo's fingerprint and rust-cache's env-hashed key, so a
+      # per-job RUSTFLAGS delta would split the shared `workspace` cache key
+      # across jobs and invalidate every cached artifact. The ld symlink is
+      # transparent to cargo fingerprints — cached dependency rlibs still hit;
+      # only the final link swaps tools. Added to every cargo-running job for
+      # tool consistency.
+      - uses: rui314/setup-mold@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Shared key so the openapi-drift job (which also builds the
+          # workspace via `cargo run --bin emit-openapi`) reuses this cache.
+          shared-key: workspace
+
+      # #903 — cargo-nextest (prebuilt binary, ~5s). Profiles in
+      # .config/nextest.toml; CI uses --profile ci below.
+      - uses: taiki-e/install-action@nextest
+
+      - name: cargo nextest run --workspace --locked
+        # #903 — nextest replaces `cargo test`: cross-binary test parallelism
+        # (the old runner executed the ~74 test binaries — post-#913 suite
+        # consolidation — serially). The build
+        # phase is equivalent to `cargo test --no-run`, so everything below
+        # still holds:
+        # - Feature enabled for compile-check coverage; codex-e2e tests
+        #   self-skip at runtime when no codex binary is discoverable (#868
+        #   resolver: unset NEIGE_CODEX_BIN → eprintln + early return, counted
+        #   as pass) — the default in GHA runners; unchanged under nextest.
+        # - No separate `cargo build --workspace` step: the test build covers
+        #   all bins (CARGO_BIN_EXE_*) plus the replay bin
+        #   (required-features=fixtures, via calm-server's dev-dep self-loop —
+        #   which also means fixtures is always ON here). Compile coverage of
+        #   the not(fixtures) production cfg branches is carried by the
+        #   chromium-e2e / stack-e2e release jobs (no fixtures, global
+        #   RUSTFLAGS=-D warnings) on every PR.
+        # - nextest does not run doctests, which loses nothing here: this repo
+        #   has 0 doctests — every doc fence carries a non-rust language tag
+        #   (json/text/sh/jsonc), see #903 design doc §0.1. If rust doctests
+        #   are ever introduced, add a `cargo test --doc` step alongside.
+        run: cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci
 
       # #679 PR0-D — migration-replay gate, made explicit so a failure is
       # attributable at a glance. Re-runs the snapshot replay harness: every
       # per-version stage→seed→replay stop must converge on the fresh-DB
       # schema. This step MUST be invoked at workspace level, exactly like the
-      # main test step above, so it stays fully Fresh (no recompile). Two
-      # ingredients, both load-bearing:
+      # main nextest step above, so it stays fully Fresh (no recompile) —
+      # nextest's build phase is the same `cargo test --no-run` fingerprint,
+      # so the artifacts are shared verbatim. Two ingredients, both
+      # load-bearing:
       #   1. Features aligned with the main test step: codex-e2e is an empty
       #      feature (calm-provider's side is `[]`; it only gates `#![cfg]` in
       #      tests/*.rs), so passing it here is purely build-fingerprint
@@ -179,14 +253,31 @@ jobs:
       #      package, so features that other workspace members enable on shared
       #      deps (sqlx, rustls, …) disappear, flipping dependency fingerprints
       #      and re-compiling ~53s of rustls→sqlx→calm-truth→calm-server. Do
-      #      not "simplify" this back to -p. `--test migration_suite` plus
-      #      the module filter selects only the replay harness.
+      #      not "simplify" this back to -p. The `-E` filterset (binary
+      #      migration_suite ∩ the migration_replay_harness:: module) selects
+      #      only the replay harness.
+      # Deliberately NOT --profile ci: the ci profile writes its junit report
+      # to a fixed path (target/nextest/ci/junit.xml), so this small re-run
+      # would overwrite the full-suite timing report uploaded below. The
+      # default profile emits no junit; its default-filter only excludes
+      # export_bindings_* tests, which don't live in this binary.
       # The external-snapshot half self-skips while NEIGE_SNAPSHOT_DB is unset
       # in CI; point it at a sanitized prod snapshot to extend the gate to
       # real data.
       - name: migration replay gate (#679 PR0-D)
         run: |
-          cargo test --workspace --locked --features calm-server/codex-e2e --test migration_suite migration_replay_harness::
+          cargo nextest run --workspace --locked --features calm-server/codex-e2e -E 'binary(migration_suite) & test(/^migration_replay_harness::/)'
+
+      # #903 — per-test timing (junit.xml, written by the ci nextest profile),
+      # the input for the Slice C timing analysis.
+      - name: upload nextest junit timing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-junit
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   frozen-vectors:
     name: frozen security vectors freeze gate
@@ -261,6 +352,9 @@ jobs:
       # See `web/e2e/_setup/replay-server.setup.ts`. Reuses the shared
       # workspace cache populated by the `rust` job above.
       - uses: dtolnay/rust-toolchain@stable
+
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -346,6 +440,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      # mold supports ubuntu-22.04, and the release link of the large bins
+      # below benefits too. Linker choice doesn't affect the produced
+      # binary's glibc ABI, so the GLIBC pin rationale above is untouched.
+      - uses: rui314/setup-mold@v1
 
       # Reuse the shared workspace cargo cache populated by the `rust` job.
       # The rust job builds debug; this job needs release binaries (`make
@@ -474,6 +574,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      # Same ubuntu-22.04 / release-link notes as the chromium e2e job.
+      - uses: rui314/setup-mold@v1
+
       # Same cache key as the chromium e2e job: debug/release targets differ,
       # but the shared registry + git index still avoid a cold dependency run.
       - uses: Swatinem/rust-cache@v2
@@ -559,6 +663,9 @@ jobs:
           swap-storage: false
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # #903 — mold via ld takeover; see the rust job's step for rationale.
+      - uses: rui314/setup-mold@v1
 
       - uses: Swatinem/rust-cache@v2
         with:

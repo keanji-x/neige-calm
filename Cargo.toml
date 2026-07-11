@@ -24,7 +24,10 @@ incremental = false
 debug = 0
 
 [profile.test]
-debug = 0
+# #913 review: line-tables-only (not 0) so failing local tests keep file:line
+# in panic backtraces; the dep-wide override below stays at 0 — external code
+# doesn't need debuginfo.
+debug = "line-tables-only"
 incremental = false
 
 [profile.test.package."*"]
