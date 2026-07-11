@@ -464,9 +464,9 @@ function NewWaveDialog({
   useEffect(() => {
     if (!open) setVariant('task');
   }, [open]);
-  // Variant-appropriate focus after a wave-type change (#891 review).
+  // Variant-appropriate focus after a workflow change (#891 review).
   // Dialog's initial-focus pass only runs when `open` flips true, so
-  // switching the wave type (which remounts NewTaskForm via `key`)
+  // switching the workflow (which remounts NewTaskForm via `key`)
   // would otherwise leave focus on the type radio while the new
   // variant's first field sits unfocused. NewTaskForm rebinds
   // `initialFieldRef` to the new variant's first field during the
