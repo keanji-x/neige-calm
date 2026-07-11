@@ -20,6 +20,12 @@ members = [
 debug = 1
 incremental = false
 
+[profile.dev.package."*"]
+debug = 0
+
 [profile.test]
-debug = 1
+debug = 0
 incremental = false
+
+[profile.test.package."*"]
+debug = 0
