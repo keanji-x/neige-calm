@@ -99,7 +99,10 @@ async fn spawn_proxy(upstream: String) -> (TempDir, PathBuf) {
 async fn connect_status(sock: &Path, authority: &str) -> Option<u16> {
     let mut client = UnixStream::connect(sock).await.expect("connect proxy");
     let req = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
-    client.write_all(req.as_bytes()).await.expect("write CONNECT");
+    client
+        .write_all(req.as_bytes())
+        .await
+        .expect("write CONNECT");
 
     let mut buf = Vec::new();
     let mut tmp = [0u8; 256];
@@ -112,7 +115,10 @@ async fn connect_status(sock: &Path, authority: &str) -> Option<u16> {
             break;
         }
     }
-    let line_end = buf.windows(2).position(|w| w == b"\r\n").unwrap_or(buf.len());
+    let line_end = buf
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .unwrap_or(buf.len());
     let line = std::str::from_utf8(&buf[..line_end]).ok()?;
     line.split_whitespace().nth(1)?.parse::<u16>().ok()
 }
@@ -122,7 +128,11 @@ async fn denies_prod_ports() {
     let up = spawn_stub_upstream().await;
     let (_dir, sock) = spawn_proxy(up.addr.clone()).await;
     for t in ["127.0.0.1:4040", "127.0.0.1:4041"] {
-        assert_eq!(connect_status(&sock, t).await, Some(403), "want 403 for {t}");
+        assert_eq!(
+            connect_status(&sock, t).await,
+            Some(403),
+            "want 403 for {t}"
+        );
     }
     assert_eq!(
         up.connects.load(Ordering::SeqCst),
@@ -135,14 +145,18 @@ async fn denies_prod_ports() {
 async fn denies_rfc1918_linklocal_and_metadata_on_443() {
     let up = spawn_stub_upstream().await;
     let (_dir, sock) = spawn_proxy(up.addr.clone()).await;
-    for t in [
-        "10.0.0.1:443",
-        "169.254.169.254:443",
-        "192.168.1.1:443",
-    ] {
-        assert_eq!(connect_status(&sock, t).await, Some(403), "want 403 for {t}");
+    for t in ["10.0.0.1:443", "169.254.169.254:443", "192.168.1.1:443"] {
+        assert_eq!(
+            connect_status(&sock, t).await,
+            Some(403),
+            "want 403 for {t}"
+        );
     }
-    assert_eq!(up.connects.load(Ordering::SeqCst), 0, "must not reach upstream");
+    assert_eq!(
+        up.connects.load(Ordering::SeqCst),
+        0,
+        "must not reach upstream"
+    );
 }
 
 #[tokio::test]
@@ -150,9 +164,17 @@ async fn denies_dot_anchor_tricks() {
     let up = spawn_stub_upstream().await;
     let (_dir, sock) = spawn_proxy(up.addr.clone()).await;
     for t in ["evilchatgpt.com:443", "chatgpt.com.evil.example:443"] {
-        assert_eq!(connect_status(&sock, t).await, Some(403), "want 403 for {t}");
+        assert_eq!(
+            connect_status(&sock, t).await,
+            Some(403),
+            "want 403 for {t}"
+        );
     }
-    assert_eq!(up.connects.load(Ordering::SeqCst), 0, "must not reach upstream");
+    assert_eq!(
+        up.connects.load(Ordering::SeqCst),
+        0,
+        "must not reach upstream"
+    );
 }
 
 #[tokio::test]
@@ -171,7 +193,11 @@ async fn denies_host_charset_injection_authorities() {
         "/a/b?x=.chatgpt.com:443",
         "\u{0441}hatgpt.com:443", // Cyrillic 'с' homograph of chatgpt.com
     ] {
-        assert_eq!(connect_status(&sock, t).await, Some(403), "want 403 for {t:?}");
+        assert_eq!(
+            connect_status(&sock, t).await,
+            Some(403),
+            "want 403 for {t:?}"
+        );
     }
     assert_eq!(
         up.connects.load(Ordering::SeqCst),
@@ -189,7 +215,11 @@ async fn denies_allowlisted_host_on_wrong_port() {
         Some(403),
         "allowlisted host on :80 must be denied on the port check"
     );
-    assert_eq!(up.connects.load(Ordering::SeqCst), 0, "must not reach upstream");
+    assert_eq!(
+        up.connects.load(Ordering::SeqCst),
+        0,
+        "must not reach upstream"
+    );
 }
 
 #[tokio::test]
@@ -203,7 +233,11 @@ async fn allows_allowlisted_hosts_reaching_stub_upstream() {
         "api.openai.com:443",
     ];
     for t in allowed {
-        assert_eq!(connect_status(&sock, t).await, Some(200), "want 200 for {t}");
+        assert_eq!(
+            connect_status(&sock, t).await,
+            Some(200),
+            "want 200 for {t}"
+        );
     }
     assert_eq!(
         up.connects.load(Ordering::SeqCst),

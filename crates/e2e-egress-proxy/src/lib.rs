@@ -66,11 +66,13 @@ const UPSTREAM_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 // Fixed responses. `Connection: close` on the error responses so a client that
 // pipelines does not wait for a keep-alive that will never come.
 const RESP_200: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
-const RESP_400: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const RESP_400: &[u8] =
+    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const RESP_403: &[u8] = b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const RESP_408: &[u8] =
     b"HTTP/1.1 408 Request Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-const RESP_502: &[u8] = b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+const RESP_502: &[u8] =
+    b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 const RESP_504: &[u8] =
     b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
@@ -441,34 +443,38 @@ where
         }
     };
 
-    let (mut upstream, up_leftover) =
-        match tokio::time::timeout(upstream_handshake_timeout, handshake).await {
-            Err(_elapsed) => {
-                eprintln!(
-                    "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 handshake timed out -> 504"
-                );
-                let _ = client.write_all(RESP_504).await;
-                let _ = client.flush().await;
-                return Ok(());
+    let (mut upstream, up_leftover) = match tokio::time::timeout(
+        upstream_handshake_timeout,
+        handshake,
+    )
+    .await
+    {
+        Err(_elapsed) => {
+            eprintln!(
+                "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 handshake timed out -> 504"
+            );
+            let _ = client.write_all(RESP_504).await;
+            let _ = client.flush().await;
+            return Ok(());
+        }
+        Ok(Err(e)) => {
+            match e {
+                UpstreamError::Connect(err) => eprintln!(
+                    "[e2e-egress-proxy] upstream {upstream_addr} connect failed: {err} -> 502"
+                ),
+                UpstreamError::Io(err) => eprintln!(
+                    "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 head read failed: {err} -> 502"
+                ),
+                UpstreamError::BadStatus(other) => eprintln!(
+                    "[e2e-egress-proxy] upstream refused CONNECT {hostname}:443 (status {other:?}) -> 502"
+                ),
             }
-            Ok(Err(e)) => {
-                match e {
-                    UpstreamError::Connect(err) => eprintln!(
-                        "[e2e-egress-proxy] upstream {upstream_addr} connect failed: {err} -> 502"
-                    ),
-                    UpstreamError::Io(err) => eprintln!(
-                        "[e2e-egress-proxy] upstream {upstream_addr} CONNECT {hostname}:443 head read failed: {err} -> 502"
-                    ),
-                    UpstreamError::BadStatus(other) => eprintln!(
-                        "[e2e-egress-proxy] upstream refused CONNECT {hostname}:443 (status {other:?}) -> 502"
-                    ),
-                }
-                let _ = client.write_all(RESP_502).await;
-                let _ = client.flush().await;
-                return Ok(());
-            }
-            Ok(Ok(v)) => v,
-        };
+            let _ = client.write_all(RESP_502).await;
+            let _ = client.flush().await;
+            return Ok(());
+        }
+        Ok(Ok(v)) => v,
+    };
 
     // 4. Tunnel established. Tell the client, flush any pre-read leftovers, splice.
     client.write_all(RESP_200).await?;
@@ -506,15 +512,15 @@ mod tests {
     #[test]
     fn allowlist_rejects_dot_anchor_tricks_and_others() {
         for host in [
-            "evilchatgpt.com",       // no label boundary before chatgpt.com
+            "evilchatgpt.com",          // no label boundary before chatgpt.com
             "chatgpt.com.evil.example", // suffix trick
-            "chat.openai.com",       // not in our scoped set
+            "chat.openai.com",          // not in our scoped set
             "openai.com",
             "10.0.0.1",
             "169.254.169.254",
             "127.0.0.1",
             "example.com",
-            "chatgpt.com.",          // caller must normalize; raw trailing dot not admitted
+            "chatgpt.com.", // caller must normalize; raw trailing dot not admitted
         ] {
             assert!(!is_allowed_host(host), "should reject {host}");
         }
@@ -557,10 +563,10 @@ mod tests {
             "127.0.0.1:4040.chatgpt.com:443",
             "user@127.0.0.1:4040#.chatgpt.com:443",
             "/a/b?x=.chatgpt.com:443",
-            "\u{0441}hatgpt.com:443", // Cyrillic 'с' homograph
+            "\u{0441}hatgpt.com:443",  // Cyrillic 'с' homograph
             "chatgpt.com\u{0000}:443", // embedded NUL
-            "chat gpt.com:443",       // whitespace
-            "[::1]:443",              // IPv6 literal (colons)
+            "chat gpt.com:443",        // whitespace
+            "[::1]:443",               // IPv6 literal (colons)
         ] {
             assert_eq!(
                 parse_connect_target(authority),
@@ -579,7 +585,10 @@ mod tests {
 
     #[test]
     fn gate_admits_only_allowlisted_host_on_443() {
-        assert_eq!(gate("chatgpt.com:443"), Gate::Allow("chatgpt.com".to_string()));
+        assert_eq!(
+            gate("chatgpt.com:443"),
+            Gate::Allow("chatgpt.com".to_string())
+        );
         assert_eq!(
             gate("sub.chatgpt.com:443"),
             Gate::Allow("sub.chatgpt.com".to_string())
@@ -714,7 +723,10 @@ mod tests {
             None
         );
         // Unknown / unsupported versions -> reject.
-        assert_eq!(connect_target_from_head(b"CONNECT a:443 HTTP/2.0\r\n\r\n"), None);
+        assert_eq!(
+            connect_target_from_head(b"CONNECT a:443 HTTP/2.0\r\n\r\n"),
+            None
+        );
         assert_eq!(connect_target_from_head(b"CONNECT a:443 xyz\r\n\r\n"), None);
     }
 
