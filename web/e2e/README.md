@@ -84,7 +84,7 @@ suite down.
 ## A11y scripts
 
 `npm run a11y` is the gate for a11y-touching PRs — CI runs it in
-the `web (build + test + a11y)` job (`.github/workflows/ci.yml`),
+the `a11y (replay + playwright)` job (`.github/workflows/ci.yml`),
 so anything not wired into it does not run in CI. The scripts
 (all run under a Playwright project, so they require `cargo`):
 
