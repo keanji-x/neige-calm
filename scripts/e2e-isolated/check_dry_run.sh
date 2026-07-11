@@ -65,6 +65,7 @@ must_contain '--init'
 must_contain '--rm'
 must_contain '/fake/target:/fake/target:ro'          # target dir ro mount
 must_contain '/fake/codex/bin/codex:/opt/codex/codex:ro'
+must_contain '/fake/target/debug/neige:/usr/local/bin/neige:ro'  # neige CLI on the run-container PATH (spec agent's wave-read channel)
 must_contain '/.codex/auth.json:ro'                  # single-file auth mount
 must_contain ':/sock:ro'                             # sock dir ro in the run container
 must_contain 'NEIGE_CODEX_PROXY=http://127.0.0.1:2081'
