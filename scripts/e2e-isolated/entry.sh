@@ -177,6 +177,37 @@ start_egress_chain() {
     log "proxy chain up: 127.0.0.1:${PROXY_PORT} -> ${SOCK} (terminated host-side by e2e-egress-proxy)"
 }
 
+# ---- required-CLI preflight (sourceable) -----------------------------------
+# The contained agent stack shells out a small set of BARE commands that must
+# resolve on PATH: the spec/worker agents run `neige` (wave reads), `rg` (code
+# search) and `git`; codex execs `bwrap` for every sandboxed local_shell; the
+# worker rollout reader runs `zstd -dc`. Each is provisioned into the run
+# container either by a run.sh bind-mount (workspace binaries — `neige` ->
+# /usr/local/bin/neige, mirroring the compose stack since #339) or by a
+# docker/Dockerfile.e2e apt package (rg/git/zstd/bwrap). A missing one otherwise
+# surfaces ONLY when a real codex run hits `command not found` mid-suite — a
+# guarded ~40min discovery (rg was #923 defect 3; neige was #931). Assert them
+# here so a provisioning gap fails CHEAP and CLOSED before any codex runs.
+# `gh` is EXCLUDED on purpose: it is not container-provided — the test fixture
+# shims it onto the agent PATH in a per-run tempdir at runtime, so it would
+# false-fail this container-PATH check.
+REQUIRED_PATH_TOOLS=(neige rg git zstd bwrap)
+assert_required_tools_on_path() {
+    local tool missing=()
+    for tool in "${REQUIRED_PATH_TOOLS[@]}"; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+    if [ "${#missing[@]}" -ne 0 ]; then
+        log "required CLI(s) missing from PATH: ${missing[*]}"
+        log "  each is shelled out as a bare command by the contained agent stack and"
+        log "  must be provisioned into the run container — a run.sh bind-mount"
+        log "  (workspace binary, e.g. neige -> /usr/local/bin/neige) or a"
+        log "  docker/Dockerfile.e2e apt package (rg/git/zstd/bwrap)."
+        fail 73 "required CLI(s) not resolvable on PATH: ${missing[*]} — a real codex run would hit 'command not found' mid-suite; ABORTING before any codex runs"
+    fi
+    log "tool preflight OK: ${REQUIRED_PATH_TOOLS[*]} all resolve on PATH"
+}
+
 # ---- suite (sourceable) ----------------------------------------------------
 run_suite() {
     local test_bin="$1" test_filter="$2" decoys="$3"
@@ -240,6 +271,12 @@ main() {
     [ -r "$HOME/.codex/auth.json" ] || die "auth.json not mounted at \$HOME/.codex/auth.json"
     [ -x /opt/codex/codex ] || die "codex binary not mounted at /opt/codex/codex"
     [ -x "$E2E_TEST_BIN" ] || die "test binary not visible at $E2E_TEST_BIN"
+
+    # Fail cheap+closed if any bare CLI the agent shells out is unprovisioned,
+    # BEFORE the egress/fence/codex work — a missing tool otherwise only shows
+    # up mid-suite in a ~40min real run. Runs in preflight mode too (gates the
+    # real run via run.sh's `... || die "preflight failed"`).
+    assert_required_tools_on_path
 
     start_egress_chain
     fence_preflight
