@@ -5,16 +5,26 @@
 # executed straight off that mount). Responsibilities, in order:
 #   1. Bring up the only egress: socat loopback TCP :2081 → /sock/proxy.sock
 #      (→ host forwarder → host proxy). NEIGE_CODEX_PROXY points here.
-#   2. REQUIRED fence preflight, two halves, both before any codex process:
+#   2. REQUIRED fence preflight, three steps, all before any codex process:
 #      (a) REMOTE POSITIVE CANARY — a GET to a public URL through the SAME
 #          chain MUST succeed. Without it a dead chain would make prod
 #          "unreachable" vacuously and the fence would pass fail-open;
 #          the canary makes the fence provable. Chain dead → ABORT (72).
-#      (b) prod 127.0.0.1:4040/:4041 must NOT be reachable THROUGH the
-#          chain. Fail-closed: any non-5xx HTTP answer aborts, and a 5xx
-#          whose body carries prod's /api/version marker (a reachable prod
-#          erroring 500) aborts too; only a genuine proxy/gateway 5xx
-#          without the marker — or no HTTP answer at all — passes (71).
+#      (b) FINGERPRINT CALIBRATION — probe a guaranteed-dead destination
+#          (127.0.0.1:1, the fixture's dead-ingest port, never listening)
+#          through the same chain TWICE. Whatever comes back (or doesn't)
+#          is by definition the proxy's own unreachable-destination
+#          behavior; the two probes are diffed so only empirically-STABLE
+#          dimensions (status line, header shape, body) are enforced.
+#          Unstable status/headers → cannot calibrate = cannot prove the
+#          fence → ABORT (73).
+#      (c) prod 127.0.0.1:4040/:4041 probed through the chain. FAIL-CLOSED
+#          ALLOWLIST: no HTTP answer at all = unreachable = OK; an answer
+#          matching the dead-destination fingerprint in every stable
+#          dimension = the proxy's own error = OK; ANY other answer,
+#          regardless of status class, = something reachable answered →
+#          ABORT (71). (No marker heuristic: prod's /api/version marker is
+#          kept only as an extra loud confirmation on breach.)
 #   3. E2E_MODE=preflight → `--list` exec probe (glibc/mount-layout proof),
 #      then exit. E2E_MODE=run → optional DECOYS, then the suite.
 #   4. DECOYS=1: plant /bin/sleep copies named like prod processes; if any
@@ -33,8 +43,16 @@ SOCK=/sock/proxy.sock
 # — what socat speaks cleanly; TLS/CONNECT is exercised later by codex
 # itself). Any 2xx/3xx proves the socat→forwarder→proxy chain is live.
 CANARY_HOST=example.com
-# Field name distinctive of calm-server's GET /api/version JSON body. A 5xx
-# carrying it is a REACHABLE prod erroring — not a proxy gateway error.
+# Guaranteed-dead destination for fingerprint calibration: the fixture's
+# dead-ingest port — nothing ever listens on it, on this host or the remote.
+DEAD_TARGET=127.0.0.1:1
+# Same path for calibration and prod probes: if the proxy error echoes the
+# URL, the echoes differ only by target host:port, which resp_body_norm()
+# masks before comparison.
+FENCE_PATH=/api/version
+# Field name distinctive of calm-server's GET /api/version JSON body. NOT a
+# pass/fail criterion anymore (the fingerprint allowlist subsumes it); kept
+# only to make a breach message conclusive when it matches.
 PROD_MARKER=kernelVersion
 
 log() { printf '[e2e-entry] %s\n' "$*" >&2; }
@@ -95,39 +113,136 @@ if [ "$canary_ok" != 1 ]; then
     exit 72
 fi
 
-# (b) prod must be unreachable through the (now proven-live) chain.
-fence_probe() {
-    local target="$1"
-    proxy_get "$target" /api/version
-    if [ -z "$STATUS" ]; then
-        log "fence: $target -> no HTTP answer (unreachable) — OK"
+# (b) calibrate the proxy-error FINGERPRINT off a guaranteed-dead destination.
+# Rationale (fail-closed allowlist): instead of classifying prod answers by
+# what they LACK (the old marker-absence blocklist — spoofable by any error
+# page that happens not to say kernelVersion), we learn what the proxy's own
+# unreachable-destination behavior IS, and later accept ONLY that. Anything
+# else answering on a prod port is, by elimination, not the proxy erroring —
+# it is something reachable.
+resp_status_line() { printf '%s' "$RESP" | head -n1 | tr -d '\r'; }
+resp_header_shape() {
+    # "Shape" = sorted lowercase NAMES of all headers (values like Date vary
+    # legitimately between two probes) + the full lowercased Server / Via /
+    # Proxy-* lines (they identify the answering software and must not move).
+    local hdrs
+    hdrs="$(printf '%s' "$RESP" | tr -d '\r' | sed -n '2,/^$/p' | sed '/^$/d' | tr '[:upper:]' '[:lower:]')"
+    printf '%s\n' "$hdrs" | sed -n 's/^\([^:[:space:]]*\):.*$/name:\1/p' | sort
+    printf '%s\n' "$hdrs" | grep -E '^(server|via|proxy-)[^:]*:' | sort || true
+}
+resp_body_norm() {
+    # Body with the probed target masked: a proxy error page legitimately
+    # echoes the destination it failed to reach; every other byte must match.
+    local target="$1" body
+    body="$(printf '%s' "$RESP" | sed -e '1,/^\r\{0,1\}$/d')"
+    printf '%s' "${body//"$target"/<TARGET>}"
+}
+body_sha() { printf '%s' "$1" | sha256sum | awk '{print $1}'; }
+
+FP_PRESENT="" FP_STATUS_LINE="" FP_HEADERS="" FP_BODY_MODE="" FP_BODY_HASH="" FP_BODY_SIZE=""
+fp_calibrate() {
+    local i
+    local -a c_present=() c_status=() c_hdrs=() c_body=()
+    for i in 1 2; do
+        proxy_get "$DEAD_TARGET" "$FENCE_PATH"
+        if [ -z "$STATUS" ]; then
+            c_present[i]=0 c_status[i]="" c_hdrs[i]="" c_body[i]=""
+            log "fingerprint probe $i/2: http://$DEAD_TARGET$FENCE_PATH -> no HTTP answer"
+        else
+            c_present[i]=1
+            c_status[i]="$(resp_status_line)"
+            c_hdrs[i]="$(resp_header_shape)"
+            c_body[i]="$(resp_body_norm "$DEAD_TARGET")"
+            log "fingerprint probe $i/2: http://$DEAD_TARGET$FENCE_PATH -> '${c_status[i]}' ($(printf '%s' "${c_body[i]}" | wc -c) body bytes)"
+        fi
+    done
+    # Diff the two probes: only dimensions stable across both are enforceable.
+    # Unstable presence/status/headers → we cannot say what "the proxy's own
+    # error" looks like → cannot prove the fence → ABORT (73).
+    if [ "${c_present[1]}" != "${c_present[2]}" ]; then
+        log "FATAL: dead-destination probes disagree on whether an HTTP answer comes back at all — unstable fingerprint, cannot calibrate = cannot prove fence."
+        exit 73
+    fi
+    FP_PRESENT="${c_present[1]}"
+    if [ "$FP_PRESENT" = 0 ]; then
+        log "fingerprint calibrated: dead destinations yield NO HTTP answer through this chain — ANY HTTP answer from a prod probe is a breach."
         return 0
     fi
-    case "$STATUS" in
-        5??)
-            if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
-                log "FENCE BREACH: $target -> HTTP $STATUS but the body carries '$PROD_MARKER' — a REACHABLE prod answering with an error status."
-                printf '%s\n' "$RESP" | head -n 12 >&2
-                log "sing-box routing would hand agents a path to prod — ABORTING before any codex runs."
-                return 1
-            fi
-            log "fence: $target -> proxy/gateway error $STATUS without '$PROD_MARKER' (tunneled elsewhere / refused) — OK"
-            return 0
-            ;;
-        *)
-            log "FENCE BREACH: $target answered HTTP $STATUS through the proxy chain."
-            if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
-                log "FENCE BREACH: response carries '$PROD_MARKER' — this IS prod."
-            fi
-            printf '%s\n' "$RESP" | head -n 12 >&2
-            log "sing-box routing would hand agents a path to prod — ABORTING before any codex runs."
-            return 1
-            ;;
-    esac
+    if [ "${c_status[1]}" != "${c_status[2]}" ]; then
+        log "FATAL: dead-destination status lines disagree ('${c_status[1]}' vs '${c_status[2]}') — unstable fingerprint, cannot calibrate = cannot prove fence."
+        exit 73
+    fi
+    if [ "${c_hdrs[1]}" != "${c_hdrs[2]}" ]; then
+        log "FATAL: dead-destination header shapes disagree — unstable fingerprint, cannot calibrate = cannot prove fence."
+        log "shape 1:"; printf '%s\n' "${c_hdrs[1]}" | sed 's/^/[e2e-entry]   /' >&2
+        log "shape 2:"; printf '%s\n' "${c_hdrs[2]}" | sed 's/^/[e2e-entry]   /' >&2
+        exit 73
+    fi
+    FP_STATUS_LINE="${c_status[1]}"
+    FP_HEADERS="${c_hdrs[1]}"
+    FP_BODY_SIZE="$(printf '%s' "${c_body[1]}" | wc -c)"
+    if [ "${c_body[1]}" = "${c_body[2]}" ]; then
+        FP_BODY_MODE="hash"
+        FP_BODY_HASH="$(body_sha "${c_body[1]}")"
+    elif [ "$FP_BODY_SIZE" = "$(printf '%s' "${c_body[2]}" | wc -c)" ]; then
+        FP_BODY_MODE="size"
+        log "NOTICE: dead-destination bodies differ byte-wise but agree on size — only size ($FP_BODY_SIZE) joins the fingerprint (unstable bytes excluded)."
+    else
+        FP_BODY_MODE="none"
+        log "NOTICE: dead-destination bodies are unstable ($FP_BODY_SIZE vs $(printf '%s' "${c_body[2]}" | wc -c) bytes) — body excluded from the fingerprint; status line + header shape still enforced."
+    fi
+    log "fingerprint calibrated: status='$FP_STATUS_LINE' body-mode=$FP_BODY_MODE${FP_BODY_HASH:+ sha256=$FP_BODY_HASH}${FP_BODY_SIZE:+ size=$FP_BODY_SIZE}"
+    log "fingerprint header shape:"
+    printf '%s\n' "$FP_HEADERS" | sed 's/^/[e2e-entry]   /' >&2
+    log "fingerprint body head: $(printf '%s' "${c_body[1]}" | head -c 160 | tr -d '\r\n')"
+}
+fp_calibrate
+
+# (c) prod must be unreachable through the (proven-live, now calibrated)
+# chain. ALLOWLIST: OK is only "no HTTP answer" or "answer == fingerprint in
+# every stable dimension". Any other answer aborts, whatever its status.
+fence_probe() {
+    local target="$1"
+    proxy_get "$target" "$FENCE_PATH"
+    if [ -z "$STATUS" ]; then
+        log "fence: $target -> no HTTP answer (unreachable through the chain) — OK"
+        return 0
+    fi
+    local s h b bs why=""
+    s="$(resp_status_line)"
+    h="$(resp_header_shape)"
+    b="$(resp_body_norm "$target")"
+    bs="$(printf '%s' "$b" | wc -c)"
+    if [ "$FP_PRESENT" = 0 ]; then
+        why="dead destinations yield NO HTTP answer through this chain, yet $target answered"
+    elif [ "$s" != "$FP_STATUS_LINE" ]; then
+        why="status line '$s' != fingerprint '$FP_STATUS_LINE'"
+    elif [ "$h" != "$FP_HEADERS" ]; then
+        why="header shape differs from fingerprint"
+    elif [ "$FP_BODY_MODE" = hash ] && [ "$(body_sha "$b")" != "$FP_BODY_HASH" ]; then
+        why="body sha256 differs from fingerprint (sizes: $bs vs $FP_BODY_SIZE)"
+    elif [ "$FP_BODY_MODE" = size ] && [ "$bs" != "$FP_BODY_SIZE" ]; then
+        why="body size $bs != fingerprint size $FP_BODY_SIZE"
+    fi
+    if [ -z "$why" ]; then
+        log "fence: $target -> '$s' matches the dead-destination proxy-error fingerprint — OK"
+        return 0
+    fi
+    log "FENCE BREACH: $target answered through the proxy chain, and the answer is NOT the proxy's own dead-destination error: $why."
+    if printf '%s' "$RESP" | grep -qi "$PROD_MARKER"; then
+        log "FENCE BREACH: response carries '$PROD_MARKER' — PROVEN prod response."
+    fi
+    if [ "$h" != "$FP_HEADERS" ]; then
+        log "observed header shape:"; printf '%s\n' "$h" | sed 's/^/[e2e-entry]   /' >&2
+        log "fingerprint header shape:"; printf '%s\n' "$FP_HEADERS" | sed 's/^/[e2e-entry]   /' >&2
+    fi
+    printf '%s\n' "$RESP" | head -n 12 >&2
+    log "sing-box routing would hand agents a path to prod — ABORTING before any codex runs."
+    return 1
 }
 fence_probe 127.0.0.1:4040 || exit 71
 fence_probe 127.0.0.1:4041 || exit 71
-log "fence preflight OK: chain live, prod :4040/:4041 unreachable through it"
+log "fence preflight OK: chain live, prod :4040/:4041 answer only as the proxy's own dead-destination error (or not at all)"
 
 # ---- 3. preflight mode: exec probe only ------------------------------------
 if [ "$E2E_MODE" = preflight ]; then

@@ -28,13 +28,15 @@
 #   4. REQUIRED fence preflight before any codex runs (entry.sh): first a
 #      REMOTE POSITIVE CANARY (a GET to a public URL through the full chain
 #      MUST succeed — a dead chain would make prod "unreachable" vacuously,
-#      i.e. fail-open; the canary makes the fence provable). Then HTTP GETs
-#      to prod 127.0.0.1:4040 and :4041 THROUGH that chain must fail
-#      (timeout/refused/proxy 5xx without prod's version marker are fine).
-#      Any origin-looking answer — any non-5xx status, or a 5xx whose body
-#      carries the prod /api/version marker — means sing-box routing would
-#      hand agents a path to prod: ABORT. The fence rests on sing-box
-#      config, so it is asserted every run, never assumed (design §B).
+#      i.e. fail-open; the canary makes the fence provable). Then a
+#      FAIL-CLOSED ALLOWLIST: a guaranteed-dead destination (127.0.0.1:1)
+#      is probed twice through the same chain to calibrate the proxy's own
+#      unreachable-destination FINGERPRINT (status line + header shape +
+#      body, stable dimensions only); prod 127.0.0.1:4040/:4041 may answer
+#      ONLY with that exact fingerprint, or not at all. ANY other answer,
+#      regardless of status class, means sing-box routing would hand agents
+#      a path to prod: ABORT. The fence rests on sing-box config, so it is
+#      asserted every run, never assumed (design §B).
 #   5. Rails (proven scope values): --memory=24g --memory-swap=24g (no swap)
 #      --cpus=8 --pids-limit=6000, non-root --user, seccomp+apparmor
 #      unconfined (needed for codex's bwrap userns; NO SYS_ADMIN — verified
@@ -429,7 +431,7 @@ fi
 
 # ---- cleanup trap FIRST, then anything it owns (design §E) ----------------
 KILLER_SNAP=""
-# shellcheck disable=SC2317  # invoked via the EXIT trap only
+# shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap only
 cleanup() {
     # ONLY the per-run containers. NEVER the shared forwarder (a concurrent
     # run's egress would be cut) — it has its own explicit down mode.
