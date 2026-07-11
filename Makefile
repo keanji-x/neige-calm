@@ -257,12 +257,14 @@ proxy-forwarder-down: ## Remove the proxy forwarder container.
 # NO published ports) mirroring proxy-forwarder-up/down above.
 #
 # E2E_PROXY_FORWARDER_IMAGE is pinned BY DIGEST (the forwarder runs
-# --network host; a mutable tag there is a supply-chain hole). To bump:
-# `docker pull alpine/socat`, then `docker images --digests alpine/socat`,
-# update the digest here AND the default in scripts/e2e-isolated/run.sh,
+# --network host; a mutable tag there is a supply-chain hole). It is now just a
+# glibc runtime shell for our host-compiled `e2e-egress-proxy` gate binary
+# (bind-mounted in) — debian:bookworm-slim, the SAME base as Dockerfile.e2e. To
+# bump: `docker pull debian:bookworm-slim`, then `docker images --digests
+# debian`, update the digest here AND the default in scripts/e2e-isolated/run.sh,
 # then `make e2e-proxy-forwarder-down` so the next run recreates it.
 E2E_PROXY_FORWARDER_NAME ?= calm-e2e-proxy-forwarder
-E2E_PROXY_FORWARDER_IMAGE ?= alpine/socat@sha256:beb4a68d9e4fe6b0f21ea774a0fde6c31f580dde6368939ed70100c5385b015e
+E2E_PROXY_FORWARDER_IMAGE ?= debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
 E2E_PROXY_SOCK_DIR ?= /tmp/calm-e2e-proxy
 E2E_RUNNER_ENV = CALM_HOST_PROXY_HOST="$(CALM_HOST_PROXY_HOST)" \
 	CALM_HOST_PROXY_PORT="$(CALM_HOST_PROXY_PORT)" \
@@ -288,9 +290,10 @@ e2e-proxy-forwarder-down: ## Remove the e2e-tier proxy forwarder container + its
 
 SHELLCHECK ?= shellcheck
 .PHONY: e2e-codex-isolated-check
-e2e-codex-isolated-check: ## shellcheck + dry-run golden assertions for the isolated tier (no docker daemon needed).
-	$(SHELLCHECK) -x scripts/e2e-isolated/run.sh scripts/e2e-isolated/entry.sh scripts/e2e-isolated/check_dry_run.sh
+e2e-codex-isolated-check: ## shellcheck + dry-run golden + fence fail-closed regression for the isolated tier (no docker daemon needed).
+	$(SHELLCHECK) -x scripts/e2e-isolated/run.sh scripts/e2e-isolated/entry.sh scripts/e2e-isolated/check_dry_run.sh scripts/e2e-isolated/check_fence.sh
 	scripts/e2e-isolated/check_dry_run.sh
+	scripts/e2e-isolated/check_fence.sh
 
 .PHONY: dev
 dev: proxy-forwarder-up build dirs ## Build, then bring the stack up in the background (FRESH=1 wipes this DEV_ID first).
