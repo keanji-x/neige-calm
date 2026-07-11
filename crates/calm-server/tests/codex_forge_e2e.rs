@@ -222,7 +222,6 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -310,7 +309,6 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -388,7 +386,6 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -585,7 +582,6 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -935,7 +931,6 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -1401,7 +1396,6 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
             workflow_id: Some("issue-development".into()),
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
-            mint_report_card: false,
             require_task_gates: false,
             descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
@@ -2074,8 +2068,8 @@ async fn wait_for_impl_review_round_on_subject(
 // `feedback_real_codex_e2e_crashes_harness`). In deterministic contexts this
 // test self-skips (no NEIGE_CODEX_BIN).
 //
-// Report card: minted by the fixture (`mint_report_card: true`); route parity
-// is a documented carve-out — the report card is setup, not proof.
+// Report card: the fixture now always mints it (production `create_wave` mints
+// it atomically for every wave); it is setup, not proof.
 //
 // Steering vs autonomy: the wave goal carries environment facts (repo
 // selector = the CLONE gitdir, issue number, base sha — `forge_pr_goal`
@@ -2117,7 +2111,6 @@ async fn real_spec_drives_issue_to_close_capstone() {
                 number: CAPSTONE_ISSUE_NUMBER,
                 body: CAPSTONE_ISSUE_BODY.into(),
             }),
-            mint_report_card: true,
             require_task_gates: true,
             descriptor_gate_cmd: Some(CAPSTONE_GATE_CMD.into()),
             repo_seed: RepoSeed::RustMicroCrate,

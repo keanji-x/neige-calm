@@ -42,6 +42,7 @@ use axum::http::{Request, StatusCode, header};
 use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
+use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::WaveId;
 use calm_server::model::{NewCard, NewCove, NewWave};
@@ -555,4 +556,102 @@ async fn explicit_user_actor_header_succeeds() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// Root-cause lock for the codex-e2e report-card fixture gap.
+//
+// `real_spec_gives_up_at_review_cap_from_descriptor` and
+// `real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor`
+// failed at `calm.report.write` with `-32603 "wave <id> has no wave-report
+// card (invariant violation)"`. Root cause: the codex-e2e fixture bypassed
+// `routes::waves::create_wave` (the only production wave-create entrypoint,
+// which mints the wave-report card atomically with the wave) by calling
+// `repo.wave_create` directly and skipping the mint. Production never
+// produces a wave without a report card.
+//
+// These pure-Rust tests reproduce the exact invariant at the shared kernel
+// resolver `resolve_report_for_wave` (used by REST and mirrored by the MCP
+// `load_report_for_wave` twin) WITHOUT spawning codex: the card-less shape
+// the buggy fixture produced errs; the production/fixed shape (card minted)
+// resolves.
+// ---------------------------------------------------------------------------
+
+async fn seed_spec_wave_without_report_card(repo: &SqlxRepo) -> WaveId {
+    let cove = repo
+        .cove_create(NewCove {
+            name: "report-invariant".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id.clone(),
+            title: "report invariant wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    // Spec card only (kind "codex"), exactly the shape the codex-e2e fixture
+    // minted with report-card minting disabled. No wave-report card.
+    repo.card_create(NewCard {
+        wave_id: wave.id.clone(),
+        kind: "codex".into(),
+        sort: None,
+        payload: Value::Null,
+    })
+    .await
+    .unwrap();
+    wave.id
+}
+
+#[tokio::test]
+async fn resolve_report_for_wave_errs_when_report_card_missing() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let wave_id = seed_spec_wave_without_report_card(&repo).await;
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+
+    let err =
+        calm_server::wave_report::resolve_report_for_wave(route_repo.as_ref(), wave_id.as_str())
+            .await
+            .expect_err("a wave with no wave-report card must trip the invariant");
+
+    match err {
+        CalmError::Internal(msg) => assert!(
+            msg.contains("has no wave-report card (invariant violation)"),
+            "unexpected internal error message: {msg}"
+        ),
+        other => panic!("expected CalmError::Internal invariant violation, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn resolve_report_for_wave_ok_when_report_card_present() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let wave_id = seed_spec_wave_without_report_card(&repo).await;
+    // Mint the wave-report card exactly as `routes::waves::create_wave` (and
+    // the fixed fixture) does: kind "wave-report", sort -1.0, initial payload.
+    repo.card_create(NewCard {
+        wave_id: wave_id.clone(),
+        kind: "wave-report".into(),
+        sort: Some(-1.0),
+        payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+    })
+    .await
+    .unwrap();
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+
+    let (wave, card, _payload) =
+        calm_server::wave_report::resolve_report_for_wave(route_repo.as_ref(), wave_id.as_str())
+            .await
+            .expect("a wave with a wave-report card resolves");
+    assert_eq!(wave.id, wave_id);
+    assert_eq!(card.kind, "wave-report");
 }
