@@ -2917,7 +2917,7 @@ fn capstone_gate_script_is_hermetic_and_cargo_free() {
 /// repo-agnostic prose, so non-vacuity is proven by `cmd != CAPSTONE_GATE_CMD`,
 /// not a `cargo` substring.
 #[test]
-fn descriptor_gate_patch_removes_cargo_and_guard_is_live() {
+fn descriptor_gate_patch_neutralizes_shipped_gate_and_guard_is_live() {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
 
     let patched = patch_manifest_gate_cmd(&raw, CAPSTONE_GATE_CMD);
