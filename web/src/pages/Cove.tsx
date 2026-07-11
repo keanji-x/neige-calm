@@ -521,8 +521,23 @@ function NewWaveDialog({
                   drawer rows. The stroke chevron replaces the UA
                   triangle (::picker-icon is display:none). Fallback
                   engines don't render non-option select children, so
-                  this whole button is inert there. */}
-              <button className="calm-select-trigger">
+                  this whole button is inert there.
+
+                  aria-hidden + tabIndex=-1: purely presentational. In
+                  Chromium the trigger is otherwise exposed as a real
+                  AX button NAMED BY THE CLONED OPTION CONTENT, which
+                  collides with in-dialog getByRole('button') locators
+                  (CI regression, #891); the <select> itself is the
+                  focusable, semantic control (chromium probe: the
+                  button is never a tab stop and refuses programmatic
+                  focus). tabIndex=-1 makes the hiding legal — axe's
+                  aria-hidden-focus rule flags a bare aria-hidden
+                  button. */}
+              <button
+                className="calm-select-trigger"
+                aria-hidden="true"
+                tabIndex={-1}
+              >
                 <selectedcontent className="calm-select-selected" />
                 <span className="calm-select-chevron" aria-hidden="true">
                   <ChevronIcon />

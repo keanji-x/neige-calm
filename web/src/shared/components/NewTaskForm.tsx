@@ -967,14 +967,26 @@ function CoveSection({
            render identically to the Workflow trigger; options are
            plain text, so they just get the row/hover/checkmark
            treatment. Fallback engines ignore the button child and
-           keep the OS popup. */
+           keep the OS popup.
+
+           aria-hidden + tabIndex=-1 on the trigger: purely
+           presentational. In Chromium it is otherwise exposed as an
+           AX button named by the cloned option content — i.e. the
+           selected COVE NAME — which strict-mode-collided with the
+           browse e2e's /browse/i button locator (cove "E2E browse
+           cove"). The <select> is the focusable, semantic control;
+           tabIndex=-1 keeps axe's aria-hidden-focus rule green. */
         <select
           id={coveSelectId}
           className="new-task-form-input calm-select"
           value={coveChoice.mode === 'existing' ? coveChoice.coveId : ''}
           onChange={(e) => setCoveChoice({ mode: 'existing', coveId: e.target.value })}
         >
-          <button className="calm-select-trigger">
+          <button
+            className="calm-select-trigger"
+            aria-hidden="true"
+            tabIndex={-1}
+          >
             <selectedcontent className="calm-select-selected" />
             <span className="calm-select-chevron" aria-hidden="true">
               <ChevronIcon />

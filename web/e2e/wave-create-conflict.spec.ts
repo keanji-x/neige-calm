@@ -108,7 +108,7 @@ test('NewTaskForm surfaces conflicting cove name in 409 error', async ({ page })
   await expect(banner).toContainText(coveAName);
 
   // Click "Use a different cove" (PR 3 fix-loop B2 surface).
-  await form.getByRole('button', { name: /use a different cove/i }).click();
+  await form.getByRole('button', { name: 'Use a different cove' }).click();
 
   // The radio picker reappears. Make sure "Existing cove" is picked
   // (it's the default after override when defaultCoveId is set).
@@ -122,7 +122,7 @@ test('NewTaskForm surfaces conflicting cove name in 409 error', async ({ page })
   // Step 5 — submit. The wave-create POST against B with
   // attach_folder=true should server-side fail with a 409 because A
   // already owns the same path.
-  await form.getByRole('button', { name: /create task/i }).click();
+  await form.getByRole('button', { name: 'Create task' }).click();
 
   // Step 6 — error appears inline via role="alert". The text must
   // contain cove A's *name* (B1 fix), the conflicting path, and must

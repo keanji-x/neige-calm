@@ -63,7 +63,7 @@ test('creates a new wave with an empty title and renders the fallback label', as
   await expect(banner).toContainText(coveName);
   await expect(banner).toContainText(folderPath);
 
-  await form.getByRole('button', { name: /create task/i }).click();
+  await form.getByRole('button', { name: 'Create task' }).click();
 
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/, { timeout: 10_000 });
   await expect(page.getByText('Untitled wave', { exact: true }).first()).toBeVisible();

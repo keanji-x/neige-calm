@@ -100,7 +100,7 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
 
   // Step 5 — the override button exists inside the banner and is
   // clickable.
-  const overrideBtn = form.getByRole('button', { name: /use a different cove/i });
+  const overrideBtn = form.getByRole('button', { name: 'Use a different cove' });
   await expect(overrideBtn).toBeVisible();
   await expect(overrideBtn).toBeEnabled();
   await overrideBtn.click();
@@ -128,7 +128,7 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
 
   // Step 8 — submit. Two-step (POST cove → POST wave with
   // attach_folder=true) should both succeed.
-  await form.getByRole('button', { name: /create task/i }).click();
+  await form.getByRole('button', { name: 'Create task' }).click();
 
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+$/, { timeout: 10_000 });
   const waveId = new URL(page.url()).pathname.split('/').pop()!;
