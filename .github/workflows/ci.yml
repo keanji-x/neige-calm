@@ -171,22 +171,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Free ~20GB (Android SDK / .NET / Haskell / pre-pulled docker images) so the
-      # `cargo test --workspace --locked` link stage doesn't intermittently die with
-      # `collect2: ld terminated with signal 7 [Bus error]` — tmpfs object-file
-      # truncation / ENOSPC at the temp dir under runner disk pressure when linking the
-      # many test binaries. Mirrors the `openapi drift` job's mitigation (#634). Keep
-      # `tool-cache` (Node) and runner swap; skip slow `large-packages`.
-      - name: free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
+      # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
+      # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
+      # with ~89G free (145G disk, run 29140215747), and post-#913 (test bins 153→35)
+      # + #918 (debuginfo) target/ peaks ~5G, rust-cache ~321MB — the 2m47s was waste.
 
       # Workspace is edition = "2024" → needs Rust >= 1.85.
       - uses: dtolnay/rust-toolchain@stable
@@ -389,6 +377,17 @@ jobs:
       # Playwright browsers aren't bundled with `@playwright/test`; the
       # binary must be downloaded once per runner. `--with-deps` also
       # installs the system libraries chromium needs on ubuntu-latest.
+      #
+      # #903 — cache the browser download. The install step stays as-is: on a
+      # cache hit `npx playwright install` sees the browser and skips the
+      # download in seconds, and only the --with-deps apt portion still runs
+      # (~29s → ~10s).
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+
       - name: install playwright chromium
         run: npx playwright install --with-deps chromium
 
@@ -436,6 +435,13 @@ jobs:
     # compose up + 2 specs (~30s each with retries). 30 minutes is comfortable
     # headroom; bump if cold-cache cargo build pushes us over.
     timeout-minutes: 30
+    # #903 — e2e verifies behavior, not performance: opt-level 1 is behaviorally
+    # equivalent and nearly halves the release build (~4m13s of the ~6min job).
+    # Must match stack-e2e-tier-1's value or the shared rust-cache key's dep
+    # fingerprints split. Tradeoff: CI e2e binaries aren't bit-identical to
+    # production's opt-3; to revert, delete this env block in both jobs.
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -529,6 +535,14 @@ jobs:
           docker compose logs
           exit 1
 
+      # #903 — cache the browser download; see the web job's cache step for
+      # rationale (install stays: cache hit skips the download, apt still runs).
+      - name: cache playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+
       - name: install playwright chromium
         working-directory: web
         run: npx playwright install --with-deps chromium
@@ -569,6 +583,12 @@ jobs:
     # binaries remain ABI-compatible with the bookworm-slim runtime image.
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    # #903 — e2e verifies behavior, not performance: opt-level 1 nearly halves
+    # the dominant release build. Must stay identical to chromium-e2e's value
+    # or the shared rust-cache key's dep fingerprints split; see the rationale
+    # and revert note on that job.
+    env:
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -638,29 +658,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Issue #634 — `npm run gen:api` builds three test-profile binaries
-      # (`cargo test export_bindings_` for calm-types / calm-session /
-      # calm-editor; #679 PR1 moved the WS-event bindings source from
-      # calm-server to calm-types) plus `cargo run --bin emit-openapi`,
-      # all on the shared
-      # `workspace` rust-cache. Peak target/ + cache exceeds the ~14GB free
-      # that `ubuntu-latest` ships with, and the link stage was repeatedly
-      # dying with SIGBUS (tmpfs object-file truncation) or ENOSPC at the
-      # temp dir. Pruning Android SDK / .NET / Haskell / pre-pulled docker
-      # images frees ~20GB+ and gives a stable link stage. Keep
-      # `tool-cache` so the `actions/setup-node` step below still finds a
-      # pre-cached Node 20; skip `large-packages` (slow, unneeded) and
-      # `swap-storage` (don't shrink runner swap on a tight job).
-      - name: free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: true
-          swap-storage: false
+      # #903 — dropped the #634-era `free disk space` (jlumbroso) step: ubuntu-latest
+      # then shipped ~14G free (link-stage SIGBUS/ENOSPC); as of 2026-07 runners boot
+      # with ~89G free (145G disk, run 29140215747), and post-#913 (test bins 153→35)
+      # + #918 (debuginfo) target/ peaks ~5G, rust-cache ~321MB — the 2m47s was waste.
+      # The `df -h` step below stays as a zero-cost headroom sentinel.
 
       - uses: dtolnay/rust-toolchain@stable
 

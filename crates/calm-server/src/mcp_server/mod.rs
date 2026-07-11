@@ -31,6 +31,8 @@
 //!   * [`handshake`] — `initialize` request handler: token lookup +
 //!     card-identity binding.
 //!   * [`registry`]  — `ToolRegistry` + `AppContext` + per-call identity.
+//!   * [`tool_visibility`] — #891 per-wave plugin-tool scope (single choke
+//!     point shared by `tools/list` discovery and `tools/call` dispatch).
 //!   * [`transport`] — UDS listener, per-connection task, JSON-RPC
 //!     message pump, `McpServer` + `McpShimConfig`.
 //!   * [`tools`]     — default MCP tool handlers and descriptors.
@@ -45,6 +47,7 @@ pub mod auth;
 pub mod framing;
 pub mod handshake;
 pub mod registry;
+pub(crate) mod tool_visibility;
 pub mod tools;
 pub mod transport;
 pub mod wiring;
