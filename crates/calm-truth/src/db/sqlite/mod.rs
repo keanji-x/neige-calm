@@ -22,7 +22,9 @@ use sqlx::Connection;
 use sqlx::Executor;
 use sqlx::SqlitePool;
 use sqlx::TransactionManager as _;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteTransactionManager};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteTransactionManager,
+};
 use std::str::FromStr;
 
 use super::Repo;
@@ -132,6 +134,51 @@ pub struct SqlxRepo {
     /// `AppState::new` seeds from the same pool). Both converge on
     /// the persisted `waves` table.
     wave_cove_cache: WaveCoveCache,
+    /// #926 — process-lifetime keepalive for in-memory databases.
+    ///
+    /// sqlx maps `sqlite::memory:` / `mode=memory` URLs to a NAMED
+    /// shared-cache database (`file:sqlx-in-memory-{seqno}?cache=shared`,
+    /// seqno fixed per parsed `SqliteConnectOptions`); the cache — i.e.
+    /// the entire database — lives only while at least one connection
+    /// holds it. Every POOL connection churns under the default
+    /// `SqlitePoolOptions`: the reaper closes connections idle > 600 s,
+    /// `max_lifetime` (1800 s) hits the same-age connections together,
+    /// and error paths `close_hard` — including the #920 `after_release`
+    /// hook's fail-closed branch. If the pool's LAST connection closed,
+    /// the database would be destroyed: the next acquire attaches a fresh
+    /// EMPTY cache of the same name, migrations do NOT re-run, and every
+    /// query fails "no such table" until process restart.
+    ///
+    /// This connection is acquired in `open()` — before migrations, so
+    /// the cache provably cannot die between any two later steps — and
+    /// `detach()`ed from the pool (the pool opens replacements as needed;
+    /// capacity is unaffected). It is never used for queries: it exists
+    /// solely to keep the cache alive so any pool churn is harmless.
+    /// `None` for on-disk databases, whose reopen is lossless.
+    ///
+    /// In-memory detection asks the ENGINE, not the URL: `open()` probes
+    /// `pragma_database_list` on the candidate connection — sqlite
+    /// reports an empty `file` for in-memory and per-connection
+    /// temp-file databases and the absolute path for on-disk ones
+    /// (decades-stable behavior) — so detection is immune to URL
+    /// spellings (e.g. percent-encoded params) and to future sqlx parse
+    /// changes. Temp-file databases thus also get an anchor: useless
+    /// (each connection has its own private temp DB, nothing shared to
+    /// keep alive) but harmless. `cache=private` in-memory URLs are
+    /// unsupported-by-construction at the sqlx level — every pool
+    /// connection gets its OWN private empty database, anchor or not —
+    /// the probe still anchors them (their `file` is empty too),
+    /// equally useless and harmless.
+    ///
+    /// Dropped with the repo (never leaked): dropping ends the
+    /// connection's worker thread and closes the sqlite handle, so tests
+    /// building many repos don't accumulate threads.
+    ///
+    /// `SqliteConnection` is `Send + Sync` (all work is proxied to its
+    /// worker thread over channels; compile-time assert in
+    /// `pool_memory_anchor_tests`), so `SqlxRepo` stays shareable as
+    /// `Arc<SqlxRepo>` with no lock around this field.
+    _memory_cache_anchor: Option<SqliteConnection>,
 }
 
 impl SqlxRepo {
@@ -139,7 +186,12 @@ impl SqlxRepo {
     /// enable foreign-key enforcement per-connection.
     ///
     /// Accepts both `sqlite::memory:` (used in tests) and on-disk
-    /// `sqlite://path?mode=rwc` URLs.
+    /// `sqlite://path?mode=rwc` URLs. In-memory opens — detected by
+    /// probing `pragma_database_list` on a live connection, not by
+    /// parsing the URL — additionally pin the shared cache with a
+    /// pool-external keepalive connection so pool churn can never
+    /// destroy the database (#926 — see the `_memory_cache_anchor`
+    /// field docs).
     pub async fn open(url: &str) -> Result<Self> {
         let mut opts = SqliteConnectOptions::from_str(url)
             .map_err(|e| CalmError::Internal(format!("invalid sqlite url {url:?}: {e}")))?
@@ -204,13 +256,13 @@ impl SqlxRepo {
                     }
                     // Fail closed — still inside a transaction after the
                     // bounded unwind; the Err makes the pool close_hard the
-                    // connection. If it was the last connection of a
-                    // shared-cache in-memory DB, the database dies with it —
-                    // accepted: a connection whose ROLLBACK fails (or whose
-                    // depth counter has desynced from sqlite's real state)
-                    // can never serve `begin_with` again, and recirculating
-                    // it would re-poison the pool. The general in-memory
-                    // last-connection lifecycle hazard is issue #926.
+                    // connection: one whose ROLLBACK fails (or whose depth
+                    // counter has desynced from sqlite's real state) can
+                    // never serve `begin_with` again, and recirculating it
+                    // would re-poison the pool. The close_hard is safe even
+                    // for in-memory repos: the `_memory_cache_anchor` keeps
+                    // the shared cache alive, and the pool's replacement
+                    // connections re-attach to it (see the field docs).
                     Err(sqlx::Error::Protocol(
                         "connection still inside a transaction after bounded rollback".into(),
                     ))
@@ -218,6 +270,29 @@ impl SqlxRepo {
             })
             .connect_with(opts)
             .await?;
+
+        // #926 — for in-memory DBs, anchor the shared cache with one
+        // pool-external connection BEFORE anything else touches the pool,
+        // so the database provably cannot vanish between any two later
+        // steps (migration check, migrations, backfill, cache seeding —
+        // or any pool churn for the rest of the process lifetime). See
+        // the `_memory_cache_anchor` field docs for the full mechanism.
+        // Detection is an engine probe, not URL parsing:
+        // `pragma_database_list.file` is empty for in-memory (and
+        // temp-file) databases and the absolute path for on-disk ones.
+        let mut candidate = pool.acquire().await?;
+        let main_db_file: String =
+            sqlx::query_scalar("SELECT file FROM pragma_database_list WHERE name = 'main'")
+                .fetch_one(&mut *candidate)
+                .await?;
+        let memory_cache_anchor = if main_db_file.is_empty() {
+            // In-memory (or temp-file) DB: pin the cache.
+            Some(candidate.detach())
+        } else {
+            // On-disk: hand the connection back to the pool, no anchor.
+            drop(candidate);
+            None
+        };
 
         // Tier-A upgrade stability boundary (`docs/upgrade-stability.md`):
         // refuse to boot when the DB carries a migration row that this
@@ -252,7 +327,15 @@ impl SqlxRepo {
             pool,
             card_role_cache,
             wave_cove_cache,
+            _memory_cache_anchor: memory_cache_anchor,
         })
+    }
+
+    /// #926 — test-only visibility: whether this repo holds the in-memory
+    /// keepalive anchor. In-memory repos must; on-disk repos must not.
+    #[cfg(test)]
+    pub(crate) fn has_memory_cache_anchor(&self) -> bool {
+        self._memory_cache_anchor.is_some()
     }
 
     /// Direct access to the pool for tests / fixtures / sync-engine
@@ -341,3 +424,6 @@ mod wave_workflow_input_tests;
 
 #[cfg(test)]
 mod pool_tx_repair_tests;
+
+#[cfg(test)]
+mod pool_memory_anchor_tests;
