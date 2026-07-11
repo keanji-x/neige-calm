@@ -39,6 +39,12 @@ pub fn is_sqlite_busy(e: &sqlx::Error) -> bool {
 
 pub(super) fn is_sqlite_busy_code(code: &str) -> bool {
     if let Ok(code) = code.parse::<i64>() {
+        // 5 = SQLITE_BUSY, 6 = SQLITE_LOCKED. Plain code 6 includes the
+        // shared-cache unlock_notify deadlock ("database is deadlocked",
+        // #930). Retrying on it is ONLY safe at BEGIN, where the fresh tx
+        // holds nothing; a mid-transaction statement retry keeps the tx's
+        // table locks and re-deadlocks deterministically (see
+        // deadlock_semantics_tests).
         return matches!(code & 0xFF, 5 | 6);
     }
     matches!(code, "SQLITE_BUSY" | "SQLITE_LOCKED")

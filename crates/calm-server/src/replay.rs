@@ -47,7 +47,7 @@ use futures::future::BoxFuture;
 use serde::Deserialize;
 
 use crate::db::RepoEventWrite;
-use crate::db::sqlite::SqlxRepo;
+use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::ActorId;
 use crate::operation::SpawnHandle;
@@ -344,7 +344,9 @@ pub async fn reset_from_fixture(
     // they can go anywhere; we drain them first to keep the audit log
     // out of the way of the structural wipe.
     let pool = repo.pool();
-    let mut tx = pool.begin().await?;
+    // #930 uniform rule: writing transactions always BEGIN IMMEDIATE —
+    // deferred transactions are reserved for read-only work.
+    let mut tx = begin_immediate_tx(pool).await?;
     for stmt in [
         "DELETE FROM events",
         // Retention bookkeeping must reset WITH the event log: a stale

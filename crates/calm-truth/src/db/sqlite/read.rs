@@ -175,6 +175,12 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
+        // READ-ONLY deferred transaction (#930 allowlist): groups the
+        // wave/cards/overlays SELECTs into one consistent snapshot and
+        // performs no writes, so it can never hold-and-wait on the shared
+        // cache's writer slot. Writing transactions must use
+        // `begin_immediate_tx` instead (see the deferred_write_tx
+        // invariant test).
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
             r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at

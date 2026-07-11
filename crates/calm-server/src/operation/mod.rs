@@ -932,4 +932,6 @@ fn required_output(op: &Operation) -> Result<&TxOutput> {
 }
 
 #[cfg(test)]
+mod claim_completion_deadlock_tests;
+#[cfg(test)]
 mod tests;
