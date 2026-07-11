@@ -263,27 +263,34 @@ impl SessionRepo for SqlxRepo {
 // RepoSyncDomainRaw — raw entity writes for the in-scope sync domain.
 // Gated: not reachable via the `RouteRepo` trait object that handlers see;
 // only callable via the explicit `AppState::raw_repo()` escape hatch.
+//
+// #930 uniform rule: every writing transaction begins with
+// `begin_immediate_tx` (BEGIN IMMEDIATE). Some of these `_tx` helpers read
+// before writing (e.g. sort computation); a deferred read→write upgrade
+// under shared-cache sqlite can close a lock cycle with a concurrent
+// IMMEDIATE writer ("database is deadlocked"), while a second IMMEDIATE
+// parks at BEGIN holding nothing.
 // ---------------------------------------------------------------------------
 
 #[async_trait]
 impl RepoSyncDomainRaw for SqlxRepo {
     // ---------------------------------------------------------------- coves
     async fn cove_create(&self, p: NewCove) -> Result<Cove> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = cove_create_tx(&mut tx, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn cove_update(&self, id: &str, p: CovePatch) -> Result<Cove> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = cove_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn cove_delete(&self, id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         overlay_delete_subtree_by_cove_tx(&mut tx, id).await?;
         overlay_delete_by_entity_tx(&mut tx, "cove", id).await?;
         cove_delete_tx(&mut tx, id).await?;
@@ -293,21 +300,21 @@ impl RepoSyncDomainRaw for SqlxRepo {
 
     // ---------------------------------------------------------------- waves
     async fn wave_create(&self, p: NewWave) -> Result<Wave> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = wave_create_tx(&mut tx, p, &self.wave_cove_cache).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn wave_update(&self, id: &str, p: WavePatch) -> Result<Wave> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = wave_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn wave_delete(&self, id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         overlay_delete_card_overlays_by_wave_tx(&mut tx, id).await?;
         overlay_delete_by_entity_tx(&mut tx, "wave", id).await?;
         overlay_delete_by_entity_tx(&mut tx, "view", id).await?;
@@ -318,21 +325,21 @@ impl RepoSyncDomainRaw for SqlxRepo {
 
     // ---------------------------------------------------------------- cards
     async fn card_create(&self, p: NewCard) -> Result<Card> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = card_create_tx(&mut tx, p, &self.card_role_cache).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn card_update(&self, id: &str, p: CardPatch) -> Result<Card> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = card_update_tx(&mut tx, id, p).await?;
         tx.commit().await?;
         Ok(out)
     }
 
     async fn card_delete(&self, id: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         card_delete_tx(&mut tx, id, &self.card_role_cache).await?;
         tx.commit().await?;
         Ok(())
@@ -340,7 +347,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
 
     // -------------------------------------------------------------- overlays
     async fn overlay_upsert(&self, p: NewOverlay) -> Result<Overlay> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let out = overlay_upsert_tx(&mut tx, p).await?;
         tx.commit().await?;
         Ok(out)
@@ -353,7 +360,7 @@ impl RepoSyncDomainRaw for SqlxRepo {
         entity_id: &str,
         kind: &str,
     ) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         overlay_delete_tx(&mut tx, plugin_id, entity_kind, entity_id, kind).await?;
         tx.commit().await?;
         Ok(())

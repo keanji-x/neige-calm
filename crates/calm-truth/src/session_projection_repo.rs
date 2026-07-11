@@ -173,6 +173,16 @@ impl From<serde_json::Error> for WorkerSessionProjectionRepoError {
     }
 }
 
+/// #930: lets the sqlite impl start its writing transactions through
+/// `begin_immediate_tx` (which returns `CalmError`) with plain `?`.
+impl From<crate::error::CalmError> for WorkerSessionProjectionRepoError {
+    fn from(err: crate::error::CalmError) -> Self {
+        Self::Message {
+            message: err.to_string(),
+        }
+    }
+}
+
 impl From<WorkerSessionProjectionRepoError> for crate::error::CalmError {
     fn from(err: WorkerSessionProjectionRepoError) -> Self {
         crate::error::CalmError::Internal(err.to_string())

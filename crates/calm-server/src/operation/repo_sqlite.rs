@@ -164,7 +164,13 @@ impl OperationRepo for SqlxOperationRepo {
         let now = now_ms();
         let lease_owner = new_id();
         let lease_until = now + OPERATION_LEASE_MS;
-        let mut tx = self.pool.begin().await?;
+        // #930: this tx reads `operations` (SELECT below) and then writes it
+        // (UPDATE). A deferred read→write upgrade holds R(operations) while
+        // waiting for the shared cache's single writer slot, which deadlocks
+        // against any IMMEDIATE writer that wants W(operations) — e.g. a
+        // parked op's completion observer ("database is deadlocked").
+        // BEGIN IMMEDIATE instead parks at BEGIN holding nothing.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let ids = sqlx::query(
             r#"SELECT id
                FROM operations

@@ -3,7 +3,7 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
-use super::SqlxRepo;
+use super::{SqlxRepo, begin_immediate_tx};
 use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::*;
@@ -313,7 +313,8 @@ impl RepoOutOfDomain for SqlxRepo {
         payload: &str,
         created_at_ms: i64,
     ) -> Result<i64> {
-        let mut tx = self.pool.begin().await?;
+        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         let id = worker_flow_item_insert_tx(
             &mut tx,
             card_id,

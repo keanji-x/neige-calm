@@ -13,7 +13,7 @@ use super::session_mirror::{
     session_set_status_mirror_tx,
 };
 use super::session_row::{agent_provider_to_db, runtime_message};
-use super::{SqlxRepo, derive_session_identity};
+use super::{SqlxRepo, begin_immediate_tx, derive_session_identity};
 use crate::model::*;
 use crate::session_projection_repo::{
     AgentProvider, CardId as RuntimeCardId, Result as WorkerSessionProjectionResult, RuntimeId,
@@ -461,7 +461,8 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = self.pool.begin().await?;
+        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         session_set_status_for_card_tx(&mut tx, card_id, status).await?;
         tx.commit().await?;
         Ok(())
@@ -472,7 +473,8 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         card_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = self.pool.begin().await?;
+        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         session_complete_for_card_tx(&mut tx, card_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())
@@ -483,7 +485,8 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         terminal_id: &str,
         terminal_status: WorkerSessionState,
     ) -> WorkerSessionProjectionResult<()> {
-        let mut tx = self.pool.begin().await?;
+        // #930 uniform rule: writing transactions always BEGIN IMMEDIATE.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
         session_complete_for_terminal_tx(&mut tx, terminal_id, terminal_status).await?;
         tx.commit().await?;
         Ok(())

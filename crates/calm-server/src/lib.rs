@@ -123,6 +123,11 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
 /// wraps whole repo calls: the reconcile writes run outside any
 /// caller-held transaction, so re-issuing the call is safe. Non-busy
 /// errors pass through untouched on the first attempt.
+///
+/// Composes with `begin_immediate_tx`'s internal bounded retry (7
+/// attempts, 10-250ms backoff, 5s busy_timeout per attempt): worst-case
+/// error surfacing at boot under sustained writer starvation is minutes —
+/// bounded and accepted (#930 review note).
 async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
 where
     E: SqliteBusyClass + std::fmt::Display,
@@ -165,12 +170,17 @@ impl SqliteBusyClass for calm_truth::TruthError {
 }
 
 impl SqliteBusyClass for crate::session_projection_repo::WorkerSessionProjectionRepoError {
-    // This error type stringifies driver errors at the repo boundary
-    // (`From<sqlx::Error>` folds into `Message`), so the result code is
-    // gone by the time it reaches us. Match sqlite's canonical BUSY /
-    // LOCKED message texts instead — `SQLITE_BUSY_*` extended codes
-    // (including `SQLITE_BUSY_SNAPSHOT`) all render "database is locked",
-    // and `SQLITE_LOCKED` renders "database table is locked".
+    // This error type stringifies driver errors at the repo boundary, so
+    // the result code is gone by the time it reaches us: most paths fold
+    // `From<sqlx::Error>` into `Message`, while the three #930-converted
+    // projection writers (which start via `begin_immediate_tx`) surface
+    // begin errors through `From<CalmError>` as
+    // `"database error: <sqlx text>"`. Match sqlite's canonical BUSY /
+    // LOCKED message texts instead — a pure substring test, so the added
+    // `"database error: "` prefix doesn't affect it: `SQLITE_BUSY_*`
+    // extended codes (including `SQLITE_BUSY_SNAPSHOT`) all render
+    // "database is locked", and `SQLITE_LOCKED` renders "database table
+    // is locked".
     fn is_sqlite_busy(&self) -> bool {
         matches!(
             self,

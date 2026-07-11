@@ -425,5 +425,11 @@ mod wave_workflow_input_tests;
 #[cfg(test)]
 mod pool_tx_repair_tests;
 
+// #930 — pins the upstream shared-cache deadlock semantics (unlock_notify
+// registration order, autocommit unwind, retry shape, #920-hook interplay)
+// that the "writing transactions always BEGIN IMMEDIATE" rule rests on.
+#[cfg(test)]
+mod deadlock_semantics_tests;
+
 #[cfg(test)]
 mod pool_memory_anchor_tests;

@@ -1656,7 +1656,10 @@ async fn claimed_spawn_started_operation(repo: &SqlxOperationRepo) -> Operation 
     repo.get_operation(&op_id).await.unwrap().unwrap()
 }
 
-async fn parked_operation(repo: &SqlxOperationRepo, deadline_ms: TimestampMs) -> Operation {
+pub(super) async fn parked_operation(
+    repo: &SqlxOperationRepo,
+    deadline_ms: TimestampMs,
+) -> Operation {
     let op = claimed_spawn_started_operation(repo).await;
     repo.record_spawn_artifacts(&op, &sample_spawn_artifacts())
         .await
