@@ -18,9 +18,11 @@
 //! the same transaction. See `db::mod`'s sync-engine comment.
 
 use sqlx::ConnectOptions;
+use sqlx::Connection;
 use sqlx::Executor;
 use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::TransactionManager as _;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteTransactionManager};
 use std::str::FromStr;
 
 use super::Repo;
@@ -158,6 +160,62 @@ impl SqlxRepo {
                     Ok(())
                 })
             })
+            // #920 — self-heal connections released while still inside a
+            // transaction. sqlx 0.8's `begin_with` has two awaits: the
+            // worker executes BEGIN and bumps its transaction-depth
+            // counter, then a second await verifies the state. A caller
+            // future cancelled between them (e.g. an axum handler dropped
+            // on client abort) leaks the open transaction: no
+            // `Transaction` guard exists to roll it back, and the pool's
+            // release path only pings. Every later `begin_with` on the
+            // poisoned connection then fails at non-zero depth, plain
+            // `begin()` silently nests a SAVEPOINT whose "commits" never
+            // commit, and on shared-cache `sqlite::memory:` DBs every
+            // OTHER connection's `BEGIN IMMEDIATE` parks in sqlite's
+            // unlock_notify behind the leaked write lock. Repair here —
+            // rolling back rather than discarding, because for in-memory
+            // DBs dropping the connection can drop the database.
+            .after_release(|conn, _meta| {
+                Box::pin(async move {
+                    if !Connection::is_in_transaction(conn) {
+                        return Ok(true);
+                    }
+                    // A `Transaction` dropped on a normal error path has
+                    // already queued its rollback on the worker's FIFO
+                    // command queue; the depth counter only falls when the
+                    // worker dequeues it. Round-trip a ping (same queue) so
+                    // a pending drop-rollback completes before we judge the
+                    // connection actually leaked.
+                    Connection::ping(&mut *conn).await?;
+                    if !Connection::is_in_transaction(conn) {
+                        return Ok(true);
+                    }
+                    tracing::warn!(
+                        "sqlite: connection released to pool inside an open transaction \
+                         (cancelled begin?); rolling it back"
+                    );
+                    // Bounded unwind: one rollback per depth level covers
+                    // nested savepoints without risking an infinite loop.
+                    for _ in 0..8 {
+                        SqliteTransactionManager::rollback(conn).await?;
+                        if !Connection::is_in_transaction(conn) {
+                            return Ok(true);
+                        }
+                    }
+                    // Fail closed — still inside a transaction after the
+                    // bounded unwind; the Err makes the pool close_hard the
+                    // connection. If it was the last connection of a
+                    // shared-cache in-memory DB, the database dies with it —
+                    // accepted: a connection whose ROLLBACK fails (or whose
+                    // depth counter has desynced from sqlite's real state)
+                    // can never serve `begin_with` again, and recirculating
+                    // it would re-poison the pool. The general in-memory
+                    // last-connection lifecycle hazard is issue #926.
+                    Err(sqlx::Error::Protocol(
+                        "connection still inside a transaction after bounded rollback".into(),
+                    ))
+                })
+            })
             .connect_with(opts)
             .await?;
 
@@ -280,3 +338,6 @@ mod session_record_activity_tests;
 
 #[cfg(test)]
 mod wave_workflow_input_tests;
+
+#[cfg(test)]
+mod pool_tx_repair_tests;
