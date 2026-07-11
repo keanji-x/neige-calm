@@ -1,0 +1,38 @@
+# #903 — nextest profiles. CI runs with --profile ci; the local default
+# profile keeps nextest defaults (test-threads = logical cores — on the shared
+# production box pass an explicit --test-threads to cap concurrency, see the
+# #903 design doc's local-verification section).
+
+# Version floor: older nextest would silently ignore `default-filter` below,
+# and the export_bindings_* tests would then run in parallel and corrupt the
+# checked-in generated bindings — make that a hard error instead.
+nextest-version = { required = "0.9.100" }
+
+[profile.default]
+# Exclude the ts-rs `export_bindings_*` generator tests (calm-types /
+# calm-session / calm-editor). ts-rs 12's export-file merge lock is a
+# process-local static; under nextest's process-per-test model the tests race
+# and concurrently truncate/merge the shared checked-in outputs
+# (web/src/api/generated*.ts), producing nondeterministic panics and a dirty
+# working tree. Coverage is not lost: the openapi-drift CI job runs
+# `npm run gen:api` (which invokes `cargo test … export_bindings_` in a single
+# process) and verifies with `git diff --exit-code` on every PR — a strictly
+# stronger check than running the tests here. Excluded in the default profile
+# too so a plain local `cargo nextest run` cannot corrupt the working tree.
+default-filter = 'not test(/export_bindings_/)'
+# Warn-only: collect slow-test data first (Slice C) without introducing a new
+# flake source from timeout-killed processes.
+slow-timeout = { period = "60s" }
+
+[profile.ci]
+# Same ts-rs export-race exclusion as profile.default (see comment above).
+default-filter = 'not test(/export_bindings_/)'
+fail-fast = false                    # surface every failure in one round
+retries = 0                          # don't mask flakes; revisit in Slice C if needed
+failure-output = "immediate-final"   # print on failure + summarize at the end
+status-level = "slow"
+slow-timeout = { period = "120s" }   # warn-only; stdio_shim's longest test is ~5s budget × many waits, ample headroom
+
+[profile.ci.junit]
+# Per-test timing on disk (target/nextest/ci/junit.xml), Slice C's timing input.
+path = "junit.xml"
