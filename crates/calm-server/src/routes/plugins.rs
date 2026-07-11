@@ -420,6 +420,7 @@ pub(crate) async fn install_plugin(
     responses(
         (status = 200, description = "Plugin enabled and spawned", body = PluginDetail),
         (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 409, description = "Workflow id already registered by a running trusted plugin", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Spawn failed / internal error", body = ErrorBody),
     ),
@@ -618,6 +619,7 @@ pub(crate) async fn tail_plugin_log(
         (status = 200, description = "Manifest reloaded + plugin restarted if enabled", body = PluginDetail),
         (status = 400, description = "Manifest invalid / id mismatch after reload", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
+        (status = 409, description = "Workflow id already registered by a running trusted plugin", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -1066,17 +1068,27 @@ fn rpc_to_calm(e: RpcError) -> CalmError {
 /// Translate a `PluginHost::spawn` failure into a route-shaped `CalmError`.
 ///
 /// Most variants flatten to a 500 with the underlying string — the caller
-/// (operator / UI) only needs to know "spawn failed, here's why". The
-/// exception is `KernelTooOld` (issue #45): the manifest demands a kernel we
-/// don't ship, so we surface a 422 `PluginKernelTooOld` carrying both
-/// versions in the body. That lets the UI render a "upgrade required" hint
-/// instead of a generic internal-error toast.
+/// (operator / UI) only needs to know "spawn failed, here's why". Two
+/// exceptions get typed statuses:
+///
+/// * `KernelTooOld` (issue #45): the manifest demands a kernel we don't
+///   ship, so we surface a 422 `PluginKernelTooOld` carrying both versions
+///   in the body. That lets the UI render a "upgrade required" hint instead
+///   of a generic internal-error toast.
+/// * `WorkflowConflict` (#891 slice ④ review fix): the manifest declares a
+///   workflow id another running trusted plugin already registers. That's a
+///   409 `PluginConflict` — the request was well-formed and the kernel is
+///   fine; the refusal is a state conflict the operator resolves by stopping
+///   the holder — mirroring the install route's duplicate-id 409.
 fn spawn_error_to_calm(e: crate::plugin_host::HostError) -> CalmError {
     match e {
         crate::plugin_host::HostError::KernelTooOld(k) => CalmError::PluginKernelTooOld(format!(
             "plugin requires kernel >= {}, this kernel is {}",
             k.required, k.actual,
         )),
+        conflict @ crate::plugin_host::HostError::WorkflowConflict { .. } => {
+            CalmError::PluginConflict(conflict.to_string())
+        }
         other => CalmError::Internal(format!("spawn failed: {other}")),
     }
 }
@@ -1223,3 +1235,42 @@ async fn build_detail(cs: &CodexShellState, plug: Plugin) -> PluginDetail {
 // `wire_name()` / `last_error()` everywhere.
 #[allow(dead_code)]
 const _RUNTIME_STATUS_LIVE: Option<PluginRuntimeStatus> = None;
+
+#[cfg(test)]
+mod spawn_error_mapping_tests {
+    use super::spawn_error_to_calm;
+    use crate::error::CalmError;
+    use crate::plugin_host::HostError;
+    use axum::http::StatusCode;
+
+    /// #891 slice ④ review fix — a workflow-id refusal is an operator-visible
+    /// state conflict (409 `plugin_conflict`), not a generic 500.
+    #[test]
+    fn workflow_conflict_maps_to_structured_409() {
+        let mapped = spawn_error_to_calm(HostError::WorkflowConflict {
+            plugin_id: "dev.second".into(),
+            workflow_id: "issue-development".into(),
+            held_by: "dev.first".into(),
+        });
+        assert!(
+            matches!(&mapped, CalmError::PluginConflict(msg)
+                if msg.contains("issue-development") && msg.contains("dev.first")),
+            "expected PluginConflict naming the workflow and holder, got {mapped:?}"
+        );
+        assert_eq!(mapped.status(), StatusCode::CONFLICT);
+        assert_eq!(mapped.code(), "plugin_conflict");
+    }
+
+    /// Regression pin for the pre-existing KernelTooOld → 422 precedent this
+    /// mapping follows.
+    #[test]
+    fn kernel_too_old_still_maps_to_422() {
+        let mapped =
+            spawn_error_to_calm(HostError::KernelTooOld(crate::plugin_host::KernelTooOld {
+                required: semver::Version::new(9, 9, 9),
+                actual: semver::Version::new(0, 1, 0),
+            }));
+        assert_eq!(mapped.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(mapped.code(), "plugin_kernel_too_old");
+    }
+}

@@ -63,6 +63,26 @@ pub(crate) async fn plugin_scope_for_wave(
     ctx: &Arc<AppContext>,
     wave_id: Option<&str>,
 ) -> WavePluginScope {
+    // #891 review fix (hot-path observability): this resolver sits on both
+    // the tools/list and tools/call paths and does per-call repo + registry
+    // reads; log the resolution at debug so latency regressions and scope
+    // decisions are attributable without enabling caching in this slice.
+    let started = std::time::Instant::now();
+    let scope = resolve_plugin_scope_for_wave(ctx, wave_id).await;
+    tracing::debug!(
+        target: "mcp_server::tool_visibility",
+        wave_id = wave_id.unwrap_or("<none>"),
+        scope = ?scope,
+        elapsed_us = started.elapsed().as_micros() as u64,
+        "plugin tool scope resolved"
+    );
+    scope
+}
+
+async fn resolve_plugin_scope_for_wave(
+    ctx: &Arc<AppContext>,
+    wave_id: Option<&str>,
+) -> WavePluginScope {
     let Some(wave_id) = wave_id else {
         return WavePluginScope::All;
     };

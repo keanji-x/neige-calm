@@ -657,26 +657,40 @@ async fn dispatch_plugin_tools_call(
     arguments: Value,
     connection_identity: &ConnectionIdentity,
 ) -> Result<Value, RpcError> {
+    // #891 review fix — identity FIRST. Route lookup used to precede
+    // identity resolution, so a genuinely-unknown tool returned `-32601`
+    // immediately while an existing out-of-scope tool with a
+    // missing/malformed threadId surfaced an identity error — making tool
+    // EXISTENCE distinguishable from the error shape. Resolving identity
+    // before any route knowledge makes identity failures uniform regardless
+    // of whether `name` exists. (Kernel `calm.*` tools return earlier in
+    // `dispatch_tools_call` and already resolve identity before running.)
+    let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
+
+    // Single shared construction for EVERY existence-shaped rejection below
+    // (no plugin host, unknown route, out-of-scope plugin) so the error
+    // object is byte-identical and cannot be used as an existence oracle.
+    let unknown_tool = || RpcError::method_not_found(&format!("tools/call: {name}"));
+
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
+        return Err(unknown_tool());
     };
     let running_ids = plugin_host.running_plugin_ids().await;
     let Some((plugin_id, tool_name, kind)) = plugin_tool_route(&plugin_host, name, &running_ids)?
     else {
-        return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
+        return Err(unknown_tool());
     };
 
-    let identity = resolve_tools_call_identity(ctx, thread_id, name, connection_identity).await?;
     // #891 slice ④ — dispatch-side per-wave scope enforcement (the strict
     // half of "discovery wide, dispatch strict"): a wave bound to a workflow
-    // may only call the owning plugin's tools. Rejected with
-    // `method_not_found` — the same code an unknown tool gets — so a bound
-    // wave cannot probe for the existence of other plugins' tools.
+    // may only call the owning plugin's tools. Rejected via `unknown_tool` —
+    // the same object an unknown tool gets — so a bound wave cannot probe
+    // for the existence of other plugins' tools.
     if !plugin_scope_for_wave(ctx, identity.wave_id.as_deref())
         .await
         .allows(&plugin_id)
     {
-        return Err(RpcError::method_not_found(&format!("tools/call: {name}")));
+        return Err(unknown_tool());
     }
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     match kind {

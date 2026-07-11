@@ -2054,6 +2054,16 @@
               }
             }
           },
+          "409": {
+            "description": "Workflow id already registered by a running trusted plugin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Manifest min_kernel_version exceeds kernel version",
             "content": {
@@ -2183,6 +2193,16 @@
           },
           "404": {
             "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workflow id already registered by a running trusted plugin",
             "content": {
               "application/json": {
                 "schema": {

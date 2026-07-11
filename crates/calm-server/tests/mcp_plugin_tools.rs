@@ -40,6 +40,10 @@ const COLLIDING_EXPOSED_NAME: &str = "plugin.dev_echo.do.thing";
 // reuses the default trusted id so no env mutation is needed.
 const WORKFLOW_ID: &str = "tool-visibility-flow";
 const TRUSTED_TOOL_NAME: &str = "wf.tool";
+/// Shared-daemon token so the error-shape matrix below can drive a
+/// DaemonTrust connection (the only mode where "missing threadId" is an
+/// identity failure rather than a bound-card fallback).
+const DAEMON_TOKEN: &str = "mcp-plugin-tools-daemon-token";
 
 struct Fixture {
     _server: Arc<McpServer>,
@@ -355,6 +359,156 @@ async fn bound_wave_scopes_plugin_tools_to_workflow_owner() {
         .expect("stop prefix-colliding plugin");
 }
 
+/// #891 review fix — the wire error object must not act as an existence
+/// oracle for plugin tools. Matrix: {existing-but-out-of-scope tool, unknown
+/// tool under a running plugin's prefix, fully-unknown bare name} ×
+/// {valid threadId, missing threadId, unknown threadId} on a DaemonTrust
+/// connection. Within each identity column the COMPLETE error object must be
+/// identical across all three names (modulo the caller's own requested name
+/// in the valid column), because identity now resolves BEFORE route lookup
+/// and unknown-route/scope-reject share one `-32601` construction.
+#[tokio::test]
+async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
+    let fx = boot_fixture().await;
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, DAEMON_TOKEN).await;
+
+    let unknown_plugin_tool = "plugin.dev.echo_no.such.tool";
+    let unknown_bare_tool = "no.such.tool";
+    // EXPOSED_NAME exists and is callable by an unbound wave, but the bound
+    // wave's scope is Only(trusted owner) — so for the bound thread it is
+    // the "exists but cross-plugin / out of scope" probe.
+    let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
+
+    // Column 1 — valid threadId (workflow-bound wave): every rejection is
+    // the one shared -32601 construction; the only difference is the
+    // caller's own requested name echoed back.
+    for (idx, name) in names.iter().enumerate() {
+        let err = call_expect_error(
+            &mut rd,
+            &mut wr,
+            10 + idx as i64,
+            name,
+            Some(&fx.bound_thread_id),
+        )
+        .await;
+        assert_eq!(
+            err,
+            json!({
+                "code": -32601,
+                "message": format!("method not found: tools/call: {name}"),
+            }),
+            "valid-thread rejection for `{name}` must be the shared -32601 object"
+        );
+    }
+
+    // Column 2 — missing threadId on DaemonTrust: identity fails BEFORE any
+    // route knowledge, so the error object is byte-identical whether or not
+    // the tool exists.
+    let mut missing_thread_errors = Vec::new();
+    for (idx, name) in names.iter().enumerate() {
+        missing_thread_errors
+            .push(call_expect_error(&mut rd, &mut wr, 20 + idx as i64, name, None).await);
+    }
+    for err in &missing_thread_errors[1..] {
+        assert_eq!(
+            err, &missing_thread_errors[0],
+            "missing-threadId error must be identical across tool existence"
+        );
+    }
+    assert_eq!(
+        missing_thread_errors[0]["code"], -32602,
+        "missing threadId is an identity (invalid params) failure: {missing_thread_errors:#?}"
+    );
+    assert!(
+        missing_thread_errors[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("requires _meta.threadId"),
+        "missing-threadId message names the identity requirement: {missing_thread_errors:#?}"
+    );
+
+    // Column 3 — unknown threadId: same uniformity; the error names the
+    // unresolved thread, never the (maybe-existing) tool.
+    let mut unknown_thread_errors = Vec::new();
+    for (idx, name) in names.iter().enumerate() {
+        unknown_thread_errors.push(
+            call_expect_error(
+                &mut rd,
+                &mut wr,
+                30 + idx as i64,
+                name,
+                Some("ghost-thread"),
+            )
+            .await,
+        );
+    }
+    for err in &unknown_thread_errors[1..] {
+        assert_eq!(
+            err, &unknown_thread_errors[0],
+            "unknown-threadId error must be identical across tool existence"
+        );
+    }
+    assert_eq!(
+        unknown_thread_errors[0]["code"], -32601,
+        "unknown threadId keeps its method-not-found shape: {unknown_thread_errors:#?}"
+    );
+    let unknown_thread_message = unknown_thread_errors[0]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        unknown_thread_message.contains("unknown thread_id: ghost-thread"),
+        "unknown-threadId message names the thread: {unknown_thread_errors:#?}"
+    );
+    assert!(
+        !unknown_thread_message.contains(EXPOSED_NAME),
+        "identity errors must never echo the requested tool: {unknown_thread_errors:#?}"
+    );
+
+    fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
+    fx.plugin_host
+        .stop(COLLIDING_PLUGIN_ID)
+        .await
+        .expect("stop prefix-colliding plugin");
+    fx.plugin_host
+        .stop(&fx.trusted_plugin_id)
+        .await
+        .expect("stop trusted workflow plugin");
+}
+
+/// `tools/call` that must fail: returns the complete `error` object.
+/// `thread_id: None` sends an empty `_meta` (no threadId key).
+async fn call_expect_error(
+    rd: &mut tokio::io::BufReader<tokio::net::unix::OwnedReadHalf>,
+    wr: &mut tokio::net::unix::OwnedWriteHalf,
+    id: i64,
+    name: &str,
+    thread_id: Option<&str>,
+) -> Value {
+    let mut meta = serde_json::Map::new();
+    if let Some(tid) = thread_id {
+        meta.insert("threadId".into(), json!(tid));
+    }
+    send_frame(
+        wr,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": name,
+                "arguments": {},
+                "_meta": Value::Object(meta),
+            }
+        }),
+    )
+    .await;
+    let resp = recv_frame(rd).await;
+    resp.get("error")
+        .cloned()
+        .unwrap_or_else(|| panic!("expected an error for `{name}`, got: {resp:#?}"))
+}
+
 fn tool_names_from_response(resp: &Value) -> Vec<String> {
     let mut names = resp["result"]["tools"]
         .as_array()
@@ -484,7 +638,7 @@ async fn boot_fixture() -> Fixture {
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         build_default_registry(),
-        None,
+        Some(calm_server::mcp_server::auth::hash_token(DAEMON_TOKEN)),
         plugin_host_cell,
         Arc::new(OnceCell::new()),
         std::env::temp_dir().join("neige-test-gate-logs"),

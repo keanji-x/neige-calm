@@ -142,6 +142,51 @@ struct RunningPlugin {
 }
 
 // ---------------------------------------------------------------------------
+// Process table (live processes + spawn admission reservations)
+// ---------------------------------------------------------------------------
+
+/// Everything `PluginHost` knows about plugin runtime state, guarded by ONE
+/// mutex so admission decisions are atomic.
+///
+/// #891 review fix (spawn TOCTOU): the workflow-uniqueness check and the
+/// "already running" check used to read a Running-only snapshot with no lock
+/// held across the spawn, while the `live` insert happened only after process
+/// exec + MCP handshake. Two concurrent spawns of trusted plugins declaring
+/// the same workflow id could both pass, yielding duplicate running owners
+/// and a nondeterministic `plugin_scope_for_wave` winner. Concurrent callers
+/// are real: HTTP enable/reload routes plus the crash-supervisor respawn.
+///
+/// `spawning` is the admission set: an id is inserted here — under the same
+/// lock where the conflict check reads state — the moment its spawn is
+/// admitted, and counts as a workflow-id holder for every later admission
+/// until it is either swapped for a `live` entry (success, same lock) or
+/// released (any failure between admission and the swap). The existing
+/// [`PluginRuntimeStatus::Spawning`] state is reused to report reserved ids
+/// via `status`/`list_running`, so no new status vocabulary is introduced.
+#[derive(Default)]
+struct ProcessTable {
+    live: HashMap<String, RunningPlugin>,
+    spawning: BTreeSet<String>,
+}
+
+impl ProcessTable {
+    /// Ids that hold their manifests' workflow ids for admission purposes:
+    /// live plugins that are actually `Running`, plus admission-reserved
+    /// (`Spawning`) ids. Crashed/stopping entries do not squat on ids —
+    /// same policy as [`PluginHost::running_plugin_ids`].
+    fn workflow_holder_ids(&self) -> BTreeSet<String> {
+        let mut ids: BTreeSet<String> = self
+            .live
+            .iter()
+            .filter(|(_, rp)| matches!(rp.status, PluginRuntimeStatus::Running))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.extend(self.spawning.iter().cloned());
+        ids
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PluginHost
 // ---------------------------------------------------------------------------
 
@@ -179,7 +224,7 @@ pub struct PluginHost {
     events_arc: Arc<EventBus>,
     /// #480 PR2 — write-surface caches shared with REST/worker paths.
     write: WriteContext,
-    processes: Mutex<HashMap<String, RunningPlugin>>,
+    processes: Mutex<ProcessTable>,
 }
 
 #[allow(deprecated)]
@@ -210,7 +255,7 @@ impl PluginHost {
             events: Some(events),
             events_arc,
             write,
-            processes: Mutex::new(HashMap::new()),
+            processes: Mutex::new(ProcessTable::default()),
         }
     }
 
@@ -288,21 +333,6 @@ impl PluginHost {
             return Err(HostError::Disabled(id.to_string()));
         }
 
-        // Already running?
-        {
-            let map = self.processes.lock().await;
-            if let Some(rp) = map.get(id) {
-                // Crashed→spawn is the recovery path; the supervisor cleared
-                // its handle, so we treat that as "go ahead".
-                if matches!(
-                    rp.status,
-                    PluginRuntimeStatus::Running | PluginRuntimeStatus::Spawning
-                ) {
-                    return Err(HostError::AlreadyRunning(id.to_string()));
-                }
-            }
-        }
-
         let manifest = self
             .registry
             .get(id)
@@ -334,29 +364,84 @@ impl PluginHost {
             return Err(HostError::KernelTooOld(err));
         }
 
-        // #891 slice ④ — registration-time workflow-id uniqueness: refuse to
-        // spawn a trusted plugin whose workflow id another RUNNING trusted
-        // plugin already registers. Uniqueness is enforced over the same
-        // "running ∧ trusted" set every workflow resolver filters on
+        // #891 slice ④ (+ review fix) — atomic admission. Under ONE lock on
+        // the process table we (a) refuse a spawn that's already running or
+        // already admitted, (b) run the registration-time workflow-id
+        // uniqueness check against running ∧ admitted holders, and (c) on
+        // success reserve the id in the admission set. This closes the
+        // check-to-insert TOCTOU: a concurrent spawn (HTTP enable/reload,
+        // crash-supervisor respawn) observes either our reservation or our
+        // live entry, never the in-between. Uniqueness is enforced over the
+        // same "running ∧ trusted" set every workflow resolver filters on
         // (`resolve_trusted_workflow`, `bound_workflow`, the MCP per-wave
-        // tool scope), so a stopped plugin never squats on a workflow id.
-        // Ordered before the token mint below so a refusal — like the
-        // min-kernel check above — has zero side effects; the autospawn
+        // tool scope) — plus admission reservations — so a stopped plugin
+        // never squats on a workflow id but a mid-spawn one already holds it.
+        // Ordered before the token mint so a refusal — like the min-kernel
+        // check above — has zero side effects on plugin state; the autospawn
         // loop's per-plugin tolerance logs and moves on.
-        if let Some(conflict) = find_workflow_conflict(
-            &manifest,
-            self.registry.list(),
-            &self.running_plugin_ids().await,
-            &trusted_forge_plugin,
-        ) {
+        let conflict = {
+            let mut table = self.processes.lock().await;
+            if table.spawning.contains(id) {
+                return Err(HostError::AlreadyRunning(id.to_string()));
+            }
+            if let Some(rp) = table.live.get(id)
+                && matches!(
+                    rp.status,
+                    PluginRuntimeStatus::Running | PluginRuntimeStatus::Spawning
+                )
+            {
+                // Crashed→spawn is the recovery path; the supervisor cleared
+                // its handle, so we treat that as "go ahead".
+                return Err(HostError::AlreadyRunning(id.to_string()));
+            }
+            match find_workflow_conflict(
+                &manifest,
+                self.registry.list(),
+                &table.workflow_holder_ids(),
+                &trusted_forge_plugin,
+            ) {
+                Some(conflict) => Some(conflict),
+                None => {
+                    table.spawning.insert(id.to_string());
+                    None
+                }
+            }
+        };
+        if let Some(conflict) = conflict {
             tracing::warn!(
                 plugin_id = %id,
                 error = %conflict,
                 "refusing to spawn plugin with a conflicting workflow id"
             );
+            // #891 review fix (design §4.4 "该插件进 Failed"): surface the
+            // refusal as a failed `PluginState` event so operators see WHY
+            // the plugin isn't running instead of it silently looking
+            // stopped. Boot-loop tolerance is unchanged: autospawn logs and
+            // continues; the enable route maps this to a structured 409.
+            self.emit_crashed(id, &conflict.to_string()).await;
             return Err(conflict);
         }
 
+        // Reservation held from here on: every failure in `spawn_admitted`
+        // must release it, success swaps it for the live entry atomically.
+        let result = self.spawn_admitted(id, &manifest).await;
+        if result.is_err() {
+            self.processes.lock().await.spawning.remove(id);
+        }
+        result
+    }
+
+    /// Everything downstream of a successful admission reservation: token
+    /// mint, process exec, MCP handshake, router + supervisor wiring, and
+    /// the final swap of the reservation for the live `Running` entry (one
+    /// lock). Split out of [`PluginHost::spawn`] so its single call site can
+    /// release the admission reservation on EVERY failure path with one
+    /// `is_err()` check instead of per-`return` bookkeeping.
+    async fn spawn_admitted(
+        self: &Arc<Self>,
+        id: &str,
+        manifest: &Manifest,
+    ) -> Result<(), HostError> {
         let install_path = self
             .registry
             .install_path(id)
@@ -374,9 +459,9 @@ impl PluginHost {
         self.emit_state(id, &PluginRuntimeStatus::Spawning).await;
 
         // Spawn the process. On failure we propagate without touching the
-        // processes map.
+        // live map (the caller releases the admission reservation).
         let process = Arc::new(
-            PluginProcess::spawn(&manifest, &install_path, &self.plugins_data_dir, &token)
+            PluginProcess::spawn(manifest, &install_path, &self.plugins_data_dir, &token)
                 .map_err(HostError::from)?,
         );
 
@@ -400,9 +485,10 @@ impl PluginHost {
                 // kill_on_drop-flagged so dropping `process` SIGKILLs it.
                 if matches!(&e, McpError::Framing(m) if m == "auth mismatch") {
                     let reason = "auth handshake failed";
-                    // Drop any stale processes-map entry so list_running /
-                    // status don't report a stale Running state.
-                    let _ = self.processes.lock().await.remove(id);
+                    // Drop any stale live entry so list_running / status
+                    // don't report a stale Running state. (The admission
+                    // reservation is released by `spawn` on this Err.)
+                    let _ = self.processes.lock().await.live.remove(id);
                     self.emit_crashed(id, reason).await;
                     return Err(HostError::AuthMismatch(id.to_string()));
                 }
@@ -462,17 +548,20 @@ impl PluginHost {
             })
         };
 
-        // Park the running record. We preserve any pre-existing crash-window
-        // counters (carried by `Crashed → Spawning` recovery paths) so the
-        // crash-loop disable threshold counts the actual rate, not just the
-        // restarts within one spawn lifetime.
+        // Park the running record, atomically swapping the admission
+        // reservation for the live entry so no interleaving ever sees
+        // "neither reserved nor running". We preserve any pre-existing
+        // crash-window counters (carried by `Crashed → Spawning` recovery
+        // paths) so the crash-loop disable threshold counts the actual rate,
+        // not just the restarts within one spawn lifetime.
         {
-            let mut map = self.processes.lock().await;
-            let (crashes_in_window, window_started) = match map.get(id) {
+            let mut table = self.processes.lock().await;
+            let (crashes_in_window, window_started) = match table.live.get(id) {
                 Some(prev) => (prev.crashes_in_window, prev.window_started),
                 None => (0, Instant::now()),
             };
-            map.insert(
+            table.spawning.remove(id);
+            table.live.insert(
                 id.to_string(),
                 RunningPlugin {
                     process: process.clone(),
@@ -498,8 +587,9 @@ impl PluginHost {
     /// won't respawn, sends SIGTERM via PluginProcess::stop, awaits exit.
     pub async fn stop(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
         let (process, supervisor, subs) = {
-            let mut map = self.processes.lock().await;
-            let rp = map
+            let mut table = self.processes.lock().await;
+            let rp = table
+                .live
                 .get_mut(id)
                 .ok_or_else(|| HostError::NotFound(id.to_string()))?;
             if rp.stopping {
@@ -541,8 +631,8 @@ impl PluginHost {
         }
 
         {
-            let mut map = self.processes.lock().await;
-            map.remove(id);
+            let mut table = self.processes.lock().await;
+            table.live.remove(id);
         }
 
         self.emit_state(id, &PluginRuntimeStatus::Disabled).await;
@@ -560,10 +650,18 @@ impl PluginHost {
         self.spawn(id).await
     }
 
-    /// Snapshot current status for one plugin.
+    /// Snapshot current status for one plugin. An admission-reserved id
+    /// (mid-spawn, no live entry yet) reports as `Spawning` with no pid.
     pub async fn status(&self, id: &str) -> Option<PluginHostStatus> {
-        let map = self.processes.lock().await;
-        map.get(id).map(|rp| PluginHostStatus {
+        let table = self.processes.lock().await;
+        if table.spawning.contains(id) {
+            return Some(PluginHostStatus {
+                id: id.to_string(),
+                status: PluginRuntimeStatus::Spawning,
+                pid: None,
+            });
+        }
+        table.live.get(id).map(|rp| PluginHostStatus {
             id: id.to_string(),
             status: rp.status.clone(),
             pid: rp.process.pid(),
@@ -571,22 +669,41 @@ impl PluginHost {
     }
 
     /// Snapshot the full table — used by the REST `GET /api/plugins` handler
-    /// once Slice D wires it.
+    /// once Slice D wires it. Admission-reserved ids report as `Spawning`
+    /// (they shadow any stale crashed live entry, matching `status`).
     pub async fn list_running(&self) -> Vec<PluginHostStatus> {
-        let map = self.processes.lock().await;
-        map.iter()
-            .map(|(id, rp)| PluginHostStatus {
+        let table = self.processes.lock().await;
+        let mut out: Vec<PluginHostStatus> = table
+            .spawning
+            .iter()
+            .map(|id| PluginHostStatus {
                 id: id.clone(),
-                status: rp.status.clone(),
-                pid: rp.process.pid(),
+                status: PluginRuntimeStatus::Spawning,
+                pid: None,
             })
-            .collect()
+            .collect();
+        out.extend(
+            table
+                .live
+                .iter()
+                .filter(|(id, _)| !table.spawning.contains(*id))
+                .map(|(id, rp)| PluginHostStatus {
+                    id: id.clone(),
+                    status: rp.status.clone(),
+                    pid: rp.process.pid(),
+                }),
+        );
+        out
     }
 
-    /// Snapshot ids that are currently running.
+    /// Snapshot ids that are currently running. Admission-reserved
+    /// (`Spawning`) ids are deliberately NOT included: tool visibility and
+    /// dispatch must not expose a plugin before its handshake completed.
     pub async fn running_plugin_ids(&self) -> BTreeSet<String> {
-        let map = self.processes.lock().await;
-        map.iter()
+        let table = self.processes.lock().await;
+        table
+            .live
+            .iter()
             .filter(|(_, rp)| matches!(rp.status, PluginRuntimeStatus::Running))
             .map(|(id, _)| id.clone())
             .collect()
@@ -595,15 +712,17 @@ impl PluginHost {
     /// Most-recent stderr lines, oldest → newest. `n` clamps to the ring
     /// capacity inside `PluginProcess`.
     pub async fn stderr_tail(&self, id: &str, n: usize) -> Option<Vec<String>> {
-        let map = self.processes.lock().await;
-        map.get(id).map(|rp| rp.process.stderr_tail(n))
+        let table = self.processes.lock().await;
+        table.live.get(id).map(|rp| rp.process.stderr_tail(n))
     }
 
     /// Borrow the live MCP client. Slice C calls this to issue `tools/list`
     /// or to drive other outbound RPC.
     pub async fn mcp_client(&self, id: &str) -> Option<Arc<McpClient>> {
-        let map = self.processes.lock().await;
-        map.get(id)
+        let table = self.processes.lock().await;
+        table
+            .live
+            .get(id)
             .filter(|rp| matches!(rp.status, PluginRuntimeStatus::Running))
             .map(|rp| Arc::clone(&rp.mcp))
     }
@@ -634,8 +753,9 @@ impl PluginHost {
         call_id: Option<&str>,
     ) -> Result<serde_json::Value, RpcError> {
         let (mcp, subscriptions) = {
-            let map = self.processes.lock().await;
-            let rp = map
+            let table = self.processes.lock().await;
+            let rp = table
+                .live
                 .get(plugin_id)
                 .ok_or_else(|| RpcError::custom(-32002, "plugin not running"))?;
             if !matches!(rp.status, PluginRuntimeStatus::Running) {
@@ -717,8 +837,8 @@ impl PluginHost {
         let exit_result = child.wait().await;
         // Was this a graceful stop? Look at the map; if `stopping=true`, yes.
         let stopping = {
-            let map = self.processes.lock().await;
-            map.get(&id).map(|rp| rp.stopping).unwrap_or(true)
+            let table = self.processes.lock().await;
+            table.live.get(&id).map(|rp| rp.stopping).unwrap_or(true)
         };
 
         if stopping {
@@ -734,8 +854,10 @@ impl PluginHost {
 
         // Snapshot stderr tail so the crash event carries useful detail.
         let tail = {
-            let map = self.processes.lock().await;
-            map.get(&id)
+            let table = self.processes.lock().await;
+            table
+                .live
+                .get(&id)
                 .map(|rp| rp.process.stderr_tail(10).join("\n"))
                 .unwrap_or_default()
         };
@@ -747,8 +869,8 @@ impl PluginHost {
 
         // Crash-window bookkeeping.
         let (attempts, exceeded) = {
-            let mut map = self.processes.lock().await;
-            let entry = match map.get_mut(&id) {
+            let mut table = self.processes.lock().await;
+            let entry = match table.live.get_mut(&id) {
                 Some(e) => e,
                 None => {
                     // Was removed by `stop()` — nothing to do.
@@ -781,8 +903,8 @@ impl PluginHost {
             // supervisor task ends here; an explicit `spawn(id)` revives.
             // We do, however, remove the process arc so its file descriptors
             // (already-closed pipes mostly) get reaped.
-            let mut map = self.processes.lock().await;
-            if let Some(rp) = map.get_mut(&id) {
+            let mut table = self.processes.lock().await;
+            if let Some(rp) = table.live.get_mut(&id) {
                 rp.supervisor = None;
             }
             return;
@@ -805,8 +927,8 @@ impl PluginHost {
         // Drop the old entry's process/mcp before respawning so the channels
         // close before we open new ones.
         {
-            let mut map = self.processes.lock().await;
-            map.remove(&id);
+            let mut table = self.processes.lock().await;
+            table.live.remove(&id);
         }
         if let Err(e) = self.spawn(&id).await {
             tracing::error!(plugin_id = %id, error = %e, "respawn failed");
@@ -822,15 +944,18 @@ impl PluginHost {
 
 /// #891 slice ④ — pure core of the registration-time workflow-id uniqueness
 /// check `PluginHost::spawn` runs. Returns the [`HostError::WorkflowConflict`]
-/// for the first workflow id of `manifest` that another **running trusted**
+/// for the first workflow id of `manifest` that another **holding trusted**
 /// candidate manifest already declares; `None` when the spawn may proceed.
 ///
 /// Rules (design §4.4):
 /// * only fires when the spawning plugin itself is trusted — untrusted
 ///   plugins never enter the workflow resolution set, so their (unreachable)
 ///   duplicate ids are tolerated;
-/// * only running ∧ trusted candidates count — a stopped plugin does not
-///   hold its workflow ids;
+/// * only holding ∧ trusted candidates count — `holder_ids` is the caller's
+///   atomic snapshot of running plugins PLUS admission-reserved (`Spawning`)
+///   ids ([`ProcessTable::workflow_holder_ids`]), so a stopped plugin does
+///   not squat on its workflow ids but a concurrent mid-spawn one already
+///   holds them (#891 review fix — anti-TOCTOU);
 /// * the spawning plugin's own registry entry is skipped (respawn path).
 ///
 /// The trust predicate is injected because the trusted set is
@@ -839,14 +964,14 @@ impl PluginHost {
 fn find_workflow_conflict(
     manifest: &Manifest,
     candidates: impl IntoIterator<Item = Manifest>,
-    running_ids: &BTreeSet<String>,
+    holder_ids: &BTreeSet<String>,
     is_trusted: &dyn Fn(&str) -> bool,
 ) -> Option<HostError> {
     if !is_trusted(&manifest.id) {
         return None;
     }
     for other in candidates {
-        if other.id == manifest.id || !running_ids.contains(&other.id) || !is_trusted(&other.id) {
+        if other.id == manifest.id || !holder_ids.contains(&other.id) || !is_trusted(&other.id) {
             continue;
         }
         for workflow in &manifest.workflows {

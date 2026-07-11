@@ -3737,6 +3737,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Workflow id already registered by a running trusted plugin */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Manifest min_kernel_version exceeds kernel version */
             422: {
                 headers: {
@@ -3832,6 +3841,15 @@ export interface operations {
             };
             /** @description Plugin not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workflow id already registered by a running trusted plugin */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
