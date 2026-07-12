@@ -71,7 +71,7 @@ impl RepoRead for SqlxRepo {
     // -------------------------------------------------------- cove_folders
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
+            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
                FROM cove_folders WHERE cove_id = ?1 ORDER BY path ASC"#,
         )
         .bind(cove_id)
@@ -82,7 +82,7 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
+            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
                FROM cove_folders ORDER BY path ASC"#,
         )
         .fetch_all(&self.pool)
@@ -92,7 +92,7 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
         let row = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
+            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
                FROM cove_folders WHERE id = ?1"#,
         )
         .bind(id)
@@ -104,7 +104,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -115,7 +115,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -138,7 +138,7 @@ impl RepoRead for SqlxRepo {
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
         let mut sql = String::from(
-            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, \
+            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, \
              terminal_at, created_at, updated_at FROM waves",
         );
         let mut where_clauses: Vec<&str> = Vec::new();
@@ -183,7 +183,7 @@ impl RepoRead for SqlxRepo {
         // invariant test).
         let mut tx = self.pool.begin().await?;
         let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)

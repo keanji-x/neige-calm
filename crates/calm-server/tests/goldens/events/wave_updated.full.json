@@ -12,6 +12,7 @@
       "lifecycle": "working",
       "cwd": "/tmp/golden-wave",
       "workflow_id": null,
+      "purpose": null,
       "workflow_input": null,
       "terminal_at": 333,
       "created_at": 1000,

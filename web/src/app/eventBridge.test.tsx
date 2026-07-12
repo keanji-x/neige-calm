@@ -339,6 +339,7 @@ describe('EventBridge', () => {
         // future calendar/terminal-stamp subscribers will read them.
         cwd: '',
         workflow_id: null,
+        purpose: null,
         workflow_input: null,
         terminal_at: null,
         pinned_at: null,

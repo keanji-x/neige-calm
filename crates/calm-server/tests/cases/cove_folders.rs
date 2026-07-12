@@ -27,6 +27,7 @@
 #![cfg(unix)]
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -174,11 +175,62 @@ async fn post_then_get_returns_the_folder() {
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert_eq!(body["path"].as_str().unwrap(), "/a");
     assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
+    assert!(body["repo_identity"].is_null());
+    assert!(body["repo_identity_probed_at"].is_number());
 
     let (status, body) = get(b.app.clone(), &format!("/api/coves/{}/folders", b.cove_id)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["path"].as_str().unwrap(), "/a");
+    assert!(body[0]["repo_identity"].is_null());
+    assert!(body[0]["repo_identity_probed_at"].is_number());
+}
+
+#[tokio::test]
+async fn git_identity_commits_with_folder_and_round_trips() {
+    let b = boot().await;
+    let folder_path = b._tmp.path().join("repo");
+    std::fs::create_dir(&folder_path).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&folder_path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["-C"])
+            .arg(&folder_path)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://user:secret@github.com/Owner/Repo.git",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let uri = format!("/api/coves/{}/folders", b.cove_id);
+    let (status, created) = post(
+        b.app.clone(),
+        &uri,
+        json!({"path": folder_path.to_str().unwrap()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+    assert_eq!(created["repo_identity"], "Owner/Repo");
+    assert!(!created.to_string().contains("secret"));
+
+    let (_, listed) = get(b.app.clone(), &uri).await;
+    assert_eq!(listed[0]["repo_identity"], "Owner/Repo");
+    assert_eq!(
+        listed[0]["repo_identity_probed_at"],
+        created["repo_identity_probed_at"]
+    );
 }
 
 // (2) ---------------------------------------------------------------

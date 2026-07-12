@@ -13,6 +13,7 @@ pub mod event_bus;
 pub mod events_prune;
 pub mod mcp_auth;
 pub mod model;
+pub mod repo_identity;
 pub mod role_gate;
 pub mod session_projection_lookup;
 pub mod session_projection_repo;

@@ -579,6 +579,9 @@ impl RepoOutOfDomain for SqlxRepo {
 
     // ----------------------------------------------------- cove_folders
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder> {
+        // Probe before the INSERT acquires SQLite's writer lock.
+        let repo_identity = crate::repo_identity::probe_repo_identity(std::path::Path::new(path));
+        let probed_at = now_ms();
         // Parent cove must exist; surface as NotFound to mirror the
         // terminal_create precedent above (FK error message would be
         // less actionable for the REST caller).
@@ -596,9 +599,11 @@ impl RepoOutOfDomain for SqlxRepo {
         // UNIQUE is a race (concurrent claim of the same path). Bubble
         // it up as the generic Conflict so the surface is honest.
         let res =
-            sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
+            sqlx::query("INSERT INTO cove_folders (cove_id, path, repo_identity, repo_identity_probed_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
                 .bind(cove_id)
                 .bind(path)
+                .bind(repo_identity.as_deref())
+                .bind(probed_at)
                 .bind(now)
                 .execute(&self.pool)
                 .await;
@@ -607,6 +612,8 @@ impl RepoOutOfDomain for SqlxRepo {
                 id: out.last_insert_rowid(),
                 cove_id: cove_id.to_string().into(),
                 path: path.to_string(),
+                repo_identity,
+                repo_identity_probed_at: Some(probed_at),
                 created_at: now,
             }),
             Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
@@ -614,6 +621,30 @@ impl RepoOutOfDomain for SqlxRepo {
             ),
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn cove_folder_refresh_repo_identity(&self, id: i64) -> Result<CoveFolder> {
+        let folder = self
+            .cove_folder_get(id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("cove_folder {id}")))?;
+        // As above, all filesystem/git work completes before the write.
+        let identity =
+            crate::repo_identity::probe_repo_identity(std::path::Path::new(&folder.path));
+        let probed_at = now_ms();
+        sqlx::query(
+            "UPDATE cove_folders SET repo_identity = ?1, repo_identity_probed_at = ?2 WHERE id = ?3",
+        )
+        .bind(identity.as_deref())
+        .bind(probed_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(CoveFolder {
+            repo_identity: identity,
+            repo_identity_probed_at: Some(probed_at),
+            ..folder
+        })
     }
 
     async fn cove_folder_delete(&self, id: i64) -> Result<()> {

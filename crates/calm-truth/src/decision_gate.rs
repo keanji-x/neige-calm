@@ -429,6 +429,7 @@ mod tests {
             lifecycle: WaveLifecycle::Draft,
             cwd: String::new(),
             workflow_id: None,
+            purpose: None,
             workflow_input: None,
             terminal_at: None,
             created_at: 0,

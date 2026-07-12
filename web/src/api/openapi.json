@@ -2566,6 +2566,46 @@
         }
       }
     },
+    "/api/today/launchpad/ensure": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "ensure_today_launchpad",
+        "responses": {
+          "200": {
+            "description": "Existing live launchpad",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayLaunchpad"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Launchpad minted or adopted; harness start may still be dormant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayLaunchpad"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Launchpad exists but harness failed to start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/version": {
       "get": {
         "tags": [
@@ -3729,6 +3769,21 @@
           },
           "path": {
             "type": "string"
+          },
+          "repo_identity": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Normalized `owner/name` from the folder's Git origin, when resolvable."
+          },
+          "repo_identity_probed_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Unix epoch milliseconds of the most recent identity probe."
           }
         }
       },
@@ -5017,6 +5072,29 @@
           }
         }
       },
+      "TodayLaunchpad": {
+        "type": "object",
+        "required": [
+          "wave_id",
+          "spec_card_id",
+          "terminal_card_id",
+          "terminal_id"
+        ],
+        "properties": {
+          "spec_card_id": {
+            "type": "string"
+          },
+          "terminal_card_id": {
+            "type": "string"
+          },
+          "terminal_id": {
+            "type": "string"
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
       "ToolCallBody": {
         "type": "object",
         "description": "M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC\n`tools/call` params shape so the web-calm helper can hand it through\nverbatim from the iframe-side `app.callServerTool({ name, arguments })`.\n\nScope β: an optional `call_id` is threaded through to every event the\nkernel writes while servicing this call. Each downstream `events.row`\nrecords `correlation = \"user_tool_call:<call_id>\"` so multi-step\ndispatches (e.g. a plugin tool that issues several overlay writes) can\nbe grouped after the fact (design doc §9). The frontend mints the id;\nthe kernel never inspects its content beyond formatting it into the\ncorrelation string.",
@@ -5251,6 +5329,13 @@
               "null"
             ],
             "format": "int64"
+          },
+          "purpose": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Server-owned structural marker. Public wave creation cannot set this."
           },
           "sort": {
             "type": "number",

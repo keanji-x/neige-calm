@@ -661,6 +661,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/today/launchpad/ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["ensure_today_launchpad"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/version": {
         parameters: {
             query?: never;
@@ -1020,6 +1036,13 @@ export interface components {
             /** Format: int64 */
             id: number;
             path: string;
+            /** @description Normalized `owner/name` from the folder's Git origin, when resolvable. */
+            repo_identity?: string | null;
+            /**
+             * Format: int64
+             * @description Unix epoch milliseconds of the most recent identity probe.
+             */
+            repo_identity_probed_at?: number | null;
         };
         /**
          * @description Issue #175 — visibility / ownership gate persisted on each cove.
@@ -1672,6 +1695,12 @@ export interface components {
             thread_id: string;
             wave_id?: string | null;
         };
+        TodayLaunchpad: {
+            spec_card_id: string;
+            terminal_card_id: string;
+            terminal_id: string;
+            wave_id: string;
+        };
         /**
          * @description M5: AppBridge → kernel tool-call wire body. Mirrors the JSON-RPC
          *     `tools/call` params shape so the web-calm helper can hand it through
@@ -1827,6 +1856,8 @@ export interface components {
             lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: int64 */
             pinned_at?: number | null;
+            /** @description Server-owned structural marker. Public wave creation cannot set this. */
+            purpose?: string | null;
             /** Format: double */
             sort: number;
             /**
@@ -4137,6 +4168,44 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    ensure_today_launchpad: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing live launchpad */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayLaunchpad"];
+                };
+            };
+            /** @description Launchpad minted or adopted; harness start may still be dormant */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayLaunchpad"];
+                };
+            };
+            /** @description Launchpad exists but harness failed to start */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
