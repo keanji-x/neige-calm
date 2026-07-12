@@ -68,6 +68,7 @@ pub async fn card_create_with_id_tx(
     };
     let now = now_ms();
     let payload_text = serde_json::to_string(&p.payload)?;
+    let title = p.title.filter(|t| !t.trim().is_empty());
     // `role` lands in the `cards.role` column added by migration 0008
     // (PR3, #136). User-facing card creation now uniformly passes
     // `CardRole::Worker`; wave-create passes `CardRole::Spec`.
@@ -86,7 +87,7 @@ pub async fn card_create_with_id_tx(
     .bind(&p.kind)
     .bind(sort)
     .bind(&payload_text)
-    .bind(&p.title)
+    .bind(&title)
     .bind(role.as_db_str())
     .bind(deletable)
     .bind(now)
@@ -109,7 +110,7 @@ pub async fn card_create_with_id_tx(
         kind: p.kind,
         sort,
         payload: p.payload,
-        title: p.title,
+        title,
         runtime: None,
         deletable,
         created_at: now,
@@ -154,7 +155,7 @@ pub async fn card_update_tx(
         c.payload = v;
     }
     if let Some(v) = p.title {
-        c.title = Some(v);
+        c.title = Some(v).filter(|t| !t.trim().is_empty());
     }
     // Issue #229 PR A — `p.deletable` is intentionally ignored here.
     // The route handler in `routes/cards.rs::update_card` returns 400

@@ -696,6 +696,25 @@ mod tests {
             Some("Hello")
         );
 
+        let untitled = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                title: Some(String::new()),
+                kind: "plugin:test:view".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.card_get(untitled.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            None
+        );
+
         repo.card_update(
             card.id.as_str(),
             CardPatch {
@@ -714,6 +733,48 @@ mod tests {
                 .as_deref(),
             Some("Renamed")
         );
+
+        repo.card_update(card.id.as_str(), CardPatch::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.card_get(card.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Renamed")
+        );
+
+        for title in ["", "  "] {
+            repo.card_update(
+                card.id.as_str(),
+                CardPatch {
+                    title: Some(title.into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                repo.card_get(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .title,
+                None
+            );
+            repo.card_update(
+                card.id.as_str(),
+                CardPatch {
+                    title: Some("Restored".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
 
         let mut tx = repo.pool().begin().await.unwrap();
         let (composite, _) = card_with_terminal_create_tx(
