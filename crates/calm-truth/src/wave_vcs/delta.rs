@@ -301,7 +301,7 @@ async fn run_key_for_worker_card_tx(
     visibility: &CardVisibility,
 ) -> Result<Option<String>> {
     let row = sqlx::query(
-        r#"SELECT id,
+        r#"SELECT id, title,
                   json_extract(payload, '$.idempotency_key') AS idempotency_key,
                   EXISTS (
                     SELECT 1

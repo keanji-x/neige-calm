@@ -900,6 +900,7 @@ export interface components {
             runtime?: null | components["schemas"]["CardRuntimeView"];
             /** Format: double */
             sort: number;
+            title?: string | null;
             /** Format: int64 */
             updated_at: number;
             wave_id: string;
@@ -918,6 +919,7 @@ export interface components {
             payload?: Record<string, never> | null;
             /** Format: double */
             sort?: number | null;
+            title?: string | null;
         };
         /**
          * @description Wave-as-Actor PR3 (#136): authorization label persisted on each card.
@@ -1090,6 +1092,7 @@ export interface components {
             payload?: Record<string, never> | null;
             /** Format: double */
             sort?: number | null;
+            title?: string | null;
             via_tool_call?: null | components["schemas"]["ViaToolCall"];
         };
         DirEntry: {
@@ -1246,6 +1249,7 @@ export interface components {
             payload?: Record<string, never>;
             /** Format: double */
             sort?: number | null;
+            title?: string | null;
             /**
              * @description Defaulted so the REST handler can override from the `:wave_id` path
              *     param without forcing every client body to repeat it. Direct repo
@@ -1276,6 +1280,7 @@ export interface components {
              *     Claude's terminal color probes with colors matching the surrounding UI.
              */
             theme: components["schemas"]["RequestTheme"];
+            title?: string | null;
         };
         /**
          * @description Body for `POST /api/waves/:wave_id/codex-cards`.
@@ -1336,6 +1341,7 @@ export interface components {
              *     the host theme. A caller that omits this field gets 422.
              */
             theme: components["schemas"]["RequestTheme"];
+            title?: string | null;
         };
         NewCove: {
             color: string;
@@ -1389,6 +1395,7 @@ export interface components {
              *     `term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv.
              */
             theme: components["schemas"]["RequestTheme"];
+            title?: string | null;
         };
         NewWave: {
             /**

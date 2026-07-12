@@ -78,14 +78,15 @@ pub async fn card_create_with_id_tx(
     // transparently via its `Encode<Sqlite>` impl, so the bind is direct.
     sqlx::query(
         r#"INSERT INTO cards
-               (id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"#,
+               (id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"#,
     )
     .bind(&id)
     .bind(p.wave_id.as_str())
     .bind(&p.kind)
     .bind(sort)
     .bind(&payload_text)
+    .bind(&p.title)
     .bind(role.as_db_str())
     .bind(deletable)
     .bind(now)
@@ -108,6 +109,7 @@ pub async fn card_create_with_id_tx(
         kind: p.kind,
         sort,
         payload: p.payload,
+        title: p.title,
         runtime: None,
         deletable,
         created_at: now,
@@ -133,7 +135,7 @@ pub async fn card_update_tx(
     p: CardPatch,
 ) -> Result<Card> {
     let mut c = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
+        r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
            FROM cards WHERE id = ?1"#,
     )
     .bind(id)
@@ -151,6 +153,9 @@ pub async fn card_update_tx(
     if let Some(v) = p.payload {
         c.payload = v;
     }
+    if let Some(v) = p.title {
+        c.title = Some(v);
+    }
     // Issue #229 PR A — `p.deletable` is intentionally ignored here.
     // The route handler in `routes/cards.rs::update_card` returns 400
     // when a client sends the field; the field exists on `CardPatch`
@@ -161,12 +166,13 @@ pub async fn card_update_tx(
     let payload_text = serde_json::to_string(&c.payload)?;
 
     sqlx::query(
-        r#"UPDATE cards SET kind = ?1, sort = ?2, payload = ?3, updated_at = ?4
-           WHERE id = ?5"#,
+        r#"UPDATE cards SET kind = ?1, sort = ?2, payload = ?3, title = ?4, updated_at = ?5
+           WHERE id = ?6"#,
     )
     .bind(&c.kind)
     .bind(c.sort)
     .bind(&payload_text)
+    .bind(&c.title)
     .bind(c.updated_at)
     .bind(c.id.as_str())
     .execute(&mut **tx)

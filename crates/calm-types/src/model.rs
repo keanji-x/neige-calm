@@ -492,6 +492,9 @@ pub struct Card {
     pub payload: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub runtime: Option<CardRuntimeView>,
     /// Issue #229 PR A — system-card guard. `true` for user-facing cards
     /// (the default; all pre-#229 rows backfill via the column DEFAULT in

@@ -306,6 +306,7 @@ pub(crate) async fn persist_report_with_shadow(
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
                 let patch = CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(payload_value),

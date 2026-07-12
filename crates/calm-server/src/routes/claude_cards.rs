@@ -45,6 +45,8 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewClaudeCardBody {
+    #[serde(default)]
+    pub title: Option<String>,
     /// Sort order within the wave. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
@@ -150,6 +152,7 @@ pub(crate) fn normalize_claude_create_request(
 ) -> Result<NormalizedClaudeCreateRequest> {
     normalize_claude_create_request_payload(ClaudeCreateRequestInput {
         wave_id,
+        title: body.title,
         sort: body.sort,
         cwd: body.cwd,
         prompt: body.prompt,

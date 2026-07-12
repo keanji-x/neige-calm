@@ -45,7 +45,7 @@ kind: string, sort: number,
  * `serde-json-impl` feature, but we pin it explicitly so a future
  * feature-flag change can't silently widen / narrow the surface.
  */
-payload: unknown, runtime?: CardRuntimeView, 
+payload: unknown, title?: string, runtime?: CardRuntimeView,
 /**
  * Issue #229 PR A — system-card guard. `true` for user-facing cards
  * (the default; all pre-#229 rows backfill via the column DEFAULT in

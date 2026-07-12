@@ -2903,6 +2903,7 @@ mod scope_tests {
             kind: "terminal".into(),
             sort: 1.0,
             payload: serde_json::json!({}),
+            title: None,
             runtime: None,
             deletable: true,
             created_at: 0,

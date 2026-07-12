@@ -388,6 +388,8 @@ struct CardCreateParams {
     payload: Value,
     #[serde(default)]
     sort: Option<f64>,
+    #[serde(default)]
+    title: Option<String>,
 }
 
 #[allow(deprecated)]
@@ -415,6 +417,7 @@ async fn card_create(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
         kind: p.kind,
         sort: p.sort,
         payload,
+        title: p.title,
     };
     let actor = ctx.actor();
     let correlation = ctx.correlation();
@@ -472,6 +475,8 @@ struct CardUpdateParams {
     sort: Option<f64>,
     #[serde(default)]
     payload: Option<Value>,
+    #[serde(default)]
+    title: Option<String>,
 }
 
 async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
@@ -507,6 +512,7 @@ async fn card_update(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcE
             .map_err(|e| RpcError::invalid_params(e.to_string()))?;
     }
     let patch = CardPatch {
+        title: p.title,
         kind: p.kind,
         sort: p.sort,
         payload: p.payload,

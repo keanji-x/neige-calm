@@ -638,6 +638,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         tx,
                         &card_id,
                         CardPatch {
+                            title: None,
                             kind: None,
                             sort: None,
                             payload: Some(card_payload),
@@ -927,6 +928,7 @@ async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> 
                 tx,
                 &card_id,
                 CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(payload),

@@ -51,6 +51,8 @@ pub fn router() -> Router<AppState> {
 /// as additional vars on top of `TERM` / `COLORTERM` / inherited.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewTerminalCardBody {
+    #[serde(default)]
+    pub title: Option<String>,
     /// Sort order within the wave. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
@@ -94,6 +96,7 @@ pub(crate) async fn create_terminal_card(
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_terminal_create_request(TerminalCreateRequestPayload {
         wave_id,
+        title: p.title,
         sort: p.sort,
         program: p.program,
         cwd: p.cwd,
