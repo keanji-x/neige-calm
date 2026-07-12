@@ -58,6 +58,8 @@ pub struct CoveFolderRow {
     #[sqlx(try_from = "String")]
     pub cove_id: CoveId,
     pub path: String,
+    pub repo_identity: Option<String>,
+    pub repo_identity_probed_at: Option<i64>,
     pub created_at: i64,
 }
 
@@ -67,6 +69,8 @@ impl From<CoveFolderRow> for CoveFolder {
             id: r.id,
             cove_id: r.cove_id,
             path: r.path,
+            repo_identity: r.repo_identity,
+            repo_identity_probed_at: r.repo_identity_probed_at,
             created_at: r.created_at,
         }
     }

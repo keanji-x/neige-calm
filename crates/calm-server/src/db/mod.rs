@@ -665,6 +665,7 @@ pub trait ServerRepoOutOfDomainExt: ServerRepoReadExt {
     async fn settings_upsert(&self, key: &str, value: &str) -> Result<()>;
     async fn settings_delete(&self, key: &str) -> Result<()>;
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
+    async fn cove_folder_refresh_repo_identity(&self, id: i64) -> Result<CoveFolder>;
     async fn cove_folder_delete(&self, id: i64) -> Result<()>;
 }
 
@@ -817,6 +818,11 @@ where
     }
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder> {
         calm_truth::db::RepoOutOfDomain::cove_folder_create(self, cove_id, path)
+            .await
+            .map_err(Into::into)
+    }
+    async fn cove_folder_refresh_repo_identity(&self, id: i64) -> Result<CoveFolder> {
+        calm_truth::db::RepoOutOfDomain::cove_folder_refresh_repo_identity(self, id)
             .await
             .map_err(Into::into)
     }

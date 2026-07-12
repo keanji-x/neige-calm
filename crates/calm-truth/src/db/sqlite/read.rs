@@ -71,7 +71,7 @@ impl RepoRead for SqlxRepo {
     // -------------------------------------------------------- cove_folders
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
+            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
                FROM cove_folders WHERE cove_id = ?1 ORDER BY path ASC"#,
         )
         .bind(cove_id)
@@ -82,7 +82,7 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
+            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
                FROM cove_folders ORDER BY path ASC"#,
         )
         .fetch_all(&self.pool)
@@ -92,7 +92,7 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
         let row = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, created_at
+            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
                FROM cove_folders WHERE id = ?1"#,
         )
         .bind(id)

@@ -200,6 +200,8 @@ pub async fn cove_folder_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     cove_id: &str,
     path: &str,
+    repo_identity: Option<&str>,
+    repo_identity_probed_at: i64,
 ) -> Result<CoveFolder> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
         .bind(cove_id)
@@ -210,9 +212,11 @@ pub async fn cove_folder_create_tx(
     }
     let now = now_ms();
     let res =
-        sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
+        sqlx::query("INSERT INTO cove_folders (cove_id, path, repo_identity, repo_identity_probed_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
             .bind(cove_id)
             .bind(path)
+            .bind(repo_identity)
+            .bind(repo_identity_probed_at)
             .bind(now)
             .execute(&mut **tx)
             .await;
@@ -221,6 +225,8 @@ pub async fn cove_folder_create_tx(
             id: out.last_insert_rowid(),
             cove_id: cove_id.to_string().into(),
             path: path.to_string(),
+            repo_identity: repo_identity.map(str::to_owned),
+            repo_identity_probed_at: Some(repo_identity_probed_at),
             created_at: now,
         }),
         Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
@@ -237,7 +243,7 @@ pub async fn cove_folder_create_tx(
 /// path against per-connection isolation surprises.
 pub async fn cove_folders_list_all_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<Vec<CoveFolder>> {
     let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-        r#"SELECT id, cove_id, path, created_at
+        r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
            FROM cove_folders ORDER BY path ASC"#,
     )
     .fetch_all(&mut **tx)

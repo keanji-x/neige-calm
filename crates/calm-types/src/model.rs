@@ -210,6 +210,10 @@ pub struct CoveFolder {
     #[schema(value_type = String)]
     pub cove_id: CoveId,
     pub path: String,
+    /// Normalized `owner/name` from the folder's Git origin, when resolvable.
+    pub repo_identity: Option<String>,
+    /// Unix epoch milliseconds of the most recent identity probe.
+    pub repo_identity_probed_at: Option<i64>,
     pub created_at: i64,
 }
 

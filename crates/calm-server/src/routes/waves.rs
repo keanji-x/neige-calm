@@ -466,7 +466,31 @@ pub(crate) async fn create_wave(
         }
     }
 
-    create_wave_with_spec_harness(s, actor, p, attach_folder, body_cove_id, normalized_cwd).await
+    // Git probing must finish before `write_with_events_typed` opens its
+    // SQLite write transaction. The resolved value then commits with the
+    // folder and wave rows.
+    let repo_identity = attach_folder
+        .then(|| {
+            calm_truth::repo_identity::probe_repo_identity(std::path::Path::new(&normalized_cwd))
+        })
+        .flatten();
+    let repo_identity_probed_at = attach_folder.then(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64
+    });
+    create_wave_with_spec_harness(
+        s,
+        actor,
+        p,
+        attach_folder,
+        body_cove_id,
+        normalized_cwd,
+        repo_identity,
+        repo_identity_probed_at,
+    )
+    .await
 }
 
 /// Resolve `workflow_id` to its descriptor iff a running **trusted** plugin
@@ -538,6 +562,8 @@ async fn create_wave_with_spec_harness(
     attach_folder: bool,
     body_cove_id: String,
     normalized_cwd: String,
+    repo_identity: Option<String>,
+    repo_identity_probed_at: Option<i64>,
 ) -> Result<Response> {
     let spec_card_id = new_id();
     let report_card_id = new_id();
@@ -548,6 +574,7 @@ async fn create_wave_with_spec_harness(
     let report_card_id_for_tx = report_card_id.clone();
     let cove_id_for_attach = body_cove_id;
     let normalized_cwd_for_tx = normalized_cwd;
+    let repo_identity_for_tx = repo_identity;
     let ((wave,), _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id.clone(),
@@ -557,7 +584,14 @@ async fn create_wave_with_spec_harness(
         move |tx| {
             Box::pin(async move {
                 if attach_folder {
-                    cove_folder_create_tx(tx, &cove_id_for_attach, &normalized_cwd_for_tx).await?;
+                    cove_folder_create_tx(
+                        tx,
+                        &cove_id_for_attach,
+                        &normalized_cwd_for_tx,
+                        repo_identity_for_tx.as_deref(),
+                        repo_identity_probed_at.expect("attach probe timestamp"),
+                    )
+                    .await?;
                 }
 
                 let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
