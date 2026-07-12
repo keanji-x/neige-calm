@@ -1000,7 +1000,7 @@ pub trait RepoOutOfDomain: RepoRead {
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
     /// Re-probe a folder outside a write transaction, then atomically replace
     /// its cached identity and probe timestamp. Existing rows are refreshed on
-    /// demand; migration 0062 deliberately performs no filesystem backfill.
+    /// demand; migration 0063 deliberately performs no filesystem backfill.
     async fn cove_folder_refresh_repo_identity(&self, id: i64) -> Result<CoveFolder>;
     /// Delete a folder by integer id. Returns `NotFound` when no row
     /// exists. PR 2 will add a "has live wave referencing this path"
