@@ -126,6 +126,7 @@ async fn today_launchpad_ensure_tx(
             tx,
             new_id(),
             NewCard {
+                title: None,
                 wave_id: wave.id.clone(),
                 kind: "codex".into(),
                 sort: None,
@@ -144,6 +145,7 @@ async fn today_launchpad_ensure_tx(
             tx,
             new_id(),
             NewCard {
+                title: None,
                 wave_id: wave.id.clone(),
                 kind: "wave-report".into(),
                 sort: Some(-1.0),
@@ -173,6 +175,7 @@ async fn today_launchpad_ensure_tx(
             &new_id(),
             None,
             wave.id.clone(),
+            None,
             None,
             String::new(),
             cwd.into(),
