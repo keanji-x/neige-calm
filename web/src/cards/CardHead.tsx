@@ -64,6 +64,56 @@ export type CardHeadProps = {
   closeAriaLabel?: string;
 };
 
+function CardHeadTitleEditor({
+  cardId,
+  initialTitle,
+  onDone,
+}: {
+  cardId: string;
+  initialTitle: string;
+  onDone: () => void;
+}) {
+  const [draftTitle, setDraftTitle] = useState(initialTitle);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const updateCard = useUpdateCardMutation();
+
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  const commitRename = () => {
+    if (draftTitle !== initialTitle) {
+      updateCard.mutate({ id: cardId, body: { title: draftTitle } });
+    }
+    onDone();
+  };
+
+  return (
+    <span className="card-head-title">
+      <input
+        ref={inputRef}
+        className="card-head-title-input"
+        aria-label="Card title"
+        value={draftTitle}
+        onChange={(e) => setDraftTitle(e.target.value)}
+        onBlur={commitRename}
+        onMouseDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commitRename();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onDone();
+          }
+        }}
+      />
+    </span>
+  );
+}
+
 /**
  * Compose the slot wrappers + optional escape-hatch children into the
  * shared `.card-head` skeleton. Slot wrappers are only emitted when the
@@ -89,22 +139,9 @@ export function CardHead({
   const titleNode = cardTitle || defaultTitle;
   const canRename = !!card?.id && card.type !== 'spec' && card.type !== 'wave-report';
   const [editingTitle, setEditingTitle] = useState(false);
-  const [draftTitle, setDraftTitle] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-  const updateCard = useUpdateCardMutation();
-  useEffect(() => {
-    if (editingTitle) inputRef.current?.select();
-  }, [editingTitle]);
   const beginRename = () => {
     if (!canRename) return;
-    setDraftTitle(cardTitle || '');
     setEditingTitle(true);
-  };
-  const commitRename = () => {
-    if (!editingTitle || !card?.id) return;
-    setEditingTitle(false);
-    if (draftTitle === (cardTitle || '')) return;
-    updateCard.mutate({ id: card.id, body: { title: draftTitle } });
   };
   const rootClass = className ? `card-head ${className}` : 'card-head';
   // Synthesise the letter-avatar only when the caller didn't pass an icon
@@ -120,32 +157,17 @@ export function CardHead({
   return (
     <div className={rootClass}>
       {iconNode}
-      {titleNode !== undefined && (
+      {editingTitle && canRename && card?.id ? (
+        <CardHeadTitleEditor
+          cardId={card.id}
+          initialTitle={cardTitle || ''}
+          onDone={() => setEditingTitle(false)}
+        />
+      ) : titleNode !== undefined ? (
         <span className="card-head-title" onDoubleClick={beginRename}>
-          {editingTitle ? (
-            <input
-              ref={inputRef}
-              className="card-head-title-input"
-              aria-label="Card title"
-              value={draftTitle}
-              onChange={(e) => setDraftTitle(e.target.value)}
-              onBlur={commitRename}
-              onMouseDown={(e) => e.stopPropagation()}
-              onDoubleClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => {
-                e.stopPropagation();
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  commitRename();
-                } else if (e.key === 'Escape') {
-                  e.preventDefault();
-                  setEditingTitle(false);
-                }
-              }}
-            />
-          ) : titleNode}
+          {titleNode}
         </span>
-      )}
+      ) : null}
       {children}
       {actions.length > 0 && (
         <span className="card-head-actions">
