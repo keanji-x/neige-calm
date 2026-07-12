@@ -189,6 +189,7 @@ pub struct CodexWorkerOperationPayload {
 #[derive(Clone, Debug)]
 pub struct CodexCreateRequestInput {
     pub wave_id: String,
+    pub title: Option<String>,
     pub sort: Option<f64>,
     pub cwd: Option<String>,
     pub prompt: Option<String>,
@@ -200,6 +201,8 @@ pub struct CodexCreateRequestInput {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NormalizedCodexCreateRequest {
     pub wave_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub sort: Option<f64>,
     pub cwd: String,
@@ -240,6 +243,7 @@ pub fn normalize_codex_create_request(
 
     Ok(NormalizedCodexCreateRequest {
         wave_id: input.wave_id,
+        title: input.title,
         sort: input.sort,
         cwd,
         prompt,
@@ -322,6 +326,7 @@ impl ProviderAdapter for CodexAdapter {
             &runtime_id,
             None,
             WaveId::from(wave_id.clone()),
+            payload.request.title.clone(),
             payload.request.sort,
             payload.request.cwd.clone(),
             env.clone(),
@@ -793,6 +798,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
             Some(op.id.as_str()),
             wave_id,
             None,
+            None,
             cwd.clone(),
             env.clone(),
             None,
@@ -826,6 +832,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
                 tx,
                 card.id.as_ref(),
                 crate::model::CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(Value::Object(merged)),
@@ -1396,6 +1403,7 @@ async fn persist_shared_worker_runtime_fields(
                 tx,
                 &card_id_for_tx,
                 crate::model::CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(payload),

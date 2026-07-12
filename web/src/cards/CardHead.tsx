@@ -22,7 +22,9 @@
 // shared `<LetterAvatar>` component so the AddPanel menu can render the
 // identical glyph — this file delegates to it for the default case.
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
+import { useState } from '../shared/state';
+import { useUpdateCardMutation } from '../api/queries';
 import { CloseIcon } from '../shared/components/CloseIcon';
 import { LetterAvatar } from './LetterAvatar';
 import { Icon } from '../Icon';
@@ -62,6 +64,56 @@ export type CardHeadProps = {
   closeAriaLabel?: string;
 };
 
+function CardHeadTitleEditor({
+  cardId,
+  initialTitle,
+  onDone,
+}: {
+  cardId: string;
+  initialTitle: string;
+  onDone: () => void;
+}) {
+  const [draftTitle, setDraftTitle] = useState(initialTitle);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const updateCard = useUpdateCardMutation();
+
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  const commitRename = () => {
+    if (draftTitle !== initialTitle) {
+      updateCard.mutate({ id: cardId, body: { title: draftTitle } });
+    }
+    onDone();
+  };
+
+  return (
+    <span className="card-head-title">
+      <input
+        ref={inputRef}
+        className="card-head-title-input"
+        aria-label="Card title"
+        value={draftTitle}
+        onChange={(e) => setDraftTitle(e.target.value)}
+        onBlur={commitRename}
+        onMouseDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commitRename();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onDone();
+          }
+        }}
+      />
+    </span>
+  );
+}
+
 /**
  * Compose the slot wrappers + optional escape-hatch children into the
  * shared `.card-head` skeleton. Slot wrappers are only emitted when the
@@ -82,7 +134,15 @@ export function CardHead({
   const ctx = useOptionalCardInstanceCtx();
   const entry = card ? getEntry(card.type) : undefined;
   const actions = card && ctx ? entry?.actions?.(card, ctx) ?? [] : [];
-  const titleNode = title ?? (card ? entry?.title(card) : undefined);
+  const cardTitle = card && 'title' in card ? card.title : undefined;
+  const defaultTitle = title ?? (card ? entry?.title(card) : undefined);
+  const titleNode = cardTitle || defaultTitle;
+  const canRename = !!card?.id && card.type !== 'spec' && card.type !== 'wave-report';
+  const [editingTitle, setEditingTitle] = useState(false);
+  const beginRename = () => {
+    if (!canRename) return;
+    setEditingTitle(true);
+  };
   const rootClass = className ? `card-head ${className}` : 'card-head';
   // Synthesise the letter-avatar only when the caller didn't pass an icon
   // AND the title is a plain string (non-string titles often wrap rich
@@ -97,7 +157,17 @@ export function CardHead({
   return (
     <div className={rootClass}>
       {iconNode}
-      {titleNode !== undefined && <span className="card-head-title">{titleNode}</span>}
+      {editingTitle && canRename && card?.id ? (
+        <CardHeadTitleEditor
+          cardId={card.id}
+          initialTitle={cardTitle || ''}
+          onDone={() => setEditingTitle(false)}
+        />
+      ) : titleNode !== undefined ? (
+        <span className="card-head-title" onDoubleClick={beginRename}>
+          {titleNode}
+        </span>
+      ) : null}
       {children}
       {actions.length > 0 && (
         <span className="card-head-actions">

@@ -194,7 +194,7 @@ impl RepoRead for SqlxRepo {
         };
 
         let cards = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(id)
@@ -271,7 +271,7 @@ impl RepoRead for SqlxRepo {
         // Keep this ORDER BY aligned with wave_vcs::cards_for_wave_tx; tests pin
         // the sort ASC, id ASC tie-break for duplicate worker run keys.
         let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC, id ASC"#,
         )
         .bind(wave_id)
@@ -282,7 +282,7 @@ impl RepoRead for SqlxRepo {
 
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
         let row = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                FROM cards WHERE id = ?1"#,
         )
         .bind(id)

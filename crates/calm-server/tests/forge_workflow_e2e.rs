@@ -1513,6 +1513,7 @@ async fn boot_fixture() -> Fixture {
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: Value::Null,
@@ -1657,6 +1658,7 @@ async fn create_worker_caller(
         &runtime_id,
         None,
         wave_id.clone(),
+        None,
         None,
         "/workspace".into(),
         json!({}),

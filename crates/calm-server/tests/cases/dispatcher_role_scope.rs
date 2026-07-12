@@ -96,6 +96,7 @@ async fn seed_worker_in_wave(
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),
@@ -248,6 +249,7 @@ async fn worker_emitting_other_card_scope_is_rejected() {
     let card_b = repo
         .card_create(NewCard {
             wave_id: wave.as_str().into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),
@@ -534,6 +536,7 @@ async fn spec_emitting_wave_scope_is_accepted() {
     let spec = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: None,
             payload: json!({}),

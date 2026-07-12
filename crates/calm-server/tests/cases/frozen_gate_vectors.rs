@@ -225,6 +225,7 @@ async fn seed_card(
     let card = repo
         .card_create(NewCard {
             wave_id: wave.as_str().into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

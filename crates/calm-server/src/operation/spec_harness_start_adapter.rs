@@ -317,7 +317,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
         let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, deletable, created_at, updated_at
+            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                  FROM cards
                 WHERE id = ?1
                   AND wave_id = ?2"#,
@@ -638,6 +638,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         tx,
                         &card_id,
                         CardPatch {
+                            title: None,
                             kind: None,
                             sort: None,
                             payload: Some(card_payload),
@@ -927,6 +928,7 @@ async fn clear_card_runtime_fields(ctx: &SpawnCtx, card_id: &str) -> Result<()> 
                 tx,
                 &card_id,
                 CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(payload),

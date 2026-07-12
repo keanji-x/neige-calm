@@ -760,6 +760,7 @@ async fn seed_card(repo: &SqlxRepo, idx: usize) -> String {
         .unwrap();
     repo.card_create(NewCard {
         wave_id: wave.id,
+        title: None,
         kind: "terminal".into(),
         sort: None,
         payload: json!({"codex_source": "shared"}),

@@ -13,6 +13,7 @@ declare module '../../types' {
 
 export interface WaveReportCardData {
   type: 'wave-report';
+  title?: string | null;
   id?: string;
   summary: string;
   body: string;
@@ -33,7 +34,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
   Component: () => null,
   defaultSize: { w: 1, h: 1, minW: 1, minH: 1 },
   claim: { mode: 'exact', kind: 'wave-report' },
-  title: () => 'Report',
+  title: (card) => card.title || 'Report',
   accessibleName: (card) =>
     card.summary.trim().length > 0 ? `Report: ${card.summary}` : 'Report',
   create: { mode: 'kernel-minted-only' },
@@ -50,6 +51,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
       return {
         type: 'wave-report',
         id: k.id,
+        title: k.title,
         summary: '',
         body: '',
         updatedAt: k.updated_at,

@@ -113,6 +113,7 @@ async fn add_card_with_id_with_event(
     };
     let new_card = NewCard {
         wave_id: wave_id.clone(),
+        title: None,
         kind: kind.into(),
         sort: None,
         payload,
@@ -267,6 +268,7 @@ async fn insert_raw_card(
         new_id(),
         NewCard {
             wave_id: wave_id.clone(),
+            title: None,
             kind: kind.into(),
             sort: None,
             payload,
@@ -2676,6 +2678,7 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
         &report,
         &cove.id,
         CardPatch {
+            title: None,
             kind: Some("terminal".into()),
             sort: None,
             payload: Some(json!({"schemaVersion": 1})),
@@ -2728,6 +2731,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         &report,
         &cove.id,
         CardPatch {
+            title: None,
             kind: None,
             sort: None,
             payload: Some(payload(old_body)),
@@ -2747,6 +2751,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
         &report,
         &cove.id,
         CardPatch {
+            title: None,
             kind: None,
             sort: None,
             payload: Some(payload(new_body)),
@@ -2918,6 +2923,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         &high_id,
         &cove.id,
         CardPatch {
+            title: None,
             kind: None,
             sort: Some(1.0),
             payload: None,
@@ -2932,6 +2938,7 @@ async fn duplicate_run_key_uses_shared_card_order_for_delta_and_snapshot() {
         &low_id,
         &cove.id,
         CardPatch {
+            title: None,
             kind: None,
             sort: Some(1.0),
             payload: None,
@@ -3525,6 +3532,7 @@ async fn eventless_card_row_stays_hidden_until_card_added_event() {
         hidden_id.clone(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({"schemaVersion": 1, "idempotency_key": "hidden-run"}),

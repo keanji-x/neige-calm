@@ -65,6 +65,7 @@ pub async fn boot() -> Boot {
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(0.0),
             payload: json!({ "role": "spec" }),
@@ -74,6 +75,7 @@ pub async fn boot() -> Boot {
     let worker_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(1.0),
             payload: json!({ "task": "local" }),
@@ -83,6 +85,7 @@ pub async fn boot() -> Boot {
     let report_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "wave-report".into(),
             sort: Some(-1.0),
             payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
@@ -114,6 +117,7 @@ pub async fn boot() -> Boot {
     let other_wave_card = repo
         .card_create(NewCard {
             wave_id: wave2.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({ "task": "other-wave" }),
@@ -123,6 +127,7 @@ pub async fn boot() -> Boot {
     let other_spec_card = repo
         .card_create(NewCard {
             wave_id: wave2.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(-1.0),
             payload: json!({ "role": "spec" }),
@@ -319,6 +324,7 @@ pub async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(10.0),
             payload: json!({

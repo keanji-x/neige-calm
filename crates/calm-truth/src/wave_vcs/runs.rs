@@ -379,7 +379,7 @@ async fn worker_card_for_run_key_tx(
     visibility: &CardVisibility,
 ) -> Result<Option<CardProjection>> {
     let rows = sqlx::query(
-        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
+        r#"SELECT id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
                   EXISTS (
                     SELECT 1
                     FROM events

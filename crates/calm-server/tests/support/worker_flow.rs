@@ -113,6 +113,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
         card_id.to_string(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({ "task": "test" }),
@@ -160,6 +161,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
         card_id.to_string(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "claude".into(),
             sort: None,
             payload: json!({ "schemaVersion": 1, "cwd": cwd }),

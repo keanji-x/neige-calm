@@ -97,6 +97,7 @@ async fn insert_session(repo: &SqlxRepo, mut session: WorkerSession) -> Card {
         repo,
         NewCard {
             wave_id: session.wave_id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),

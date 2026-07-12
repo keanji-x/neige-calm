@@ -49,6 +49,7 @@ async fn harness_drops_foreign_thread_notifications() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -156,6 +157,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
         new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -313,6 +315,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
         new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),

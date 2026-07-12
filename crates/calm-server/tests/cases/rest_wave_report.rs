@@ -99,6 +99,7 @@ async fn boot() -> Boot {
     let _report_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "wave-report".into(),
             sort: Some(-1.0),
             payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
@@ -603,6 +604,7 @@ async fn seed_spec_wave_without_report_card(repo: &SqlxRepo) -> WaveId {
     // minted with report-card minting disabled. No wave-report card.
     repo.card_create(NewCard {
         wave_id: wave.id.clone(),
+        title: None,
         kind: "codex".into(),
         sort: None,
         payload: Value::Null,
@@ -640,6 +642,7 @@ async fn resolve_report_for_wave_ok_when_report_card_present() {
     // the fixed fixture) does: kind "wave-report", sort -1.0, initial payload.
     repo.card_create(NewCard {
         wave_id: wave_id.clone(),
+        title: None,
         kind: "wave-report".into(),
         sort: Some(-1.0),
         payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),

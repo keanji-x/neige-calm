@@ -35,6 +35,7 @@ async fn seed_card(repo: &SqlxRepo) -> String {
         "card-cursor".into(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "worker".into(),
             sort: None,
             payload: serde_json::json!({}),

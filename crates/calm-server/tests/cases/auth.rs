@@ -154,6 +154,7 @@ async fn hook_boot() -> HookBoot {
     let claude_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "claude".into(),
             sort: None,
             payload: json!({}),
@@ -163,6 +164,7 @@ async fn hook_boot() -> HookBoot {
     let codex_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

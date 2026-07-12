@@ -13,6 +13,7 @@ declare module '../../types' {
 
 export interface SpecCardData {
   type: 'spec';
+  title?: string | null;
   id?: string;
   goal?: string;
   iconBg?: string;
@@ -44,7 +45,7 @@ export const SpecEntry: CardEntry<SpecCardData, never> = {
   Component: () => null,
   defaultSize: { w: 1, h: 1, minW: 1, minH: 1 },
   refreshBacking: 'none',
-  title: () => 'Spec',
+  title: (card) => card.title || 'Spec',
   accessibleName: (card) =>
     card.goal?.trim() ? `Spec agent: ${card.goal}` : 'Spec agent',
   create: { mode: 'kernel-minted-only' },
@@ -62,6 +63,7 @@ export const SpecEntry: CardEntry<SpecCardData, never> = {
       return {
         type: 'spec',
         id: k.id,
+        title: k.title,
         unsupportedVersion: version,
       };
     }

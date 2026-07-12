@@ -53,6 +53,7 @@ async fn setup() -> (axum::Router, Arc<dyn Repo>, String) {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "claude".into(),
             sort: None,
             payload: json!({}),

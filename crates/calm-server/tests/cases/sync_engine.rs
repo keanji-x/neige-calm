@@ -365,6 +365,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                     tx,
                     NewCard {
                         wave_id,
+                        title: None,
                         kind: "terminal".into(),
                         sort: None,
                         payload: serde_json::json!({}),
@@ -695,6 +696,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                             tx,
                             NewCard {
                                 wave_id,
+                                title: None,
                                 kind: "terminal".into(),
                                 sort: None,
                                 payload: serde_json::json!({}),

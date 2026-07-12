@@ -63,6 +63,7 @@ async fn spec_card_can_update_wave() {
     let card = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: None,
             payload: serde_json::json!({}),
@@ -161,6 +162,7 @@ async fn ai_codex_cannot_update_wave() {
     let card = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::json!({}),
@@ -307,6 +309,7 @@ async fn public_card_create_writes_worker_role() {
     let card = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: serde_json::json!({}),
@@ -352,6 +355,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
     let c1 = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: None,
             payload: serde_json::json!({}),
@@ -361,6 +365,7 @@ async fn unique_spec_card_per_wave_index_enforced() {
     let c2 = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: None,
             payload: serde_json::json!({}),

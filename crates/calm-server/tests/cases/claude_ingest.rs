@@ -200,6 +200,7 @@ async fn test_app() -> (axum::Router, Arc<SqlxRepo>, EventBus, String) {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "claude".into(),
             sort: None,
             payload: serde_json::json!({}),

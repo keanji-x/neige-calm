@@ -905,6 +905,7 @@ mod tests {
         let card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,
@@ -973,6 +974,7 @@ mod tests {
         let card_b = repo
             .card_create(NewCard {
                 wave_id: wave_id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,
@@ -1265,6 +1267,7 @@ mod tests {
         //     must not) emit a duplicate wave write.
         let new_codex_card = || NewCard {
             wave_id: wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: Value::Null,
@@ -1429,6 +1432,7 @@ mod tests {
         let card_a = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,
@@ -1438,6 +1442,7 @@ mod tests {
         let card_b = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,

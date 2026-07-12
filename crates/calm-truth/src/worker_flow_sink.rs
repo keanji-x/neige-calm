@@ -129,6 +129,7 @@ mod tests {
             &mut tx,
             NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: Some(0.0),
                 payload: serde_json::json!({ "task": "x" }),

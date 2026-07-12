@@ -90,6 +90,7 @@ async fn setup(role: CardRole) -> (axum::Router, Arc<dyn Repo>, String, String) 
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::json!({}),

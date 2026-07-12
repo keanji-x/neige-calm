@@ -611,6 +611,7 @@ async fn empty_card_spawn_failure_removes_pending_entry() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone().into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

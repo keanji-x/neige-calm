@@ -517,8 +517,10 @@ async function createFromEntry(
       if (entry.claim?.mode !== 'exact') {
         throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
       }
+      const title = (input as { title?: string }).title || undefined;
       const card = await api.createCard(waveId, {
         kind: entry.claim.kind,
+        title,
         payload: entry.create.buildPayload(input as never),
       });
       result = { cardId: card.id, raw: card };

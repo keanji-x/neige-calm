@@ -50,6 +50,7 @@ async fn legacy_compensation_harness(
         repo.as_ref(),
         crate::model::NewCard {
             wave_id: wave.id,
+            title: None,
             kind: card_kind.into(),
             sort: None,
             payload: json!({ "schemaVersion": 1 }),
@@ -518,6 +519,7 @@ async fn operation_event_append_creates_wave_vcs_commit() {
         card_id.clone(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "wave-report".into(),
             sort: None,
             payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
@@ -860,6 +862,7 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
         &sqlx_repo,
         crate::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),
@@ -976,6 +979,7 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
         &sqlx_repo,
         crate::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),
@@ -1109,6 +1113,7 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
         &sqlx_repo,
         crate::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),
@@ -1226,6 +1231,7 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
         &sqlx_repo,
         crate::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),
@@ -1391,6 +1397,7 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
         &sqlx_repo,
         crate::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

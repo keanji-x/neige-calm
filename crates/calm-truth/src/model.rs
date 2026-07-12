@@ -188,10 +188,12 @@ pub struct NewCard {
     #[serde(default)]
     #[schema(value_type = Object)]
     pub payload: serde_json::Value,
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]
 pub struct CardPatch {
+    pub title: Option<String>,
     pub kind: Option<String>,
     pub sort: Option<f64>,
     #[schema(value_type = Option<Object>)]

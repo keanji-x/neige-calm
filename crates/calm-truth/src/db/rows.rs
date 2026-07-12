@@ -133,6 +133,7 @@ pub struct CardRow {
     pub sort: f64,
     #[sqlx(json)]
     pub payload: serde_json::Value,
+    pub title: Option<String>,
     pub deletable: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -146,6 +147,7 @@ impl From<CardRow> for Card {
             kind: r.kind,
             sort: r.sort,
             payload: r.payload,
+            title: r.title,
             runtime: None,
             deletable: r.deletable,
             created_at: r.created_at,

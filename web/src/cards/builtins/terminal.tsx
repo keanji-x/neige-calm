@@ -27,7 +27,7 @@ export interface TerminalCardData {
   type: 'terminal';
   id?: string;
   idempotencyKey?: string;
-  title: string;
+  title?: string | null;
   lines: TermLine[];
   terminalId?: string;
   unsupportedVersion?: number;
@@ -215,7 +215,10 @@ function TerminalCard({
   );
 }
 
-export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> = {
+export const TerminalEntry: CardEntry<
+  TerminalCardData,
+  Record<string, never>
+> = {
   type: 'terminal',
   Component: TerminalCard,
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
@@ -239,8 +242,7 @@ export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> =
   create: {
     mode: 'atomic',
     async submit(waveId, _input, ctx) {
-      const rgb = ctx.themeRgb;
-      const card = await createTerminalCard(waveId, { theme: rgb });
+      const card = await createTerminalCard(waveId, { theme: ctx.themeRgb });
       return { cardId: card.id, raw: card };
     },
   },
@@ -265,7 +267,7 @@ export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> =
       return {
         type: 'terminal',
         id: k.id,
-        title: 'terminal',
+        title: k.title,
         lines: [],
         unsupportedVersion: version,
       };
@@ -283,7 +285,7 @@ export const TerminalEntry: CardEntry<TerminalCardData, Record<string, never>> =
       type: 'terminal',
       id: k.id,
       idempotencyKey: parsed.data.idempotency_key,
-      title: 'terminal',
+      title: k.title,
       lines: [],
       terminalId: parsed.data.terminal_id,
     };

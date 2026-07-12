@@ -124,6 +124,7 @@ async fn boot_with_registry(registry: Arc<ToolRegistry>) -> Boot {
         None,
         wave.id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,

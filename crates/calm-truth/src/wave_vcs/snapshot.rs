@@ -282,7 +282,7 @@ pub(super) async fn cards_for_wave_tx(
     // Keep this ORDER BY aligned with SqlxRepo::cards_by_wave in db/sqlite.rs;
     // tests pin the sort ASC, id ASC tie-break for duplicate worker run keys.
     let rows = sqlx::query(
-        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
+        r#"SELECT id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
                   EXISTS (
                     SELECT 1
                     FROM events
@@ -315,7 +315,7 @@ pub(super) async fn card_in_wave_tx(
     visibility: &CardVisibility,
 ) -> Result<Option<CardProjection>> {
     let row = sqlx::query(
-        r#"SELECT id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at,
+        r#"SELECT id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at,
                   EXISTS (
                     SELECT 1
                     FROM events
@@ -353,6 +353,7 @@ pub(super) fn card_projection_from_row(row: SqliteRow) -> Result<CardProjection>
             kind: row.try_get("kind")?,
             sort: row.try_get("sort")?,
             payload,
+            title: row.try_get("title")?,
             runtime: None,
             deletable: deletable != 0,
             created_at: row.try_get("created_at")?,

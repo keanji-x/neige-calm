@@ -15,6 +15,7 @@ fn test_card(id: &str, kind: &str, payload: Value) -> Card {
     Card {
         id: CardId::from(id),
         wave_id: WaveId::from("wave-test"),
+        title: None,
         kind: kind.to_string(),
         sort: 1.25,
         payload,
@@ -783,6 +784,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
         "card-big".into(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "worker".into(),
             sort: None,
             payload: serde_json::json!({}),

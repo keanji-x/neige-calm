@@ -349,6 +349,7 @@ async fn create_worker_caller(
         None,
         wave_id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,

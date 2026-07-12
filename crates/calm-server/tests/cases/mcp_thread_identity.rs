@@ -96,6 +96,7 @@ async fn boot_with_registry_and_daemon_hash(
         None,
         wave.id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,
@@ -113,6 +114,7 @@ async fn boot_with_registry_and_daemon_hash(
     let worker = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: Value::Null,
@@ -267,6 +269,7 @@ async fn card_mcp_token_set_tx_replaces_hash() {
         card_id.clone(),
         calm_server::model::NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: Value::Null,
@@ -361,6 +364,7 @@ async fn remint_updates_one_worker_session_hash_row() {
         None,
         wave.id,
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,
@@ -430,6 +434,7 @@ async fn seed_card_with_mcp_token(boot: &Boot, card_id: &str, role: CardRole) ->
     let mut tx = boot.sqlx_repo.pool().begin().await.unwrap();
     let card = calm_server::model::NewCard {
         wave_id: boot.wave_id.as_str().into(),
+        title: None,
         kind: "codex".into(),
         sort: None,
         payload: Value::Null,

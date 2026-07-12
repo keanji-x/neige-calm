@@ -105,6 +105,7 @@ pub(super) async fn create_card_in_tx(
         card_id,
         NewCard {
             wave_id: wave.id,
+            title: None,
             kind: card_kind.into(),
             sort: None,
             payload: json!({"schemaVersion": 1, "case": label}),
@@ -216,6 +217,7 @@ pub(super) async fn seed_terminal_runtime(
         None,
         wave.id,
         None,
+        None,
         "bash".into(),
         "/tmp".into(),
         json!({}),
@@ -276,6 +278,7 @@ pub(super) async fn seed_codex_terminal_card(
         &runtime_id,
         None,
         wave.id,
+        None,
         None,
         "/tmp".into(),
         json!({}),
