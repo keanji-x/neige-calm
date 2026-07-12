@@ -14,6 +14,7 @@ declare module '../../types' {
 
 export interface IframeCardData {
   type: 'iframe';
+  title?: string | null;
   id: string;
   url: string;
   trusted?: boolean;
@@ -194,7 +195,7 @@ export const IframeEntry: CardEntry<IframeCardData> = {
     };
   },
   claim: { mode: 'exact', kind: 'iframe' },
-  title: (card) => card.url,
+  title: (card) => card.title || card.url,
   accessibleName: (card) => `Web page: ${card.url}`,
   create: {
     mode: 'generic',
@@ -232,6 +233,7 @@ export const IframeEntry: CardEntry<IframeCardData> = {
     return {
       type: 'iframe',
       id: k.id,
+      title: k.title,
       url: parsed.data.url,
       trusted: parsed.data.trusted ?? false,
     };
@@ -244,9 +246,10 @@ export const IframeEntry: CardEntry<IframeCardData> = {
         if (!isAllowedIframeUrl(url)) {
           throw new Error(`Invalid iframe URL: ${url}`);
         }
-        return { url };
+        return { title: values.title, url };
       },
       fields: [
+        { key: 'title', label: 'Title', type: 'string' },
         {
           key: 'url',
           label: 'URL',

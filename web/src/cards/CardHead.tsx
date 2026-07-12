@@ -22,7 +22,9 @@
 // shared `<LetterAvatar>` component so the AddPanel menu can render the
 // identical glyph — this file delegates to it for the default case.
 
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
+import { useState } from '../shared/state';
+import { useUpdateCardMutation } from '../api/queries';
 import { CloseIcon } from '../shared/components/CloseIcon';
 import { LetterAvatar } from './LetterAvatar';
 import { Icon } from '../Icon';
@@ -82,7 +84,28 @@ export function CardHead({
   const ctx = useOptionalCardInstanceCtx();
   const entry = card ? getEntry(card.type) : undefined;
   const actions = card && ctx ? entry?.actions?.(card, ctx) ?? [] : [];
-  const titleNode = title ?? (card ? entry?.title(card) : undefined);
+  const cardTitle = card && 'title' in card ? card.title : undefined;
+  const defaultTitle = title ?? (card ? entry?.title(card) : undefined);
+  const titleNode = cardTitle || defaultTitle;
+  const canRename = !!card?.id && card.type !== 'spec' && card.type !== 'wave-report';
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [draftTitle, setDraftTitle] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const updateCard = useUpdateCardMutation();
+  useEffect(() => {
+    if (editingTitle) inputRef.current?.select();
+  }, [editingTitle]);
+  const beginRename = () => {
+    if (!canRename) return;
+    setDraftTitle(cardTitle || '');
+    setEditingTitle(true);
+  };
+  const commitRename = () => {
+    if (!editingTitle || !card?.id) return;
+    setEditingTitle(false);
+    if (draftTitle === (cardTitle || '')) return;
+    updateCard.mutate({ id: card.id, body: { title: draftTitle } });
+  };
   const rootClass = className ? `card-head ${className}` : 'card-head';
   // Synthesise the letter-avatar only when the caller didn't pass an icon
   // AND the title is a plain string (non-string titles often wrap rich
@@ -97,7 +120,32 @@ export function CardHead({
   return (
     <div className={rootClass}>
       {iconNode}
-      {titleNode !== undefined && <span className="card-head-title">{titleNode}</span>}
+      {titleNode !== undefined && (
+        <span className="card-head-title" onDoubleClick={beginRename}>
+          {editingTitle ? (
+            <input
+              ref={inputRef}
+              className="card-head-title-input"
+              aria-label="Card title"
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              onBlur={commitRename}
+              onMouseDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitRename();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setEditingTitle(false);
+                }
+              }}
+            />
+          ) : titleNode}
+        </span>
+      )}
       {children}
       {actions.length > 0 && (
         <span className="card-head-actions">
