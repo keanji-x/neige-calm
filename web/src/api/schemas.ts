@@ -97,7 +97,7 @@ export const waveSchema = z.object({
    * field existed; fresh rows serialize the field explicitly.
    */
   workflow_id: z.string().nullable().default(null),
-  purpose: z.string().nullable(),
+  purpose: z.string().nullable().default(null),
   /**
    * Issue #891 — opaque bound-workflow input JSON (kernel validates at
    * create time; the frontend never interprets it). `z.unknown()` mirrors
