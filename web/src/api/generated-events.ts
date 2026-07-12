@@ -149,7 +149,15 @@ kind: CoveKind, created_at: number, updated_at: number, };
  * later reconcile. The compact integer also keeps `/folders/:id` URLs
  * readable.
  */
-export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at: number, };
+export type CoveFolder = { id: number, cove_id: CoveId, path: string, 
+/**
+ * Normalized `owner/name` from the folder's Git origin, when resolvable.
+ */
+repo_identity: string | null, 
+/**
+ * Unix epoch milliseconds of the most recent identity probe.
+ */
+repo_identity_probed_at: number | null, created_at: number, };
 
 /**
  * Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
@@ -384,6 +392,10 @@ cwd: string,
  */
 workflow_id: string | null, 
 /**
+ * Server-owned structural marker. Public wave creation cannot set this.
+ */
+purpose: string | null, 
+/**
  * Issue #891 — input JSON for the bound workflow, validated against the
  * descriptor's `input_schema` at create time and persisted verbatim; the
  * kernel never interprets it. `#[serde(default)]` hydrates pre-#891
@@ -539,6 +551,10 @@ cwd: string,
  * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
  */
 workflow_id: string | null, 
+/**
+ * Server-owned structural marker. Public wave creation cannot set this.
+ */
+purpose: string | null, 
 /**
  * Issue #891 — input JSON for the bound workflow, validated against the
  * descriptor's `input_schema` at create time and persisted verbatim; the
