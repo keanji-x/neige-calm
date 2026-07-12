@@ -235,6 +235,8 @@ pub struct CreateCardBody {
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub payload: Option<Value>,
+    #[serde(default)]
+    pub title: Option<String>,
     /// M2: plugin tool-call descriptor. When present, the kernel calls the
     /// plugin and the `kind` / `payload` fields above are ignored.
     #[serde(default)]
@@ -308,6 +310,7 @@ pub(crate) async fn create_card(
         kind,
         sort: body.sort,
         payload,
+        title: body.title,
     };
     let card_id_for_tx = card_id.0.clone();
     let write_for_tx = s.write().clone();
@@ -447,6 +450,7 @@ async fn create_via_tool_call(
         kind: creation.resource_uri,
         sort: None,
         payload,
+        title: None,
     };
     // M2 tool-call writes: actor stays `Plugin(<id>)` (the entity making
     // the kernel write), `correlation` records the user-driven invocation

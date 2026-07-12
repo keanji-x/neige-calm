@@ -151,6 +151,8 @@ pub struct TerminalCreateOperationPayload {
 pub struct TerminalCreateRequestPayload {
     pub wave_id: String,
     #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
     pub sort: Option<f64>,
     #[serde(default)]
     pub program: String,
@@ -239,6 +241,7 @@ impl ProviderAdapter for TerminalAdapter {
             &runtime_id,
             None,
             WaveId::from(wave_id),
+            payload.request.title.clone(),
             payload.request.sort,
             program.clone(),
             cwd.clone(),
@@ -595,6 +598,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
             Some(op.id.as_str()),
             wave_id,
             None,
+            None,
             payload.cmd.clone(),
             cwd.clone(),
             env.clone(),
@@ -618,6 +622,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 tx,
                 card.id.as_ref(),
                 crate::model::CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(Value::Object(merged)),

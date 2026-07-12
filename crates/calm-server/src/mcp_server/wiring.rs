@@ -182,6 +182,7 @@ mod tests {
             card_id.clone(),
             NewCard {
                 wave_id: wave.id,
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,

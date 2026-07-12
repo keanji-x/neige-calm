@@ -136,6 +136,7 @@ async fn mint_codex_worker(boot: &Boot) -> (Card, Terminal) {
         None,
         boot.wave_id.clone().into(),
         None,
+        None,
         "/workspace".into(),
         json!({"CODEX_HOME": "/tmp/codex-home"}),
         None,

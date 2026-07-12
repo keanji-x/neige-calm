@@ -52,6 +52,7 @@ async fn make_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> Wave {
 async fn make_card(repo: &SqlxRepo, wave_id: &str, kind: &str) -> Card {
     repo.card_create(NewCard {
         wave_id: wave_id.into(),
+        title: None,
         kind: kind.into(),
         sort: None,
         payload: json!({"hello": "world"}),
@@ -385,6 +386,7 @@ async fn card_crud_round_trip() {
         .card_update(
             card.id.as_str(),
             CardPatch {
+                title: None,
                 kind: Some("plugin:x:view".into()),
                 sort: None,
                 payload: Some(json!({"replaced": true})),
@@ -1068,6 +1070,7 @@ async fn card_with_terminal_create_tx_atomic_writes_card_terminal_and_runtime() 
         None,
         w.id.clone(),
         None,
+        None,
         "bash".into(),
         "/tmp".into(),
         json!({"FOO": "bar"}),
@@ -1135,6 +1138,7 @@ async fn card_with_terminal_create_tx_rolls_back_on_invalid_wave() {
         None,
         "wave-that-does-not-exist".into(),
         None,
+        None,
         "bash".into(),
         "/tmp".into(),
         json!({}),
@@ -1178,6 +1182,7 @@ async fn card_with_terminal_create_tx_uses_caller_supplied_sort() {
         &calm_server::model::new_id(),
         None,
         w.id.clone(),
+        None,
         Some(42.0),
         "bash".into(),
         "/tmp".into(),
@@ -1214,6 +1219,7 @@ async fn card_with_terminal_create_tx_defaults_sort_when_none() {
         &calm_server::model::new_id(),
         None,
         w.id.clone(),
+        None,
         None,
         "bash".into(),
         "/tmp".into(),
@@ -1304,6 +1310,7 @@ async fn card_with_codex_create_tx_atomic_writes_card_terminal_and_runtime() {
         None,
         w.id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({"CODEX_HOME": "/tmp/cx"}),
         None,
@@ -1380,6 +1387,7 @@ async fn card_with_codex_create_tx_rolls_back_on_invalid_wave() {
         None,
         "wave-that-does-not-exist".into(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,
@@ -1424,6 +1432,7 @@ async fn card_with_codex_create_tx_uses_caller_supplied_sort() {
         &calm_server::model::new_id(),
         None,
         w.id.clone(),
+        None,
         Some(7.0),
         "/workspace".into(),
         json!({}),
@@ -1798,6 +1807,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         calm_server::model::new_id(),
         NewCard {
             wave_id: mapped_wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -1817,6 +1827,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         pending_card_id.clone(),
         NewCard {
             wave_id: pending_wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -1834,6 +1845,7 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
         calm_server::model::new_id(),
         NewCard {
             wave_id: phantom_wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({

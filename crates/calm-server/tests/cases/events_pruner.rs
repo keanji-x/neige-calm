@@ -176,6 +176,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                     tx,
                     NewCard {
                         wave_id,
+                        title: None,
                         kind: "terminal".into(),
                         sort: None,
                         payload: serde_json::json!({}),

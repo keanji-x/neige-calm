@@ -329,6 +329,7 @@ pub async fn boot_forge_e2e_fixture(
     let spec_card = repo_dyn
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: spec_kind,
             sort: None,
             payload: spec_payload,
@@ -360,6 +361,7 @@ pub async fn boot_forge_e2e_fixture(
     let report_card = repo_dyn
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "wave-report".into(),
             sort: Some(-1.0),
             payload: serde_json::to_value(WaveReportPayload::initial())

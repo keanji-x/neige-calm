@@ -160,6 +160,7 @@ async fn add_card_with_event(
     let lookup_card_id = card_id.clone();
     let new_card = NewCard {
         wave_id: wave_id.clone(),
+        title: None,
         kind: kind.into(),
         sort: None,
         payload,
@@ -621,6 +622,7 @@ async fn update_card_payload_with_event(boot: &Boot, card: &Card, payload: Value
                         tx,
                         card_id.as_str(),
                         CardPatch {
+                            title: None,
                             kind: None,
                             sort: None,
                             payload: Some(payload),

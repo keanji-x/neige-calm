@@ -130,6 +130,7 @@ fn card_min() -> Card {
     Card {
         id: CardId::from("card-01"),
         wave_id: WaveId::from("wave-01"),
+        title: None,
         kind: "terminal".into(),
         sort: 1.5,
         payload: json!({}),

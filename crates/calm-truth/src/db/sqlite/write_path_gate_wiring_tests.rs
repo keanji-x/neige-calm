@@ -46,6 +46,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
         format!("card-hp1-b-i-{label}"),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1, "case": label}),

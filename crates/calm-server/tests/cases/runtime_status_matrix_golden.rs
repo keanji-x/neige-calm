@@ -138,6 +138,7 @@ async fn probe(
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -308,6 +309,7 @@ async fn running_codex_fixture() -> (
         &new_id(),
         None,
         wave.id,
+        None,
         None,
         "/workspace".into(),
         json!({"CODEX_HOME": "/tmp/codex-home"}),

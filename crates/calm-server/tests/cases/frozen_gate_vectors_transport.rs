@@ -105,6 +105,7 @@ async fn boot_with_registry(
         None,
         wave.id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,
@@ -620,6 +621,7 @@ async fn seed_role_card(
     let card = repo
         .card_create(NewCard {
             wave_id: wave.as_str().into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

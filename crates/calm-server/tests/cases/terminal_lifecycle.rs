@@ -169,6 +169,7 @@ async fn card_delete_reaps_terminal_process() {
     let card = raw
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -270,6 +271,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     let card_a = raw
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -279,6 +281,7 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
     let card_b = raw
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -410,6 +413,7 @@ async fn cove_delete_reaps_every_terminal_under_cove() {
     let card = raw
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -526,6 +530,7 @@ async fn card_delete_succeeds_when_card_has_no_terminal() {
     let card = raw
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "ui://plugin/foo".into(),
             sort: None,
             payload: json!({}),

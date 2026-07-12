@@ -457,6 +457,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         None,
         wave.id.clone(),
         None,
+        None,
         "claude".into(),
         "/tmp".into(),
         json!({}),

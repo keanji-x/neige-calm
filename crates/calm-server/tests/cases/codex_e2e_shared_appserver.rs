@@ -61,6 +61,7 @@ async fn seed_card(repo: &SqlxRepo, name: &str) -> String {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),

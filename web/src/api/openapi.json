@@ -3587,6 +3587,12 @@
             "type": "number",
             "format": "double"
           },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "updated_at": {
             "type": "integer",
             "format": "int64"
@@ -3624,6 +3630,12 @@
               "null"
             ],
             "format": "double"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -3851,6 +3863,12 @@
               "null"
             ],
             "format": "double"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "via_tool_call": {
             "oneOf": [
@@ -4255,6 +4273,12 @@
             ],
             "format": "double"
           },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "wave_id": {
             "type": "string",
             "description": "Defaulted so the REST handler can override from the `:wave_id` path\nparam without forcing every client body to repeat it. Direct repo\ncallers must still set this — passing \"\" produces a NotFound."
@@ -4307,6 +4331,12 @@
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
             "description": "Host browser's current theme RGB. Required so the PTY daemon answers\nClaude's terminal color probes with colors matching the surrounding UI."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false
@@ -4357,6 +4387,12 @@
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
             "description": "Host browser's current theme RGB (#177). Required so the terminal\nmodel answers codex's OSC 10/11 startup probe with colors matching\nthe host theme. A caller that omits this field gets 422."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "additionalProperties": false
@@ -4453,6 +4489,12 @@
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
             "description": "Host browser's current theme RGB (#177). Required — the kernel\nwrites it onto the terminal row inside the same transaction\nthat mints the card, and every spawn for this row reads\n`term.theme_fg/_bg` to stamp `--terminal-fg/-bg` daemon argv."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

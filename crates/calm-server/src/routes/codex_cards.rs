@@ -83,6 +83,8 @@ pub fn router() -> Router<AppState> {
 #[derive(Deserialize, Debug, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewCodexCardBody {
+    #[serde(default)]
+    pub title: Option<String>,
     /// Sort order within the wave. `None` defaults to "append to end".
     #[serde(default)]
     pub sort: Option<f64>,
@@ -131,6 +133,7 @@ pub(crate) async fn create_codex_card(
 ) -> Result<(StatusCode, Json<Card>)> {
     let request = normalize_codex_create_request(CodexCreateRequestInput {
         wave_id,
+        title: p.title,
         sort: p.sort,
         cwd: p.cwd,
         prompt: p.prompt,

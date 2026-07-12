@@ -3860,6 +3860,19 @@ textarea.new-task-form-rawjson-text {
   text-transform: uppercase;
   letter-spacing: var(--tracking-wider);
 }
+
+.card-head-title-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  outline: none;
+}
 .card-head-status {
   flex: 1;
   display: flex;

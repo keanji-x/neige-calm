@@ -421,6 +421,7 @@ async fn seed_shared_worker_card(boot: &Boot, label: &str, thread_id: &str) -> C
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "plugin:test:worker".into(),
             sort: None,
             payload: json!({
@@ -528,6 +529,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -1631,6 +1633,7 @@ async fn reset_spec_card_rejects_worker_codex_card() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone().into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -1655,6 +1658,7 @@ async fn reset_spec_card_rejects_wrong_kind_card() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone().into(),
+            title: None,
             kind: "report".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -1680,6 +1684,7 @@ async fn reset_spec_card_restarts_terminal_less_harness_card() {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -1771,6 +1776,7 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -1872,6 +1878,7 @@ async fn reset_spec_card_preserves_runtime_pending_queue_and_push_watermark() {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -1994,6 +2001,7 @@ async fn reset_spec_card_spawn_failure_restores_old_runtime_after_old_harness_te
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -2111,6 +2119,7 @@ async fn reset_spec_card_recovers_inert_harness_card_without_active_runtime() {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({
@@ -2171,6 +2180,7 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({

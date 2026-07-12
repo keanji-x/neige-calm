@@ -132,6 +132,7 @@ async fn codex_hook_records_ai_codex_actor_from_card_id_query() {
     let card = repo
         .card_create(calm_server::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

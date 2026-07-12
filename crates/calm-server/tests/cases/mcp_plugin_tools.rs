@@ -692,6 +692,7 @@ async fn mint_worker_card_with_thread(
         None,
         wave_id,
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,

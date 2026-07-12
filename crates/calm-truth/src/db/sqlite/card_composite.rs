@@ -37,6 +37,7 @@ pub async fn card_with_terminal_create_tx(
     runtime_id: &str,
     spawn_op_id: Option<&str>,
     wave_id: WaveId,
+    title: Option<String>,
     sort: Option<f64>,
     program: String,
     cwd: String,
@@ -76,6 +77,7 @@ pub async fn card_with_terminal_create_tx(
             kind: "terminal".into(),
             sort,
             payload: serde_json::Value::Null,
+            title,
         },
         role,
         deletable,
@@ -112,6 +114,7 @@ pub async fn card_with_terminal_create_tx(
         tx,
         card.id.as_ref(),
         CardPatch {
+            title: None,
             kind: None,
             sort: None,
             payload: Some(payload),
@@ -229,6 +232,7 @@ pub async fn card_with_codex_create_tx(
     runtime_id: &str,
     spawn_op_id: Option<&str>,
     wave_id: WaveId,
+    title: Option<String>,
     sort: Option<f64>,
     cwd: String,
     env: serde_json::Value,
@@ -264,6 +268,7 @@ pub async fn card_with_codex_create_tx(
             kind: "codex".into(),
             sort,
             payload: serde_json::Value::Null,
+            title,
         },
         role,
         deletable,
@@ -324,6 +329,7 @@ pub async fn card_with_codex_create_tx(
         tx,
         card.id.as_ref(),
         CardPatch {
+            title: None,
             kind: None,
             sort: None,
             payload: Some(payload),
@@ -387,6 +393,7 @@ pub async fn card_with_claude_create_tx(
     card_id: String,
     runtime_id: &str,
     wave_id: WaveId,
+    title: Option<String>,
     sort: Option<f64>,
     program: String,
     cwd: String,
@@ -409,6 +416,7 @@ pub async fn card_with_claude_create_tx(
             kind: "claude".into(),
             sort,
             payload: serde_json::Value::Null,
+            title,
         },
         role,
         deletable,
@@ -456,6 +464,7 @@ pub async fn card_with_claude_create_tx(
         tx,
         card.id.as_ref(),
         CardPatch {
+            title: None,
             kind: None,
             sort: None,
             payload: Some(payload),
@@ -502,6 +511,7 @@ pub async fn card_with_claude_worker_create_tx(
     runtime_id: &str,
     spawn_op_id: Option<&str>,
     wave_id: WaveId,
+    title: Option<String>,
     sort: Option<f64>,
     program: String,
     cwd: String,
@@ -522,6 +532,7 @@ pub async fn card_with_claude_worker_create_tx(
             kind: "claude".into(),
             sort,
             payload: serde_json::Value::Null,
+            title,
         },
         CardRole::Worker,
         true,
@@ -569,6 +580,7 @@ pub async fn card_with_claude_worker_create_tx(
         tx,
         card.id.as_ref(),
         CardPatch {
+            title: None,
             kind: None,
             sort: None,
             payload: Some(payload),
@@ -624,4 +636,174 @@ pub async fn card_mcp_token_set_tx(
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::db::{RepoRead, RepoSyncDomainRaw};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn card_title_round_trips_through_create_patch_and_composite() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "title-test".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id,
+                title: "wave".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                title: Some("Hello".into()),
+                kind: "plugin:test:view".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.card_get(card.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Hello")
+        );
+        assert_eq!(
+            repo.cards_by_wave(wave.id.as_str()).await.unwrap()[0]
+                .title
+                .as_deref(),
+            Some("Hello")
+        );
+
+        let untitled = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                title: Some(String::new()),
+                kind: "plugin:test:view".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.card_get(untitled.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            None
+        );
+
+        repo.card_update(
+            card.id.as_str(),
+            CardPatch {
+                title: Some("Renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repo.card_get(card.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Renamed")
+        );
+
+        repo.card_update(card.id.as_str(), CardPatch::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.card_get(card.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Renamed")
+        );
+
+        for title in ["", "  "] {
+            repo.card_update(
+                card.id.as_str(),
+                CardPatch {
+                    title: Some(title.into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                repo.card_get(card.id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .title,
+                None
+            );
+            repo.card_update(
+                card.id.as_str(),
+                CardPatch {
+                    title: Some("Restored".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let (composite, _) = card_with_terminal_create_tx(
+            &mut tx,
+            crate::model::new_id(),
+            &crate::model::new_id(),
+            None,
+            wave.id,
+            Some("T".into()),
+            None,
+            "bash".into(),
+            "/tmp".into(),
+            json!({}),
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+            RequestTheme::default_dark(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            repo.card_get(composite.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("T")
+        );
+    }
 }

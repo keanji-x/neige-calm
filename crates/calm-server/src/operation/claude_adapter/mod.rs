@@ -182,6 +182,7 @@ pub struct ClaudeWorkerOperationPayload {
 #[derive(Clone, Debug)]
 pub struct ClaudeCreateRequestInput {
     pub wave_id: String,
+    pub title: Option<String>,
     pub sort: Option<f64>,
     pub cwd: Option<String>,
     pub prompt: Option<String>,
@@ -193,6 +194,8 @@ pub struct ClaudeCreateRequestInput {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NormalizedClaudeCreateRequest {
     pub wave_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub sort: Option<f64>,
     pub cwd: String,
@@ -208,6 +211,8 @@ pub struct NormalizedClaudeCreateRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PreparedClaudeCreateRequest {
     pub wave_id: String,
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub sort: Option<f64>,
     pub cwd: String,
@@ -253,6 +258,7 @@ pub fn normalize_claude_create_request(
 
     Ok(NormalizedClaudeCreateRequest {
         wave_id: input.wave_id,
+        title: input.title,
         sort: input.sort,
         cwd,
         prompt,
@@ -289,6 +295,7 @@ pub async fn prepare_claude_create_request(
 
     Ok(PreparedClaudeCreateRequest {
         wave_id: request.wave_id,
+        title: request.title,
         sort: request.sort,
         cwd: request.cwd,
         prompt: request.prompt,
@@ -429,6 +436,7 @@ impl ProviderAdapter for ClaudeAdapter {
             card_id,
             &runtime_id,
             WaveId::from(wave_id),
+            request.title.clone(),
             request.sort,
             request.command_line.clone(),
             request.cwd.clone(),
@@ -803,6 +811,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
             Some(op.id.as_str()),
             wave_id,
             None,
+            None,
             command_line.clone(),
             cwd.clone(),
             env.clone(),
@@ -846,6 +855,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
                 tx,
                 card.id.as_ref(),
                 crate::model::CardPatch {
+                    title: None,
                     kind: None,
                     sort: None,
                     payload: Some(Value::Object(merged)),

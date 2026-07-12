@@ -678,6 +678,7 @@ async fn lease_fixture(wave_cwd: &Path) -> (crate::db::sqlite::SqlxRepo, String,
         &repo,
         crate::model::NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::Value::Null,

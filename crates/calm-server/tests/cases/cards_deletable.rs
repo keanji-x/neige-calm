@@ -240,6 +240,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         calm_server::model::new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -259,6 +260,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
         calm_server::model::new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -621,6 +623,7 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
         .repo
         .card_create(NewCard {
             wave_id: wave_id.clone().into(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({"title": "worker"}),

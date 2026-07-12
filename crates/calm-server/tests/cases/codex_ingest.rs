@@ -364,6 +364,7 @@ async fn create_codex_card(repo: &SqlxRepo) -> Card {
         .unwrap();
     repo.card_create(NewCard {
         wave_id: wave.id.clone(),
+        title: None,
         kind: "codex".into(),
         sort: None,
         payload: serde_json::json!({}),

@@ -144,6 +144,7 @@ async fn seed_durable_state(db_url: &str) -> Seeded {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),

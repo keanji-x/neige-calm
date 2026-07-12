@@ -191,6 +191,7 @@ async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave
         card_id.to_string(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({

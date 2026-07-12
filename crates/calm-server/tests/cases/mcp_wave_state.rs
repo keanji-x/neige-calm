@@ -142,6 +142,7 @@ async fn boot() -> Boot {
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: None,
             payload: serde_json::Value::Null,
@@ -151,6 +152,7 @@ async fn boot() -> Boot {
     let worker_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::Value::Null,

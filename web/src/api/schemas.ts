@@ -152,6 +152,8 @@ export const cardSchema = z.object({
   id: z.string(),
   wave_id: z.string(),
   kind: z.string(),
+  // Option<String> is omitted (rather than serialized as null) on the wire.
+  title: z.string().optional(),
   sort: z.number(),
   // serde_json::Value on the wire: arbitrary JSON. Kernel never inspects.
   payload: z.unknown(),

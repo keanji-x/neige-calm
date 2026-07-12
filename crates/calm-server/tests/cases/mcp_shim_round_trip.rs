@@ -113,6 +113,7 @@ async fn boot() -> Boot {
         None,
         wave.id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,

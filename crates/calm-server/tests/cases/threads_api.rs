@@ -74,6 +74,7 @@ async fn create_card(repo: &SqlxRepo, wave_id: &str, role: CardRole) -> String {
         new_id(),
         NewCard {
             wave_id: wave_id.into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({}),

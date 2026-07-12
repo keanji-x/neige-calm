@@ -75,6 +75,7 @@ async fn create_claude_card(repo: &SqlxRepo, wave_id: &str) -> String {
         new_id(),
         NewCard {
             wave_id: wave_id.into(),
+            title: None,
             kind: "claude".into(),
             sort: None,
             payload: json!({}),

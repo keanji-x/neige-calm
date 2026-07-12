@@ -105,6 +105,7 @@ async fn seed_linked_pair(state: &AppState, concrete: &SqlxRepo) -> (String, Str
         .raw_repo()
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),
@@ -186,6 +187,7 @@ async fn seed_shared_spec_pair(
         None,
         wave.id,
         None,
+        None,
         "/tmp".into(),
         json!({}),
         None,
@@ -257,6 +259,7 @@ async fn seed_migrated_shared_spec_pair(state: &AppState, concrete: &SqlxRepo) -
         None,
         wave.id,
         None,
+        None,
         "/tmp".into(),
         json!({}),
         None,
@@ -299,6 +302,7 @@ async fn unlink_card(state: &AppState, card_id: &str) {
         .card_update(
             card_id,
             CardPatch {
+                title: None,
                 payload: Some(json!({})),
                 ..Default::default()
             },

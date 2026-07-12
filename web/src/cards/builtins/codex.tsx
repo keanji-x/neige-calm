@@ -64,6 +64,7 @@ declare module '../../types' {
 
 export interface CodexCardData {
   type: 'codex';
+  title?: string | null;
   id?: string;
   idempotencyKey?: string;
   terminalId?: string;
@@ -76,6 +77,7 @@ export interface CodexCardData {
 
 export interface ClaudeCardData {
   type: 'claude';
+  title?: string | null;
   id?: string;
   idempotencyKey?: string;
   terminalId?: string;
@@ -120,8 +122,8 @@ const claudePayloadSchema = z.object({
 
 type AgentProvider = 'codex' | 'claude';
 
-type CodexCreateInput = { cwd?: string; prompt?: string };
-type ClaudeCreateInput = { cwd?: string; prompt?: string };
+type CodexCreateInput = { title?: string; cwd?: string; prompt?: string };
+type ClaudeCreateInput = { title?: string; cwd?: string; prompt?: string };
 
 type AgentCardLogoStyle = CSSProperties & {
   '--agent-card-logo-bg'?: string;
@@ -533,12 +535,13 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
     return { kind: 'xterm', ref: xtermRefSlotFor(instance) };
   },
   claim: { mode: 'exact', kind: 'codex' },
-  title: () => 'Codex',
+  title: (card) => card.title || 'Codex',
   accessibleName: () => 'Codex',
   create: {
     mode: 'atomic',
     async submit(waveId, input, ctx) {
       const card = await createCodexCard(waveId, {
+        title: input.title || undefined,
         cwd: input.cwd || undefined,
         prompt: input.prompt || undefined,
         theme: ctx.themeRgb,
@@ -563,6 +566,7 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
       return {
         type: 'codex',
         id: k.id,
+        title: k.title,
         unsupportedVersion: version,
       };
     }
@@ -589,6 +593,7 @@ export const CodexEntry: CardEntry<CodexCardData, CodexCreateInput> = {
       // Interactive codex handles permission / model selection inside its
       // own slash-command UX, so the schema-form is now just cwd.
       fields: [
+        { key: 'title', label: 'Title', type: 'string' },
         {
           key: 'cwd',
           label: 'Working directory',
@@ -608,12 +613,13 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
     return { kind: 'xterm', ref: xtermRefSlotFor(instance) };
   },
   claim: { mode: 'exact', kind: 'claude' },
-  title: () => 'Claude',
+  title: (card) => card.title || 'Claude',
   accessibleName: () => 'Claude',
   create: {
     mode: 'atomic',
     async submit(waveId, input, ctx) {
       const card = await createClaudeCard(waveId, {
+        title: input.title || undefined,
         cwd: input.cwd || undefined,
         prompt: input.prompt || undefined,
         theme: ctx.themeRgb,
@@ -634,6 +640,7 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
       return {
         type: 'claude',
         id: k.id,
+        title: k.title,
         unsupportedVersion: version,
       };
     }
@@ -659,6 +666,7 @@ export const ClaudeEntry: CardEntry<ClaudeCardData, ClaudeCreateInput> = {
     label: 'claude',
     createSchema: {
       fields: [
+        { key: 'title', label: 'Title', type: 'string' },
         {
           key: 'cwd',
           label: 'Working directory',

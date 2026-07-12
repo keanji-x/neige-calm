@@ -618,6 +618,7 @@ mod tests {
                 .repo
                 .card_create(NewCard {
                     wave_id: WaveId::from(self.wave_id.clone()),
+                    title: None,
                     kind: "codex".into(),
                     sort: None,
                     payload: json!({ "schemaVersion": 1 }),

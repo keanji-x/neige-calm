@@ -212,6 +212,7 @@ async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str)
         .repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),

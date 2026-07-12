@@ -86,6 +86,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -172,6 +173,7 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -255,6 +257,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -353,6 +356,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -502,6 +506,7 @@ async fn boot_recovery_skips_terminal_waves() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -582,6 +587,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -672,6 +678,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
         let card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: json!({
@@ -890,6 +897,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),

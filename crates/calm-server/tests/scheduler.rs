@@ -106,6 +106,7 @@ async fn boot() -> Boot {
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: None,
             payload: Value::Null,
@@ -115,6 +116,7 @@ async fn boot() -> Boot {
     let worker_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: Value::Null,
@@ -419,6 +421,7 @@ async fn seed_codex_worker_card_with_terminal(
                     &runtime_id,
                     None,
                     wave_id,
+                    None,
                     None,
                     "/tmp".to_string(),
                     json!({}),
@@ -1498,6 +1501,7 @@ async fn seed_terminal_worker(boot: &Boot, task_id: &str) -> (CardId, String) {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({ "idempotency_key": task_id }),
@@ -2247,6 +2251,7 @@ async fn sibling_card_report_cannot_flip_other_tasks_row() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: Value::Null,
@@ -2941,6 +2946,7 @@ async fn unstamped_dispatched_row_rejects_sibling_report() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({ "idempotency_key": "some-other-task" }),
@@ -3068,6 +3074,7 @@ async fn forged_payload_sibling_report_rejected_without_op_target() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({ "idempotency_key": task_id }),

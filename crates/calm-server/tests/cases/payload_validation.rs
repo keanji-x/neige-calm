@@ -270,6 +270,7 @@ async fn patch_terminal_card_with_bad_payload_returns_400() {
         .raw_repo()
         .card_create(NewCard {
             wave_id: wave_id.clone().into(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({ "terminal_id": "t1" }),
@@ -296,6 +297,7 @@ async fn patch_ui_card_with_junk_payload_is_accepted() {
         .raw_repo()
         .card_create(NewCard {
             wave_id: wave_id.clone().into(),
+            title: None,
             kind: "ui://example/view".into(),
             sort: None,
             payload: json!({}),
@@ -365,6 +367,7 @@ async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
         .raw_repo()
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({}),

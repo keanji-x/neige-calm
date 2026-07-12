@@ -647,6 +647,7 @@ mod tests {
         let worker_card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,
@@ -775,6 +776,7 @@ mod tests {
         let spec_card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,
@@ -784,6 +786,7 @@ mod tests {
         let report_card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "wave-report".into(),
                 sort: Some(-1.0),
                 payload: serde_json::to_value(WaveReportPayload::initial())
@@ -913,6 +916,7 @@ mod tests {
         let spec_card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: Value::Null,
@@ -922,6 +926,7 @@ mod tests {
         let report_card = repo
             .card_create(NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "wave-report".into(),
                 sort: Some(-1.0),
                 payload: serde_json::to_value(WaveReportPayload::initial())

@@ -609,6 +609,7 @@ async fn create_wave_with_spec_harness(
                     tx,
                     spec_card_id_for_tx.clone(),
                     NewCard {
+                        title: None,
                         wave_id: wave_id.clone(),
                         kind: "codex".into(),
                         sort: None,
@@ -630,6 +631,7 @@ async fn create_wave_with_spec_harness(
                     tx,
                     report_card_id_for_tx.clone(),
                     NewCard {
+                        title: None,
                         wave_id: wave_id.clone(),
                         kind: "wave-report".into(),
                         sort: Some(-1.0),

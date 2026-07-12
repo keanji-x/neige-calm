@@ -35,6 +35,7 @@ declare module '../../types' {
 
 export interface FileViewerCardData {
   type: 'file-viewer';
+  title?: string | null;
   id: string;
   path: string;
 }
@@ -970,7 +971,7 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
     return { kind: 'native-scroll', ref: paneRefSlot };
   },
   claim: { mode: 'exact', kind: 'file-viewer' },
-  title: () => 'file',
+  title: (card) => card.title || 'file',
   accessibleName: (card) => `File: ${card.path}`,
   create: {
     mode: 'generic',
@@ -992,6 +993,7 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
     return {
       type: 'file-viewer',
       id: k.id,
+      title: k.title,
       path: parsed.data.path,
     };
   },
@@ -999,6 +1001,7 @@ export const FileViewerEntry: CardEntry<FileViewerCardData> = {
     label: 'file',
     createSchema: {
       fields: [
+        { key: 'title', label: 'Title', type: 'string' },
         {
           key: 'path',
           label: 'File or folder',
