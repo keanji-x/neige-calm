@@ -4,7 +4,7 @@ use crate::actor::Actor;
 use crate::db::sqlite::{
     card_create_with_id_tx, card_update_tx, card_with_terminal_create_tx, cove_create_system_tx,
 };
-use crate::db::{write_with_event_typed, write_with_events_typed};
+use crate::db::{write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::{ActorId, CardId, WaveId};
@@ -44,6 +44,14 @@ struct EnsureTxResult {
     wave: Wave,
     report_card_id: String,
     created: bool,
+    adopted_legacy: bool,
+}
+
+fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
+    let CalmError::Db(sqlx::Error::Database(error)) = error else {
+        return false;
+    };
+    error.is_unique_violation() && error.message().contains(constraint)
 }
 
 fn spec_payload() -> serde_json::Value {
@@ -64,8 +72,8 @@ async fn today_launchpad_ensure_tx(
         "SELECT id,cove_id,title,sort,archived_at,pinned_at,lifecycle,cwd,workflow_id,purpose,workflow_input,terminal_at,created_at,updated_at FROM waves WHERE purpose='launchpad' LIMIT 1",
     ).fetch_optional(&mut **tx).await?.map(Wave::from);
 
-    let (wave, created) = if let Some(wave) = existing {
-        (wave, false)
+    let (wave, created, adopted_legacy) = if let Some(wave) = existing {
+        (wave, false, false)
     } else if let Some(mut wave) = sqlx::query_as::<_, crate::db::rows::WaveRow>(
         "SELECT id,cove_id,title,sort,archived_at,pinned_at,lifecycle,cwd,workflow_id,purpose,workflow_input,terminal_at,created_at,updated_at FROM waves WHERE cove_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1",
     ).bind(cove_id).fetch_optional(&mut **tx).await?.map(Wave::from) {
@@ -73,10 +81,10 @@ async fn today_launchpad_ensure_tx(
             .bind(wave.id.as_str()).bind(cwd).bind(now_ms()).execute(&mut **tx).await?;
         wave.purpose = Some("launchpad".into()); wave.cwd = cwd.into();
         wave.workflow_id = None; wave.workflow_input = None;
-        (wave, true)
+        (wave, false, true)
     } else {
         let id = new_id(); let now = now_ms();
-        let sort: f64 = sqlx::query_scalar("SELECT COALESCE(MAX(sort),-1)+1 FROM waves WHERE cove_id=?1")
+        let sort: f64 = sqlx::query_scalar("SELECT CAST(COALESCE(MAX(sort),-1)+1 AS REAL) FROM waves WHERE cove_id=?1")
             .bind(cove_id).fetch_one(&mut **tx).await?;
         sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,cwd,workflow_id,purpose,workflow_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',?4,NULL,'launchpad',NULL,?5,?5)")
             .bind(&id).bind(cove_id).bind(sort).bind(cwd).bind(now).execute(&mut **tx).await?;
@@ -84,7 +92,7 @@ async fn today_launchpad_ensure_tx(
         (Wave { id:id.into(), cove_id:cove_id.to_string().into(), title:"Today".into(), sort,
             archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd:cwd.into(),
             workflow_id:None, purpose:Some("launchpad".into()), workflow_input:None,
-            terminal_at:None, created_at:now, updated_at:now }, true)
+            terminal_at:None, created_at:now, updated_at:now }, true, false)
     };
 
     let cards: Vec<Card> = sqlx::query_as::<_, crate::db::rows::CardRow>(
@@ -95,20 +103,24 @@ async fn today_launchpad_ensure_tx(
         .find(|c| c.kind == "codex" && s.write.role_cache().get(&c.id) == Some(CardRole::Spec))
         .cloned()
     {
-        // Adoption deliberately resets only the spec transcript/thread surface.
-        sqlx::query("DELETE FROM harness_items WHERE card_id=?1")
-            .bind(card.id.as_str())
-            .execute(&mut **tx)
-            .await?;
-        card_update_tx(
-            tx,
-            card.id.as_str(),
-            CardPatch {
-                payload: Some(spec_payload()),
-                ..Default::default()
-            },
-        )
-        .await?
+        if adopted_legacy {
+            // Only repurposing a legacy Today wave invalidates its old spec thread.
+            sqlx::query("DELETE FROM harness_items WHERE card_id=?1")
+                .bind(card.id.as_str())
+                .execute(&mut **tx)
+                .await?;
+            card_update_tx(
+                tx,
+                card.id.as_str(),
+                CardPatch {
+                    payload: Some(spec_payload()),
+                    ..Default::default()
+                },
+            )
+            .await?
+        } else {
+            card
+        }
     } else {
         card_create_with_id_tx(
             tx,
@@ -182,6 +194,7 @@ async fn today_launchpad_ensure_tx(
         wave,
         report_card_id: report.id.to_string(),
         created,
+        adopted_legacy,
     })
 }
 
@@ -215,7 +228,7 @@ pub(crate) async fn ensure_today_launchpad(
         .await;
         match minted {
             Ok((c, _)) => c,
-            Err(CalmError::Db(_)) => app
+            Err(e) if is_unique_constraint(&e, "idx_coves_one_system") => app
                 .repo
                 .cove_get_system()
                 .await?
@@ -234,45 +247,22 @@ pub(crate) async fn ensure_today_launchpad(
     }
     let cwd = launchpad.to_string_lossy().into_owned();
     let route = RouteState::from_ref(&app);
-    let write = route.write.clone();
     let cove_id = cove.id.to_string();
-    let attempt = write_with_events_typed(
-        app.repo.as_ref(),
-        ActorId::Kernel,
-        None,
-        &app.events,
-        &write,
-        move |tx| {
-            Box::pin(async move {
-                let out = today_launchpad_ensure_tx(tx, &route, &cove_id, &cwd).await?;
-                Ok((out, Vec::new()))
-            })
-        },
-    )
+    let attempt = write_in_tx_typed(app.repo.as_ref(), move |tx| {
+        Box::pin(async move { today_launchpad_ensure_tx(tx, &route, &cove_id, &cwd).await })
+    })
     .await;
-    let (out, _) = match attempt {
+    let out = match attempt {
         Ok(v) => v,
-        Err(e @ CalmError::Db(_)) => {
+        Err(e) if is_unique_constraint(&e, "idx_waves_one_launchpad") => {
             // A concurrent inserter won the partial unique index; retry selects it.
             let route = RouteState::from_ref(&app);
-            let write = route.write.clone();
             let cove_id = cove.id.to_string();
             let cwd = launchpad.to_string_lossy().into_owned();
-            write_with_events_typed(
-                app.repo.as_ref(),
-                ActorId::Kernel,
-                None,
-                &app.events,
-                &write,
-                move |tx| {
-                    Box::pin(async move {
-                        let o = today_launchpad_ensure_tx(tx, &route, &cove_id, &cwd).await?;
-                        Ok((o, Vec::new()))
-                    })
-                },
-            )
-            .await
-            .map_err(|_| e)?
+            write_in_tx_typed(app.repo.as_ref(), move |tx| {
+                Box::pin(async move { today_launchpad_ensure_tx(tx, &route, &cove_id, &cwd).await })
+            })
+            .await?
         }
         Err(e) => return Err(e),
     };
@@ -284,8 +274,13 @@ pub(crate) async fn ensure_today_launchpad(
         sort: None,
         cwd: out.wave.cwd.clone(),
         goal: None,
-        reset_harness_items: out.created,
-        force_new_thread: out.created,
+        reset_harness_items: out.created || out.adopted_legacy,
+        force_new_thread: out.created || out.adopted_legacy,
+    };
+    let start_mode = if out.created || out.adopted_legacy {
+        "bootstrap"
+    } else {
+        "reuse"
     };
     let hash = stable_payload_hash(&serde_json::json!({"actor":"kernel","request":&req}))?;
     let op = app
@@ -294,7 +289,10 @@ pub(crate) async fn ensure_today_launchpad(
             "spec-harness-start",
             OperationKey {
                 operation_key: new_id(),
-                idempotency_key: Some(format!("today-launchpad:{}", out.dto.spec_card_id)),
+                idempotency_key: Some(format!(
+                    "today-launchpad:{}:{start_mode}",
+                    out.dto.spec_card_id
+                )),
                 payload_hash: hash,
             },
             serde_json::to_value(req)?,
@@ -304,7 +302,7 @@ pub(crate) async fn ensure_today_launchpad(
     match result.outcome {
         OperationOutcome::Succeeded { .. } | OperationOutcome::SucceededViaCollision { .. } => {
             Ok((
-                if out.created {
+                if out.created || out.adopted_legacy {
                     StatusCode::CREATED
                 } else {
                     StatusCode::OK

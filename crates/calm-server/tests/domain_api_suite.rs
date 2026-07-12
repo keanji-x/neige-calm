@@ -47,5 +47,7 @@ mod settings;
 mod threads_api;
 #[path = "cases/threads_resolve_claude.rs"]
 mod threads_resolve_claude;
+#[path = "cases/today_launchpad.rs"]
+mod today_launchpad;
 #[path = "cases/version.rs"]
 mod version;
