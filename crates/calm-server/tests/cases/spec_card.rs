@@ -325,6 +325,7 @@ async fn spec_card_can_emit_wave_updated_via_enforce_role() {
             lifecycle: calm_server::model::WaveLifecycle::Draft,
             cwd: String::new(),
             workflow_id: None,
+            purpose: None,
             workflow_input: None,
             terminal_at: None,
             created_at: 0,

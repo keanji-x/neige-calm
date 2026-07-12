@@ -53,6 +53,7 @@ fn spec_payload() -> serde_json::Value {
     })
 }
 
+#[allow(deprecated)]
 async fn today_launchpad_ensure_tx(
     tx: &mut Transaction<'_, Sqlite>,
     s: &RouteState,

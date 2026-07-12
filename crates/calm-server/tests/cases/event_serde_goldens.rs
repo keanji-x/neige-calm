@@ -118,6 +118,7 @@ fn wave_min() -> Wave {
         lifecycle: WaveLifecycle::Draft,
         cwd: String::new(),
         workflow_id: None,
+        purpose: None,
         workflow_input: None,
         terminal_at: None,
         created_at: 1000,

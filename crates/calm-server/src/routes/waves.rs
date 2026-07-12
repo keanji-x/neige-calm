@@ -487,8 +487,10 @@ pub(crate) async fn create_wave(
         attach_folder,
         body_cove_id,
         normalized_cwd,
-        repo_identity,
-        repo_identity_probed_at,
+        AttachRepoIdentity {
+            identity: repo_identity,
+            probed_at: repo_identity_probed_at,
+        },
     )
     .await
 }
@@ -554,6 +556,11 @@ fn validate_workflow_input_binding(
     }
 }
 
+struct AttachRepoIdentity {
+    identity: Option<String>,
+    probed_at: Option<i64>,
+}
+
 #[allow(deprecated)]
 async fn create_wave_with_spec_harness(
     s: RouteState,
@@ -562,8 +569,7 @@ async fn create_wave_with_spec_harness(
     attach_folder: bool,
     body_cove_id: String,
     normalized_cwd: String,
-    repo_identity: Option<String>,
-    repo_identity_probed_at: Option<i64>,
+    repo_identity: AttachRepoIdentity,
 ) -> Result<Response> {
     let spec_card_id = new_id();
     let report_card_id = new_id();
@@ -574,7 +580,8 @@ async fn create_wave_with_spec_harness(
     let report_card_id_for_tx = report_card_id.clone();
     let cove_id_for_attach = body_cove_id;
     let normalized_cwd_for_tx = normalized_cwd;
-    let repo_identity_for_tx = repo_identity;
+    let repo_identity_for_tx = repo_identity.identity;
+    let repo_identity_probed_at = repo_identity.probed_at;
     let ((wave,), _event_ids) = write_with_events_typed(
         s.repo.as_ref(),
         actor_id.clone(),
