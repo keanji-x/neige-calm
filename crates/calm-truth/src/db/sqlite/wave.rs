@@ -46,8 +46,8 @@ pub async fn wave_create_tx(
     // by construction; `WaveLifecycle::is_terminal` returns false for it).
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, NULL, ?9, ?10)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, NULL, ?8, NULL, ?9, ?10)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
@@ -77,6 +77,7 @@ pub async fn wave_create_tx(
         lifecycle,
         cwd: p.cwd,
         workflow_id: p.workflow_id,
+        purpose: None,
         workflow_input: p.workflow_input,
         terminal_at: None,
         created_at: now,
@@ -90,7 +91,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, workflow_input, terminal_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)

@@ -91,6 +91,7 @@ pub struct WaveRow {
     pub lifecycle: WaveLifecycle,
     pub cwd: String,
     pub workflow_id: Option<String>,
+    pub purpose: Option<String>,
     /// Nullable JSON TEXT column (migration 0061); decodes through the same
     /// `#[sqlx(json)]` machinery as `CardRow.payload`, `nullable` so a NULL
     /// column lands as `None` instead of a decode error.
@@ -113,6 +114,7 @@ impl From<WaveRow> for Wave {
             lifecycle: r.lifecycle,
             cwd: r.cwd,
             workflow_id: r.workflow_id,
+            purpose: r.purpose,
             workflow_input: r.workflow_input,
             terminal_at: r.terminal_at,
             created_at: r.created_at,
