@@ -184,6 +184,7 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
         &mut tx,
         card.id.as_ref(),
         CardPatch {
+            title: None,
             payload: Some(json!({
                 "schemaVersion": 1,
                 "terminal_id": term.id,

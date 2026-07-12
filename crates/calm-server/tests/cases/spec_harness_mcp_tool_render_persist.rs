@@ -43,6 +43,7 @@ async fn seed_harness(
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1, "spec_harness": true}),

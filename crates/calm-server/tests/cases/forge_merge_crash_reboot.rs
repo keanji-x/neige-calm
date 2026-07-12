@@ -663,6 +663,7 @@ async fn seed_world(repo: &Arc<SqlxRepo>, wave_cwd: &Path) -> Seeded {
         None,
         wave.id.clone(),
         None,
+        None,
         "/workspace".into(),
         json!({}),
         None,

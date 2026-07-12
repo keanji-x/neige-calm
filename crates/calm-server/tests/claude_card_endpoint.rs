@@ -824,6 +824,7 @@ async fn post_claude_restart_returns_403_for_non_claude_card() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone().into(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -843,6 +844,7 @@ async fn post_claude_restart_returns_403_without_resumable_session() {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone().into(),
+            title: None,
             kind: "claude".into(),
             sort: None,
             payload: json!({

@@ -175,6 +175,7 @@ impl TestFixture {
             .repo
             .card_create(NewCard {
                 wave_id: wave.id,
+                title: None,
                 kind: "terminal".into(),
                 sort: None,
                 payload: json!({}),

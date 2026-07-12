@@ -134,6 +134,7 @@ async fn dispatcher_pending_thread_bind_persists_thread_id_and_broadcasts_card_u
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::json!({}),
@@ -239,6 +240,7 @@ async fn dispatcher_pending_thread_missing_runtime_is_orphaned_and_clears_pendin
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::json!(["corrupt-payload-shape"]),
@@ -520,6 +522,7 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
     let worker_card = repo
         .card_create(NewCard {
             wave_id: wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: Value::Null,

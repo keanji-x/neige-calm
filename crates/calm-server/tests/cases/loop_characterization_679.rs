@@ -129,6 +129,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -144,6 +145,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),
@@ -717,6 +719,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
     let worker_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "terminal".into(),
             sort: None,
             payload: json!({"idempotency_key": task_id}),

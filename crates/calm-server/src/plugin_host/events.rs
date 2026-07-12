@@ -139,6 +139,7 @@ mod tests {
         Card {
             id: id.into(),
             wave_id: wave_id.into(),
+            title: None,
             kind: kind.into(),
             sort: 1.0,
             payload: json!({}),

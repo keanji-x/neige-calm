@@ -246,7 +246,7 @@ export const IframeEntry: CardEntry<IframeCardData> = {
         if (!isAllowedIframeUrl(url)) {
           throw new Error(`Invalid iframe URL: ${url}`);
         }
-        return { title: values.title, url };
+        return { url };
       },
       fields: [
         { key: 'title', label: 'Title', type: 'string' },

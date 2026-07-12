@@ -637,3 +637,112 @@ pub async fn card_mcp_token_set_tx(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::sqlite::SqlxRepo;
+    use crate::db::{RepoRead, RepoSyncDomainRaw};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn card_title_round_trips_through_create_patch_and_composite() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "title-test".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id,
+                title: "wave".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+
+        let card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                title: Some("Hello".into()),
+                kind: "plugin:test:view".into(),
+                sort: None,
+                payload: json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.card_get(card.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Hello")
+        );
+        assert_eq!(
+            repo.cards_by_wave(wave.id.as_str()).await.unwrap()[0]
+                .title
+                .as_deref(),
+            Some("Hello")
+        );
+
+        repo.card_update(
+            card.id.as_str(),
+            CardPatch {
+                title: Some("Renamed".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            repo.card_get(card.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Renamed")
+        );
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let (composite, _) = card_with_terminal_create_tx(
+            &mut tx,
+            crate::model::new_id(),
+            &crate::model::new_id(),
+            None,
+            wave.id,
+            Some("T".into()),
+            None,
+            "bash".into(),
+            "/tmp".into(),
+            json!({}),
+            CardRole::Worker,
+            true,
+            repo.card_role_cache(),
+            RequestTheme::default_dark(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            repo.card_get(composite.id.as_str())
+                .await
+                .unwrap()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("T")
+        );
+    }
+}

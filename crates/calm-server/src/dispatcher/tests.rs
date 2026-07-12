@@ -1378,6 +1378,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
     let card_sample = || crate::model::Card {
         id: worker.clone(),
         wave_id: wave.clone(),
+        title: None,
         kind: "terminal".into(),
         sort: 0.0,
         payload: serde_json::Value::Null,

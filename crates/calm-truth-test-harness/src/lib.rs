@@ -379,6 +379,7 @@ pub async fn invariant_t2_observation_writes_can_skip_events() {
     let card = repo
         .card_create(NewCard {
             wave_id,
+            title: None,
             kind: "plugin:test:worker".into(),
             sort: None,
             payload: Default::default(),

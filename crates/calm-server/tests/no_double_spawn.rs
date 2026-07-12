@@ -1144,6 +1144,7 @@ async fn terminal_create_recovery_from_tx_committed_replays_spawn_once() {
                 None,
                 wave_id.into(),
                 None,
+                None,
                 "/bin/sh".into(),
                 "/tmp".into(),
                 json!({}),
@@ -1263,6 +1264,7 @@ async fn codex_create_recovery_from_tx_committed_reaches_terminal_phase() {
                 &runtime_id_for_tx,
                 None,
                 wave_id.into(),
+                None,
                 None,
                 "/workspace".into(),
                 env.clone(),
@@ -1384,6 +1386,7 @@ async fn claude_create_recovery_from_tx_committed_reaches_terminal_phase_and_wri
                 card_id,
                 &runtime_id_for_tx,
                 wave_id.into(),
+                None,
                 None,
                 command_line_for_tx,
                 "/workspace".into(),
@@ -1685,6 +1688,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_waits_for_lifecycle_with
         .card_update(
             card.id.as_str(),
             CardPatch {
+                title: None,
                 kind: None,
                 sort: None,
                 payload: Some(payload),
@@ -1797,6 +1801,7 @@ async fn codex_prompt_recovery_without_marker_replays_turn_start_idempotently() 
         .card_update(
             card.id.as_str(),
             CardPatch {
+                title: None,
                 kind: None,
                 sort: None,
                 payload: Some(payload),
@@ -1915,6 +1920,7 @@ async fn codex_prompt_recovery_with_turn_started_marker_times_out_without_lifecy
         .card_update(
             card.id.as_str(),
             CardPatch {
+                title: None,
                 kind: None,
                 sort: None,
                 payload: Some(payload),
@@ -2018,6 +2024,7 @@ async fn codex_empty_recovery_from_spawn_started_rehydrates_pending_registry() {
         .card_update(
             card.id.as_str(),
             CardPatch {
+                title: None,
                 kind: None,
                 sort: None,
                 payload: Some(pending_payload),
@@ -2121,6 +2128,7 @@ async fn terminal_create_recovery_spawn_failure_clears_stale_pid_before_compensa
                 &runtime_id_for_tx,
                 None,
                 wave_id.into(),
+                None,
                 None,
                 "/bin/sh".into(),
                 "/tmp".into(),
@@ -2611,6 +2619,7 @@ async fn apply_recovery_continues_after_drive_error_between_items() {
                 None,
                 wave_id.into(),
                 None,
+                None,
                 "/bin/sh".into(),
                 "/tmp".into(),
                 json!({}),
@@ -2863,6 +2872,7 @@ fn terminal_payload(wave_id: &str) -> Value {
         runtime_id: Some(new_id()),
         request: TerminalCreateRequestPayload {
             wave_id: wave_id.to_string(),
+            title: None,
             sort: Some(1.0),
             program: "/bin/sh".into(),
             cwd: "/tmp".into(),
@@ -2934,6 +2944,7 @@ fn codex_payload(wave_id: &str, prompt: Option<&str>) -> Value {
         runtime_id: Some(new_id()),
         request: NormalizedCodexCreateRequest {
             wave_id: wave_id.to_string(),
+            title: None,
             sort: Some(1.0),
             cwd: "/workspace".into(),
             prompt: prompt.map(ToOwned::to_owned),
@@ -2969,6 +2980,7 @@ fn claude_payload(boot: &Boot, wave_id: &str, prompt: Option<&str>) -> Value {
         runtime_id: Some(new_id()),
         request: PreparedClaudeCreateRequest {
             wave_id: wave_id.to_string(),
+            title: None,
             sort: Some(1.0),
             cwd: "/workspace".into(),
             prompt: prompt.map(ToOwned::to_owned),
@@ -3216,6 +3228,7 @@ async fn seed_codex_card_for_operation(
                 &runtime_id_for_tx,
                 None,
                 wave_id.into(),
+                None,
                 None,
                 "/workspace".into(),
                 env,

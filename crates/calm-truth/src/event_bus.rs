@@ -364,6 +364,7 @@ mod filter_tests {
         Event::CardAdded(crate::model::Card {
             id: CardId::from(card),
             wave_id: WaveId::from(wave),
+            title: None,
             kind: "terminal".into(),
             sort: 1.0,
             payload: serde_json::Value::Null,

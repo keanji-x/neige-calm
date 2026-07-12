@@ -1135,6 +1135,7 @@ mod tests {
             .repo
             .card_create(NewCard {
                 wave_id: h.wave_id.clone().into(),
+                title: None,
                 kind: "terminal".into(),
                 sort: None,
                 payload: json!({}),
@@ -1321,6 +1322,7 @@ mod tests {
             .repo
             .card_create(NewCard {
                 wave_id: h.wave_id.clone().into(),
+                title: None,
                 kind: "terminal".into(),
                 sort: None,
                 payload: json!({}),
@@ -1397,6 +1399,7 @@ mod tests {
             crate::model::new_id(),
             NewCard {
                 wave_id: h.wave_id.clone().into(),
+                title: None,
                 kind: "plugin:p1:demo".into(),
                 sort: None,
                 payload: json!({}),

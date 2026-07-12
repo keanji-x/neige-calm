@@ -171,6 +171,7 @@ async fn seed_codex_card_with_role(boot: &Boot, role: CardRole) -> Card {
         .repo
         .card_create(NewCard {
             wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({

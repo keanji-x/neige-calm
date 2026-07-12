@@ -56,6 +56,7 @@ async fn boot() -> Boot {
         new_id(),
         NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1, "spec_harness": true}),
@@ -71,6 +72,7 @@ async fn boot() -> Boot {
         new_id(),
         NewCard {
             wave_id: wave.id,
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),

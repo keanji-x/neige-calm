@@ -42,6 +42,7 @@ async fn make_card(repo: &SqlxRepo, kind: &str, payload: Value) -> Card {
     let wave = make_wave(repo).await;
     repo.card_create(NewCard {
         wave_id: wave.id,
+        title: None,
         kind: kind.into(),
         sort: None,
         payload,

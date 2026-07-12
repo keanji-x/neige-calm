@@ -116,6 +116,7 @@ async fn fallback_replay_posts_file_and_deletes_on_success() {
     let card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: serde_json::json!({}),

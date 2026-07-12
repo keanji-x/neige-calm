@@ -290,6 +290,7 @@ mod tests {
             new_id(),
             NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: json!({"schemaVersion": 1, "spec_harness": true}),
@@ -305,6 +306,7 @@ mod tests {
             new_id(),
             NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: json!({"schemaVersion": 1}),
@@ -480,6 +482,7 @@ mod tests {
             new_id(),
             NewCard {
                 wave_id: wave.id.clone(),
+                title: None,
                 kind: "codex".into(),
                 sort: None,
                 payload: json!({"schemaVersion": 1, "spec_harness": true}),

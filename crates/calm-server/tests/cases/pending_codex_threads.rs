@@ -109,6 +109,7 @@ async fn seed_card_with_runtime_kind(
     let card = repo
         .card_create(NewCard {
             wave_id: wave_id.into(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({"schemaVersion": 1}),

@@ -108,6 +108,7 @@ async fn boot() -> Boot {
     let spec_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(0.0),
             payload: json!({ "role": "spec" }),
@@ -117,6 +118,7 @@ async fn boot() -> Boot {
     let worker_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(1.0),
             payload: json!({ "task": "local" }),
@@ -126,6 +128,7 @@ async fn boot() -> Boot {
     let report_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
+            title: None,
             kind: "wave-report".into(),
             sort: Some(-1.0),
             payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
@@ -158,6 +161,7 @@ async fn boot() -> Boot {
     let other_wave_card = repo
         .card_create(NewCard {
             wave_id: wave2.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: None,
             payload: json!({ "task": "other-wave" }),
@@ -167,6 +171,7 @@ async fn boot() -> Boot {
     let other_spec_card = repo
         .card_create(NewCard {
             wave_id: wave2.id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(-1.0),
             payload: json!({ "role": "spec" }),
@@ -475,6 +480,7 @@ async fn materialize_worker(boot: &Boot, key: &str) -> CardId {
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "codex".into(),
             sort: Some(10.0),
             payload: json!({
@@ -1133,6 +1139,7 @@ async fn runs_projection_ignores_non_worker_cards_with_idempotency_key_payloads(
         .repo
         .card_create(NewCard {
             wave_id: boot.wave_id.clone(),
+            title: None,
             kind: "spec".into(),
             sort: Some(2.0),
             payload: json!({ "idempotency_key": "decoy" }),
