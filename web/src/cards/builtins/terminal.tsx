@@ -215,7 +215,10 @@ function TerminalCard({
   );
 }
 
-export const TerminalEntry: CardEntry<TerminalCardData, { title?: string }> = {
+export const TerminalEntry: CardEntry<
+  TerminalCardData,
+  Record<string, never>
+> = {
   type: 'terminal',
   Component: TerminalCard,
   defaultSize: { w: 6, h: 10, minW: 4, minH: 6 },
@@ -238,12 +241,8 @@ export const TerminalEntry: CardEntry<TerminalCardData, { title?: string }> = {
   accessibleName: (card) => (card.title ? `Terminal: ${card.title}` : 'Terminal'),
   create: {
     mode: 'atomic',
-    async submit(waveId, input, ctx) {
-      const rgb = ctx.themeRgb;
-      const card = await createTerminalCard(waveId, {
-        title: input.title || undefined,
-        theme: rgb,
-      });
+    async submit(waveId, _input, ctx) {
+      const card = await createTerminalCard(waveId, { theme: ctx.themeRgb });
       return { cardId: card.id, raw: card };
     },
   },
@@ -291,10 +290,5 @@ export const TerminalEntry: CardEntry<TerminalCardData, { title?: string }> = {
       terminalId: parsed.data.terminal_id,
     };
   },
-  addPanel: {
-    label: 'terminal',
-    createSchema: {
-      fields: [{ key: 'title', label: 'Title', type: 'string' }],
-    },
-  },
+  addPanel: { label: 'terminal' },
 };
