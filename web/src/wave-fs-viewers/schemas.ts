@@ -132,6 +132,7 @@ export const waveFsWaveSchema = z.object({
   lifecycle: waveFsWaveLifecycleSchema,
   cwd: z.string(),
   workflow_id: z.string().nullable().default(null),
+  purpose: z.string().nullable(),
   /**
    * Issue #891 — opaque bound-workflow input JSON; `z.unknown()` mirrors the
    * `#[ts(type = "unknown")]` override on the Rust side. Legacy wave.json
