@@ -96,7 +96,7 @@ async fn today_launchpad_ensure_tx(
     };
 
     let cards: Vec<Card> = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT id,wave_id,kind,sort,payload,deletable,created_at,updated_at FROM cards WHERE wave_id=?1 ORDER BY created_at,id"
+        "SELECT id,wave_id,kind,title,sort,payload,deletable,created_at,updated_at FROM cards WHERE wave_id=?1 ORDER BY created_at,id"
     ).bind(wave.id.as_str()).fetch_all(&mut **tx).await?.into_iter().map(Card::from).collect();
     let spec = if let Some(card) = cards
         .iter()
@@ -158,7 +158,7 @@ async fn today_launchpad_ensure_tx(
         .await?
     };
     let valid_terminal_card = sqlx::query_as::<_, crate::db::rows::CardRow>(
-        "SELECT c.id,c.wave_id,c.kind,c.sort,c.payload,c.deletable,c.created_at,c.updated_at FROM cards c JOIN terminals t ON t.card_id=c.id WHERE c.wave_id=?1 AND c.kind='terminal' ORDER BY c.created_at,c.id LIMIT 1"
+        "SELECT c.id,c.wave_id,c.kind,c.title,c.sort,c.payload,c.deletable,c.created_at,c.updated_at FROM cards c JOIN terminals t ON t.card_id=c.id WHERE c.wave_id=?1 AND c.kind='terminal' ORDER BY c.created_at,c.id LIMIT 1"
     ).bind(wave.id.as_str()).fetch_optional(&mut **tx).await?.map(Card::from);
     let valid_terminal: Option<(Card, Terminal)> = if let Some(card) = valid_terminal_card {
         let term = crate::db::sqlite::terminal_get_by_card_tx(tx, card.id.as_str()).await?;
