@@ -3548,6 +3548,306 @@ async fn takeover_restamps_starting_row_to_running() {
     let _ = child.wait().await;
 }
 
+/// Spawn a fake app-server child directly from the test with a delayed
+/// socket bind (models mid-backfill: alive, verified, not yet bound) and a
+/// SIGTERM marker oracle. Returns (child, pid, process_start_time) once the
+/// fixture reports its SIGTERM handler armed — before that, a reap would
+/// hit a default-disposition process and the marker oracle would be vacuous.
+async fn spawn_unbound_child_with_term_marker(
+    sock: &Path,
+    bind_delay_ms: u64,
+    marker: &Path,
+    handler_ready: &Path,
+) -> (tokio::process::Child, i32, u64) {
+    let child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .env("FAKE_CODEX_BIND_DELAY_MS", bind_delay_ms.to_string())
+        .env("FAKE_CODEX_SIGTERM_MARKER", marker)
+        .env("FAKE_CODEX_HANDLER_READY_MARKER", handler_ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn unbound fake app-server child");
+    let pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
+    let mut handler_armed = false;
+    for _ in 0..500 {
+        if handler_ready.exists() {
+            handler_armed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        handler_armed,
+        "fixture must report its SIGTERM handler armed before the boot runs"
+    );
+    let process_start_time = read_proc_start_time(pid).expect("child start time");
+    (child, pid, process_start_time)
+}
+
+async fn persist_starting_daemon(
+    repo: &SqlxRepo,
+    root: &tempfile::TempDir,
+    pid: i32,
+    sock: &Path,
+    process_start_time: u64,
+    started_at: i64,
+) {
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "starting".into(),
+        pid: Some(pid),
+        pgid: Some(pid),
+        sock_path: Some(sock.display().to_string()),
+        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
+        process_start_time: Some(process_start_time),
+        boot_id: Some(read_boot_id().unwrap_or_default()),
+        started_at: Some(started_at),
+        last_error: None,
+        increment_restart_count: false,
+        daemon_env_signature: Some(effective_test_env_signature(
+            &cfg(root).codex_ingest_url_resolved(),
+        )),
+    })
+    .await
+    .unwrap();
+}
+
+/// #954 defect 2, design test 10 (failing-first) — a persisted `starting`
+/// row naming a VERIFIED alive child that has not yet bound its socket
+/// (mid-backfill) must be given the remaining readiness window budgeted by
+/// the persisted `started_at`, and ADOPTED when it binds: same pid, never
+/// signaled (no marker), restart_count unchanged, backfill progress
+/// preserved. Pre-#954-PR2 the takeover probe made a single
+/// `connect_initialized` attempt that failed instantly on the unbound
+/// socket → handshake-failure reap → a fresh spawn restarting backfill from
+/// scratch on every boot.
+///
+/// #953 interaction: the adoption funnels through the SAME
+/// `start_new_process_typestate` seam as a fresh spawn, so it must publish
+/// readiness `running: true` with the bumped installed generation (the
+/// claim boundary deferred harness recovery consumes).
+#[tokio::test]
+async fn boot_adopts_starting_child_within_readiness_window() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let marker = root.path().join("window-term-marker");
+    let handler_ready = root.path().join("window-handler-ready");
+
+    let (mut child, old_pid, process_start_time) =
+        spawn_unbound_child_with_term_marker(&sock, 2_000, &marker, &handler_ready).await;
+    let repo = repo().await;
+    persist_starting_daemon(&repo, &root, old_pid, &sock, process_start_time, now_ms()).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    let mut readiness = daemon.readiness_receiver();
+    daemon.start_or_takeover().await.unwrap();
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    assert_eq!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "the starting child must be ADOPTED when it binds within the \
+         remaining readiness window, not reaped for a fresh spawn"
+    );
+    assert!(
+        !marker.exists(),
+        "adoption must never signal the child (no SIGTERM marker) — \
+         backfill progress is preserved"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "adoption must re-stamp the starting row to running"
+    );
+    assert_eq!(record.pid, Some(old_pid));
+    assert_eq!(
+        record.restart_count, 0,
+        "adoption is not a restart — restart_count must be unchanged"
+    );
+    let ready = *readiness.borrow_and_update();
+    assert!(
+        ready.running,
+        "adoption must publish readiness running: true (same typestate \
+         seam as spawn — #953 claim boundary)"
+    );
+    assert_eq!(
+        ready.generation,
+        daemon.generation_for_test().await,
+        "readiness generation must be the adopted incarnation's bumped generation"
+    );
+    assert!(
+        ready.generation >= 1,
+        "installing the adopted Running incarnation must bump the generation"
+    );
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+/// #954 defect 2, design test 11 — window lapse: the persisted `started_at`
+/// is backdated beyond the start timeout, so the remaining window is zero.
+/// The alive-but-unbound child is reaped GRACEFULLY (cooperative SIGTERM
+/// marker written — the defect-1 helper, not an instant SIGKILL) and a
+/// fresh spawn replaces it.
+#[tokio::test]
+async fn readiness_window_lapse_reaps_gracefully_then_spawns_fresh() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let marker = root.path().join("lapse-term-marker");
+    let handler_ready = root.path().join("lapse-handler-ready");
+
+    let (child, old_pid, process_start_time) =
+        spawn_unbound_child_with_term_marker(&sock, 60_000, &marker, &handler_ready).await;
+    let repo = repo().await;
+    // Backdated far beyond the 120s default start timeout ⇒ zero window.
+    persist_starting_daemon(
+        &repo,
+        &root,
+        old_pid,
+        &sock,
+        process_start_time,
+        now_ms() - 600_000,
+    )
+    .await;
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    assert!(
+        marker.exists(),
+        "the lapsed child must be reaped GRACEFULLY (cooperative SIGTERM \
+         marker written), never an instant SIGKILL"
+    );
+    assert!(
+        waitpid_reaped(old_pid).await,
+        "the lapsed child must be gone after the graceful reap"
+    );
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    let new_pid = snapshot.runtime.as_ref().map(|runtime| runtime.pid);
+    assert_ne!(
+        new_pid,
+        Some(old_pid),
+        "a fresh spawn must replace the lapsed child"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, new_pid, "the row must name the fresh spawn");
+    drop(child);
+}
+
+/// #954 defect 2, design test 11 (exit arm) — a child that EXITS during the
+/// readiness window is detected by the liveness probe (`verify_owned_pid`
+/// polling) and replaced by an immediate fresh spawn — the boot never sits
+/// out the remaining window against a dead child.
+#[tokio::test]
+async fn child_exit_during_readiness_window_spawns_immediately() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let marker = root.path().join("exit-term-marker");
+    let handler_ready = root.path().join("exit-handler-ready");
+
+    let (child, old_pid, process_start_time) =
+        spawn_unbound_child_with_term_marker(&sock, 60_000, &marker, &handler_ready).await;
+    let repo = repo().await;
+    // Fresh started_at ⇒ near-full 120s window; the test kills the child
+    // 500ms into it, so only prompt exit-detection can finish in time.
+    persist_starting_daemon(&repo, &root, old_pid, &sock, process_start_time, now_ms()).await;
+
+    let daemon = server(&root, repo.clone()).await;
+    let boot = tokio::spawn({
+        let daemon = daemon.clone();
+        async move { daemon.start_or_takeover().await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // SAFETY: SIGKILL to the fake child this test spawned (models a child
+    // that dies mid-backfill; SIGKILL so no marker is written).
+    unsafe {
+        libc::kill(old_pid, libc::SIGKILL);
+    }
+    tokio::time::timeout(Duration::from_secs(30), boot)
+        .await
+        .expect("boot must not sit out the remaining window against a dead child")
+        .expect("boot task")
+        .expect("boot must recover by spawning fresh");
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    assert_ne!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "a fresh spawn must replace the exited child"
+    );
+    drop(child);
+}
+
+/// #954 defect 2 — the readiness window NEVER re-arms across repeated boots
+/// for the same child: it is budgeted by the PERSISTED `started_at` (which
+/// adoption/re-stamp preserves), so a second boot sees only the leftover
+/// budget. Constructed via a backdated `started_at`: with a 3s start
+/// timeout and 2s already consumed, the leftover 1s window lapses before
+/// the child's 2.5s bind — even though a (wrongly) re-armed fresh 3s window
+/// would have adopted it.
+#[tokio::test]
+async fn readiness_window_never_rearms_for_same_child() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+    let marker = root.path().join("rearm-term-marker");
+    let handler_ready = root.path().join("rearm-handler-ready");
+
+    let (child, old_pid, process_start_time) =
+        spawn_unbound_child_with_term_marker(&sock, 2_500, &marker, &handler_ready).await;
+    let repo = repo().await;
+    persist_starting_daemon(
+        &repo,
+        &root,
+        old_pid,
+        &sock,
+        process_start_time,
+        now_ms() - 2_000,
+    )
+    .await;
+
+    let mut cfg = cfg(&root);
+    cfg.shared_codex_appserver_start_timeout_secs = 3;
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+    daemon.start_or_takeover().await.unwrap();
+
+    assert!(
+        marker.exists(),
+        "the leftover window (1s) must lapse before the 2.5s bind: a fresh \
+         re-armed 3s window would have adopted the child instead of reaping"
+    );
+    assert!(
+        waitpid_reaped(old_pid).await,
+        "the lapsed child must be gone after the graceful reap"
+    );
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    assert_ne!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "the second boot gets only the leftover budget — the same child is \
+         replaced, not re-granted a full window"
+    );
+    drop(child);
+}
+
 /// #953 design test 12 — the settings PUT path (mark + nudge) never takes
 /// the transition serial: it must return promptly even while a stalled
 /// spawn holds the serial.

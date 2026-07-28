@@ -1490,6 +1490,26 @@ struct SpawnEnvSnapshot {
 }
 
 // ===================== Process lifecycle / supervision =====================
+/// #954 defect 2 — outcome of the takeover connect probe. `running` rows
+/// (and other adoptable non-starting shapes) keep the single-attempt
+/// fast-fail: a running daemon whose socket doesn't answer is broken, so
+/// boot must not stall for it. `starting` rows get the bounded readiness
+/// window poll ([`SharedCodexAppServer::poll_adopt_initialized`]).
+enum AdoptProbe {
+    /// The socket answered `initialize` — continue into the adoption body.
+    Connected((CodexAppServer, crate::codex_appserver::NotificationStream)),
+    /// Single-attempt probe failed against a live verified daemon —
+    /// handshake-failure reap, then fall through to spawn.
+    HandshakeFailed(String),
+    /// The child exited during the readiness window — fall through to
+    /// spawn with no reap (the stale-socket reap before spawn covers a
+    /// half-bound socket).
+    ChildExited,
+    /// The remaining window lapsed with the child alive and unbound —
+    /// graceful reap (defect-1 helper), then fall through to spawn.
+    WindowLapsed { last_error: String },
+}
+
 impl SharedCodexAppServer {
     async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
         self.running_client()
@@ -1590,8 +1610,34 @@ impl SharedCodexAppServer {
             return Ok(false);
         };
         let sock = PathBuf::from(sock_path);
-        match connect_initialized(&sock).await {
-            Ok((client, notifications)) => {
+        // #954 defect 2 — branch the probe on the persisted state: a
+        // `starting` row names a child still inside its own cold-start
+        // budget (mid-backfill after a calm-server crash/shutdown), so it
+        // gets the REMAINING readiness window instead of the instant
+        // handshake fast-fail that reaped it — and restarted backfill from
+        // scratch — on every boot.
+        let probe = if matches!(
+            SharedDaemonState::from_db_str(&record.state),
+            SharedDaemonState::Starting
+        ) {
+            // ms-domain saturating math anchored to the PERSISTED
+            // `started_at`: clock skew degenerates to a full or zero
+            // window, both bounded. Repeated boots against the same child
+            // never re-arm the window (adoption/re-stamp preserves
+            // `started_at`); a genuinely new spawn writes a new
+            // `started_at` and correctly gets a fresh window.
+            let elapsed = Duration::from_millis(now_ms().saturating_sub(started_at).max(0) as u64);
+            let remaining = self.start_timeout.saturating_sub(elapsed);
+            self.poll_adopt_initialized(&sock, pid, start_time, &boot_id, remaining)
+                .await
+        } else {
+            match connect_initialized(&sock).await {
+                Ok(pair) => AdoptProbe::Connected(pair),
+                Err(e) => AdoptProbe::HandshakeFailed(e.to_string()),
+            }
+        };
+        match probe {
+            AdoptProbe::Connected((client, notifications)) => {
                 let client = Arc::new(client);
                 let runtime = SharedDaemonRuntime {
                     pid,
@@ -1668,7 +1714,7 @@ impl SharedCodexAppServer {
                 }
                 Ok(true)
             }
-            Err(e) => {
+            AdoptProbe::HandshakeFailed(e) => {
                 tracing::warn!(
                     target: "shared_codex_daemon::stop",
                     pid,
@@ -1676,6 +1722,23 @@ impl SharedCodexAppServer {
                     error = %e,
                     "takeover handshake failed against verified daemon; reaping pgid before relaunch"
                 );
+                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
+                Ok(false)
+            }
+            AdoptProbe::ChildExited => Ok(false),
+            AdoptProbe::WindowLapsed { last_error } => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    pgid,
+                    error = %last_error,
+                    "starting child never bound within its remaining readiness \
+                     window; reaping gracefully before relaunch"
+                );
+                // The same wall-clock deadline the child's own supervisor
+                // would have enforced (#949), just by a successor process —
+                // graceful (defect-1 helper), never the instant SIGKILL
+                // that armed codex's backfill lease on 7/12.
                 reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
                 Ok(false)
             }
@@ -2546,6 +2609,71 @@ impl SharedCodexAppServer {
                     started.elapsed().as_secs_f64(),
                     self.start_timeout.as_secs()
                 )));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// #954 defect 2 — bounded readiness window for a verified `starting`
+    /// child: [`Self::poll_connect_initialized`]'s #949 loop with
+    /// child-liveness adapted to a non-child target — `verify_owned_pid`
+    /// polling instead of `spawn_guard.try_wait_exit()` (the child belongs
+    /// to a previous calm-server incarnation, so no `Child` handle exists).
+    /// `window` is the REMAINING budget
+    /// `start_timeout − (now − persisted started_at)`; a zero window
+    /// degenerates to a single raced attempt (an already-bound socket still
+    /// adopts) and then lapses. The deadline is a TOTAL cap: it also cuts
+    /// short an in-flight `connect_initialized` attempt, so the window
+    /// cannot be exceeded by the attempt's internal 10s request timeout.
+    async fn poll_adopt_initialized(
+        &self,
+        sock: &Path,
+        pid: i32,
+        start_time: u64,
+        boot_id: &str,
+        window: Duration,
+    ) -> AdoptProbe {
+        let started = tokio::time::Instant::now();
+        let deadline = started + window;
+        loop {
+            let (deadline_hit_in_flight, attempt_err) =
+                match tokio::time::timeout_at(deadline, connect_initialized(sock)).await {
+                    Ok(Ok(pair)) => return AdoptProbe::Connected(pair),
+                    Ok(Err(e)) => (false, e.to_string()),
+                    Err(_) => (
+                        true,
+                        "initialize attempt still in flight at the readiness-window deadline"
+                            .to_string(),
+                    ),
+                };
+            // Liveness AFTER the (possibly long) attempt, mirroring
+            // `poll_connect_initialized`: a child that exited during a
+            // hung attempt is classified as exited, not lapsed. Zombie =
+            // dead (#953 review D4 posture, same as
+            // `terminate_group_with_grace`): an exited-but-unreaped child
+            // can never bind the socket, so polling it out to the window
+            // deadline would stall boot for nothing.
+            if !verify_owned_pid(pid, start_time, boot_id) || proc_pid_is_zombie(pid) {
+                tracing::info!(
+                    target: "shared_codex_daemon::start",
+                    pid,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    "starting child exited during its readiness window; falling through to spawn"
+                );
+                return AdoptProbe::ChildExited;
+            }
+            if deadline_hit_in_flight || tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    target: "shared_codex_daemon::start",
+                    pid,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    window_ms = window.as_millis() as u64,
+                    error = %attempt_err,
+                    "starting child missed its remaining readiness window"
+                );
+                return AdoptProbe::WindowLapsed {
+                    last_error: attempt_err,
+                };
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
