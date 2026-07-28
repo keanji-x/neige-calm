@@ -977,8 +977,10 @@ impl SharedCodexAppServer {
     }
 
     /// #953 §5 — subscribe to the readiness channel (stamped on every
-    /// installed Running / terminal Failed). Sole consumer in this slice:
-    /// deferred harness recovery.
+    /// installed Running / terminal Failed, and INVALIDATED — `running:
+    /// false`, outgoing generation — on transition ENTRY in
+    /// `transition_replace`). Sole consumer in this slice: deferred harness
+    /// recovery.
     pub fn readiness_receiver(&self) -> tokio::sync::watch::Receiver<DaemonReadiness> {
         self.readiness.subscribe()
     }
