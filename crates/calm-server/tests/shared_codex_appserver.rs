@@ -2097,11 +2097,86 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     );
 }
 
+/// #949 review-fix — the deadline is a TOTAL cap even across an in-flight
+/// attempt: the child binds the socket immediately but never answers
+/// `initialize` (delay >> deadline). Without `timeout_at` around the
+/// attempt, the attempt's internal 10s request timeout would stretch the
+/// configured 2s deadline to ~10s. The start must fail at ~2s and the spawn
+/// guard must reap the child.
+///
+/// RED before the fix: elapsed was ~10s (attempt-internal request timeout),
+/// violating the knob's documented total-time semantics.
+#[tokio::test]
+async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        // Socket binds immediately; only the initialize RESPONSE hangs, far
+        // past both the 2s deadline and the attempt's 10s request timeout.
+        std::env::set_var("FAKE_CODEX_INITIALIZE_DELAY_MS", "60000");
+    }
+    let _delay = EnvGuard("FAKE_CODEX_INITIALIZE_DELAY_MS");
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut cfg = cfg(&root);
+    cfg.shared_codex_appserver_start_timeout_secs = 2;
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+
+    let started = std::time::Instant::now();
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("a hanging initialize must fail at the configured deadline");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "deadline must be honored, not undercut (took {elapsed:?})"
+    );
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "the 2s TOTAL deadline must cap the in-flight attempt, not the \
+         attempt's internal 10s request timeout (took {elapsed:?})"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("deadline 2s"),
+        "timeout error must report the configured deadline: {msg}"
+    );
+
+    // The spawn guard reaps the still-hanging child on failure.
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let pid = record
+        .pid
+        .expect("Starting state persisted the spawned pid");
+    let mut reaped = false;
+    for _ in 0..60 {
+        if pid_gone_or_zombie(pid) {
+            reaped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        reaped,
+        "a child hanging on initialize must be reaped after the deadline"
+    );
+}
+
 /// #949 acceptance (4) — the cold-start deadline knob: 120s default, and
 /// flag + env overrides, mirroring the sibling restart-delay knobs.
 #[tokio::test]
 async fn cold_start_deadline_config_default_flag_and_env_override() {
     let _guard = ENV_LOCK.lock().await;
+    // Ambient env from the invoking shell could already carry the override;
+    // clear it so the default assertion is hermetic.
+    unsafe {
+        std::env::remove_var("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS");
+    }
     assert_eq!(
         Config::parse_from(["calm-server"]).shared_codex_appserver_start_timeout_secs,
         120,

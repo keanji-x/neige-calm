@@ -1482,7 +1482,11 @@ impl SharedCodexAppServer {
     /// spend minutes backfilling its state db before it binds), a dead child
     /// fails immediately with its exit status, and only the configured
     /// cold-start deadline reaps a live-but-never-binding child (the
-    /// caller's `SpawnedChildGuard` drop does the actual reaping).
+    /// caller's `SpawnedChildGuard` drop does the actual reaping). The
+    /// deadline is a TOTAL cap: it also cuts short an in-flight
+    /// `connect_initialized` attempt (socket accepted, `initialize` never
+    /// answered), so the configured wait cannot be exceeded by the attempt's
+    /// internal 10s request timeout.
     async fn poll_connect_initialized(
         &self,
         spawn_guard: &mut SpawnedChildGuard,
@@ -1490,35 +1494,48 @@ impl SharedCodexAppServer {
         let started = tokio::time::Instant::now();
         let deadline = started + self.start_timeout;
         loop {
-            match connect_initialized(&self.sock).await {
-                Ok(pair) => return Ok(pair),
-                Err(e) => {
-                    if let Some(status) = spawn_guard.try_wait_exit() {
-                        return Err(CalmError::CodexAppServer(format!(
-                            "shared codex app-server exited before initialize ({status}) \
-                             after {:.1}s: {e}",
-                            started.elapsed().as_secs_f64()
-                        )));
-                    }
-                    if tokio::time::Instant::now() >= deadline {
-                        let waited_ms = started.elapsed().as_millis() as u64;
-                        tracing::warn!(
-                            target: "shared_codex_daemon::start",
-                            waited_ms,
-                            deadline_ms = self.start_timeout.as_millis() as u64,
-                            error = %e,
-                            "shared codex app-server missed the cold-start deadline; reaping spawn"
-                        );
-                        return Err(CalmError::CodexAppServer(format!(
-                            "shared codex app-server not initialized after {:.1}s \
-                             (deadline {}s, child still alive): {e}",
-                            started.elapsed().as_secs_f64(),
-                            self.start_timeout.as_secs()
-                        )));
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
+            // The deadline caps the TOTAL wait, including an in-flight
+            // attempt: `connect_initialized` gives `initialize` its own 10s
+            // request timeout, so without `timeout_at` a child that accepts
+            // the socket but never answers would stretch the configured
+            // deadline by up to 10s per attempt.
+            let (deadline_hit_in_flight, attempt_err) =
+                match tokio::time::timeout_at(deadline, connect_initialized(&self.sock)).await {
+                    Ok(Ok(pair)) => return Ok(pair),
+                    Ok(Err(e)) => (false, e.to_string()),
+                    Err(_) => (
+                        true,
+                        "initialize attempt still in flight at the cold-start deadline".to_string(),
+                    ),
+                };
+            // Probe liveness AFTER the (possibly long) attempt so both error
+            // paths below describe the child's state at emission time — a
+            // child that exited during a hung attempt surfaces its exit
+            // status here rather than a stale "still alive" claim.
+            if let Some(status) = spawn_guard.try_wait_exit() {
+                return Err(CalmError::CodexAppServer(format!(
+                    "shared codex app-server exited before initialize ({status}) \
+                     after {:.1}s: {attempt_err}",
+                    started.elapsed().as_secs_f64()
+                )));
             }
+            if deadline_hit_in_flight || tokio::time::Instant::now() >= deadline {
+                let waited_ms = started.elapsed().as_millis() as u64;
+                tracing::warn!(
+                    target: "shared_codex_daemon::start",
+                    waited_ms,
+                    deadline_ms = self.start_timeout.as_millis() as u64,
+                    error = %attempt_err,
+                    "shared codex app-server missed the cold-start deadline; reaping spawn"
+                );
+                return Err(CalmError::CodexAppServer(format!(
+                    "shared codex app-server not initialized after {:.1}s \
+                     (deadline {}s, child still alive): {attempt_err}",
+                    started.elapsed().as_secs_f64(),
+                    self.start_timeout.as_secs()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
