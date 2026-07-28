@@ -56,6 +56,12 @@ fn cfg(root: &TempDir) -> Config {
         "10",
         "--shared-codex-appserver-restart-max-delay-ms",
         "50",
+        // #949: keep the cold-start deadline short — the respawn-failure
+        // tests force `FAKE_CODEX_FAIL_INITIALIZE` with a live child, which
+        // now (correctly) retries until this deadline instead of a hardcoded
+        // 10s; the 120s production default would stall those tests.
+        "--shared-codex-appserver-start-timeout-secs",
+        "3",
     ])
 }
 

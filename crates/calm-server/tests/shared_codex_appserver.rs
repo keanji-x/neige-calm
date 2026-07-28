@@ -1940,3 +1940,189 @@ async fn active_turns_map_tracks_turn_started_and_completed() {
         std::env::remove_var("FAKE_CODEX_TURN_COMPLETED_DELAY_MS");
     }
 }
+
+// ================= #949 cold-start deadline & child-liveness wait =================
+
+/// `/proc/<pid>` liveness for reap assertions: gone entirely, or already
+/// reaped into a zombie (state `Z`) — either way the process stopped working.
+fn pid_gone_or_zombie(pid: i32) -> bool {
+    let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(_) => return true,
+    };
+    // The state field is the first token after the `(comm)` field.
+    stat.rsplit(") ")
+        .next()
+        .and_then(|rest| rest.chars().next())
+        .map(|state| state == 'Z')
+        .unwrap_or(false)
+}
+
+/// #949 acceptance (1)+(5) — repro of the production cold-start livelock:
+/// codex may spend minutes rebuilding its state db (48.7s measured in
+/// production) before it binds the listen socket at all. The fake delays
+/// socket BIND past the old hardcoded 10s deadline; the start must still
+/// succeed (default deadline 120s) and the child must NOT be reaped.
+///
+/// RED before #949: `poll_connect_initialized` gave up at a hardcoded 10s
+/// and `SpawnedChildGuard` killed the legitimately-backfilling child.
+#[tokio::test]
+async fn cold_start_survives_socket_bind_slower_than_ten_seconds() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_BIND_DELAY_MS", "11000");
+    }
+    let _delay = EnvGuard("FAKE_CODEX_BIND_DELAY_MS");
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    let started = std::time::Instant::now();
+    daemon
+        .start_or_takeover()
+        .await
+        .expect("start must survive a >10s socket bind delay within the default 120s deadline");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(10),
+        "bind delay must actually outlive the old hardcoded 10s deadline (took {elapsed:?})"
+    );
+
+    let snapshot = daemon.status_snapshot();
+    assert!(
+        matches!(snapshot.state, SharedDaemonState::Running),
+        "delayed-bind start must land Running, got {:?}",
+        snapshot.state
+    );
+    let pid = snapshot.runtime.expect("running runtime has pid").pid;
+    assert!(
+        !pid_gone_or_zombie(pid),
+        "child must not be reaped after a successful delayed start"
+    );
+}
+
+/// #949 acceptance (2) — the child exits before the socket appears: the
+/// cold-start poll must fail fast (well under the deadline) and surface the
+/// child's exit status instead of blindly waiting out the timer.
+///
+/// RED before #949: the poll ignored child liveness and burned the full
+/// deadline, then reported only the socket connect error.
+#[tokio::test]
+async fn cold_start_fails_fast_with_exit_status_when_child_dies_before_bind() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_EXIT_BEFORE_BIND_CODE", "7");
+    }
+    let _code = EnvGuard("FAKE_CODEX_EXIT_BEFORE_BIND_CODE");
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    let started = std::time::Instant::now();
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("start must fail when the child exits before binding");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "child exit must fail the start fast, not wait out the deadline (took {elapsed:?})"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exit status: 7"),
+        "start error must include the child's exit status: {msg}"
+    );
+}
+
+/// #949 acceptance (3) — the child stays alive but never binds: the
+/// configured deadline (2s here) is the only kill switch. The start must
+/// fail shortly after that deadline — not the old hardcoded 10s — and the
+/// spawn guard must reap the child.
+#[tokio::test]
+async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_BIND_DELAY_MS", "8000");
+    }
+    let _delay = EnvGuard("FAKE_CODEX_BIND_DELAY_MS");
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut cfg = cfg(&root);
+    cfg.shared_codex_appserver_start_timeout_secs = 2;
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+
+    let started = std::time::Instant::now();
+    let err = daemon
+        .start_or_takeover()
+        .await
+        .expect_err("a never-binding child must fail at the configured deadline");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= Duration::from_secs(2),
+        "deadline must be honored, not undercut (took {elapsed:?})"
+    );
+    assert!(
+        elapsed < Duration::from_secs(7),
+        "the CONFIGURED 2s deadline must apply, not the old hardcoded 10s (took {elapsed:?})"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("deadline 2s"),
+        "timeout error must report the configured deadline: {msg}"
+    );
+
+    // The spawn guard reaps the still-alive child on failure.
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    let pid = record
+        .pid
+        .expect("Starting state persisted the spawned pid");
+    let mut reaped = false;
+    for _ in 0..60 {
+        if pid_gone_or_zombie(pid) {
+            reaped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        reaped,
+        "never-binding child must be reaped after the deadline"
+    );
+}
+
+/// #949 acceptance (4) — the cold-start deadline knob: 120s default, and
+/// flag + env overrides, mirroring the sibling restart-delay knobs.
+#[tokio::test]
+async fn cold_start_deadline_config_default_flag_and_env_override() {
+    let _guard = ENV_LOCK.lock().await;
+    assert_eq!(
+        Config::parse_from(["calm-server"]).shared_codex_appserver_start_timeout_secs,
+        120,
+        "default must be 120s (#949: covers the measured 48.7s backfill with headroom)"
+    );
+    assert_eq!(
+        Config::parse_from([
+            "calm-server",
+            "--shared-codex-appserver-start-timeout-secs",
+            "7"
+        ])
+        .shared_codex_appserver_start_timeout_secs,
+        7
+    );
+    unsafe {
+        std::env::set_var("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS", "33");
+    }
+    let _env = EnvGuard("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS");
+    assert_eq!(
+        Config::parse_from(["calm-server"]).shared_codex_appserver_start_timeout_secs,
+        33,
+        "env override must win over the default"
+    );
+}

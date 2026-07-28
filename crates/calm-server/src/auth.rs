@@ -501,6 +501,7 @@ mod tests {
             auth_dev_autologin: false,
             shared_codex_appserver_restart_initial_delay_ms: 250,
             shared_codex_appserver_restart_max_delay_ms: 10_000,
+            shared_codex_appserver_start_timeout_secs: 120,
             shared_codex_appserver_log_dir: None,
         };
         let err = AuthConfig::from_config(&cfg).unwrap_err();
@@ -530,6 +531,7 @@ mod tests {
             auth_dev_autologin: true,
             shared_codex_appserver_restart_initial_delay_ms: 250,
             shared_codex_appserver_restart_max_delay_ms: 10_000,
+            shared_codex_appserver_start_timeout_secs: 120,
             shared_codex_appserver_log_dir: None,
         };
         let auth = AuthConfig::from_config(&cfg).expect("dev autologin allows missing password");
