@@ -1294,6 +1294,7 @@ async fn review_round_recovers_into_pending_queue() {
         daemon,
         &registry,
         runtime,
+        calm_server::harness::ClaimMode::Replace,
     )
     .await
     .expect("spawn recovered harness")

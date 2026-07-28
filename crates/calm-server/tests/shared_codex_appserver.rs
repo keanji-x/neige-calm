@@ -2425,6 +2425,61 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
     );
 }
 
+/// #953 PR2 §5 — the readiness watch is stamped `running: false` on a
+/// terminal Failed (typestate error arm) and `running: true` with the
+/// installed generation on every installed Running (typestate success arm).
+/// This is the channel the deferred harness recovery consumes.
+#[tokio::test]
+async fn readiness_watch_tracks_failed_and_running_transitions() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut quiet_cfg = cfg(&root);
+    quiet_cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    quiet_cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let (daemon, codex_link) = daemon_with_codex_symlink_cfg(&root, repo.clone(), quiet_cfg);
+    let mut readiness = daemon.readiness_receiver();
+    assert!(
+        !readiness.borrow().running,
+        "readiness starts not-running before any spawn"
+    );
+
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot spawn must fail with a missing codex bin");
+    let after_failure = *readiness.borrow_and_update();
+    assert!(
+        !after_failure.running,
+        "terminal Failed must stamp running: false"
+    );
+
+    // Repair + the existing settings-change nudge: the heal loop's success
+    // must stamp running: true with the installed generation.
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    daemon.mark_needs_respawn();
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let current = *readiness.borrow_and_update();
+            if current.running {
+                break current;
+            }
+            readiness
+                .changed()
+                .await
+                .expect("supervisor must outlive the wait");
+        }
+    })
+    .await
+    .expect("readiness must flip to running after the background heal");
+    assert_eq!(
+        ready.generation,
+        daemon.generation_for_test().await,
+        "readiness generation must be the installed Running incarnation's"
+    );
+    assert!(daemon.is_running());
+}
+
 /// Rewrite the polluted home's config.toml without the `evil` entry —
 /// "polluted-then-repaired" (#953 design test 6).
 fn repair_polluted_home(root: &tempfile::TempDir) {

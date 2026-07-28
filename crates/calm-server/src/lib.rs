@@ -594,7 +594,12 @@ pub async fn recover_harnesses_after_daemon_boot(
                 error = %e,
                 "shared codex app-server start/takeover failed; continuing boot"
             );
-            tracing::warn!("skipping spec harness recovery; daemon unavailable");
+            // #953 §5 — deferred, not skipped forever: the heal loop armed
+            // by the failed spawn keeps retrying, and the first observed
+            // Running triggers a claim-based recovery pass that never
+            // stomps a runtime the user resumed in the meantime.
+            tracing::warn!("deferring spec harness recovery until the shared daemon self-heals");
+            state.arm_deferred_harness_recovery();
             Ok(0)
         }
     }

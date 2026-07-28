@@ -606,6 +606,7 @@ pub async fn force_spec_phase(
             state.shared_codex_appserver.clone(),
             &state.harness,
             runtime.clone(),
+            crate::harness::ClaimMode::Replace,
         )
         .await?
         .ok_or_else(|| {

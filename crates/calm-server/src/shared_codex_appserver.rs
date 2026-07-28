@@ -199,6 +199,18 @@ pub enum ReplacePrecondition {
     NotRunning,
 }
 
+/// #953 §5 — readiness snapshot published on every installed Running /
+/// terminal Failed. `generation` identifies the Running incarnation
+/// (equality comparisons only; wrap/restart-reset harmless for the
+/// process-local consumer). Sole consumer in this slice: deferred harness
+/// recovery; future consumers (status/health, admin wait) can watch the
+/// same channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DaemonReadiness {
+    pub generation: u64,
+    pub running: bool,
+}
+
 /// Outcome of [`SharedCodexAppServer::transition_replace`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplaceOutcome {
@@ -633,6 +645,11 @@ pub struct SharedCodexAppServer {
     heal_nudge: Arc<tokio::sync::Notify>,
     /// #953 §2 — post-Ok dedup of Failed DB writes.
     failed_persist_dedup: FailedPersistDedup,
+    /// #953 §5 — readiness channel: stamped on every installed Running
+    /// (typestate success arm) and every terminal Failed (typestate error
+    /// arm + the in-memory terminalization paths). Receivers via
+    /// [`Self::readiness_receiver`].
+    readiness: tokio::sync::watch::Sender<DaemonReadiness>,
     /// #953 review D1 — fixtures-only interleaving gate: the heal loop's Ok
     /// path awaits this mutex AFTER `ensure_running` succeeded but BEFORE it
     /// releases the singleton claim. A test holding the lock parks the heal
@@ -822,6 +839,10 @@ impl SharedCodexAppServer {
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
             failed_persist_dedup: FailedPersistDedup::default(),
+            readiness: tokio::sync::watch::Sender::new(DaemonReadiness {
+                generation: 0,
+                running: false,
+            }),
             #[cfg(feature = "fixtures")]
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: "http://127.0.0.1:0".into(),
@@ -872,6 +893,10 @@ impl SharedCodexAppServer {
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
             failed_persist_dedup: FailedPersistDedup::default(),
+            readiness: tokio::sync::watch::Sender::new(DaemonReadiness {
+                generation: 0,
+                running: false,
+            }),
             #[cfg(feature = "fixtures")]
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: cfg.codex_ingest_url_resolved(),
@@ -930,6 +955,24 @@ impl SharedCodexAppServer {
         )
         .await?;
         Ok(())
+    }
+
+    /// #953 §5 — subscribe to the readiness channel (stamped on every
+    /// installed Running / terminal Failed). Sole consumer in this slice:
+    /// deferred harness recovery.
+    pub fn readiness_receiver(&self) -> tokio::sync::watch::Receiver<DaemonReadiness> {
+        self.readiness.subscribe()
+    }
+
+    /// Fixtures-only: publish a readiness value directly, so stub-daemon
+    /// tests can drive the deferred-recovery consumer deterministically
+    /// without a real spawn/heal cycle.
+    #[cfg(feature = "fixtures")]
+    pub fn publish_readiness_for_test(&self, generation: u64, running: bool) {
+        self.readiness.send_replace(DaemonReadiness {
+            generation,
+            running,
+        });
     }
 
     /// #953 — preflight enrichment: same error variants/status as before,
@@ -1884,14 +1927,20 @@ impl SharedCodexAppServer {
         last_error: String,
         class: FailureClass,
     ) {
-        {
+        let generation = {
             let mut core = self.core.lock().await;
             core.state = SupervisorState::Failed {
                 last_error,
                 class,
                 since: Instant::now(),
             };
-        }
+            core.generation
+        };
+        // #953 §5 — readiness stamped on every terminal Failed.
+        self.readiness.send_replace(DaemonReadiness {
+            generation,
+            running: false,
+        });
         self.schedule_heal();
     }
 
@@ -2462,29 +2511,43 @@ impl SharedCodexAppServer {
         }
         match spawn(socket_path).await {
             Ok(launched) => {
-                let mut core = self.core.lock().await;
-                core.attempts = 0;
-                // #953 §1 — a new Running incarnation is installed: bump the
-                // generation (wrapping; equality-only consumers).
-                core.generation = core.generation.wrapping_add(1);
-                core.state = SupervisorState::Running {
-                    child: launched.child,
-                    client: launched.client,
-                    runtime: launched.runtime,
-                    watcher: launched.watcher,
+                let generation = {
+                    let mut core = self.core.lock().await;
+                    core.attempts = 0;
+                    // #953 §1 — a new Running incarnation is installed: bump
+                    // the generation (wrapping; equality-only consumers).
+                    core.generation = core.generation.wrapping_add(1);
+                    core.state = SupervisorState::Running {
+                        child: launched.child,
+                        client: launched.client,
+                        runtime: launched.runtime,
+                        watcher: launched.watcher,
+                    };
+                    core.generation
                 };
+                // #953 §5 — readiness stamped on every installed Running.
+                self.readiness.send_replace(DaemonReadiness {
+                    generation,
+                    running: true,
+                });
                 Ok(())
             }
             Err(err) => {
                 let class = classify_spawn_failure(&err);
-                {
+                let generation = {
                     let mut core = self.core.lock().await;
                     core.state = SupervisorState::Failed {
                         last_error: err.to_string(),
                         class,
                         since: Instant::now(),
                     };
-                }
+                    core.generation
+                };
+                // #953 §5 — readiness stamped on every terminal Failed.
+                self.readiness.send_replace(DaemonReadiness {
+                    generation,
+                    running: false,
+                });
                 // No DB I/O under the core mutex; the transition serial is
                 // still held by the caller, so this write is ordered with
                 // every other daemon-row write.

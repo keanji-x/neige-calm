@@ -508,6 +508,25 @@ impl AppState {
         .await
     }
 
+    /// #953 §5 — arm the deferred (post-heal) spec harness recovery task.
+    /// Called from the boot path ONLY when the daemon spawn failed; the task
+    /// waits on the supervisor readiness watch and runs a claim-based
+    /// recovery pass on the first observed `running: true`.
+    pub fn arm_deferred_harness_recovery(&self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(crate::harness::recover_harnesses_deferred(
+            crate::harness::DeferredRecoveryParams {
+                repo: self.raw.clone(),
+                events: self.events.clone(),
+                card_role_cache: self.card_role_cache.clone(),
+                wave_cove_cache: self.wave_cove_cache.clone(),
+                daemon: self.shared_codex_appserver.clone(),
+                registry: self.harness.clone(),
+                #[cfg(feature = "fixtures")]
+                post_eligibility_hook: None,
+            },
+        ))
+    }
+
     /// Test / replay-lib hatch: build an `AppState` from already-constructed
     /// pieces, skipping the boot-time plugin registry load + background
     /// task spawn that `new` does. Public so `replay::boot_in_memory` and

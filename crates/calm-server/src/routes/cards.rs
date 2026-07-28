@@ -1181,6 +1181,7 @@ async fn ensure_live_spec_harness(
         cs.shared_codex_appserver.clone(),
         &s.harness,
         runtime.clone(),
+        crate::harness::ClaimMode::Replace,
     )
     .await?
     .ok_or_else(dormant)?;
