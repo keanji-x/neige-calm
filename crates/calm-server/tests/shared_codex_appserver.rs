@@ -18,8 +18,8 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::{
-    BackoffState, SPAWN_ENV_PASSTHROUGH, SharedCodexAppServer, SharedDaemonState,
-    SharedThreadStartParams, ThreadConfig, bounded_exponential_backoff,
+    BackoffState, ReplaceOutcome, ReplacePrecondition, SPAWN_ENV_PASSTHROUGH, SharedCodexAppServer,
+    SharedDaemonState, SharedThreadStartParams, ThreadConfig, bounded_exponential_backoff,
     drop_spawned_child_guard_for_test,
 };
 use clap::Parser;
@@ -2373,6 +2373,18 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
         record.state
     );
 
+    // #953 defect 3/design test 4 — while Failed, the preflight message must
+    // carry the live failure and the background-retry fact.
+    assert!(
+        !daemon.is_running(),
+        "failed daemon must preflight as not running"
+    );
+    let message = daemon.not_running_message();
+    assert!(
+        message.contains("last error:") && message.contains("retry"),
+        "not_running_message must carry last_error and the retry hint; got: {message}"
+    );
+
     // Repair the cause, then fire ONLY the existing settings-change nudge.
     std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
     daemon.mark_needs_respawn();
@@ -2390,4 +2402,666 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
         "heal success must persist the running row"
     );
     assert!(record.pid.is_some());
+    // Lockout reversed: the user-path preflight passes again.
+    assert!(
+        daemon.is_running(),
+        "preflighted user path must pass after the background heal"
+    );
+}
+
+/// Rewrite the polluted home's config.toml without the `evil` entry —
+/// "polluted-then-repaired" (#953 design test 6).
+fn repair_polluted_home(root: &tempfile::TempDir) {
+    let cfg_path = root.path().join("codex-home/config.toml");
+    let content = std::fs::read_to_string(&cfg_path).unwrap();
+    let repaired = content.replace("[mcp_servers.evil]\ncommand = \"/usr/bin/evil-mcp\"\n", "");
+    assert_ne!(content, repaired, "pollution must have been present");
+    std::fs::write(&cfg_path, repaired).unwrap();
+}
+
+/// #953 design test 5 — the double-spawn race of the old split path,
+/// demonstrated post-hoc via the precondition that replaced it (the split
+/// path is deleted, so the race itself is no longer constructible): a
+/// crash restart carrying a stale generation — its process was already
+/// replaced by a settings respawn — must abort silently: no reap, no spawn,
+/// a single live pid, consistent restart_count.
+#[tokio::test]
+async fn stale_generation_crash_restart_aborts_without_reap_or_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+    let stale_generation = daemon.generation_for_test().await;
+
+    // A settings respawn replaces the process: the generation moves on.
+    daemon.mark_needs_respawn();
+    daemon.ensure_respawn_for_current_settings().await.unwrap();
+    let after_respawn = daemon.status_snapshot();
+    assert_eq!(after_respawn.restart_count, 1);
+    let replaced_pid = after_respawn.runtime.as_ref().unwrap().pid;
+    assert_ne!(
+        daemon.generation_for_test().await,
+        stale_generation,
+        "installing a new Running incarnation must bump the generation"
+    );
+
+    let outcome = daemon
+        .transition_replace_for_test(
+            "stale crash restart",
+            ReplacePrecondition::GenerationIs(stale_generation),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome,
+        ReplaceOutcome::PreconditionFailed,
+        "a stale-generation restart must abort at the precondition"
+    );
+    let after = daemon.status_snapshot();
+    assert_eq!(after.state, SharedDaemonState::Running);
+    assert_eq!(
+        after.restart_count, 1,
+        "the aborted restart must not bump restart_count"
+    );
+    assert_eq!(
+        after.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(replaced_pid),
+        "the aborted restart must not replace the live daemon"
+    );
+    assert!(
+        !pid_gone_or_zombie(replaced_pid),
+        "the aborted restart must not reap the live daemon"
+    );
+}
+
+/// #953 design test 6 — fence-unreconciled: a corrupt pgid≠pid record plus a
+/// polluted-then-repaired home. While the survivor lives, no round may
+/// spawn (row keeps identity + `unreconciled:` prefix, survivor untouched);
+/// once the survivor is gone, reconciliation proves absence, NULLs identity,
+/// and the spawn proceeds.
+#[tokio::test]
+async fn unreconciled_record_fences_spawn_until_survivor_proven_gone() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let (launcher, pgid, peer_pid) = spawn_launcher_with_fake_appserver(&sock, false, false).await;
+    let process_start_time = read_proc_start_time(peer_pid).expect("fake app-server start time");
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
+
+    let daemon =
+        SharedCodexAppServer::new(&cfg(&root), Arc::new(polluted_home(&root)), repo.clone());
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot guard must refuse the polluted CODEX_HOME");
+
+    repair_polluted_home(&root);
+
+    // The home is clean now, but the unreconciled row still fences the spawn.
+    let err = daemon
+        .ensure_running()
+        .await
+        .expect_err("the unreconciled row must fence the spawn while the survivor lives");
+    assert!(
+        err.to_string().contains("unreconciled"),
+        "fence error must say unreconciled; got: {err}"
+    );
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    assert_eq!(
+        unsafe { libc::kill(peer_pid, 0) },
+        0,
+        "the survivor must never be signaled while unreconciled"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        record.pid,
+        Some(peer_pid),
+        "the fenced row must retain the identity tuple"
+    );
+    assert!(
+        record
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("unreconciled: "),
+        "fenced row must carry the durable prefix; got {:?}",
+        record.last_error
+    );
+    assert_ne!(
+        daemon.status_snapshot().state,
+        SharedDaemonState::Running,
+        "no spawn may happen while unreconciled"
+    );
+
+    // Survivor killed ⇒ absence provable ⇒ identity NULLed ⇒ spawn proceeds.
+    force_cleanup_process_group(launcher, pgid);
+    assert!(
+        wait_proc_gone(peer_pid).await,
+        "test survivor must terminate"
+    );
+    daemon
+        .ensure_running()
+        .await
+        .expect("proven absence must reopen the spawn path");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running
+    );
+    assert_ne!(record.pid, Some(peer_pid), "a fresh daemon must be spawned");
+    assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Running);
+}
+
+/// #953 design test 11 — the unreconciled marker is durable: a NEW
+/// supervisor instance over the same repo (calm-server restart) classifies
+/// Unreconciled from the row alone (NOT SafeToRetry), spawns nothing while
+/// the survivor lives, and recovers once the survivor is gone.
+#[tokio::test]
+async fn unreconciled_classification_survives_supervisor_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let (launcher, pgid, peer_pid) = spawn_launcher_with_fake_appserver(&sock, false, false).await;
+    let process_start_time = read_proc_start_time(peer_pid).expect("fake app-server start time");
+
+    let repo = repo().await;
+    persist_running_daemon(&repo, &root, peer_pid, pgid, &sock, process_start_time).await;
+
+    // Instance A refuses (polluted home) and persists the durable marker.
+    // Its heal loop is quieted (long delays) so it cannot race instance B.
+    let mut cfg_a = cfg(&root);
+    cfg_a.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    cfg_a.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let instance_a =
+        SharedCodexAppServer::new(&cfg_a, Arc::new(polluted_home(&root)), repo.clone());
+    instance_a
+        .start_or_takeover()
+        .await
+        .expect_err("boot guard must refuse the polluted CODEX_HOME");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, Some(peer_pid), "marker must retain identity");
+    drop(instance_a);
+
+    // The pollution is repaired; a NEW instance (fresh in-memory state) must
+    // still classify the row Unreconciled and refuse to spawn.
+    repair_polluted_home(&root);
+    let home_b = calm_server::shared_codex_home::SharedCodexHome::new(
+        root.path().join("codex-home"),
+        root.path().join("codex-homes"),
+    );
+    let instance_b = SharedCodexAppServer::new(&cfg(&root), Arc::new(home_b), repo.clone());
+    let err = instance_b
+        .start_or_takeover()
+        .await
+        .expect_err("a new instance must classify the row Unreconciled, not SafeToRetry");
+    assert!(
+        err.to_string().contains("unreconciled"),
+        "restart-surviving fence must say unreconciled; got: {err}"
+    );
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    assert_eq!(
+        unsafe { libc::kill(peer_pid, 0) },
+        0,
+        "the survivor must still be alive and unsignaled"
+    );
+    assert_ne!(
+        instance_b.status_snapshot().state,
+        SharedDaemonState::Running
+    );
+
+    // Kill the survivor ⇒ the next round proves absence, NULLs identity,
+    // and spawns.
+    force_cleanup_process_group(launcher, pgid);
+    assert!(wait_proc_gone(peer_pid).await);
+    instance_b
+        .ensure_running()
+        .await
+        .expect("proven absence must reopen the spawn path after the restart");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running
+    );
+    assert_ne!(record.pid, Some(peer_pid));
+}
+
+/// #953 design test 7 (integration half) — identical consecutive failures
+/// produce exactly one Failed DB write: `updated_at` stays put across
+/// repeated failing rounds (the module unit test covers the forced-DB-
+/// failure half of the dedup contract).
+#[tokio::test]
+async fn identical_consecutive_failures_dedup_to_one_db_write() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let (daemon, codex_link) = daemon_with_codex_symlink(&root, repo.clone());
+    std::fs::remove_file(&codex_link).unwrap();
+
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("missing codex bin must fail the start");
+    let first = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&first.state),
+        SharedDaemonState::Failed
+    );
+
+    // Give a differing updated_at time to become visible, then fail twice
+    // more with the identical tuple.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    daemon
+        .ensure_running()
+        .await
+        .expect_err("bin still missing");
+    daemon
+        .ensure_running()
+        .await
+        .expect_err("bin still missing");
+    let second = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(second.last_error, first.last_error);
+    assert_eq!(
+        second.updated_at, first.updated_at,
+        "identical consecutive Failed tuples must not be rewritten"
+    );
+}
+
+/// #953 design test 9 — heal-task abort: the RAII guard clears the
+/// singleton claim on abort, and re-scheduling can claim again.
+#[tokio::test]
+async fn heal_task_abort_clears_claim_via_raii_guard() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let (daemon, codex_link) = daemon_with_codex_symlink(&root, repo.clone());
+    // Rounds will keep failing, so the loop stays alive until aborted.
+    std::fs::remove_file(&codex_link).unwrap();
+
+    assert!(!daemon.heal_active_for_test());
+    let handle = daemon
+        .schedule_heal_for_test()
+        .expect("first claim must succeed");
+    assert!(daemon.heal_active_for_test());
+    assert!(
+        daemon.schedule_heal_for_test().is_none(),
+        "the heal task is a singleton while active"
+    );
+
+    handle.abort();
+    let mut cleared = false;
+    for _ in 0..100 {
+        if !daemon.heal_active_for_test() {
+            cleared = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        cleared,
+        "abort must clear heal_active via the RAII guard drop"
+    );
+
+    let handle2 = daemon
+        .schedule_heal_for_test()
+        .expect("the claim must be reclaimable after an abort");
+    assert!(daemon.heal_active_for_test());
+    handle2.abort();
+}
+
+/// #953 design test 10 — takeover success re-stamps the row: adopting a
+/// daemon persisted as `starting` flips the row to `running` with the
+/// adopted tuple.
+#[tokio::test]
+async fn takeover_restamps_starting_row_to_running() {
+    let root = tempfile::tempdir().unwrap();
+    let sock = root.path().join("run/codex-appserver.sock");
+    std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+
+    let mut child = Command::new(fake_codex_bin())
+        .arg("app-server")
+        .arg("--listen")
+        .arg(format!("unix://{}", sock.display()))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn fake app-server for starting-row takeover");
+    let old_pid = i32::try_from(child.id().expect("fake app-server pid")).expect("pid fits i32");
+    let process_start_time = wait_for_start_time_and_socket(old_pid, &sock).await;
+
+    let repo = repo().await;
+    // Persist the daemon as it would look mid-launch: state='starting' with
+    // a full identity tuple and the current env signature.
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "starting".into(),
+        pid: Some(old_pid),
+        pgid: Some(old_pid),
+        sock_path: Some(sock.display().to_string()),
+        codex_home_path: Some(root.path().join("codex-home").display().to_string()),
+        process_start_time: Some(process_start_time),
+        boot_id: Some(read_boot_id().unwrap_or_default()),
+        started_at: Some(now_ms()),
+        last_error: None,
+        increment_restart_count: false,
+        daemon_env_signature: Some(effective_test_env_signature(
+            &cfg(&root).codex_ingest_url_resolved(),
+        )),
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let snapshot = daemon.status_snapshot();
+    assert_eq!(snapshot.state, SharedDaemonState::Running);
+    assert_eq!(
+        snapshot.runtime.as_ref().map(|runtime| runtime.pid),
+        Some(old_pid),
+        "the live daemon must be adopted, not respawned"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "takeover success must re-stamp the row to running"
+    );
+    assert_eq!(record.pid, Some(old_pid));
+
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+/// #953 design test 12 — the settings PUT path (mark + nudge) never takes
+/// the transition serial: it must return promptly even while a stalled
+/// spawn holds the serial.
+#[tokio::test]
+async fn settings_nudge_returns_promptly_during_stalled_spawn() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_INITIALIZE_DELAY_MS", "1500");
+    }
+    let _env = EnvGuard("FAKE_CODEX_INITIALIZE_DELAY_MS");
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    let start_task = tokio::spawn({
+        let daemon = daemon.clone();
+        async move { daemon.start_or_takeover().await }
+    });
+    let mut stalled = false;
+    for _ in 0..200 {
+        if daemon.status_snapshot().state == SharedDaemonState::Starting {
+            stalled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(stalled, "spawn must be observably in flight");
+
+    let nudge_started = std::time::Instant::now();
+    daemon.mark_needs_respawn();
+    let nudge_elapsed = nudge_started.elapsed();
+    assert!(
+        nudge_elapsed < Duration::from_millis(100),
+        "settings PUT (mark + nudge) must not block on the held transition \
+         serial (took {nudge_elapsed:?})"
+    );
+
+    start_task
+        .await
+        .unwrap()
+        .expect("delayed initialize within the default deadline must succeed");
+}
+
+/// #953 design test 13(a) — pid-partial shape: a failed row naming only a
+/// pid (verification pair incomplete). While `/proc/<pid>` exists the shape
+/// stays unreconciled and the process is NEVER signaled (ownership
+/// unprovable — a bare-pid kill could hit an unrelated process); once it
+/// exits, the next round proves absence and the spawn proceeds.
+#[tokio::test]
+async fn partial_identity_pid_only_never_signals_and_recovers_on_exit() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut survivor = Command::new("sleep")
+        .arg("120")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn unrelated survivor process");
+    let survivor_pid = i32::try_from(survivor.id().expect("survivor pid")).expect("pid fits i32");
+
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "failed".into(),
+        pid: Some(survivor_pid),
+        pgid: None,
+        sock_path: None,
+        codex_home_path: None,
+        process_start_time: None,
+        boot_id: None,
+        started_at: None,
+        last_error: Some("crash".into()),
+        increment_restart_count: false,
+        daemon_env_signature: None,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon
+        .ensure_running()
+        .await
+        .expect_err("pid-partial shape with a live pid must stay unreconciled");
+    // A `sleep` dies on any signal, so liveness proves nothing was sent.
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    assert_eq!(
+        unsafe { libc::kill(survivor_pid, 0) },
+        0,
+        "the pid-partial survivor must never be signaled"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, Some(survivor_pid), "identity must be retained");
+    assert!(
+        record
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("unreconciled: "),
+        "row must carry the unreconciled prefix; got {:?}",
+        record.last_error
+    );
+
+    // Rounds only re-probe: a second round changes nothing and stays fenced.
+    daemon
+        .ensure_running()
+        .await
+        .expect_err("still fenced while the pid is live");
+    assert_eq!(unsafe { libc::kill(survivor_pid, 0) }, 0);
+
+    // Process exits ⇒ next round NULLs identity ⇒ SafeToRetry ⇒ spawn.
+    survivor.kill().await.expect("stop test survivor");
+    let _ = survivor.wait().await;
+    daemon
+        .ensure_running()
+        .await
+        .expect("proven absence must reopen the spawn path");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running
+    );
+    assert_ne!(record.pid, Some(survivor_pid));
+}
+
+/// #953 design test 13(b) — the pid-NULL operator shape: identity fragments
+/// without a pid name no process at all. Rounds only re-read; the row and
+/// `status_snapshot().last_error` carry `unreconciled-needs-operator:`;
+/// remediation is the operator clearing the identity columns.
+#[tokio::test]
+async fn partial_identity_pid_null_operator_shape_requires_manual_clear() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "failed".into(),
+        pid: None,
+        pgid: None,
+        sock_path: None,
+        codex_home_path: None,
+        process_start_time: Some(12345),
+        boot_id: Some("some-old-boot".into()),
+        started_at: None,
+        last_error: Some("crash".into()),
+        increment_restart_count: false,
+        daemon_env_signature: None,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    let err = daemon
+        .ensure_running()
+        .await
+        .expect_err("the operator shape must never spawn");
+    assert!(
+        err.to_string().contains("unreconciled-needs-operator"),
+        "operator shape must be labeled; got: {err}"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert!(
+        record
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("unreconciled-needs-operator: "),
+        "row must carry the operator prefix; got {:?}",
+        record.last_error
+    );
+    assert_eq!(
+        record.process_start_time,
+        Some(12345),
+        "identity fragments must be retained for the operator"
+    );
+    // Surfaced via the existing daemon status API (no new UI).
+    assert!(
+        daemon
+            .status_snapshot()
+            .last_error
+            .unwrap_or_default()
+            .contains("unreconciled-needs-operator"),
+        "status_snapshot().last_error must surface the operator state"
+    );
+
+    // Rounds only re-read: identical tuple, no rewrite.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    daemon
+        .ensure_running()
+        .await
+        .expect_err("still the operator shape");
+    let after_round = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        after_round.updated_at, record.updated_at,
+        "operator-shape rounds must not rewrite the row"
+    );
+
+    // Operator remediation: clear the identity columns (manual DB fix).
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "failed".into(),
+        pid: None,
+        pgid: None,
+        sock_path: None,
+        codex_home_path: None,
+        process_start_time: None,
+        boot_id: None,
+        started_at: None,
+        last_error: Some("operator cleared identity".into()),
+        increment_restart_count: false,
+        daemon_env_signature: None,
+    })
+    .await
+    .unwrap();
+    daemon
+        .ensure_running()
+        .await
+        .expect("cleared identity must classify SafeToRetry and spawn");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running
+    );
+}
+
+/// #953 design test 13(c) — triple complete (pid/start_time/boot_id) with
+/// pgid NULL: verifiable but not group-reapable — there is no valid pgid to
+/// target and a bare-pid signal is not a group reap. Stays unreconciled and
+/// unsignaled while alive; verify-false after exit proves absence.
+#[tokio::test]
+async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut survivor = Command::new("sleep")
+        .arg("120")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn survivor process");
+    let survivor_pid = i32::try_from(survivor.id().expect("survivor pid")).expect("pid fits i32");
+    let start_time = read_proc_start_time(survivor_pid).expect("survivor start time");
+    let boot_id = read_boot_id().unwrap_or_default();
+
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "failed".into(),
+        pid: Some(survivor_pid),
+        pgid: None,
+        sock_path: None,
+        codex_home_path: None,
+        process_start_time: Some(start_time),
+        boot_id: Some(boot_id),
+        started_at: None,
+        last_error: Some("crash".into()),
+        increment_restart_count: false,
+        daemon_env_signature: None,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon
+        .ensure_running()
+        .await
+        .expect_err("triple-complete pgid-NULL shape must stay unreconciled while alive");
+    // A `sleep` dies on any signal — liveness proves no signal was sent.
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    assert_eq!(
+        unsafe { libc::kill(survivor_pid, 0) },
+        0,
+        "the pgid-NULL survivor must never be signaled"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(record.pid, Some(survivor_pid));
+    assert!(
+        record
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("unreconciled: "),
+        "row must carry the unreconciled prefix; got {:?}",
+        record.last_error
+    );
+
+    // Process exits ⇒ verify-false ⇒ identity NULLed ⇒ spawn.
+    survivor.kill().await.expect("stop test survivor");
+    let _ = survivor.wait().await;
+    daemon
+        .ensure_running()
+        .await
+        .expect("verify-false after exit must reopen the spawn path");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running
+    );
+    assert_ne!(record.pid, Some(survivor_pid));
 }

@@ -3202,6 +3202,147 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// #953 design test 7 — the dedup cache is updated ONLY after a
+    /// successful DB write (`note_written`): a forced write failure (the
+    /// caller skipping `note_written`) leaves the cache unset so the next
+    /// identical round retries the write instead of masking it.
+    #[test]
+    fn failed_persist_dedup_updates_only_after_successful_write() {
+        let dedup = FailedPersistDedup::default();
+        let identity = FailedIdentity::proven_absent(Path::new("/tmp/s"), Path::new("/tmp/h"));
+        assert!(!dedup.should_skip("boom", FailureClass::Persistent, &identity));
+        // Simulated DB-write failure: `note_written` is NOT called (that is
+        // the code-level contract at the persist site) — the tuple must
+        // still be written next round.
+        assert!(
+            !dedup.should_skip("boom", FailureClass::Persistent, &identity),
+            "a failed write must not populate the dedup cache"
+        );
+        dedup.note_written("boom".into(), FailureClass::Persistent, identity.clone());
+        assert!(
+            dedup.should_skip("boom", FailureClass::Persistent, &identity),
+            "identical consecutive tuples dedup after a successful write"
+        );
+        // Any component change re-enables the write.
+        assert!(!dedup.should_skip("other", FailureClass::Persistent, &identity));
+        assert!(!dedup.should_skip("boom", FailureClass::Transient, &identity));
+        let retained = FailedIdentity {
+            pid: Some(42),
+            ..identity.clone()
+        };
+        assert!(!dedup.should_skip("boom", FailureClass::Persistent, &retained));
+        // A successful non-failed write clears the cache.
+        dedup.clear();
+        assert!(!dedup.should_skip("boom", FailureClass::Persistent, &identity));
+    }
+
+    /// #953 §2 — lane classification: the two cold-start poll failures and
+    /// child-exit shapes are Transient; exec/config/guard failures are
+    /// Persistent.
+    #[test]
+    fn classify_spawn_failure_assigns_lanes() {
+        let transient = [
+            "shared codex app-server exited before initialize (exit status: 7) after 0.1s: x",
+            "shared codex app-server not initialized after 2.0s (deadline 2s, child still alive): x",
+            "shared codex app-server exited: exit status: 1",
+        ];
+        for msg in transient {
+            assert_eq!(
+                classify_spawn_failure(&CalmError::CodexAppServer(msg.into())),
+                FailureClass::Transient,
+                "{msg}"
+            );
+        }
+        let persistent = [
+            "spawn shared codex app-server: No such file or directory (os error 2)",
+            "refusing to launch shared codex app-server: unexpected mcp server evil",
+            "db error: settings read failed",
+        ];
+        for msg in persistent {
+            assert_eq!(
+                classify_spawn_failure(&CalmError::CodexAppServer(msg.into())),
+                FailureClass::Persistent,
+                "{msg}"
+            );
+        }
+    }
+
+    /// #953 §2 — jitter stays within ±20%.
+    #[test]
+    fn heal_jitter_stays_within_twenty_percent() {
+        for _ in 0..64 {
+            let jittered = heal_jitter(Duration::from_secs(100));
+            assert!(
+                jittered >= Duration::from_secs(80) && jittered <= Duration::from_secs(120),
+                "jittered delay {jittered:?} outside ±20% of 100s"
+            );
+        }
+    }
+
+    /// #953 design test 7 — Persistent hits the 300s slow ceiling with a
+    /// floor at `restart_max_delay`; Transient stays on the fast lane cap.
+    #[test]
+    fn slow_lane_floors_at_restart_max_and_caps_at_const_ceiling() {
+        let state = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
+        assert_eq!(
+            state.next_slow_delay(HEAL_SLOW_RETRY_CEILING),
+            Duration::from_secs(10),
+            "slow-lane floor must be restart_max_delay"
+        );
+        let mut last = Duration::ZERO;
+        for _ in 0..20 {
+            last = state.next_slow_delay(HEAL_SLOW_RETRY_CEILING);
+        }
+        assert_eq!(
+            last, HEAL_SLOW_RETRY_CEILING,
+            "slow-lane ceiling must be the 300s const"
+        );
+
+        let fast = BackoffState::new(Duration::from_millis(250), Duration::from_secs(10));
+        let mut last_fast = Duration::ZERO;
+        for _ in 0..20 {
+            last_fast = fast.next_delay();
+        }
+        assert_eq!(
+            last_fast,
+            Duration::from_secs(10),
+            "the Transient lane keeps the configured fast cap"
+        );
+    }
+
+    /// #953 §3 — read-side classification rule over row shapes.
+    #[test]
+    fn failed_row_identity_presence_classifies_unreconciled() {
+        let mut record = crate::db::SharedCodexDaemonRecord {
+            state: "failed".into(),
+            pid: None,
+            pgid: None,
+            sock_path: None,
+            codex_home_path: None,
+            process_start_time: None,
+            boot_id: None,
+            started_at: None,
+            updated_at: 0,
+            restart_count: 0,
+            last_error: None,
+            daemon_env_signature: None,
+        };
+        assert!(
+            !failed_row_identity_present(&record),
+            "failed + all-NULL identity is SafeToRetry (legacy rows included)"
+        );
+        record.boot_id = Some("b".into());
+        assert!(
+            failed_row_identity_present(&record),
+            "ANY identity column present marks the row unreconciled"
+        );
+        record.state = "running".into();
+        assert!(
+            !failed_row_identity_present(&record),
+            "the rule applies to failed rows only"
+        );
+    }
+
     #[test]
     fn shared_thread_start_params_debug_scrubs_neige_mcp_token() {
         let params = SharedThreadStartParams {
