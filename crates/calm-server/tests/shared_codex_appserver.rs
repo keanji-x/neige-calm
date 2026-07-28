@@ -2480,6 +2480,71 @@ async fn readiness_watch_tracks_failed_and_running_transitions() {
     assert!(daemon.is_running());
 }
 
+/// #953 PR2 review D1(b) — entering a transition (leaving Running) must
+/// invalidate readiness IMMEDIATELY: `transition_replace` publishes
+/// `running: false` with the OUTGOING generation at transition entry, so a
+/// claim-boundary consumer (deferred harness recovery) never accepts a
+/// transitional Restarting/Starting daemon whose last terminal value was
+/// still `running: true`. The Ok arm then re-publishes the terminal
+/// `running: true` with the newly installed generation — no premature
+/// `running: true` in between (the parked window only ever shows `false`).
+#[tokio::test]
+async fn transition_entry_invalidates_readiness_before_terminal_republish() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let mut readiness = daemon.readiness_receiver();
+    let before = *readiness.borrow_and_update();
+    assert!(before.running, "daemon starts Running");
+    let outgoing_generation = before.generation;
+
+    // Park the transition inside the entry window (state left Running,
+    // reap/start body not yet run).
+    let gate = daemon.transition_entry_gate_for_test();
+    let parked = gate.lock().await;
+    let task = tokio::spawn({
+        let daemon = daemon.clone();
+        async move {
+            daemon
+                .transition_replace_for_test("settings changed", ReplacePrecondition::Always)
+                .await
+        }
+    });
+
+    // The ONLY publish that can wake this receiver while the transition is
+    // parked is the entry-time invalidation.
+    tokio::time::timeout(Duration::from_secs(5), readiness.changed())
+        .await
+        .expect("transition entry must publish a readiness invalidation")
+        .unwrap();
+    let mid = *readiness.borrow_and_update();
+    assert!(
+        !mid.running,
+        "transition entry must invalidate readiness (running: false)"
+    );
+    assert_eq!(
+        mid.generation, outgoing_generation,
+        "the entry invalidation must carry the OUTGOING generation"
+    );
+
+    // Release: the transition completes and re-publishes the terminal value.
+    drop(parked);
+    let outcome = task.await.unwrap().unwrap();
+    assert_eq!(outcome, ReplaceOutcome::Replaced);
+    let after = *readiness.borrow_and_update();
+    assert!(
+        after.running,
+        "the Ok arm must re-publish the terminal running: true"
+    );
+    assert_ne!(
+        after.generation, outgoing_generation,
+        "the terminal value must carry the newly installed generation"
+    );
+    assert_eq!(after.generation, daemon.generation_for_test().await);
+}
+
 /// Rewrite the polluted home's config.toml without the `evil` entry —
 /// "polluted-then-repaired" (#953 design test 6).
 fn repair_polluted_home(root: &tempfile::TempDir) {

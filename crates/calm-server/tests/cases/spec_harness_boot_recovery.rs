@@ -255,6 +255,7 @@ async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based
     )
     .await
     .unwrap()
+    .installed()
     .expect("user resume registers a harness");
 
     // First heal success: the readiness watch flips running.
@@ -384,6 +385,87 @@ async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
         .shutdown()
         .await
         .unwrap();
+}
+
+/// #953 PR2 review D1 — claim-boundary daemon re-check: the daemon leaves
+/// Running inside the eligibility→claim window (which contains the
+/// potentially long event replay — the fixtures post-eligibility hook fires
+/// at the start of exactly that window). The deferred task must NOT install
+/// a harness against the stale generation: it abandons the pass without
+/// reserving anything, re-arms the wait loop, and recovers only after the
+/// daemon heals again (new generation).
+#[tokio::test]
+async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_during_replay() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let runtime_id = seed_recoverable_runtime(&repo, "deferred-daemon-flap", "thread-flap").await;
+
+    let daemon = SharedCodexAppServer::new_stub_with_pending(repo.clone(), None);
+    let registry = HarnessRegistry::new();
+    let events = EventBus::new();
+
+    let hook_fired = Arc::new(AtomicUsize::new(0));
+    let hook_daemon = daemon.clone();
+    let hook_fired_in_hook = hook_fired.clone();
+    let hook_target = runtime_id.clone();
+    let post_eligibility_hook: std::sync::Arc<dyn Fn(&String) + Send + Sync> =
+        std::sync::Arc::new(move |eligible_runtime_id: &String| {
+            if *eligible_runtime_id != hook_target {
+                return;
+            }
+            // First pass only: the daemon fails (readiness invalidated with
+            // the outgoing generation — what transition ENTRY publishes)
+            // inside the eligibility→claim window.
+            if hook_fired_in_hook.fetch_add(1, Ordering::SeqCst) == 0 {
+                hook_daemon.publish_readiness_for_test(1, false);
+            }
+        });
+
+    let driver = tokio::spawn(recover_harnesses_deferred(DeferredRecoveryParams {
+        repo: repo.clone(),
+        events,
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon: daemon.clone(),
+        registry: registry.clone(),
+        post_eligibility_hook: Some(post_eligibility_hook),
+    }));
+
+    // First heal success: pass 1 starts, eligibility sees Running(gen 1).
+    daemon.publish_readiness_for_test(1, true);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while hook_fired.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("pass 1 must reach the post-eligibility window");
+
+    // Let replay + the claim-boundary re-check run to completion: nothing
+    // may be installed against the stale generation, and the task must
+    // re-arm (still alive) rather than finish its pass.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        registry.get(&runtime_id).is_none(),
+        "no harness may be installed against a daemon that left Running during replay"
+    );
+    assert!(
+        !driver.is_finished(),
+        "the deferred task must abandon the pass and re-arm, not exit"
+    );
+
+    // The daemon heals again (new generation): recovery resumes and installs.
+    daemon.publish_readiness_for_test(2, true);
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("deferred recovery must complete after the daemon heals again")
+        .unwrap();
+    assert_eq!(hook_fired.load(Ordering::SeqCst), 2);
+    let handle = registry
+        .get(&runtime_id)
+        .expect("recovery must resume on the next heal");
+    handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -827,12 +827,24 @@ fn start_timeout_flag_value(child_args: &[String]) -> Option<&str> {
     found
 }
 
+/// #953 PR2 review D2 — upper clamp for the healthcheck deadline:
+/// `Instant + Duration` PANICS on overflow, so a near-`u64::MAX` configured
+/// child start timeout (which `effective_child_start_timeout` happily
+/// parses) must not reach the `Instant::now() + deadline` add unclamped.
+/// 30 days is far beyond any meaningful healthcheck horizon and far below
+/// the overflow boundary.
+const HEALTHCHECK_DEADLINE_CEILING: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// #956 — the `/upgrade/apply` healthcheck deadline. Derived, not fixed:
 /// `effective_child_start_timeout + 60s margin`, so raising the child start
 /// timeout automatically raises the healthcheck deadline (the old hardcoded
 /// 60s was SHORTER than calm-server's own 120s default boot allowance).
+/// Clamped to [`HEALTHCHECK_DEADLINE_CEILING`] so the `Instant` add at the
+/// call site cannot panic.
 fn healthcheck_deadline(cfg: &SupervisorConfig) -> Duration {
-    effective_child_start_timeout(cfg).saturating_add(HEALTHCHECK_MARGIN)
+    effective_child_start_timeout(cfg)
+        .saturating_add(HEALTHCHECK_MARGIN)
+        .min(HEALTHCHECK_DEADLINE_CEILING)
 }
 
 async fn healthcheck(
@@ -1489,8 +1501,13 @@ mod tests {
         );
     }
 
+    /// #953 PR2 review D2 — an extreme configured timeout is CLAMPED, not
+    /// merely saturated: `Duration::from_secs(u64::MAX)` survives the
+    /// saturating add but panics at the call site's
+    /// `Instant::now() + deadline`. The end-to-end contract is that the
+    /// deadline this function returns is safe to add to an `Instant`.
     #[test]
-    fn healthcheck_deadline_saturates_on_extreme_timeouts() {
+    fn healthcheck_deadline_clamps_extreme_timeouts_below_instant_overflow() {
         let cfg = supervisor_config(
             args(&[&format!(
                 "--shared-codex-appserver-start-timeout-secs={}",
@@ -1498,10 +1515,17 @@ mod tests {
             )]),
             vec![],
         );
-        assert_eq!(
-            healthcheck_deadline(&cfg),
-            Duration::from_secs(u64::MAX).saturating_add(HEALTHCHECK_MARGIN)
+        let deadline = healthcheck_deadline(&cfg);
+        assert_eq!(deadline, HEALTHCHECK_DEADLINE_CEILING);
+        // The exact operation the healthcheck performs must not panic.
+        let _ = tokio::time::Instant::now() + deadline;
+        // Ordinary deadlines are far below the ceiling — the clamp is
+        // overflow protection, not a behavior change.
+        let ordinary = supervisor_config(
+            args(&["--shared-codex-appserver-start-timeout-secs", "600"]),
+            vec![],
         );
+        assert!(healthcheck_deadline(&ordinary) < HEALTHCHECK_DEADLINE_CEILING);
     }
 
     #[test]

@@ -599,6 +599,9 @@ pub async fn recover_harnesses_after_daemon_boot(
             // Running triggers a claim-based recovery pass that never
             // stomps a runtime the user resumed in the meantime.
             tracing::warn!("deferring spec harness recovery until the shared daemon self-heals");
+            // The JoinHandle is intentionally detached: the task owns every
+            // part it needs (Arc-cloned out of AppState) and lives until a
+            // recovery pass completes or process teardown.
             state.arm_deferred_harness_recovery();
             Ok(0)
         }

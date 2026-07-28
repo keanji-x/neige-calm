@@ -200,11 +200,13 @@ pub enum ReplacePrecondition {
 }
 
 /// #953 §5 — readiness snapshot published on every installed Running /
-/// terminal Failed. `generation` identifies the Running incarnation
-/// (equality comparisons only; wrap/restart-reset harmless for the
-/// process-local consumer). Sole consumer in this slice: deferred harness
-/// recovery; future consumers (status/health, admin wait) can watch the
-/// same channel.
+/// terminal Failed, and on every transition ENTRY (`running: false` with
+/// the outgoing generation — PR2 review D1(b)), so `running: true` holds
+/// only while a Running incarnation is actually installed. `generation`
+/// identifies the Running incarnation (equality comparisons only;
+/// wrap/restart-reset harmless for the process-local consumer). Sole
+/// consumer in this slice: deferred harness recovery; future consumers
+/// (status/health, admin wait) can watch the same channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DaemonReadiness {
     pub generation: u64,
@@ -647,7 +649,11 @@ pub struct SharedCodexAppServer {
     failed_persist_dedup: FailedPersistDedup,
     /// #953 §5 — readiness channel: stamped on every installed Running
     /// (typestate success arm) and every terminal Failed (typestate error
-    /// arm + the in-memory terminalization paths). Receivers via
+    /// arm + the in-memory terminalization paths), and INVALIDATED
+    /// (`running: false`, outgoing generation) on transition ENTRY
+    /// (`transition_replace` leaving Running — PR2 review D1(b)), so a
+    /// transitional Restarting/Starting daemon is never mistaken for the
+    /// Running incarnation it replaced. Receivers via
     /// [`Self::readiness_receiver`].
     readiness: tokio::sync::watch::Sender<DaemonReadiness>,
     /// #953 review D1 — fixtures-only interleaving gate: the heal loop's Ok
@@ -660,6 +666,15 @@ pub struct SharedCodexAppServer {
     /// it; absent from non-fixtures builds.
     #[cfg(feature = "fixtures")]
     heal_post_ok_gate: Arc<tokio::sync::Mutex<()>>,
+    /// #953 PR2 review D1 — fixtures-only interleaving gate:
+    /// `transition_replace` awaits this mutex right after the transition
+    /// ENTRY (state captured/replaced + readiness invalidated) and before
+    /// the reap/start body. A test holding the lock parks the transition
+    /// inside that window so the entry-time readiness invalidation is
+    /// deterministically observable. Uncontended (a lock/unlock pair) when
+    /// no test holds it; absent from non-fixtures builds.
+    #[cfg(feature = "fixtures")]
+    transition_entry_gate: Arc<tokio::sync::Mutex<()>>,
     ingest_url: String,
     #[cfg(feature = "fixtures")]
     fake: Option<Arc<FakeSharedCodexAppServer>>,
@@ -845,6 +860,8 @@ impl SharedCodexAppServer {
             }),
             #[cfg(feature = "fixtures")]
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(feature = "fixtures")]
+            transition_entry_gate: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: "http://127.0.0.1:0".into(),
             #[cfg(feature = "fixtures")]
             fake: _fake_running.then(|| Arc::new(FakeSharedCodexAppServer::new())),
@@ -899,6 +916,8 @@ impl SharedCodexAppServer {
             }),
             #[cfg(feature = "fixtures")]
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(feature = "fixtures")]
+            transition_entry_gate: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: cfg.codex_ingest_url_resolved(),
             #[cfg(feature = "fixtures")]
             fake: None,
@@ -1603,7 +1622,7 @@ impl SharedCodexAppServer {
     ) -> Result<ReplaceOutcome> {
         let via = {
             let _serial = self.transition_serial.lock().await;
-            let running = {
+            let (running, outgoing_generation) = {
                 let mut core = self.core.lock().await;
                 match pre {
                     ReplacePrecondition::Always => {}
@@ -1651,7 +1670,7 @@ impl SharedCodexAppServer {
                         attempts,
                     },
                 );
-                match old_state {
+                let parts = match old_state {
                     SupervisorState::Running {
                         child,
                         runtime,
@@ -1663,8 +1682,26 @@ impl SharedCodexAppServer {
                         watcher,
                     }),
                     _ => None,
-                }
+                };
+                (parts, core.generation)
             };
+            // #953 PR2 review D1(b) — transition ENTRY: the state just left
+            // Running (Restarting is installed), so invalidate readiness NOW
+            // with the outgoing generation. Claim-boundary consumers
+            // (deferred harness recovery) would otherwise still see the last
+            // terminal `running: true` for the whole transition and accept a
+            // transitional daemon. No premature `running: true` is possible:
+            // both the Ok arm (installed Running) and every Err arm
+            // (terminal Failed / in-memory terminalization) re-publish the
+            // terminal value before the serial is released.
+            self.readiness.send_replace(DaemonReadiness {
+                generation: outgoing_generation,
+                running: false,
+            });
+            // Fixtures-only interleaving gate: park here so tests can
+            // observe the entry-time window deterministically.
+            #[cfg(feature = "fixtures")]
+            drop(self.transition_entry_gate.lock().await);
             self.reap_current_child_or_runtime(running).await;
             self.start_body_locked(increment_restart_count, last_error)
                 .await?
@@ -2984,6 +3021,16 @@ impl SharedCodexAppServer {
     #[cfg(feature = "fixtures")]
     pub fn heal_post_ok_gate_for_test(&self) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(&self.heal_post_ok_gate)
+    }
+
+    /// #953 PR2 review D1 — the transition-entry interleaving gate (fixtures
+    /// builds only): a test that locks this mutex parks a
+    /// `transition_replace` AFTER the state left Running (readiness
+    /// invalidated with the outgoing generation) but BEFORE the reap/start
+    /// body runs.
+    #[cfg(feature = "fixtures")]
+    pub fn transition_entry_gate_for_test(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.transition_entry_gate)
     }
 
     /// #953 — current Running-incarnation generation.

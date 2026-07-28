@@ -1298,6 +1298,7 @@ async fn review_round_recovers_into_pending_queue() {
     )
     .await
     .expect("spawn recovered harness")
+    .installed()
     .expect("recovered harness");
 
     let pending = wait_for_recovered_pending(&handle).await;

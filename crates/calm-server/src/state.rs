@@ -511,7 +511,11 @@ impl AppState {
     /// #953 §5 — arm the deferred (post-heal) spec harness recovery task.
     /// Called from the boot path ONLY when the daemon spawn failed; the task
     /// waits on the supervisor readiness watch and runs a claim-based
-    /// recovery pass on the first observed `running: true`.
+    /// recovery pass on the first observed `running: true`. The boot caller
+    /// detaches the returned JoinHandle (PR2 review D3): the task owns
+    /// Arc-cloned parts (including the supervisor, so the watch sender it
+    /// waits on can never drop under it) and lives until a pass completes
+    /// or process teardown.
     pub fn arm_deferred_harness_recovery(&self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(crate::harness::recover_harnesses_deferred(
             crate::harness::DeferredRecoveryParams {

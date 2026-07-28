@@ -32,13 +32,47 @@ pub use state::{HarnessState, IssuingKind, run_status_for};
 pub enum ClaimMode {
     /// Boot recovery + user resume: today's shutdown-replace semantics via
     /// [`HarnessRegistry::reserve_replacing`] — an existing Live harness is
-    /// shut down, an in-flight reservation is superseded.
+    /// shut down, an in-flight reservation is superseded. Carries NO daemon
+    /// eligibility gate: user resume semantics are unchanged.
     Replace,
     /// Deferred (post-heal) recovery: [`HarnessRegistry::try_reserve`] as
     /// the claim — an occupied slot (Live OR Reserved) means the user
     /// already touched this runtime, so skip without shutting anything
     /// down. Shutdown-replace is unreachable from this mode by construction.
-    SkipIfClaimed,
+    ///
+    /// PR2 review D1(a) — `expected_generation` is the Running incarnation
+    /// the deferred pass acted on: the replay between eligibility and claim
+    /// can be long, so eligibility (readiness still `running` with this
+    /// generation) is re-checked at the claim boundary, immediately before
+    /// `try_reserve`. On mismatch nothing is reserved and the pass reports
+    /// [`RecoveryOutcome::DaemonIneligible`].
+    SkipIfClaimed { expected_generation: u64 },
+}
+
+/// Outcome of [`spawn_recovered_harness`].
+pub enum RecoveryOutcome {
+    /// A harness was built and installed under the claim.
+    Installed(SpecHarness),
+    /// Nothing installed: the runtime is not recoverable (missing card /
+    /// snapshot), the slot was already claimed ([`ClaimMode::SkipIfClaimed`]),
+    /// or the install lost against a newer claim (stale-install shutdown).
+    Skipped,
+    /// [`ClaimMode::SkipIfClaimed`] only: the claim-boundary daemon re-check
+    /// failed — the daemon left Running or changed generation during replay.
+    /// Nothing was reserved or installed; the deferred pass must abandon and
+    /// re-arm on the readiness watch.
+    DaemonIneligible,
+}
+
+impl RecoveryOutcome {
+    /// The installed handle, if any ([`ClaimMode::Replace`] callers keep
+    /// their old `Option` semantics through this).
+    pub fn installed(self) -> Option<SpecHarness> {
+        match self {
+            Self::Installed(handle) => Some(handle),
+            Self::Skipped | Self::DaemonIneligible => None,
+        }
+    }
 }
 
 /// #953 §5 — install the just-built harness under the reservation, or shut
@@ -70,12 +104,12 @@ pub async fn spawn_recovered_harness(
     registry: &HarnessRegistry,
     runtime: WorkerSessionProjection,
     claim_mode: ClaimMode,
-) -> Result<Option<SpecHarness>> {
+) -> Result<RecoveryOutcome> {
     let Some(card) = repo.card_get(&runtime.card_id).await? else {
-        return Ok(None);
+        return Ok(RecoveryOutcome::Skipped);
     };
     let Some(state_json) = runtime.handle_state_json.clone() else {
-        return Ok(None);
+        return Ok(RecoveryOutcome::Skipped);
     };
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
     let catch_up_watermark = snapshot.push_watermark;
@@ -100,16 +134,39 @@ pub async fn spawn_recovered_harness(
             }
             reservation
         }
-        ClaimMode::SkipIfClaimed => match registry.try_reserve(runtime_id.clone()) {
-            Some(reservation) => reservation,
-            None => {
+        ClaimMode::SkipIfClaimed {
+            expected_generation,
+        } => {
+            // #953 PR2 review D1(a) — claim-boundary daemon re-check: the
+            // replay above can be long, so re-verify the eligibility the
+            // deferred pass acted on IMMEDIATELY before the claim. Consults
+            // the readiness watch (never the daemon core lock — no core
+            // acquisition near registry entry ops); transition ENTRY
+            // publishes `running: false`, so a transitional daemon is
+            // rejected here too. No reservation exists yet, so there is
+            // nothing to release on failure.
+            let readiness = *daemon.readiness_receiver().borrow();
+            if !readiness.running || readiness.generation != expected_generation {
                 tracing::info!(
                     runtime_id = %runtime_id,
-                    "deferred harness recovery: runtime already claimed (Live or Reserved); skipping"
+                    running = readiness.running,
+                    generation = readiness.generation,
+                    expected_generation,
+                    "deferred harness recovery: daemon left Running during replay; abandoning claim"
                 );
-                return Ok(None);
+                return Ok(RecoveryOutcome::DaemonIneligible);
             }
-        },
+            match registry.try_reserve(runtime_id.clone()) {
+                Some(reservation) => reservation,
+                None => {
+                    tracing::info!(
+                        runtime_id = %runtime_id,
+                        "deferred harness recovery: runtime already claimed (Live or Reserved); skipping"
+                    );
+                    return Ok(RecoveryOutcome::Skipped);
+                }
+            }
+        }
     };
     let handle = SpecHarness::run(SpecHarnessParams {
         runtime_id: runtime_id.clone(),
@@ -137,7 +194,10 @@ pub async fn spawn_recovered_harness(
         config: HarnessConfig::default(),
         snapshot,
     });
-    install_or_shutdown(reservation, handle).await
+    Ok(match install_or_shutdown(reservation, handle).await? {
+        Some(handle) => RecoveryOutcome::Installed(handle),
+        None => RecoveryOutcome::Skipped,
+    })
 }
 
 async fn replay_harness_events_since(
@@ -271,6 +331,7 @@ pub async fn recover_harnesses_on_boot(
             ClaimMode::Replace,
         )
         .await?
+        .installed()
         .is_some()
         {
             recovered += 1;
@@ -298,7 +359,9 @@ pub struct DeferredRecoveryParams {
     /// Fixtures-only deterministic-race hook (#953 test 8): fired once per
     /// runtime AFTER the per-runtime eligibility check (readiness still
     /// running, generation unchanged) and BEFORE the `try_reserve` claim —
-    /// the window where a concurrent user registration must win.
+    /// the window where a concurrent user registration must win, and (PR2
+    /// review D1) where a daemon transition during replay must make the
+    /// claim-boundary re-check abandon the pass.
     #[cfg(feature = "fixtures")]
     pub post_eligibility_hook: Option<PostEligibilityHook>,
 }
@@ -308,15 +371,21 @@ pub struct DeferredRecoveryParams {
 /// triggered by the first `running: true` observed on the supervisor's
 /// readiness watch. Claim-based: fresh DB re-read of recoverable runtimes at
 /// trigger time, per-runtime readiness re-check (running + unchanged
-/// generation) at claim time, `try_reserve` as the claim
-/// ([`ClaimMode::SkipIfClaimed`]) so a runtime the user already resumed is
-/// never shutdown-replaced.
+/// generation) both before replay AND at the claim boundary immediately
+/// before `try_reserve` (PR2 review D1(a) — replay can be long), with
+/// `try_reserve` as the claim ([`ClaimMode::SkipIfClaimed`]) so a runtime
+/// the user already resumed is never shutdown-replaced.
 pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
     let mut readiness = params.daemon.readiness_receiver();
     'arm: loop {
-        // Wait for a running daemon (first heal success). The watch sender
-        // living inside the supervisor means `changed()` only errors when
-        // the supervisor itself is gone — shutdown — so exit.
+        // Wait for a running daemon (first heal success). Lifecycle (PR2
+        // review D3): this task is spawned DETACHED
+        // (`AppState::arm_deferred_harness_recovery`) and owns an Arc of the
+        // supervisor via `params.daemon`, so the watch sender can never drop
+        // while we wait — the `changed()` Err arm below is defensive dead
+        // code, not the documented exit. The task actually ends by
+        // completing a recovery pass (the `return` at the bottom) or at
+        // process teardown.
         let observed = loop {
             let current = *readiness.borrow_and_update();
             if current.running {
@@ -375,12 +444,25 @@ pub async fn recover_harnesses_deferred(params: DeferredRecoveryParams) {
                 params.daemon.clone(),
                 &params.registry,
                 runtime,
-                ClaimMode::SkipIfClaimed,
+                ClaimMode::SkipIfClaimed {
+                    expected_generation: observed.generation,
+                },
             )
             .await
             {
-                Ok(Some(_)) => recovered += 1,
-                Ok(None) => {}
+                Ok(RecoveryOutcome::Installed(_)) => recovered += 1,
+                Ok(RecoveryOutcome::Skipped) => {}
+                Ok(RecoveryOutcome::DaemonIneligible) => {
+                    // PR2 review D1(a) — the claim-boundary re-check failed
+                    // (daemon left Running or was replaced during replay).
+                    // Nothing was reserved; abandon this pass and re-arm the
+                    // wait loop so recovery resumes on the next heal.
+                    tracing::info!(
+                        runtime_id = %runtime_id,
+                        "deferred harness recovery: daemon readiness changed at the claim boundary; re-arming"
+                    );
+                    continue 'arm;
+                }
                 Err(e) => {
                     // Per-runtime failures don't abort the pass: recover
                     // what can be recovered, log the rest.
@@ -654,6 +736,7 @@ mod tests {
         )
         .await
         .unwrap()
+        .installed()
         .expect("recovered harness");
         assert!(registry.get(&runtime_id).is_some());
 
@@ -850,6 +933,7 @@ mod tests {
         )
         .await
         .unwrap()
+        .installed()
         .expect("recovered harness");
         assert!(registry.get(&runtime_id).is_some());
 

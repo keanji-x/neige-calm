@@ -609,6 +609,7 @@ pub async fn force_spec_phase(
             crate::harness::ClaimMode::Replace,
         )
         .await?
+        .installed()
         .ok_or_else(|| {
             CalmError::Internal(format!(
                 "spawn_recovered_harness declined runtime {} for card {card_id_string}",
