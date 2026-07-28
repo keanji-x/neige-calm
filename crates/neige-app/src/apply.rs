@@ -10,13 +10,13 @@ use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::Supervisor;
 use crate::config::{AppConfig, SourceConfig};
 use crate::installed::{InstalledState, read_installed_state, write_installed_state};
 use crate::manifest::{ReleaseManifestV2, RestartPolicy, UnitName, VersionedReleaseManifest};
 use crate::preflight::{self, BreakingReason, Verdict};
 use crate::source;
 use crate::upgrade;
+use crate::{Supervisor, SupervisorConfig};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -749,6 +749,92 @@ impl HealthcheckOutcome {
     }
 }
 
+/// #956 — mirror of calm-server's clap default for
+/// `--shared-codex-appserver-start-timeout-secs`
+/// (`crates/calm-server/src/config.rs`, `default_value_t = 120`). Keep the
+/// two in sync: calm-server's boot blocks on the shared-codex spawn for up
+/// to this long before `/api/version` can answer, so the healthcheck
+/// deadline is derived from it.
+const CALM_START_TIMEOUT_DEFAULT_SECS: u64 = 120;
+const CALM_START_TIMEOUT_FLAG: &str = "--shared-codex-appserver-start-timeout-secs";
+const CALM_START_TIMEOUT_ENV: &str = "CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS";
+/// Post-boot margin on top of the child start timeout: version probe,
+/// harness recovery, HTTP bind.
+const HEALTHCHECK_MARGIN: Duration = Duration::from_secs(60);
+
+/// #956 — the effective `shared_codex_appserver_start_timeout_secs`
+/// calm-server will resolve when spawned with this [`SupervisorConfig`],
+/// following calm-server's own clap precedence: flag in `child_args` (both
+/// `--flag VALUE` and `--flag=VALUE`, duplicates last-wins) → env var in
+/// `child_envs` (applied via `cmd.envs`, overriding inheritance) → the same
+/// var in neige-app's ambient env (inherited by the child; no `env_clear`)
+/// → the mirrored clap default. A present-but-unparseable value falls back
+/// to the default at every level — a harmless divergence, because
+/// calm-server itself fails to boot on the same invalid value, so the
+/// healthcheck fails regardless of its deadline.
+fn effective_child_start_timeout(cfg: &SupervisorConfig) -> Duration {
+    let ambient = std::env::var(CALM_START_TIMEOUT_ENV).ok();
+    effective_child_start_timeout_from(&cfg.child_args, &cfg.child_envs, ambient.as_deref())
+}
+
+/// Pure resolution core (ambient env injected for tests).
+fn effective_child_start_timeout_from(
+    child_args: &[String],
+    child_envs: &[(String, String)],
+    ambient_env: Option<&str>,
+) -> Duration {
+    let raw = start_timeout_flag_value(child_args)
+        .or_else(|| {
+            // `cmd.envs` applies pairs in order — a later duplicate wins.
+            child_envs
+                .iter()
+                .rev()
+                .find(|(key, _)| key == CALM_START_TIMEOUT_ENV)
+                .map(|(_, value)| value.as_str())
+        })
+        .or(ambient_env);
+    let secs = raw
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(CALM_START_TIMEOUT_DEFAULT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Last-wins scan (clap behavior for repeated args) accepting both
+/// `--flag VALUE` and `--flag=VALUE`. A trailing flag without a value
+/// resolves to an empty (unparseable) value, which falls back to the
+/// default — calm-server would reject that command line anyway.
+fn start_timeout_flag_value(child_args: &[String]) -> Option<&str> {
+    let mut found = None;
+    let mut i = 0;
+    while i < child_args.len() {
+        let arg = child_args[i].as_str();
+        if let Some(inline) = arg
+            .strip_prefix(CALM_START_TIMEOUT_FLAG)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            found = Some(inline);
+        } else if arg == CALM_START_TIMEOUT_FLAG {
+            match child_args.get(i + 1) {
+                Some(value) => {
+                    found = Some(value.as_str());
+                    i += 1;
+                }
+                None => found = Some(""),
+            }
+        }
+        i += 1;
+    }
+    found
+}
+
+/// #956 — the `/upgrade/apply` healthcheck deadline. Derived, not fixed:
+/// `effective_child_start_timeout + 60s margin`, so raising the child start
+/// timeout automatically raises the healthcheck deadline (the old hardcoded
+/// 60s was SHORTER than calm-server's own 120s default boot allowance).
+fn healthcheck_deadline(cfg: &SupervisorConfig) -> Duration {
+    effective_child_start_timeout(cfg).saturating_add(HEALTHCHECK_MARGIN)
+}
+
 async fn healthcheck(
     cfg: &AppConfig,
     supervisor: &Supervisor,
@@ -758,7 +844,12 @@ async fn healthcheck(
         .units
         .get(&UnitName::CalmServer)
         .map(|unit| unit.version.clone());
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    // #956 — derived deadline: the child blocks its boot on the shared
+    // codex spawn for up to `effective_child_start_timeout` before
+    // `/api/version` can answer, so a fixed 60s deadline declared healthy
+    // boots dead (60s < the 120s default). Derived from the exact
+    // SupervisorConfig this supervisor spawns calm-server with.
+    let deadline = tokio::time::Instant::now() + healthcheck_deadline(&supervisor.cfg);
     let mut last_error = None;
     while tokio::time::Instant::now() < deadline {
         let status = supervisor.process_status().await;
@@ -1250,6 +1341,168 @@ async fn write_last_upgrade_id_blocking(cfg: &AppConfig, release_id: &str) -> an
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn envs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn supervisor_config(
+        child_args: Vec<String>,
+        child_envs: Vec<(String, String)>,
+    ) -> SupervisorConfig {
+        SupervisorConfig {
+            name: "calm-server".into(),
+            child_bin: PathBuf::from("/nonexistent/calm-server"),
+            child_cwd: None,
+            child_args,
+            child_envs,
+            restart_delay: Duration::from_secs(1),
+            stop_grace: Duration::from_secs(1),
+            calm_listen: Some("127.0.0.1:0".into()),
+            persist_identity_to: None,
+        }
+    }
+
+    /// #956 failing-first — the healthcheck deadline must cover the child's
+    /// own boot allowance: calm-server blocks on the shared-codex spawn for
+    /// up to `effective_child_start_timeout` before `/api/version` answers,
+    /// so the deadline must be at least that plus the margin. The old
+    /// hardcoded 60s deadline was SHORTER than the 120s default timeout.
+    #[test]
+    fn healthcheck_deadline_covers_child_start_timeout_plus_margin() {
+        let cfg = supervisor_config(vec![], vec![]);
+        let effective = effective_child_start_timeout(&cfg);
+        assert!(
+            healthcheck_deadline(&cfg) >= effective.saturating_add(HEALTHCHECK_MARGIN),
+            "healthcheck deadline {:?} must cover the child start timeout {:?} + {:?} margin",
+            healthcheck_deadline(&cfg),
+            effective,
+            HEALTHCHECK_MARGIN
+        );
+        // And raising the timeout raises the deadline (no fixed footgun).
+        let raised = supervisor_config(
+            args(&["--shared-codex-appserver-start-timeout-secs", "600"]),
+            vec![],
+        );
+        assert_eq!(
+            healthcheck_deadline(&raised),
+            Duration::from_secs(600).saturating_add(HEALTHCHECK_MARGIN)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_defaults_to_mirrored_calm_server_default() {
+        assert_eq!(
+            effective_child_start_timeout_from(&[], &[], None),
+            Duration::from_secs(CALM_START_TIMEOUT_DEFAULT_SECS)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_flag_space_form_wins_over_env_and_ambient() {
+        let child_args = args(&["--shared-codex-appserver-start-timeout-secs", "300"]);
+        let child_envs = envs(&[("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS", "200")]);
+        assert_eq!(
+            effective_child_start_timeout_from(&child_args, &child_envs, Some("100")),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_flag_equals_form_wins() {
+        let child_args = args(&["--shared-codex-appserver-start-timeout-secs=240"]);
+        assert_eq!(
+            effective_child_start_timeout_from(&child_args, &[], Some("100")),
+            Duration::from_secs(240)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_duplicate_flags_last_wins() {
+        let child_args = args(&[
+            "--shared-codex-appserver-start-timeout-secs",
+            "300",
+            "--shared-codex-appserver-start-timeout-secs=450",
+        ]);
+        assert_eq!(
+            effective_child_start_timeout_from(&child_args, &[], None),
+            Duration::from_secs(450)
+        );
+        let reversed = args(&[
+            "--shared-codex-appserver-start-timeout-secs=450",
+            "--shared-codex-appserver-start-timeout-secs",
+            "300",
+        ]);
+        assert_eq!(
+            effective_child_start_timeout_from(&reversed, &[], None),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_child_env_beats_ambient_and_duplicates_last_win() {
+        let child_envs = envs(&[
+            ("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS", "200"),
+            ("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS", "250"),
+        ]);
+        assert_eq!(
+            effective_child_start_timeout_from(&[], &child_envs, Some("100")),
+            Duration::from_secs(250)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_ambient_env_used_when_nothing_explicit() {
+        assert_eq!(
+            effective_child_start_timeout_from(&[], &[], Some("90")),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn effective_timeout_unparseable_values_fall_back_to_default() {
+        // Flag wins the precedence but is unparseable ⇒ default (calm-server
+        // dies on the same bad value, so the healthcheck fails regardless).
+        let child_args = args(&["--shared-codex-appserver-start-timeout-secs", "soon"]);
+        let child_envs = envs(&[("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS", "200")]);
+        assert_eq!(
+            effective_child_start_timeout_from(&child_args, &child_envs, None),
+            Duration::from_secs(CALM_START_TIMEOUT_DEFAULT_SECS)
+        );
+        // Trailing flag without a value.
+        let dangling = args(&["--shared-codex-appserver-start-timeout-secs"]);
+        assert_eq!(
+            effective_child_start_timeout_from(&dangling, &[], None),
+            Duration::from_secs(CALM_START_TIMEOUT_DEFAULT_SECS)
+        );
+        // Unparseable env var.
+        let bad_env = envs(&[("CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS", "12s")]);
+        assert_eq!(
+            effective_child_start_timeout_from(&[], &bad_env, None),
+            Duration::from_secs(CALM_START_TIMEOUT_DEFAULT_SECS)
+        );
+    }
+
+    #[test]
+    fn healthcheck_deadline_saturates_on_extreme_timeouts() {
+        let cfg = supervisor_config(
+            args(&[&format!(
+                "--shared-codex-appserver-start-timeout-secs={}",
+                u64::MAX
+            )]),
+            vec![],
+        );
+        assert_eq!(
+            healthcheck_deadline(&cfg),
+            Duration::from_secs(u64::MAX).saturating_add(HEALTHCHECK_MARGIN)
+        );
+    }
 
     #[test]
     fn sqlite_backup_restore_copies_wal_and_shm() {
