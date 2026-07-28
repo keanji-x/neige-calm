@@ -842,6 +842,21 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
     )
     .await
     .expect("first write");
+    let first_payload: WaveReportPayload = serde_json::from_value(
+        boot.repo
+            .card_get(boot.report_card_id.as_str())
+            .await
+            .unwrap()
+            .expect("report after first write")
+            .payload,
+    )
+    .expect("first payload");
+    let first_ids: Vec<String> = first_payload
+        .blocks
+        .expect("derived blocks after first write")
+        .into_iter()
+        .map(|block| block.id)
+        .collect();
 
     let events = boot.ctx.events.clone();
     let sub = tokio::spawn(async move { collect_n(&events, 2).await });
@@ -860,6 +875,22 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
     )
     .await
     .expect("second write (content-equal)");
+    let second_payload: WaveReportPayload = serde_json::from_value(
+        boot.repo
+            .card_get(boot.report_card_id.as_str())
+            .await
+            .unwrap()
+            .expect("report after second write")
+            .payload,
+    )
+    .expect("second payload");
+    let second_ids: Vec<String> = second_payload
+        .blocks
+        .expect("derived blocks after second write")
+        .into_iter()
+        .map(|block| block.id)
+        .collect();
+    assert_eq!(second_ids, first_ids, "content-equal writes preserve ids");
 
     let envs = sub.await.expect("collector ok");
     assert_eq!(

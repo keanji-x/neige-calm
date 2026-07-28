@@ -1189,11 +1189,7 @@ pub(crate) async fn update_wave_report(
     // Build the next payload from the request body. `schemaVersion` is
     // always the current constant — the field is not on the wire shape
     // (see `UpdateWaveReportBody` doc) so we stamp it here.
-    let next = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
-        summary: body.summary,
-        body: body.body,
-    };
+    let next = WaveReportPayload::new(body.summary, body.body);
 
     // Persist + emit. `EditAuthor::User` is the load-bearing
     // attribution — the wire shape doesn't accept `author` (see the

@@ -2715,12 +2715,7 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
     let (roles, _coves, write) = write_context();
     let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
     let payload = |body: &str| {
-        serde_json::to_value(WaveReportPayload {
-            schema_version: WaveReportPayload::SCHEMA_VERSION,
-            summary: String::new(),
-            body: body.to_string(),
-        })
-        .expect("report payload")
+        serde_json::to_value(WaveReportPayload::new("", body)).expect("report payload")
     };
     let old_body = "# Goal\n\n```text\nstable\n```\n\nold line\n";
     let new_body = "# Goal\n\n```text\nstable\n```\n\nnew line\n";

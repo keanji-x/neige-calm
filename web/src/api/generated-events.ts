@@ -354,6 +354,11 @@ payload: unknown, updated_at: number, };
 export type RatifyDecision = "grant" | "deny";
 
 /**
+ * A derived, addressable slice of a wave report.
+ */
+export type ReportBlock = { id: string, kind: string, rev: number, payload: unknown, };
+
+/**
  * Logical review subject key for `review.round`.
  */
 export type ReviewSubject = { phase: string, slice_id: string, pr_number: number | null, };
@@ -508,7 +513,12 @@ summary: string,
  * splitting at H1 (`^# `) headings; the kernel does not interpret
  * the structure.
  */
-body: string, };
+body: string, 
+/**
+ * Derived block cache. `body` remains the authoritative persisted
+ * projection in schema v1, so older writers may safely omit this.
+ */
+blocks?: Array<ReportBlock> | null, };
 
 /**
  * Payload for `Event::WaveUpdated`.
