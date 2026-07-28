@@ -143,6 +143,19 @@ pub struct Config {
     )]
     pub shared_codex_appserver_restart_max_delay_ms: u64,
 
+    /// Cold-start deadline: total time the supervisor waits for a freshly
+    /// spawned shared codex app-server to bind its socket and answer
+    /// `initialize` before reaping the spawn. Codex may spend minutes
+    /// rebuilding its state db (backfill) before the socket exists at all —
+    /// 48.7s measured in production (#949) — so the default leaves headroom
+    /// for disk load and data growth.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS",
+        default_value_t = 120
+    )]
+    pub shared_codex_appserver_start_timeout_secs: u64,
+
     /// Log directory for the shared codex app-server child.
     #[arg(long, env = "CALM_SHARED_CODEX_APPSERVER_LOG_DIR")]
     pub shared_codex_appserver_log_dir: Option<PathBuf>,

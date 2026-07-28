@@ -288,6 +288,11 @@ pub struct SharedCodexAppServer {
     thread_cache: Arc<DashMap<String, String>>,
     active_turns: Arc<DashMap<String, String>>,
     restart_backoff: BackoffState,
+    /// #949 — cold-start deadline for a freshly spawned child to bind its
+    /// socket and answer `initialize`. Codex may spend minutes backfilling
+    /// its state db before the socket exists; only this deadline (or a dead
+    /// child) may fail the spawn.
+    start_timeout: Duration,
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
@@ -456,6 +461,7 @@ impl SharedCodexAppServer {
             thread_cache: Arc::new(DashMap::new()),
             active_turns: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
+            start_timeout: Duration::from_secs(120),
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -499,6 +505,7 @@ impl SharedCodexAppServer {
                 Duration::from_millis(cfg.shared_codex_appserver_restart_initial_delay_ms),
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
             ),
+            start_timeout: Duration::from_secs(cfg.shared_codex_appserver_start_timeout_secs),
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -1315,7 +1322,7 @@ impl SharedCodexAppServer {
         self.persist_runtime_starting(&runtime, last_error.clone(), daemon_env_signature.clone())
             .await?;
 
-        let (client, notifications) = self.poll_connect_initialized().await?;
+        let (client, notifications) = self.poll_connect_initialized(&mut spawn_guard).await?;
         self.repo
             .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
                 state: SharedDaemonState::Running.as_db_str().to_string(),
@@ -1469,19 +1476,66 @@ impl SharedCodexAppServer {
             .map_err(Into::into)
     }
 
+    /// Wait for the freshly spawned child to bind its socket and answer
+    /// `initialize`. #949 — the wait is child-liveness-aware: a missing or
+    /// unready socket is NOT a failure while the child is alive (codex may
+    /// spend minutes backfilling its state db before it binds), a dead child
+    /// fails immediately with its exit status, and only the configured
+    /// cold-start deadline reaps a live-but-never-binding child (the
+    /// caller's `SpawnedChildGuard` drop does the actual reaping). The
+    /// deadline is a TOTAL cap: it also cuts short an in-flight
+    /// `connect_initialized` attempt (socket accepted, `initialize` never
+    /// answered), so the configured wait cannot be exceeded by the attempt's
+    /// internal 10s request timeout.
     async fn poll_connect_initialized(
         &self,
+        spawn_guard: &mut SpawnedChildGuard,
     ) -> Result<(CodexAppServer, crate::codex_appserver::NotificationStream)> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        let started = tokio::time::Instant::now();
+        let deadline = started + self.start_timeout;
         loop {
-            match connect_initialized(&self.sock).await {
-                Ok(pair) => return Ok(pair),
-                Err(e) if tokio::time::Instant::now() < deadline => {
-                    let _ = e;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(e) => return Err(e),
+            // The deadline caps the TOTAL wait, including an in-flight
+            // attempt: `connect_initialized` gives `initialize` its own 10s
+            // request timeout, so without `timeout_at` a child that accepts
+            // the socket but never answers would stretch the configured
+            // deadline by up to 10s per attempt.
+            let (deadline_hit_in_flight, attempt_err) =
+                match tokio::time::timeout_at(deadline, connect_initialized(&self.sock)).await {
+                    Ok(Ok(pair)) => return Ok(pair),
+                    Ok(Err(e)) => (false, e.to_string()),
+                    Err(_) => (
+                        true,
+                        "initialize attempt still in flight at the cold-start deadline".to_string(),
+                    ),
+                };
+            // Probe liveness AFTER the (possibly long) attempt so both error
+            // paths below describe the child's state at emission time — a
+            // child that exited during a hung attempt surfaces its exit
+            // status here rather than a stale "still alive" claim.
+            if let Some(status) = spawn_guard.try_wait_exit() {
+                return Err(CalmError::CodexAppServer(format!(
+                    "shared codex app-server exited before initialize ({status}) \
+                     after {:.1}s: {attempt_err}",
+                    started.elapsed().as_secs_f64()
+                )));
             }
+            if deadline_hit_in_flight || tokio::time::Instant::now() >= deadline {
+                let waited_ms = started.elapsed().as_millis() as u64;
+                tracing::warn!(
+                    target: "shared_codex_daemon::start",
+                    waited_ms,
+                    deadline_ms = self.start_timeout.as_millis() as u64,
+                    error = %attempt_err,
+                    "shared codex app-server missed the cold-start deadline; reaping spawn"
+                );
+                return Err(CalmError::CodexAppServer(format!(
+                    "shared codex app-server not initialized after {:.1}s \
+                     (deadline {}s, child still alive): {attempt_err}",
+                    started.elapsed().as_secs_f64(),
+                    self.start_timeout.as_secs()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -2209,6 +2263,17 @@ impl SpawnedChildGuard {
         self.spawned_child
             .take()
             .expect("spawn guard disarmed once")
+    }
+
+    /// #949 — non-blocking liveness probe on the still-guarded child. The
+    /// cold-start poll uses it to fail fast (with the exit status) when the
+    /// child dies before its socket appears. `None` while the child runs, or
+    /// on a probe error (the deadline then remains the backstop).
+    fn try_wait_exit(&mut self) -> Option<std::process::ExitStatus> {
+        self.spawned_child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .flatten()
     }
 }
 

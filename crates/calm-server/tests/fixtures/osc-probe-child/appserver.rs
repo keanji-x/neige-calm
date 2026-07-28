@@ -42,6 +42,22 @@ fn listen_sock_path() -> PathBuf {
 /// the accept/serve loop until the connection closes or the process is
 /// killed (which is how the test reaps us).
 pub fn run_fake_app_server() {
+    // #949 cold-start knobs — model codex's state-db backfill window, where
+    // the child is alive for a long time BEFORE the listen socket exists:
+    //   * `FAKE_CODEX_EXIT_BEFORE_BIND_CODE`: exit with this code before the
+    //     socket ever appears (child-died-during-backfill).
+    //   * `FAKE_CODEX_BIND_DELAY_MS`: stay alive but delay socket creation
+    //     (backfill in progress). Distinct from
+    //     `FAKE_CODEX_INITIALIZE_DELAY_MS`, which delays only the initialize
+    //     RESPONSE after the socket is already accepting connections.
+    if let Ok(raw) = std::env::var("FAKE_CODEX_EXIT_BEFORE_BIND_CODE") {
+        let code = raw.trim().parse::<i32>().unwrap_or(1);
+        std::process::exit(code);
+    }
+    if let Some(delay) = env_delay("FAKE_CODEX_BIND_DELAY_MS") {
+        std::thread::sleep(delay);
+    }
+
     let sock = listen_sock_path();
     if let Some(parent) = sock.parent()
         && !parent.exists()
