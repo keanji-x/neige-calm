@@ -4827,6 +4827,30 @@
           }
         }
       },
+      "ReportBlock": {
+        "type": "object",
+        "description": "A derived, addressable slice of a wave report.",
+        "required": [
+          "id",
+          "kind",
+          "rev",
+          "payload"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "payload": {},
+          "rev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        }
+      },
       "RequestTheme": {
         "type": "object",
         "description": "Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
@@ -5850,6 +5874,16 @@
           "body"
         ],
         "properties": {
+          "blocks": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ReportBlock"
+            },
+            "description": "Derived block cache. `body` remains the authoritative persisted\nprojection in schema v1, so older writers may safely omit this."
+          },
           "body": {
             "type": "string",
             "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."

@@ -1574,6 +1574,14 @@ export interface components {
             text: string;
             truncated: boolean;
         };
+        /** @description A derived, addressable slice of a wave report. */
+        ReportBlock: {
+            id: string;
+            kind: string;
+            payload: unknown;
+            /** Format: int32 */
+            rev: number;
+        };
         /**
          * @description Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
          *     `calm_session::TerminalTheme` value type one-for-one — duplicated
@@ -2069,6 +2077,11 @@ export interface components {
          *     the storage layer does not impose a section vocabulary.
          */
         WaveReportPayload: {
+            /**
+             * @description Derived block cache. `body` remains the authoritative persisted
+             *     projection in schema v1, so older writers may safely omit this.
+             */
+            blocks?: components["schemas"]["ReportBlock"][] | null;
             /**
              * @description Markdown source. Sections are derived at render time by
              *     splitting at H1 (`^# `) headings; the kernel does not interpret
