@@ -495,15 +495,15 @@ async fn guard_refusal_reaps_verified_daemon_and_persists_failed_record() {
     );
 }
 
-/// #863 review R2-3(a) / F3a — a persisted record whose pgid != pid is
-/// corrupt (spawn invariant: `process_group(0)` ⇒ pgid == pid); the
-/// guard-refusal reap must NOT signal it. The launcher/native split makes
-/// the liveness assertion meaningful: the record points pid at the native
-/// app-server and pgid at the launcher's (real, live) process group, so a
-/// regression that signals the recorded pgid kills both — the guard must
-/// leave them alive and the corrupt record untouched.
+/// #863 review R2-3(a) / F3a, reshaped by #953 §3 — a persisted record whose
+/// pgid != pid is corrupt (spawn invariant: `process_group(0)` ⇒ pgid ==
+/// pid); the guard refusal must NOT signal it (the launcher/native split
+/// makes the liveness assertion meaningful: a regression that signals the
+/// recorded pgid kills both). #953 change: the record is no longer left
+/// untouched — the refusal persists `failed` RETAINING the identity tuple as
+/// the durable unreconciled marker, with the `unreconciled:` prefix.
 #[tokio::test]
-async fn guard_refusal_skips_reap_when_persisted_pgid_mismatches_pid() {
+async fn guard_refusal_pgid_mismatch_marks_unreconciled_retains_identity_and_never_signals() {
     let root = tempfile::tempdir().unwrap();
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
@@ -541,22 +541,38 @@ async fn guard_refusal_skips_reap_when_persisted_pgid_mismatches_pid() {
         "guard refusal must NOT signal a corrupt (pgid != pid) persisted record; \
          peer_alive={peer_alive} launcher_alive={launcher_alive}"
     );
-    // Skip path also means no failed-record rewrite: the corrupt record is
-    // left as-is for the operator (only the reap path persists Failed).
+    // #953 §3 — identity RETAINED as-read (the durable unreconciled marker),
+    // state now `failed` with the `unreconciled:` prefix.
     assert_eq!(
         record.pid,
         Some(peer_pid),
-        "corrupt record pid must be left untouched"
+        "unreconciled refusal must retain the persisted pid as-read"
     );
     assert_eq!(
         record.pgid,
         Some(pgid),
-        "corrupt record pgid must be left untouched"
+        "unreconciled refusal must retain the persisted pgid as-read"
+    );
+    assert_eq!(
+        record.process_start_time,
+        Some(process_start_time),
+        "unreconciled refusal must retain the persisted start_time as-read"
     );
     assert_eq!(
         SharedDaemonState::from_db_str(&record.state),
-        SharedDaemonState::Running,
-        "skip path must not rewrite the persisted state"
+        SharedDaemonState::Failed,
+        "unreconciled refusal must persist state=failed"
+    );
+    let last_error = record
+        .last_error
+        .expect("unreconciled refusal must persist last_error");
+    assert!(
+        last_error.starts_with("unreconciled: "),
+        "unreconciled last_error must carry the durable prefix; got: {last_error}"
+    );
+    assert!(
+        last_error.contains("evil"),
+        "unreconciled last_error must name the offender; got: {last_error}"
     );
 }
 
@@ -2051,6 +2067,10 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     let repo = repo().await;
     let mut cfg = cfg(&root);
     cfg.shared_codex_appserver_start_timeout_secs = 2;
+    // #953 — keep the armed heal loop quiet for the assertion window so it
+    // does not respawn (and re-persist `starting`) mid-test.
+    cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
@@ -2059,9 +2079,17 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
 
     let started = std::time::Instant::now();
-    let err = daemon
-        .start_or_takeover()
+    let start_task = tokio::spawn({
+        let daemon = daemon.clone();
+        async move { daemon.start_or_takeover().await }
+    });
+    // #953 — the failed spawn persists `failed` with identity NULLed, so the
+    // spawned pid must be captured from the transient `starting` row while
+    // the spawn is still in flight.
+    let pid = wait_for_starting_pid(&repo).await;
+    let err = start_task
         .await
+        .unwrap()
         .expect_err("a never-binding child must fail at the configured deadline");
     let elapsed = started.elapsed();
     assert!(
@@ -2079,10 +2107,6 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
     );
 
     // The spawn guard reaps the still-alive child on failure.
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
-    let pid = record
-        .pid
-        .expect("Starting state persisted the spawned pid");
     let mut reaped = false;
     for _ in 0..60 {
         if pid_gone_or_zombie(pid) {
@@ -2095,6 +2119,30 @@ async fn cold_start_reaps_never_binding_child_at_configured_deadline() {
         reaped,
         "never-binding child must be reaped after the deadline"
     );
+    // #953 defect 1 — and the row must reflect the failure, not a stranded
+    // `starting`.
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Failed,
+        "deadline failure must persist state=failed; got {}",
+        record.state
+    );
+    assert_eq!(record.pid, None, "proven-absent failure must NULL pid");
+}
+
+/// Poll for the transient `starting` row's pid while a spawn is in flight.
+async fn wait_for_starting_pid(repo: &SqlxRepo) -> i32 {
+    for _ in 0..200 {
+        let record = repo.shared_daemon_runtime_get().await.unwrap();
+        if SharedDaemonState::from_db_str(&record.state) == SharedDaemonState::Starting
+            && let Some(pid) = record.pid
+        {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("spawn never persisted a starting row with a pid");
 }
 
 /// #949 review-fix — the deadline is a TOTAL cap even across an in-flight
@@ -2120,6 +2168,9 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     let repo = repo().await;
     let mut cfg = cfg(&root);
     cfg.shared_codex_appserver_start_timeout_secs = 2;
+    // #953 — keep the armed heal loop quiet for the assertion window.
+    cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
@@ -2128,9 +2179,16 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
 
     let started = std::time::Instant::now();
-    let err = daemon
-        .start_or_takeover()
+    let start_task = tokio::spawn({
+        let daemon = daemon.clone();
+        async move { daemon.start_or_takeover().await }
+    });
+    // #953 — capture the spawned pid from the transient `starting` row (the
+    // failure now persists `failed` with identity NULLed).
+    let pid = wait_for_starting_pid(&repo).await;
+    let err = start_task
         .await
+        .unwrap()
         .expect_err("a hanging initialize must fail at the configured deadline");
     let elapsed = started.elapsed();
     assert!(
@@ -2149,10 +2207,6 @@ async fn cold_start_deadline_caps_in_flight_hanging_initialize() {
     );
 
     // The spawn guard reaps the still-hanging child on failure.
-    let record = repo.shared_daemon_runtime_get().await.unwrap();
-    let pid = record
-        .pid
-        .expect("Starting state persisted the spawned pid");
     let mut reaped = false;
     for _ in 0..60 {
         if pid_gone_or_zombie(pid) {
@@ -2200,4 +2254,140 @@ async fn cold_start_deadline_config_default_flag_and_env_override() {
         33,
         "env override must win over the default"
     );
+}
+
+// ================= #953 supervisor self-heal =================
+
+/// Build a daemon whose codex bin is a removable symlink, so tests can break
+/// and repair the spawn path deterministically.
+fn daemon_with_codex_symlink(
+    root: &tempfile::TempDir,
+    repo: Arc<SqlxRepo>,
+) -> (Arc<SharedCodexAppServer>, std::path::PathBuf) {
+    let bin_dir = root.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let codex_link = bin_dir.join("codex");
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+
+    let mut cfg = cfg(root);
+    cfg.codex_bin = codex_link.display().to_string();
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    (
+        SharedCodexAppServer::new(&cfg, Arc::new(home), repo),
+        codex_link,
+    )
+}
+
+async fn wait_for_state(daemon: &SharedCodexAppServer, want: SharedDaemonState, secs: u64) -> bool {
+    tokio::time::timeout(Duration::from_secs(secs), async {
+        loop {
+            if daemon.status_snapshot().state == want {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+/// #953 defect 1 — failing-first repro (i), design test 1: a spawn failure
+/// AFTER `persist_runtime_starting` (here: the child answers `initialize`
+/// with an error until the 1s cold-start deadline) must persist a `failed`
+/// row with the identity tuple NULLed and last_error set. It must never
+/// strand the DB at `state='starting'` with a dead pid (production: 16 days).
+#[tokio::test]
+async fn spawn_failure_after_persist_starting_persists_failed_row() {
+    let _guard = ENV_LOCK.lock().await;
+    unsafe {
+        std::env::set_var("FAKE_CODEX_FAIL_INITIALIZE", "1");
+    }
+    let _env = EnvGuard("FAKE_CODEX_FAIL_INITIALIZE");
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut cfg = cfg(&root);
+    cfg.shared_codex_appserver_start_timeout_secs = 1;
+    // Keep the armed heal loop quiet for the assertion window: its retry
+    // would legitimately re-persist `starting` while respawning.
+    cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let home = calm_server::shared_codex_home::SharedCodexHome::new(
+        cfg.data_dir_resolved().join("codex-home"),
+        cfg.data_dir_resolved().join("codex-homes"),
+    );
+    home.seed().unwrap();
+    let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("failing initialize must fail the start at the deadline");
+    assert!(
+        daemon.heal_active_for_test(),
+        "spawn failure must arm the background heal loop"
+    );
+
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Failed,
+        "post-persist_runtime_starting spawn failure must persist state=failed, \
+         never strand 'starting'; got state={}",
+        record.state
+    );
+    assert_eq!(record.pid, None, "proven-absent failure must NULL pid");
+    assert_eq!(record.pgid, None, "proven-absent failure must NULL pgid");
+    assert_eq!(record.process_start_time, None);
+    assert_eq!(record.boot_id, None);
+    assert!(
+        record.last_error.is_some(),
+        "failed row must carry last_error"
+    );
+}
+
+/// #953 defect 3 — failing-first repro (ii), design tests 2+4: once the
+/// daemon is Failed (missing codex bin at boot), repairing the cause and
+/// firing the settings-change nudge must bring the daemon back to Running
+/// WITHOUT any manual respawn call and without restarting calm-server.
+#[tokio::test]
+async fn failed_daemon_heals_in_background_without_server_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let (daemon, codex_link) = daemon_with_codex_symlink(&root, repo.clone());
+
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot spawn must fail with a missing codex bin");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Failed,
+        "boot spawn failure must leave an accurate failed row; got state={}",
+        record.state
+    );
+
+    // Repair the cause, then fire ONLY the existing settings-change nudge.
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    daemon.mark_needs_respawn();
+
+    assert!(
+        wait_for_state(&daemon, SharedDaemonState::Running, 15).await,
+        "background heal loop must revive a Failed daemon without a manual \
+         respawn call or a calm-server restart; still {:?}",
+        daemon.status_snapshot().state
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "heal success must persist the running row"
+    );
+    assert!(record.pid.is_some());
 }

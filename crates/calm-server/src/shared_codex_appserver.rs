@@ -158,6 +158,295 @@ enum ResumeMode {
     HotTakeover,
 }
 
+/// #953 §2 — slow-lane retry ceiling for the self-heal loop. A code
+/// invariant, not a knob (Explicit-Config rule: no new config knobs).
+pub const HEAL_SLOW_RETRY_CEILING: Duration = Duration::from_secs(300);
+
+/// #953 §2 — ±20% uniform jitter applied to every heal delay.
+const HEAL_JITTER_FRACTION: f64 = 0.2;
+
+/// #953 §2 — classified failure lanes for the self-heal loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureClass {
+    /// Fast lane — the existing `BackoffState` knobs. Child exited,
+    /// handshake/cold-start deadline, socket errors.
+    Transient,
+    /// Slow lane — spawn exec error, settings/config read error, guard
+    /// refusal that is safe to retry (floor `restart_max_delay_ms`, ceiling
+    /// [`HEAL_SLOW_RETRY_CEILING`]).
+    Persistent,
+    /// Slow lane, reconciliation-only rounds (#953 §3): a possible surviving
+    /// daemon we could not prove gone. The spawn path is unreachable until a
+    /// reconciliation round proves absence (or, for the pid-NULL operator
+    /// shape, until the operator clears the identity columns).
+    Unreconciled,
+}
+
+/// #953 §1 — precondition validated (before any destructive work) by
+/// [`SharedCodexAppServer::transition_replace`] under the same core lock
+/// that captures the running parts. The transition serial is never released
+/// between validation and the terminal Running/Failed write, so no second
+/// pre-spawn check is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplacePrecondition {
+    /// Settings respawn: replace whatever is installed.
+    Always,
+    /// Crash watcher: proceed only if the Running generation it observed
+    /// dying is still the installed one (equality only, never ordering).
+    GenerationIs(u64),
+    /// Heal loop: proceed only when nothing is Running — the loop can never
+    /// stomp a Running daemon a concurrent transition won.
+    NotRunning,
+}
+
+/// Outcome of [`SharedCodexAppServer::transition_replace`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplaceOutcome {
+    Replaced,
+    /// The precondition failed: no reap, no spawn, nothing touched.
+    PreconditionFailed,
+}
+
+/// How the shared start body established the Running daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartedVia {
+    Takeover,
+    Spawn,
+}
+
+impl StartedVia {
+    fn resume_mode(self) -> ResumeMode {
+        match self {
+            StartedVia::Takeover => ResumeMode::HotTakeover,
+            StartedVia::Spawn => ResumeMode::ColdRespawn,
+        }
+    }
+}
+
+/// #953 §3 — result of the exhaustive per-shape resolution over a persisted
+/// daemon record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShapeResolution {
+    /// Absence/death proven — identity columns may be NULLed (the durable
+    /// proof-of-absence transition) and the spawn path reopened.
+    ProvenAbsent,
+    /// A possible survivor we could not prove gone. `needs_operator` marks
+    /// the pid-NULL shape that names no process at all — the only shape that
+    /// cannot self-resolve on process death.
+    Unreconciled { needs_operator: bool },
+}
+
+/// #953 §2 — the identity/context columns a Failed persist writes. NULL-only
+/// when absence is proven; retained exactly as read while unreconciled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FailedIdentity {
+    pid: Option<i32>,
+    pgid: Option<i32>,
+    process_start_time: Option<u64>,
+    boot_id: Option<String>,
+    started_at: Option<i64>,
+    sock_path: Option<String>,
+    codex_home_path: Option<String>,
+    daemon_env_signature: Option<String>,
+}
+
+impl FailedIdentity {
+    /// Proven absence: identity NULL, sock/home point at this supervisor,
+    /// no signature (there is no process for it to describe).
+    fn proven_absent(sock: &Path, codex_home: &Path) -> Self {
+        Self {
+            pid: None,
+            pgid: None,
+            process_start_time: None,
+            boot_id: None,
+            started_at: None,
+            sock_path: Some(sock.display().to_string()),
+            codex_home_path: Some(codex_home.display().to_string()),
+            daemon_env_signature: None,
+        }
+    }
+
+    /// Unreconciled: retain the tuple exactly as read (full or partial) —
+    /// identity presence IS the durable unreconciled marker (#953 §3).
+    fn retained(record: &crate::db::SharedCodexDaemonRecord) -> Self {
+        Self {
+            pid: record.pid,
+            pgid: record.pgid,
+            process_start_time: record.process_start_time,
+            boot_id: record.boot_id.clone(),
+            started_at: record.started_at,
+            sock_path: record.sock_path.clone(),
+            codex_home_path: record.codex_home_path.clone(),
+            daemon_env_signature: record.daemon_env_signature.clone(),
+        }
+    }
+}
+
+/// #953 §2 — last successfully-persisted Failed tuple. Identical consecutive
+/// Failed writes are skipped; the cache is updated ONLY after the DB write
+/// returns Ok (`note_written`), so a failed write is retried next round,
+/// never masked. Any successful non-failed write clears it.
+#[derive(Default)]
+struct FailedPersistDedup(std::sync::Mutex<Option<(String, FailureClass, FailedIdentity)>>);
+
+impl FailedPersistDedup {
+    fn should_skip(
+        &self,
+        last_error: &str,
+        class: FailureClass,
+        identity: &FailedIdentity,
+    ) -> bool {
+        self.0
+            .lock()
+            .expect("failed persist dedup mutex poisoned")
+            .as_ref()
+            .is_some_and(|(cached_error, cached_class, cached_identity)| {
+                cached_error == last_error && *cached_class == class && cached_identity == identity
+            })
+    }
+
+    /// Call ONLY after the DB write returned Ok.
+    fn note_written(&self, last_error: String, class: FailureClass, identity: FailedIdentity) {
+        *self.0.lock().expect("failed persist dedup mutex poisoned") =
+            Some((last_error, class, identity));
+    }
+
+    fn clear(&self) {
+        *self.0.lock().expect("failed persist dedup mutex poisoned") = None;
+    }
+}
+
+/// #953 §2 — RAII claim for the singleton heal task: `Drop` clears the
+/// `heal_active` flag, so panic, cancellation, abort, and normal exit all
+/// release the claim.
+struct HealActiveGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl Drop for HealActiveGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
+/// #953 §2 — failure classification for the heal lanes. The Transient
+/// messages are exactly the cold-start poll failures produced in this file
+/// (`poll_connect_initialized`) plus the crash-watcher exit shape; everything
+/// else (exec/spawn errors, settings/config read errors, guard refusals)
+/// retries on the slow lane.
+fn classify_spawn_failure(err: &CalmError) -> FailureClass {
+    let msg = err.to_string();
+    if msg.contains("exited before initialize")
+        || msg.contains("not initialized after")
+        || msg.contains("app-server exited")
+    {
+        FailureClass::Transient
+    } else {
+        FailureClass::Persistent
+    }
+}
+
+/// #953 §2 — ±20% uniform jitter. Cheap clock-derived entropy: the heal loop
+/// only needs desynchronization, not statistical quality (no rand dep).
+fn heal_jitter(delay: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0) as u64;
+    let unit = (nanos % 1_000_001) as f64 / 1_000_000.0;
+    delay.mul_f64(1.0 - HEAL_JITTER_FRACTION + 2.0 * HEAL_JITTER_FRACTION * unit)
+}
+
+/// `/proc/<pid>/stat` state == `Z`. A zombie is dead for supervision
+/// purposes: it cannot serve, hold sockets, or spawn — it merely awaits its
+/// parent's `wait()` (which may not be us, e.g. a test-spawned survivor).
+fn proc_pid_is_zombie(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // The state field is the first token after the `(comm)` field.
+    stat.rsplit(") ")
+        .next()
+        .and_then(|rest| rest.chars().next())
+        .map(|state| state == 'Z')
+        .unwrap_or(false)
+}
+
+/// `/proc/<pid>` presence (zombies excluded) — the ONLY probe allowed for
+/// the pid-partial shape (#953 §3 shape (a)): ownership is unprovable (the
+/// pid may be recycled), so the record must never be reaped or signaled.
+fn proc_pid_running(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    Path::new(&format!("/proc/{pid}")).exists() && !proc_pid_is_zombie(pid)
+}
+
+/// #953 §3 — "survivor still alive" criterion for reconciliation: the
+/// verified identity matches a live, non-zombie process.
+fn persisted_survivor_alive(pid: i32, start_time: u64, boot_id: &str) -> bool {
+    verify_owned_pid(pid, start_time, boot_id) && !proc_pid_is_zombie(pid)
+}
+
+/// #953 §3 durable marker prefixes — human-readable belt-and-braces; the
+/// machine rule is identity presence (`failed_row_identity_present`).
+const UNRECONCILED_PREFIX: &str = "unreconciled: ";
+const UNRECONCILED_NEEDS_OPERATOR_PREFIX: &str = "unreconciled-needs-operator: ";
+
+fn unreconciled_prefix(needs_operator: bool) -> &'static str {
+    if needs_operator {
+        UNRECONCILED_NEEDS_OPERATOR_PREFIX
+    } else {
+        UNRECONCILED_PREFIX
+    }
+}
+
+fn strip_unreconciled_prefix(last_error: &str) -> &str {
+    last_error
+        .strip_prefix(UNRECONCILED_NEEDS_OPERATOR_PREFIX)
+        .or_else(|| last_error.strip_prefix(UNRECONCILED_PREFIX))
+        .unwrap_or(last_error)
+}
+
+/// #953 §3 read-side classification rule (explicit; survives calm-server
+/// restarts): `state='failed'` ∧ all identity columns NULL ⇒ SafeToRetry;
+/// `state='failed'` ∧ any identity column present ⇒ Unreconciled — run the
+/// per-shape resolution algorithm before any spawn. Unambiguous vs legacy
+/// rows: every pre-#953 Failed writer NULLed identity.
+fn failed_row_identity_present(record: &crate::db::SharedCodexDaemonRecord) -> bool {
+    SharedDaemonState::from_db_str(&record.state) == SharedDaemonState::Failed
+        && (record.pid.is_some()
+            || record.pgid.is_some()
+            || record.process_start_time.is_some()
+            || record.boot_id.is_some())
+}
+
+/// The Failed message written while a row stays unreconciled. A pure
+/// function of the record's identity shape — NOT of its previous
+/// `last_error` — so identical consecutive rounds produce an identical
+/// tuple and dedup to a single DB write.
+fn unreconciled_message(
+    record: &crate::db::SharedCodexDaemonRecord,
+    needs_operator: bool,
+) -> String {
+    if needs_operator {
+        format!(
+            "{UNRECONCILED_NEEDS_OPERATOR_PREFIX}persisted daemon record names no pid \
+             (pgid={:?}, process_start_time={:?}, boot_id_present={}); \
+             clear its identity columns to re-enable respawn",
+            record.pgid,
+            record.process_start_time,
+            record.boot_id.is_some()
+        )
+    } else {
+        format!(
+            "{UNRECONCILED_PREFIX}possible surviving daemon (pid {:?}, pgid {:?}) \
+             not proven gone; refusing to spawn until absence is proven",
+            record.pid, record.pgid
+        )
+    }
+}
+
 #[derive(Clone)]
 pub enum ThreadConfig {
     /// No per-card MCP credentials injected. Serializes to omitted `config`.
@@ -246,6 +535,15 @@ impl BackoffState {
         bounded_exponential_backoff(self.initial, self.max, attempt)
     }
 
+    /// #953 §2 — slow heal lane: same attempts counter and stable-window
+    /// semantics as [`Self::next_delay`], but with floor = this state's max
+    /// (`restart_max_delay_ms`) and a caller-supplied ceiling.
+    pub fn next_slow_delay(&self, ceiling: Duration) -> Duration {
+        self.reset_if_stable();
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+        bounded_exponential_backoff(self.max, ceiling.max(self.max), attempt)
+    }
+
     fn reset_if_stable(&self) {
         let Some(last_relaunch_at) = *self
             .last_relaunch_at
@@ -310,6 +608,14 @@ pub struct SharedCodexAppServer {
     core: Arc<tokio::sync::Mutex<SupervisorCore>>,
     /// #480 §C — serializes process transitions (replaces `restart_lock` in PR5b).
     transition_serial: Arc<tokio::sync::Mutex<()>>,
+    /// #953 §2 — singleton claim for the background heal task; cleared by
+    /// the RAII [`HealActiveGuard`] on any task exit (panic/abort included).
+    heal_active: Arc<AtomicBool>,
+    /// #953 §2 — slow-lane immediate wake on external change (the existing
+    /// settings-change path); the heal loop sleeps in select(sleep, nudge).
+    heal_nudge: Arc<tokio::sync::Notify>,
+    /// #953 §2 — post-Ok dedup of Failed DB writes.
+    failed_persist_dedup: FailedPersistDedup,
     ingest_url: String,
     #[cfg(feature = "fixtures")]
     fake: Option<Arc<FakeSharedCodexAppServer>>,
@@ -364,6 +670,8 @@ pub enum SupervisorState {
     },
     Failed {
         last_error: String,
+        /// #953 §2 — heal-lane classification for this failure.
+        class: FailureClass,
         since: Instant,
     },
 }
@@ -381,6 +689,13 @@ pub struct SupervisorWatcher {
 pub struct SupervisorCore {
     pub state: SupervisorState,
     pub attempts: u32,
+    /// #953 §1 — bumped (`wrapping_add`, defined wrap, no debug-overflow
+    /// panic) each time a Running state is installed. Consumers compare by
+    /// equality only, never ordering: the crash watcher records the
+    /// generation it observed dying and passes
+    /// [`ReplacePrecondition::GenerationIs`]; a mismatch means another
+    /// transition already replaced that process.
+    pub generation: u64,
 }
 
 pub struct LaunchedSharedDaemon {
@@ -474,8 +789,12 @@ impl SharedCodexAppServer {
             core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
                 state: SupervisorState::Idle,
                 attempts: 0,
+                generation: 0,
             })),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
+            heal_active: Arc::new(AtomicBool::new(false)),
+            heal_nudge: Arc::new(tokio::sync::Notify::new()),
+            failed_persist_dedup: FailedPersistDedup::default(),
             ingest_url: "http://127.0.0.1:0".into(),
             #[cfg(feature = "fixtures")]
             fake: _fake_running.then(|| Arc::new(FakeSharedCodexAppServer::new())),
@@ -518,8 +837,12 @@ impl SharedCodexAppServer {
             core: Arc::new(tokio::sync::Mutex::new(SupervisorCore {
                 state: SupervisorState::Idle,
                 attempts: 0,
+                generation: 0,
             })),
             transition_serial: Arc::new(tokio::sync::Mutex::new(())),
+            heal_active: Arc::new(AtomicBool::new(false)),
+            heal_nudge: Arc::new(tokio::sync::Notify::new()),
+            failed_persist_dedup: FailedPersistDedup::default(),
             ingest_url: cfg.codex_ingest_url_resolved(),
             #[cfg(feature = "fixtures")]
             fake: None,
@@ -531,141 +854,75 @@ impl SharedCodexAppServer {
     }
 
     pub async fn start_or_takeover(self: &Arc<Self>) -> Result<()> {
-        // #863 review R2-1 — the whole boot sequence is ONE serialized
-        // lifecycle transition: `transition_serial` is held from BEFORE the
-        // boot guard through the guard-refusal reap + Failed write AND
-        // through the takeover/spawn (#480 §C invariant). Acquiring it any
-        // later lets a concurrent transition (crash-restart, settings
-        // respawn) complete a spawn in between; the Failed write below would
-        // then overwrite that Running state in memory while its live child
-        // keeps running unsupervised. The downstream transitions
-        // (`try_takeover_live` → `start_new_process_typestate`,
-        // `start_new_process_locked`) are `_locked`-style callees that assume
-        // this guard instead of re-acquiring it — no double-lock.
-        let _serial = self.transition_serial.lock().await;
-        // #863 boot guard — the resolved home is exactly what resumed threads
-        // will run against, on boot AND on takeover. Refuse before touching
-        // the process, and never strand a previously-live polluted daemon
-        // running unsupervised.
-        if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
-            let msg = format!("refusing to launch shared codex app-server: {guard_err}");
-            self.reap_persisted_daemon_if_verified(&msg).await;
-            // #863 review F1 — surface the refusal in `status_snapshot()`:
-            // mirror the typestate error arm of `start_new_process_typestate`
-            // (Failed under the core lock; `transition_serial` held above).
-            {
-                let mut core = self.core.lock().await;
-                core.state = SupervisorState::Failed {
-                    last_error: msg.clone(),
-                    since: Instant::now(),
-                };
-            }
-            return Err(CalmError::CodexAppServer(msg));
-        }
-        self.rebuild_thread_cache_from_db().await?;
-        let record = self.repo.shared_daemon_runtime_get().await?;
-        if self.try_takeover_live(&record).await? {
-            return Ok(());
-        }
-
-        self.start_new_process_locked(false, None).await?;
+        // #863 review R2-1 / #953 §1 — the whole boot sequence is ONE
+        // serialized lifecycle transition: `transition_serial` is held from
+        // BEFORE the boot guard through the guard-refusal reconciliation +
+        // Failed write AND through the takeover/spawn (#480 §C invariant).
+        // The downstream callees (`start_body_locked` → `try_takeover_live`
+        // → `start_new_process_typestate`) are `_locked`-style callees that
+        // assume this guard instead of re-acquiring it — no double-lock.
+        // Thread resume runs after the serial is released (#953 §1: not a
+        // transition).
+        let via = {
+            let _serial = self.transition_serial.lock().await;
+            self.rebuild_thread_cache_from_db().await?;
+            self.start_body_locked(false, None).await?
+        };
+        self.resume_cached_threads(via.resume_mode()).await;
         Ok(())
     }
 
-    /// #863 — "no polluted survivor": when the boot guard refuses, the
-    /// persisted daemon (if still verified alive) is reaped before the error
-    /// propagates, so it cannot keep serving with its polluted env/home.
-    async fn reap_persisted_daemon_if_verified(&self, guard_error: &str) {
-        let record = match self.repo.shared_daemon_runtime_get().await {
-            Ok(record) => record,
-            Err(e) => {
-                tracing::warn!(
-                    target: "shared_codex_daemon::stop",
-                    error = %e,
-                    "boot guard refusal: failed reading persisted daemon runtime; skipping reap"
-                );
-                return;
-            }
-        };
-        let (Some(pid), Some(pgid), Some(start_time), Some(boot_id)) = (
-            record.pid,
-            record.pgid,
-            record.process_start_time,
-            record.boot_id.clone(),
-        ) else {
-            // #863 review F3b — a partial identity tuple is a corrupt record:
-            // say so instead of silently skipping. A fully-empty tuple is the
-            // normal "no daemon was ever persisted" state and stays silent.
-            if record.pid.is_some()
-                || record.pgid.is_some()
-                || record.process_start_time.is_some()
-                || record.boot_id.is_some()
-            {
-                tracing::warn!(
-                    target: "shared_codex_daemon::stop",
-                    pid = ?record.pid,
-                    pgid = ?record.pgid,
-                    process_start_time = ?record.process_start_time,
-                    boot_id = ?record.boot_id,
-                    "boot guard refusal: persisted daemon record has a partial identity tuple; skipping reap"
-                );
-            }
-            return;
-        };
-        // #863 review F3a — spawn always sets pgid = pid (`process_group(0)`);
-        // a mismatched persisted pgid is a corrupt record, and signaling a
-        // pgid we did not create risks killing unrelated processes. Never
-        // signal; warn and skip the reap.
-        if pgid != pid {
-            tracing::warn!(
-                target: "shared_codex_daemon::stop",
-                pid,
-                pgid,
-                "boot guard refusal: persisted pgid does not match pid (spawn invariant pgid == pid); treating record as corrupt and skipping reap"
-            );
-            return;
+    /// #953 §3 — supervisor entry to (re)establish a running daemon from any
+    /// non-Running state: `start_or_takeover` with a Running fast-path,
+    /// sharing the same `_locked` body (guard verify → persisted-record
+    /// reconciliation → takeover probe → spawn). The `NotRunning`
+    /// precondition is re-validated under the transition serial, so the heal
+    /// loop can never stomp a Running daemon a concurrent transition won.
+    pub async fn ensure_running(self: &Arc<Self>) -> Result<()> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return Ok(());
         }
-        if !verify_owned_pid(pid, start_time, &boot_id) {
-            return;
+        if matches!(
+            self.core.lock().await.state,
+            SupervisorState::Running { .. }
+        ) {
+            return Ok(());
         }
-        tracing::warn!(
-            target: "shared_codex_daemon::stop",
-            pid,
-            pgid,
-            "boot guard refused polluted CODEX_HOME; reaping verified persisted daemon before erroring"
-        );
-        reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
-        // #863 review F3c — persist the reap so DB truth reflects it.
-        // `try_takeover_live`'s reap paths deliberately leave the record
-        // because a fresh spawn immediately follows and overwrites it
-        // (`persist_runtime_starting`); here NOTHING follows — the guard
-        // refusal aborts the boot — so a stale "running" row would misreport
-        // a daemon we just killed. Shape mirrors `restart_after_crash`'s
-        // failed-spawn arm; the env signature is cleared because there is no
-        // process for it to describe.
-        if let Err(e) = self
-            .repo
-            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Failed.as_db_str().to_string(),
-                pid: None,
-                pgid: None,
-                sock_path: Some(self.sock.display().to_string()),
-                codex_home_path: Some(self.home.path().display().to_string()),
-                process_start_time: None,
-                boot_id: None,
-                started_at: None,
-                last_error: Some(guard_error.to_string()),
-                increment_restart_count: false,
-                daemon_env_signature: None,
-            })
-            .await
-        {
-            tracing::warn!(
-                target: "shared_codex_daemon::stop",
-                error = %e,
-                "failed persisting Failed daemon record after boot-guard reap"
-            );
+        // Both outcomes are success: Replaced means we established Running;
+        // PreconditionFailed means a concurrent transition already did.
+        self.transition_replace(
+            "self-heal: daemon not running",
+            ReplacePrecondition::NotRunning,
+            false,
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// #953 — preflight enrichment: same error variants/status as before,
+    /// message now carries the live failure and the fact that recovery runs
+    /// in the background. Preflights stay non-blocking.
+    pub fn not_running_message(&self) -> String {
+        let last_error = self
+            .core
+            .try_lock()
+            .ok()
+            .and_then(|core| core.state.last_error().map(String::from));
+        match last_error {
+            Some(e) => format!(
+                "shared codex app-server is not running (last error: {e}); \
+                 supervisor is retrying in the background — retry shortly"
+            ),
+            None => "shared codex app-server is not running; \
+                     supervisor is retrying in the background — retry shortly"
+                .to_string(),
         }
+    }
+
+    pub fn not_running_error(&self) -> CalmError {
+        CalmError::Internal(self.not_running_message())
     }
 
     pub async fn thread_start_for_card(
@@ -892,6 +1149,10 @@ impl SharedCodexAppServer {
     pub fn mark_needs_respawn(&self) {
         self.needs_respawn_on_next_thread_start
             .store(true, Ordering::SeqCst);
+        // #953 §2 — the existing settings-change path doubles as the heal
+        // loop's slow-lane immediate wake. `notify_one` stores a permit, so
+        // a nudge fired while the loop is mid-round is not lost.
+        self.heal_nudge.notify_one();
     }
 
     pub fn status_snapshot(&self) -> SharedDaemonStatus {
@@ -1171,6 +1432,7 @@ impl SharedCodexAppServer {
                 let handle = tokio::spawn(async move {
                     Self::watch_taken_over_pid(watcher_self, watcher_runtime).await;
                 });
+                let adopted = runtime.clone();
                 self.start_new_process_typestate(|_| async move {
                     Ok(LaunchedSharedDaemon {
                         child: None,
@@ -1183,7 +1445,35 @@ impl SharedCodexAppServer {
                     })
                 })
                 .await?;
-                self.resume_cached_threads(ResumeMode::HotTakeover).await;
+                // #953 — takeover success re-stamps `running` with the
+                // adopted tuple, so a row persisted as `starting` (or another
+                // legacy adoptable shape) reflects the live adopted daemon.
+                if let Err(e) = self
+                    .repo
+                    .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                        state: SharedDaemonState::Running.as_db_str().to_string(),
+                        pid: Some(adopted.pid),
+                        pgid: Some(adopted.pgid),
+                        sock_path: record.sock_path.clone(),
+                        codex_home_path: record.codex_home_path.clone(),
+                        process_start_time: Some(adopted.process_start_time),
+                        boot_id: Some(adopted.boot_id.clone()),
+                        started_at: Some(adopted.started_at),
+                        last_error: record.last_error.clone(),
+                        increment_restart_count: false,
+                        daemon_env_signature: record.daemon_env_signature.clone(),
+                    })
+                    .await
+                {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::start",
+                        pid = adopted.pid,
+                        error = %e,
+                        "takeover succeeded but re-stamping the running row failed"
+                    );
+                } else {
+                    self.failed_persist_dedup.clear();
+                }
                 Ok(true)
             }
             Err(e) => {
@@ -1200,35 +1490,393 @@ impl SharedCodexAppServer {
         }
     }
 
-    async fn start_new_process(
+    /// #953 §1 — THE atomic replace transition. Every process transition
+    /// funnels through here (settings respawn, crash restart, heal loop)
+    /// under a single continuously-held `transition_serial` guard: validate
+    /// precondition → capture RunningProcessParts + set Restarting → abort
+    /// watcher → reap → guard verify → record reconciliation →
+    /// takeover-probe/spawn (typestate). The serial is released only after
+    /// the terminal Running/Failed write; `resume_cached_threads` runs after
+    /// release (not a transition). The precondition is validated BEFORE any
+    /// destructive work, atomically with the capture, and the guard is never
+    /// released in between — no second pre-spawn check needed.
+    pub(crate) async fn transition_replace(
         self: &Arc<Self>,
+        reason: &str,
+        pre: ReplacePrecondition,
         increment_restart_count: bool,
         last_error: Option<String>,
-    ) -> Result<()> {
-        // Scoped so crash-restart/settings-respawn callers keep the pre-R2-1
-        // behavior: serialized spawn transition, thread resume outside it.
-        {
+    ) -> Result<ReplaceOutcome> {
+        let via = {
             let _serial = self.transition_serial.lock().await;
-            self.spawn_process_transition(increment_restart_count, last_error)
-                .await?;
-        }
-        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
-        Ok(())
+            let running = {
+                let mut core = self.core.lock().await;
+                match pre {
+                    ReplacePrecondition::Always => {}
+                    ReplacePrecondition::GenerationIs(generation) => {
+                        if core.generation != generation {
+                            // Another transition already replaced the process
+                            // this caller observed dying: abort silently —
+                            // no reap, no spawn (kills the double-spawn
+                            // interleaving of the old split path).
+                            return Ok(ReplaceOutcome::PreconditionFailed);
+                        }
+                    }
+                    ReplacePrecondition::NotRunning => {
+                        if matches!(core.state, SupervisorState::Running { .. }) {
+                            return Ok(ReplaceOutcome::PreconditionFailed);
+                        }
+                    }
+                }
+                core.attempts = core.attempts.saturating_add(1);
+                let attempts = core.attempts;
+                let prev_pid = match &core.state {
+                    SupervisorState::Running { runtime, .. } => Some(runtime.pid),
+                    _ => None,
+                };
+                let old_state = std::mem::replace(
+                    &mut core.state,
+                    SupervisorState::Restarting {
+                        prev_pid,
+                        reason: reason.to_string(),
+                        attempts,
+                    },
+                );
+                match old_state {
+                    SupervisorState::Running {
+                        child,
+                        runtime,
+                        watcher,
+                        ..
+                    } => Some(RunningProcessParts {
+                        child,
+                        runtime,
+                        watcher,
+                    }),
+                    _ => None,
+                }
+            };
+            self.reap_current_child_or_runtime(running).await;
+            self.start_body_locked(increment_restart_count, last_error)
+                .await?
+        };
+        self.resume_cached_threads(via.resume_mode()).await;
+        Ok(ReplaceOutcome::Replaced)
     }
 
-    /// **Invariant (#863 review R2-1)**: caller MUST hold `transition_serial`.
-    /// Boot path (`start_or_takeover`) variant: the caller keeps ONE guard
-    /// across boot-guard + takeover probe + this spawn, so the thread resume
-    /// also runs inside the serialized section there.
-    async fn start_new_process_locked(
+    /// #953 §3 — the ONE shared start body: guard verify → persisted-record
+    /// reconciliation → takeover probe → spawn. **Invariant**: caller MUST
+    /// hold `transition_serial`; every terminal Running/Failed write happens
+    /// before the caller releases it.
+    async fn start_body_locked(
         self: &Arc<Self>,
         increment_restart_count: bool,
         last_error: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<StartedVia> {
+        // #863 boot guard — the resolved home is exactly what resumed
+        // threads will run against. Refuse before touching the process, and
+        // never strand a previously-live polluted daemon running
+        // unsupervised.
+        if let Err(guard_err) = self.home.verify_expected_mcp_servers(EXPECTED_MCP_SERVERS) {
+            let msg = format!("refusing to launch shared codex app-server: {guard_err}");
+            self.record_guard_refusal(&msg).await;
+            return Err(CalmError::CodexAppServer(msg));
+        }
+        // #953 §3 read-side rule (survives calm-server restarts): a `failed`
+        // row with ANY identity column present is an unreconciled possible
+        // survivor — run the per-shape resolution algorithm BEFORE any
+        // spawn; the spawn path is unreachable until it proves absence.
+        let record = match self.repo.shared_daemon_runtime_get().await {
+            Ok(record) => record,
+            Err(e) => {
+                // Nothing trustworthy to write (the read itself failed):
+                // keep class Unreconciled in memory only; the next heal
+                // round re-reads.
+                let msg = format!("unreconciled: failed reading persisted daemon record: {e}");
+                self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
+                    .await;
+                return Err(CalmError::CodexAppServer(msg));
+            }
+        };
+        if failed_row_identity_present(&record) {
+            match self.resolve_persisted_shape(&record).await {
+                ShapeResolution::ProvenAbsent => {
+                    // Durable proof-of-absence transition: NULL the identity
+                    // columns so the row classifies SafeToRetry even if the
+                    // spawn below never completes.
+                    let proven_error = record
+                        .last_error
+                        .as_deref()
+                        .map(strip_unreconciled_prefix)
+                        .unwrap_or("unreconciled survivor proven absent")
+                        .to_string();
+                    self.persist_failed_deduped(
+                        &proven_error,
+                        FailureClass::Persistent,
+                        FailedIdentity::proven_absent(&self.sock, self.home.path()),
+                    )
+                    .await;
+                }
+                ShapeResolution::Unreconciled { needs_operator } => {
+                    let msg = unreconciled_message(&record, needs_operator);
+                    self.persist_failed_deduped(
+                        &msg,
+                        FailureClass::Unreconciled,
+                        FailedIdentity::retained(&record),
+                    )
+                    .await;
+                    self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Unreconciled)
+                        .await;
+                    return Err(CalmError::CodexAppServer(msg));
+                }
+            }
+        }
+        // `try_takeover_live` skips Idle/Failed rows itself — a refused
+        // survivor is never adopted.
+        if self.try_takeover_live(&record).await? {
+            return Ok(StartedVia::Takeover);
+        }
         self.spawn_process_transition(increment_restart_count, last_error)
             .await?;
-        self.resume_cached_threads(ResumeMode::ColdRespawn).await;
-        Ok(())
+        Ok(StartedVia::Spawn)
+    }
+
+    /// #953 §3 — boot-guard refusal arm (home pollution). Runs the same
+    /// per-shape reconciliation as the failed-row path: a verified owned
+    /// survivor is reaped (existing "no polluted survivor" posture, #863),
+    /// anything unprovable stays unreconciled with the identity tuple
+    /// RETAINED as the durable marker.
+    async fn record_guard_refusal(self: &Arc<Self>, guard_error: &str) {
+        let record = match self.repo.shared_daemon_runtime_get().await {
+            Ok(record) => record,
+            Err(e) => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    error = %e,
+                    "guard refusal: failed reading persisted daemon runtime; skipping reconciliation"
+                );
+                self.fail_in_memory_and_arm_heal(
+                    format!("unreconciled: {guard_error} (persisted record read failed: {e})"),
+                    FailureClass::Unreconciled,
+                )
+                .await;
+                return;
+            }
+        };
+        match self.resolve_persisted_shape(&record).await {
+            ShapeResolution::ProvenAbsent => {
+                // No owned process (or the verified reap completed): persist
+                // the refusal with identity NULLed so DB truth reflects it.
+                self.persist_failed_deduped(
+                    guard_error,
+                    FailureClass::Persistent,
+                    FailedIdentity::proven_absent(&self.sock, self.home.path()),
+                )
+                .await;
+                self.fail_in_memory_and_arm_heal(guard_error.to_string(), FailureClass::Persistent)
+                    .await;
+            }
+            ShapeResolution::Unreconciled { needs_operator } => {
+                let msg = format!("{}{guard_error}", unreconciled_prefix(needs_operator));
+                self.persist_failed_deduped(
+                    &msg,
+                    FailureClass::Unreconciled,
+                    FailedIdentity::retained(&record),
+                )
+                .await;
+                self.fail_in_memory_and_arm_heal(msg, FailureClass::Unreconciled)
+                    .await;
+            }
+        }
+    }
+
+    /// #953 §3 — exhaustive per-shape resolution over every persisted
+    /// identity combination (pid × pgid × verification-pair presence).
+    /// Proof of absence ⇒ the caller may NULL identity and reopen the spawn
+    /// path; anything else stays unreconciled and fail-closed. Destructive
+    /// action (a verified group reap) is allowed ONLY in the full-tuple
+    /// pgid==pid shape — never signal a pgid we did not create, never signal
+    /// a bare pid (not a group reap; ownership may be unprovable).
+    async fn resolve_persisted_shape(
+        &self,
+        record: &crate::db::SharedCodexDaemonRecord,
+    ) -> ShapeResolution {
+        let Some(pid) = record.pid else {
+            if record.pgid.is_none()
+                && record.process_start_time.is_none()
+                && record.boot_id.is_none()
+            {
+                // Fully-empty tuple: the normal "no daemon was ever
+                // persisted" state.
+                return ShapeResolution::ProvenAbsent;
+            }
+            // Shape (b): identity fragments without a pid name no process at
+            // all — nothing is establishable from the record; operator
+            // remediation only (clear the identity columns).
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                pgid = ?record.pgid,
+                process_start_time = ?record.process_start_time,
+                boot_id = ?record.boot_id,
+                "persisted daemon record has identity fragments but no pid; operator must clear the identity columns"
+            );
+            return ShapeResolution::Unreconciled {
+                needs_operator: true,
+            };
+        };
+        let (Some(start_time), Some(boot_id)) = (record.process_start_time, record.boot_id.clone())
+        else {
+            // Shape (a): pid without a complete verification pair —
+            // ownership unprovable (the pid may be recycled), so never reap
+            // or signal; `/proc` existence is the only safe probe.
+            if proc_pid_running(pid) {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    "persisted daemon record has a pid with an incomplete verification pair and the pid is live; staying unreconciled (never signaling a bare pid)"
+                );
+                return ShapeResolution::Unreconciled {
+                    needs_operator: false,
+                };
+            }
+            return ShapeResolution::ProvenAbsent;
+        };
+        if !persisted_survivor_alive(pid, start_time, &boot_id) {
+            // Natural death (or the identity matches no live process).
+            return ShapeResolution::ProvenAbsent;
+        }
+        match record.pgid {
+            Some(pgid) if pgid == pid => {
+                // Full tuple honoring the spawn invariant (`process_group(0)`
+                // ⇒ pgid == pid): verified group reap, then absence is
+                // claimed only if the post-reap check confirms death.
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    pgid,
+                    "reaping verified persisted daemon survivor"
+                );
+                reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
+                if persisted_survivor_alive(pid, start_time, &boot_id) {
+                    tracing::warn!(
+                        target: "shared_codex_daemon::stop",
+                        pid,
+                        pgid,
+                        "persisted daemon still verifies alive after the reap; staying unreconciled"
+                    );
+                    ShapeResolution::Unreconciled {
+                        needs_operator: false,
+                    }
+                } else {
+                    ShapeResolution::ProvenAbsent
+                }
+            }
+            Some(pgid) => {
+                // Corrupt record: never signal a pgid we did not create
+                // (risk of killing unrelated processes). Self-resolves on
+                // natural death via verify-false above.
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    pgid,
+                    "persisted pgid does not match pid (spawn invariant pgid == pid); staying unreconciled without signaling"
+                );
+                ShapeResolution::Unreconciled {
+                    needs_operator: false,
+                }
+            }
+            None => {
+                // Triple complete but no pgid: there is no valid pgid to
+                // target, and signaling the bare pid is not a group reap —
+                // it risks orphaning grandchildren mid-tree. Stay consistent
+                // with the reap-by-pgid posture; self-resolves on death.
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    "persisted daemon record verifies alive but has no pgid; staying unreconciled (no valid pgid to target)"
+                );
+                ShapeResolution::Unreconciled {
+                    needs_operator: false,
+                }
+            }
+        }
+    }
+
+    /// Flip the in-memory state to Failed and arm the heal loop. The core
+    /// mutex is held only to flip state — no DB I/O under it, ever.
+    async fn fail_in_memory_and_arm_heal(
+        self: &Arc<Self>,
+        last_error: String,
+        class: FailureClass,
+    ) {
+        {
+            let mut core = self.core.lock().await;
+            core.state = SupervisorState::Failed {
+                last_error,
+                class,
+                since: Instant::now(),
+            };
+        }
+        self.schedule_heal();
+    }
+
+    /// #953 §2 — the single Failed DB writer, with post-Ok dedup. Persist
+    /// errors are `tracing::error!`-logged, never swallowed into `let _ =`,
+    /// and never mask the original failure (the caller keeps its error).
+    async fn persist_failed_deduped(
+        &self,
+        last_error: &str,
+        class: FailureClass,
+        identity: FailedIdentity,
+    ) {
+        if self
+            .failed_persist_dedup
+            .should_skip(last_error, class, &identity)
+        {
+            tracing::debug!(
+                target: "shared_codex_daemon::heal",
+                last_error,
+                "identical consecutive daemon failure; skipping duplicate Failed persist"
+            );
+            return;
+        }
+        tracing::warn!(
+            target: "shared_codex_daemon::heal",
+            last_error,
+            class = ?class,
+            "persisting failed shared codex daemon state"
+        );
+        match self
+            .repo
+            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                state: SharedDaemonState::Failed.as_db_str().to_string(),
+                pid: identity.pid,
+                pgid: identity.pgid,
+                sock_path: identity.sock_path.clone(),
+                codex_home_path: identity.codex_home_path.clone(),
+                process_start_time: identity.process_start_time,
+                boot_id: identity.boot_id.clone(),
+                started_at: identity.started_at,
+                last_error: Some(last_error.to_string()),
+                increment_restart_count: false,
+                daemon_env_signature: identity.daemon_env_signature.clone(),
+            })
+            .await
+        {
+            Ok(()) => {
+                // Post-Ok only: a failed write must be retried next round.
+                self.failed_persist_dedup
+                    .note_written(last_error.to_string(), class, identity);
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "shared_codex_daemon::heal",
+                    error = %e,
+                    last_error,
+                    "failed persisting failed daemon record"
+                );
+            }
+        }
     }
 
     /// Shared spawn-transition body. **Invariant**: caller MUST hold
@@ -1389,14 +2037,8 @@ impl SharedCodexAppServer {
             target: "shared_codex_daemon::restart",
             "respawning shared codex app-server before thread/start because runtime settings changed"
         );
-        let prev_pid = self.running_runtime().await.map(|runtime| runtime.pid);
-        let running = self
-            .begin_restart(prev_pid, "settings changed".to_string())
-            .await;
-
-        self.reap_current_child_or_runtime(running).await;
-
-        self.start_new_process(true, None).await?;
+        self.transition_replace("settings changed", ReplacePrecondition::Always, true, None)
+            .await?;
         Ok(())
     }
 
@@ -1472,8 +2114,11 @@ impl SharedCodexAppServer {
                 increment_restart_count: false,
                 daemon_env_signature: Some(daemon_env_signature),
             })
-            .await
-            .map_err(Into::into)
+            .await?;
+        // The DB row is no longer a Failed shape: the dedup cache must not
+        // suppress a later Failed write against it.
+        self.failed_persist_dedup.clear();
+        Ok(())
     }
 
     /// Wait for the freshly spawned child to bind its socket and answer
@@ -1555,10 +2200,15 @@ impl SharedCodexAppServer {
         }
     }
 
+    /// Take an exited child out of the installed Running state, together
+    /// with the generation of that Running incarnation (#953 §1: captured
+    /// atomically under the core lock, so the crash restart can pass
+    /// `GenerationIs` and abort if anything else replaced the process).
     async fn try_take_exited_running_child(
         &self,
-    ) -> Option<(std::process::ExitStatus, SharedDaemonRuntime)> {
+    ) -> Option<(std::process::ExitStatus, SharedDaemonRuntime, u64)> {
         let mut core = self.core.lock().await;
+        let generation = core.generation;
         match &mut core.state {
             SupervisorState::Running { child, runtime, .. } => match child
                 .as_mut()
@@ -1567,7 +2217,7 @@ impl SharedCodexAppServer {
             {
                 Some(status) => {
                     *child = None;
-                    Some((status, runtime.clone()))
+                    Some((status, runtime.clone(), generation))
                 }
                 None => None,
             },
@@ -1582,7 +2232,7 @@ impl SharedCodexAppServer {
                 return;
             };
             let exited = this.try_take_exited_running_child().await;
-            if let Some((status, runtime)) = exited {
+            if let Some((status, runtime, generation)) = exited {
                 let uptime_sec = (now_ms() - runtime.started_at).max(0) / 1000;
                 let error = format!("shared codex app-server exited: {status}");
                 tracing::warn!(
@@ -1592,7 +2242,12 @@ impl SharedCodexAppServer {
                     signal = status.signal(),
                     "shared codex app-server stopped"
                 );
-                Arc::clone(&this).restart_after_crash(error).await;
+                // #953 §1 — the restart runs as its OWN task: the replace
+                // transition aborts the captured watcher handle (this task),
+                // so an inline restart would abort itself mid-transition.
+                // Staleness is handled by the `GenerationIs` precondition,
+                // not by task cancellation.
+                tokio::spawn(Arc::clone(&this).restart_after_crash(error, generation));
                 // #480 PR5b: restart_after_crash spawns a new SupervisorWatcher
                 // for the replacement Running state. This task's loop must end
                 // here so we don't accumulate one stale watcher per crash.
@@ -1609,6 +2264,26 @@ impl SharedCodexAppServer {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
+                // #953 §1 — confirm the process we watched is still the
+                // installed Running incarnation and capture its generation
+                // atomically; if another transition already replaced it, do
+                // nothing (its watcher was aborted logically — we are stale).
+                let generation = {
+                    let core = this.core.lock().await;
+                    match &core.state {
+                        SupervisorState::Running {
+                            runtime: installed, ..
+                        } if installed.pid == runtime.pid
+                            && installed.process_start_time == runtime.process_start_time =>
+                        {
+                            Some(core.generation)
+                        }
+                        _ => None,
+                    }
+                };
+                let Some(generation) = generation else {
+                    return;
+                };
                 let uptime_sec = (now_ms() - runtime.started_at).max(0) / 1000;
                 let error = format!(
                     "taken-over shared codex app-server exited: pid {}",
@@ -1621,19 +2296,30 @@ impl SharedCodexAppServer {
                     reason = "taken-over daemon exited",
                     "shared codex app-server takeover pid exited"
                 );
-                Arc::clone(&this).restart_after_crash(error).await;
+                // Own task, not inline: see `watch_spawned_child` (#953 §1 —
+                // the transition aborts this watcher's handle).
+                tokio::spawn(Arc::clone(&this).restart_after_crash(error, generation));
                 return;
             }
         }
     }
 
+    /// Crash-watcher restart (#953 §1). The backoff sleep happens BEFORE
+    /// acquiring the transition serial — never while holding it — and the
+    /// `GenerationIs` precondition aborts silently (no reap, no spawn) if
+    /// any other transition already replaced the process this watcher
+    /// observed dying. On a failed respawn the Failed row + heal loop are
+    /// handled at the typestate choke point — the old swallowed `let _ =`
+    /// crash-path persist is gone (one writer).
+    ///
+    /// Boxed future: the watcher → restart → transition → spawn → watcher
+    /// cycle of opaque `async fn` types otherwise defeats `Send` inference.
     fn restart_after_crash(
         self: Arc<Self>,
         error: String,
+        generation: u64,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
         Box::pin(async move {
-            let prev_pid = self.running_runtime().await.map(|runtime| runtime.pid);
-            let _running = self.begin_restart(prev_pid, error.clone()).await;
             let count = self.restart_count.load(Ordering::SeqCst) + 1;
             tracing::warn!(
                 target = "shared_codex_daemon::restart",
@@ -1644,27 +2330,30 @@ impl SharedCodexAppServer {
             );
             let delay = self.restart_backoff.next_delay();
             tokio::time::sleep(delay).await;
-            if let Err(e) = self.start_new_process(true, Some(error.clone())).await {
-                let _ = self
-                    .repo
-                    .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                        state: SharedDaemonState::Failed.as_db_str().to_string(),
-                        pid: None,
-                        pgid: None,
-                        sock_path: Some(self.sock.display().to_string()),
-                        codex_home_path: Some(self.home.path().display().to_string()),
-                        process_start_time: None,
-                        boot_id: None,
-                        started_at: None,
-                        last_error: Some(e.to_string()),
-                        increment_restart_count: false,
-                        daemon_env_signature: Some(
-                            self.current_env_signature().await.unwrap_or_else(|_| {
-                                Self::compute_env_signature(&self.ingest_url, None, None)
-                            }),
-                        ),
-                    })
-                    .await;
+            match self
+                .transition_replace(
+                    &error,
+                    ReplacePrecondition::GenerationIs(generation),
+                    true,
+                    Some(error.clone()),
+                )
+                .await
+            {
+                Ok(ReplaceOutcome::Replaced) => {}
+                Ok(ReplaceOutcome::PreconditionFailed) => {
+                    tracing::info!(
+                        target = "shared_codex_daemon::restart",
+                        generation,
+                        "crash restart aborted: another transition already replaced the crashed process"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target = "shared_codex_daemon::restart",
+                        error = %e,
+                        "crash restart failed; failed state persisted and heal loop armed"
+                    );
+                }
             }
         })
     }
@@ -1675,7 +2364,18 @@ impl SharedCodexAppServer {
     /// can hold ONE guard across boot-guard + takeover/spawn without
     /// re-locking here). Callers: `try_takeover_live` and
     /// `spawn_process_transition`, both under a caller-held guard.
-    pub(crate) async fn start_new_process_typestate<F, Fut>(&self, spawn: F) -> Result<()>
+    ///
+    /// #953 §1 — this is THE Failed-persistence choke point: any spawn
+    /// failure (pre- or post-`persist_runtime_starting`) persists a `failed`
+    /// row here with the identity tuple NULLed — NULL is legitimate because
+    /// absence is proven for both cases (a self-spawned child is our direct
+    /// child, reaped by `SpawnedChildGuard`; a pre-spawn failure never had a
+    /// child). The unreconciled boot-guard case never reaches this arm — it
+    /// errors before `spawn()` and RETAINS identity (§3).
+    pub(crate) async fn start_new_process_typestate<F, Fut>(
+        self: &Arc<Self>,
+        spawn: F,
+    ) -> Result<()>
     where
         F: FnOnce(PathBuf) -> Fut + Send,
         Fut: std::future::Future<Output = Result<LaunchedSharedDaemon>> + Send,
@@ -1692,6 +2392,9 @@ impl SharedCodexAppServer {
             Ok(launched) => {
                 let mut core = self.core.lock().await;
                 core.attempts = 0;
+                // #953 §1 — a new Running incarnation is installed: bump the
+                // generation (wrapping; equality-only consumers).
+                core.generation = core.generation.wrapping_add(1);
                 core.state = SupervisorState::Running {
                     child: launched.child,
                     client: launched.client,
@@ -1701,48 +2404,121 @@ impl SharedCodexAppServer {
                 Ok(())
             }
             Err(err) => {
-                let mut core = self.core.lock().await;
-                core.state = SupervisorState::Failed {
-                    last_error: err.to_string(),
-                    since: Instant::now(),
-                };
+                let class = classify_spawn_failure(&err);
+                {
+                    let mut core = self.core.lock().await;
+                    core.state = SupervisorState::Failed {
+                        last_error: err.to_string(),
+                        class,
+                        since: Instant::now(),
+                    };
+                }
+                // No DB I/O under the core mutex; the transition serial is
+                // still held by the caller, so this write is ordered with
+                // every other daemon-row write.
+                self.persist_failed_deduped(
+                    &err.to_string(),
+                    class,
+                    FailedIdentity::proven_absent(&self.sock, self.home.path()),
+                )
+                .await;
+                self.schedule_heal();
                 Err(err)
             }
         }
     }
+}
 
-    /// #480 §C — typestate transition: mark a restart in progress.
-    /// **Invariant**: must hold `transition_serial`.
-    pub(crate) async fn begin_restart(
-        &self,
-        prev_pid: Option<i32>,
-        reason: String,
-    ) -> Option<RunningProcessParts> {
-        let _serial = self.transition_serial.lock().await;
-        let mut core = self.core.lock().await;
-        core.attempts = core.attempts.saturating_add(1);
-        let attempts = core.attempts;
-        let old_state = std::mem::replace(
-            &mut core.state,
-            SupervisorState::Restarting {
-                prev_pid,
-                reason,
-                attempts,
-            },
-        );
-        match old_state {
-            SupervisorState::Running {
-                child,
-                runtime,
-                watcher,
-                ..
-            } => Some(RunningProcessParts {
-                child,
-                runtime,
-                watcher,
-            }),
-            _ => None,
+// ===================== #953 §2 — self-heal loop =====================
+impl SharedCodexAppServer {
+    /// Arm the background heal loop: at most one instance via CAS on
+    /// `heal_active`; the claim is released by [`HealActiveGuard`]'s RAII
+    /// `Drop` on panic, cancellation, abort, and normal exit alike. No-op in
+    /// fixtures fake mode (stubs never reach spawn paths). Returns the task
+    /// handle (tests use it; production callers drop it — the task holds
+    /// only a `Weak` and exits when the supervisor drops).
+    fn schedule_heal(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        #[cfg(feature = "fixtures")]
+        if self.fake.is_some() {
+            return None;
         }
+        if self
+            .heal_active
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return None;
+        }
+        let guard = HealActiveGuard {
+            flag: Arc::clone(&self.heal_active),
+        };
+        let weak = Arc::downgrade(self);
+        Some(tokio::spawn(async move {
+            let _active = guard;
+            Self::heal_loop(weak).await;
+        }))
+    }
+
+    /// Infinite classified retry — no give-up-after-N (give-up is the
+    /// defect-3 lockout reborn; systemd `Restart=always` precedent). Each
+    /// round: sleep by class (select against the settings-change nudge for
+    /// the slow lane's immediate wake) → upgrade the Weak → `ensure_running`.
+    /// Ok ⇒ exit (healed, or a concurrent transition won — its `NotRunning`
+    /// precondition re-check runs under the serial). Err ⇒ reclassify from
+    /// the fresh Failed state and continue. Unreconciled rounds run only
+    /// guard + reconciliation — `ensure_running`'s body keeps the spawn path
+    /// unreachable until absence is proven.
+    async fn heal_loop(this: std::sync::Weak<Self>) {
+        loop {
+            let Some(strong) = this.upgrade() else {
+                return;
+            };
+            let delay = strong.next_heal_delay().await;
+            let nudge = Arc::clone(&strong.heal_nudge);
+            drop(strong);
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = nudge.notified() => {}
+            }
+            let Some(strong) = this.upgrade() else {
+                return;
+            };
+            match strong.ensure_running().await {
+                Ok(()) => return,
+                Err(e) => {
+                    // First occurrence / changes are warned by the persist
+                    // path; the per-round line stays debug to avoid log
+                    // amplification on a permanent cheap failure.
+                    tracing::debug!(
+                        target: "shared_codex_daemon::heal",
+                        error = %e,
+                        "heal round failed; retrying on the classified lane"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Delay for the next heal round: fast lane = the existing
+    /// `BackoffState` knobs; slow lane = same exponential/attempts with
+    /// floor `restart_max_delay_ms` and ceiling [`HEAL_SLOW_RETRY_CEILING`];
+    /// ±20% jitter on every delay. Backoff reset keeps the existing
+    /// `reset_if_stable` semantics — brief Running does NOT reset attempts.
+    async fn next_heal_delay(&self) -> Duration {
+        let class = {
+            let core = self.core.lock().await;
+            match &core.state {
+                SupervisorState::Failed { class, .. } => *class,
+                _ => FailureClass::Transient,
+            }
+        };
+        let raw = match class {
+            FailureClass::Transient => self.restart_backoff.next_delay(),
+            FailureClass::Persistent | FailureClass::Unreconciled => self
+                .restart_backoff
+                .next_slow_delay(HEAL_SLOW_RETRY_CEILING),
+        };
+        heal_jitter(raw)
     }
 }
 
@@ -2026,6 +2802,32 @@ impl SharedCodexAppServer {
     pub fn needs_respawn_on_next_thread_start_for_test(&self) -> bool {
         self.needs_respawn_on_next_thread_start
             .load(Ordering::SeqCst)
+    }
+
+    /// #953 — whether the singleton heal-loop claim is currently held.
+    pub fn heal_active_for_test(&self) -> bool {
+        self.heal_active.load(Ordering::SeqCst)
+    }
+
+    /// #953 — arm the heal loop directly (same CAS/RAII path as production).
+    pub fn schedule_heal_for_test(self: &Arc<Self>) -> Option<JoinHandle<()>> {
+        self.schedule_heal()
+    }
+
+    /// #953 — current Running-incarnation generation.
+    pub async fn generation_for_test(&self) -> u64 {
+        self.core.lock().await.generation
+    }
+
+    /// #953 — drive the atomic replace transition with an explicit
+    /// precondition (the crash watcher's production path).
+    pub async fn transition_replace_for_test(
+        self: &Arc<Self>,
+        reason: &str,
+        pre: ReplacePrecondition,
+    ) -> Result<ReplaceOutcome> {
+        self.transition_replace(reason, pre, true, Some(reason.to_string()))
+            .await
     }
 
     pub async fn taken_over_pid_watcher_active_for_test(&self) -> bool {
