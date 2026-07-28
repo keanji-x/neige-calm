@@ -711,7 +711,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = output.output_string("wave_id", "spec harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "spec harness")?;
         let snapshot = output_snapshot(output)?;
-        if let Some(existing) = self.harness_registry.remove(&runtime_id) {
+        // #953 §5 — atomic replace claim: the old remove-then-insert pair
+        // left a window where a concurrent registration could land between
+        // the two ops. `reserve_replacing` swaps the slot to Reserved in one
+        // entry op and hands back the previous Live handle for shutdown
+        // outside the map lock.
+        let (reservation, previous_live) =
+            self.harness_registry.reserve_replacing(runtime_id.clone());
+        if let Some(existing) = previous_live {
             existing.shutdown().await?;
         }
         let handle = SpecHarness::run(SpecHarnessParams {
@@ -727,8 +734,16 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             config: HarnessConfig::default(),
             snapshot,
         });
-        self.harness_registry
-            .insert(runtime_id.clone(), handle.clone());
+        if !reservation.install(handle.clone()) {
+            // Superseded by a concurrent `reserve_replacing` between our
+            // reserve and install: shut down the handle we just built (never
+            // leak its run loop) and fail the op — compensation handles the
+            // row.
+            handle.shutdown().await?;
+            return Err(crate::error::CalmError::Internal(format!(
+                "spec harness registration for runtime {runtime_id} superseded during start"
+            )));
+        }
         handle.persist_snapshot().await?;
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness { runtime_id }))
     }

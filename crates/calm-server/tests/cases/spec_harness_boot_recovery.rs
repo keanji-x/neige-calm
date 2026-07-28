@@ -8,7 +8,9 @@ use calm_server::db::sqlite::{
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus, EventScope};
 use calm_server::harness::{
-    HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, recover_harnesses_on_boot,
+    ClaimMode, DeferredRecoveryParams, HarnessConfig, HarnessPhaseTag, HarnessRegistry,
+    HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams, recover_harnesses_deferred,
+    recover_harnesses_on_boot, spawn_recovered_harness,
 };
 use calm_server::ids::{ActorId, CardId, WaveId};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
@@ -57,6 +59,68 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
 
 fn sqlite_url(tmp: &TempDir, name: &str) -> String {
     format!("sqlite://{}?mode=rwc", tmp.path().join(name).display())
+}
+
+/// Seed a cove/wave/card + recoverable SharedSpec runtime row; returns the
+/// runtime id.
+async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &str) -> String {
+    let cove = repo
+        .cove_create(NewCove {
+            name: tag.into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id,
+            title: tag.into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+    let runtime_id = new_id();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: WorkerSessionKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.into()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    runtime_id
 }
 
 #[tokio::test]
@@ -146,70 +210,17 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
     handle.shutdown().await.unwrap();
 }
 
+/// #953 test 3 — boot-spawn failure no longer skips harness recovery
+/// forever: the Err arm arms a DEFERRED claim-based recovery (not run
+/// immediately), and the first `running: true` on the supervisor readiness
+/// watch triggers a pass that recovers what the user didn't touch and never
+/// shutdown-replaces a runtime the user resumed in the meantime.
 #[tokio::test]
-async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
+async fn boot_spawn_failure_defers_recovery_until_heal_then_recovers_claim_based() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
-    let cove = repo
-        .cove_create(NewCove {
-            name: "boot-unavailable".into(),
-            color: "#111111".into(),
-            sort: None,
-        })
-        .await
-        .unwrap();
-    let wave = repo
-        .wave_create(NewWave {
-            workflow_input: None,
-            cove_id: cove.id,
-            title: "boot-unavailable".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            workflow_id: None,
-            attach_folder: false,
-            theme: calm_server::routes::theme::RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            wave_id: wave.id,
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
-    let runtime_id = new_id();
-    let mut snapshot = HarnessSnapshot::initial(
-        11,
-        vec![Observation::WaveGoal {
-            text: "wait for daemon".into(),
-        }],
-    );
-    snapshot.phase = HarnessPhaseTag::Idle;
-    snapshot.last_thread_id = Some("thread-unavailable".into());
-    let mut tx = repo.pool().begin().await.unwrap();
-    session_start_runtime_tx(
-        &mut tx,
-        WorkerSessionInit {
-            id: runtime_id.clone(),
-            card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
-            agent_provider: Some(AgentProvider::Codex),
-            status: WorkerSessionState::Idle,
-            terminal_run_id: None,
-            thread_id: Some("thread-unavailable".into()),
-            session_id: None,
-            active_turn_id: None,
-            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
-            spawn_op_id: None,
-            now_ms: now_ms(),
-        },
-    )
-    .await
-    .unwrap();
-    tx.commit().await.unwrap();
+    let untouched_runtime_id =
+        seed_recoverable_runtime(&repo, "deferred-untouched", "thread-untouched").await;
+    let user_runtime_id = seed_recoverable_runtime(&repo, "deferred-user", "thread-user").await;
 
     let state = app_state_for_boot_test(repo.clone());
     let recovered = calm_server::recover_harnesses_after_daemon_boot(
@@ -218,16 +229,243 @@ async fn recover_harnesses_on_boot_skipped_when_daemon_unavailable() {
     )
     .await
     .unwrap();
+    // Deferred-armed, NOT run: nothing is recovered while the daemon stays
+    // down.
     assert_eq!(recovered, 0);
-    assert!(state.harness.get(&runtime_id).is_none());
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(state.harness.get(&untouched_runtime_id).is_none());
+    assert!(state.harness.get(&user_runtime_id).is_none());
+
+    // The user resumes one runtime before the daemon heals (today's
+    // shutdown-replace semantics).
+    let user_runtime = repo
+        .session_projection_by_id(&user_runtime_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let user_handle = spawn_recovered_harness(
+        repo.clone(),
+        state.events.clone(),
+        calm_server::card_role_cache::CardRoleCache::new(),
+        calm_server::wave_cove_cache::WaveCoveCache::new(),
+        state.shared_codex_appserver.clone(),
+        &state.harness,
+        user_runtime,
+        ClaimMode::Replace,
+    )
+    .await
+    .unwrap()
+    .installed()
+    .expect("user resume registers a harness");
+
+    // First heal success: the readiness watch flips running.
+    state
+        .shared_codex_appserver
+        .publish_readiness_for_test(1, true);
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if state.harness.get(&untouched_runtime_id).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("deferred recovery must recover the untouched runtime after heal");
+
+    // The user's harness was never shutdown-replaced: its run loop still
+    // accepts observations and its registry slot is intact.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    user_handle
+        .observe(Observation::WaveGoal {
+            text: "still mine".into(),
+        })
+        .expect("user harness must stay alive through deferred recovery");
+    assert!(state.harness.get(&user_runtime_id).is_some());
+
+    for runtime_id in [&untouched_runtime_id, &user_runtime_id] {
+        if let Some(handle) = state.harness.remove(runtime_id) {
+            handle.shutdown().await.unwrap();
+        }
+    }
+}
+
+/// #953 test 8 — deterministic claim race: the user's registration lands
+/// AFTER the deferred task's per-runtime eligibility check (fixtures-only
+/// post-eligibility hook) and BEFORE its claim ⇒ `try_reserve` returns None
+/// ⇒ the runtime is skipped without any shutdown-replace.
+#[tokio::test]
+async fn deferred_recovery_skips_runtime_claimed_after_eligibility_check() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let runtime_id = seed_recoverable_runtime(&repo, "deferred-race", "thread-race").await;
     let runtime = repo
         .session_projection_by_id(&runtime_id)
         .await
         .unwrap()
         .unwrap();
-    let stored: HarnessSnapshot =
-        serde_json::from_value(runtime.handle_state_json.unwrap()).unwrap();
-    assert_eq!(stored.pending_queue.len(), 1);
+
+    let daemon = SharedCodexAppServer::new_stub_with_pending(repo.clone(), None);
+    let registry = HarnessRegistry::new();
+    let events = EventBus::new();
+
+    // The user's harness, built but NOT registered yet — the hook lands it
+    // inside the eligibility→claim window.
+    let user_handle = SpecHarness::run(SpecHarnessParams {
+        runtime_id: runtime_id.clone(),
+        wave_id: WaveId::from(
+            repo.card_get(&runtime.card_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .wave_id
+                .to_string(),
+        ),
+        card_id: CardId::from(runtime.card_id.clone()),
+        thread_id: runtime.thread_id.clone(),
+        repo: repo.clone(),
+        events: events.clone(),
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon: daemon.clone(),
+        config: HarnessConfig::default(),
+        snapshot: HarnessSnapshot::initial(0, vec![]),
+    });
+
+    let hook_fired = Arc::new(AtomicUsize::new(0));
+    let pending_user_install = Arc::new(std::sync::Mutex::new(Some(user_handle.clone())));
+    let hook_registry = registry.clone();
+    let hook_fired_in_hook = hook_fired.clone();
+    let hook_target = runtime_id.clone();
+    let post_eligibility_hook: std::sync::Arc<dyn Fn(&String) + Send + Sync> =
+        std::sync::Arc::new(move |eligible_runtime_id: &String| {
+            if *eligible_runtime_id != hook_target {
+                return;
+            }
+            hook_fired_in_hook.fetch_add(1, Ordering::SeqCst);
+            if let Some(handle) = pending_user_install.lock().unwrap().take() {
+                let (reservation, previous_live) =
+                    hook_registry.reserve_replacing(eligible_runtime_id.clone());
+                assert!(
+                    previous_live.is_none(),
+                    "deferred task must not have claimed yet"
+                );
+                assert!(reservation.install(handle));
+            }
+        });
+
+    let driver = tokio::spawn(recover_harnesses_deferred(DeferredRecoveryParams {
+        repo: repo.clone(),
+        events,
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon: daemon.clone(),
+        registry: registry.clone(),
+        post_eligibility_hook: Some(post_eligibility_hook),
+    }));
+    daemon.publish_readiness_for_test(1, true);
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("deferred recovery pass must complete")
+        .unwrap();
+
+    assert_eq!(hook_fired.load(Ordering::SeqCst), 1);
+    // try_reserve lost against the user's registration: no shutdown-replace
+    // — the user's run loop still accepts observations and holds the slot.
+    user_handle
+        .observe(Observation::WaveGoal {
+            text: "user wins the claim".into(),
+        })
+        .expect("user harness must never be shutdown-replaced by deferred recovery");
+    registry
+        .remove(&runtime_id)
+        .expect("user harness still registered")
+        .shutdown()
+        .await
+        .unwrap();
+}
+
+/// #953 PR2 review D1 — claim-boundary daemon re-check: the daemon leaves
+/// Running inside the eligibility→claim window (which contains the
+/// potentially long event replay — the fixtures post-eligibility hook fires
+/// at the start of exactly that window). The deferred task must NOT install
+/// a harness against the stale generation: it abandons the pass without
+/// reserving anything, re-arms the wait loop, and recovers only after the
+/// daemon heals again (new generation).
+#[tokio::test]
+async fn deferred_recovery_abandons_claim_and_rearms_when_daemon_transitions_during_replay() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let runtime_id = seed_recoverable_runtime(&repo, "deferred-daemon-flap", "thread-flap").await;
+
+    let daemon = SharedCodexAppServer::new_stub_with_pending(repo.clone(), None);
+    let registry = HarnessRegistry::new();
+    let events = EventBus::new();
+
+    let hook_fired = Arc::new(AtomicUsize::new(0));
+    let hook_daemon = daemon.clone();
+    let hook_fired_in_hook = hook_fired.clone();
+    let hook_target = runtime_id.clone();
+    let post_eligibility_hook: std::sync::Arc<dyn Fn(&String) + Send + Sync> =
+        std::sync::Arc::new(move |eligible_runtime_id: &String| {
+            if *eligible_runtime_id != hook_target {
+                return;
+            }
+            // First pass only: the daemon fails (readiness invalidated with
+            // the outgoing generation — what transition ENTRY publishes)
+            // inside the eligibility→claim window.
+            if hook_fired_in_hook.fetch_add(1, Ordering::SeqCst) == 0 {
+                hook_daemon.publish_readiness_for_test(1, false);
+            }
+        });
+
+    let driver = tokio::spawn(recover_harnesses_deferred(DeferredRecoveryParams {
+        repo: repo.clone(),
+        events,
+        card_role_cache: calm_server::card_role_cache::CardRoleCache::new(),
+        wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache::new(),
+        daemon: daemon.clone(),
+        registry: registry.clone(),
+        post_eligibility_hook: Some(post_eligibility_hook),
+    }));
+
+    // First heal success: pass 1 starts, eligibility sees Running(gen 1).
+    daemon.publish_readiness_for_test(1, true);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while hook_fired.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("pass 1 must reach the post-eligibility window");
+
+    // Let replay + the claim-boundary re-check run to completion: nothing
+    // may be installed against the stale generation, and the task must
+    // re-arm (still alive) rather than finish its pass.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        registry.get(&runtime_id).is_none(),
+        "no harness may be installed against a daemon that left Running during replay"
+    );
+    assert!(
+        !driver.is_finished(),
+        "the deferred task must abandon the pass and re-arm, not exit"
+    );
+
+    // The daemon heals again (new generation): recovery resumes and installs.
+    daemon.publish_readiness_for_test(2, true);
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("deferred recovery must complete after the daemon heals again")
+        .unwrap();
+    assert_eq!(hook_fired.load(Ordering::SeqCst), 2);
+    let handle = registry
+        .get(&runtime_id)
+        .expect("recovery must resume on the next heal");
+    handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]

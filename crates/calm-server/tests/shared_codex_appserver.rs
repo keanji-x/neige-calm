@@ -2425,6 +2425,126 @@ async fn failed_daemon_heals_in_background_without_server_restart() {
     );
 }
 
+/// #953 PR2 §5 — the readiness watch is stamped `running: false` on a
+/// terminal Failed (typestate error arm) and `running: true` with the
+/// installed generation on every installed Running (typestate success arm).
+/// This is the channel the deferred harness recovery consumes.
+#[tokio::test]
+async fn readiness_watch_tracks_failed_and_running_transitions() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut quiet_cfg = cfg(&root);
+    quiet_cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    quiet_cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let (daemon, codex_link) = daemon_with_codex_symlink_cfg(&root, repo.clone(), quiet_cfg);
+    let mut readiness = daemon.readiness_receiver();
+    assert!(
+        !readiness.borrow().running,
+        "readiness starts not-running before any spawn"
+    );
+
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot spawn must fail with a missing codex bin");
+    let after_failure = *readiness.borrow_and_update();
+    assert!(
+        !after_failure.running,
+        "terminal Failed must stamp running: false"
+    );
+
+    // Repair + the existing settings-change nudge: the heal loop's success
+    // must stamp running: true with the installed generation.
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    daemon.mark_needs_respawn();
+    let ready = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let current = *readiness.borrow_and_update();
+            if current.running {
+                break current;
+            }
+            readiness
+                .changed()
+                .await
+                .expect("supervisor must outlive the wait");
+        }
+    })
+    .await
+    .expect("readiness must flip to running after the background heal");
+    assert_eq!(
+        ready.generation,
+        daemon.generation_for_test().await,
+        "readiness generation must be the installed Running incarnation's"
+    );
+    assert!(daemon.is_running());
+}
+
+/// #953 PR2 review D1(b) — entering a transition (leaving Running) must
+/// invalidate readiness IMMEDIATELY: `transition_replace` publishes
+/// `running: false` with the OUTGOING generation at transition entry, so a
+/// claim-boundary consumer (deferred harness recovery) never accepts a
+/// transitional Restarting/Starting daemon whose last terminal value was
+/// still `running: true`. The Ok arm then re-publishes the terminal
+/// `running: true` with the newly installed generation — no premature
+/// `running: true` in between (the parked window only ever shows `false`).
+#[tokio::test]
+async fn transition_entry_invalidates_readiness_before_terminal_republish() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let daemon = server(&root, repo.clone()).await;
+    daemon.start_or_takeover().await.unwrap();
+
+    let mut readiness = daemon.readiness_receiver();
+    let before = *readiness.borrow_and_update();
+    assert!(before.running, "daemon starts Running");
+    let outgoing_generation = before.generation;
+
+    // Park the transition inside the entry window (state left Running,
+    // reap/start body not yet run).
+    let gate = daemon.transition_entry_gate_for_test();
+    let parked = gate.lock().await;
+    let task = tokio::spawn({
+        let daemon = daemon.clone();
+        async move {
+            daemon
+                .transition_replace_for_test("settings changed", ReplacePrecondition::Always)
+                .await
+        }
+    });
+
+    // The ONLY publish that can wake this receiver while the transition is
+    // parked is the entry-time invalidation.
+    tokio::time::timeout(Duration::from_secs(5), readiness.changed())
+        .await
+        .expect("transition entry must publish a readiness invalidation")
+        .unwrap();
+    let mid = *readiness.borrow_and_update();
+    assert!(
+        !mid.running,
+        "transition entry must invalidate readiness (running: false)"
+    );
+    assert_eq!(
+        mid.generation, outgoing_generation,
+        "the entry invalidation must carry the OUTGOING generation"
+    );
+
+    // Release: the transition completes and re-publishes the terminal value.
+    drop(parked);
+    let outcome = task.await.unwrap().unwrap();
+    assert_eq!(outcome, ReplaceOutcome::Replaced);
+    let after = *readiness.borrow_and_update();
+    assert!(
+        after.running,
+        "the Ok arm must re-publish the terminal running: true"
+    );
+    assert_ne!(
+        after.generation, outgoing_generation,
+        "the terminal value must carry the newly installed generation"
+    );
+    assert_eq!(after.generation, daemon.generation_for_test().await);
+}
+
 /// Rewrite the polluted home's config.toml without the `evil` entry —
 /// "polluted-then-repaired" (#953 design test 6).
 fn repair_polluted_home(root: &tempfile::TempDir) {

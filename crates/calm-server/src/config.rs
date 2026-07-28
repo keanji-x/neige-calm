@@ -149,6 +149,11 @@ pub struct Config {
     /// rebuilding its state db (backfill) before the socket exists at all —
     /// 48.7s measured in production (#949) — so the default leaves headroom
     /// for disk load and data growth.
+    ///
+    /// #956 — the default (120) is mirrored by neige-app's
+    /// `CALM_START_TIMEOUT_DEFAULT_SECS` (`crates/neige-app/src/apply.rs`),
+    /// which derives the `/upgrade/apply` healthcheck deadline from this
+    /// setting's clap precedence. Keep the two in sync.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS",

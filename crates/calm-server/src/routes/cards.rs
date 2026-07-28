@@ -1181,8 +1181,10 @@ async fn ensure_live_spec_harness(
         cs.shared_codex_appserver.clone(),
         &s.harness,
         runtime.clone(),
+        crate::harness::ClaimMode::Replace,
     )
     .await?
+    .installed()
     .ok_or_else(dormant)?;
     tracing::info!(
         card_id = %card_id,
