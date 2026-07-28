@@ -296,9 +296,9 @@ impl ProviderAdapter for CodexAdapter {
             )));
         }
         if !self.shared_codex_appserver.is_running() {
-            return Err(CalmError::Internal(
-                "shared codex app-server is not running".into(),
-            ));
+            // #953 — same variant/status; message carries the live failure
+            // and the background-retry fact. Preflights stay non-blocking.
+            return Err(self.shared_codex_appserver.not_running_error());
         }
         Ok(())
     }
@@ -930,9 +930,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         }
 
         if !self.shared_codex_appserver.is_running() {
-            return Err(CalmError::Internal(
-                "shared codex app-server is not running".into(),
-            ));
+            // #953 — message-only enrichment; see prepare-side preflight.
+            return Err(self.shared_codex_appserver.not_running_error());
         }
 
         let card = ctx

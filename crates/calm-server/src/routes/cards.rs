@@ -1167,8 +1167,9 @@ async fn ensure_live_spec_harness(
     // A recovered harness can't issue turns without the shared app-server;
     // surface backpressure instead of spawning a silently-wedged task.
     if !cs.shared_codex_appserver.is_running() {
+        // #953 — same variant/status (503); message-only enrichment.
         return Err(CalmError::ServiceUnavailable(
-            "shared codex app-server is not running; retry shortly".into(),
+            cs.shared_codex_appserver.not_running_message(),
         ));
     }
     let runtime_id = runtime.id.clone();

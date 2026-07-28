@@ -298,9 +298,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             )));
         }
         if !self.daemon.is_running() {
-            return Err(CalmError::Internal(
-                "shared codex app-server is not running".into(),
-            ));
+            // #953 — same variant/status; message carries the live failure
+            // and the background-retry fact. Preflights stay non-blocking.
+            return Err(self.daemon.not_running_error());
         }
         Ok(())
     }
