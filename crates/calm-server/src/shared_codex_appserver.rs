@@ -357,9 +357,15 @@ fn heal_jitter(delay: Duration) -> Duration {
     delay.mul_f64(1.0 - HEAL_JITTER_FRACTION + 2.0 * HEAL_JITTER_FRACTION * unit)
 }
 
-/// `/proc/<pid>/stat` state == `Z`. A zombie is dead for supervision
-/// purposes: it cannot serve, hold sockets, or spawn — it merely awaits its
-/// parent's `wait()` (which may not be us, e.g. a test-spawned survivor).
+/// `/proc/<pid>/stat` state == `Z`. #953 review D4 — a zombie's meaning
+/// depends on WHICH question is being asked: for post-reap verification of
+/// a group WE just signaled it means "dead" (the leader cannot serve and
+/// merely awaits its parent's `wait()`, which may not be us — e.g. a
+/// test-spawned survivor); for a reconciliation probe BEFORE any signal it
+/// proves nothing about the process GROUP — live descendants may remain in
+/// the zombie leader's group, so absence must never be claimed from it.
+/// See [`survivor_alive_after_group_reap`] (post-signal, zombie = dead) vs
+/// [`proc_pid_present`] / `verify_owned_pid` (pre-signal, zombie = present).
 fn proc_pid_is_zombie(pid: i32) -> bool {
     let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
         return false;
@@ -372,19 +378,30 @@ fn proc_pid_is_zombie(pid: i32) -> bool {
         .unwrap_or(false)
 }
 
-/// `/proc/<pid>` presence (zombies excluded) — the ONLY probe allowed for
-/// the pid-partial shape (#953 §3 shape (a)): ownership is unprovable (the
-/// pid may be recycled), so the record must never be reaped or signaled.
-fn proc_pid_running(pid: i32) -> bool {
+/// `/proc/<pid>` presence — the ONLY probe allowed for the pid-partial
+/// shape (#953 §3 shape (a)): ownership is unprovable (the pid may be
+/// recycled), so the record must never be reaped or signaled. #953 review
+/// D4(b) — a ZOMBIE counts as present: this probe runs before (and without)
+/// any signal, and a zombie entry does not prove the group named by the
+/// unverifiable record is gone. The shape self-resolves when the zombie's
+/// parent reaps it (`/proc/<pid>` disappears).
+fn proc_pid_present(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
-    Path::new(&format!("/proc/{pid}")).exists() && !proc_pid_is_zombie(pid)
+    Path::new(&format!("/proc/{pid}")).exists()
 }
 
-/// #953 §3 — "survivor still alive" criterion for reconciliation: the
-/// verified identity matches a live, non-zombie process.
-fn persisted_survivor_alive(pid: i32, start_time: u64, boot_id: &str) -> bool {
+/// #953 §3 — POST-group-reap "survivor still alive" criterion: the verified
+/// identity matches a live, non-zombie process. Zombie-as-dead is valid
+/// here ONLY because every caller has just signaled the verified group
+/// (SIGTERM + SIGKILL): a leader left zombie by our own SIGKILL is dead for
+/// supervision purposes and merely awaits its parent's `wait()` (which may
+/// not be us, e.g. a test-spawned survivor). Absence proofs BEFORE any
+/// signal must NOT use this predicate (#953 review D4): pre-signal probes
+/// are `verify_owned_pid` (full tuple) or [`proc_pid_present`]
+/// (pid-partial shape), both of which treat a zombie as still-present.
+fn survivor_alive_after_group_reap(pid: i32, start_time: u64, boot_id: &str) -> bool {
     verify_owned_pid(pid, start_time, boot_id) && !proc_pid_is_zombie(pid)
 }
 
@@ -616,6 +633,16 @@ pub struct SharedCodexAppServer {
     heal_nudge: Arc<tokio::sync::Notify>,
     /// #953 §2 — post-Ok dedup of Failed DB writes.
     failed_persist_dedup: FailedPersistDedup,
+    /// #953 review D1 — fixtures-only interleaving gate: the heal loop's Ok
+    /// path awaits this mutex AFTER `ensure_running` succeeded but BEFORE it
+    /// releases the singleton claim. A test holding the lock parks the heal
+    /// task inside that window (modelling the post-serial
+    /// `resume_cached_threads` seconds) so a concurrent crash + failed
+    /// restart can deterministically lose its `schedule_heal` CAS against
+    /// the held claim. Uncontended (a lock/unlock pair) when no test holds
+    /// it; absent from non-fixtures builds.
+    #[cfg(feature = "fixtures")]
+    heal_post_ok_gate: Arc<tokio::sync::Mutex<()>>,
     ingest_url: String,
     #[cfg(feature = "fixtures")]
     fake: Option<Arc<FakeSharedCodexAppServer>>,
@@ -795,6 +822,8 @@ impl SharedCodexAppServer {
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
             failed_persist_dedup: FailedPersistDedup::default(),
+            #[cfg(feature = "fixtures")]
+            heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: "http://127.0.0.1:0".into(),
             #[cfg(feature = "fixtures")]
             fake: _fake_running.then(|| Arc::new(FakeSharedCodexAppServer::new())),
@@ -843,6 +872,8 @@ impl SharedCodexAppServer {
             heal_active: Arc::new(AtomicBool::new(false)),
             heal_nudge: Arc::new(tokio::sync::Notify::new()),
             failed_persist_dedup: FailedPersistDedup::default(),
+            #[cfg(feature = "fixtures")]
+            heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             ingest_url: cfg.codex_ingest_url_resolved(),
             #[cfg(feature = "fixtures")]
             fake: None,
@@ -1399,7 +1430,27 @@ impl SharedCodexAppServer {
             );
             return Ok(false);
         }
-        let current_env_signature = self.current_env_signature().await?;
+        // #953 review D3 — this settings read is the one fallible await in
+        // the takeover probe that is NOT already terminalized downstream;
+        // letting its error escape through `start_body_locked` /
+        // `transition_replace` would release the serial with the in-memory
+        // state stranded `Restarting` (no Failed state, no heal loop).
+        // Terminalize like the record-read failure arm: in-memory Failed +
+        // heal armed, DB row deliberately untouched — it still truthfully
+        // names a live VERIFIED daemon, so writing `failed` + retained
+        // identity would make the next heal round REAP a healthy survivor,
+        // and NULLing identity would forge proof of absence. The next heal
+        // round re-reads settings and retries the takeover.
+        let current_env_signature = match self.current_env_signature().await {
+            Ok(signature) => signature,
+            Err(e) => {
+                let msg =
+                    format!("failed reading runtime settings for takeover env comparison: {e}");
+                self.fail_in_memory_and_arm_heal(msg.clone(), FailureClass::Persistent)
+                    .await;
+                return Err(CalmError::CodexAppServer(msg));
+            }
+        };
         if record.daemon_env_signature.as_deref() != Some(current_env_signature.as_str()) {
             tracing::warn!(
                 target: "shared_codex_daemon::takeover_env_changed",
@@ -1514,11 +1565,26 @@ impl SharedCodexAppServer {
                 match pre {
                     ReplacePrecondition::Always => {}
                     ReplacePrecondition::GenerationIs(generation) => {
-                        if core.generation != generation {
-                            // Another transition already replaced the process
-                            // this caller observed dying: abort silently —
-                            // no reap, no spawn (kills the double-spawn
-                            // interleaving of the old split path).
+                        // #953 review D2 — generation equality alone is not
+                        // staleness proof: the generation bumps only when a
+                        // Running incarnation is INSTALLED, so an
+                        // intervening transition that FAILED (settings
+                        // respawn or heal round that consumed the crashed
+                        // process and then failed to spawn) leaves it
+                        // unchanged. The crashed incarnation this caller
+                        // observed is "still installed" only while the
+                        // state is Running (the watcher leaves the exited
+                        // child's Running state in place) AND carries that
+                        // generation; anything else — Failed/Restarting/
+                        // Starting installed by someone else — means
+                        // another transition already consumed it: abort
+                        // silently — no reap, no spawn, no crash-lane
+                        // retry overriding the later failure's
+                        // classification (also kills the double-spawn
+                        // interleaving of the old split path).
+                        if core.generation != generation
+                            || !matches!(core.state, SupervisorState::Running { .. })
+                        {
                             return Ok(ReplaceOutcome::PreconditionFailed);
                         }
                     }
@@ -1728,12 +1794,14 @@ impl SharedCodexAppServer {
         else {
             // Shape (a): pid without a complete verification pair —
             // ownership unprovable (the pid may be recycled), so never reap
-            // or signal; `/proc` existence is the only safe probe.
-            if proc_pid_running(pid) {
+            // or signal; `/proc` existence (zombies INCLUDED — #953 review
+            // D4(b): a zombie leader proves nothing about its group) is the
+            // only safe probe.
+            if proc_pid_present(pid) {
                 tracing::warn!(
                     target: "shared_codex_daemon::stop",
                     pid,
-                    "persisted daemon record has a pid with an incomplete verification pair and the pid is live; staying unreconciled (never signaling a bare pid)"
+                    "persisted daemon record has a pid with an incomplete verification pair and the pid is present; staying unreconciled (never signaling a bare pid)"
                 );
                 return ShapeResolution::Unreconciled {
                     needs_operator: false,
@@ -1741,8 +1809,15 @@ impl SharedCodexAppServer {
             }
             return ShapeResolution::ProvenAbsent;
         };
-        if !persisted_survivor_alive(pid, start_time, &boot_id) {
-            // Natural death (or the identity matches no live process).
+        if !verify_owned_pid(pid, start_time, &boot_id) {
+            // Natural death (or the identity matches no live process). #953
+            // review D4(a) — a verified-but-ZOMBIE leader does NOT prove
+            // absence here: it can no longer serve, but live descendants
+            // may remain in its process group. Zombie leaders fall through
+            // to the pgid arms below: the owned pgid==pid shape still runs
+            // the group reap (verification permits signaling the known
+            // pgid), and the unsignalable shapes stay unreconciled until
+            // the leader is reaped by its parent (verify then fails).
             return ShapeResolution::ProvenAbsent;
         }
         match record.pgid {
@@ -1757,7 +1832,7 @@ impl SharedCodexAppServer {
                     "reaping verified persisted daemon survivor"
                 );
                 reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
-                if persisted_survivor_alive(pid, start_time, &boot_id) {
+                if survivor_alive_after_group_reap(pid, start_time, &boot_id) {
                     tracing::warn!(
                         target: "shared_codex_daemon::stop",
                         pid,
@@ -2340,10 +2415,15 @@ impl SharedCodexAppServer {
                     );
                 }
                 Err(e) => {
+                    // #953 review D3 — "recorded", not "persisted": every
+                    // escape path terminalizes the in-memory state and arms
+                    // heal, but the DB write only happens where a Failed row
+                    // is trustworthy (e.g. NOT on a settings-read failure
+                    // over a live takeover-eligible daemon).
                     tracing::warn!(
                         target = "shared_codex_daemon::restart",
                         error = %e,
-                        "crash restart failed; failed state persisted and heal loop armed"
+                        "crash restart failed; terminal failed state recorded and heal loop armed"
                     );
                 }
             }
@@ -2445,22 +2525,20 @@ impl SharedCodexAppServer {
             flag: Arc::clone(&self.heal_active),
         };
         let weak = Arc::downgrade(self);
-        Some(tokio::spawn(async move {
-            let _active = guard;
-            Self::heal_loop(weak).await;
-        }))
+        Some(tokio::spawn(Self::heal_loop(weak, guard)))
     }
 
     /// Infinite classified retry — no give-up-after-N (give-up is the
     /// defect-3 lockout reborn; systemd `Restart=always` precedent). Each
     /// round: sleep by class (select against the settings-change nudge for
     /// the slow lane's immediate wake) → upgrade the Weak → `ensure_running`.
-    /// Ok ⇒ exit (healed, or a concurrent transition won — its `NotRunning`
-    /// precondition re-check runs under the serial). Err ⇒ reclassify from
+    /// Ok ⇒ release the claim, re-check the terminal state (re-arming on
+    /// Failed — #953 review D1), and exit. Err ⇒ reclassify from
     /// the fresh Failed state and continue. Unreconciled rounds run only
     /// guard + reconciliation — `ensure_running`'s body keeps the spawn path
     /// unreachable until absence is proven.
-    async fn heal_loop(this: std::sync::Weak<Self>) {
+    async fn heal_loop(this: std::sync::Weak<Self>, claim: HealActiveGuard) {
+        let mut claim = Some(claim);
         loop {
             let Some(strong) = this.upgrade() else {
                 return;
@@ -2476,7 +2554,37 @@ impl SharedCodexAppServer {
                 return;
             };
             match strong.ensure_running().await {
-                Ok(()) => return,
+                Ok(()) => {
+                    // #953 review D1 fixtures gate — see the field doc: a
+                    // test holding this mutex parks the healed task here,
+                    // keeping the claim held across a concurrent failure.
+                    #[cfg(feature = "fixtures")]
+                    drop(strong.heal_post_ok_gate.lock().await);
+                    // #953 review D1 — release the singleton claim BEFORE
+                    // the terminal re-check. `ensure_running()` Ok is not
+                    // proof the daemon is still Running: the transition
+                    // serial was released before thread resume, so a crash
+                    // + failed restart may already have installed Failed —
+                    // and ITS `schedule_heal()` CAS silently lost against
+                    // the claim this task was still holding. Releasing
+                    // first, then re-reading, closes BOTH orderings:
+                    //  * failure's schedule_heal ran BEFORE this release:
+                    //    every failure path flips the state to Failed
+                    //    before calling schedule_heal, so the re-check
+                    //    below observes Failed and re-arms the loop;
+                    //  * failure's schedule_heal runs AFTER this release:
+                    //    its CAS wins normally (and a concurrent re-arm
+                    //    below dedups on the same CAS).
+                    drop(claim.take());
+                    let failed_behind_ok = matches!(
+                        strong.core.lock().await.state,
+                        SupervisorState::Failed { .. }
+                    );
+                    if failed_behind_ok {
+                        strong.schedule_heal();
+                    }
+                    return;
+                }
                 Err(e) => {
                     // First occurrence / changes are warned by the persist
                     // path; the per-round line stays debug to avoid log
@@ -2806,6 +2914,15 @@ impl SharedCodexAppServer {
         self.schedule_heal()
     }
 
+    /// #953 review D1 — the heal loop's post-Ok interleaving gate (fixtures
+    /// builds only): a test that locks this mutex parks the heal task AFTER
+    /// a successful round installed Running but BEFORE the task releases the
+    /// singleton `heal_active` claim.
+    #[cfg(feature = "fixtures")]
+    pub fn heal_post_ok_gate_for_test(&self) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::clone(&self.heal_post_ok_gate)
+    }
+
     /// #953 — current Running-incarnation generation.
     pub async fn generation_for_test(&self) -> u64 {
         self.core.lock().await.generation
@@ -2843,7 +2960,9 @@ async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_
     signal_process_group(pgid, libc::SIGKILL);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    if verify_owned_pid(pid, start_time, boot_id) {
+    // Post-signal check: zombie = dead (we just SIGKILLed the group; the
+    // leader may linger as a zombie until its parent waits — #953 review D4).
+    if survivor_alive_after_group_reap(pid, start_time, boot_id) {
         tracing::warn!(
             target: "shared_codex_daemon::stop",
             pid,
@@ -3333,6 +3452,113 @@ mod tests {
             !failed_row_identity_present(&record),
             "the rule applies to failed rows only"
         );
+    }
+
+    /// #953 review D3 — a settings-read failure inside `try_takeover_live`
+    /// (`current_env_signature`) during a takeover-eligible transition must
+    /// not escape the choke point with the in-memory state stranded
+    /// `Restarting`: the serial may only release on a TERMINAL in-memory
+    /// state, with the heal loop armed. The DB row is deliberately left
+    /// untouched: it still truthfully names a live verified daemon, and the
+    /// next heal round re-reads settings and retries the takeover (writing
+    /// `failed`+retained identity would make the next round REAP a healthy
+    /// survivor; NULLing identity would forge proof of absence).
+    ///
+    /// Injection: drop ONLY the `settings` table — `settings_get_all` fails
+    /// while `shared_daemon_runtime_get` stays healthy. The "live verified
+    /// daemon" is this test process itself (verifiable identity, never
+    /// signaled by this path).
+    #[tokio::test]
+    async fn takeover_settings_read_failure_terminalizes_failed_and_arms_heal() {
+        use calm_truth::db::{RepoOutOfDomain as _, RepoRead as _};
+        let repo = Arc::new(
+            crate::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        sqlx::query("DROP TABLE settings")
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let self_pid = i32::try_from(std::process::id()).unwrap();
+        let start_time = read_proc_start_time(self_pid).expect("own start time");
+        let boot_id = read_boot_id().unwrap_or_default();
+        repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+            state: SharedDaemonState::Running.as_db_str().to_string(),
+            pid: Some(self_pid),
+            pgid: Some(self_pid),
+            sock_path: Some("/tmp/none.sock".into()),
+            codex_home_path: None,
+            process_start_time: Some(start_time),
+            boot_id: Some(boot_id),
+            started_at: Some(now_ms()),
+            last_error: None,
+            increment_restart_count: false,
+            daemon_env_signature: Some("stale".into()),
+        })
+        .await
+        .unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        let cfg = <crate::config::Config as clap::Parser>::parse_from([
+            "calm-server",
+            "--data-dir",
+            root.path().to_str().unwrap(),
+        ]);
+        let home = crate::shared_codex_home::SharedCodexHome::new(
+            cfg.data_dir_resolved().join("codex-home"),
+            cfg.data_dir_resolved().join("codex-homes"),
+        );
+        home.seed().unwrap();
+        let daemon = SharedCodexAppServer::new(&cfg, Arc::new(home), repo.clone());
+
+        let err = daemon
+            .ensure_running()
+            .await
+            .expect_err("the settings-read failure must fail the transition");
+        assert!(
+            err.to_string().contains("settings"),
+            "error must name the settings read; got: {err}"
+        );
+
+        let snapshot = daemon.status_snapshot();
+        assert_eq!(
+            snapshot.state,
+            SharedDaemonState::Failed,
+            "the serial must release on a TERMINAL in-memory state, never \
+             stranded Restarting; got {:?}",
+            snapshot.state
+        );
+        assert!(
+            snapshot
+                .last_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("settings"),
+            "the Failed state must carry the settings-read failure"
+        );
+        assert!(
+            daemon.heal_active_for_test(),
+            "the escape path must arm the heal loop"
+        );
+
+        // Row untouched: it still truthfully names the live verified daemon.
+        let record = repo.shared_daemon_runtime_get().await.unwrap();
+        assert_eq!(
+            SharedDaemonState::from_db_str(&record.state),
+            SharedDaemonState::Running,
+            "no forged failed/absence write over the live daemon's row"
+        );
+        assert_eq!(record.pid, Some(self_pid), "identity untouched");
+
+        // The supervisor is not wedged: another round runs to the same
+        // terminal state (no stuck serial, no stranded Restarting).
+        daemon
+            .ensure_running()
+            .await
+            .expect_err("still failing while the settings table is gone");
+        assert_eq!(daemon.status_snapshot().state, SharedDaemonState::Failed);
     }
 
     #[test]

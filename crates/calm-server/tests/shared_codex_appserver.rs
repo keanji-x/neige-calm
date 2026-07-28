@@ -2264,12 +2264,19 @@ fn daemon_with_codex_symlink(
     root: &tempfile::TempDir,
     repo: Arc<SqlxRepo>,
 ) -> (Arc<SharedCodexAppServer>, std::path::PathBuf) {
+    daemon_with_codex_symlink_cfg(root, repo, cfg(root))
+}
+
+fn daemon_with_codex_symlink_cfg(
+    root: &tempfile::TempDir,
+    repo: Arc<SqlxRepo>,
+    mut cfg: Config,
+) -> (Arc<SharedCodexAppServer>, std::path::PathBuf) {
     let bin_dir = root.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let codex_link = bin_dir.join("codex");
     std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
 
-    let mut cfg = cfg(root);
     cfg.codex_bin = codex_link.display().to_string();
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
@@ -2354,11 +2361,20 @@ async fn spawn_failure_after_persist_starting_persists_failed_row() {
 /// daemon is Failed (missing codex bin at boot), repairing the cause and
 /// firing the settings-change nudge must bring the daemon back to Running
 /// WITHOUT any manual respawn call and without restarting calm-server.
+///
+/// #953 review D5 — the heal delays are pinned FAR beyond the 15s wait
+/// (60s/120s; the Persistent slow lane floors at the 120s max), so a pass
+/// can only come from the nudge's immediate wake, never from a polling
+/// round happening to land inside the window. This pins the design's
+/// settings-nudge immediate-wake claim while keeping the test bounded.
 #[tokio::test]
 async fn failed_daemon_heals_in_background_without_server_restart() {
     let root = tempfile::tempdir().unwrap();
     let repo = repo().await;
-    let (daemon, codex_link) = daemon_with_codex_symlink(&root, repo.clone());
+    let mut quiet_cfg = cfg(&root);
+    quiet_cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    quiet_cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let (daemon, codex_link) = daemon_with_codex_symlink_cfg(&root, repo.clone(), quiet_cfg);
 
     std::fs::remove_file(&codex_link).unwrap();
     daemon
@@ -2471,6 +2487,86 @@ async fn stale_generation_crash_restart_aborts_without_reap_or_spawn() {
     assert!(
         !pid_gone_or_zombie(replaced_pid),
         "the aborted restart must not reap the live daemon"
+    );
+}
+
+/// #953 review D2 — the generation bumps ONLY when a Running incarnation is
+/// installed, so a crash restart made stale by an intervening FAILED
+/// transition (here: a settings respawn that reaps the crashed process and
+/// then fails to spawn) still sees its captured generation. The
+/// `GenerationIs` precondition must additionally require the state to still
+/// be the Running incarnation the crash watcher observed; against the
+/// intervening Failed state the stale task must abort — never retry on the
+/// crash lane, override the settings-failure classification, double-count
+/// restarts, or consume the restored `needs_respawn` flag.
+#[tokio::test]
+async fn stale_crash_restart_after_failed_settings_respawn_aborts() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    // Quiet heal delays: the armed loop must not race the assertions below.
+    let mut quiet_cfg = cfg(&root);
+    quiet_cfg.shared_codex_appserver_restart_initial_delay_ms = 60_000;
+    quiet_cfg.shared_codex_appserver_restart_max_delay_ms = 120_000;
+    let (daemon, codex_link) = daemon_with_codex_symlink_cfg(&root, repo.clone(), quiet_cfg);
+    daemon.start_or_takeover().await.unwrap();
+    let stale_generation = daemon.generation_for_test().await;
+
+    // Intervening settings respawn that FAILS: the bin disappears first.
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon.mark_needs_respawn();
+    daemon
+        .ensure_respawn_for_current_settings()
+        .await
+        .expect_err("the settings respawn must fail with the bin gone");
+    let after_failed_respawn = daemon.status_snapshot();
+    assert_eq!(after_failed_respawn.state, SharedDaemonState::Failed);
+    assert_eq!(
+        daemon.generation_for_test().await,
+        stale_generation,
+        "a FAILED transition leaves the generation unchanged — equality \
+         alone cannot prove the crashed incarnation is still installed"
+    );
+    let failed_error = after_failed_respawn
+        .last_error
+        .expect("failed settings respawn must record last_error");
+    assert!(
+        daemon.needs_respawn_on_next_thread_start_for_test(),
+        "the failed respawn must restore the needs_respawn flag"
+    );
+
+    // The stale crash task (captured generation) now acquires the serial:
+    // it must abort at the precondition, not retry on the crash lane.
+    let outcome = daemon
+        .transition_replace_for_test(
+            "stale crash restart",
+            ReplacePrecondition::GenerationIs(stale_generation),
+        )
+        .await
+        .expect("the stale crash restart must abort cleanly, not respawn-fail");
+    assert_eq!(
+        outcome,
+        ReplaceOutcome::PreconditionFailed,
+        "an intervening failed transition must invalidate the crash task"
+    );
+    let after = daemon.status_snapshot();
+    assert_eq!(
+        after.state,
+        SharedDaemonState::Failed,
+        "the aborted stale task must leave the Failed state untouched"
+    );
+    assert_eq!(
+        after.last_error.as_deref(),
+        Some(failed_error.as_str()),
+        "the settings-failure classification must not be overridden by the \
+         stale crash lane"
+    );
+    assert_eq!(
+        after.restart_count, after_failed_respawn.restart_count,
+        "the aborted stale task must not double-count restarts"
+    );
+    assert!(
+        daemon.needs_respawn_on_next_thread_start_for_test(),
+        "the aborted stale task must not race away the restored flag"
     );
 }
 
@@ -2708,6 +2804,88 @@ async fn heal_task_abort_clears_claim_via_raii_guard() {
         .expect("the claim must be reclaimable after an abort");
     assert!(daemon.heal_active_for_test());
     handle2.abort();
+}
+
+/// #953 review D1 — heal-claim release race: a heal round succeeds
+/// (Running installed, serial released) but the task still holds the
+/// singleton `heal_active` claim through the post-transition window
+/// (production: `resume_cached_threads`, which can take seconds — modelled
+/// here by the fixtures post-Ok gate). If the fresh daemon crashes and its
+/// crash restart FAILS inside that window, the failure path's
+/// `schedule_heal()` CAS silently loses against the held claim. The heal
+/// task must therefore release the claim FIRST and then re-check the
+/// terminal state, re-arming on Failed — otherwise the end state is
+/// Failed + heal_active=false + no loop: the permanent lockout this PR
+/// exists to remove.
+#[tokio::test]
+async fn heal_ok_claim_release_race_rearms_loop_for_failure_that_lost_cas() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let (daemon, codex_link) = daemon_with_codex_symlink(&root, repo.clone());
+
+    // Boot failure arms the heal loop (claim held by the loop task).
+    std::fs::remove_file(&codex_link).unwrap();
+    daemon
+        .start_or_takeover()
+        .await
+        .expect_err("boot spawn must fail with a missing codex bin");
+    assert!(daemon.heal_active_for_test(), "boot failure must arm heal");
+
+    // Park the NEXT successful round after ensure_running() Ok but before
+    // the claim release (the resume_cached_threads window).
+    let hold = daemon.heal_post_ok_gate_for_test().lock_owned().await;
+
+    // Repair the bin: the heal loop heals to Running, then parks at the
+    // gate STILL HOLDING the claim.
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    assert!(
+        wait_for_state(&daemon, SharedDaemonState::Running, 30).await,
+        "heal round must install Running before parking at the gate"
+    );
+
+    // Inside the window: crash the fresh daemon AND re-break the bin so
+    // the crash restart fails; its schedule_heal() CAS loses against the
+    // claim the parked task still holds.
+    std::fs::remove_file(&codex_link).unwrap();
+    let crashed_pid = daemon
+        .status_snapshot()
+        .runtime
+        .expect("running daemon must expose its runtime")
+        .pid;
+    // SAFETY: SIGKILL to the daemon child this test's supervisor spawned.
+    unsafe {
+        libc::kill(crashed_pid, libc::SIGKILL);
+    }
+    assert!(
+        wait_for_state(&daemon, SharedDaemonState::Failed, 30).await,
+        "the failed crash restart must terminalize to Failed"
+    );
+    assert!(
+        daemon.heal_active_for_test(),
+        "the parked heal task must still hold the singleton claim"
+    );
+
+    // Repair again, then release the gate. The finishing heal task must
+    // release its claim FIRST and re-arm against the Failed state it
+    // re-reads (the crash path's schedule_heal already lost its CAS). The
+    // nudge only wakes the re-armed loop promptly — with no loop armed
+    // (the pre-fix lockout) it wakes nothing.
+    std::os::unix::fs::symlink(fake_codex_bin(), &codex_link).unwrap();
+    drop(hold);
+    daemon.mark_needs_respawn();
+    assert!(
+        wait_for_state(&daemon, SharedDaemonState::Running, 60).await,
+        "the released heal task must re-arm the loop for the failure that \
+         lost its CAS; still {:?} (heal_active={})",
+        daemon.status_snapshot().state,
+        daemon.heal_active_for_test()
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "the re-armed heal round must persist the running row"
+    );
 }
 
 /// #953 design test 10 — takeover success re-stamps the row: adopting a
@@ -3064,4 +3242,196 @@ async fn partial_identity_triple_complete_pgid_null_never_signals_and_recovers()
         SharedDaemonState::Running
     );
     assert_ne!(record.pid, Some(survivor_pid));
+}
+
+/// `/proc/<pid>/stat` state field (first token after the `(comm)` field).
+fn proc_stat_state(pid: i32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit(") ").next()?.chars().next()
+}
+
+/// Wait for `pid` to become a zombie (its tokio `Child` is deliberately
+/// held un-`wait()`ed by the caller, so the kernel keeps the entry).
+async fn wait_until_zombie(pid: i32) -> bool {
+    for _ in 0..250 {
+        if proc_stat_state(pid) == Some('Z') {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+/// #953 review D4(a) — a zombie group LEADER is not proof that its process
+/// group is dead: live descendants may remain in the group. For a full
+/// verified pid==pgid tuple, reconciliation must still run the group reap
+/// (verification permits signaling the known pgid; the leader being a
+/// zombie is irrelevant to the members) instead of classifying ProvenAbsent
+/// on the leader's zombie state alone — which would clear the durable fence
+/// and spawn a replacement while the old group still contains live
+/// processes.
+///
+/// Construction: a `sh` group leader backgrounds a `sleep` in its own pgid,
+/// prints the member pid, and exits; the test holds the tokio `Child`
+/// without `wait()`ing, so the leader stays a zombie while the member lives.
+#[tokio::test]
+async fn zombie_leader_with_live_group_member_is_group_reaped_not_proven_absent() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+
+    let mut leader = Command::new("sh")
+        .arg("-c")
+        .arg("sleep 120 & echo $!; exit 0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .expect("spawn zombie-leader group");
+    let leader_pid = i32::try_from(leader.id().expect("leader pid")).expect("pid fits i32");
+    let member_pid = read_pid_line(leader.stdout.take().expect("leader stdout piped")).await;
+    assert!(
+        wait_until_zombie(leader_pid).await,
+        "the exited-but-unreaped leader must show as a zombie"
+    );
+    // The zombie's /proc entry still carries its identity: the persisted
+    // tuple verifies against it.
+    let start_time = read_proc_start_time(leader_pid).expect("zombie leader keeps /proc stat");
+    // SAFETY: signal 0 probes liveness without delivering a signal.
+    assert_eq!(
+        unsafe { libc::kill(member_pid, 0) },
+        0,
+        "the group member must be alive behind the zombie leader"
+    );
+    assert_eq!(
+        unsafe { libc::getpgid(member_pid) },
+        leader_pid,
+        "the live member must sit in the zombie leader's process group"
+    );
+
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "failed".into(),
+        pid: Some(leader_pid),
+        pgid: Some(leader_pid),
+        sock_path: None,
+        codex_home_path: None,
+        process_start_time: Some(start_time),
+        boot_id: Some(read_boot_id().unwrap_or_default()),
+        started_at: None,
+        last_error: Some("crash".into()),
+        increment_restart_count: false,
+        daemon_env_signature: None,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    daemon
+        .ensure_running()
+        .await
+        .expect("group reap of the verified tuple must prove absence and reopen the spawn path");
+
+    // The core assertion: absence was proven by SIGNALING the known pgid,
+    // never silently from the leader's zombie state — the live member must
+    // be gone (SIGKILL to the group; init reaps it once its dead parent's
+    // slot is cleared). Pre-fix, the member survived unsignaled.
+    let mut member_gone = false;
+    for _ in 0..100 {
+        // SAFETY: signal 0 probes liveness without delivering a signal.
+        if unsafe { libc::kill(member_pid, 0) } != 0 {
+            member_gone = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        member_gone,
+        "the live group member must have been reaped with the group; \
+         a zombie leader must never yield silent ProvenAbsent without signaling"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running,
+        "post-reap proven absence must reopen the spawn path"
+    );
+    assert_ne!(
+        record.pid,
+        Some(leader_pid),
+        "a fresh daemon must be spawned"
+    );
+
+    // Reap the zombie leader (test-side wait) for hygiene.
+    let _ = leader.wait().await;
+}
+
+/// #953 review D4(b) — the pid-partial shape (a): a ZOMBIE pid is still a
+/// present /proc entry, and group absence is NOT provable from it (the
+/// unverifiable record may name a group whose members outlive the zombie
+/// leader; a bare pid must never be signaled). The shape must stay
+/// unreconciled while the zombie exists and recover only once the entry is
+/// truly gone (parent reaps it).
+#[tokio::test]
+async fn partial_identity_pid_only_zombie_stays_unreconciled_until_reaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo().await;
+    let mut child = Command::new("true")
+        .stdout(Stdio::null())
+        .spawn()
+        .expect("spawn short-lived child");
+    let zombie_pid = i32::try_from(child.id().expect("child pid")).expect("pid fits i32");
+    assert!(
+        wait_until_zombie(zombie_pid).await,
+        "the exited-but-unreaped child must show as a zombie"
+    );
+
+    repo.shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+        state: "failed".into(),
+        pid: Some(zombie_pid),
+        pgid: None,
+        sock_path: None,
+        codex_home_path: None,
+        process_start_time: None,
+        boot_id: None,
+        started_at: None,
+        last_error: Some("crash".into()),
+        increment_restart_count: false,
+        daemon_env_signature: None,
+    })
+    .await
+    .unwrap();
+
+    let daemon = server(&root, repo.clone()).await;
+    let err = daemon
+        .ensure_running()
+        .await
+        .expect_err("a zombie pid is a present /proc entry: the shape must stay unreconciled");
+    assert!(
+        err.to_string().contains("unreconciled"),
+        "fence error must say unreconciled; got: {err}"
+    );
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        record.pid,
+        Some(zombie_pid),
+        "the fenced row must retain the identity tuple"
+    );
+    assert_ne!(
+        daemon.status_snapshot().state,
+        SharedDaemonState::Running,
+        "no spawn may happen while the zombie entry exists"
+    );
+
+    // Parent reaps the zombie ⇒ /proc entry gone ⇒ absence provable ⇒ the
+    // next round NULLs identity and spawns.
+    let _ = child.wait().await;
+    daemon
+        .ensure_running()
+        .await
+        .expect("a truly-gone /proc entry must reopen the spawn path");
+    let record = repo.shared_daemon_runtime_get().await.unwrap();
+    assert_eq!(
+        SharedDaemonState::from_db_str(&record.state),
+        SharedDaemonState::Running
+    );
+    assert_ne!(record.pid, Some(zombie_pid));
 }
