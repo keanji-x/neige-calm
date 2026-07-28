@@ -1757,10 +1757,15 @@ impl SharedCodexAppServer {
     /// released in between — no second pre-spawn check needed.
     ///
     /// #954 serial-hold analysis (grace runs INSIDE `transition_serial` —
-    /// required by the #953 atomic-transition invariant): worst case a
-    /// transition holds the serial for `stop_grace + start_timeout` ≈
+    /// required by the #953 atomic-transition invariant): a steady-state
+    /// transition holds the serial for up to `stop_grace + start_timeout` ≈
     /// 60 + 120 = 180s at defaults (wedged old daemon paying the full
-    /// grace, then a slow cold start). Queued behind it: thread-start
+    /// grace, then a slow cold start). The boot takeover of a `starting`
+    /// row can additionally pay the remaining readiness window before
+    /// reaping, so its worst case is `window (≤ start_timeout) +
+    /// stop_grace + start_timeout` ≈ 120 + 60 + 120 = 300s at defaults
+    /// (unbound child consuming the full window, then the full grace, then
+    /// a slow cold start). Queued behind it: thread-start
     /// settings drains, crash restarts, heal rounds (their backoff happens
     /// before acquiring), boot; wave preflights observe non-Running and
     /// fail fast rather than queue. All of those already tolerate the 120s
@@ -2621,8 +2626,11 @@ impl SharedCodexAppServer {
     /// to a previous calm-server incarnation, so no `Child` handle exists).
     /// `window` is the REMAINING budget
     /// `start_timeout − (now − persisted started_at)`; a zero window
-    /// degenerates to a single raced attempt (an already-bound socket still
-    /// adopts) and then lapses. The deadline is a TOTAL cap: it also cuts
+    /// degenerates to a single raced attempt that the already-expired
+    /// deadline cuts short at its first `Pending` — in practice even an
+    /// already-bound socket cannot complete connect+initialize in that one
+    /// poll, so the probe lapses (→ graceful reap) rather than adopting.
+    /// The deadline is a TOTAL cap: it also cuts
     /// short an in-flight `connect_initialized` attempt, so the window
     /// cannot be exceeded by the attempt's internal 10s request timeout.
     async fn poll_adopt_initialized(
@@ -2652,7 +2660,13 @@ impl SharedCodexAppServer {
             // dead (#953 review D4 posture, same as
             // `terminate_group_with_grace`): an exited-but-unreaped child
             // can never bind the socket, so polling it out to the window
-            // deadline would stall boot for nothing.
+            // deadline would stall boot for nothing. Honest residual (the
+            // r5.1 accepted class): this ChildExited classification sends
+            // no signals at all — unlike the r5.1 non-owned dead-leader
+            // arms it performs no per-member straggler sweep, so members
+            // of the zombie leader's group can leak past the fresh spawn;
+            // only a socket-holding straggler is caught by the pre-spawn
+            // `reap_listener_if_alive`.
             if !verify_owned_pid(pid, start_time, boot_id) || proc_pid_is_zombie(pid) {
                 tracing::info!(
                     target: "shared_codex_daemon::start",

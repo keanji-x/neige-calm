@@ -3793,10 +3793,14 @@ async fn child_exit_during_readiness_window_spawns_immediately() {
 /// #954 defect 2 — the readiness window NEVER re-arms across repeated boots
 /// for the same child: it is budgeted by the PERSISTED `started_at` (which
 /// adoption/re-stamp preserves), so a second boot sees only the leftover
-/// budget. Constructed via a backdated `started_at`: with a 3s start
-/// timeout and 2s already consumed, the leftover 1s window lapses before
-/// the child's 2.5s bind — even though a (wrongly) re-armed fresh 3s window
-/// would have adopted it.
+/// budget. Constructed via a backdated `started_at` anchored to a
+/// timestamp captured BEFORE the spawn: with an 8s start timeout and 6s
+/// already consumed, the lapse deadline is `started_at + 8s` = anchor + 2s,
+/// while the child binds no earlier than anchor + 5s — a ≥3s margin that
+/// setup latency (repo init, handler-ready wait) cannot erode, because
+/// extra latency only shrinks the leftover window further. The lapse
+/// happens even though a (wrongly) re-armed fresh 8s window would have
+/// adopted the 5s bind.
 #[tokio::test]
 async fn readiness_window_never_rearms_for_same_child() {
     let root = tempfile::tempdir().unwrap();
@@ -3805,8 +3809,9 @@ async fn readiness_window_never_rearms_for_same_child() {
     let marker = root.path().join("rearm-term-marker");
     let handler_ready = root.path().join("rearm-handler-ready");
 
+    let spawn_anchor = now_ms();
     let (child, old_pid, process_start_time) =
-        spawn_unbound_child_with_term_marker(&sock, 2_500, &marker, &handler_ready).await;
+        spawn_unbound_child_with_term_marker(&sock, 5_000, &marker, &handler_ready).await;
     let repo = repo().await;
     persist_starting_daemon(
         &repo,
@@ -3814,12 +3819,12 @@ async fn readiness_window_never_rearms_for_same_child() {
         old_pid,
         &sock,
         process_start_time,
-        now_ms() - 2_000,
+        spawn_anchor - 6_000,
     )
     .await;
 
     let mut cfg = cfg(&root);
-    cfg.shared_codex_appserver_start_timeout_secs = 3;
+    cfg.shared_codex_appserver_start_timeout_secs = 8;
     let home = calm_server::shared_codex_home::SharedCodexHome::new(
         cfg.data_dir_resolved().join("codex-home"),
         cfg.data_dir_resolved().join("codex-homes"),
@@ -3830,8 +3835,8 @@ async fn readiness_window_never_rearms_for_same_child() {
 
     assert!(
         marker.exists(),
-        "the leftover window (1s) must lapse before the 2.5s bind: a fresh \
-         re-armed 3s window would have adopted the child instead of reaping"
+        "the leftover window (≤2s) must lapse before the 5s bind: a fresh \
+         re-armed 8s window would have adopted the child instead of reaping"
     );
     assert!(
         waitpid_reaped(old_pid).await,
