@@ -195,12 +195,75 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
     calm_server::spawn_hook_fallback_replay(cfg.codex_ingest_url_resolved());
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+    // #954 defect 4 — graceful shutdown: SIGTERM/SIGINT stops accepting and
+    // drains in-flight HTTP, bounded by SHUTDOWN_DRAIN_MAX (long-lived WS
+    // connections would otherwise hold the drain open past neige-app's 5s
+    // stop_grace). In-flight daemon transitions get no wait and no abort: a
+    // spawn transition runs seconds-minutes, a ≤3s wait almost never
+    // completes it and can't abort it safely mid-reap; runtime teardown
+    // aborts the detached transition task at an await point and the
+    // TERM-only guard belt covers the child. sqlite WAL is durable
+    // per-commit; nothing needs an explicit flush.
+    //
+    // INVARIANT: calm-server shutdown NEVER signals the shared codex
+    // daemon; the daemon is deliberately left running for the next boot's
+    // takeover (#953 re-stamp). This is why `SharedCodexAppServer` has no
+    // `Drop` impl (#954) — one would fire right here, after serve returns,
+    // and silently defeat takeover.
+    serve_until_shutdown(
+        std::future::IntoFuture::into_future(
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal()),
+        ),
+        shutdown_signal(),
+        SHUTDOWN_DRAIN_MAX,
     )
     .await?;
 
+    Ok(())
+}
+
+/// #954 defect 4 — bound on the post-signal HTTP drain. A code invariant
+/// under neige-app's 5s `stop_grace` default, not a knob.
+const SHUTDOWN_DRAIN_MAX: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Resolves on SIGTERM or SIGINT (ctrl_c).
+async fn shutdown_signal() {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::select! {
+        _ = sigterm.recv() => {}
+        _ = ctrl_c => {}
+    }
+}
+
+/// Run the serve future until it finishes its graceful drain, but never
+/// longer than `drain_max` past the shutdown signal — then return anyway
+/// (exit code 0). Split out of `main` so the select shape is testable with
+/// mock serve/shutdown futures.
+async fn serve_until_shutdown<S, F>(
+    serve: S,
+    shutdown: F,
+    drain_max: std::time::Duration,
+) -> std::io::Result<()>
+where
+    S: std::future::Future<Output = std::io::Result<()>>,
+    F: std::future::Future<Output = ()>,
+{
+    let drain_deadline = async {
+        shutdown.await;
+        tokio::time::sleep(drain_max).await;
+    };
+    tokio::select! {
+        result = serve => result?,
+        _ = drain_deadline => {
+            tracing::info!("shutdown drain window elapsed; exiting");
+        }
+    }
     Ok(())
 }
 
@@ -236,6 +299,50 @@ fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    /// #954 defect 4 — the drain is BOUNDED: a serve future held open past
+    /// the signal (long-lived WS) is abandoned `drain_max` after the
+    /// shutdown signal, and main returns Ok (exit 0).
+    #[tokio::test]
+    async fn serve_until_shutdown_bounds_the_drain_after_signal() {
+        let started = std::time::Instant::now();
+        super::serve_until_shutdown(
+            std::future::pending::<std::io::Result<()>>(),
+            std::future::ready(()),
+            Duration::from_millis(100),
+        )
+        .await
+        .expect("bounded drain must exit cleanly");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(100) && elapsed < Duration::from_secs(2),
+            "the drain bound must fire ~drain_max after the signal (took {elapsed:?})"
+        );
+    }
+
+    /// A serve future that completes on its own (clean drain before the
+    /// bound) returns its own result immediately.
+    #[tokio::test]
+    async fn serve_until_shutdown_returns_serve_result_when_drain_completes() {
+        super::serve_until_shutdown(
+            std::future::ready(Ok(())),
+            std::future::pending::<()>(),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("completed serve must pass its result through");
+
+        let err = super::serve_until_shutdown(
+            std::future::ready::<std::io::Result<()>>(Err(std::io::Error::other("boom"))),
+            std::future::pending::<()>(),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect_err("serve errors must propagate");
+        assert!(err.to_string().contains("boom"));
+    }
+
     #[test]
     fn cors_allows_idempotency_key_header() {
         let headers = super::cors_allowed_headers();
