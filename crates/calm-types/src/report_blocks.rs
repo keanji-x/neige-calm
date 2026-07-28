@@ -23,8 +23,9 @@ pub fn split_body(body: &str) -> Vec<BlockSlice> {
         let line = line.strip_suffix('\r').unwrap_or(line);
 
         if let Some((marker, minimum)) = fence {
-            if fence_run(line, marker)
-                .is_some_and(|length| length >= minimum && fence_tail_is_blank(line, length))
+            let fence_line = strip_fence_indent(line);
+            if fence_run(fence_line, marker)
+                .is_some_and(|length| length >= minimum && fence_tail_is_blank(fence_line, length))
             {
                 fence = None;
             }
@@ -59,7 +60,16 @@ pub fn flatten(blocks: &[BlockSlice]) -> String {
 /// Reuse ids through exact LCS anchors, then similarity-align edited slices
 /// within each unmatched gap. Remaining slices receive a new `b_ffff` id.
 pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Vec<ReportBlock> {
-    let old_text: Vec<&str> = old_blocks.iter().map(block_markdown).collect();
+    let mut reusable_ids = HashSet::new();
+    let old_text: Vec<Option<&str>> = old_blocks
+        .iter()
+        .map(|block| {
+            reusable_ids
+                .insert(block.id.as_str())
+                .then(|| block_markdown(block))
+                .flatten()
+        })
+        .collect();
     let anchors = lcs_matches(&old_text, new_slices);
     let mut assignments = vec![None; new_slices.len()];
     for &(old, new) in &anchors {
@@ -111,28 +121,39 @@ fn fence_run(line: &str, marker: u8) -> Option<usize> {
 }
 
 fn opening_fence(line: &str) -> Option<(u8, usize)> {
-    [b'`', b'~']
-        .into_iter()
-        .find_map(|marker| fence_run(line, marker).map(|length| (marker, length)))
+    let line = strip_fence_indent(line);
+    [b'`', b'~'].into_iter().find_map(|marker| {
+        fence_run(line, marker)
+            .filter(|&length| marker != b'`' || !line[length..].contains('`'))
+            .map(|length| (marker, length))
+    })
+}
+
+fn strip_fence_indent(line: &str) -> &str {
+    let indent = line
+        .bytes()
+        .take_while(|byte| *byte == b' ')
+        .take(4)
+        .count();
+    if indent <= 3 { &line[indent..] } else { line }
 }
 
 fn fence_tail_is_blank(line: &str, run: usize) -> bool {
-    line[run..].trim().is_empty()
+    line[run..].bytes().all(|byte| matches!(byte, b' ' | b'\t'))
 }
 
-fn block_markdown(block: &ReportBlock) -> &str {
+fn block_markdown(block: &ReportBlock) -> Option<&str> {
     block
         .payload
         .get("markdown")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
 }
 
-fn lcs_matches(old: &[&str], new: &[BlockSlice]) -> Vec<(usize, usize)> {
+fn lcs_matches(old: &[Option<&str>], new: &[BlockSlice]) -> Vec<(usize, usize)> {
     let mut lengths = vec![vec![0usize; new.len() + 1]; old.len() + 1];
     for old_index in (0..old.len()).rev() {
         for new_index in (0..new.len()).rev() {
-            lengths[old_index][new_index] = if old[old_index] == new[new_index].raw {
+            lengths[old_index][new_index] = if old[old_index] == Some(&new[new_index].raw) {
                 lengths[old_index + 1][new_index + 1] + 1
             } else {
                 lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
@@ -142,7 +163,7 @@ fn lcs_matches(old: &[&str], new: &[BlockSlice]) -> Vec<(usize, usize)> {
     let (mut old_index, mut new_index) = (0, 0);
     let mut matches = Vec::new();
     while old_index < old.len() && new_index < new.len() {
-        if old[old_index] == new[new_index].raw {
+        if old[old_index] == Some(&new[new_index].raw) {
             matches.push((old_index, new_index));
             old_index += 1;
             new_index += 1;
@@ -156,7 +177,7 @@ fn lcs_matches(old: &[&str], new: &[BlockSlice]) -> Vec<(usize, usize)> {
 }
 
 fn similarity_matches(
-    old: &[&str],
+    old: &[Option<&str>],
     new: &[BlockSlice],
     old_offset: usize,
     new_offset: usize,
@@ -164,6 +185,9 @@ fn similarity_matches(
 ) {
     let mut scores = Vec::new();
     for (old_index, old_text) in old.iter().enumerate() {
+        let Some(old_text) = old_text else {
+            continue;
+        };
         for (new_index, new_slice) in new.iter().enumerate() {
             let score = similarity(old_text, &new_slice.raw);
             if score >= 0.5 {
@@ -241,6 +265,20 @@ mod tests {
         fn split_and_flatten_is_byte_exact(body in any::<String>()) {
             prop_assert_eq!(flatten(&split_body(&body)), body);
         }
+
+        #[test]
+        fn markdown_state_machine_is_byte_exact(
+            fragments in prop::collection::vec(
+                prop::sample::select(vec![
+                    "# A", "## B", "```", "~~~", "   ```", "    ```", "```x`y",
+                    "text", "\n", "\r\n", "", "    indented", "\t", "\u{00a0}",
+                ]),
+                0..40,
+            ),
+        ) {
+            let body = fragments.concat();
+            prop_assert_eq!(flatten(&split_body(&body)), body);
+        }
     }
 
     #[test]
@@ -262,6 +300,33 @@ mod tests {
     }
 
     #[test]
+    fn commonmark_fence_edges_split_only_real_headings() {
+        let cases = [
+            ("```\r\n# code\r\n```\r\n# real", 2),
+            ("```\n# code\n```\n# real\n", 2),
+            ("   ```rust\n# code\n   ```\n# real\n", 2),
+            ("~~~rust\n# code\n~~~~~~\n# real\n", 2),
+            ("   ~~~\n# code\n   ~~~\n# real\n", 2),
+            ("    ```\n# real\n", 2),
+            ("```foo`bar\n# A\n```\n# B\n", 2),
+            ("```\n```\u{00a0}\n# still-code\n", 1),
+            ("```\n# code\n# still-code", 1),
+        ];
+
+        for (body, expected_blocks) in cases {
+            let blocks = split_body(body);
+            assert_eq!(flatten(&blocks), body, "{body:?}");
+            assert_eq!(blocks.len(), expected_blocks, "{body:?}");
+        }
+
+        assert!(
+            split_body("```foo`bar\n# A\n```\n# B\n")[1]
+                .raw
+                .starts_with("# A\n")
+        );
+    }
+
+    #[test]
     fn edited_block_inherits_id_after_an_insertion() {
         let old_slices = split_body("# A\nalpha\n# B\nbeta\n");
         let old = reassign_ids(&[], &old_slices);
@@ -269,5 +334,42 @@ mod tests {
         let new = reassign_ids(&old, &new_slices);
         assert_eq!(new[1].id, old[0].id);
         assert_eq!(new[2].id, old[1].id);
+    }
+
+    #[test]
+    fn duplicate_ids_and_invalid_payloads_are_not_reused() {
+        let old = vec![
+            ReportBlock {
+                id: "dup".to_string(),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({ "markdown": "# A\n" }),
+            },
+            ReportBlock {
+                id: "dup".to_string(),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({ "markdown": "# B\n" }),
+            },
+            ReportBlock {
+                id: "broken".to_string(),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({}),
+            },
+        ];
+        let reassigned = reassign_ids(&old, &split_body("# A\n# B\n"));
+
+        assert_eq!(reassigned[0].id, "dup");
+        assert_ne!(reassigned[1].id, "dup");
+        assert_ne!(reassigned[1].id, "broken");
+        assert_eq!(
+            reassigned
+                .iter()
+                .map(|block| block.id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            reassigned.len()
+        );
     }
 }
