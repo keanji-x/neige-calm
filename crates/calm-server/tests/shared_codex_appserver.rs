@@ -1160,16 +1160,25 @@ async fn crash_respawn_with_current_settings_clears_pending_drain() {
     );
 }
 
-/// #954 review D1 walk — post-D1 this test passes MEANINGFULLY, not
-/// vacuously: the launcher (the persisted leader) dies on the group
-/// SIGTERM but is held UNREAPED by this test (tokio reaps only on
-/// `wait`/drop), so the reap helper observes an exited-but-pinning ZOMBIE
-/// leader → `ExitedPinned` → the final group SIGKILL is still sent and
-/// the TERM-ignoring native descendant dies. The recycle-safety skip
-/// applies only to a FULLY REAPED leader — see
-/// `fully_reaped_leader_skips_final_group_sigkill`.
+/// #954 review D1 walk (r2 update) — the launcher (the persisted leader)
+/// dies on the group SIGTERM but is held UNREAPED by this test (tokio
+/// reaps only on `wait`/drop), so the reap helper deterministically
+/// observes an exited ZOMBIE leader on the NON-owned (`VerifiedIdentity`)
+/// path. Pre-r2 that arm sent a group-wide `kill(-pgid, SIGKILL)` — the
+/// recycle-unsafe signal the r2 review flagged (an externally-reapable
+/// zombie does not pin the pgid across the observation→signal interval).
+/// Post-r2 the arm instead SWEEPS the remaining group members
+/// individually (scan `/proc` for `pgrp == pgid`, re-verify each member's
+/// `start_time`, SIGKILL by pid) — and the TERM-ignoring native
+/// descendant still dies. This test is therefore the Z-observed cousin of
+/// `reaped_leader_sweep_kills_verified_group_members` below: same
+/// observable oracle (descendant dies) via the sweep instead of the group
+/// signal; the absence of any group-wide signal on this arm is pinned by
+/// construction (the `ExitedPinned`-non-owned arm no longer contains a
+/// `scope.send(SIGKILL)` call), not by an observable — a recycled pgid
+/// cannot be constructed deterministically in a test.
 #[tokio::test]
-async fn takeover_handshake_fail_sigkills_pgid_even_after_launcher_exits() {
+async fn takeover_handshake_fail_kills_group_descendants_even_after_launcher_exits() {
     let root = tempfile::tempdir().unwrap();
     let sock = root.path().join("run/codex-appserver.sock");
     std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
@@ -1191,17 +1200,25 @@ async fn takeover_handshake_fail_sigkills_pgid_even_after_launcher_exits() {
     );
 }
 
-/// #954 review D1 (failing-first) — the final group SIGKILL must be
-/// SKIPPED when the verified leader is FULLY REAPED by its external parent
-/// within the grace: once the leader is reaped the group identity is
-/// unverifiable and the numeric pgid may already be recycled, so an
-/// unconditional `kill(-pgid, SIGKILL)` could hit an unrelated group.
-/// Observable oracle: a TERM-ignoring descendant left in the group
-/// survives the reap — pre-D1 the unconditional SIGKILL killed it (that
-/// kill is exactly the recycle-unsafe signal, aimed here at a group we
-/// merely know USED to be ours).
+/// #954 review r2 D1 (failing-first) — when the verified leader is FULLY
+/// REAPED by its external parent (or observed as an externally-reapable
+/// zombie) within the grace, the group identity is unverifiable and the
+/// numeric pgid may already be recycled, so no group-wide
+/// `kill(-pgid, SIGKILL)` may be sent. But simply SKIPPING (the r1 shape,
+/// `fully_reaped_leader_skips_final_group_sigkill`) leaked TERM-ignoring
+/// descendants — the r2 review's honesty note. r2 fix: the non-owned
+/// Z/FullyGone arms SWEEP the remaining group members individually
+/// (scan `/proc` for `pgrp == pgid`, capture each member's `start_time`,
+/// re-verify it, SIGKILL by pid). Observable oracle: the TERM-ignoring
+/// descendant left in the group now DIES — pre-r2-fix this construction
+/// left it alive (asserted by this test's r1 predecessor), so this
+/// assertion fails first on the pre-fix code. The recycled-pgid hazard
+/// itself is not deterministically constructible in a test; its guard is
+/// pinned by the per-member `start_time` re-verify (unit-tested in
+/// `proc_identity`) plus code construction: neither non-owned arm
+/// contains a group-wide signal anymore.
 #[tokio::test]
-async fn fully_reaped_leader_skips_final_group_sigkill() {
+async fn reaped_leader_sweep_kills_verified_group_members() {
     let root = tempfile::tempdir().unwrap();
     let leader_pid_file = root.path().join("leader.pid");
     let survivor_pid_file = root.path().join("survivor.pid");
@@ -1282,21 +1299,21 @@ wait
         wait_proc_gone(leader_pid).await,
         "leader must exit on SIGTERM and be reaped by its parent"
     );
-    // … and the TERM-ignoring survivor must STILL be alive: with the
-    // leader fully reaped the group identity was unverifiable, so no
-    // final group SIGKILL may have been sent.
-    // SAFETY: signal 0 probes liveness without delivering a signal.
-    let survivor_alive = unsafe { libc::kill(survivor_pid, 0) } == 0;
+    // … and the TERM-ignoring survivor must ALSO die: with the leader
+    // reaped (or zombie) no group-wide SIGKILL is allowed, so the sweep
+    // must have re-verified the survivor's identity and SIGKILLed it by
+    // pid individually.
+    let survivor_gone = wait_proc_gone(survivor_pid).await;
     // Cleanup before asserting so a failure can't leak the group.
     unsafe {
         libc::kill(-leader_pid, libc::SIGKILL);
     }
     drop(parent);
     assert!(
-        survivor_alive,
-        "a fully reaped leader must SKIP the final group SIGKILL \
-         (pgid unverifiable / possibly recycled); the TERM-ignoring \
-         survivor was killed, so the unconditional SIGKILL still fired"
+        survivor_gone,
+        "a reaped/zombie leader must trigger the per-member identity \
+         sweep; the TERM-ignoring survivor stayed alive, so the sweep \
+         did not run (the r1 skip-only leak)"
     );
 }
 

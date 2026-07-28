@@ -36,7 +36,8 @@ use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_c
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::proc_identity::{
-    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
+    read_boot_id, read_proc_start_time, sigkill_verified_group_members, signal_process_group,
+    verify_owned_pid,
 };
 use crate::routes::settings::load_settings;
 use crate::session_projection_lookup::{
@@ -634,8 +635,10 @@ pub struct SharedCodexAppServer {
     /// child) may fail the spawn.
     start_timeout: Duration,
     /// #954 — stop-grace ceiling for every daemon termination: SIGTERM →
-    /// exit-driven wait up to this ceiling → final group SIGKILL. A
-    /// cooperative daemon pays its actual exit time, never the full grace.
+    /// exit-driven wait up to this ceiling → straggler cleanup (group
+    /// SIGKILL where the group is provably pinned, else the per-member
+    /// identity sweep — see `terminate_group_with_grace`). A cooperative
+    /// daemon pays its actual exit time, never the full grace.
     stop_grace: Duration,
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
@@ -2415,7 +2418,10 @@ impl SharedCodexAppServer {
 
     /// #954 — both arms go through `terminate_group_with_grace`: SIGTERM →
     /// exit-driven wait up to the stop grace (a cooperative daemon exits in
-    /// its own time, never paying the full grace) → final group SIGKILL.
+    /// its own time, never paying the full grace) → straggler cleanup
+    /// (owned-child arm: group SIGKILL under the held-zombie pin;
+    /// runtime-identity arm: group SIGKILL only if still alive at the
+    /// deadline, else the per-member identity sweep — #954 review r2 D1).
     async fn reap_current_child_or_runtime(&self, running: Option<RunningProcessParts>) {
         let Some(RunningProcessParts {
             runtime,
@@ -3367,25 +3373,37 @@ enum ExitWait<'a> {
     ProcPresence { pid: i32 },
 }
 
-/// #954 review D1 — how the leader's exit was observed, which decides
-/// whether the final group SIGKILL is safe to send. Once a group's last
+/// #954 review D1 (r2-hardened) — how the leader's exit was observed,
+/// which decides what straggler cleanup is safe. Once a group's last
 /// member is reaped the kernel may recycle the numeric pgid, so an
 /// unverified `kill(-pgid, SIGKILL)` could hit an unrelated group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeaderExit {
-    /// Exit observed with the leader still an UNREAPED zombie: the zombie
-    /// pins the process-group identity (a group with a member can never be
-    /// recycled), so the final group SIGKILL is safe — send it for
-    /// straggler descendants.
+    /// Exit observed with the leader still an UNREAPED zombie. Whether
+    /// that zombie PINS the group across the observation→signal interval
+    /// depends on who reaps it (#954 review r2 D1):
+    ///   * Owned `Child`: WE hold the unreaped zombie (`child.wait()` is
+    ///     deferred until after the signal decision), so the pin is
+    ///     guaranteed — the final group SIGKILL is safe and is sent for
+    ///     straggler descendants.
+    ///   * Non-owned (`VerifiedIdentity` / `ProcPresence`): the EXTERNAL
+    ///     parent can reap the zombie at any moment after our
+    ///     observation, un-pinning the pgid — so a group-wide signal
+    ///     still races recycling (the r1 shape merely narrowed the race
+    ///     to ε). Treated like [`LeaderExit::FullyGone`]: no group-wide
+    ///     signal; remaining members are swept individually under
+    ///     per-pid identity re-verification instead.
     ExitedPinned,
     /// The leader was fully reaped (`/proc` entry gone / identity
     /// mismatch, or an owned child already waited on): the group may be
-    /// empty and its numeric id recycled — the final SIGKILL is SKIPPED. A
-    /// verified-empty group gains nothing from it, and an unverifiable one
-    /// must not be signaled.
+    /// empty and its numeric id recycled — no group-wide signal is ever
+    /// sent. Non-owned paths sweep the remaining enumerable members
+    /// individually (verify-then-signal per pid); see
+    /// `terminate_group_with_grace` step 3 for the recorded residual.
     FullyGone,
-    /// Grace ceiling elapsed with the leader still alive: the group
-    /// provably exists (the leader is a member) — SIGKILL as before.
+    /// Grace ceiling elapsed with the leader still alive (not a zombie):
+    /// the live leader is a member, so the group provably exists and
+    /// cannot be recycled — group SIGKILL as before.
     AliveAtDeadline,
 }
 
@@ -3397,17 +3415,32 @@ enum LeaderExit {
 ///     exits in <2s) pays its actual exit time (plus at most the ≤100ms
 ///     observation poll) — no fixed grace tax; a wedged daemon pays the
 ///     full grace before SIGKILL.
-///  3. Send the final scope SIGKILL ONLY while the group identity is still
-///     verifiable (#954 review D1): an exited-but-UNREAPED leader (zombie)
-///     pins the pgid, so the straggler-grandchild SIGKILL is safe — this
-///     preserves the
-///     `takeover_handshake_fail_sigkills_pgid_even_after_launcher_exits`
-///     posture (descendants of a dead-but-pinning leader still die). A
-///     FULLY REAPED leader may leave the numeric pgid free for kernel
-///     recycling, so the KILL is skipped (`debug!`). The Owned-Child arm
-///     therefore observes exit WITHOUT reaping — `/proc` state poll, no
-///     `child.wait()` — so the zombie keeps pinning the group until after
-///     the final signal decision; the child is reaped only afterwards.
+///  3. Straggler cleanup, gated on WHO controls the leader's zombie (#954
+///     review D1, hardened in r2):
+///     * Leader alive at the deadline → group SIGKILL (a live leader pins
+///       the group; recycling is impossible).
+///     * Owned `Child` observed exited → group SIGKILL. The Child arm
+///       observes exit WITHOUT reaping — `/proc` state poll, no
+///       `child.wait()` — so WE hold the unreaped zombie and it pins the
+///       pgid until after the signal; the child is reaped only afterwards.
+///     * Non-owned leader (`VerifiedIdentity` / `ProcPresence`) observed
+///       zombie OR fully reaped → NO group-wide signal, ever: the
+///       external parent can reap the zombie between our observation and
+///       a `kill(-pgid, …)`, letting the kernel recycle the numeric pgid
+///       (#954 review r2 D1 — observing `Z` does not preserve the pin).
+///       Instead the remaining group members are enumerated
+///       (`/proc/*/stat` `pgrp == pgid`) and SIGKILLed INDIVIDUALLY,
+///       each under a scan-time `start_time` capture re-verified
+///       immediately before its signal — the same verify-then-signal
+///       posture as every `verify_owned_pid`-then-`kill` site. Zombie
+///       members are skipped (already dead; their parent reaps them).
+///       Recorded residual (#954 review r2 D2): the sweep covers only
+///       members that are enumerable and identity-verifiable at sweep
+///       time — a member that forks after the scan, or whose re-verify
+///       fails, is deliberately left alone. Such a TERM-surviving
+///       straggler stays discoverable through the `--listen
+///       unix://<sock>` argv contract and self-limits on bind conflict
+///       (the same mitigation as the guard-drop orphan).
 ///  4. Bounded post-wait; callers with identity keep their existing
 ///     `survivor_alive_after_group_reap` post-check.
 async fn terminate_group_with_grace(
@@ -3456,9 +3489,11 @@ async fn terminate_group_with_grace(
             start_time,
             boot_id,
         } => (
-            // Post-signal poll: zombie = dead (#953 review D4 posture),
-            // but a zombie still PINS the group; only a fully reaped
-            // leader (external parent `wait()`ed it) forfeits the KILL.
+            // Post-signal poll: zombie = dead (#953 review D4 posture).
+            // The Z/FullyGone distinction no longer changes the cleanup
+            // (#954 review r2 D1 — a non-owned zombie's pin does not
+            // survive the observation→signal interval; both arms sweep),
+            // but it is kept for the caller-visible outcome and logs.
             poll_leader_exit(deadline, || {
                 if !verify_owned_pid(pid, start_time, boot_id) {
                     Some(LeaderExit::FullyGone)
@@ -3485,13 +3520,17 @@ async fn terminate_group_with_grace(
             None,
         ),
     };
+    let owned_child = waited_child.is_some();
     match outcome {
-        LeaderExit::ExitedPinned => {
+        LeaderExit::ExitedPinned if owned_child => {
+            // Owned Child: WE hold the unreaped zombie (reaped only after
+            // this signal), so the pgid is provably pinned — the group
+            // SIGKILL is safe (r2-review-verified arm).
             tracing::debug!(
                 target: "shared_codex_daemon::stop",
                 scope_kind,
                 scope_id,
-                "daemon exited within the stop grace after SIGTERM; unreaped leader still pins the group — final SIGKILL for stragglers"
+                "owned child exited within the stop grace after SIGTERM; held zombie pins the group — final SIGKILL for stragglers"
             );
             scope.send(libc::SIGKILL);
         }
@@ -3505,13 +3544,52 @@ async fn terminate_group_with_grace(
             );
             scope.send(libc::SIGKILL);
         }
-        LeaderExit::FullyGone => {
+        LeaderExit::FullyGone if owned_child => {
+            // Defensive-only arm (the pre-signal early return above
+            // handles the already-reaped owned child): keep the r1 skip.
             tracing::debug!(
                 target: "shared_codex_daemon::stop",
                 scope_kind,
                 scope_id,
-                "leader fully reaped within the stop grace; group identity unverifiable (pgid may be recycled) — skipping final SIGKILL"
+                "owned child already reaped; skipping final SIGKILL"
             );
+        }
+        LeaderExit::ExitedPinned | LeaderExit::FullyGone => {
+            // Non-owned leader observed zombie or fully reaped (#954
+            // review r2 D1): the external parent may reap the zombie —
+            // or already has — between observation and any group signal,
+            // and the kernel may then recycle the numeric pgid, so NO
+            // group-wide signal is sent from here. Stragglers are swept
+            // individually under per-pid verify-then-signal instead; see
+            // the helper doc (step 3) for the recorded residual.
+            match scope {
+                SignalScope::Group { pgid } => {
+                    let sweep = sigkill_verified_group_members(pgid);
+                    tracing::debug!(
+                        target: "shared_codex_daemon::stop",
+                        scope_kind,
+                        scope_id,
+                        outcome = ?outcome,
+                        killed = ?sweep.killed,
+                        skipped_zombies = ?sweep.skipped_zombies,
+                        verify_failed = ?sweep.verify_failed,
+                        "non-owned leader dead (zombie or reaped); swept remaining group members individually instead of group SIGKILL"
+                    );
+                }
+                SignalScope::Pid { .. } => {
+                    // Pid-fallback scope: the only known target IS the
+                    // dead leader; there is no pgid to enumerate and a
+                    // bare-pid SIGKILL races recycling identically —
+                    // nothing further can be signaled safely.
+                    tracing::debug!(
+                        target: "shared_codex_daemon::stop",
+                        scope_kind,
+                        scope_id,
+                        outcome = ?outcome,
+                        "non-owned pid-scope leader dead; nothing further safely signalable"
+                    );
+                }
+            }
         }
     }
     // Reap / settle so callers' post-checks observe the result. The owned
@@ -3549,8 +3627,11 @@ async fn poll_leader_exit(
     }
 }
 
-/// SIGTERM → exit-driven wait up to `grace` → final group SIGKILL (#954;
-/// previously a fixed 500ms sleep then SIGKILL).
+/// SIGTERM → exit-driven wait up to `grace` → straggler cleanup (#954;
+/// previously a fixed 500ms sleep then SIGKILL): group SIGKILL only while
+/// the leader is provably alive at the deadline; a dead (zombie/reaped)
+/// leader triggers the per-member identity sweep instead (#954 review r2
+/// D1 — this path does not own the leader's zombie).
 async fn reap_verified_process_group(
     pid: i32,
     pgid: i32,
@@ -3761,8 +3842,10 @@ async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()>
     );
     drop(stream);
     // #954 — graceful group reap: SIGTERM → exit-driven wait (leader exit
-    // observed via /proc; a post-signal zombie counts as exited) → final
-    // group SIGKILL.
+    // observed via /proc; a post-signal zombie counts as exited) →
+    // straggler cleanup (group SIGKILL only for a leader still alive at
+    // the deadline; otherwise the per-member identity sweep — #954
+    // review r2 D1).
     terminate_group_with_grace(
         SignalScope::Group { pgid },
         ExitWait::ProcPresence { pid: peer_pid },
