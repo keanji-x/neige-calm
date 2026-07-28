@@ -2192,14 +2192,6 @@ impl SharedCodexAppServer {
         }
     }
 
-    async fn running_runtime(&self) -> Option<SharedDaemonRuntime> {
-        let core = self.core.lock().await;
-        match &core.state {
-            SupervisorState::Running { runtime, .. } => Some(runtime.clone()),
-            _ => None,
-        }
-    }
-
     /// Take an exited child out of the installed Running state, together
     /// with the generation of that Running incarnation (#953 §1: captured
     /// atomically under the core lock, so the crash restart can pass
