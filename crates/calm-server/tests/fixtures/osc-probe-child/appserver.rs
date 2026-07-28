@@ -82,6 +82,14 @@ fn install_signal_fixture() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     });
+    // #954 review D4 — readiness handshake: `FAKE_CODEX_HANDLER_READY_MARKER`
+    // is written only AFTER the SIGTERM handler and its monitor thread are
+    // armed, so tests wait on the marker instead of a fixed sleep (a loaded
+    // runner could otherwise deliver a belt TERM to a default-disposition
+    // process and kill it before the cooperative-shutdown marker write).
+    if let Ok(ready) = std::env::var("FAKE_CODEX_HANDLER_READY_MARKER") {
+        let _ = std::fs::write(ready, "armed");
+    }
 }
 
 /// Parse `--listen unix://<path>` out of argv.

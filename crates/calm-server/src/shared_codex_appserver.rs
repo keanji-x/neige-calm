@@ -360,6 +360,17 @@ fn classify_spawn_failure(err: &CalmError) -> FailureClass {
     }
 }
 
+/// #954 review D2 — marker for the ONE error whose transition outcome was
+/// never observed (the detached spawn task died without publishing its
+/// result). Callers must not claim "terminalized + heal armed" for it: the
+/// in-memory state may still be `Starting` with heal unarmed.
+const DETACHED_SPAWN_RESULT_LOST: &str =
+    "detached spawn transition task ended without publishing a result";
+
+fn detached_spawn_result_lost(err: &CalmError) -> bool {
+    err.to_string().contains(DETACHED_SPAWN_RESULT_LOST)
+}
+
 /// #953 §2 — ±20% uniform jitter. Cheap clock-derived entropy: the heal loop
 /// only needs desynchronization, not statistical quality (no rand dep).
 fn heal_jitter(delay: Duration) -> Duration {
@@ -2184,13 +2195,18 @@ impl SharedCodexAppServer {
             Ok(result) => result,
             // The sender dropped without sending: the detached task
             // panicked or the runtime is tearing down (its abort → local
-            // drop → SpawnedChildGuard belt SIGTERM). Nothing to
-            // terminalize from here — surface the observation.
-            Err(_) => Err(CalmError::CodexAppServer(
-                "detached spawn transition task ended without publishing a result \
-                 (task panic or runtime teardown)"
-                    .into(),
-            )),
+            // drop → SpawnedChildGuard belt SIGTERM). This observer CANNOT
+            // terminalize (the task owns the serial and the typestate), so
+            // the shape may be stranded: in-memory `Starting`, heal
+            // unarmed, child TERM'd by the belt (#954 review D2 — the
+            // accepted belt-contract residual). It is recoverable, not
+            // lost: the durable row still names the child, so the next
+            // transition (mint / settings drain / heal nudge) or the next
+            // boot's reconciliation/adoption resolves it. Surface the
+            // observation with the D2 marker so callers log it honestly.
+            Err(_) => Err(CalmError::CodexAppServer(format!(
+                "{DETACHED_SPAWN_RESULT_LOST} (task panic or runtime teardown)"
+            ))),
         }
     }
 
@@ -2300,7 +2316,7 @@ impl SharedCodexAppServer {
                     started_at: Some(started_at),
                     last_error: last_error.clone(),
                     increment_restart_count,
-                    daemon_env_signature: Some(daemon_env_signature),
+                    daemon_env_signature: Some(daemon_env_signature.clone()),
                 })
                 .await?;
             Ok(pair)
@@ -2312,6 +2328,35 @@ impl SharedCodexAppServer {
                 return Err(err);
             }
         };
+        // #954 review D3 — this spawn just persisted a Running row whose
+        // `daemon_env_signature` derives from the live settings snapshot.
+        // If the effective signature STILL matches it, any pending
+        // `needs_respawn` drain is already satisfied by this very process
+        // (adopt-and-drain marked, then a crash-lane/heal-lane respawn
+        // landed with current settings) — clear the flag so the next mint
+        // doesn't pay a fully redundant graceful replace (cold start,
+        // potentially minutes). The RE-READ (not an assumption) preserves
+        // marks from settings changes that landed after this spawn's
+        // snapshot: those recompute to a DIFFERENT signature and the mark
+        // survives (pinned by `concurrent_mark_during_respawn_is_preserved`).
+        // Documented residual: a proxy upsert + mark landing entirely
+        // between this re-read and the swap below can be cleared — the
+        // daemon then runs with the old proxy, but the persisted OLD
+        // signature makes the next boot re-detect the mismatch and re-arm
+        // the drain (adopt-and-drain), so the loss is bounded, not silent.
+        if self
+            .current_env_signature()
+            .await
+            .is_ok_and(|current| current == daemon_env_signature)
+            && self
+                .needs_respawn_on_next_thread_start
+                .swap(false, Ordering::AcqRel)
+        {
+            tracing::info!(
+                target = "shared_codex_daemon::restart",
+                "cleared pending settings-drain: the fresh spawn already carries the current env signature"
+            );
+        }
         let child = spawn_guard.disarm();
         let client = Arc::new(client);
         self.install_client(notifications).await;
@@ -2653,6 +2698,21 @@ impl SharedCodexAppServer {
                         target = "shared_codex_daemon::restart",
                         generation,
                         "crash restart aborted: another transition already replaced the crashed process"
+                    );
+                }
+                // #954 review D2 — the observation-lost error is the one
+                // Err for which "terminalized + heal armed" would be a
+                // false claim: the detached task died without publishing,
+                // so the in-memory state may remain `Starting` with heal
+                // unarmed. Recovery is the next transition (mint / settings
+                // drain / heal nudge) or boot reconciliation from the
+                // durable row — say that, not "recorded and armed".
+                Err(e) if detached_spawn_result_lost(&e) => {
+                    tracing::warn!(
+                        target = "shared_codex_daemon::restart",
+                        error = %e,
+                        "crash restart outcome unobserved (detached spawn task panic/teardown); \
+                         state unknown — recovery via the next transition or boot reconciliation"
                     );
                 }
                 Err(e) => {
@@ -3307,99 +3367,183 @@ enum ExitWait<'a> {
     ProcPresence { pid: i32 },
 }
 
+/// #954 review D1 — how the leader's exit was observed, which decides
+/// whether the final group SIGKILL is safe to send. Once a group's last
+/// member is reaped the kernel may recycle the numeric pgid, so an
+/// unverified `kill(-pgid, SIGKILL)` could hit an unrelated group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaderExit {
+    /// Exit observed with the leader still an UNREAPED zombie: the zombie
+    /// pins the process-group identity (a group with a member can never be
+    /// recycled), so the final group SIGKILL is safe — send it for
+    /// straggler descendants.
+    ExitedPinned,
+    /// The leader was fully reaped (`/proc` entry gone / identity
+    /// mismatch, or an owned child already waited on): the group may be
+    /// empty and its numeric id recycled — the final SIGKILL is SKIPPED. A
+    /// verified-empty group gains nothing from it, and an unverifiable one
+    /// must not be signaled.
+    FullyGone,
+    /// Grace ceiling elapsed with the leader still alive: the group
+    /// provably exists (the leader is a member) — SIGKILL as before.
+    AliveAtDeadline,
+}
+
 /// #954 defect 1 — THE shared exit-driven termination helper, replacing
 /// every fixed post-SIGTERM sleep. Steps:
 ///  1. SIGTERM the scope.
 ///  2. Wait for the LEADER's exit up to `grace`. The grace is a CEILING,
 ///     not a sleep: a cooperative daemon (handles SIGTERM, checkpoints,
-///     exits in <2s) pays its actual exit time — no fixed grace tax; a
-///     wedged daemon pays the full grace before SIGKILL.
-///  3. ALWAYS send a final SIGKILL to the scope afterwards (straggler
-///     grandchildren; ESRCH no-op on an emptied group — preserves the
+///     exits in <2s) pays its actual exit time (plus at most the ≤100ms
+///     observation poll) — no fixed grace tax; a wedged daemon pays the
+///     full grace before SIGKILL.
+///  3. Send the final scope SIGKILL ONLY while the group identity is still
+///     verifiable (#954 review D1): an exited-but-UNREAPED leader (zombie)
+///     pins the pgid, so the straggler-grandchild SIGKILL is safe — this
+///     preserves the
 ///     `takeover_handshake_fail_sigkills_pgid_even_after_launcher_exits`
-///     posture). `warn!` when the ceiling forced escalation, `debug!` on a
-///     clean exit.
+///     posture (descendants of a dead-but-pinning leader still die). A
+///     FULLY REAPED leader may leave the numeric pgid free for kernel
+///     recycling, so the KILL is skipped (`debug!`). The Owned-Child arm
+///     therefore observes exit WITHOUT reaping — `/proc` state poll, no
+///     `child.wait()` — so the zombie keeps pinning the group until after
+///     the final signal decision; the child is reaped only afterwards.
 ///  4. Bounded post-wait; callers with identity keep their existing
 ///     `survivor_alive_after_group_reap` post-check.
-async fn terminate_group_with_grace(scope: SignalScope, wait: ExitWait<'_>, grace: Duration) {
+async fn terminate_group_with_grace(
+    scope: SignalScope,
+    wait: ExitWait<'_>,
+    grace: Duration,
+) -> LeaderExit {
+    let (scope_kind, scope_id) = scope.describe();
+    // #954 review D1 — an owned child that was ALREADY reaped before this
+    // helper ran (cold-start fail-fast `try_wait`) means the leader is gone
+    // and the numeric pgid may be recycled: nothing here is safely
+    // signalable anymore, not even the initial SIGTERM.
+    if let ExitWait::Child(child) = &wait
+        && child.id().is_none()
+    {
+        tracing::debug!(
+            target: "shared_codex_daemon::stop",
+            scope_kind,
+            scope_id,
+            "owned child already reaped before termination; skipping group signals (pgid may be recycled)"
+        );
+        return LeaderExit::FullyGone;
+    }
     scope.send(libc::SIGTERM);
     let deadline = tokio::time::Instant::now() + grace;
-    let (clean_exit, waited_child) = match wait {
+    let (outcome, waited_child) = match wait {
         ExitWait::Child(child) => {
-            let clean = match tokio::time::timeout_at(deadline, child.wait()).await {
-                Ok(Ok(_status)) => true,
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        target: "shared_codex_daemon::stop",
-                        error = %e,
-                        "failed waiting for shared codex app-server after SIGTERM; escalating"
-                    );
-                    false
+            // Observe WITHOUT reaping (#954 review D1): `child.wait()`
+            // would release the zombie and un-pin the pgid before the
+            // final group signal. An unreaped direct child can never leave
+            // `/proc`, so state `Z` is exactly "exited, still pinning".
+            let outcome = match child.id().and_then(|raw| i32::try_from(raw).ok()) {
+                Some(pid) => {
+                    poll_leader_exit(deadline, || {
+                        proc_pid_is_zombie(pid).then_some(LeaderExit::ExitedPinned)
+                    })
+                    .await
                 }
-                Err(_) => false,
+                // Unreachable after the pre-check above; defensive.
+                None => LeaderExit::FullyGone,
             };
-            (clean, Some(child))
+            (outcome, Some(child))
         }
         ExitWait::VerifiedIdentity {
             pid,
             start_time,
             boot_id,
         } => (
-            // Post-signal poll: zombie = dead (#953 review D4 posture).
-            poll_exited_until(deadline, || {
-                !survivor_alive_after_group_reap(pid, start_time, boot_id)
+            // Post-signal poll: zombie = dead (#953 review D4 posture),
+            // but a zombie still PINS the group; only a fully reaped
+            // leader (external parent `wait()`ed it) forfeits the KILL.
+            poll_leader_exit(deadline, || {
+                if !verify_owned_pid(pid, start_time, boot_id) {
+                    Some(LeaderExit::FullyGone)
+                } else if proc_pid_is_zombie(pid) {
+                    Some(LeaderExit::ExitedPinned)
+                } else {
+                    None
+                }
             })
             .await,
             None,
         ),
         ExitWait::ProcPresence { pid } => (
-            poll_exited_until(deadline, || {
-                !proc_pid_present(pid) || proc_pid_is_zombie(pid)
+            poll_leader_exit(deadline, || {
+                if !proc_pid_present(pid) {
+                    Some(LeaderExit::FullyGone)
+                } else if proc_pid_is_zombie(pid) {
+                    Some(LeaderExit::ExitedPinned)
+                } else {
+                    None
+                }
             })
             .await,
             None,
         ),
     };
-    let (scope_kind, scope_id) = scope.describe();
-    if clean_exit {
-        tracing::debug!(
-            target: "shared_codex_daemon::stop",
-            scope_kind,
-            scope_id,
-            "daemon exited within the stop grace after SIGTERM"
-        );
-    } else {
-        tracing::warn!(
-            target: "shared_codex_daemon::stop",
-            scope_kind,
-            scope_id,
-            grace_ms = grace.as_millis() as u64,
-            "stop-grace ceiling elapsed without a verified exit; escalating to SIGKILL"
-        );
+    match outcome {
+        LeaderExit::ExitedPinned => {
+            tracing::debug!(
+                target: "shared_codex_daemon::stop",
+                scope_kind,
+                scope_id,
+                "daemon exited within the stop grace after SIGTERM; unreaped leader still pins the group — final SIGKILL for stragglers"
+            );
+            scope.send(libc::SIGKILL);
+        }
+        LeaderExit::AliveAtDeadline => {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                scope_kind,
+                scope_id,
+                grace_ms = grace.as_millis() as u64,
+                "stop-grace ceiling elapsed without a verified exit; escalating to SIGKILL"
+            );
+            scope.send(libc::SIGKILL);
+        }
+        LeaderExit::FullyGone => {
+            tracing::debug!(
+                target: "shared_codex_daemon::stop",
+                scope_kind,
+                scope_id,
+                "leader fully reaped within the stop grace; group identity unverifiable (pgid may be recycled) — skipping final SIGKILL"
+            );
+        }
     }
-    scope.send(libc::SIGKILL);
-    // Bounded post-wait so callers' post-checks observe the SIGKILL result.
+    // Reap / settle so callers' post-checks observe the result. The owned
+    // child is reaped only NOW — after the final signal decision — so its
+    // zombie pinned the group identity for the SIGKILL above.
     match waited_child {
         Some(child) => {
             let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
         }
-        None => tokio::time::sleep(Duration::from_millis(200)).await,
+        None if outcome != LeaderExit::FullyGone => {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        None => {}
     }
+    outcome
 }
 
-/// #954 — 100ms exit poll against a deadline; `true` = exit observed
-/// within the grace, `false` = ceiling elapsed.
-async fn poll_exited_until(
+/// #954 — ≤100ms observation poll against the grace deadline, classifying
+/// the leader's state (#954 review D1). Returns
+/// [`LeaderExit::AliveAtDeadline`] when the ceiling elapses without an
+/// exit observation.
+async fn poll_leader_exit(
     deadline: tokio::time::Instant,
-    mut exited: impl FnMut() -> bool,
-) -> bool {
+    mut observe: impl FnMut() -> Option<LeaderExit>,
+) -> LeaderExit {
     loop {
-        if exited() {
-            return true;
+        if let Some(outcome) = observe() {
+            return outcome;
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return false;
+            return LeaderExit::AliveAtDeadline;
         }
         tokio::time::sleep(Duration::from_millis(100).min(deadline - now)).await;
     }
@@ -3690,6 +3834,14 @@ impl Drop for SpawnedChildGuard {
     /// discoverability contract for a wedged orphan is its argv
     /// (`--listen unix://<data_dir>/.../codex-appserver`), operator kills
     /// by VERIFIED pid only.
+    ///
+    /// #954 review D2 — this belt does NOT terminalize the supervisor: a
+    /// panic in the detached task unwinds the serial and can leave
+    /// in-memory `Starting` with heal unarmed (the accepted belt-contract
+    /// residual). The shape is stranded, not lost — the durable row still
+    /// names the child, and if the TERM'd child survives (or was already
+    /// initialized), the next transition or boot reconciliation/adoption
+    /// recovers it.
     fn drop(&mut self) {
         if self.spawned_child.is_none() {
             return;
