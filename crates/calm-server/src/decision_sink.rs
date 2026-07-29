@@ -394,7 +394,7 @@ impl CardDecisionSink {
                 report_card,
                 current_payload,
                 ReportDocOp::Replace {
-                    summary: next.summary,
+                    summary: Some(next.summary),
                     body: next.body,
                 },
                 Some(agent_message),

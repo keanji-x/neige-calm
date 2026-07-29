@@ -62,7 +62,7 @@ use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
 use crate::model::{Card, CardRole, Wave, WaveLifecycle};
-use crate::wave_report::WaveReportPayload;
+use crate::wave_report::{ReportDocOp, WaveReportPayload};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -121,20 +121,67 @@ fn read_descriptor() -> ToolDescriptor {
     }
 }
 
-/// The report's block index, derived deterministically when the JSON
-/// cache doesn't carry one yet (schema-v1 rows, or a `blocks` field a
-/// pre-#960 binary dropped — harmless per design D8). The derivation
-/// (`reassign_ids` over `split_body`) is byte-deterministic and is
-/// exactly what the persist boundary's CRDT seed
-/// (`ReportDoc::from_payload`) runs on first write, so ids handed out
-/// by `read` remain valid targets for `blocks.*` ops.
-pub(crate) fn payload_blocks(payload: &WaveReportPayload) -> Vec<crate::wave_report::ReportBlock> {
-    payload.blocks.clone().unwrap_or_else(|| {
-        calm_types::report_blocks::reassign_ids(
-            &[],
-            &calm_types::report_blocks::split_body(&payload.body),
-        )
-    })
+/// The report's block index for `calm.report.read`.
+///
+/// Resolution order (#960 PR2 review — the CRDT is the source of
+/// truth, the JSON cache is best-effort):
+///
+///   1. `payload.blocks` when the JSON cache carries it (the common
+///      case — the persist boundary rewrites it on every write).
+///   2. Cache missing but `cards.body_crdt` holds a migrated (v2)
+///      doc: read-only load, serve `blocks_snapshot()` — the ids and
+///      revs the `blocks.*` write path will actually check. A JSON
+///      cache dropped by a pre-#960 binary (design D8) must NOT make
+///      `read` hand out re-derived ids that diverge from the doc
+///      (e.g. after a `blocks.move`, re-derivation would mint
+///      position-dependent ids that no longer exist in the doc).
+///   3. `body_crdt` NULL (pure v1 row, never written post-#247) or a
+///      legacy not-yet-migrated doc layout: derive deterministically
+///      (`reassign_ids` over `split_body`) — byte-identical to what
+///      the CRDT seed / lazy migrator will mint on first write with
+///      the same (absent) hint, so the ids stay valid targets.
+pub(crate) async fn payload_blocks(
+    ctx: &Arc<AppContext>,
+    report_card_id: &str,
+    payload: &WaveReportPayload,
+) -> Result<Vec<crate::wave_report::ReportBlock>, RpcError> {
+    if let Some(blocks) = payload.blocks.clone() {
+        return Ok(blocks);
+    }
+    let derive = |body: &str| {
+        calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
+    };
+    let bytes = ctx
+        .repo
+        .card_body_crdt_get(report_card_id)
+        .await
+        .map_err(|e| RpcError::internal(format!("wave_report: read body_crdt: {e}")))?;
+    let Some(bytes) = bytes else {
+        // Pure v1 row: the CRDT seed will run `reassign_ids` over the
+        // same body with the same (absent) hints, minting these ids.
+        return Ok(derive(&payload.body));
+    };
+    let doc = crate::wave_report_doc::ReportDoc::from_bytes(&bytes).map_err(|e| {
+        RpcError::internal(format!(
+            "wave_report: load CRDT for card {report_card_id}: {e}"
+        ))
+    })?;
+    if doc.has_blocks_layout() {
+        return doc.blocks_snapshot().map_err(|e| {
+            RpcError::internal(format!(
+                "wave_report: snapshot CRDT blocks for card {report_card_id}: {e}"
+            ))
+        });
+    }
+    // Legacy (pre-#960) doc layout: the lazy migrator will derive ids
+    // from the doc's own body with the payload's (absent) blocks as
+    // hint — mirror that derivation from the doc's projected body.
+    let (_, body) = doc.project().map_err(|e| {
+        RpcError::internal(format!(
+            "wave_report: project legacy CRDT for card {report_card_id}: {e}"
+        ))
+    })?;
+    Ok(derive(&body))
 }
 
 pub(crate) async fn report_read(
@@ -153,7 +200,7 @@ pub(crate) async fn report_read(
         }
     };
     let (_, _, report_card, payload) = resolve_report_for_caller(&ctx, &identity).await?;
-    let blocks = payload_blocks(&payload);
+    let blocks = payload_blocks(&ctx, report_card.id.as_str(), &payload).await?;
     let text = if with_markers {
         blocks
             .iter()
@@ -250,10 +297,11 @@ async fn report_write(
     };
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    let next_payload = WaveReportPayload::new(
-        summary_override.unwrap_or_else(|| current.summary.clone()),
-        body,
-    );
+    // Omitted summary = keep the existing one. The op carries `None`
+    // and the persist layer resolves it against the doc INSIDE the
+    // transaction — resolving from the `current` snapshot here would
+    // let a concurrent summary write be silently reverted (TOCTOU,
+    // #960 PR2 review).
     commit_report_write_for_identity(
         &ctx,
         &identity,
@@ -261,7 +309,8 @@ async fn report_write(
             wave,
             report_card,
             current_payload: current,
-            next: next_payload,
+            summary: summary_override,
+            body,
             agent_message: write_args.message,
             lifecycle: write_args.lifecycle,
         },
@@ -381,7 +430,8 @@ async fn report_edit(
         current.body.replacen(&old_string, &new_string, 1)
     };
 
-    let next_payload = WaveReportPayload::new(current.summary.clone(), new_body);
+    // `edit` never touches the summary: `None` keeps whatever the doc
+    // holds at commit time (resolved in-tx by the persist layer).
     commit_report_write_for_identity(
         &ctx,
         &identity,
@@ -389,7 +439,8 @@ async fn report_edit(
             wave,
             report_card,
             current_payload: current,
-            next: next_payload,
+            summary: None,
+            body: new_body,
             agent_message: write_args.message,
             lifecycle: write_args.lifecycle,
         },
@@ -515,7 +566,11 @@ struct ReportSinkCall {
     wave: Wave,
     report_card: Card,
     current_payload: WaveReportPayload,
-    next: WaveReportPayload,
+    /// `None` keeps the current summary, resolved by the persist
+    /// layer inside the transaction (#960 PR2 review — never snapshot
+    /// the summary outside the tx).
+    summary: Option<String>,
+    body: String,
     agent_message: String,
     lifecycle: Option<WaveLifecycle>,
 }
@@ -526,18 +581,21 @@ async fn commit_report_write_for_identity(
     call: ReportSinkCall,
 ) -> Result<Value, RpcError> {
     match CardDecisionSink::from_app_context(ctx)
-        .commit_report_write(
+        .commit_report_op(
             identity,
             call.wave,
             call.report_card,
             call.current_payload,
-            call.next,
-            call.agent_message,
+            ReportDocOp::Replace {
+                summary: call.summary,
+                body: call.body,
+            },
+            Some(call.agent_message),
             call.lifecycle,
         )
         .await
     {
-        Ok(updated) => Ok(json!({ "updated_at": updated.updated_at })),
+        Ok((updated, _outcome)) => Ok(json!({ "updated_at": updated.updated_at })),
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
             -32403,
             format!("wave_report: forbidden: {msg}"),

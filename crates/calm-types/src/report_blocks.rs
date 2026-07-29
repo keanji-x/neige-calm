@@ -166,7 +166,11 @@ pub fn reassign_ids_with_hints(
                 ReportBlock {
                     id: old.id.clone(),
                     kind: old.kind.clone(),
-                    rev: if unchanged { old.rev } else { old.rev + 1 },
+                    rev: if unchanged {
+                        old.rev
+                    } else {
+                        old.rev.saturating_add(1)
+                    },
                     // A matched non-prose payload is preserved verbatim —
                     // it is not `{ markdown }` and must not be clobbered
                     // by the prose slice text.
@@ -655,6 +659,28 @@ mod tests {
         // Unknown hint id: LCS still reuses the old id (exact match).
         assert_eq!(out[0].id, old[0].id);
         assert_eq!(out[0].rev, old[0].rev);
+    }
+
+    #[test]
+    fn duplicate_hint_ids_only_first_slice_claims_the_block() {
+        // Two slices hinting the same id: first-wins, the second falls
+        // back to normal alignment / a fresh mint — output ids stay
+        // unique (fix for #960 PR2 review failure-major 3).
+        let old = reassign_ids(&[], &split_body("# A\nalpha\n"));
+        let hints = vec![Some(old[0].id.clone()), Some(old[0].id.clone())];
+        let slices = split_body("# A\nalpha\n# Z\nzeta\n");
+        let out = reassign_ids_with_hints(&old, &slices, &hints);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, old[0].id, "first hint claims the block");
+        assert_ne!(out[1].id, old[0].id, "duplicate hint is ignored");
+        assert_eq!(
+            out.iter()
+                .map(|block| block.id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            out.len(),
+            "output ids are unique"
+        );
     }
 
     #[test]

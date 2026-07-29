@@ -69,13 +69,24 @@ pub use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 pub enum ReportDocOp {
     /// Wholesale `(summary, body)` replace — the legacy
     /// `calm.report.write`/`edit` tools and the REST user-edit path.
-    Replace { summary: String, body: String },
+    /// `summary: None` keeps the doc's **current** summary, resolved
+    /// inside the persist transaction against the CRDT truth (#960
+    /// PR2 review: an outside-tx snapshot would let a concurrent
+    /// summary write be silently reverted — TOCTOU).
+    Replace {
+        summary: Option<String>,
+        body: String,
+    },
     /// `calm.report.write_markdown`: wholesale replace whose body may
     /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
     /// stripped unconditionally in-tx (they never reach storage) and
     /// become exact id-reuse hints; unmarked slices fall back to the
-    /// LCS alignment.
-    WriteMarkdown { summary: String, body: String },
+    /// LCS alignment. `summary: None` keeps the current summary,
+    /// resolved in-tx (same TOCTOU rule as [`Self::Replace`]).
+    WriteMarkdown {
+        summary: Option<String>,
+        body: String,
+    },
     /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
     /// default append); `id: Some` replaces and requires `if_rev`.
     UpsertBlock {
@@ -126,14 +137,32 @@ fn apply_report_op(
         Ok(current)
     }
     let internal = |e: anyhow::Error| CalmError::Internal(format!("wave_report: block op: {e}"));
+    // `summary: None` = keep the current summary. Resolved HERE,
+    // inside the persist transaction, from the doc itself — never from
+    // a caller-side snapshot (which could revert a summary written
+    // between the caller's read and this tx).
+    let tx_summary = |doc: &ReportDoc, summary: &Option<String>| -> Result<String, CalmError> {
+        match summary {
+            Some(summary) => Ok(summary.clone()),
+            None => Ok(doc
+                .project()
+                .map_err(|e| {
+                    CalmError::Internal(format!("wave_report: read current summary: {e}"))
+                })?
+                .0),
+        }
+    };
     match op {
         ReportDocOp::Replace { summary, body } => {
-            doc.update(summary, body);
+            let summary = tx_summary(doc, summary)?;
+            doc.update(&summary, body).map_err(internal)?;
             Ok(None)
         }
         ReportDocOp::WriteMarkdown { summary, body } => {
+            let summary = tx_summary(doc, summary)?;
             let marked = calm_types::report_blocks::strip_markers_and_split(body);
-            doc.update_with_hints(summary, &marked.slices, &marked.hints);
+            doc.update_with_hints(&summary, &marked.slices, &marked.hints)
+                .map_err(internal)?;
             Ok(None)
         }
         ReportDocOp::UpsertBlock {
@@ -156,7 +185,7 @@ fn apply_report_op(
                 Ok(Some(BlockOpOutcome { id, rev }))
             }
             None => {
-                let len = doc.block_index().len();
+                let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len
                 {
@@ -184,7 +213,7 @@ fn apply_report_op(
             if let Some(expected) = if_rev {
                 check_rev(doc, id, *expected)?;
             }
-            let len = doc.block_index().len();
+            let len = doc.block_index().map_err(internal)?.len();
             if *to_index >= len {
                 return Err(CalmError::BadRequest(format!(
                     "to_index {to_index} out of range (report has {len} blocks)"
@@ -340,7 +369,7 @@ pub async fn persist_report(
         report_card,
         current_payload,
         ReportDocOp::Replace {
-            summary: next.summary,
+            summary: Some(next.summary),
             body: next.body,
         },
         agent_message,
@@ -467,8 +496,11 @@ pub(crate) async fn persist_report_with_shadow(
                     None => ReportDoc::from_payload(&current_payload),
                 };
                 // 2. Capture the pre-write projection for the edit-log
-                //    entry.
-                let (summary_before, body_before) = doc.project();
+                //    entry. A malformed doc surfaces as Internal here
+                //    (never a panic).
+                let (summary_before, body_before) = doc.project().map_err(|e| {
+                    CalmError::Internal(format!("wave_report: project CRDT for card {id}: {e}"))
+                })?;
                 // 3. Apply the requested op on the doc. `if_rev`
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the
@@ -481,10 +513,18 @@ pub(crate) async fn persist_report_with_shadow(
                 //    doc's own snapshot (id/rev alignment already
                 //    happened inside `ReportDoc::update`), so nothing
                 //    is re-derived at the JSON layer.
-                let (summary_after, body_after) = doc.project();
+                let (summary_after, body_after) = doc.project().map_err(|e| {
+                    CalmError::Internal(format!(
+                        "wave_report: project CRDT post-op for card {id}: {e}"
+                    ))
+                })?;
                 let mut projected_payload =
                     WaveReportPayload::new(summary_after.clone(), body_after.clone());
-                projected_payload.blocks = Some(doc.blocks_snapshot());
+                projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
+                    CalmError::Internal(format!(
+                        "wave_report: snapshot CRDT blocks for card {id}: {e}"
+                    ))
+                })?);
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -578,6 +618,53 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.to_string().contains("summary"), "got: {err}");
+    }
+
+    #[test]
+    fn apply_op_with_none_summary_resolves_from_doc_inside_tx() {
+        // #960 PR2 review (write_markdown TOCTOU): `summary: None`
+        // must resolve against the doc — the in-tx truth — not any
+        // caller-side snapshot. Simulate the race by moving the doc's
+        // summary after "the caller read it".
+        let mut doc =
+            ReportDoc::from_payload(&WaveReportPayload::new("stale snapshot", "# A\n\nalpha\n"));
+        doc.update("racing summary", "# A\n\nalpha\n").unwrap();
+
+        let outcome = apply_report_op(
+            &mut doc,
+            &ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: "# A\n\nalpha edited\n".into(),
+            },
+        )
+        .unwrap();
+        assert!(outcome.is_none());
+        let (summary, body) = doc.project().unwrap();
+        assert_eq!(
+            summary, "racing summary",
+            "None must keep the doc's current (in-tx) summary"
+        );
+        assert_eq!(body, "# A\n\nalpha edited\n");
+
+        // Replace with None behaves identically; Some overrides.
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::Replace {
+                summary: None,
+                body: "# B\n\nbeta\n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.project().unwrap().0, "racing summary");
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::Replace {
+                summary: Some("explicit".into()),
+                body: "# C\n\ngamma\n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.project().unwrap().0, "explicit");
     }
 
     #[test]

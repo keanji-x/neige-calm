@@ -397,8 +397,15 @@ async fn write_markdown(
     let summary_override = optional_string(obj, "summary", tool)?;
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    let summary = summary_override.unwrap_or_else(|| current.summary.clone());
-    let op = ReportDocOp::WriteMarkdown { summary, body };
+    // Omitted summary = keep the existing one. The op carries `None`
+    // and the persist layer resolves it against the doc INSIDE the
+    // transaction — resolving from the `current` snapshot here would
+    // let a concurrent summary write be silently reverted (TOCTOU,
+    // #960 PR2 review).
+    let op = ReportDocOp::WriteMarkdown {
+        summary: summary_override,
+        body,
+    };
     let (card, _none) = match CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(&identity, wave, report_card, current, op, None, None)
         .await

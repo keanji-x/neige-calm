@@ -50,9 +50,9 @@
 //! `body`, `blocks`) is a projection cache the persist boundary
 //! rewrites from this doc on every write.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc};
+use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
@@ -168,17 +168,18 @@ impl ReportDoc {
     /// get a fresh map entry (`rev = 1`), vanished blocks are deleted,
     /// and `order` is rewritten when it changed. Byte-identical
     /// content is a doc-level no-op (revs untouched, zero text ops).
-    pub fn update(&mut self, new_summary: &str, new_body: &str) {
-        let summary_id = self
-            .obj(&ROOT, FIELD_SUMMARY)
-            .expect("doc invariant: summary Text must exist at root");
+    ///
+    /// Returns an error when the stored doc violates the layout
+    /// invariants (malformed CRDT bytes) — never panics.
+    pub fn update(&mut self, new_summary: &str, new_body: &str) -> Result<()> {
+        let summary_id = self.summary_text_id()?;
         self.0
             .update_text(&summary_id, new_summary)
-            .expect("update_text on existing Text obj cannot fail");
+            .context("update summary text")?;
 
-        let current = self.blocks_snapshot();
+        let current = self.blocks_snapshot()?;
         let aligned = reassign_ids(&current, &split_body(new_body));
-        self.apply_aligned_blocks(&current, &aligned);
+        self.apply_aligned_blocks(&current, &aligned)
     }
 
     /// Marker-aware wholesale replace behind `calm.report.write_markdown`
@@ -193,17 +194,15 @@ impl ReportDoc {
         new_summary: &str,
         slices: &[BlockSlice],
         hints: &[Option<String>],
-    ) {
-        let summary_id = self
-            .obj(&ROOT, FIELD_SUMMARY)
-            .expect("doc invariant: summary Text must exist at root");
+    ) -> Result<()> {
+        let summary_id = self.summary_text_id()?;
         self.0
             .update_text(&summary_id, new_summary)
-            .expect("update_text on existing Text obj cannot fail");
+            .context("update summary text")?;
 
-        let current = self.blocks_snapshot();
+        let current = self.blocks_snapshot()?;
         let aligned = reassign_ids_with_hints(&current, slices, hints);
-        self.apply_aligned_blocks(&current, &aligned);
+        self.apply_aligned_blocks(&current, &aligned)
     }
 
     /// Read the current `(summary, body)` projection out of the doc,
@@ -216,96 +215,87 @@ impl ReportDoc {
     ///
     /// Read-only fallback: a legacy doc that has not been migrated
     /// yet projects its `ROOT.body` text unchanged.
-    pub fn project(&self) -> (String, String) {
-        let summary_id = self
-            .obj(&ROOT, FIELD_SUMMARY)
-            .expect("doc invariant: summary Text must exist at root");
-        let summary = self
-            .0
-            .text(&summary_id)
-            .expect("text() on existing Text obj cannot fail");
+    ///
+    /// Returns an error (never panics) when the stored doc violates
+    /// the layout invariants — a malformed blob must surface as an
+    /// `Internal` error at the persist/read boundary, not crash the
+    /// server.
+    pub fn project(&self) -> Result<(String, String)> {
+        let summary = self.text_at(&ROOT, FIELD_SUMMARY)?;
         let body = if let Some(blocks_id) = self.obj(&ROOT, FIELD_BLOCKS) {
-            self.order_ids()
-                .iter()
-                .map(|id| {
-                    let entry = self
-                        .obj(&blocks_id, id)
-                        .expect("doc invariant: every order id has a blocks entry");
-                    let text_id = self
-                        .obj(&entry, KEY_TEXT)
-                        .expect("doc invariant: block entry has a text field");
-                    self.0
-                        .text(&text_id)
-                        .expect("text() on existing Text obj cannot fail")
-                })
-                .collect()
+            let mut body = String::new();
+            for id in self.order_ids()? {
+                let entry = self.obj(&blocks_id, &id).with_context(|| {
+                    format!("malformed report doc: order id {id} has no blocks entry")
+                })?;
+                body.push_str(
+                    &self
+                        .text_at(&entry, KEY_TEXT)
+                        .with_context(|| format!("malformed report doc: block {id} text field"))?,
+                );
+            }
+            body
         } else {
-            let (_, body_id) = self
-                .0
-                .get(&ROOT, LEGACY_FIELD_BODY)
-                .ok()
-                .flatten()
-                .expect("doc invariant: legacy doc must have a body Text at root");
-            self.0
-                .text(&body_id)
-                .expect("text() on existing Text obj cannot fail")
+            self.text_at(&ROOT, LEGACY_FIELD_BODY)
+                .context("malformed report doc: legacy doc must have a body Text at root")?
         };
-        (summary, body)
+        Ok((summary, body))
+    }
+
+    /// True when the doc carries the v2 `blocks`/`order` layout
+    /// (i.e. `ensure_blocks_layout` has run, or the doc was seeded
+    /// post-#960). A `false` doc is a legacy pre-#960 shape.
+    pub fn has_blocks_layout(&self) -> bool {
+        self.obj(&ROOT, FIELD_BLOCKS).is_some()
     }
 
     /// Full typed snapshot of the block map in `order` order. The
     /// persist boundary mirrors this into `WaveReportPayload::blocks`.
     // TODO(#960 PR3): non-prose blocks will carry their stored JSON
     // payload here instead of `{ markdown }`.
-    pub fn blocks_snapshot(&self) -> Vec<ReportBlock> {
+    pub fn blocks_snapshot(&self) -> Result<Vec<ReportBlock>> {
         let Some(blocks_id) = self.obj(&ROOT, FIELD_BLOCKS) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        self.order_ids()
-            .into_iter()
-            .map(|id| {
-                let entry = self
-                    .obj(&blocks_id, &id)
-                    .expect("doc invariant: every order id has a blocks entry");
-                let kind = self
-                    .0
-                    .get(&entry, KEY_KIND)
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| value.to_str().map(str::to_string))
-                    .expect("doc invariant: block entry has a Str kind");
-                let rev = self
-                    .0
-                    .get(&entry, KEY_REV)
-                    .ok()
-                    .flatten()
-                    .and_then(|(value, _)| value.to_u64())
-                    .expect("doc invariant: block entry has a Uint rev")
-                    as u32;
-                let text_id = self
-                    .obj(&entry, KEY_TEXT)
-                    .expect("doc invariant: block entry has a text field");
-                let text = self
-                    .0
-                    .text(&text_id)
-                    .expect("text() on existing Text obj cannot fail");
-                ReportBlock {
-                    id,
-                    kind,
-                    rev,
-                    payload: json!({ "markdown": text }),
-                }
-            })
-            .collect()
+        let mut blocks = Vec::new();
+        for id in self.order_ids()? {
+            let entry = self.obj(&blocks_id, &id).with_context(|| {
+                format!("malformed report doc: order id {id} has no blocks entry")
+            })?;
+            let kind = self
+                .0
+                .get(&entry, KEY_KIND)
+                .with_context(|| format!("read block {id} kind"))?
+                .and_then(|(value, _)| value.to_str().map(str::to_string))
+                .with_context(|| format!("malformed report doc: block {id} has no Str kind"))?;
+            let rev = self
+                .0
+                .get(&entry, KEY_REV)
+                .with_context(|| format!("read block {id} rev"))?
+                .and_then(|(value, _)| value.to_u64())
+                .with_context(|| format!("malformed report doc: block {id} has no Uint rev"))?;
+            let rev = u32::try_from(rev).unwrap_or(u32::MAX);
+            let text = self
+                .text_at(&entry, KEY_TEXT)
+                .with_context(|| format!("malformed report doc: block {id} text field"))?;
+            blocks.push(ReportBlock {
+                id,
+                kind,
+                rev,
+                payload: json!({ "markdown": text }),
+            });
+        }
+        Ok(blocks)
     }
 
     /// `(id, kind, rev)` per block, in `order` order — the index the
     /// MCP tool surface (next slice) returns alongside the flat text.
-    pub fn block_index(&self) -> Vec<(String, String, u32)> {
-        self.blocks_snapshot()
+    pub fn block_index(&self) -> Result<Vec<(String, String, u32)>> {
+        Ok(self
+            .blocks_snapshot()?
             .into_iter()
             .map(|block| (block.id, block.kind, block.rev))
-            .collect()
+            .collect())
     }
 
     /// Current rev of a block, or `None` if the id doesn't exist.
@@ -318,7 +308,7 @@ impl ReportDoc {
             .ok()
             .flatten()
             .and_then(|(value, _)| value.to_u64())
-            .map(|rev| rev as u32)
+            .map(|rev| u32::try_from(rev).unwrap_or(u32::MAX))
     }
 
     /// Insert or replace a single block.
@@ -327,9 +317,11 @@ impl ReportDoc {
     ///     `calm_types::report_blocks::mint_id`), create the block at
     ///     the end of `order` with `rev = 1`, return `(id, 1)`.
     ///   * `id = Some(_)` — replace that block's kind + content and
-    ///     bump `rev` by 1 (an explicit replace bumps even when the
-    ///     content is byte-identical — the caller asked for a write
-    ///     and gets a fresh rev to anchor on). Unknown id is an error.
+    ///     bump `rev` by 1. Byte-identical content (same kind, same
+    ///     text) is an idempotent no-op: nothing is written and the
+    ///     **current** rev is returned, so a retried request cannot
+    ///     silently invalidate the caller's `if_rev` anchor (#960 PR2
+    ///     review). Unknown id is an error.
     pub fn upsert_block(
         &mut self,
         id: Option<&str>,
@@ -349,16 +341,30 @@ impl ReportDoc {
                     .get(&entry, KEY_REV)
                     .context("read block rev")?
                     .and_then(|(value, _)| value.to_u64())
-                    .context("doc invariant: block entry has a Uint rev")?
-                    as u32;
-                let next_rev = rev + 1;
+                    .context("doc invariant: block entry has a Uint rev")?;
+                let rev = u32::try_from(rev).unwrap_or(u32::MAX);
+                let text_id = self
+                    .obj(&entry, KEY_TEXT)
+                    .context("doc invariant: block entry has a text field")?;
+                let existing_kind = self
+                    .0
+                    .get(&entry, KEY_KIND)
+                    .context("read block kind")?
+                    .and_then(|(value, _)| value.to_str().map(str::to_string));
+                let existing_text = self.0.text(&text_id).context("read block text")?;
+                if existing_kind.as_deref() == Some(kind) && existing_text == content {
+                    // Idempotent replace: byte-identical content moves
+                    // nothing — no text op, no rev bump. The persist
+                    // boundary still runs (and still emits the dual-
+                    // event pair) so the uniform "every persist → two
+                    // events" invariant holds.
+                    return Ok((id.to_string(), rev));
+                }
+                let next_rev = rev.saturating_add(1);
                 self.0.put(&entry, KEY_KIND, kind).context("put kind")?;
                 self.0
                     .put(&entry, KEY_REV, u64::from(next_rev))
                     .context("put rev")?;
-                let text_id = self
-                    .obj(&entry, KEY_TEXT)
-                    .context("doc invariant: block entry has a text field")?;
                 self.0
                     .update_text(&text_id, content)
                     .context("update block text")?;
@@ -388,7 +394,7 @@ impl ReportDoc {
         let order_id = self
             .obj(&ROOT, FIELD_ORDER)
             .context("doc invariant: order list must exist")?;
-        let ids = self.order_ids();
+        let ids = self.order_ids()?;
         let from = ids
             .iter()
             .position(|existing| existing == id)
@@ -420,7 +426,7 @@ impl ReportDoc {
             .obj(&ROOT, FIELD_ORDER)
             .context("doc invariant: order list must exist")?;
         let index = self
-            .order_ids()
+            .order_ids()?
             .iter()
             .position(|existing| existing == id)
             .with_context(|| format!("block {id} not found"))?;
@@ -441,16 +447,20 @@ impl ReportDoc {
     // `update` path must refuse to stomp them instead of relying on
     // `reassign_ids` preserving their payload; today only prose
     // blocks can exist so every block's content lives in its Text.
-    fn apply_aligned_blocks(&mut self, current: &[ReportBlock], aligned: &[ReportBlock]) {
+    fn apply_aligned_blocks(
+        &mut self,
+        current: &[ReportBlock],
+        aligned: &[ReportBlock],
+    ) -> Result<()> {
         let blocks_id = self
             .obj(&ROOT, FIELD_BLOCKS)
-            .expect("doc invariant: blocks map must exist (run ensure_blocks_layout)");
+            .context("doc invariant: blocks map must exist (run ensure_blocks_layout)")?;
         let keep: HashSet<&str> = aligned.iter().map(|block| block.id.as_str()).collect();
         for old in current {
             if !keep.contains(old.id.as_str()) {
                 self.0
                     .delete(&blocks_id, old.id.as_str())
-                    .expect("delete on existing map key cannot fail");
+                    .context("delete vanished block entry")?;
             }
         }
         let old_by_id: HashMap<&str, &ReportBlock> = current
@@ -463,24 +473,24 @@ impl ReportDoc {
                 Some(old) => {
                     let entry = self
                         .obj(&blocks_id, &block.id)
-                        .expect("doc invariant: surviving block entry exists");
+                        .context("doc invariant: surviving block entry exists")?;
                     if old.kind != block.kind {
                         self.0
                             .put(&entry, KEY_KIND, block.kind.as_str())
-                            .expect("put on existing map cannot fail");
+                            .context("put block kind")?;
                     }
                     if old.rev != block.rev {
                         self.0
                             .put(&entry, KEY_REV, u64::from(block.rev))
-                            .expect("put on existing map cannot fail");
+                            .context("put block rev")?;
                     }
                     if block_markdown(old) != content {
                         let text_id = self
                             .obj(&entry, KEY_TEXT)
-                            .expect("doc invariant: block entry has a text field");
+                            .context("doc invariant: block entry has a text field")?;
                         self.0
                             .update_text(&text_id, content)
-                            .expect("update_text on existing Text obj cannot fail");
+                            .context("update block text")?;
                     }
                 }
                 None => {
@@ -496,26 +506,36 @@ impl ReportDoc {
             }
         }
         let new_order: Vec<&str> = aligned.iter().map(|block| block.id.as_str()).collect();
-        if self.order_ids() != new_order {
+        if self.order_ids()? != new_order {
             let order_id = self
                 .obj(&ROOT, FIELD_ORDER)
-                .expect("doc invariant: order list must exist");
+                .context("doc invariant: order list must exist")?;
             while self.0.length(&order_id) > 0 {
                 self.0
                     .delete(&order_id, 0_usize)
-                    .expect("delete on non-empty list cannot fail");
+                    .context("clear order list")?;
             }
             for (index, id) in new_order.iter().enumerate() {
                 self.0
                     .insert(&order_id, index, *id)
-                    .expect("insert at list tail cannot fail");
+                    .context("rebuild order list")?;
             }
         }
+        Ok(())
     }
 
     /// Create the `blocks` map + `order` list from scratch and fill
     /// them from an aligned block list. Seeding path shared by
     /// `from_payload` and the lazy migrator.
+    ///
+    /// Duplicate ids in `blocks` are deduplicated defensively: the
+    /// first occurrence keeps the id, later occurrences get a freshly
+    /// minted one (a duplicate map key would silently overwrite the
+    /// first block's entry while `order` still listed the id twice —
+    /// projecting the same content twice and breaking the byte-exact
+    /// `flatten(blocks) == body` invariant). `reassign_ids*` already
+    /// guarantees unique output ids; this guards direct callers and
+    /// future refactors.
     fn write_blocks_layout(doc: &mut AutoCommit, blocks: &[ReportBlock]) {
         let blocks_id = doc
             .put_object(&ROOT, FIELD_BLOCKS, ObjType::Map)
@@ -523,18 +543,28 @@ impl ReportDoc {
         let order_id = doc
             .put_object(&ROOT, FIELD_ORDER, ObjType::List)
             .expect("put_object at root cannot fail");
+        let mut used: HashSet<String> = blocks.iter().map(|block| block.id.clone()).collect();
+        let mut seen: HashSet<String> = HashSet::new();
         for (index, block) in blocks.iter().enumerate() {
-            Self::insert_block_entry(
-                doc,
-                &blocks_id,
-                &block.id,
-                &block.kind,
-                block.rev,
-                block_markdown(block),
-            );
-            doc.insert(&order_id, index, block.id.as_str())
+            let content = block_markdown(block);
+            let id = if seen.insert(block.id.clone()) {
+                block.id.clone()
+            } else {
+                // Duplicate id: first occupant wins, mint a fresh one.
+                let minted = mint_id(content, index, &mut used);
+                seen.insert(minted.clone());
+                minted
+            };
+            Self::insert_block_entry(doc, &blocks_id, &id, &block.kind, block.rev, content);
+            doc.insert(&order_id, index, id.as_str())
                 .expect("insert at list tail cannot fail");
         }
+        // Post-condition: `order` never carries a duplicate id.
+        debug_assert_eq!(
+            seen.len(),
+            blocks.len(),
+            "write_blocks_layout: order must be duplicate-free"
+        );
     }
 
     /// Create one block entry (`Map { kind, rev, text }`) under the
@@ -561,21 +591,55 @@ impl ReportDoc {
             .expect("update_text on freshly-minted Text obj cannot fail");
     }
 
-    /// The block-id order, materialized as owned strings.
-    fn order_ids(&self) -> Vec<String> {
+    /// The block-id order, materialized as owned strings. Errors on a
+    /// malformed doc whose `order` entries are not Str values.
+    fn order_ids(&self) -> Result<Vec<String>> {
         let Some(order_id) = self.obj(&ROOT, FIELD_ORDER) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         (0..self.0.length(&order_id))
             .map(|index| {
                 self.0
                     .get(&order_id, index)
-                    .ok()
-                    .flatten()
+                    .with_context(|| format!("read order entry {index}"))?
                     .and_then(|(value, _)| value.to_str().map(str::to_string))
-                    .expect("doc invariant: order entries are Str block ids")
+                    .with_context(|| {
+                        format!("malformed report doc: order entry {index} is not a Str block id")
+                    })
             })
             .collect()
+    }
+
+    /// The summary `Text` object id, validated. Errors (never panics)
+    /// when the doc has no summary or it is not a `Text` object.
+    fn summary_text_id(&self) -> Result<automerge::ObjId> {
+        let (value, id) = self
+            .0
+            .get(&ROOT, FIELD_SUMMARY)
+            .context("read summary")?
+            .context("malformed report doc: missing summary at root")?;
+        ensure!(
+            matches!(value, Value::Object(ObjType::Text)),
+            "malformed report doc: summary is not a Text object"
+        );
+        Ok(id)
+    }
+
+    /// Read a validated `Text` object's content at `parent[prop]`.
+    /// Errors when the key is absent or holds anything but a `Text`
+    /// object (a malformed doc must never panic the read path).
+    fn text_at(&self, parent: &automerge::ObjId, prop: &str) -> Result<String> {
+        let (value, id) = self
+            .0
+            .get(parent, prop)
+            .with_context(|| format!("read `{prop}`"))?
+            .with_context(|| format!("malformed report doc: missing `{prop}`"))?;
+        if !matches!(value, Value::Object(ObjType::Text)) {
+            bail!("malformed report doc: `{prop}` is not a Text object");
+        }
+        self.0
+            .text(&id)
+            .with_context(|| format!("read `{prop}` text"))
     }
 
     /// Resolve a child object id off a parent. Returns `None` if the
@@ -624,18 +688,18 @@ mod tests {
     fn from_payload_then_project_returns_original_values() {
         let payload = sample_payload();
         let mut doc = ReportDoc::from_payload(&payload);
-        let (summary, body) = doc.project();
+        let (summary, body) = doc.project().unwrap();
         assert_eq!(summary, payload.summary);
         assert_eq!(body, payload.body);
         // Force a save round-trip too — project before save mustn't
         // depend on any pending-op state that disappears post-save.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
-        let (s2, b2) = reloaded.project();
+        let (s2, b2) = reloaded.project().unwrap();
         assert_eq!(s2, payload.summary);
         assert_eq!(b2, payload.body);
         // Two H1 sections → two prose blocks at rev 1, order matches.
-        let index = reloaded.block_index();
+        let index = reloaded.block_index().unwrap();
         assert_eq!(index.len(), 2);
         assert!(
             index
@@ -650,7 +714,7 @@ mod tests {
         let hint = reassign_ids(&[], &split_body(&payload.body));
         payload.blocks = Some(hint.clone());
         let doc = ReportDoc::from_payload(&payload);
-        let index = doc.block_index();
+        let index = doc.block_index().unwrap();
         assert_eq!(
             index
                 .iter()
@@ -669,7 +733,7 @@ mod tests {
         let mut doc = ReportDoc::from_payload(&payload);
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
-        let (s, b) = reloaded.project();
+        let (s, b) = reloaded.project().unwrap();
         assert_eq!(s, "");
         assert_eq!(b, "# Goal\n");
     }
@@ -678,14 +742,15 @@ mod tests {
     fn update_then_project_returns_new_values() {
         let payload = sample_payload();
         let mut doc = ReportDoc::from_payload(&payload);
-        doc.update("new summary", "# Heading\n\nnew body.\n");
-        let (s, b) = doc.project();
+        doc.update("new summary", "# Heading\n\nnew body.\n")
+            .unwrap();
+        let (s, b) = doc.project().unwrap();
         assert_eq!(s, "new summary");
         assert_eq!(b, "# Heading\n\nnew body.\n");
         // And it survives a save round-trip.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
-        let (s2, b2) = reloaded.project();
+        let (s2, b2) = reloaded.project().unwrap();
         assert_eq!(s2, "new summary");
         assert_eq!(b2, "# Heading\n\nnew body.\n");
     }
@@ -694,7 +759,7 @@ mod tests {
     fn update_bumps_rev_only_for_changed_blocks() {
         let payload = WaveReportPayload::new("s", "# A\n\nalpha\n\n# B\n\nbeta\n");
         let mut doc = ReportDoc::from_payload(&payload);
-        let before = doc.block_index();
+        let before = doc.block_index().unwrap();
         assert_eq!(before.len(), 2);
         let (id_a, _, rev_a) = before[0].clone();
         let (id_b, _, rev_b) = before[1].clone();
@@ -702,7 +767,8 @@ mod tests {
 
         // Edit only block A (mild edit — stays above the similarity
         // reuse threshold); B stays byte-identical.
-        doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n");
+        doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n")
+            .unwrap();
         assert_eq!(doc.block_rev(&id_a), Some(2), "changed block: rev+1");
         assert_eq!(
             doc.block_rev(&id_b),
@@ -711,15 +777,16 @@ mod tests {
         );
 
         // Byte-identical rewrite: no rev movement at all.
-        doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n");
+        doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n")
+            .unwrap();
         assert_eq!(doc.block_rev(&id_a), Some(2));
         assert_eq!(doc.block_rev(&id_b), Some(1));
 
         // Dropping a block deletes its entry; the survivor keeps id+rev.
-        doc.update("s", "# B\n\nbeta\n");
+        doc.update("s", "# B\n\nbeta\n").unwrap();
         assert_eq!(doc.block_rev(&id_a), None, "vanished block is deleted");
         assert_eq!(doc.block_rev(&id_b), Some(1));
-        assert_eq!(doc.project().1, "# B\n\nbeta\n");
+        assert_eq!(doc.project().unwrap().1, "# B\n\nbeta\n");
     }
 
     #[test]
@@ -731,10 +798,10 @@ mod tests {
         // Read-only projection works before migration (legacy fallback).
         let unmigrated = ReportDoc::from_bytes(&bytes).unwrap();
         assert_eq!(
-            unmigrated.project(),
+            unmigrated.project().unwrap(),
             (summary.to_string(), body.to_string())
         );
-        assert!(unmigrated.blocks_snapshot().is_empty());
+        assert!(unmigrated.blocks_snapshot().unwrap().is_empty());
 
         // Migrate with the PR1-derived JSON blocks as the id hint.
         let hint = reassign_ids(&[], &split_body(body));
@@ -744,12 +811,13 @@ mod tests {
             "legacy doc migrates"
         );
         assert_eq!(
-            doc.project(),
+            doc.project().unwrap(),
             (summary.to_string(), body.to_string()),
             "projection is byte-identical"
         );
         assert_eq!(
             doc.block_index()
+                .unwrap()
                 .iter()
                 .map(|(id, _, _)| id.as_str())
                 .collect::<Vec<_>>(),
@@ -766,7 +834,10 @@ mod tests {
         let bytes2 = doc.to_bytes();
         let mut reloaded = ReportDoc::from_bytes(&bytes2).unwrap();
         assert!(!reloaded.ensure_blocks_layout(None).unwrap());
-        assert_eq!(reloaded.project(), (summary.to_string(), body.to_string()));
+        assert_eq!(
+            reloaded.project().unwrap(),
+            (summary.to_string(), body.to_string())
+        );
     }
 
     #[test]
@@ -774,7 +845,7 @@ mod tests {
         let bytes = legacy_doc_bytes("s", "# A\n\nalpha\n");
         let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
         assert!(doc.ensure_blocks_layout(None).unwrap());
-        let index = doc.block_index();
+        let index = doc.block_index().unwrap();
         assert_eq!(index.len(), 1);
         assert!(
             index[0].0.starts_with("b_"),
@@ -788,14 +859,14 @@ mod tests {
     #[test]
     fn upsert_move_delete_block_round_trip() {
         let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
-        let (id_a, _, _) = doc.block_index()[0].clone();
+        let (id_a, _, _) = doc.block_index().unwrap()[0].clone();
 
         // Append a new block.
         let (id_b, rev_b) = doc.upsert_block(None, "prose", "# B\n\nbeta\n").unwrap();
         assert_eq!(rev_b, 1);
         assert!(id_b.starts_with("b_"));
         assert_ne!(id_b, id_a);
-        assert_eq!(doc.project().1, "# A\n\nalpha\n# B\n\nbeta\n");
+        assert_eq!(doc.project().unwrap().1, "# A\n\nalpha\n# B\n\nbeta\n");
 
         // Replace an existing block: rev bumps, content splices.
         let (same_id, rev) = doc
@@ -804,39 +875,45 @@ mod tests {
         assert_eq!(same_id, id_a);
         assert_eq!(rev, 2);
         assert_eq!(doc.block_rev(&id_a), Some(2));
-        assert_eq!(doc.project().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
+        assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
 
-        // Replace with byte-identical content still bumps (explicit write).
+        // Replace with byte-identical content is an idempotent no-op:
+        // rev unchanged, content unchanged (#960 PR2 review).
         let (_, rev) = doc
             .upsert_block(Some(&id_a), "prose", "# A\n\nalpha v2\n")
             .unwrap();
-        assert_eq!(rev, 3);
+        assert_eq!(rev, 2, "identical content: rev holds");
+        assert_eq!(doc.block_rev(&id_a), Some(2));
+        assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
 
         // Unknown id errors.
         assert!(doc.upsert_block(Some("b_nope"), "prose", "x").is_err());
 
         // Move B to the front; rev untouched.
         doc.move_block(&id_b, 0).unwrap();
-        assert_eq!(doc.project().1, "# B\n\nbeta\n# A\n\nalpha v2\n");
+        assert_eq!(doc.project().unwrap().1, "# B\n\nbeta\n# A\n\nalpha v2\n");
         assert_eq!(doc.block_rev(&id_b), Some(1));
         // And back to the tail.
         doc.move_block(&id_b, 1).unwrap();
-        assert_eq!(doc.project().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
+        assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
         // Out-of-range and unknown-id are errors.
         assert!(doc.move_block(&id_b, 2).is_err());
         assert!(doc.move_block("b_nope", 0).is_err());
 
         // Delete B.
         doc.delete_block(&id_b).unwrap();
-        assert_eq!(doc.project().1, "# A\n\nalpha v2\n");
+        assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n");
         assert_eq!(doc.block_rev(&id_b), None);
         assert!(doc.delete_block(&id_b).is_err(), "double delete errors");
 
         // Everything survives a save round-trip.
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).unwrap();
-        assert_eq!(reloaded.project().1, "# A\n\nalpha v2\n");
-        assert_eq!(reloaded.block_index(), vec![(id_a, "prose".to_string(), 3)]);
+        assert_eq!(reloaded.project().unwrap().1, "# A\n\nalpha v2\n");
+        assert_eq!(
+            reloaded.block_index().unwrap(),
+            vec![(id_a, "prose".to_string(), 2)]
+        );
     }
 
     #[test]
@@ -847,18 +924,18 @@ mod tests {
         let payload = sample_payload();
         let mut doc = ReportDoc::from_payload(&payload);
         let first = doc.to_bytes();
-        doc.update(&payload.summary, &payload.body);
+        doc.update(&payload.summary, &payload.body).unwrap();
         let second = doc.to_bytes();
         let r1 = ReportDoc::from_bytes(&first).unwrap();
         let r2 = ReportDoc::from_bytes(&second).unwrap();
         assert_eq!(
-            r1.project(),
+            r1.project().unwrap(),
             (payload.summary.clone(), payload.body.clone())
         );
-        assert_eq!(r2.project(), (payload.summary, payload.body));
+        assert_eq!(r2.project().unwrap(), (payload.summary, payload.body));
         assert_eq!(
-            r1.block_index(),
-            r2.block_index(),
+            r1.block_index().unwrap(),
+            r2.block_index().unwrap(),
             "no-op update moves no revs"
         );
         assert!(
@@ -882,7 +959,7 @@ mod tests {
         let mut doc = ReportDoc::from_payload(&payload);
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
-        let (s, b) = reloaded.project();
+        let (s, b) = reloaded.project().unwrap();
         assert_eq!(s.as_bytes(), summary.as_bytes());
         assert_eq!(b.as_bytes(), body.as_bytes());
 
@@ -890,13 +967,13 @@ mod tests {
         let mut doc2 = ReportDoc::from_bytes(&bytes).expect("re-load for update");
         let new_summary = "新摘要 🚀 🇯🇵";
         let new_body = "第一行\r\n第二行 🎊\r\n";
-        doc2.update(new_summary, new_body);
-        let (s2, b2) = doc2.project();
+        doc2.update(new_summary, new_body).unwrap();
+        let (s2, b2) = doc2.project().unwrap();
         assert_eq!(s2.as_bytes(), new_summary.as_bytes());
         assert_eq!(b2.as_bytes(), new_body.as_bytes());
         let bytes2 = doc2.to_bytes();
         let reloaded2 = ReportDoc::from_bytes(&bytes2).expect("post-update round-trip");
-        let (s3, b3) = reloaded2.project();
+        let (s3, b3) = reloaded2.project().unwrap();
         assert_eq!(s3.as_bytes(), new_summary.as_bytes());
         assert_eq!(b3.as_bytes(), new_body.as_bytes());
     }
@@ -914,11 +991,15 @@ mod tests {
         let mut replica_a = ReportDoc::from_bytes(&bytes).unwrap();
         let mut replica_b = ReportDoc::from_bytes(&bytes).unwrap();
 
-        replica_a.update("shared", "# A\n\nALPHA\n\n# B\n\nbeta\n");
-        replica_b.update("shared", "# A\n\nalpha\n\n# B\n\nBETA\n");
+        replica_a
+            .update("shared", "# A\n\nALPHA\n\n# B\n\nbeta\n")
+            .unwrap();
+        replica_b
+            .update("shared", "# A\n\nalpha\n\n# B\n\nBETA\n")
+            .unwrap();
 
         replica_a.0.merge(&mut replica_b.0).expect("merge replicas");
-        let (merged_summary, merged_body) = replica_a.project();
+        let (merged_summary, merged_body) = replica_a.project().unwrap();
         assert_eq!(merged_summary, "shared", "summary stayed identical");
         assert!(
             merged_body.contains("ALPHA"),
@@ -928,5 +1009,160 @@ mod tests {
             merged_body.contains("BETA"),
             "replica B's edit survived: body = {merged_body:?}"
         );
+    }
+
+    // -- malformed-doc hardening (#960 PR2 review) -------------------
+
+    /// A fresh raw doc with a valid `summary` Text at ROOT.
+    fn raw_doc_with_summary(summary: &str) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        let summary_id = doc.put_object(&ROOT, FIELD_SUMMARY, ObjType::Text).unwrap();
+        doc.update_text(&summary_id, summary).unwrap();
+        doc
+    }
+
+    #[test]
+    fn malformed_dangling_order_id_errors_instead_of_panicking() {
+        // `order` references a block id with no `blocks` entry.
+        let mut raw = raw_doc_with_summary("s");
+        raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_dead").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.project().unwrap_err();
+        assert!(err.to_string().contains("no blocks entry"), "err = {err:#}");
+        assert!(doc.blocks_snapshot().is_err());
+        assert!(doc.block_index().is_err());
+        // Mutating entry points surface the same error, no panic.
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        assert!(doc.update("s", "# A\n").is_err());
+    }
+
+    #[test]
+    fn malformed_non_text_block_field_errors_instead_of_panicking() {
+        // Block entry whose `text` is a scalar Str, not a Text object.
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, KEY_KIND, "prose").unwrap();
+        raw.put(&entry, KEY_REV, 1_u64).unwrap();
+        raw.put(&entry, KEY_TEXT, "scalar, not Text").unwrap();
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.project().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a Text object"),
+            "err = {err:#}"
+        );
+        assert!(doc.blocks_snapshot().is_err());
+    }
+
+    #[test]
+    fn malformed_missing_summary_errors_instead_of_panicking() {
+        // v2 layout without any `summary` at ROOT.
+        let mut raw = AutoCommit::new();
+        raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.project().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("missing `summary`"),
+            "err = {err:#}"
+        );
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        assert!(doc.update("s", "# A\n").is_err(), "update must not panic");
+        assert!(
+            doc.update_with_hints("s", &split_body("# A\n"), &[])
+                .is_err(),
+            "update_with_hints must not panic"
+        );
+    }
+
+    // -- duplicate id hints (#960 PR2 review) ------------------------
+
+    #[test]
+    fn duplicate_hint_ids_migrate_with_unique_order() {
+        // Legacy migration fed a payload `blocks` cache in which two
+        // blocks share one id: only the first occurrence may claim it;
+        // the projection stays byte-exact and `order` is unique.
+        let body = "# A\n\nalpha\n\n# B\n\nbeta\n";
+        let hint = vec![
+            ReportBlock {
+                id: "b_dupe".to_string(),
+                kind: "prose".to_string(),
+                rev: 2,
+                payload: json!({ "markdown": "# A\n\nalpha\n\n" }),
+            },
+            ReportBlock {
+                id: "b_dupe".to_string(),
+                kind: "prose".to_string(),
+                rev: 5,
+                payload: json!({ "markdown": "# B\n\nbeta\n" }),
+            },
+        ];
+        let bytes = legacy_doc_bytes("s", body);
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        assert!(doc.ensure_blocks_layout(Some(&hint)).unwrap());
+        assert_eq!(
+            doc.project().unwrap(),
+            ("s".to_string(), body.to_string()),
+            "projection is byte-identical"
+        );
+        let ids: Vec<String> = doc
+            .block_index()
+            .unwrap()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], "b_dupe", "first occurrence keeps the id");
+        assert_ne!(ids[1], "b_dupe", "duplicate gets a fresh id");
+        assert_eq!(
+            ids.iter().collect::<HashSet<_>>().len(),
+            ids.len(),
+            "order ids are unique"
+        );
+    }
+
+    #[test]
+    fn write_blocks_layout_dedupes_duplicate_ids_defensively() {
+        // Feed the seeding path duplicate ids directly (bypassing
+        // `reassign_ids`, which already guarantees uniqueness): the
+        // first occupant keeps the id, the rest are re-minted, and the
+        // projection still concatenates every block byte-exactly.
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = vec![
+            ReportBlock {
+                id: "b_dupe".to_string(),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({ "markdown": "# A\n\nalpha\n\n" }),
+            },
+            ReportBlock {
+                id: "b_dupe".to_string(),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({ "markdown": "# B\n\nbeta\n" }),
+            },
+        ];
+        ReportDoc::write_blocks_layout(&mut raw, &blocks);
+        let doc = ReportDoc(raw);
+        assert_eq!(doc.project().unwrap().1, "# A\n\nalpha\n\n# B\n\nbeta\n");
+        let ids: Vec<String> = doc
+            .block_index()
+            .unwrap()
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        assert_eq!(ids[0], "b_dupe");
+        assert_ne!(ids[1], "b_dupe");
+        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
     }
 }

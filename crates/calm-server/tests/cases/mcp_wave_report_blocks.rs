@@ -31,6 +31,7 @@ use calm_server::mcp_server::tools::wave_report_blocks::{
     RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
+use calm_server::model::CardPatch;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
@@ -640,6 +641,129 @@ async fn write_markdown_without_markers_falls_back_to_lcs() {
     assert_eq!(index[2].0, ids[1].0, "unchanged B keeps id");
     assert_eq!(index[2].1, ids[1].1, "unchanged B keeps rev");
     assert_eq!(current_payload(&boot).await.summary, "restructured");
+}
+
+#[tokio::test]
+async fn upsert_identical_content_keeps_rev_and_still_emits_events() {
+    // #960 PR2 review: a byte-identical replace is idempotent — the
+    // rev must NOT bump (a retried request would otherwise silently
+    // invalidate the caller's if_rev anchor). The persist boundary
+    // still runs: dual events fire with body_before == body_after.
+    let boot = boot().await;
+    let ids = seed_two_blocks(&boot).await;
+    let (id, rev) = ids[0].clone();
+
+    let events = boot.ctx.events.clone();
+    let sub = tokio::spawn(async move { collect_n(&events, 2).await });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "id": id, "kind": "prose", "markdown": "# A\n\nalpha\n\n", "if_rev": rev }),
+    )
+    .await
+    .expect("identical replace succeeds");
+    assert_eq!(out.get("id").and_then(Value::as_str), Some(id.as_str()));
+    assert_eq!(
+        out.get("rev").and_then(Value::as_u64),
+        Some(rev),
+        "identical content: rev unchanged"
+    );
+
+    // Dual-event invariant holds even for the no-op write.
+    let envs = sub.await.expect("collector ok");
+    assert_eq!(envs.len(), 2, "got {envs:?}");
+    assert!(matches!(envs[0].event, Event::CardUpdated(_)));
+    match &envs[1].event {
+        Event::WaveReportEdited {
+            body_before,
+            body_after,
+            ..
+        } => assert_eq!(body_before, body_after, "no-op write: bodies equal"),
+        other => panic!("expected WaveReportEdited, got {other:?}"),
+    }
+
+    // The unchanged rev is still a valid anchor: a real edit with the
+    // SAME if_rev succeeds and bumps to rev+1.
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "id": id, "kind": "prose", "markdown": "# A\n\nalpha edited\n\n", "if_rev": rev }),
+    )
+    .await
+    .expect("subsequent real edit succeeds with the same if_rev");
+    assert_eq!(out.get("rev").and_then(Value::as_u64), Some(rev + 1));
+    let index = index_of(&read(&boot, json!({})).await);
+    assert_eq!(index[0], (id, rev + 1));
+}
+
+#[tokio::test]
+async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
+    // #960 PR2 review: when a v2 row's JSON `blocks` cache is missing
+    // (dropped by a pre-#960 binary — design D8), `read` must serve
+    // the index from the CRDT doc, not re-derive ids from the flat
+    // body (re-derivation mints position-dependent ids that diverge
+    // from the doc after a `blocks.move` — handing out dead targets).
+    let boot = boot().await;
+    let ids = seed_two_blocks(&boot).await;
+    // Move B to the front so the CRDT order/ids can no longer be
+    // reproduced by deriving from the flat body.
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({ "id": ids[1].0, "to_index": 0 }),
+    )
+    .await
+    .expect("move succeeds");
+    let truth = index_of(&read(&boot, json!({})).await);
+    assert_eq!(truth[0].0, ids[1].0, "B moved to front");
+
+    // Simulate the dropped cache: rewrite the payload without `blocks`.
+    let card = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .expect("report card row");
+    let mut payload = card.payload.clone();
+    payload
+        .as_object_mut()
+        .expect("payload object")
+        .remove("blocks")
+        .expect("blocks cache was present");
+    boot.repo
+        .card_update(
+            boot.report_card_id.as_str(),
+            CardPatch {
+                title: None,
+                kind: None,
+                sort: None,
+                payload: Some(payload),
+                deletable: None,
+            },
+        )
+        .await
+        .expect("strip blocks cache");
+
+    // Read must serve the CRDT truth (same ids/revs/order as before).
+    let out = read(&boot, json!({})).await;
+    assert_eq!(index_of(&out), truth, "index comes from the CRDT doc");
+
+    // And the handed-out id/rev is a live target: upsert succeeds.
+    let (id, rev) = truth[0].clone();
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "id": id, "kind": "prose", "markdown": "# B\n\nbeta v2\n", "if_rev": rev }),
+    )
+    .await
+    .expect("id from CRDT-truth read is upsertable");
+    assert_eq!(out.get("rev").and_then(Value::as_u64), Some(rev + 1));
 }
 
 #[tokio::test]

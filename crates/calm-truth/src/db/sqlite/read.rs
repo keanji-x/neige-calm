@@ -291,6 +291,15 @@ impl RepoRead for SqlxRepo {
         Ok(row.map(Card::from))
     }
 
+    async fn card_body_crdt_get(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        let row: Option<(Option<Vec<u8>>,)> =
+            sqlx::query_as(r#"SELECT body_crdt FROM cards WHERE id = ?1"#)
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.and_then(|(blob,)| blob))
+    }
+
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {
         // #679 PR1 — `CardRole` lost its `sqlx::Type` derive when it moved
         // to calm-types; decode TEXT and parse via `TryFrom<String>`.
