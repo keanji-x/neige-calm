@@ -265,8 +265,26 @@ impl ReportDoc {
         let Some(blocks_id) = self.blocks_map()? else {
             return Ok(Vec::new());
         };
+        // 1:1 layout validation (#960 PR2 review round 3): `order`
+        // must be duplicate-free and cover the blocks map exactly —
+        // a duplicated order id would project the same block twice,
+        // a hidden map entry outside `order` is unreachable state.
+        let order = self.order_ids()?;
+        let mut seen: HashSet<&str> = HashSet::new();
+        for id in &order {
+            ensure!(
+                seen.insert(id.as_str()),
+                "malformed report doc: duplicate id {id} in order"
+            );
+        }
+        let map_len = self.0.keys(&blocks_id).count();
+        ensure!(
+            map_len == order.len(),
+            "malformed report doc: blocks map has {map_len} entries but order lists {}",
+            order.len()
+        );
         let mut blocks = Vec::new();
-        for id in self.order_ids()? {
+        for id in order {
             let entry = self.entry_at(&blocks_id, &id)?.with_context(|| {
                 format!("malformed report doc: order id {id} has no blocks entry")
             })?;
@@ -282,7 +300,9 @@ impl ReportDoc {
                 .with_context(|| format!("read block {id} rev"))?
                 .and_then(|(value, _)| value.to_u64())
                 .with_context(|| format!("malformed report doc: block {id} has no Uint rev"))?;
-            let rev = u32::try_from(rev).unwrap_or(u32::MAX);
+            let rev = u32::try_from(rev).with_context(|| {
+                format!("malformed report doc: block {id} rev {rev} exceeds u32")
+            })?;
             let text = self
                 .text_at(&entry, KEY_TEXT)
                 .with_context(|| format!("malformed report doc: block {id} text field"))?;
@@ -324,7 +344,9 @@ impl ReportDoc {
             .with_context(|| format!("read block {id} rev"))?
             .and_then(|(value, _)| value.to_u64())
             .with_context(|| format!("malformed report doc: block {id} has no Uint rev"))?;
-        Ok(Some(u32::try_from(rev).unwrap_or(u32::MAX)))
+        let rev = u32::try_from(rev)
+            .with_context(|| format!("malformed report doc: block {id} rev {rev} exceeds u32"))?;
+        Ok(Some(rev))
     }
 
     /// Insert or replace a single block.
@@ -358,7 +380,9 @@ impl ReportDoc {
                     .context("read block rev")?
                     .and_then(|(value, _)| value.to_u64())
                     .context("doc invariant: block entry has a Uint rev")?;
-                let rev = u32::try_from(rev).unwrap_or(u32::MAX);
+                let rev = u32::try_from(rev).with_context(|| {
+                    format!("malformed report doc: block {id} rev {rev} exceeds u32")
+                })?;
                 let text_id = self
                     .typed_at(&entry, KEY_TEXT, ObjType::Text)?
                     .with_context(|| format!("malformed report doc: block {id} text field"))?;
@@ -1221,6 +1245,84 @@ mod tests {
         );
         // An unknown id on the same doc is still a clean None.
         assert_eq!(doc.block_rev("b_nope").unwrap(), None);
+    }
+
+    #[test]
+    fn out_of_range_rev_is_corruption_not_saturation() {
+        // rev stored as a Uint beyond u32::MAX: corruption, not a
+        // silently saturated value (#960 PR2 review round 3).
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, KEY_KIND, "prose").unwrap();
+        raw.put(&entry, KEY_REV, u64::from(u32::MAX) + 1).unwrap();
+        let text_id = raw.put_object(&entry, KEY_TEXT, ObjType::Text).unwrap();
+        raw.update_text(&text_id, "# A\n").unwrap();
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.blocks_snapshot().unwrap_err();
+        assert!(format!("{err:#}").contains("exceeds u32"), "err = {err:#}");
+        assert!(doc.block_rev("b_0001").is_err());
+        assert!(doc.has_blocks_layout().is_err());
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        assert!(
+            doc.upsert_block(Some("b_0001"), "prose", "x\n").is_err(),
+            "replace over a corrupt rev must be refused"
+        );
+    }
+
+    #[test]
+    fn duplicate_order_id_is_corruption() {
+        // `order` lists the same id twice: projecting it would emit
+        // the block twice — corruption, not an interpretable state.
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, KEY_KIND, "prose").unwrap();
+        raw.put(&entry, KEY_REV, 1_u64).unwrap();
+        let text_id = raw.put_object(&entry, KEY_TEXT, ObjType::Text).unwrap();
+        raw.update_text(&text_id, "# A\n").unwrap();
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        raw.insert(&order, 1, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.blocks_snapshot().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("duplicate id b_0001 in order"),
+            "err = {err:#}"
+        );
+        assert!(doc.has_blocks_layout().is_err());
+    }
+
+    #[test]
+    fn hidden_blocks_entry_outside_order_is_corruption() {
+        // The blocks map carries an entry `order` never lists: hidden,
+        // unreachable state — the 1:1 count check must reject it.
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        for id in ["b_0001", "b_hidden"] {
+            let entry = raw.put_object(&blocks, id, ObjType::Map).unwrap();
+            raw.put(&entry, KEY_KIND, "prose").unwrap();
+            raw.put(&entry, KEY_REV, 1_u64).unwrap();
+            let text_id = raw.put_object(&entry, KEY_TEXT, ObjType::Text).unwrap();
+            raw.update_text(&text_id, "# A\n").unwrap();
+        }
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.blocks_snapshot().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("blocks map has 2 entries but order lists 1"),
+            "err = {err:#}"
+        );
+        assert!(doc.has_blocks_layout().is_err());
     }
 
     // -- duplicate id hints (#960 PR2 review) ------------------------
