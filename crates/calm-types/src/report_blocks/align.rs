@@ -102,8 +102,8 @@ pub fn reassign_ids_with_hints(
                 .flatten()
         })
         .collect();
-    let old_text: Vec<Option<&str>> = old_flat.iter().map(Option::as_deref).collect();
-    let new_text: Vec<Option<&str>> = canonical
+    let mut old_text: Vec<Option<&str>> = old_flat.iter().map(Option::as_deref).collect();
+    let mut new_text: Vec<Option<&str>> = canonical
         .iter()
         .enumerate()
         .map(|(index, text)| assignments[index].is_none().then_some(text.as_str()))
@@ -119,6 +119,24 @@ pub fn reassign_ids_with_hints(
         .iter()
         .chain(std::iter::once(&(old_blocks.len(), new_slices.len())))
     {
+        // Same-kind non-prose pre-pass (#960 PR3 review round 1): a
+        // heavily re-parameterized data block (e.g. a chart whose
+        // candles were all replaced) falls below the 0.5 similarity
+        // threshold on its full fence text and would mint a new id.
+        // Within this gap, when the old side has exactly ONE eligible
+        // non-prose block of kind K and the new side exactly ONE
+        // fence slice of kind K, pair them directly — identity is
+        // unambiguous regardless of content distance. More than one
+        // of the same kind falls back to the similarity logic.
+        same_kind_pairs(
+            old_blocks,
+            &fences,
+            (previous_old, anchor_old),
+            (previous_new, anchor_new),
+            &mut old_text,
+            &mut new_text,
+            &mut assignments,
+        );
         similarity_matches(
             &old_text[previous_old..anchor_old],
             &new_text[previous_new..anchor_new],
@@ -178,6 +196,50 @@ fn comparable_flat(block: &ReportBlock) -> Option<String> {
             .map(str::to_string)
     } else {
         Some(flat_text(block))
+    }
+}
+
+/// Pair the unique same-kind non-prose (old block, new fence slice)
+/// per kind within one LCS gap. Paired entries are assigned and
+/// masked out of both sides so the similarity pass skips them.
+fn same_kind_pairs(
+    old_blocks: &[ReportBlock],
+    fences: &[Option<NonProseFence>],
+    (old_start, old_end): (usize, usize),
+    (new_start, new_end): (usize, usize),
+    old_text: &mut [Option<&str>],
+    new_text: &mut [Option<&str>],
+    assignments: &mut [Option<usize>],
+) {
+    let mut old_by_kind: HashMap<&str, Vec<usize>> = HashMap::new();
+    for index in old_start..old_end {
+        if old_text[index].is_some() && old_blocks[index].kind != KIND_PROSE {
+            old_by_kind
+                .entry(old_blocks[index].kind.as_str())
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut new_by_kind: HashMap<&str, Vec<usize>> = HashMap::new();
+    for index in new_start..new_end {
+        if new_text[index].is_some()
+            && let Some(fence) = &fences[index]
+        {
+            new_by_kind
+                .entry(fence.kind.as_str())
+                .or_default()
+                .push(index);
+        }
+    }
+    for (kind, old_indexes) in old_by_kind {
+        if let ([old_index], Some([new_index])) = (
+            old_indexes.as_slice(),
+            new_by_kind.get(kind).map(Vec::as_slice),
+        ) {
+            assignments[*new_index] = Some(*old_index);
+            old_text[*old_index] = None;
+            new_text[*new_index] = None;
+        }
     }
 }
 
@@ -424,6 +486,84 @@ mod tests {
         assert_eq!(out[2].id, "b_ch01", "fence keeps id across insertion");
         assert_eq!(out[2].rev, 2);
         assert_eq!(out[2].payload, chart.payload);
+    }
+
+    #[test]
+    fn heavily_reparameterized_data_block_keeps_id_via_same_kind_pairing() {
+        // #960 PR3 review round 1: a large parameter edit drops fence
+        // similarity below 0.5 — the unique same-kind pre-pass must
+        // still pair the blocks (id inherited, rev+1).
+        //
+        // app: src "/x" → long path.
+        let old = vec![ReportBlock {
+            id: "b_ap01".to_string(),
+            kind: "app".to_string(),
+            rev: 2,
+            payload: serde_json::json!({ "src": "/x" }),
+        }];
+        let long_src = format!("/apps/deeply/nested/{}", "z".repeat(120));
+        let body = format!(
+            "```neige-block app\n{{\"src\": \"{long_src}\", \"title\": \"tooling\"}}\n```\n"
+        );
+        let out = reassign_ids(&old, &split_body(&body));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "b_ap01", "id survives the large edit");
+        assert_eq!(out[0].rev, 3, "changed payload: rev+1");
+        assert_eq!(out[0].payload["src"], serde_json::json!(long_src));
+
+        // chart: most candles replaced, surrounded by prose that also
+        // changed — still pairs inside the gap.
+        let chart = ReportBlock {
+            id: "b_ch01".to_string(),
+            kind: "chart.candles".to_string(),
+            rev: 4,
+            payload: serde_json::json!({
+                "symbol": "0700.HK",
+                "candles": [[1, 1, 1, 1, 1], [2, 2, 2, 2, 2]],
+            }),
+        };
+        let mut old = reassign_ids(&[], &split_body("# A\nalpha\n"));
+        old.push(chart);
+        let new_candles: Vec<serde_json::Value> = (100..160)
+            .map(|i| serde_json::json!([i, i * 7, i * 9, i * 3, i * 5]))
+            .collect();
+        let new_fence = flat_text(&ReportBlock {
+            id: String::new(),
+            kind: "chart.candles".to_string(),
+            rev: 0,
+            payload: serde_json::json!({ "symbol": "9988.HK", "candles": new_candles }),
+        });
+        let out = reassign_ids(&old, &split_body(&format!("# A\nalpha\n{new_fence}")));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].id, "b_ch01", "chart id survives wholesale re-data");
+        assert_eq!(out[1].rev, 5, "rev+1");
+
+        // Two same-kind blocks in one gap: ambiguity falls back to
+        // similarity — the byte-identical one is LCS-anchored, the
+        // remaining one-on-one pair still resolves via the pre-pass.
+        let a = ReportBlock {
+            id: "b_a".to_string(),
+            kind: "app".to_string(),
+            rev: 1,
+            payload: serde_json::json!({ "src": "/keep" }),
+        };
+        let b = ReportBlock {
+            id: "b_b".to_string(),
+            kind: "app".to_string(),
+            rev: 1,
+            payload: serde_json::json!({ "src": "/rewrite" }),
+        };
+        let body = format!(
+            "{}```neige-block app\n{{\"src\": \"/totally/different/{}\"}}\n```\n",
+            flat_text(&a),
+            "w".repeat(80)
+        );
+        let out = reassign_ids(&[a, b], &split_body(&body));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "b_a", "identical fence LCS-anchored");
+        assert_eq!(out[0].rev, 1);
+        assert_eq!(out[1].id, "b_b", "leftover same-kind pair inherits");
+        assert_eq!(out[1].rev, 2);
     }
 
     #[test]

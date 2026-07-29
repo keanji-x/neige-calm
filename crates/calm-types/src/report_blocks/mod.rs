@@ -21,7 +21,8 @@ mod align;
 pub use align::{mint_id, reassign_ids, reassign_ids_with_hints};
 pub use fence::{NonProseFence, canonical_json, neige_open_kind, parse_fence, render_fence};
 pub use kinds::{
-    DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_PROSE, KIND_TABLE, is_data_kind,
+    DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_PROSE, KIND_TABLE, MAX_CANONICAL_BYTES,
+    MAX_CHART_CANDLES, MAX_STRING_CHARS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, is_data_kind,
     validate_payload,
 };
 
@@ -47,10 +48,12 @@ pub fn split_body(body: &str) -> Vec<BlockSlice> {
 /// Descriptions of every malformed `neige-block` fence in `body`: an
 /// unindented ```` ```neige-block <kind> ```` opener whose region does
 /// not parse (bad JSON, non-object payload, over-long/decorated closer,
-/// unterminated). The lenient read treats these as prose; write ends
-/// (`blocks.upsert` prose content, `write_markdown`, the prose
-/// `Replace` shim) must refuse them so a typo'd data block cannot be
-/// silently persisted as prose.
+/// unterminated), plus two near-miss typo shapes outside any fence —
+/// a 1-3-space-indented `` ```neige-block `` opener, and a zero-indent
+/// opener with trailing text after the kind. The lenient read treats
+/// all of these as prose; write ends (`blocks.upsert` prose content,
+/// `write_markdown`, the prose `Replace` shim) must refuse them so a
+/// typo'd data block cannot be silently persisted as prose.
 pub fn invalid_neige_fences(body: &str) -> Vec<String> {
     scan(body).invalid_fences
 }
@@ -94,6 +97,32 @@ fn scan(body: &str) -> Scan {
             // check it first so the candidate region is tracked.
             fence_state = Some((b'`', 3, Some(offset)));
         } else if let Some((marker, length)) = opening_fence(line) {
+            // Typo'd neige openers (#960 PR3 review round 1): outside
+            // any fence, a 1-3-space-indented `` ```neige-block ``
+            // opener, or a zero-indent opener with trailing text after
+            // the kind, is almost certainly a mistake — record it so
+            // write ends reject with a fix hint. Examples inside an
+            // outer fence (~~~ or 4-backtick) never reach this branch.
+            if marker == b'`' {
+                let stripped = strip_fence_indent(line);
+                if stripped.starts_with("```neige-block") {
+                    if stripped.len() != line.len() {
+                        invalid_fences.push(format!(
+                            "indented ```neige-block opener at byte {offset}: a neige-block \
+                             fence must start at column 0 — remove the leading spaces (or wrap \
+                             the snippet in a ~~~ fence if it is only an example)"
+                        ));
+                    } else if let Some(rest) = line.strip_prefix("```neige-block ")
+                        && rest.trim_end().contains([' ', '\t'])
+                    {
+                        invalid_fences.push(format!(
+                            "```neige-block opener with trailing text at byte {offset}: the \
+                             info string must be exactly `neige-block <kind>` — remove \
+                             everything after the kind"
+                        ));
+                    }
+                }
+            }
             fence_state = Some((marker, length, None));
         } else if is_h1_or_h2(line) {
             starts.push(offset);
@@ -414,20 +443,63 @@ mod tests {
     #[test]
     fn neige_fence_inside_an_outer_fence_is_not_cut_and_not_invalid() {
         // Documentation showing the syntax inside ~~~ or 4-backtick
-        // fences must be left alone.
+        // fences must be left alone — including indented or
+        // trailing-text openers that would otherwise be typo-flagged.
         for body in [
             "~~~md\n```neige-block app\n{\"src\": \"/x\"}\n```\n~~~\n",
             "````md\n```neige-block app\nnot json\n```\n````\n",
+            "~~~md\n  ```neige-block app\n~~~\n",
+            "````md\n```neige-block app extra tail\n````\n",
         ] {
             let blocks = split_body(body);
             assert_eq!(flatten(&blocks), body, "{body:?}");
             assert_eq!(blocks.len(), 1, "{body:?}");
             assert!(invalid_neige_fences(body).is_empty(), "{body:?}");
         }
-        // Indented neige opener: an ordinary fence, not a candidate.
-        let body = "  ```neige-block app\n{\"src\": \"/x\"}\n  ```\n";
-        assert_eq!(split_body(body).len(), 1);
-        assert!(invalid_neige_fences(body).is_empty());
+    }
+
+    #[test]
+    fn typo_neige_openers_are_flagged_for_write_ends() {
+        // #960 PR3 review round 1: near-miss openers outside any fence
+        // are almost certainly mistakes — flagged (write ends reject),
+        // while the lenient read still treats them as prose.
+        for (body, needle) in [
+            // 1-3-space indent before the opener.
+            (" ```neige-block app\n{\"src\": \"/x\"}\n```\n", "indented"),
+            (
+                "   ```neige-block app\n{\"src\": \"/x\"}\n   ```\n",
+                "indented",
+            ),
+            // Zero-indent opener with trailing text after the kind.
+            (
+                "```neige-block app extra\n{\"src\": \"/x\"}\n```\n",
+                "trailing text",
+            ),
+            (
+                "```neige-block chart.candles day\n{}\n```\n",
+                "trailing text",
+            ),
+        ] {
+            let blocks = split_body(body);
+            assert_eq!(flatten(&blocks), body, "{body:?}");
+            assert_eq!(blocks.len(), 1, "typo fence reads as prose: {body:?}");
+            let invalid = invalid_neige_fences(body);
+            assert_eq!(invalid.len(), 1, "{body:?} → {invalid:?}");
+            assert!(invalid[0].contains(needle), "{body:?} → {invalid:?}");
+        }
+        // Narrow judgment: shapes outside the two typo patterns stay
+        // lenient (ordinary fences, nothing flagged).
+        for body in [
+            "```neige-block Chart\n{}\n```\n", // bad kind chars, no tail
+            "```neige-blockapp\n{}\n```\n",    // no space after info word
+            "````neige-block app\n{}\n````\n", // four backticks
+            "    ```neige-block app\n",        // 4+ indent = indented code
+        ] {
+            assert!(
+                invalid_neige_fences(body).is_empty(),
+                "{body:?} must stay lenient"
+            );
+        }
     }
 
     #[test]

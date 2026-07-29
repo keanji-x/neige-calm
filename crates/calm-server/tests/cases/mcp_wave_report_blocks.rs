@@ -163,6 +163,52 @@ async fn kinds_returns_all_four_schemas() {
             .and_then(Value::as_u64),
         Some(2000),
     );
+
+    // #960 PR3 review round 1: advertised limits mirror the Rust
+    // validator (calm_types::report_blocks::kinds) so agents can
+    // self-limit before the round-trip.
+    assert_eq!(
+        chart
+            .pointer("/schema/properties/candles/maxItems")
+            .and_then(Value::as_u64),
+        Some(5000),
+    );
+    assert_eq!(
+        chart
+            .pointer("/schema/properties/symbol/maxLength")
+            .and_then(Value::as_u64),
+        Some(2048),
+    );
+    assert_eq!(
+        table
+            .pointer("/schema/properties/columns/maxItems")
+            .and_then(Value::as_u64),
+        Some(32),
+    );
+    assert_eq!(
+        table
+            .pointer("/schema/properties/rows/maxItems")
+            .and_then(Value::as_u64),
+        Some(500),
+    );
+    assert!(
+        table
+            .pointer("/schema/properties/rows/items/description")
+            .and_then(Value::as_str)
+            .is_some_and(|d| d.contains("declared column") && d.contains("PE")),
+        "row-key rule + counter-example in the description"
+    );
+    assert_eq!(
+        app.pointer("/schema/properties/src/pattern")
+            .and_then(Value::as_str),
+        Some("^/(?![/\\\\])[^\\\\]*$"),
+    );
+    assert!(
+        app.pointer("/schema/properties/src/description")
+            .and_then(Value::as_str)
+            .is_some_and(|d| d.contains("NOT accepted")),
+        "src description forbids full URLs"
+    );
 }
 
 #[tokio::test]
@@ -456,16 +502,36 @@ async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
         err.message.contains("range: unknown field"),
         "msg = {err:?}"
     );
+    for src in [
+        "https://evil.example/x",
+        // Backslash bypass (#960 PR3 review round 1): browsers
+        // normalize `/\host` into a protocol-relative URL.
+        "/\\evil.example/x",
+        "/apps\\x",
+    ] {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            spec_identity(&boot),
+            json!({ "kind": "app", "payload": { "src": src } }),
+        )
+        .await
+        .expect_err("non-same-origin app src");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("src"), "{src} → {err:?}");
+    }
+    // Oversized payload: limit named in the error (-32602 path).
+    let candles: Vec<Value> = (0..5001i64).map(|i| json!([i, 1, 2, 0, 1])).collect();
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "app", "payload": { "src": "https://evil.example/x" } }),
+        json!({ "kind": "chart.candles", "payload": { "symbol": "X", "candles": candles } }),
     )
     .await
-    .expect_err("absolute URL app src");
+    .expect_err("over-cap candles");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("src"), "msg = {err:?}");
+    assert!(err.message.contains("limit is 5000"), "msg = {err:?}");
     // Nothing was written by any of the rejected calls.
     assert_eq!(current_payload(&boot).await, before);
 }

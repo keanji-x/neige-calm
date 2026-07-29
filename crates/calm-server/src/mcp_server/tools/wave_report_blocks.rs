@@ -127,11 +127,12 @@ fn kinds_table() -> Value {
                     "required": ["symbol", "candles"],
                     "additionalProperties": false,
                     "properties": {
-                        "symbol": { "type": "string", "minLength": 1, "description": "Instrument label, e.g. \"0700.HK\"." },
+                        "symbol": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Instrument label, e.g. \"0700.HK\"." },
                         "period": { "type": "string", "enum": ["day", "week", "month"], "description": "Candle period (default day)." },
                         "candles": {
                             "type": "array",
                             "minItems": 2,
+                            "maxItems": report_blocks::MAX_CHART_CANDLES,
                             "description": "Inline candle rows, oldest first. You fetch the data yourself and write it in; the reader filters ranges client-side.",
                             "items": {
                                 "type": "array",
@@ -146,7 +147,7 @@ fn kinds_table() -> Value {
                             "items": { "type": "string", "enum": ["ma20", "ma60"] },
                             "description": "Moving-average overlays to render."
                         },
-                        "caption": { "type": "string" }
+                        "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS }
                     }
                 },
                 "usage": "Candlestick chart with inline data. Minimal example \
@@ -155,7 +156,9 @@ fn kinds_table() -> Value {
                      [[1719800000000, 371.2, 380.0, 370.0, 378.4, 12000000], \
                      [1719886400000, 378.4, 382.0, 375.0, 379.8, 9800000]] } }. \
                      The kernel has no market-data source: include every \
-                     candle you want rendered."
+                     candle you want rendered. Limits: at most 5000 candles \
+                     and 256KB of JSON per block — downsample older history \
+                     if you exceed either."
             },
             {
                 "kind": "table",
@@ -167,34 +170,40 @@ fn kinds_table() -> Value {
                         "columns": {
                             "type": "array",
                             "minItems": 1,
+                            "maxItems": report_blocks::MAX_TABLE_COLUMNS,
                             "items": {
                                 "type": "object",
                                 "required": ["key", "label"],
                                 "additionalProperties": false,
                                 "properties": {
-                                    "key": { "type": "string", "minLength": 1, "description": "Row-object key; unique per table." },
-                                    "label": { "type": "string", "description": "Rendered column header." },
+                                    "key": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Row-object key; unique per table." },
+                                    "label": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Rendered column header." },
                                     "align": { "type": "string", "enum": ["left", "right"] }
                                 }
                             }
                         },
                         "rows": {
                             "type": "array",
+                            "maxItems": report_blocks::MAX_TABLE_ROWS,
                             "items": {
                                 "type": "object",
-                                "description": "Keys must be declared column keys; values are string | number | null.",
+                                "description": "Every key MUST be a declared column `key` (JSON Schema cannot express this — it is enforced server-side). Counter-example: with columns [{\"key\": \"pe\", …}], a row { \"PE\": 18.2 } is rejected with `rows[0].PE: not a declared column key`. Values are string | number | null.",
                                 "additionalProperties": { "type": ["string", "number", "null"] }
                             }
                         },
-                        "caption": { "type": "string" },
-                        "highlight": { "type": "string", "description": "Row key VALUE to visually highlight." }
+                        "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "highlight": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Row key VALUE to visually highlight." }
                     }
                 },
                 "usage": "Structured comparison table. Minimal example — \
                      calm.report.blocks.upsert { \"kind\": \"table\", \"payload\": \
                      { \"columns\": [{ \"key\": \"name\", \"label\": \"公司\" }, \
                      { \"key\": \"pe\", \"label\": \"PE\", \"align\": \"right\" }], \
-                     \"rows\": [{ \"name\": \"腾讯\", \"pe\": 18.2 }] } }."
+                     \"rows\": [{ \"name\": \"腾讯\", \"pe\": 18.2 }] } }. Row \
+                     keys must be declared column keys — { \"columns\": \
+                     [{\"key\": \"pe\", …}], \"rows\": [{ \"PE\": 1 }] } is \
+                     rejected. Limits: 32 columns, 500 rows, 2048 chars per \
+                     string, 256KB of JSON per block."
             },
             {
                 "kind": "app",
@@ -203,15 +212,17 @@ fn kinds_table() -> Value {
                     "required": ["src"],
                     "additionalProperties": false,
                     "properties": {
-                        "src": { "type": "string", "description": "Same-origin path starting with `/` (no scheme, no `//host`). Rendered in the sandboxed AppBridge iframe." },
-                        "title": { "type": "string" },
+                        "src": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/(?![/\\\\])[^\\\\]*$", "description": "Same-origin absolute path: starts with `/`, not `//`, no backslashes, no scheme — full URLs (https://…) are NOT accepted. Rendered in the sandboxed AppBridge iframe." },
+                        "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
                         "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Iframe height in px (default chosen by the renderer)." }
                     }
                 },
                 "usage": "Embed a same-origin mini-app in the report. Minimal \
                      example — calm.report.blocks.upsert { \"kind\": \"app\", \
                      \"payload\": { \"src\": \"/apps/screener\", \"title\": \
-                     \"选股器\", \"height\": 600 } }."
+                     \"选股器\", \"height\": 600 } }. `src` must be a \
+                     same-origin absolute path (`/…`); full URLs and \
+                     backslashes are rejected."
             }
         ]
     })
