@@ -199,6 +199,13 @@ async fn kinds_returns_all_four_schemas() {
         "row-key rule + counter-example in the description"
     );
     assert_eq!(
+        table
+            .pointer("/schema/properties/rows/items/additionalProperties/maxLength")
+            .and_then(Value::as_u64),
+        Some(2048),
+        "string cell values advertise the 2048-char cap"
+    );
+    assert_eq!(
         app.pointer("/schema/properties/src/pattern")
             .and_then(Value::as_str),
         Some("^/(?![/\\\\])[^\\\\]*$"),

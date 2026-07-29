@@ -188,7 +188,7 @@ fn kinds_table() -> Value {
                             "items": {
                                 "type": "object",
                                 "description": "Every key MUST be a declared column `key` (JSON Schema cannot express this — it is enforced server-side). Counter-example: with columns [{\"key\": \"pe\", …}], a row { \"PE\": 18.2 } is rejected with `rows[0].PE: not a declared column key`. Values are string | number | null.",
-                                "additionalProperties": { "type": ["string", "number", "null"] }
+                                "additionalProperties": { "type": ["string", "number", "null"], "maxLength": report_blocks::MAX_STRING_CHARS }
                             }
                         },
                         "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },

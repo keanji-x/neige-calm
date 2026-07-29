@@ -242,13 +242,18 @@ fn validate_app(map: &Map<String, Value>, errors: &mut Vec<String>) {
     reject_unknown(map, &["src", "title", "height"], errors);
     match map.get("src") {
         Some(Value::String(src))
-            if src.starts_with('/') && !src.starts_with("//") && !src.contains('\\') =>
+            if src.starts_with('/')
+                && !src.starts_with("//")
+                && !src.contains('\\')
+                && !src.chars().any(is_url_hostile_char) =>
         {
             check_string_cap("src", src, errors);
         }
         Some(_) | None => errors.push(
             "src: required same-origin path starting with `/` (no scheme, no `//host`, no \
-             backslashes — browsers normalize `/\\host` to a protocol-relative URL)"
+             backslashes, no control characters — the WHATWG URL parser strips tab/newline/C0 \
+             controls before parsing, so `/\\host` or `/\\n/host` would normalize to a \
+             protocol-relative URL; percent-encoded forms like `/%0A` are fine)"
                 .into(),
         ),
     }
@@ -259,6 +264,16 @@ fn validate_app(map: &Map<String, Value>, errors: &mut Vec<String>) {
             _ => errors.push("height: must be a number between 120 and 2000 (px)".into()),
         }
     }
+}
+
+/// Characters the WHATWG URL parser strips or reinterprets before
+/// parsing (#960 PR3 review round 2): ASCII C0 controls + DEL
+/// (`is_ascii_control` — includes tab/LF/CR) and the C1 control range
+/// U+0080..=U+009F. A `src` containing any of these could normalize
+/// into a different URL in the browser, so they are rejected outright;
+/// visible ASCII (incl. space) and non-control UTF-8 stay legal.
+fn is_url_hostile_char(c: char) -> bool {
+    c.is_ascii_control() || matches!(c, '\u{80}'..='\u{9f}')
 }
 
 fn reject_unknown(map: &Map<String, Value>, allowed: &[&str], errors: &mut Vec<String>) {
@@ -391,6 +406,16 @@ mod tests {
             Ok(())
         );
         assert_eq!(validate_payload(KIND_APP, &json!({ "src": "/x" })), Ok(()));
+        // Percent-encoded control chars are harmless (browsers do not
+        // pre-decode before URL parsing) — stay allowed, as do spaces
+        // and non-control UTF-8.
+        for ok in ["/%0A/page", "/apps/%5C", "/path with space", "/应用/看板"] {
+            assert_eq!(
+                validate_payload(KIND_APP, &json!({ "src": ok })),
+                Ok(()),
+                "{ok} must stay allowed"
+            );
+        }
         for (payload, needle) in [
             (json!({ "src": "https://evil.example/x" }), "src"),
             (json!({ "src": "//evil.example/x" }), "src"),
@@ -402,6 +427,15 @@ mod tests {
             (json!({ "src": "/\\evil.example/x" }), "src"),
             (json!({ "src": "/x\\..\\..\\evil" }), "src"),
             (json!({ "src": "/apps\\x" }), "src"),
+            // Control-character bypasses (#960 PR3 review round 2):
+            // WHATWG strips tab/newline/C0 before parsing, so
+            // `/\n/evil` would normalize to `//evil` in the browser.
+            (json!({ "src": "/\n/evil.example/x" }), "src"),
+            (json!({ "src": "/\t/evil.example/x" }), "src"),
+            (json!({ "src": "/\r/evil.example/x" }), "src"),
+            (json!({ "src": "/x\u{0}" }), "src"),
+            (json!({ "src": "/x\u{7f}" }), "src"),
+            (json!({ "src": "/x\u{85}y" }), "src"),
             (json!({ "src": "/x", "height": 80 }), "height"),
             (json!({ "src": "/x", "height": 9000 }), "height"),
             (json!({ "src": "/x", "onload": "x" }), "unknown field"),
