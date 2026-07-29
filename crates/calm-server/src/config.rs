@@ -173,6 +173,12 @@ pub struct Config {
     /// is a documented sanity cap. Deliberately NOT tied to
     /// `start_timeout` — shutdown/checkpoint time and cold-start time are
     /// different budgets.
+    ///
+    /// #954 — the default (60) is mirrored by neige-app's
+    /// `CALM_STOP_GRACE_DEFAULT_SECS` (`crates/neige-app/src/apply.rs`),
+    /// which folds this setting (same clap precedence) into the
+    /// `/upgrade/apply` healthcheck deadline
+    /// (`2·start_timeout + stop_grace + margin`). Keep the two in sync.
     #[arg(
         long,
         env = "CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS",
