@@ -126,6 +126,14 @@
   --success: oklch(54% 0.14 145);  /* test pass, git add */
   --error:   oklch(56% 0.14 25);   /* test fail, git rm */
 
+  /* Market polarity — 红涨绿跌 (CN convention): up = red, down = green.
+     Used by report candle charts / tables (#960). Hue alone is not the only
+     channel — rising candles are hollow, falling solid. Canvas chart code
+     (pages/report-blocks/candles.tsx) mirrors these values as hex; keep in
+     sync when editing. */
+  --up:   #b3271c;
+  --down: #2ba471;
+
   /* Surface tokens — named backgrounds that text lands on. Slice 1 of #137:
      paper/bg are aliases for existing tokens; rail/card/chip/toggle-overlay
      replace inline oklch literals scattered across component selectors.
@@ -347,6 +355,9 @@
      call. The 0.14 chroma matches the light side. */
   --success: oklch(74% 0.14 145);
   --error:   oklch(74% 0.14 25);
+  /* Market polarity, dark (see light block note; keep candles.tsx in sync). */
+  --up:   #e94f42;
+  --down: #34a87e;
   --surface-rail: oklch(15% 0.008 245);
   --surface-card: oklch(21% 0.009 245);
   --surface-chip: oklch(24% 0.01 245);
@@ -1708,9 +1719,13 @@ select:-webkit-autofill {
   flex-direction: column;
   overflow: hidden;
 }
+/* One left edge runs the whole page (#960 PR3): the document container is
+   748px; prose (and the doc head) narrow to 616px flush-left inside it,
+   while chart/table/app blocks break out to the full 748px. Breakout — not
+   a card border — is what marks the figure as a layout event. */
 .report-doc {
   width: 100%;
-  max-width: 640px;
+  max-width: 748px;
   margin: var(--space-0) auto;
   padding:
     calc(var(--space-12) + var(--space-4))
@@ -1927,6 +1942,248 @@ select:-webkit-autofill {
 }
 .report-json-card {
   margin-top: var(--space-10);
+}
+/* Prose measure inside the 748px report document. Blocks share one left
+   edge; only .report-block--breakout widens back to the container. */
+.report-title,
+.report-byline,
+.report-duplicate,
+.report-empty,
+.report-block {
+  max-width: 616px;
+}
+.report-block--breakout {
+  max-width: none;
+  margin-top: calc(var(--space-12) + var(--space-6));
+}
+.report-block--breakout + .report-block--breakout {
+  margin-top: var(--space-12);
+}
+.rb-unsupported {
+  margin-top: var(--space-10);
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+/* ── chart.candles: no card frame — hairlines + breakout do the work ── */
+.rb-fig {
+  margin: var(--space-0);
+}
+.rb-fig-top {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-6);
+  padding-bottom: var(--space-5);
+}
+.rb-fig-sym {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--text);
+}
+.rb-fig-last {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.rb-fig-chg {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.rb-fig-chg--up {
+  color: var(--up);
+}
+.rb-fig-chg--down {
+  color: var(--down);
+}
+.rb-ranges {
+  display: flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.rb-range {
+  padding: var(--space-1) var(--space-4);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.rb-range:hover {
+  background: var(--surface-card);
+  color: var(--text-2);
+}
+.rb-range[aria-pressed="true"] {
+  background: var(--surface-chip);
+  color: var(--text);
+}
+.rb-chart {
+  position: relative;
+  border-top: 1px solid var(--hairline);
+}
+.rb-chart-host {
+  height: 300px;
+}
+.rb-tip {
+  position: absolute;
+  z-index: var(--z-raised);
+  top: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+  border-radius: var(--radius-lg);
+  background: color-mix(in oklab, var(--paper) 80%, transparent);
+  backdrop-filter: blur(14px) saturate(160%);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--leading-base);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.rb-tip-row {
+  display: flex;
+  gap: var(--space-9);
+  justify-content: space-between;
+}
+.rb-tip-row span:first-child {
+  color: var(--text-4);
+}
+.rb-fig-cap {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--hairline);
+  color: var(--text-4);
+  font-size: var(--text-xs);
+}
+.rb-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.rb-legend-label {
+  color: var(--text-4);
+}
+.rb-sw {
+  width: 13px;
+  height: 2px;
+  border-radius: var(--radius-xs);
+}
+.rb-sw--box {
+  width: 8px;
+  height: 10px;
+  border: 1.4px solid currentcolor;
+  border-radius: var(--radius-xs);
+  background: transparent;
+}
+.rb-sw--box-solid {
+  background: currentcolor;
+}
+.rb-fig-src {
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+/* ── table: classic borderless editorial table ── */
+.rb-table-wrap {
+  overflow-x: auto;
+}
+.rb-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+}
+.rb-table caption {
+  caption-side: bottom;
+  padding-top: var(--space-5);
+  color: var(--text-4);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+.rb-table thead th {
+  padding: var(--space-0) var(--space-7) var(--space-4);
+  border-bottom: 1px solid var(--hairline-strong);
+  color: var(--text-4);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wider);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rb-table tbody td {
+  padding: var(--space-5) var(--space-7);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.rb-table thead th:first-child,
+.rb-table tbody td:first-child {
+  padding-left: var(--space-0);
+}
+.rb-table thead th:last-child,
+.rb-table tbody td:last-child {
+  padding-right: var(--space-0);
+}
+.rb-table tbody tr:last-child td {
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.rb-table tbody tr.rb-row-hi td {
+  box-shadow: inset 0 0 0 99px var(--accent-soft);
+  color: var(--text);
+  font-weight: var(--weight-semibold);
+}
+.rb-align-left {
+  text-align: left;
+}
+.rb-align-right {
+  text-align: right;
+}
+/* ── app: the one block that keeps a border — it is a sandboxed outsider ── */
+.rb-app {
+  overflow: hidden;
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-lg);
+}
+.rb-appbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.rb-appbar-lock {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.7;
+}
+.rb-appbar-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.rb-appbar-badge {
+  margin-left: auto;
+  letter-spacing: var(--tracking-widest);
+}
+.rb-app-frame {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
 }
 .wave-fs-viewer-cards-index {
   padding: var(--space-8);
