@@ -5882,7 +5882,7 @@
             "items": {
               "$ref": "#/components/schemas/ReportBlock"
             },
-            "description": "Derived block cache. `body` remains the authoritative persisted\nprojection in schema v1, so older writers may safely omit this."
+            "description": "Block mirror of the authoritative CRDT block map (#960 PR2).\nSince schema v2 the CRDT `blocks`/`order` layout is the source\nof truth; this JSON field and `body` are both projections the\npersist boundary rewrites on every write. v1 rows may omit it."
           },
           "body": {
             "type": "string",
@@ -5891,7 +5891,7 @@
           "schemaVersion": {
             "type": "integer",
             "format": "int32",
-            "description": "Tier A persistence contract — see\n[`crate::validation::WAVE_REPORT_PAYLOAD_SCHEMA_VERSION`].\nAlways `1` today; a future v2 would bump this constant + add a\nmigrator next to it in `validation.rs`.",
+            "description": "Tier A persistence contract — see\n`WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `2` since #960 PR2 (blocks became the\nauthoritative source; `body` is the flat projection). v1 rows\n(absent or `1`) remain readable and are lazily upgraded at the\nnext persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
             "minimum": 0
           },
           "summary": {

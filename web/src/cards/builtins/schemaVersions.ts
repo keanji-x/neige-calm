@@ -21,8 +21,9 @@ export const CODEX_PAYLOAD_SCHEMA_VERSION = 1;
 export const SPEC_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "claude"` card payloads. */
 export const CLAUDE_PAYLOAD_SCHEMA_VERSION = 1;
-/** `schemaVersion` for `kind: "wave-report"` card payloads (issue #229 PR B). */
-export const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION = 1;
+/** `schemaVersion` for `kind: "wave-report"` card payloads (issue #229 PR B;
+ *  v2 adds the `blocks` array — issue #960 PR2). */
+export const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION = 2;
 /** `schemaVersion` for `kind: "status"` overlay payloads. */
 export const OVERLAY_STATUS_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "progress"` overlay payloads. */
