@@ -56,7 +56,9 @@ use automerge::{AutoCommit, ObjType, ROOT, ReadDoc};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-use calm_types::report_blocks::{mint_id, reassign_ids, split_body};
+use calm_types::report_blocks::{
+    BlockSlice, mint_id, reassign_ids, reassign_ids_with_hints, split_body,
+};
 
 use crate::wave_report::{ReportBlock, WaveReportPayload};
 
@@ -176,6 +178,31 @@ impl ReportDoc {
 
         let current = self.blocks_snapshot();
         let aligned = reassign_ids(&current, &split_body(new_body));
+        self.apply_aligned_blocks(&current, &aligned);
+    }
+
+    /// Marker-aware wholesale replace behind `calm.report.write_markdown`
+    /// (#960 PR2). Same landing semantics as [`Self::update`], but the
+    /// caller supplies pre-split slices plus per-slice id hints
+    /// (recovered from stripped `<!-- neige:b_xxxx -->` marker lines by
+    /// `calm_types::report_blocks::strip_markers_and_split`); hinted
+    /// slices bind to their old block exactly, the rest fall back to
+    /// the LCS/similarity alignment.
+    pub fn update_with_hints(
+        &mut self,
+        new_summary: &str,
+        slices: &[BlockSlice],
+        hints: &[Option<String>],
+    ) {
+        let summary_id = self
+            .obj(&ROOT, FIELD_SUMMARY)
+            .expect("doc invariant: summary Text must exist at root");
+        self.0
+            .update_text(&summary_id, new_summary)
+            .expect("update_text on existing Text obj cannot fail");
+
+        let current = self.blocks_snapshot();
+        let aligned = reassign_ids_with_hints(&current, slices, hints);
         self.apply_aligned_blocks(&current, &aligned);
     }
 

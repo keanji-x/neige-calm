@@ -21,7 +21,9 @@ use crate::state::WriteContext;
 use crate::wave_lifecycle::{
     apply_requested_transition_in_tx, auto_promote_draft_in_tx, auto_transition_if_current_in_tx,
 };
-use crate::wave_report::{WaveReportPayload, persist_report_with_shadow};
+use crate::wave_report::{
+    BlockOpOutcome, ReportDocOp, WaveReportPayload, persist_report_with_shadow,
+};
 use async_trait::async_trait;
 use calm_exec::{AgentReactor, DecisionIntent, DecisionSink};
 use calm_truth::decision_gate::{GateDecision, PrincipalDecisionGate};
@@ -385,6 +387,40 @@ impl CardDecisionSink {
         agent_message: String,
         lifecycle: Option<WaveLifecycle>,
     ) -> Result<Card, CalmError> {
+        let (updated, _outcome) = self
+            .commit_report_op(
+                identity,
+                wave,
+                report_card,
+                current_payload,
+                ReportDocOp::Replace {
+                    summary: next.summary,
+                    body: next.body,
+                },
+                Some(agent_message),
+                lifecycle,
+            )
+            .await?;
+        Ok(updated)
+    }
+
+    /// #960 PR2 — the generalized spec-MCP report write: same recorder
+    /// shadow gate, same `EditAuthor::Spec` attribution, same
+    /// auto-promote semantics as [`Self::commit_report_write`], but the
+    /// mutation is an arbitrary [`ReportDocOp`] (typed `blocks.*` op or
+    /// marker-aware `write_markdown`) executed inside the persist
+    /// transaction against the CRDT truth.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_report_op(
+        &self,
+        identity: &ToolCallIdentity,
+        wave: Wave,
+        report_card: Card,
+        current_payload: WaveReportPayload,
+        op: ReportDocOp,
+        agent_message: Option<String>,
+        lifecycle: Option<WaveLifecycle>,
+    ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
         let actor = identity.to_actor_id();
         let principal = identity.to_principal();
         let recorder_shadow: Arc<dyn RecorderShadowProbe> =
@@ -392,7 +428,7 @@ impl CardDecisionSink {
                 principal,
                 wave_id: wave.id.clone(),
             });
-        let updated = persist_report_with_shadow(
+        persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
             &self.write,
@@ -401,14 +437,13 @@ impl CardDecisionSink {
             wave,
             report_card,
             current_payload,
-            next,
-            Some(agent_message),
+            op,
+            agent_message,
             lifecycle,
             true,
             Some(recorder_shadow),
         )
-        .await?;
-        Ok(updated)
+        .await
     }
 }
 

@@ -52,6 +52,159 @@ use std::sync::Arc;
 pub use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 
 // ---------------------------------------------------------------------------
+// Report-doc operations (#960 PR2)
+// ---------------------------------------------------------------------------
+
+/// One mutation of the report's CRDT block map, executed *inside* the
+/// persist transaction by [`persist_report_with_shadow`] — the only
+/// place `if_rev` may be checked, because only there is
+/// `ReportDoc::block_rev` the transactional truth (the JSON `blocks`
+/// cache can be arbitrarily stale under D8).
+///
+/// Every variant lands through the same five-step persist sequence and
+/// therefore keeps the dual-event invariant: one successful op = one
+/// `CardUpdated` + one `WaveReportEdited` whose `body_before/after`
+/// are the flat projections.
+#[derive(Debug, Clone)]
+pub enum ReportDocOp {
+    /// Wholesale `(summary, body)` replace — the legacy
+    /// `calm.report.write`/`edit` tools and the REST user-edit path.
+    Replace { summary: String, body: String },
+    /// `calm.report.write_markdown`: wholesale replace whose body may
+    /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
+    /// stripped unconditionally in-tx (they never reach storage) and
+    /// become exact id-reuse hints; unmarked slices fall back to the
+    /// LCS alignment.
+    WriteMarkdown { summary: String, body: String },
+    /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
+    /// default append); `id: Some` replaces and requires `if_rev`.
+    UpsertBlock {
+        id: Option<String>,
+        kind: String,
+        markdown: String,
+        if_rev: Option<u32>,
+        position: Option<usize>,
+    },
+    /// `calm.report.blocks.move`: reorder only, rev untouched.
+    MoveBlock {
+        id: String,
+        to_index: usize,
+        if_rev: Option<u32>,
+    },
+    /// `calm.report.blocks.delete`: `if_rev` is mandatory.
+    DeleteBlock { id: String, if_rev: u32 },
+}
+
+/// `(id, rev)` a block-level [`ReportDocOp`] resolved to: the created/
+/// replaced/moved block's id and its post-op rev. `None` for the
+/// wholesale and delete variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockOpOutcome {
+    pub id: String,
+    pub rev: u32,
+}
+
+/// Execute `op` against the (already migrated) doc. Returns
+/// `CalmError::Conflict` on an `if_rev` mismatch — the persist closure
+/// propagates it, aborting the transaction, so a conflicting op writes
+/// nothing and emits nothing. Unknown ids / out-of-range indexes are
+/// `CalmError::BadRequest`.
+fn apply_report_op(
+    doc: &mut ReportDoc,
+    op: &ReportDocOp,
+) -> Result<Option<BlockOpOutcome>, CalmError> {
+    fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
+        let current = doc
+            .block_rev(id)
+            .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+        if current != expected {
+            return Err(CalmError::Conflict(format!(
+                "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
+                 — re-read the report and retry with the current rev"
+            )));
+        }
+        Ok(current)
+    }
+    let internal = |e: anyhow::Error| CalmError::Internal(format!("wave_report: block op: {e}"));
+    match op {
+        ReportDocOp::Replace { summary, body } => {
+            doc.update(summary, body);
+            Ok(None)
+        }
+        ReportDocOp::WriteMarkdown { summary, body } => {
+            let marked = calm_types::report_blocks::strip_markers_and_split(body);
+            doc.update_with_hints(summary, &marked.slices, &marked.hints);
+            Ok(None)
+        }
+        ReportDocOp::UpsertBlock {
+            id,
+            kind,
+            markdown,
+            if_rev,
+            position,
+        } => match id {
+            Some(id) => {
+                let expected = if_rev.ok_or_else(|| {
+                    CalmError::BadRequest(
+                        "if_rev is required when replacing an existing block".into(),
+                    )
+                })?;
+                check_rev(doc, id, expected)?;
+                let (id, rev) = doc
+                    .upsert_block(Some(id), kind, markdown)
+                    .map_err(internal)?;
+                Ok(Some(BlockOpOutcome { id, rev }))
+            }
+            None => {
+                let len = doc.block_index().len();
+                if let Some(position) = position
+                    && *position > len
+                {
+                    return Err(CalmError::BadRequest(format!(
+                        "position {position} out of range (report has {len} blocks)"
+                    )));
+                }
+                let (id, rev) = doc.upsert_block(None, kind, markdown).map_err(internal)?;
+                if let Some(position) = position
+                    && *position < len
+                {
+                    doc.move_block(&id, *position).map_err(internal)?;
+                }
+                Ok(Some(BlockOpOutcome { id, rev }))
+            }
+        },
+        ReportDocOp::MoveBlock {
+            id,
+            to_index,
+            if_rev,
+        } => {
+            let current = doc
+                .block_rev(id)
+                .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+            if let Some(expected) = if_rev {
+                check_rev(doc, id, *expected)?;
+            }
+            let len = doc.block_index().len();
+            if *to_index >= len {
+                return Err(CalmError::BadRequest(format!(
+                    "to_index {to_index} out of range (report has {len} blocks)"
+                )));
+            }
+            doc.move_block(id, *to_index).map_err(internal)?;
+            Ok(Some(BlockOpOutcome {
+                id: id.clone(),
+                rev: current,
+            }))
+        }
+        ReportDocOp::DeleteBlock { id, if_rev } => {
+            check_rev(doc, id, *if_rev)?;
+            doc.delete_block(id).map_err(internal)?;
+            Ok(None)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared persist boundary (Issue #247 PR3)
 // ---------------------------------------------------------------------------
 
@@ -177,7 +330,7 @@ pub async fn persist_report(
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
-    persist_report_with_shadow(
+    let (updated, _outcome) = persist_report_with_shadow(
         repo,
         events,
         write,
@@ -186,13 +339,17 @@ pub async fn persist_report(
         wave,
         report_card,
         current_payload,
-        next,
+        ReportDocOp::Replace {
+            summary: next.summary,
+            body: next.body,
+        },
         agent_message,
         lifecycle,
         auto_promote_draft,
         None,
     )
-    .await
+    .await?;
+    Ok(updated)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -205,12 +362,12 @@ pub(crate) async fn persist_report_with_shadow(
     wave: Wave,
     report_card: Card,
     current_payload: WaveReportPayload,
-    next: WaveReportPayload,
+    op: ReportDocOp,
     agent_message: Option<String>,
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
-) -> Result<Card, CalmError> {
+) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
     let cove_id = wave.cove_id.clone();
@@ -225,15 +382,19 @@ pub(crate) async fn persist_report_with_shadow(
     };
     let report_card_id_inner = report_card_id.clone();
     let wave_id_for_event = wave_id.clone();
-    let (updated, _ids) =
-        write_with_actor_events_typed::<Card, _>(repo, None, events, write, move |tx| {
+    let (updated, _ids) = write_with_actor_events_typed::<(Card, Option<BlockOpOutcome>), _>(
+        repo,
+        None,
+        events,
+        write,
+        move |tx| {
             let id = report_card_id_inner.as_str().to_string();
             let report_card_id = report_card_id_inner.clone();
             let wave_id = wave_id_for_event.clone();
             let scope = scope.clone();
             let wave_scope = wave_scope.clone();
             let current_payload = current_payload.clone();
-            let next = next.clone();
+            let op = op.clone();
             let actor = actor.clone();
             let agent_message = agent_message.clone();
             let recorder_shadow = recorder_shadow.clone();
@@ -308,8 +469,11 @@ pub(crate) async fn persist_report_with_shadow(
                 // 2. Capture the pre-write projection for the edit-log
                 //    entry.
                 let (summary_before, body_before) = doc.project();
-                // 3. Apply the proposed update uniformly to both fields.
-                doc.update(&next.summary, &next.body);
+                // 3. Apply the requested op on the doc. `if_rev`
+                //    checks happen in here, against the CRDT truth
+                //    inside this transaction — a conflict aborts the
+                //    tx (nothing written, no events emitted).
+                let outcome = apply_report_op(&mut doc, &op)?;
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache. Since #960 PR2 the
                 //    CRDT block map is the source of truth: `body` is
@@ -357,10 +521,11 @@ pub(crate) async fn persist_report_with_shadow(
                     Event::CardUpdated(updated.clone()),
                 ));
                 events.push((actor, scope, report_edited));
-                Ok((updated, events))
+                Ok(((updated, outcome), events))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(updated)
 }
 

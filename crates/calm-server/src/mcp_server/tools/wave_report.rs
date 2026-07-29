@@ -92,33 +92,99 @@ where
 fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
-        description: "Spec-only: read the wave's report Markdown body + \
-             one-line summary. Returns `{ body, summary, schemaVersion, \
-             updated_at }`. Behaves like the codex `Read` file tool — \
-             call before editing so you have the current text to base \
-             your `old_string` on."
+        description: "Spec-only: read the wave's report. Returns \
+             `{ text, body, summary, schemaVersion, updated_at, \
+             blocks }` — `text` is the flat Markdown (`body` is a \
+             legacy alias with the same value) and `blocks` is the \
+             addressable index `[{ id, kind, rev }]` in document \
+             order. The report is made of blocks: address them with \
+             `calm.report.blocks.upsert` / `.move` / `.delete` (all \
+             take `if_rev` for optimistic concurrency; see \
+             `calm.report.blocks.kinds` for the block vocabulary). \
+             Pass `{ with_markers: true }` to get `text` with one \
+             `<!-- neige:b_xxxx -->` line before each block so you \
+             can see block boundaries; markers exist only in this \
+             read output (and are accepted+stripped by \
+             `calm.report.write_markdown`), they are never stored."
             .into(),
         input_schema: json!({
             "type": "object",
-            "properties": {}
+            "properties": {
+                "with_markers": {
+                    "type": "boolean",
+                    "description": "Inject a `<!-- neige:b_xxxx -->` marker line before each block in `text` (default false)."
+                }
+            }
         }),
         annotations: Some(read_only_annotations()),
         visible_to_roles: &[],
     }
 }
 
+/// The report's block index, derived deterministically when the JSON
+/// cache doesn't carry one yet (schema-v1 rows, or a `blocks` field a
+/// pre-#960 binary dropped — harmless per design D8). The derivation
+/// (`reassign_ids` over `split_body`) is byte-deterministic and is
+/// exactly what the persist boundary's CRDT seed
+/// (`ReportDoc::from_payload`) runs on first write, so ids handed out
+/// by `read` remain valid targets for `blocks.*` ops.
+pub(crate) fn payload_blocks(payload: &WaveReportPayload) -> Vec<crate::wave_report::ReportBlock> {
+    payload.blocks.clone().unwrap_or_else(|| {
+        calm_types::report_blocks::reassign_ids(
+            &[],
+            &calm_types::report_blocks::split_body(&payload.body),
+        )
+    })
+}
+
 pub(crate) async fn report_read(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
-    _args: Value,
+    args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
+    let with_markers = match args.get("with_markers") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => {
+            return Err(RpcError::invalid_params(
+                "calm.report.read: `with_markers` must be a boolean if provided",
+            ));
+        }
+    };
     let (_, _, report_card, payload) = resolve_report_for_caller(&ctx, &identity).await?;
+    let blocks = payload_blocks(&payload);
+    let text = if with_markers {
+        blocks
+            .iter()
+            .map(|block| {
+                let markdown = block
+                    .payload
+                    .get("markdown")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                format!(
+                    "{}{markdown}",
+                    calm_types::report_blocks::marker_line(&block.id)
+                )
+            })
+            .collect::<String>()
+    } else {
+        payload.body.clone()
+    };
+    let index: Vec<Value> = blocks
+        .iter()
+        .map(|block| json!({ "id": block.id, "kind": block.kind, "rev": block.rev }))
+        .collect();
     Ok(json!({
-        "body": payload.body,
+        "text": text,
+        // Legacy alias — same value as `text`, kept so existing
+        // consumers keyed on `body` keep working.
+        "body": text,
         "summary": payload.summary,
         "schemaVersion": payload.schema_version,
         "updated_at": report_card.updated_at,
+        "blocks": index,
     }))
 }
 
@@ -129,15 +195,18 @@ pub(crate) async fn report_read(
 fn write_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE.into(),
-        description: "Spec-only: wholesale-replace the wave's report \
-             body (and optionally `summary`). Behaves like the codex \
-             `Write` file tool — clobbers prior content. Use \
-             `calm.report.edit` for targeted string replacement \
-             instead when only part of the body changes. Returns \
-             `{ updated_at }`. Omitting `summary` leaves the existing \
-             summary unchanged. `message` is required and is persisted as \
-             `agent_message`; optional `lifecycle` advances the wave state \
-             machine in the same atomic write."
+        description: "Spec-only compatibility interface: wholesale-\
+             replace the wave's report body (and optionally `summary`). \
+             Prefer the block-addressed tools — `calm.report.blocks.\
+             upsert`/`.move`/`.delete` for targeted changes, or \
+             `calm.report.write_markdown` for full rewrites that \
+             preserve block identity via markers. Behaves like the \
+             codex `Write` file tool — clobbers prior content; block \
+             ids are re-derived best-effort. Returns `{ updated_at }`. \
+             Omitting `summary` leaves the existing summary unchanged. \
+             `message` is required and is persisted as `agent_message`; \
+             optional `lifecycle` advances the wave state machine in \
+             the same atomic write."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -207,8 +276,11 @@ async fn report_write(
 fn edit_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_EDIT.into(),
-        description: "Spec-only: string-replace inside the wave's \
-             report body. Behaves like the codex `Edit` file tool. \
+        description: "Spec-only compatibility interface: string-replace \
+             inside the wave's report body. Prefer \
+             `calm.report.blocks.upsert` with `id` + `if_rev` for \
+             targeted block replacement. Behaves like the codex `Edit` \
+             file tool. \
              `old_string` must appear in the body; if it appears more \
              than once you must pass `replace_all = true`. If \
              `old_string == new_string`, the call is a content-equal \
@@ -351,7 +423,10 @@ fn count_matches(haystack: &str, needle: &str) -> usize {
 ///     data-shape bug, not a user-visible 404);
 ///   * payload deserialize fails → InternalError (a malformed row would
 ///     mean someone wrote past the validator).
-async fn resolve_report_for_caller(
+// TODO(#960 PR3): once non-prose blocks exist, `report.write` /
+// `report.edit` must refuse writes that stomp a non-prose block
+// instead of silently flattening it (design §4 row PR3).
+pub(crate) async fn resolve_report_for_caller(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
 ) -> Result<(Wave, Card, Card, WaveReportPayload), RpcError> {
