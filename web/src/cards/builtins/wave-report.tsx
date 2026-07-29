@@ -69,7 +69,12 @@ export const tableBlockPayloadSchema = z
       .min(1)
       .max(32),
     rows: z
-      .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
+      .array(
+        z.record(
+          z.string(),
+          z.union([z.string().max(2048), z.number(), z.null()]),
+        ),
+      )
       .max(500),
     caption: z.string().max(2048).optional(),
     highlight: z.string().max(2048).optional(),
@@ -98,7 +103,20 @@ export const appBlockPayloadSchema = z.strictObject({
     .max(2048)
     .regex(/^\/(?!\/)[^\\]*$/, {
       message: 'src must be a same-origin absolute path',
-    }),
+    })
+    // Mirror the Rust validator: no C0/C1 control characters (0x00..0x1F,
+    // 0x7F..0x9F) — header-injection / log-forgery class characters have no
+    // business in a same-origin path.
+    .refine(
+      (s) => {
+        for (let i = 0; i < s.length; i++) {
+          const c = s.charCodeAt(i);
+          if (c < 0x20 || (c >= 0x7f && c <= 0x9f)) return false;
+        }
+        return true;
+      },
+      { message: 'src must not contain control characters' },
+    ),
   title: z.string().max(2048).optional(),
   height: z.number().min(120).max(2000).optional(),
 });

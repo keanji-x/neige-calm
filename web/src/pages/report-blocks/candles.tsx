@@ -181,7 +181,17 @@ export function ReportCandlesBlock({
     [visible],
   );
 
+  // A build failure latches per payload, not per mount: new chart data gets
+  // a fresh attempt (the build effect below keys on `failed` so clearing the
+  // latch re-runs it). Theme flips deliberately do NOT reset the latch.
   useEffect(() => {
+    setFailed(false);
+  }, [payload.candles, payload.symbol, payload.overlays, setFailed]);
+
+  useEffect(() => {
+    // `failed` is a dep so clearing the latch re-runs the build; while the
+    // latch is set the placeholder renders and there is no host to build in.
+    if (failed) return;
     const host = chartHostRef.current;
     if (!host || visible.length === 0) return;
 
@@ -323,7 +333,7 @@ export function ReportCandlesBlock({
       }
       setHover(null);
     };
-  }, [visible, startIndex, ma20, ma60, hasVolume, palette]);
+  }, [visible, startIndex, ma20, ma60, hasVolume, palette, failed]);
 
   if (failed) {
     return (

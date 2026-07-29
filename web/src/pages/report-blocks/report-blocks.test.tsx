@@ -254,6 +254,31 @@ describe('chart.candles block', () => {
     );
   });
 
+  it('retries the chart when a new payload arrives after a failure', async () => {
+    lw.throwOnCreate = true;
+    const { rerender } = render(
+      <ReportBlockView
+        block={chartBlock({ symbol: 'RETRY', candles: makeCandles(5) })}
+      />,
+    );
+    expect(await screen.findByRole('note')).toHaveTextContent(
+      'chart failed to render',
+    );
+    expect(lw.charts).toBe(0);
+
+    lw.throwOnCreate = false;
+    rerender(
+      <ReportBlockView
+        block={chartBlock({ symbol: 'RETRY', candles: makeCandles(6) })}
+      />,
+    );
+
+    // New candle data clears the failure latch and rebuilds successfully.
+    expect(await screen.findByTestId('rb-fig-last')).toHaveTextContent('106.00');
+    expect(screen.queryByRole('note')).not.toBeInTheDocument();
+    expect(lw.charts).toBe(1);
+  });
+
   it('adds a volume histogram only when candles carry volume', async () => {
     render(
       <ReportBlockView
@@ -513,6 +538,36 @@ describe('degraded blocks', () => {
           kind: 'app',
           rev: 1,
           payload: { src: '/' + 'a'.repeat(2048) },
+        } as ReportBlock,
+      },
+      {
+        name: 'app: src with a C0 control character',
+        block: {
+          id: 'a2',
+          kind: 'app',
+          rev: 1,
+          payload: { src: '/ok\u0007bell' },
+        } as ReportBlock,
+      },
+      {
+        name: 'app: src with a C1 control character',
+        block: {
+          id: 'a3',
+          kind: 'app',
+          rev: 1,
+          payload: { src: '/ok\u0085next-line' },
+        } as ReportBlock,
+      },
+      {
+        name: 'table: string cell over 2048 chars',
+        block: {
+          id: 't5',
+          kind: 'table',
+          rev: 1,
+          payload: {
+            columns: [{ key: 'k', label: 'A' }],
+            rows: [{ k: 'x'.repeat(2049) }],
+          },
         } as ReportBlock,
       },
     ];
