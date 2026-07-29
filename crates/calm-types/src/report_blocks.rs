@@ -59,6 +59,18 @@ pub fn flatten(blocks: &[BlockSlice]) -> String {
 
 /// Reuse ids through exact LCS anchors, then similarity-align edited slices
 /// within each unmatched gap. Remaining slices receive a new `b_ffff` id.
+///
+/// Rev semantics (#960 PR2):
+///   * matched block, byte-identical content → `rev` unchanged;
+///   * matched block, content changed → `rev = old.rev + 1`;
+///   * unmatched (brand-new) slice → `rev = 1`.
+///
+/// Matched blocks keep their old `kind`. A matched non-prose block also
+/// keeps its old `payload` verbatim — its payload is not `{ markdown }`
+/// and must not be clobbered by the prose slice text.
+// TODO(#960 PR3): non-prose blocks should be compared against their
+// deterministic flat (fenced) representation instead of an optional
+// `payload.markdown`; today only prose slices reach this function.
 pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Vec<ReportBlock> {
     let mut reusable_ids = HashSet::new();
     let old_text: Vec<Option<&str>> = old_blocks
@@ -97,16 +109,30 @@ pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Ve
     new_slices
         .iter()
         .enumerate()
-        .map(|(index, slice)| {
-            let id = assignments[index]
-                .map(|old| old_blocks[old].id.clone())
-                .unwrap_or_else(|| mint_id(&slice.raw, index, &mut used));
-            ReportBlock {
-                id,
-                kind: "prose".to_string(),
-                rev: assignments[index].map_or(1, |old| old_blocks[old].rev),
-                payload: json!({ "markdown": slice.raw }),
+        .map(|(index, slice)| match assignments[index] {
+            Some(old_index) => {
+                let old = &old_blocks[old_index];
+                let unchanged = block_markdown(old) == Some(slice.raw.as_str());
+                ReportBlock {
+                    id: old.id.clone(),
+                    kind: old.kind.clone(),
+                    rev: if unchanged { old.rev } else { old.rev + 1 },
+                    // A matched non-prose payload is preserved verbatim —
+                    // it is not `{ markdown }` and must not be clobbered
+                    // by the prose slice text.
+                    payload: if old.kind == "prose" {
+                        json!({ "markdown": slice.raw })
+                    } else {
+                        old.payload.clone()
+                    },
+                }
             }
+            None => ReportBlock {
+                id: mint_id(&slice.raw, index, &mut used),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({ "markdown": slice.raw }),
+            },
         })
         .collect()
 }
@@ -241,7 +267,12 @@ fn levenshtein(left: &[char], right: &[char]) -> usize {
     previous[right.len()]
 }
 
-fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
+/// Mint a deterministic `b_xxxx` block id from the slice content +
+/// position, probing until it misses every id in `used` (which the
+/// caller must pre-seed with all live ids and which this function
+/// extends with the returned id). Public so the CRDT layer
+/// (`calm-server::wave_report_doc`) mints ids in the same style.
+pub fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
     let mut hash = 0x811c9dc5u32;
     for byte in raw.bytes().chain(index.to_le_bytes()) {
         hash = (hash ^ u32::from(byte)).wrapping_mul(0x01000193);
@@ -334,6 +365,59 @@ mod tests {
         let new = reassign_ids(&old, &new_slices);
         assert_eq!(new[1].id, old[0].id);
         assert_eq!(new[2].id, old[1].id);
+    }
+
+    #[test]
+    fn rev_increments_on_change_and_holds_on_identical_content() {
+        let first = reassign_ids(&[], &split_body("# A\nalpha\n# B\nbeta\n"));
+        assert!(
+            first.iter().all(|block| block.rev == 1),
+            "new blocks: rev=1"
+        );
+
+        // Byte-identical rewrite: ids and revs both stay put.
+        let same = reassign_ids(&first, &split_body("# A\nalpha\n# B\nbeta\n"));
+        for (before, after) in first.iter().zip(&same) {
+            assert_eq!(after.id, before.id);
+            assert_eq!(after.rev, before.rev);
+        }
+
+        // Editing one block bumps only that block's rev.
+        let edited = reassign_ids(&same, &split_body("# A\nalpha edited\n# B\nbeta\n"));
+        assert_eq!(edited[0].id, first[0].id);
+        assert_eq!(edited[0].rev, 2, "edited block: rev+1");
+        assert_eq!(edited[1].id, first[1].id);
+        assert_eq!(edited[1].rev, 1, "untouched block: rev unchanged");
+
+        // A brand-new block starts at rev=1; survivors keep theirs.
+        let grown = reassign_ids(
+            &edited,
+            &split_body("# A\nalpha edited\n# B\nbeta\n# C\nnew\n"),
+        );
+        assert_eq!(grown[0].rev, 2);
+        assert_eq!(grown[1].rev, 1);
+        assert_eq!(grown[2].rev, 1);
+        assert!(grown[2].id != grown[0].id && grown[2].id != grown[1].id);
+    }
+
+    #[test]
+    fn matched_non_prose_block_keeps_kind_payload_and_rev() {
+        let payload = json!({ "symbol": "0700.HK", "markdown": "# Chart\nflat repr\n" });
+        let old = vec![ReportBlock {
+            id: "b_ch01".to_string(),
+            kind: "chart.candles".to_string(),
+            rev: 3,
+            payload: payload.clone(),
+        }];
+        let reassigned = reassign_ids(&old, &split_body("# Chart\nflat repr\n"));
+        assert_eq!(reassigned.len(), 1);
+        assert_eq!(reassigned[0].id, "b_ch01");
+        assert_eq!(reassigned[0].kind, "chart.candles");
+        assert_eq!(reassigned[0].rev, 3, "identical content: rev unchanged");
+        assert_eq!(
+            reassigned[0].payload, payload,
+            "non-prose payload preserved verbatim"
+        );
     }
 
     #[test]

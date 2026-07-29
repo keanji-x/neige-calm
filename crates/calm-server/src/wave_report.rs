@@ -49,7 +49,6 @@ use std::sync::Arc;
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
 // (Tier-A persisted payload, TS-exported). Re-exported so the
 // `crate::wave_report::WaveReportPayload` path is unchanged.
-use calm_types::report_blocks::{reassign_ids, split_body};
 pub use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 
 // ---------------------------------------------------------------------------
@@ -276,11 +275,27 @@ pub(crate) async fn persist_report_with_shadow(
                         .await?;
                 }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
+                //    Loaded docs may still carry the pre-#960 layout
+                //    (`ROOT.body` Text, no block map) — migrate them
+                //    in place, reusing the PR1-derived block ids from
+                //    the payload JSON as the id hint. The migrated
+                //    bytes are written back below in this same tx.
                 let existing = card_body_crdt_get_tx(tx, &id).await?;
                 let mut doc = match existing {
-                    Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|e| {
-                        CalmError::Internal(format!("wave_report: load CRDT for card {id}: {e}"))
-                    })?,
+                    Some(bytes) => {
+                        let mut doc = ReportDoc::from_bytes(&bytes).map_err(|e| {
+                            CalmError::Internal(format!(
+                                "wave_report: load CRDT for card {id}: {e}"
+                            ))
+                        })?;
+                        doc.ensure_blocks_layout(current_payload.blocks.as_deref())
+                            .map_err(|e| {
+                                CalmError::Internal(format!(
+                                    "wave_report: migrate CRDT block layout for card {id}: {e}"
+                                ))
+                            })?;
+                        doc
+                    }
                     // Safe: current_payload was read outside the tx,
                     // but is only consulted here when body_crdt is
                     // still NULL in-tx. SQLite's single-writer means
@@ -296,14 +311,16 @@ pub(crate) async fn persist_report_with_shadow(
                 // 3. Apply the proposed update uniformly to both fields.
                 doc.update(&next.summary, &next.body);
                 // 4. Project back — these are the authoritative values
-                //    that go into the JSON cache.
+                //    that go into the JSON cache. Since #960 PR2 the
+                //    CRDT block map is the source of truth: `body` is
+                //    the per-block concatenation and `blocks` is the
+                //    doc's own snapshot (id/rev alignment already
+                //    happened inside `ReportDoc::update`), so nothing
+                //    is re-derived at the JSON layer.
                 let (summary_after, body_after) = doc.project();
                 let mut projected_payload =
                     WaveReportPayload::new(summary_after.clone(), body_after.clone());
-                projected_payload.blocks = Some(reassign_ids(
-                    current_payload.blocks.as_deref().unwrap_or_default(),
-                    &split_body(&body_after),
-                ));
+                projected_payload.blocks = Some(doc.blocks_snapshot());
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -370,7 +387,7 @@ mod tests {
         assert_eq!(
             v,
             json!({
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "summary": "hi",
                 "body": "# A\n\nb\n",
             })

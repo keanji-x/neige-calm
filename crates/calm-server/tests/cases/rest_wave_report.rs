@@ -272,7 +272,7 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     assert_eq!(v["summary"], "user wrote this");
     assert_eq!(v["body"], "# Goal\n\nuser edit body\n");
     assert_eq!(
-        v["schemaVersion"], 1,
+        v["schemaVersion"], 2,
         "schemaVersion is server-pinned to the current constant"
     );
 
