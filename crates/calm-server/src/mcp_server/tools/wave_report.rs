@@ -251,14 +251,13 @@ pub(crate) async fn report_read(
             .blocks
             .iter()
             .map(|block| {
-                let markdown = block
-                    .payload
-                    .get("markdown")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+                // flat_text: markdown for prose, canonical fence for
+                // non-prose (#960 PR3) — the same bytes the block
+                // contributes to `body`.
                 format!(
-                    "{}{markdown}",
-                    calm_types::report_blocks::marker_line(&block.id)
+                    "{}{}",
+                    calm_types::report_blocks::marker_line(&block.id),
+                    calm_types::report_blocks::flat_text(block)
                 )
             })
             .collect::<String>()
@@ -521,9 +520,10 @@ fn count_matches(haystack: &str, needle: &str) -> usize {
 ///     data-shape bug, not a user-visible 404);
 ///   * payload deserialize fails → InternalError (a malformed row would
 ///     mean someone wrote past the validator).
-// TODO(#960 PR3): once non-prose blocks exist, `report.write` /
-// `report.edit` must refuse writes that stomp a non-prose block
-// instead of silently flattening it (design §4 row PR3).
+///
+/// #960 PR3: `report.write` / `report.edit` land as `ReportDocOp::
+/// Replace`, whose in-tx guard (`wave_report::guard_non_prose_stomp`)
+/// refuses any write that would modify or delete a non-prose block.
 pub(crate) async fn resolve_report_for_caller(
     ctx: &Arc<AppContext>,
     identity: &ToolCallIdentity,
@@ -647,6 +647,12 @@ async fn commit_report_write_for_identity(
             -32403,
             format!("wave_report: forbidden: {msg}"),
         )),
+        // #960 PR3 — the in-tx guard/validation of `ReportDocOp::
+        // Replace` (non-prose stomp, malformed/invalid neige fences)
+        // surfaces as BadRequest and must map to -32602, not internal.
+        Err(CalmError::BadRequest(msg)) => {
+            Err(RpcError::invalid_params(format!("wave_report: {msg}")))
+        }
         Err(e) => Err(RpcError::internal(format!("wave_report: {e}"))),
     }
 }

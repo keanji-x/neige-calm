@@ -22,10 +22,12 @@
 //! byte. Prose markdown is stored as `Text` so character-level edit
 //! history (and future concurrent merges) stay meaningful.
 //!
-//! // TODO(#960 PR3): non-prose blocks will store their payload as a
-//! // deterministic JSON `Str` instead of markdown `Text`, and their
-//! // flat representation becomes a fenced ```neige-block``` section.
-//! // This slice only ever creates prose blocks.
+//! #960 PR3 — a non-prose block's `text` holds its **canonical
+//! `neige-block` fence** (`calm_types::report_blocks::fence`), i.e.
+//! exactly the bytes it contributes to the flat projection; the JSON
+//! payload the wire mirrors is recovered by parsing that fence
+//! ([`Self::blocks_snapshot`]). Storing the projection bytes keeps
+//! `project()` a plain per-block concatenation for every kind.
 //!
 //! ## Legacy layout + lazy migration
 //!
@@ -57,7 +59,8 @@ use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
 use calm_types::report_blocks::{
-    BlockSlice, mint_id, reassign_ids, reassign_ids_with_hints, split_body,
+    BlockSlice, KIND_PROSE, flat_text, mint_id, parse_fence, reassign_ids, reassign_ids_with_hints,
+    split_body,
 };
 
 use crate::wave_report::{ReportBlock, WaveReportPayload};
@@ -71,11 +74,12 @@ const FIELD_ORDER: &str = "order";
 /// Field key for the legacy (pre-#960) body text object. Only the
 /// migrator and the read-only projection fallback may touch it.
 const LEGACY_FIELD_BODY: &str = "body";
-/// Block-entry key: block kind (`"prose"` today).
+/// Block-entry key: block kind (`prose` or a data kind, #960 PR3).
 const KEY_KIND: &str = "kind";
 /// Block-entry key: per-block optimistic-concurrency revision (Uint).
 const KEY_REV: &str = "rev";
-/// Block-entry key: the block's markdown content (Text).
+/// Block-entry key: the block's flat content (Text) — markdown for
+/// prose, the canonical `neige-block` fence for non-prose kinds.
 const KEY_TEXT: &str = "text";
 
 /// Opaque CRDT document holding the wave-report's `summary` + block map.
@@ -259,8 +263,10 @@ impl ReportDoc {
 
     /// Full typed snapshot of the block map in `order` order. The
     /// persist boundary mirrors this into `WaveReportPayload::blocks`.
-    // TODO(#960 PR3): non-prose blocks will carry their stored JSON
-    // payload here instead of `{ markdown }`.
+    /// Prose blocks carry `{ markdown }`; a non-prose block's payload
+    /// is parsed back out of its stored canonical fence (#960 PR3) —
+    /// a non-prose `text` that is not a well-formed fence of the
+    /// stored kind is corruption and errors.
     pub fn blocks_snapshot(&self) -> Result<Vec<ReportBlock>> {
         let Some(blocks_id) = self.blocks_map()? else {
             return Ok(Vec::new());
@@ -306,11 +312,28 @@ impl ReportDoc {
             let text = self
                 .text_at(&entry, KEY_TEXT)
                 .with_context(|| format!("malformed report doc: block {id} text field"))?;
+            let payload = if kind == KIND_PROSE {
+                json!({ "markdown": text })
+            } else {
+                let fence = parse_fence(&text).with_context(|| {
+                    format!(
+                        "malformed report doc: block {id} (kind {kind}) text is not a \
+                         well-formed neige-block fence"
+                    )
+                })?;
+                ensure!(
+                    fence.kind == kind,
+                    "malformed report doc: block {id} kind {kind} does not match its \
+                     fence kind {}",
+                    fence.kind
+                );
+                fence.payload
+            };
             blocks.push(ReportBlock {
                 id,
                 kind,
                 rev,
-                payload: json!({ "markdown": text }),
+                payload,
             });
         }
         Ok(blocks)
@@ -366,6 +389,23 @@ impl ReportDoc {
         kind: &str,
         content: &str,
     ) -> Result<(String, u32)> {
+        // #960 PR3 invariant: a non-prose block's stored text IS its
+        // canonical fence. The tool layer renders it; this check keeps
+        // a future caller from storing a fence the snapshot cannot
+        // parse back.
+        if kind != KIND_PROSE {
+            let fence = parse_fence(content).with_context(|| {
+                format!(
+                    "doc invariant: non-prose block content must be a canonical \
+                     neige-block fence (kind {kind})"
+                )
+            })?;
+            ensure!(
+                fence.kind == kind,
+                "doc invariant: fence kind {} does not match block kind {kind}",
+                fence.kind
+            );
+        }
         let blocks_id = self
             .blocks_map()?
             .context("doc invariant: blocks map must exist (run ensure_blocks_layout)")?;
@@ -476,11 +516,11 @@ impl ReportDoc {
     // -- internals ---------------------------------------------------
 
     /// Land an aligned block list produced by `reassign_ids` onto the
-    /// doc at block granularity.
-    // TODO(#960 PR3): once non-prose blocks exist, the wholesale
-    // `update` path must refuse to stomp them instead of relying on
-    // `reassign_ids` preserving their payload; today only prose
-    // blocks can exist so every block's content lives in its Text.
+    /// doc at block granularity. Content is each block's flat text
+    /// (markdown for prose, canonical fence for non-prose — #960 PR3).
+    /// The wholesale `Replace` path additionally refuses to stomp
+    /// non-prose blocks *before* alignment lands (the guard lives in
+    /// `wave_report::apply_report_op`, inside the persist tx).
     fn apply_aligned_blocks(
         &mut self,
         current: &[ReportBlock],
@@ -502,7 +542,7 @@ impl ReportDoc {
             .map(|block| (block.id.as_str(), block))
             .collect();
         for block in aligned {
-            let content = block_markdown(block);
+            let content = flat_text(block);
             match old_by_id.get(block.id.as_str()) {
                 Some(old) => {
                     let entry = self
@@ -518,12 +558,12 @@ impl ReportDoc {
                             .put(&entry, KEY_REV, u64::from(block.rev))
                             .context("put block rev")?;
                     }
-                    if block_markdown(old) != content {
+                    if flat_text(old) != content {
                         let text_id = self
                             .typed_at(&entry, KEY_TEXT, ObjType::Text)?
                             .context("doc invariant: block entry has a text field")?;
                         self.0
-                            .update_text(&text_id, content)
+                            .update_text(&text_id, &content)
                             .context("update block text")?;
                     }
                 }
@@ -534,7 +574,7 @@ impl ReportDoc {
                         &block.id,
                         &block.kind,
                         block.rev,
-                        content,
+                        &content,
                     );
                 }
             }
@@ -578,16 +618,16 @@ impl ReportDoc {
         let mut used: HashSet<String> = blocks.iter().map(|block| block.id.clone()).collect();
         let mut seen: HashSet<String> = HashSet::new();
         for (index, block) in blocks.iter().enumerate() {
-            let content = block_markdown(block);
+            let content = flat_text(block);
             let id = if seen.insert(block.id.clone()) {
                 block.id.clone()
             } else {
                 // Duplicate id: first occupant wins, mint a fresh one.
-                let minted = mint_id(content, index, &mut used);
+                let minted = mint_id(&content, index, &mut used);
                 seen.insert(minted.clone());
                 minted
             };
-            Self::insert_block_entry(doc, &blocks_id, &id, &block.kind, block.rev, content);
+            Self::insert_block_entry(doc, &blocks_id, &id, &block.kind, block.rev, &content);
             doc.insert(&order_id, index, id.as_str())
                 .expect("insert at list tail cannot fail");
         }
@@ -722,17 +762,6 @@ impl ReportDoc {
     fn entry_at(&self, blocks_id: &automerge::ObjId, id: &str) -> Result<Option<automerge::ObjId>> {
         self.typed_at(blocks_id, id, ObjType::Map)
     }
-}
-
-/// A block's markdown content out of its `{ markdown }` payload.
-// TODO(#960 PR3): non-prose payloads are not `{ markdown }`; their
-// flat representation will be the deterministic fenced form.
-fn block_markdown(block: &ReportBlock) -> &str {
-    block
-        .payload
-        .get("markdown")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1369,6 +1398,92 @@ mod tests {
             ids.len(),
             "order ids are unique"
         );
+    }
+
+    // -- non-prose blocks (#960 PR3) ---------------------------------
+
+    #[test]
+    fn upsert_non_prose_block_stores_canonical_fence_and_snapshot_parses_it() {
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
+        let payload = json!({ "src": "/apps/x", "height": 480 });
+        let fence_text = calm_types::report_blocks::render_fence("app", &payload);
+        let (id, rev) = doc.upsert_block(None, "app", &fence_text).unwrap();
+        assert_eq!(rev, 1);
+
+        // Projection = prose + canonical fence, byte-exact.
+        let (_, body) = doc.project().unwrap();
+        assert_eq!(body, format!("# A\n\nalpha\n{fence_text}"));
+        // Snapshot recovers the JSON payload from the stored fence.
+        let blocks = doc.blocks_snapshot().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[1].id, id);
+        assert_eq!(blocks[1].kind, "app");
+        assert_eq!(blocks[1].payload, payload);
+        // And the projection invariant holds through a save.
+        let bytes = doc.to_bytes();
+        let reloaded = ReportDoc::from_bytes(&bytes).unwrap();
+        assert_eq!(reloaded.project().unwrap().1, body);
+        assert_eq!(reloaded.blocks_snapshot().unwrap()[1].payload, payload);
+
+        // Identical fence replace is idempotent; changed payload bumps.
+        let (_, rev) = doc.upsert_block(Some(&id), "app", &fence_text).unwrap();
+        assert_eq!(rev, 1, "identical fence: rev holds");
+        let changed = calm_types::report_blocks::render_fence("app", &json!({ "src": "/apps/y" }));
+        let (_, rev) = doc.upsert_block(Some(&id), "app", &changed).unwrap();
+        assert_eq!(rev, 2, "changed payload: rev+1");
+
+        // Non-fence content for a non-prose kind is an invariant error.
+        assert!(doc.upsert_block(Some(&id), "app", "not a fence\n").is_err());
+        // Kind/fence mismatch too.
+        assert!(doc.upsert_block(Some(&id), "table", &changed).is_err());
+    }
+
+    #[test]
+    fn non_prose_text_that_is_not_a_fence_is_corruption() {
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, KEY_KIND, "chart.candles").unwrap();
+        raw.put(&entry, KEY_REV, 1_u64).unwrap();
+        let text_id = raw.put_object(&entry, KEY_TEXT, ObjType::Text).unwrap();
+        raw.update_text(&text_id, "just markdown, no fence\n")
+            .unwrap();
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.blocks_snapshot().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a well-formed neige-block fence"),
+            "err = {err:#}"
+        );
+        assert!(doc.has_blocks_layout().is_err());
+        // project() still works (it only concatenates text) — the flat
+        // body is not gated on payload parseability.
+        assert!(doc.project().is_ok());
+    }
+
+    #[test]
+    fn wholesale_update_carrying_the_fence_verbatim_preserves_the_block() {
+        // The calm-types alignment path: a Replace-style update whose
+        // body contains the canonical fence byte-for-byte keeps id,
+        // kind, payload and rev (the server-level stomp guard allows
+        // exactly this shape through).
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
+        let payload = json!({ "src": "/apps/x" });
+        let fence_text = calm_types::report_blocks::render_fence("app", &payload);
+        let (id, _) = doc.upsert_block(None, "app", &fence_text).unwrap();
+
+        doc.update("s", &format!("# A\n\nalpha edited\n{fence_text}"))
+            .unwrap();
+        let blocks = doc.blocks_snapshot().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].rev, 2, "edited prose: rev+1");
+        assert_eq!(blocks[1].id, id);
+        assert_eq!(blocks[1].kind, "app");
+        assert_eq!(blocks[1].rev, 1, "untouched fence: rev holds");
+        assert_eq!(blocks[1].payload, payload);
     }
 
     #[test]
