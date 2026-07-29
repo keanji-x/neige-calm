@@ -125,8 +125,11 @@ fn apply_report_op(
     op: &ReportDocOp,
 ) -> Result<Option<BlockOpOutcome>, CalmError> {
     fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
+        // A malformed doc/rev is Internal (corruption), never folded
+        // into "block not found" (BadRequest).
         let current = doc
             .block_rev(id)
+            .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
             .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
         if current != expected {
             return Err(CalmError::Conflict(format!(
@@ -209,6 +212,7 @@ fn apply_report_op(
         } => {
             let current = doc
                 .block_rev(id)
+                .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
                 .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
             if let Some(expected) = if_rev {
                 check_rev(doc, id, *expected)?;
@@ -665,6 +669,58 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "explicit");
+    }
+
+    #[test]
+    fn apply_op_on_malformed_doc_is_internal_not_bad_request() {
+        use automerge::transaction::Transactable;
+        use automerge::{AutoCommit, ObjType, ROOT};
+
+        // Shape 1: block rev stored as a Str. check_rev must surface
+        // CalmError::Internal (corruption), never fold the broken rev
+        // into "block not found" (BadRequest).
+        let mut raw = AutoCommit::new();
+        let summary_id = raw.put_object(&ROOT, "summary", ObjType::Text).unwrap();
+        raw.update_text(&summary_id, "s").unwrap();
+        let blocks = raw.put_object(&ROOT, "blocks", ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, "kind", "prose").unwrap();
+        raw.put(&entry, "rev", "three").unwrap();
+        let text_id = raw.put_object(&entry, "text", ObjType::Text).unwrap();
+        raw.update_text(&text_id, "# A\n").unwrap();
+        let order = raw.put_object(&ROOT, "order", ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let mut doc = ReportDoc::from_bytes(&raw.save()).unwrap();
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: Some("b_0001".into()),
+                kind: "prose".into(),
+                markdown: "x\n".into(),
+                if_rev: Some(1),
+                position: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
+
+        // Shape 2: blocks map present but no order list. A wholesale
+        // replace must fail Internal-level — the corrupt doc must not
+        // be read as an empty report and silently overwritten.
+        let mut raw = AutoCommit::new();
+        let summary_id = raw.put_object(&ROOT, "summary", ObjType::Text).unwrap();
+        raw.update_text(&summary_id, "s").unwrap();
+        raw.put_object(&ROOT, "blocks", ObjType::Map).unwrap();
+        let mut doc = ReportDoc::from_bytes(&raw.save()).unwrap();
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Replace {
+                summary: Some("s".into()),
+                body: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
     }
 
     #[test]

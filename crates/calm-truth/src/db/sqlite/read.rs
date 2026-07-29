@@ -291,13 +291,24 @@ impl RepoRead for SqlxRepo {
         Ok(row.map(Card::from))
     }
 
-    async fn card_body_crdt_get(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let row: Option<(Option<Vec<u8>>,)> =
-            sqlx::query_as(r#"SELECT body_crdt FROM cards WHERE id = ?1"#)
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.and_then(|(blob,)| blob))
+    async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>> {
+        #[derive(sqlx::FromRow)]
+        struct CardWithCrdtRow {
+            #[sqlx(flatten)]
+            card: crate::db::rows::CardRow,
+            body_crdt: Option<Vec<u8>>,
+        }
+        // Single SELECT = a self-consistent row snapshot: payload and
+        // body_crdt can never tear against each other.
+        let row: Option<CardWithCrdtRow> = sqlx::query_as(
+            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at,
+                      body_crdt
+               FROM cards WHERE id = ?1"#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| (Card::from(row.card), row.body_crdt)))
     }
 
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {

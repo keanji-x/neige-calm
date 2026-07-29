@@ -364,11 +364,14 @@ pub trait RepoRead: Send + Sync + 'static {
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
-    /// #960 PR2 review — read-only fetch of a card's opaque CRDT blob
-    /// (`cards.body_crdt`). `None` for rows never touched by the
-    /// wave-report persist path. The bytes are opaque to every caller
+    /// #960 PR2 review — atomic single-row fetch of a card together
+    /// with its opaque CRDT blob (`cards.body_crdt`). One SELECT, one
+    /// row: the returned `(Card, blob)` pair is a self-consistent
+    /// snapshot (a concurrent persist can never tear payload vs.
+    /// CRDT). The blob is `None` for rows never touched by the
+    /// wave-report persist path; the bytes are opaque to every caller
     /// except `calm-server::wave_report_doc`.
-    async fn card_body_crdt_get(&self, id: &str) -> Result<Option<Vec<u8>>>;
+    async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     async fn harness_item_list_by_card(
         &self,

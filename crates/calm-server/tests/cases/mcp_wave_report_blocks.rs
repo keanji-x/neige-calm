@@ -767,6 +767,72 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
 }
 
 #[tokio::test]
+async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
+    // #960 PR2 review round 2: when the JSON cache is unusable, EVERY
+    // read field (summary, text, blocks) must come from the same CRDT
+    // doc — never text from the stale payload.body with a block index
+    // from the doc. Make payload.body/summary diverge hard from the
+    // CRDT and assert the doc wins everywhere.
+    let boot = boot().await;
+    let ids = seed_two_blocks(&boot).await;
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({ "id": ids[1].0, "to_index": 0 }),
+    )
+    .await
+    .expect("move succeeds");
+    let crdt_body = "# B\n\nbeta\n# A\n\nalpha\n\n";
+    let truth = index_of(&read(&boot, json!({})).await);
+
+    // Stale cache row: body/summary rewritten, blocks dropped.
+    boot.repo
+        .card_update(
+            boot.report_card_id.as_str(),
+            CardPatch {
+                title: None,
+                kind: None,
+                sort: None,
+                payload: Some(json!({
+                    "schemaVersion": 2,
+                    "summary": "STALE SUMMARY",
+                    "body": "STALE BODY\n",
+                })),
+                deletable: None,
+            },
+        )
+        .await
+        .expect("write stale cache");
+
+    let out = read(&boot, json!({})).await;
+    assert_eq!(
+        out.get("text").and_then(Value::as_str),
+        Some(crdt_body),
+        "text comes from the CRDT projection, not the stale payload.body"
+    );
+    assert_eq!(
+        out.get("summary").and_then(Value::as_str),
+        Some("seeded"),
+        "summary comes from the same doc, not the stale payload"
+    );
+    assert_eq!(index_of(&out), truth, "block index from the same doc");
+
+    // with_markers: text is the concatenation of the SAME blocks the
+    // index lists — flatten(blocks) == body self-consistency.
+    let marked = read(&boot, json!({ "with_markers": true })).await;
+    let text = marked.get("text").and_then(Value::as_str).unwrap();
+    assert_eq!(
+        text,
+        format!(
+            "<!-- neige:{} -->\n# B\n\nbeta\n<!-- neige:{} -->\n# A\n\nalpha\n\n",
+            truth[0].0, truth[1].0
+        ),
+    );
+    assert_eq!(index_of(&marked), truth);
+}
+
+#[tokio::test]
 async fn write_markdown_refuses_worker() {
     let boot = boot().await;
     let err = call_tool(

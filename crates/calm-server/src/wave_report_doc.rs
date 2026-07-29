@@ -136,12 +136,7 @@ impl ReportDoc {
     /// `blocks`/`order` layout, delete `ROOT.body`, and return
     /// `Ok(true)`.
     pub fn ensure_blocks_layout(&mut self, hint_blocks: Option<&[ReportBlock]>) -> Result<bool> {
-        if self
-            .0
-            .get(&ROOT, FIELD_BLOCKS)
-            .context("probe blocks map")?
-            .is_some()
-        {
+        if self.blocks_map().context("probe blocks map")?.is_some() {
             return Ok(false);
         }
         let (_, body_id) = self
@@ -222,10 +217,10 @@ impl ReportDoc {
     /// server.
     pub fn project(&self) -> Result<(String, String)> {
         let summary = self.text_at(&ROOT, FIELD_SUMMARY)?;
-        let body = if let Some(blocks_id) = self.obj(&ROOT, FIELD_BLOCKS) {
+        let body = if let Some(blocks_id) = self.blocks_map()? {
             let mut body = String::new();
             for id in self.order_ids()? {
-                let entry = self.obj(&blocks_id, &id).with_context(|| {
+                let entry = self.entry_at(&blocks_id, &id)?.with_context(|| {
                     format!("malformed report doc: order id {id} has no blocks entry")
                 })?;
                 body.push_str(
@@ -242,11 +237,24 @@ impl ReportDoc {
         Ok((summary, body))
     }
 
-    /// True when the doc carries the v2 `blocks`/`order` layout
-    /// (i.e. `ensure_blocks_layout` has run, or the doc was seeded
-    /// post-#960). A `false` doc is a legacy pre-#960 shape.
-    pub fn has_blocks_layout(&self) -> bool {
-        self.obj(&ROOT, FIELD_BLOCKS).is_some()
+    /// `Ok(true)` when the doc carries a **well-formed** v2
+    /// `blocks`/`order` layout: `blocks` is a Map, `order` exists and
+    /// is a List, and every order entry resolves to a shape-correct
+    /// block (`kind` Str / `rev` Uint / `text` Text). `Ok(false)` only
+    /// for the legal legacy shape (no `blocks` at ROOT — pre-#960,
+    /// handled by the lazy migrator). Anything in between is
+    /// corruption and errors — a damaged v2 doc must never be read as
+    /// a valid empty report (#960 PR2 review round 2).
+    pub fn has_blocks_layout(&self) -> Result<bool> {
+        match self.blocks_map()? {
+            None => Ok(false),
+            Some(_) => {
+                // Full-shape walk; discard the snapshot, keep the
+                // validation.
+                self.blocks_snapshot()?;
+                Ok(true)
+            }
+        }
     }
 
     /// Full typed snapshot of the block map in `order` order. The
@@ -254,12 +262,12 @@ impl ReportDoc {
     // TODO(#960 PR3): non-prose blocks will carry their stored JSON
     // payload here instead of `{ markdown }`.
     pub fn blocks_snapshot(&self) -> Result<Vec<ReportBlock>> {
-        let Some(blocks_id) = self.obj(&ROOT, FIELD_BLOCKS) else {
+        let Some(blocks_id) = self.blocks_map()? else {
             return Ok(Vec::new());
         };
         let mut blocks = Vec::new();
         for id in self.order_ids()? {
-            let entry = self.obj(&blocks_id, &id).with_context(|| {
+            let entry = self.entry_at(&blocks_id, &id)?.with_context(|| {
                 format!("malformed report doc: order id {id} has no blocks entry")
             })?;
             let kind = self
@@ -298,17 +306,25 @@ impl ReportDoc {
             .collect())
     }
 
-    /// Current rev of a block, or `None` if the id doesn't exist.
-    /// The `if_rev` optimistic-concurrency check reads this.
-    pub fn block_rev(&self, id: &str) -> Option<u32> {
-        let blocks_id = self.obj(&ROOT, FIELD_BLOCKS)?;
-        let entry = self.obj(&blocks_id, id)?;
-        self.0
+    /// Current rev of a block. `Ok(None)` when the id doesn't exist;
+    /// `Err` when the doc or the entry is malformed — rev corruption
+    /// must surface as an Internal-level error, never be folded into
+    /// "block not found" (which callers map to BadRequest). The
+    /// `if_rev` optimistic-concurrency check reads this.
+    pub fn block_rev(&self, id: &str) -> Result<Option<u32>> {
+        let blocks_id = self
+            .blocks_map()?
+            .context("doc invariant: blocks map must exist (run ensure_blocks_layout)")?;
+        let Some(entry) = self.entry_at(&blocks_id, id)? else {
+            return Ok(None);
+        };
+        let rev = self
+            .0
             .get(&entry, KEY_REV)
-            .ok()
-            .flatten()
+            .with_context(|| format!("read block {id} rev"))?
             .and_then(|(value, _)| value.to_u64())
-            .map(|rev| u32::try_from(rev).unwrap_or(u32::MAX))
+            .with_context(|| format!("malformed report doc: block {id} has no Uint rev"))?;
+        Ok(Some(u32::try_from(rev).unwrap_or(u32::MAX)))
     }
 
     /// Insert or replace a single block.
@@ -329,12 +345,12 @@ impl ReportDoc {
         content: &str,
     ) -> Result<(String, u32)> {
         let blocks_id = self
-            .obj(&ROOT, FIELD_BLOCKS)
+            .blocks_map()?
             .context("doc invariant: blocks map must exist (run ensure_blocks_layout)")?;
         match id {
             Some(id) => {
                 let entry = self
-                    .obj(&blocks_id, id)
+                    .entry_at(&blocks_id, id)?
                     .with_context(|| format!("block {id} not found"))?;
                 let rev = self
                     .0
@@ -344,8 +360,8 @@ impl ReportDoc {
                     .context("doc invariant: block entry has a Uint rev")?;
                 let rev = u32::try_from(rev).unwrap_or(u32::MAX);
                 let text_id = self
-                    .obj(&entry, KEY_TEXT)
-                    .context("doc invariant: block entry has a text field")?;
+                    .typed_at(&entry, KEY_TEXT, ObjType::Text)?
+                    .with_context(|| format!("malformed report doc: block {id} text field"))?;
                 let existing_kind = self
                     .0
                     .get(&entry, KEY_KIND)
@@ -371,9 +387,7 @@ impl ReportDoc {
                 Ok((id.to_string(), next_rev))
             }
             None => {
-                let order_id = self
-                    .obj(&ROOT, FIELD_ORDER)
-                    .context("doc invariant: order list must exist")?;
+                let order_id = self.order_list()?;
                 let mut used: HashSet<String> = self.0.keys(&blocks_id).collect();
                 let index = self.0.length(&order_id);
                 let id = mint_id(content, index, &mut used);
@@ -391,9 +405,7 @@ impl ReportDoc {
     /// delete + insert on `order`; the block entry itself is
     /// untouched (rev unchanged — ordering is not content).
     pub fn move_block(&mut self, id: &str, to_index: usize) -> Result<()> {
-        let order_id = self
-            .obj(&ROOT, FIELD_ORDER)
-            .context("doc invariant: order list must exist")?;
+        let order_id = self.order_list()?;
         let ids = self.order_ids()?;
         let from = ids
             .iter()
@@ -420,11 +432,9 @@ impl ReportDoc {
     /// Unknown id is an error.
     pub fn delete_block(&mut self, id: &str) -> Result<()> {
         let blocks_id = self
-            .obj(&ROOT, FIELD_BLOCKS)
+            .blocks_map()?
             .context("doc invariant: blocks map must exist (run ensure_blocks_layout)")?;
-        let order_id = self
-            .obj(&ROOT, FIELD_ORDER)
-            .context("doc invariant: order list must exist")?;
+        let order_id = self.order_list()?;
         let index = self
             .order_ids()?
             .iter()
@@ -453,7 +463,7 @@ impl ReportDoc {
         aligned: &[ReportBlock],
     ) -> Result<()> {
         let blocks_id = self
-            .obj(&ROOT, FIELD_BLOCKS)
+            .blocks_map()?
             .context("doc invariant: blocks map must exist (run ensure_blocks_layout)")?;
         let keep: HashSet<&str> = aligned.iter().map(|block| block.id.as_str()).collect();
         for old in current {
@@ -472,7 +482,7 @@ impl ReportDoc {
             match old_by_id.get(block.id.as_str()) {
                 Some(old) => {
                     let entry = self
-                        .obj(&blocks_id, &block.id)
+                        .entry_at(&blocks_id, &block.id)?
                         .context("doc invariant: surviving block entry exists")?;
                     if old.kind != block.kind {
                         self.0
@@ -486,7 +496,7 @@ impl ReportDoc {
                     }
                     if block_markdown(old) != content {
                         let text_id = self
-                            .obj(&entry, KEY_TEXT)
+                            .typed_at(&entry, KEY_TEXT, ObjType::Text)?
                             .context("doc invariant: block entry has a text field")?;
                         self.0
                             .update_text(&text_id, content)
@@ -507,9 +517,7 @@ impl ReportDoc {
         }
         let new_order: Vec<&str> = aligned.iter().map(|block| block.id.as_str()).collect();
         if self.order_ids()? != new_order {
-            let order_id = self
-                .obj(&ROOT, FIELD_ORDER)
-                .context("doc invariant: order list must exist")?;
+            let order_id = self.order_list()?;
             while self.0.length(&order_id) > 0 {
                 self.0
                     .delete(&order_id, 0_usize)
@@ -591,12 +599,12 @@ impl ReportDoc {
             .expect("update_text on freshly-minted Text obj cannot fail");
     }
 
-    /// The block-id order, materialized as owned strings. Errors on a
-    /// malformed doc whose `order` entries are not Str values.
+    /// The block-id order, materialized as owned strings. Only legal
+    /// in a v2 context (blocks map present): a missing or non-List
+    /// `order` is corruption, never "empty" — errors on that and on
+    /// non-Str entries.
     fn order_ids(&self) -> Result<Vec<String>> {
-        let Some(order_id) = self.obj(&ROOT, FIELD_ORDER) else {
-            return Ok(Vec::new());
-        };
+        let order_id = self.order_list()?;
         (0..self.0.length(&order_id))
             .map(|index| {
                 self.0
@@ -642,10 +650,53 @@ impl ReportDoc {
             .with_context(|| format!("read `{prop}` text"))
     }
 
-    /// Resolve a child object id off a parent. Returns `None` if the
-    /// key is missing.
-    fn obj(&self, parent: &automerge::ObjId, prop: &str) -> Option<automerge::ObjId> {
-        self.0.get(parent, prop).ok().flatten().map(|(_, id)| id)
+    /// Typed child-object lookup: `Ok(None)` when `prop` is absent,
+    /// `Err` when the lookup itself fails or the value is present but
+    /// not an object of type `ty`. A malformed doc must never be
+    /// silently reinterpreted (e.g. a scalar `order` read as "no
+    /// order" → empty report) — type errors are corruption, and
+    /// corruption surfaces as an error at the persist/read boundary.
+    fn typed_at(
+        &self,
+        parent: &automerge::ObjId,
+        prop: &str,
+        ty: ObjType,
+    ) -> Result<Option<automerge::ObjId>> {
+        match self
+            .0
+            .get(parent, prop)
+            .with_context(|| format!("read `{prop}`"))?
+        {
+            None => Ok(None),
+            Some((value, id)) => {
+                ensure!(
+                    matches!(value, Value::Object(actual) if actual == ty),
+                    "malformed report doc: `{prop}` is not a {ty:?} object"
+                );
+                Ok(Some(id))
+            }
+        }
+    }
+
+    /// The v2 `blocks` map id, or `None` for a legacy (pre-#960) doc.
+    /// Errors when `blocks` exists but is not a Map.
+    fn blocks_map(&self) -> Result<Option<automerge::ObjId>> {
+        self.typed_at(&ROOT, FIELD_BLOCKS, ObjType::Map)
+    }
+
+    /// The v2 `order` list id. Every caller is in a v2 context (the
+    /// blocks map exists or is required), so "blocks without order"
+    /// is NOT an interpretable state — missing or non-List `order` is
+    /// corruption and errors.
+    fn order_list(&self) -> Result<automerge::ObjId> {
+        self.typed_at(&ROOT, FIELD_ORDER, ObjType::List)?
+            .context("malformed report doc: blocks map present but order list missing")
+    }
+
+    /// A block entry (`Map`) under the blocks map: `Ok(None)` when the
+    /// id is absent, `Err` when present but not a Map.
+    fn entry_at(&self, blocks_id: &automerge::ObjId, id: &str) -> Result<Option<automerge::ObjId>> {
+        self.typed_at(blocks_id, id, ObjType::Map)
     }
 }
 
@@ -769,9 +820,13 @@ mod tests {
         // reuse threshold); B stays byte-identical.
         doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n")
             .unwrap();
-        assert_eq!(doc.block_rev(&id_a), Some(2), "changed block: rev+1");
         assert_eq!(
-            doc.block_rev(&id_b),
+            doc.block_rev(&id_a).unwrap(),
+            Some(2),
+            "changed block: rev+1"
+        );
+        assert_eq!(
+            doc.block_rev(&id_b).unwrap(),
             Some(1),
             "untouched block: rev unchanged"
         );
@@ -779,13 +834,17 @@ mod tests {
         // Byte-identical rewrite: no rev movement at all.
         doc.update("s", "# A\n\nalpha edited\n\n# B\n\nbeta\n")
             .unwrap();
-        assert_eq!(doc.block_rev(&id_a), Some(2));
-        assert_eq!(doc.block_rev(&id_b), Some(1));
+        assert_eq!(doc.block_rev(&id_a).unwrap(), Some(2));
+        assert_eq!(doc.block_rev(&id_b).unwrap(), Some(1));
 
         // Dropping a block deletes its entry; the survivor keeps id+rev.
         doc.update("s", "# B\n\nbeta\n").unwrap();
-        assert_eq!(doc.block_rev(&id_a), None, "vanished block is deleted");
-        assert_eq!(doc.block_rev(&id_b), Some(1));
+        assert_eq!(
+            doc.block_rev(&id_a).unwrap(),
+            None,
+            "vanished block is deleted"
+        );
+        assert_eq!(doc.block_rev(&id_b).unwrap(), Some(1));
         assert_eq!(doc.project().unwrap().1, "# B\n\nbeta\n");
     }
 
@@ -874,7 +933,7 @@ mod tests {
             .unwrap();
         assert_eq!(same_id, id_a);
         assert_eq!(rev, 2);
-        assert_eq!(doc.block_rev(&id_a), Some(2));
+        assert_eq!(doc.block_rev(&id_a).unwrap(), Some(2));
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
 
         // Replace with byte-identical content is an idempotent no-op:
@@ -883,7 +942,7 @@ mod tests {
             .upsert_block(Some(&id_a), "prose", "# A\n\nalpha v2\n")
             .unwrap();
         assert_eq!(rev, 2, "identical content: rev holds");
-        assert_eq!(doc.block_rev(&id_a), Some(2));
+        assert_eq!(doc.block_rev(&id_a).unwrap(), Some(2));
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
 
         // Unknown id errors.
@@ -892,7 +951,7 @@ mod tests {
         // Move B to the front; rev untouched.
         doc.move_block(&id_b, 0).unwrap();
         assert_eq!(doc.project().unwrap().1, "# B\n\nbeta\n# A\n\nalpha v2\n");
-        assert_eq!(doc.block_rev(&id_b), Some(1));
+        assert_eq!(doc.block_rev(&id_b).unwrap(), Some(1));
         // And back to the tail.
         doc.move_block(&id_b, 1).unwrap();
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n# B\n\nbeta\n");
@@ -903,7 +962,7 @@ mod tests {
         // Delete B.
         doc.delete_block(&id_b).unwrap();
         assert_eq!(doc.project().unwrap().1, "# A\n\nalpha v2\n");
-        assert_eq!(doc.block_rev(&id_b), None);
+        assert_eq!(doc.block_rev(&id_b).unwrap(), None);
         assert!(doc.delete_block(&id_b).is_err(), "double delete errors");
 
         // Everything survives a save round-trip.
@@ -1083,6 +1142,85 @@ mod tests {
                 .is_err(),
             "update_with_hints must not panic"
         );
+    }
+
+    /// A raw doc with summary + a well-formed block entry under
+    /// `blocks`, but NO `order` list.
+    fn raw_doc_blocks_without_order() -> Vec<u8> {
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, KEY_KIND, "prose").unwrap();
+        raw.put(&entry, KEY_REV, 1_u64).unwrap();
+        let text_id = raw.put_object(&entry, KEY_TEXT, ObjType::Text).unwrap();
+        raw.update_text(&text_id, "# A\n").unwrap();
+        raw.save()
+    }
+
+    #[test]
+    fn blocks_without_order_is_corruption_not_an_empty_report() {
+        // "blocks present, order missing" is NOT an interpretable
+        // state — it must error, never read as a valid empty report
+        // (which a subsequent write would then clobber).
+        let bytes = raw_doc_blocks_without_order();
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.project().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("order list missing"),
+            "err = {err:#}"
+        );
+        assert!(doc.blocks_snapshot().is_err());
+        assert!(doc.has_blocks_layout().is_err());
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        assert!(
+            doc.update("s", "").is_err(),
+            "an empty-body write over the corrupt doc must be refused"
+        );
+    }
+
+    #[test]
+    fn scalar_order_is_corruption_not_an_empty_report() {
+        // `order` present but as a scalar Str instead of a List.
+        let mut raw = raw_doc_with_summary("s");
+        raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        raw.put(&ROOT, FIELD_ORDER, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.project().unwrap_err();
+        assert!(format!("{err:#}").contains("not a List"), "err = {err:#}");
+        assert!(doc.blocks_snapshot().is_err());
+        assert!(doc.has_blocks_layout().is_err());
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        assert!(doc.update("s", "# A\n").is_err());
+    }
+
+    #[test]
+    fn scalar_rev_is_corruption_not_block_not_found() {
+        // Block entry whose `rev` is a Str: rev corruption must error
+        // (Internal at the boundary), never fold into `Ok(None)` /
+        // "block not found" (which callers map to BadRequest).
+        let mut raw = raw_doc_with_summary("s");
+        let blocks = raw.put_object(&ROOT, FIELD_BLOCKS, ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, KEY_KIND, "prose").unwrap();
+        raw.put(&entry, KEY_REV, "three").unwrap();
+        let text_id = raw.put_object(&entry, KEY_TEXT, ObjType::Text).unwrap();
+        raw.update_text(&text_id, "# A\n").unwrap();
+        let order = raw.put_object(&ROOT, FIELD_ORDER, ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let bytes = raw.save();
+
+        let doc = ReportDoc::from_bytes(&bytes).unwrap();
+        let err = doc.blocks_snapshot().unwrap_err();
+        assert!(format!("{err:#}").contains("no Uint rev"), "err = {err:#}");
+        assert!(doc.has_blocks_layout().is_err());
+        assert!(
+            doc.block_rev("b_0001").is_err(),
+            "rev corruption must be an error, not Ok(None)"
+        );
+        // An unknown id on the same doc is still a clean None.
+        assert_eq!(doc.block_rev("b_nope").unwrap(), None);
     }
 
     // -- duplicate id hints (#960 PR2 review) ------------------------
