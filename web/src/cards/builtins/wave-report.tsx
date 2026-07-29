@@ -43,40 +43,63 @@ export const candleTupleSchema = z.tuple([
   z.number().optional(),
 ]);
 
-export const chartCandlesPayloadSchema = z.object({
-  symbol: z.string(),
+// Caps mirror the Rust-side validation (crates, #960 review round 1) so a
+// payload the kernel accepts is exactly what the frontend accepts — strict
+// objects, bounded sizes. A payload violating any cap falls to the opaque
+// catch-all (placeholder render), never failing the whole card.
+export const chartCandlesPayloadSchema = z.strictObject({
+  symbol: z.string().min(1).max(2048),
   period: z.enum(['day', 'week', 'month']).optional(),
   /** Data is inlined; range switching is a pure client-side filter. */
-  candles: z.array(candleTupleSchema).min(2),
+  candles: z.array(candleTupleSchema).min(2).max(5000),
   overlays: z.array(z.enum(['ma20', 'ma60'])).optional(),
-  caption: z.string().optional(),
+  caption: z.string().max(2048).optional(),
 });
 
-export const tableBlockPayloadSchema = z.object({
-  columns: z
-    .array(
-      z.object({
-        key: z.string(),
-        label: z.string(),
-        align: z.enum(['left', 'right']).optional(),
-      }),
-    )
-    .min(1),
-  rows: z.array(
-    z.record(z.string(), z.union([z.string(), z.number(), z.null()])),
-  ),
-  caption: z.string().optional(),
-  highlight: z.string().optional(),
-});
+export const tableBlockPayloadSchema = z
+  .strictObject({
+    columns: z
+      .array(
+        z.strictObject({
+          key: z.string().min(1).max(2048),
+          label: z.string().max(2048),
+          align: z.enum(['left', 'right']).optional(),
+        }),
+      )
+      .min(1)
+      .max(32),
+    rows: z
+      .array(z.record(z.string(), z.union([z.string(), z.number(), z.null()])))
+      .max(500),
+    caption: z.string().max(2048).optional(),
+    highlight: z.string().max(2048).optional(),
+  })
+  .refine(
+    (t) => new Set(t.columns.map((c) => c.key)).size === t.columns.length,
+    { message: 'column keys must be unique' },
+  )
+  .refine(
+    (t) => {
+      const keys = new Set(t.columns.map((c) => c.key));
+      return t.rows.every((row) =>
+        Object.keys(row).every((k) => keys.has(k)),
+      );
+    },
+    { message: 'row keys must be declared column keys' },
+  );
 
-export const appBlockPayloadSchema = z.object({
-  /** Same-origin absolute path — `//host` protocol-relative URLs are not. */
+export const appBlockPayloadSchema = z.strictObject({
+  /** Same-origin absolute path: leading `/`, not protocol-relative `//`,
+   *  and no backslashes (browsers normalize `\` to `/` in URLs, which
+   *  would smuggle a `//host` past a prefix check). Mirrors the Rust
+   *  validator; app.tsx additionally asserts the resolved origin. */
   src: z
     .string()
-    .refine((s) => s.startsWith('/') && !s.startsWith('//'), {
+    .max(2048)
+    .regex(/^\/(?!\/)[^\\]*$/, {
       message: 'src must be a same-origin absolute path',
     }),
-  title: z.string().optional(),
+  title: z.string().max(2048).optional(),
   height: z.number().min(120).max(2000).optional(),
 });
 

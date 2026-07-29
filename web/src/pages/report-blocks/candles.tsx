@@ -124,12 +124,28 @@ export function ReportCandlesBlock({
   const palette = PALETTES[theme];
   const [rangeKey, setRangeKey] = useState('All');
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  const [failed, setFailed] = useState(false);
   const chartHostRef = useRef<HTMLDivElement | null>(null);
 
-  const sorted = useMemo(
-    () => payload.candles.slice().sort((a, b) => a[0] - b[0]),
-    [payload.candles],
-  );
+  // Sort ascending, then dedupe on the SECOND (lightweight-charts keys bars
+  // by UTCTimestamp seconds and throws on duplicate/unordered times) —
+  // same-second candles keep the last one.
+  const sorted = useMemo(() => {
+    const asc = payload.candles.slice().sort((a, b) => a[0] - b[0]);
+    const out: Candle[] = [];
+    for (const c of asc) {
+      const sec = Math.floor(c[0] / 1000);
+      if (
+        out.length > 0 &&
+        Math.floor(out[out.length - 1][0] / 1000) === sec
+      ) {
+        out[out.length - 1] = c;
+      } else {
+        out.push(c);
+      }
+    }
+    return out;
+  }, [payload.candles]);
 
   const overlays = payload.overlays ?? [];
   const showMa20 = overlays.includes('ma20');
@@ -151,7 +167,9 @@ export function ReportCandlesBlock({
     if (days == null || sorted.length === 0) return 0;
     const cutoff = sorted[sorted.length - 1][0] - days * DAY_MS;
     const idx = sorted.findIndex((c) => c[0] >= cutoff);
-    return idx < 0 ? 0 : idx;
+    // A window with fewer than 2 bars is not a chart — fall back to All.
+    if (idx < 0 || sorted.length - idx < 2) return 0;
+    return idx;
   }, [sorted, days]);
 
   const visible = useMemo(
@@ -167,6 +185,12 @@ export function ReportCandlesBlock({
     const host = chartHostRef.current;
     if (!host || visible.length === 0) return;
 
+    // Crash containment: a throwing chart build (bad data the schema could
+    // not foresee, library edge case) degrades this block to a placeholder
+    // instead of taking down the whole report page.
+    let created: ReturnType<typeof createChart> | null = null;
+    let crosshairHandler: ((param: MouseEventParams) => void) | null = null;
+    try {
     const chart = createChart(host, {
       autoSize: true,
       height: 300,
@@ -185,6 +209,7 @@ export function ReportCandlesBlock({
       handleScroll: false,
       handleScale: false,
     });
+    created = chart;
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
       // Hollow rising candle: transparent body, colored border + wick.
@@ -275,14 +300,38 @@ export function ReportCandlesBlock({
       });
     };
     chart.subscribeCrosshairMove(onCrosshair);
+    crosshairHandler = onCrosshair;
     chart.timeScale().fitContent();
+    } catch {
+      try {
+        created?.remove();
+      } catch {
+        // Already torn down.
+      }
+      setFailed(true);
+      return;
+    }
 
     return () => {
-      chart.unsubscribeCrosshairMove(onCrosshair);
-      chart.remove();
+      if (created) {
+        if (crosshairHandler) created.unsubscribeCrosshairMove(crosshairHandler);
+        try {
+          created.remove();
+        } catch {
+          // Already torn down.
+        }
+      }
       setHover(null);
     };
   }, [visible, startIndex, ma20, ma60, hasVolume, palette]);
+
+  if (failed) {
+    return (
+      <div className="rb-unsupported" role="note">
+        chart failed to render
+      </div>
+    );
+  }
 
   const last = visible[visible.length - 1];
   const first = visible[0];

@@ -13,7 +13,7 @@
 //   * Non-MCP pages never complete the handshake; `connect()` simply stays
 //     pending until unmount and the plain page renders fine regardless.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   AppBridge,
   PostMessageTransport,
@@ -50,6 +50,21 @@ export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
 
   const height = clampHeight(payload.height);
   const title = payload.title?.trim() ? payload.title : payload.src;
+
+  // Defense in depth on top of the zod regex: resolve the src the way the
+  // browser will and assert it stays on our origin. URL normalization (e.g.
+  // `\` → `/`, or a smuggled scheme) that would escape same-origin renders
+  // the placeholder instead of mounting an iframe.
+  const sameOrigin = useMemo(() => {
+    try {
+      return (
+        new URL(payload.src, window.location.origin).origin ===
+        window.location.origin
+      );
+    } catch {
+      return false;
+    }
+  }, [payload.src]);
 
   useEffect(() => {
     const iframe = iframeRef.current;
@@ -137,6 +152,14 @@ export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
       // Theme push is best-effort; the block keeps rendering.
     }
   }, [theme]);
+
+  if (!sameOrigin) {
+    return (
+      <div className="rb-unsupported" role="note">
+        unsupported block kind app
+      </div>
+    );
+  }
 
   return (
     <div className="rb-app">

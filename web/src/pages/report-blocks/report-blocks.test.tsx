@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
+import { ReportAppBlock } from './app';
 import type { ReportBlock } from '../../cards/builtins/wave-report';
 
 // lightweight-charts draws on canvas — not available in jsdom. Mock the
@@ -11,6 +12,7 @@ import type { ReportBlock } from '../../cards/builtins/wave-report';
 const lw = vi.hoisted(() => {
   const state = {
     charts: 0,
+    throwOnCreate: false,
     series: [] as {
       type: unknown;
       options: Record<string, unknown>;
@@ -18,6 +20,7 @@ const lw = vi.hoisted(() => {
     }[],
     reset() {
       state.charts = 0;
+      state.throwOnCreate = false;
       state.series = [];
     },
   };
@@ -35,6 +38,7 @@ vi.mock('lightweight-charts', () => {
     ColorType: { Solid: 'solid' },
     LineStyle: { Solid: 0, Dashed: 2 },
     createChart: () => {
+      if (lw.throwOnCreate) throw new Error('boom');
       lw.charts += 1;
       return {
         addSeries: (type: unknown, options: Record<string, unknown>) => {
@@ -198,6 +202,58 @@ describe('chart.candles block', () => {
     expect(screen.getByText('MA20')).toBeInTheDocument();
   });
 
+  it('dedupes same-second candles keeping the last one', async () => {
+    render(
+      <ReportBlockView
+        block={chartBlock({
+          symbol: 'DUP',
+          candles: [
+            [T0, 100, 102, 99, 101],
+            [T0 + 500, 100, 103, 99, 102], // same floor(ts/1000) second
+            [T0 + DAY_MS, 102, 104, 101, 103],
+          ],
+        })}
+      />,
+    );
+    await screen.findByText('DUP');
+
+    const candles = candleSeriesRecords().at(-1);
+    expect(candles?.data).toHaveLength(2);
+    // The later same-second candle wins.
+    expect(candles?.data[0]).toMatchObject({ close: 102, high: 103 });
+  });
+
+  it('falls back to All when a range window holds fewer than 2 bars', async () => {
+    render(
+      <ReportBlockView
+        block={chartBlock({
+          symbol: 'GAP',
+          candles: [
+            [T0, 100, 102, 99, 101],
+            [T0 + 400 * DAY_MS, 101, 103, 100, 102],
+          ],
+        })}
+      />,
+    );
+    await screen.findByText('GAP');
+
+    await userEvent.click(screen.getByRole('button', { name: '1M' }));
+    // Only the last candle sits inside 1M — the chart keeps all bars.
+    expect(candleSeriesRecords().at(-1)?.data).toHaveLength(2);
+  });
+
+  it('degrades to a placeholder when the chart build throws', async () => {
+    lw.throwOnCreate = true;
+    render(
+      <ReportBlockView
+        block={chartBlock({ symbol: 'BOOM', candles: makeCandles(5) })}
+      />,
+    );
+    expect(await screen.findByRole('note')).toHaveTextContent(
+      'chart failed to render',
+    );
+  });
+
   it('adds a volume histogram only when candles carry volume', async () => {
     render(
       <ReportBlockView
@@ -304,6 +360,38 @@ describe('app block', () => {
     expect(iframe).toHaveStyle({ height: '360px' });
   });
 
+  it('rejects a backslash src at the schema layer', () => {
+    render(
+      <ReportBlockView
+        block={
+          {
+            id: 'b_app_bs',
+            kind: 'app',
+            rev: 1,
+            payload: { src: '/\\evil.example/x' },
+          } as ReportBlock
+        }
+      />,
+    );
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'unsupported block kind app',
+    );
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+
+  it('asserts the resolved origin before mounting the iframe (defense in depth)', () => {
+    // Bypass the zod layer on purpose — this exercises app.tsx's own check.
+    render(
+      <ReportAppBlock
+        payload={{ src: '//evil.example/x' } as { src: string }}
+      />,
+    );
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'unsupported block kind app',
+    );
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+
   it('degrades a protocol-relative src to the unsupported placeholder', () => {
     render(
       <ReportBlockView
@@ -333,6 +421,109 @@ describe('degraded blocks', () => {
     expect(screen.getByRole('note')).toHaveTextContent(
       'unsupported block kind sparkline',
     );
+  });
+
+  it('enforces the Rust-parity caps and strict shapes', () => {
+    const cases: { name: string; block: ReportBlock }[] = [
+      {
+        name: 'chart: empty symbol',
+        block: {
+          id: 'c1',
+          kind: 'chart.candles',
+          rev: 1,
+          payload: { symbol: '', candles: makeCandles(3) },
+        } as ReportBlock,
+      },
+      {
+        name: 'chart: over 5000 candles',
+        block: {
+          id: 'c2',
+          kind: 'chart.candles',
+          rev: 1,
+          payload: { symbol: 'X', candles: makeCandles(5001) },
+        } as ReportBlock,
+      },
+      {
+        name: 'chart: unknown payload key (strict)',
+        block: {
+          id: 'c3',
+          kind: 'chart.candles',
+          rev: 1,
+          payload: { symbol: 'X', candles: makeCandles(3), extra: 1 },
+        } as ReportBlock,
+      },
+      {
+        name: 'table: over 32 columns',
+        block: {
+          id: 't1',
+          kind: 'table',
+          rev: 1,
+          payload: {
+            columns: Array.from({ length: 33 }, (_, i) => ({
+              key: `k${i}`,
+              label: `L${i}`,
+            })),
+            rows: [],
+          },
+        } as ReportBlock,
+      },
+      {
+        name: 'table: duplicate column keys',
+        block: {
+          id: 't2',
+          kind: 'table',
+          rev: 1,
+          payload: {
+            columns: [
+              { key: 'k', label: 'A' },
+              { key: 'k', label: 'B' },
+            ],
+            rows: [],
+          },
+        } as ReportBlock,
+      },
+      {
+        name: 'table: row key outside declared columns',
+        block: {
+          id: 't3',
+          kind: 'table',
+          rev: 1,
+          payload: {
+            columns: [{ key: 'k', label: 'A' }],
+            rows: [{ k: 'ok', stray: 'nope' }],
+          },
+        } as ReportBlock,
+      },
+      {
+        name: 'table: over 500 rows',
+        block: {
+          id: 't4',
+          kind: 'table',
+          rev: 1,
+          payload: {
+            columns: [{ key: 'k', label: 'A' }],
+            rows: Array.from({ length: 501 }, (_, i) => ({ k: i })),
+          },
+        } as ReportBlock,
+      },
+      {
+        name: 'app: src over 2048 chars',
+        block: {
+          id: 'a1',
+          kind: 'app',
+          rev: 1,
+          payload: { src: '/' + 'a'.repeat(2048) },
+        } as ReportBlock,
+      },
+    ];
+
+    for (const { name, block } of cases) {
+      const { unmount } = render(<ReportBlockView block={block} />);
+      expect(screen.getByRole('note'), name).toHaveTextContent(
+        `unsupported block kind ${block.kind}`,
+      );
+      unmount();
+    }
   });
 
   it('renders a placeholder for a known kind with a malformed payload', () => {
