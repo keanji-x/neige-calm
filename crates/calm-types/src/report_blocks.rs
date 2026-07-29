@@ -122,7 +122,7 @@ fn fence_run(line: &str, marker: u8) -> Option<usize> {
 
 fn opening_fence(line: &str) -> Option<(u8, usize)> {
     let line = strip_fence_indent(line);
-    [b'`', b'~'].into_iter().find_map(|marker| {
+    b"`~".iter().copied().find_map(|marker| {
         fence_run(line, marker)
             .filter(|&length| marker != b'`' || !line[length..].contains('`'))
             .map(|length| (marker, length))
