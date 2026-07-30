@@ -36,7 +36,8 @@ use crate::mcp_server::wiring::{card_mcp_thread_start_config, mint_and_persist_c
 use crate::model::{CardRole, now_ms};
 use crate::pending_codex_threads::PendingThreadStartRegistry;
 use crate::proc_identity::{
-    read_boot_id, read_proc_start_time, signal_process_group, verify_owned_pid,
+    read_boot_id, read_proc_start_time, sigkill_verified_group_members, signal_process_group,
+    verify_owned_pid,
 };
 use crate::routes::settings::load_settings;
 use crate::session_projection_lookup::{
@@ -360,6 +361,17 @@ fn classify_spawn_failure(err: &CalmError) -> FailureClass {
     }
 }
 
+/// #954 review D2 — marker for the ONE error whose transition outcome was
+/// never observed (the detached spawn task died without publishing its
+/// result). Callers must not claim "terminalized + heal armed" for it: the
+/// in-memory state may still be `Starting` with heal unarmed.
+const DETACHED_SPAWN_RESULT_LOST: &str =
+    "detached spawn transition task ended without publishing a result";
+
+fn detached_spawn_result_lost(err: &CalmError) -> bool {
+    err.to_string().contains(DETACHED_SPAWN_RESULT_LOST)
+}
+
 /// #953 §2 — ±20% uniform jitter. Cheap clock-derived entropy: the heal loop
 /// only needs desynchronization, not statistical quality (no rand dep).
 fn heal_jitter(delay: Duration) -> Duration {
@@ -622,6 +634,12 @@ pub struct SharedCodexAppServer {
     /// its state db before the socket exists; only this deadline (or a dead
     /// child) may fail the spawn.
     start_timeout: Duration,
+    /// #954 — stop-grace ceiling for every daemon termination: SIGTERM →
+    /// exit-driven wait up to this ceiling → straggler cleanup (group
+    /// SIGKILL where the group is provably pinned, else the per-member
+    /// identity sweep — see `terminate_group_with_grace`). A cooperative
+    /// daemon pays its actual exit time, never the full grace.
+    stop_grace: Duration,
     notifications: NotificationFanout,
     pending_codex_threads_handle: Option<Arc<PendingThreadStartRegistry>>,
     kernel_initiated_threads: Arc<Mutex<HashSet<String>>>,
@@ -675,6 +693,12 @@ pub struct SharedCodexAppServer {
     /// no test holds it; absent from non-fixtures builds.
     #[cfg(feature = "fixtures")]
     transition_entry_gate: Arc<tokio::sync::Mutex<()>>,
+    /// #954 — test seam: abort handle of the most recent detached spawn
+    /// transition task, so tests can model a runtime-teardown/panic abort
+    /// of the transition itself (caller cancellation can no longer reach
+    /// it). Fixtures builds only.
+    #[cfg(feature = "fixtures")]
+    detached_spawn_task: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
     ingest_url: String,
     #[cfg(feature = "fixtures")]
     fake: Option<Arc<FakeSharedCodexAppServer>>,
@@ -836,6 +860,7 @@ impl SharedCodexAppServer {
             active_turns: Arc::new(DashMap::new()),
             restart_backoff: BackoffState::new(Duration::from_millis(250), Duration::from_secs(10)),
             start_timeout: Duration::from_secs(120),
+            stop_grace: Duration::from_secs(60),
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -862,6 +887,8 @@ impl SharedCodexAppServer {
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(feature = "fixtures")]
             transition_entry_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(feature = "fixtures")]
+            detached_spawn_task: std::sync::Mutex::new(None),
             ingest_url: "http://127.0.0.1:0".into(),
             #[cfg(feature = "fixtures")]
             fake: _fake_running.then(|| Arc::new(FakeSharedCodexAppServer::new())),
@@ -892,6 +919,7 @@ impl SharedCodexAppServer {
                 Duration::from_millis(cfg.shared_codex_appserver_restart_max_delay_ms),
             ),
             start_timeout: Duration::from_secs(cfg.shared_codex_appserver_start_timeout_secs),
+            stop_grace: Duration::from_secs(cfg.shared_codex_appserver_stop_grace_secs),
             notifications: tx,
             pending_codex_threads_handle,
             kernel_initiated_threads: Arc::new(Mutex::new(HashSet::new())),
@@ -918,6 +946,8 @@ impl SharedCodexAppServer {
             heal_post_ok_gate: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(feature = "fixtures")]
             transition_entry_gate: Arc::new(tokio::sync::Mutex::new(())),
+            #[cfg(feature = "fixtures")]
+            detached_spawn_task: std::sync::Mutex::new(None),
             ingest_url: cfg.codex_ingest_url_resolved(),
             #[cfg(feature = "fixtures")]
             fake: None,
@@ -938,11 +968,15 @@ impl SharedCodexAppServer {
         // assume this guard instead of re-acquiring it — no double-lock.
         // Thread resume runs after the serial is released (#953 §1: not a
         // transition).
-        let via = {
-            let _serial = self.transition_serial.lock().await;
-            self.rebuild_thread_cache_from_db().await?;
-            self.start_body_locked(false, None).await?
-        };
+        //
+        // #954 — the serial is an OWNED guard threaded down the `_locked`
+        // chain as a by-value token (type-enforcing the held-serial
+        // invariant); the spawn path moves it into the detached transition
+        // task, which releases it only after the terminal Running/Failed
+        // write.
+        let serial = Arc::clone(&self.transition_serial).lock_owned().await;
+        self.rebuild_thread_cache_from_db().await?;
+        let via = self.start_body_locked(serial, false, None).await?;
         self.resume_cached_threads(via.resume_mode()).await;
         Ok(())
     }
@@ -1456,6 +1490,26 @@ struct SpawnEnvSnapshot {
 }
 
 // ===================== Process lifecycle / supervision =====================
+/// #954 defect 2 — outcome of the takeover connect probe. `running` rows
+/// (and other adoptable non-starting shapes) keep the single-attempt
+/// fast-fail: a running daemon whose socket doesn't answer is broken, so
+/// boot must not stall for it. `starting` rows get the bounded readiness
+/// window poll ([`SharedCodexAppServer::poll_adopt_initialized`]).
+enum AdoptProbe {
+    /// The socket answered `initialize` — continue into the adoption body.
+    Connected((CodexAppServer, crate::codex_appserver::NotificationStream)),
+    /// Single-attempt probe failed against a live verified daemon —
+    /// handshake-failure reap, then fall through to spawn.
+    HandshakeFailed(String),
+    /// The child exited during the readiness window — fall through to
+    /// spawn with no reap (the stale-socket reap before spawn covers a
+    /// half-bound socket).
+    ChildExited,
+    /// The remaining window lapsed with the child alive and unbound —
+    /// graceful reap (defect-1 helper), then fall through to spawn.
+    WindowLapsed { last_error: String },
+}
+
 impl SharedCodexAppServer {
     async fn connected_client(&self) -> Result<Arc<CodexAppServer>> {
         self.running_client()
@@ -1515,24 +1569,75 @@ impl SharedCodexAppServer {
                 return Err(CalmError::CodexAppServer(msg));
             }
         };
-        if record.daemon_env_signature.as_deref() != Some(current_env_signature.as_str()) {
+        // #954 defect 3 — signature mismatch + verified healthy daemon ⇒
+        // ADOPT-AND-DRAIN, never reap-for-respawn. The v2 salt (#863)
+        // guarantees a mismatch on every first boot after an upgrade, so
+        // the old policy executed a healthy daemon at boot — that reap is
+        // what killed prod on 7/12. Adoption proceeds normally below;
+        // `mark_needs_respawn` after the re-stamp drains the daemon at the
+        // next thread-start boundary.
+        //
+        // Security property, stated precisely: adopt-and-drain guarantees
+        // that no NEW thread — and therefore no new MCP child or
+        // exec-shell — is ever created under detected-stale spawn
+        // settings: every production mint path crosses the needs_respawn
+        // drain boundary before minting (`thread_start_mint_inner` for
+        // card/spec/MCP-shell mints, `ensure_respawn_for_current_settings`
+        // for PTY/TUI creation). Documented residual: `turn_start` on an
+        // EXISTING thread does not cross the boundary — existing threads
+        // keep the MCP processes/config established under the old env
+        // until the drain completes (lazily, at the next mint) or the
+        // daemon is otherwise replaced. Two facts bound this residual: on
+        // the upgrade-salt mismatch the actual env values are typically
+        // byte-identical (only the salt changed, exposure zero); and the
+        // signature hashes ONLY the salt + ingest_url + HTTP(S)_PROXY —
+        // credentials and the rest of SPAWN_ENV_PASSTHROUGH were never
+        // detectable by this fence under either policy.
+        let signature_mismatch =
+            record.daemon_env_signature.as_deref() != Some(current_env_signature.as_str());
+        if signature_mismatch {
             tracing::warn!(
                 target: "shared_codex_daemon::takeover_env_changed",
                 pid,
                 pgid,
                 persisted = ?record.daemon_env_signature,
                 current = %current_env_signature,
-                "shared daemon was spawned with stale env signature; reaping for respawn"
+                "shared daemon was spawned with stale env signature; \
+                 adopting and marking for drain at the next thread-start boundary"
             );
-            reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
-            return Ok(false);
         }
         let Some(sock_path) = &record.sock_path else {
             return Ok(false);
         };
         let sock = PathBuf::from(sock_path);
-        match connect_initialized(&sock).await {
-            Ok((client, notifications)) => {
+        // #954 defect 2 — branch the probe on the persisted state: a
+        // `starting` row names a child still inside its own cold-start
+        // budget (mid-backfill after a calm-server crash/shutdown), so it
+        // gets the REMAINING readiness window instead of the instant
+        // handshake fast-fail that reaped it — and restarted backfill from
+        // scratch — on every boot.
+        let probe = if matches!(
+            SharedDaemonState::from_db_str(&record.state),
+            SharedDaemonState::Starting
+        ) {
+            // ms-domain saturating math anchored to the PERSISTED
+            // `started_at`: clock skew degenerates to a full or zero
+            // window, both bounded. Repeated boots against the same child
+            // never re-arm the window (adoption/re-stamp preserves
+            // `started_at`); a genuinely new spawn writes a new
+            // `started_at` and correctly gets a fresh window.
+            let elapsed = Duration::from_millis(now_ms().saturating_sub(started_at).max(0) as u64);
+            let remaining = self.start_timeout.saturating_sub(elapsed);
+            self.poll_adopt_initialized(&sock, pid, start_time, &boot_id, remaining)
+                .await
+        } else {
+            match connect_initialized(&sock).await {
+                Ok(pair) => AdoptProbe::Connected(pair),
+                Err(e) => AdoptProbe::HandshakeFailed(e.to_string()),
+            }
+        };
+        match probe {
+            AdoptProbe::Connected((client, notifications)) => {
                 let client = Arc::new(client);
                 let runtime = SharedDaemonRuntime {
                     pid,
@@ -1563,6 +1668,17 @@ impl SharedCodexAppServer {
                 // #953 — takeover success re-stamps `running` with the
                 // adopted tuple, so a row persisted as `starting` (or another
                 // legacy adoptable shape) reflects the live adopted daemon.
+                //
+                // #954 INVARIANT — the re-stamp keeps the OLD persisted
+                // signature (`record.daemon_env_signature`); the adoption
+                // path MUST NOT write the current signature anywhere. Drain
+                // durability rests on nothing else: `needs_respawn` is
+                // in-memory and lost on restart, so the next boot re-detects
+                // the mismatch from the untouched signature, re-adopts, and
+                // re-marks. On re-stamp Err the warning below stays correct
+                // because the failing write is the ONLY write on this path —
+                // the pre-existing row (old state, old signature) is
+                // untouched and the mismatch remains durably detectable.
                 if let Err(e) = self
                     .repo
                     .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
@@ -1589,9 +1705,16 @@ impl SharedCodexAppServer {
                 } else {
                     self.failed_persist_dedup.clear();
                 }
+                if signature_mismatch {
+                    // #954 defect 3 — arm the drain AFTER the adoption is
+                    // installed (re-stamp Ok or Err alike: the current
+                    // process must drain either way, and durability comes
+                    // from the untouched old signature, not this flag).
+                    self.mark_needs_respawn();
+                }
                 Ok(true)
             }
-            Err(e) => {
+            AdoptProbe::HandshakeFailed(e) => {
                 tracing::warn!(
                     target: "shared_codex_daemon::stop",
                     pid,
@@ -1599,7 +1722,24 @@ impl SharedCodexAppServer {
                     error = %e,
                     "takeover handshake failed against verified daemon; reaping pgid before relaunch"
                 );
-                reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
+                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
+                Ok(false)
+            }
+            AdoptProbe::ChildExited => Ok(false),
+            AdoptProbe::WindowLapsed { last_error } => {
+                tracing::warn!(
+                    target: "shared_codex_daemon::stop",
+                    pid,
+                    pgid,
+                    error = %last_error,
+                    "starting child never bound within its remaining readiness \
+                     window; reaping gracefully before relaunch"
+                );
+                // The same wall-clock deadline the child's own supervisor
+                // would have enforced (#949), just by a successor process —
+                // graceful (defect-1 helper), never the instant SIGKILL
+                // that armed codex's backfill lease on 7/12.
+                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
                 Ok(false)
             }
         }
@@ -1615,6 +1755,21 @@ impl SharedCodexAppServer {
     /// release (not a transition). The precondition is validated BEFORE any
     /// destructive work, atomically with the capture, and the guard is never
     /// released in between — no second pre-spawn check needed.
+    ///
+    /// #954 serial-hold analysis (grace runs INSIDE `transition_serial` —
+    /// required by the #953 atomic-transition invariant): a steady-state
+    /// transition holds the serial for up to `stop_grace + start_timeout` ≈
+    /// 60 + 120 = 180s at defaults (wedged old daemon paying the full
+    /// grace, then a slow cold start). The boot takeover of a `starting`
+    /// row can additionally pay the remaining readiness window before
+    /// reaping, so its worst case is `window (≤ start_timeout) +
+    /// stop_grace + start_timeout` ≈ 120 + 60 + 120 = 300s at defaults
+    /// (unbound child consuming the full window, then the full grace, then
+    /// a slow cold start). Queued behind it: thread-start
+    /// settings drains, crash restarts, heal rounds (their backoff happens
+    /// before acquiring), boot; wave preflights observe non-Running and
+    /// fail fast rather than queue. All of those already tolerate the 120s
+    /// cold start; settings PUT / status snapshots never take the serial.
     pub(crate) async fn transition_replace(
         self: &Arc<Self>,
         reason: &str,
@@ -1623,7 +1778,7 @@ impl SharedCodexAppServer {
         last_error: Option<String>,
     ) -> Result<ReplaceOutcome> {
         let via = {
-            let _serial = self.transition_serial.lock().await;
+            let serial = Arc::clone(&self.transition_serial).lock_owned().await;
             let (running, outgoing_generation) = {
                 let mut core = self.core.lock().await;
                 match pre {
@@ -1705,7 +1860,7 @@ impl SharedCodexAppServer {
             #[cfg(feature = "fixtures")]
             drop(self.transition_entry_gate.lock().await);
             self.reap_current_child_or_runtime(running).await;
-            self.start_body_locked(increment_restart_count, last_error)
+            self.start_body_locked(serial, increment_restart_count, last_error)
                 .await?
         };
         self.resume_cached_threads(via.resume_mode()).await;
@@ -1713,11 +1868,15 @@ impl SharedCodexAppServer {
     }
 
     /// #953 §3 — the ONE shared start body: guard verify → persisted-record
-    /// reconciliation → takeover probe → spawn. **Invariant**: caller MUST
-    /// hold `transition_serial`; every terminal Running/Failed write happens
-    /// before the caller releases it.
+    /// reconciliation → takeover probe → spawn. **Invariant** (#954:
+    /// type-enforced): the caller passes its `transition_serial` guard as
+    /// the by-value `serial` token; every terminal Running/Failed write
+    /// happens before the token drops. The takeover path drops it on
+    /// return (after the terminal re-stamp); the spawn path moves it into
+    /// the detached transition task.
     async fn start_body_locked(
         self: &Arc<Self>,
+        serial: tokio::sync::OwnedMutexGuard<()>,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<StartedVia> {
@@ -1784,7 +1943,7 @@ impl SharedCodexAppServer {
         if self.try_takeover_live(&record).await? {
             return Ok(StartedVia::Takeover);
         }
-        self.spawn_process_transition(increment_restart_count, last_error)
+        self.spawn_process_transition(serial, increment_restart_count, last_error)
             .await?;
         Ok(StartedVia::Spawn)
     }
@@ -1913,7 +2072,7 @@ impl SharedCodexAppServer {
                     pgid,
                     "reaping verified persisted daemon survivor"
                 );
-                reap_verified_process_group(pid, pgid, start_time, &boot_id).await;
+                reap_verified_process_group(pid, pgid, start_time, &boot_id, self.stop_grace).await;
                 if survivor_alive_after_group_reap(pid, start_time, &boot_id) {
                     tracing::warn!(
                         target: "shared_codex_daemon::stop",
@@ -2042,22 +2201,84 @@ impl SharedCodexAppServer {
         }
     }
 
-    /// Shared spawn-transition body. **Invariant**: caller MUST hold
-    /// `transition_serial`.
+    /// Shared spawn-transition body — #954: DETACHED from its caller.
+    ///
+    /// The spawn path contains unbounded awaits (the persist DB write, the
+    /// up-to-`start_timeout` readiness poll), so caller cancellation inside
+    /// it could previously produce a TERM'd child with no row, or a
+    /// serial-released double-transition window. Instead, the ENTIRE
+    /// typestate unit `start_new_process_typestate(launch_spawned_process)`
+    /// — Starting flip, spawn/guard, persist, readiness poll, Running
+    /// install + watcher + generation + readiness publish, and both
+    /// error-terminalization arms — runs to completion inside ONE
+    /// `tokio::spawn` task that owns the transition serial (the moved
+    /// `serial` token) for its whole duration. Nothing is handed back: the
+    /// task sends only the final `Result<()>` over a oneshot — a plain
+    /// value whose drop carries no obligations. The caller merely OBSERVES:
+    ///   * caller cancelled mid-transition ⇒ the task still finishes the
+    ///     transition to a terminal state (Running installed, or Failed +
+    ///     heal armed) — the typestate arms ARE the terminalization;
+    ///   * caller cancelled after the result was sent ⇒ nothing pending,
+    ///     the state is already terminal.
+    ///
+    /// ORDERING INVARIANT (pinned by
+    /// `spawn_transition_task_outlives_caller_cancelled_at_first_await`):
+    /// `tokio::spawn` is synchronous — the transition task is created (and
+    /// the serial token moved into it) BEFORE this function's first await
+    /// of the receiver, so a caller cancelled at that first await still
+    /// leaves a running, serial-owning transition task.
     async fn spawn_process_transition(
         self: &Arc<Self>,
+        serial: tokio::sync::OwnedMutexGuard<()>,
         increment_restart_count: bool,
         last_error: Option<String>,
     ) -> Result<()> {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let this = Arc::clone(self);
-        self.start_new_process_typestate(move |_| {
-            let this = Arc::clone(&this);
-            async move {
-                this.launch_spawned_process(increment_restart_count, last_error)
-                    .await
-            }
-        })
-        .await
+        let task = tokio::spawn(async move {
+            let launch_this = Arc::clone(&this);
+            let result = this
+                .start_new_process_typestate(move |_| async move {
+                    launch_this
+                        .launch_spawned_process(increment_restart_count, last_error)
+                        .await
+                })
+                .await;
+            // The terminal Running/Failed write, readiness publish, and
+            // heal arming all completed inside the typestate above; release
+            // the serial BEFORE publishing the result so an observer of the
+            // result never races a still-held serial.
+            drop(serial);
+            // Send failure = the caller was cancelled after detachment;
+            // deliberately ignored — the transition is already terminal.
+            let _ = result_tx.send(result);
+        });
+        #[cfg(feature = "fixtures")]
+        {
+            *self
+                .detached_spawn_task
+                .lock()
+                .expect("detached spawn task seam mutex poisoned") = Some(task.abort_handle());
+        }
+        #[cfg(not(feature = "fixtures"))]
+        drop(task);
+        match result_rx.await {
+            Ok(result) => result,
+            // The sender dropped without sending: the detached task
+            // panicked or the runtime is tearing down (its abort → local
+            // drop → SpawnedChildGuard belt SIGTERM). This observer CANNOT
+            // terminalize (the task owns the serial and the typestate), so
+            // the shape may be stranded: in-memory `Starting`, heal
+            // unarmed, child TERM'd by the belt (#954 review D2 — the
+            // accepted belt-contract residual). It is recoverable, not
+            // lost: the durable row still names the child, so the next
+            // transition (mint / settings drain / heal nudge) or the next
+            // boot's reconciliation/adoption resolves it. Surface the
+            // observation with the D2 marker so callers log it honestly.
+            Err(_) => Err(CalmError::CodexAppServer(format!(
+                "{DETACHED_SPAWN_RESULT_LOST} (task panic or runtime teardown)"
+            ))),
+        }
     }
 
     async fn launch_spawned_process(
@@ -2098,14 +2319,20 @@ impl SharedCodexAppServer {
             .open(self.log_dir.join("stderr.log"))?;
 
         let mut cmd = Command::new(&self.codex_bin);
+        // #954 — deliberately NO `.kill_on_drop(true)`: with it, tokio
+        // SIGKILLs the child on every `Child` drop regardless of the
+        // guard's Drop body (cancellation, panic, runtime teardown), and
+        // that instant SIGKILL is exactly the lease-armer that livelocked
+        // production on 7/12. Termination happens ONLY via
+        // `terminate_group_with_grace` / `SpawnedChildGuard::reap_graceful`
+        // / the TERM-only Drop belt.
         cmd.arg("app-server")
             .arg("--listen")
             .arg(&listen)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
-            .process_group(0)
-            .kill_on_drop(true);
+            .process_group(0);
         self.apply_spawn_env(&mut cmd, &spawn_env_snapshot);
         let child = cmd.spawn().map_err(|e| {
             CalmError::CodexAppServer(format!("spawn shared codex app-server: {e}"))
@@ -2130,25 +2357,77 @@ impl SharedCodexAppServer {
         };
         let mut spawn_guard = SpawnedChildGuard::new(child, pgid);
 
-        self.persist_runtime_starting(&runtime, last_error.clone(), daemon_env_signature.clone())
+        // #954 — the fallible tail: every ordinary error path (persist
+        // failure, cold-start-deadline miss, Running-row write failure)
+        // awaits a GRACEFUL reap of the guarded child — SIGTERM →
+        // exit-driven wait up to the full stop grace → final SIGKILL —
+        // while still holding the transition serial, then propagates the
+        // error to the typestate choke point. The cold-start-deadline miss
+        // (the mid-backfill child whose SIGKILL armed the production
+        // livelock) is such an ordinary error path and gets the full grace
+        // — a tiered shorter grace for the never-initialized child was
+        // rejected: that tier IS the production failure.
+        let launch = async {
+            self.persist_runtime_starting(
+                &runtime,
+                last_error.clone(),
+                daemon_env_signature.clone(),
+            )
             .await?;
-
-        let (client, notifications) = self.poll_connect_initialized(&mut spawn_guard).await?;
-        self.repo
-            .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
-                state: SharedDaemonState::Running.as_db_str().to_string(),
-                pid: Some(pid),
-                pgid: Some(pgid),
-                sock_path: Some(self.sock.display().to_string()),
-                codex_home_path: Some(self.home.path().display().to_string()),
-                process_start_time: Some(process_start_time),
-                boot_id: Some(boot_id.clone()),
-                started_at: Some(started_at),
-                last_error: last_error.clone(),
-                increment_restart_count,
-                daemon_env_signature: Some(daemon_env_signature),
-            })
-            .await?;
+            let pair = self.poll_connect_initialized(&mut spawn_guard).await?;
+            self.repo
+                .shared_daemon_runtime_set(SharedCodexDaemonUpdate {
+                    state: SharedDaemonState::Running.as_db_str().to_string(),
+                    pid: Some(pid),
+                    pgid: Some(pgid),
+                    sock_path: Some(self.sock.display().to_string()),
+                    codex_home_path: Some(self.home.path().display().to_string()),
+                    process_start_time: Some(process_start_time),
+                    boot_id: Some(boot_id.clone()),
+                    started_at: Some(started_at),
+                    last_error: last_error.clone(),
+                    increment_restart_count,
+                    daemon_env_signature: Some(daemon_env_signature.clone()),
+                })
+                .await?;
+            Ok(pair)
+        };
+        let (client, notifications) = match launch.await {
+            Ok(pair) => pair,
+            Err(err) => {
+                spawn_guard.reap_graceful(self.stop_grace).await;
+                return Err(err);
+            }
+        };
+        // #954 review D3 — this spawn just persisted a Running row whose
+        // `daemon_env_signature` derives from the live settings snapshot.
+        // If the effective signature STILL matches it, any pending
+        // `needs_respawn` drain is already satisfied by this very process
+        // (adopt-and-drain marked, then a crash-lane/heal-lane respawn
+        // landed with current settings) — clear the flag so the next mint
+        // doesn't pay a fully redundant graceful replace (cold start,
+        // potentially minutes). The RE-READ (not an assumption) preserves
+        // marks from settings changes that landed after this spawn's
+        // snapshot: those recompute to a DIFFERENT signature and the mark
+        // survives (pinned by `concurrent_mark_during_respawn_is_preserved`).
+        // Documented residual: a proxy upsert + mark landing entirely
+        // between this re-read and the swap below can be cleared — the
+        // daemon then runs with the old proxy, but the persisted OLD
+        // signature makes the next boot re-detect the mismatch and re-arm
+        // the drain (adopt-and-drain), so the loss is bounded, not silent.
+        if self
+            .current_env_signature()
+            .await
+            .is_ok_and(|current| current == daemon_env_signature)
+            && self
+                .needs_respawn_on_next_thread_start
+                .swap(false, Ordering::AcqRel)
+        {
+            tracing::info!(
+                target = "shared_codex_daemon::restart",
+                "cleared pending settings-drain: the fresh spawn already carries the current env signature"
+            );
+        }
         let child = spawn_guard.disarm();
         let client = Arc::new(client);
         self.install_client(notifications).await;
@@ -2205,6 +2484,12 @@ impl SharedCodexAppServer {
         Ok(())
     }
 
+    /// #954 — both arms go through `terminate_group_with_grace`: SIGTERM →
+    /// exit-driven wait up to the stop grace (a cooperative daemon exits in
+    /// its own time, never paying the full grace) → straggler cleanup
+    /// (owned-child arm: group SIGKILL under the held-zombie pin;
+    /// runtime-identity arm: group SIGKILL only if still alive at the
+    /// deadline, else the per-member identity sweep — #954 review r2 D1).
     async fn reap_current_child_or_runtime(&self, running: Option<RunningProcessParts>) {
         let Some(RunningProcessParts {
             runtime,
@@ -2216,27 +2501,12 @@ impl SharedCodexAppServer {
         };
         watcher.handle.abort();
         if let Some(mut child) = child {
-            let pgid =
-                Some(runtime.pgid).or_else(|| child.id().and_then(|pid| i32::try_from(pid).ok()));
-            if let Some(pgid) = pgid {
-                signal_process_group(pgid, libc::SIGTERM);
-            }
-            match tokio::time::timeout(Duration::from_millis(500), child.wait()).await {
-                Ok(Ok(_status)) => return,
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        target: "shared_codex_daemon::stop",
-                        ?pgid,
-                        error = %e,
-                        "failed waiting for shared codex app-server after SIGTERM; escalating"
-                    );
-                }
-                Err(_) => {}
-            }
-            if let Some(pgid) = pgid {
-                signal_process_group(pgid, libc::SIGKILL);
-            }
-            let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+            terminate_group_with_grace(
+                SignalScope::Group { pgid: runtime.pgid },
+                ExitWait::Child(&mut child),
+                self.stop_grace,
+            )
+            .await;
             return;
         }
 
@@ -2245,13 +2515,14 @@ impl SharedCodexAppServer {
             runtime.pgid,
             runtime.process_start_time,
             &runtime.boot_id,
+            self.stop_grace,
         )
         .await;
     }
 
     async fn remove_stale_socket_before_spawn(&self) -> Result<()> {
         if self.sock.exists() {
-            reap_listener_if_alive(&self.sock).await?;
+            reap_listener_if_alive(&self.sock, self.stop_grace).await?;
             let _ = std::fs::remove_file(&self.sock);
         }
         Ok(())
@@ -2290,7 +2561,8 @@ impl SharedCodexAppServer {
     /// spend minutes backfilling its state db before it binds), a dead child
     /// fails immediately with its exit status, and only the configured
     /// cold-start deadline reaps a live-but-never-binding child (the
-    /// caller's `SpawnedChildGuard` drop does the actual reaping). The
+    /// caller's explicit `SpawnedChildGuard::reap_graceful` does the
+    /// actual reaping — #954: SIGTERM, exit-driven grace, final SIGKILL). The
     /// deadline is a TOTAL cap: it also cuts short an in-flight
     /// `connect_initialized` attempt (socket accepted, `initialize` never
     /// answered), so the configured wait cannot be exceeded by the attempt's
@@ -2342,6 +2614,80 @@ impl SharedCodexAppServer {
                     started.elapsed().as_secs_f64(),
                     self.start_timeout.as_secs()
                 )));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// #954 defect 2 — bounded readiness window for a verified `starting`
+    /// child: [`Self::poll_connect_initialized`]'s #949 loop with
+    /// child-liveness adapted to a non-child target — `verify_owned_pid`
+    /// polling instead of `spawn_guard.try_wait_exit()` (the child belongs
+    /// to a previous calm-server incarnation, so no `Child` handle exists).
+    /// `window` is the REMAINING budget
+    /// `start_timeout − (now − persisted started_at)`; a zero window
+    /// degenerates to a single raced attempt that the already-expired
+    /// deadline cuts short at its first `Pending` — in practice even an
+    /// already-bound socket cannot complete connect+initialize in that one
+    /// poll, so the probe lapses (→ graceful reap) rather than adopting.
+    /// The deadline is a TOTAL cap: it also cuts
+    /// short an in-flight `connect_initialized` attempt, so the window
+    /// cannot be exceeded by the attempt's internal 10s request timeout.
+    async fn poll_adopt_initialized(
+        &self,
+        sock: &Path,
+        pid: i32,
+        start_time: u64,
+        boot_id: &str,
+        window: Duration,
+    ) -> AdoptProbe {
+        let started = tokio::time::Instant::now();
+        let deadline = started + window;
+        loop {
+            let (deadline_hit_in_flight, attempt_err) =
+                match tokio::time::timeout_at(deadline, connect_initialized(sock)).await {
+                    Ok(Ok(pair)) => return AdoptProbe::Connected(pair),
+                    Ok(Err(e)) => (false, e.to_string()),
+                    Err(_) => (
+                        true,
+                        "initialize attempt still in flight at the readiness-window deadline"
+                            .to_string(),
+                    ),
+                };
+            // Liveness AFTER the (possibly long) attempt, mirroring
+            // `poll_connect_initialized`: a child that exited during a
+            // hung attempt is classified as exited, not lapsed. Zombie =
+            // dead (#953 review D4 posture, same as
+            // `terminate_group_with_grace`): an exited-but-unreaped child
+            // can never bind the socket, so polling it out to the window
+            // deadline would stall boot for nothing. Honest residual (the
+            // r5.1 accepted class): this ChildExited classification sends
+            // no signals at all — unlike the r5.1 non-owned dead-leader
+            // arms it performs no per-member straggler sweep, so members
+            // of the zombie leader's group can leak past the fresh spawn;
+            // only a socket-holding straggler is caught by the pre-spawn
+            // `reap_listener_if_alive`.
+            if !verify_owned_pid(pid, start_time, boot_id) || proc_pid_is_zombie(pid) {
+                tracing::info!(
+                    target: "shared_codex_daemon::start",
+                    pid,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    "starting child exited during its readiness window; falling through to spawn"
+                );
+                return AdoptProbe::ChildExited;
+            }
+            if deadline_hit_in_flight || tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    target: "shared_codex_daemon::start",
+                    pid,
+                    waited_ms = started.elapsed().as_millis() as u64,
+                    window_ms = window.as_millis() as u64,
+                    error = %attempt_err,
+                    "starting child missed its remaining readiness window"
+                );
+                return AdoptProbe::WindowLapsed {
+                    last_error: attempt_err,
+                };
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -2500,6 +2846,21 @@ impl SharedCodexAppServer {
                         target = "shared_codex_daemon::restart",
                         generation,
                         "crash restart aborted: another transition already replaced the crashed process"
+                    );
+                }
+                // #954 review D2 — the observation-lost error is the one
+                // Err for which "terminalized + heal armed" would be a
+                // false claim: the detached task died without publishing,
+                // so the in-memory state may remain `Starting` with heal
+                // unarmed. Recovery is the next transition (mint / settings
+                // drain / heal nudge) or boot reconciliation from the
+                // durable row — say that, not "recorded and armed".
+                Err(e) if detached_spawn_result_lost(&e) => {
+                    tracing::warn!(
+                        target = "shared_codex_daemon::restart",
+                        error = %e,
+                        "crash restart outcome unobserved (detached spawn task panic/teardown); \
+                         state unknown — recovery via the next transition or boot reconciliation"
                     );
                 }
                 Err(e) => {
@@ -3040,6 +3401,46 @@ impl SharedCodexAppServer {
         self.core.lock().await.generation
     }
 
+    /// #954 T7 — abort the most recent DETACHED spawn transition task
+    /// (models a runtime-teardown abort / in-task panic; caller
+    /// cancellation can no longer reach the transition). Returns whether a
+    /// task handle was present to abort.
+    #[cfg(feature = "fixtures")]
+    pub fn abort_detached_spawn_transition_for_test(&self) -> bool {
+        let handle = self
+            .detached_spawn_task
+            .lock()
+            .expect("detached spawn task seam mutex poisoned")
+            .take();
+        match handle {
+            Some(handle) => {
+                handle.abort();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// #954 — acquire the transition serial as the owned by-value token the
+    /// `_locked` chain threads (for the spawn-ordering pin test).
+    #[cfg(feature = "fixtures")]
+    pub async fn lock_transition_serial_for_test(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.transition_serial).lock_owned().await
+    }
+
+    /// #954 — the raw detached spawn transition as an un-polled future, so
+    /// the ordering pin test can poll it exactly once (creating the
+    /// detached task) and then DROP it (caller cancelled at its first
+    /// await).
+    #[cfg(feature = "fixtures")]
+    pub fn detached_spawn_transition_future_for_test(
+        self: &Arc<Self>,
+        serial: tokio::sync::OwnedMutexGuard<()>,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'static {
+        let this = Arc::clone(self);
+        async move { this.spawn_process_transition(serial, false, None).await }
+    }
+
     /// #953 — drive the atomic replace transition with an explicit
     /// precondition (the crash watcher's production path).
     pub async fn transition_replace_for_test(
@@ -3066,11 +3467,330 @@ impl SharedCodexAppServer {
     }
 }
 
-async fn reap_verified_process_group(pid: i32, pgid: i32, start_time: u64, boot_id: &str) {
-    signal_process_group(pgid, libc::SIGTERM);
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    signal_process_group(pgid, libc::SIGKILL);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+/// #954 — where the termination signals go.
+enum SignalScope {
+    /// Signal the whole process group (the normal spawn-invariant target).
+    Group { pgid: i32 },
+    /// Signal a bare pid — ONLY for `reap_listener_if_alive`'s
+    /// getpgid-failure fallback, where no valid pgid is derivable.
+    Pid { pid: i32 },
+}
+
+impl SignalScope {
+    fn send(&self, signal: i32) {
+        match *self {
+            SignalScope::Group { pgid } => {
+                signal_process_group(pgid, signal);
+            }
+            SignalScope::Pid { pid } => {
+                // SAFETY: kill(2) on a pid this supervisor verified/derived.
+                unsafe {
+                    libc::kill(pid, signal);
+                }
+            }
+        }
+    }
+
+    fn describe(&self) -> (&'static str, i32) {
+        match *self {
+            SignalScope::Group { pgid } => ("pgid", pgid),
+            SignalScope::Pid { pid } => ("pid", pid),
+        }
+    }
+}
+
+/// #954 — how the helper observes the LEADER's exit.
+enum ExitWait<'a> {
+    /// We own the `Child` handle: exit-driven `child.wait()`.
+    Child(&'a mut Child),
+    /// Identity-verified external process: poll `verify_owned_pid` (a
+    /// post-signal zombie counts as exited).
+    VerifiedIdentity {
+        pid: i32,
+        start_time: u64,
+        boot_id: &'a str,
+    },
+    /// `reap_listener_if_alive` targets: `/proc` presence poll (a
+    /// post-signal zombie counts as exited).
+    ProcPresence { pid: i32 },
+}
+
+/// #954 review D1 (r2-hardened) — how the leader's exit was observed,
+/// which decides what straggler cleanup is safe. Once a group's last
+/// member is reaped the kernel may recycle the numeric pgid, so an
+/// unverified `kill(-pgid, SIGKILL)` could hit an unrelated group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeaderExit {
+    /// Exit observed with the leader still an UNREAPED zombie. Whether
+    /// that zombie PINS the group across the observation→signal interval
+    /// depends on who reaps it (#954 review r2 D1):
+    ///   * Owned `Child`: WE hold the unreaped zombie (`child.wait()` is
+    ///     deferred until after the signal decision), so the pin is
+    ///     guaranteed — the final group SIGKILL is safe and is sent for
+    ///     straggler descendants.
+    ///   * Non-owned (`VerifiedIdentity` / `ProcPresence`): the EXTERNAL
+    ///     parent can reap the zombie at any moment after our
+    ///     observation, un-pinning the pgid — so a group-wide signal
+    ///     still races recycling (the r1 shape merely narrowed the race
+    ///     to ε). Treated like [`LeaderExit::FullyGone`]: no group-wide
+    ///     signal; remaining members are swept individually under
+    ///     per-pid identity re-verification instead.
+    ExitedPinned,
+    /// The leader was fully reaped (`/proc` entry gone / identity
+    /// mismatch, or an owned child already waited on): the group may be
+    /// empty and its numeric id recycled — no group-wide signal is ever
+    /// sent. Non-owned paths sweep the remaining enumerable members
+    /// individually (verify-then-signal per pid); see
+    /// `terminate_group_with_grace` step 3 for the recorded residual.
+    FullyGone,
+    /// Grace ceiling elapsed with the leader still alive (not a zombie):
+    /// the live leader is a member, so the group provably exists and
+    /// cannot be recycled — group SIGKILL as before.
+    AliveAtDeadline,
+}
+
+/// #954 defect 1 — THE shared exit-driven termination helper, replacing
+/// every fixed post-SIGTERM sleep. Steps:
+///  1. SIGTERM the scope.
+///  2. Wait for the LEADER's exit up to `grace`. The grace is a CEILING,
+///     not a sleep: a cooperative daemon (handles SIGTERM, checkpoints,
+///     exits in <2s) pays its actual exit time (plus at most the ≤100ms
+///     observation poll) — no fixed grace tax; a wedged daemon pays the
+///     full grace before SIGKILL.
+///  3. Straggler cleanup, gated on WHO controls the leader's zombie (#954
+///     review D1, hardened in r2):
+///     * Leader alive at the deadline → group SIGKILL (a live leader pins
+///       the group; recycling is impossible).
+///     * Owned `Child` observed exited → group SIGKILL. The Child arm
+///       observes exit WITHOUT reaping — `/proc` state poll, no
+///       `child.wait()` — so WE hold the unreaped zombie and it pins the
+///       pgid until after the signal; the child is reaped only afterwards.
+///     * Non-owned leader (`VerifiedIdentity` / `ProcPresence`) observed
+///       zombie OR fully reaped → NO group-wide signal, ever: the
+///       external parent can reap the zombie between our observation and
+///       a `kill(-pgid, …)`, letting the kernel recycle the numeric pgid
+///       (#954 review r2 D1 — observing `Z` does not preserve the pin).
+///       Instead the remaining group members are enumerated
+///       (`/proc/*/stat` `pgrp == pgid`) and SIGKILLed INDIVIDUALLY,
+///       each under a scan-time `start_time` capture re-verified
+///       immediately before its signal — the same verify-then-signal
+///       posture as every `verify_owned_pid`-then-`kill` site. Zombie
+///       members are skipped (already dead; their parent reaps them).
+///       Recorded residual (#954 review r2 D2): the sweep covers only
+///       members that are enumerable and identity-verifiable at sweep
+///       time — a member that forks after the scan, or whose re-verify
+///       fails, is deliberately left alone. Such a TERM-surviving
+///       straggler stays discoverable through the `--listen
+///       unix://<sock>` argv contract and self-limits on bind conflict
+///       (the same mitigation as the guard-drop orphan).
+///  4. Bounded post-wait; callers with identity keep their existing
+///     `survivor_alive_after_group_reap` post-check.
+async fn terminate_group_with_grace(
+    scope: SignalScope,
+    wait: ExitWait<'_>,
+    grace: Duration,
+) -> LeaderExit {
+    let (scope_kind, scope_id) = scope.describe();
+    // #954 review D1 — an owned child that was ALREADY reaped before this
+    // helper ran (cold-start fail-fast `try_wait`) means the leader is gone
+    // and the numeric pgid may be recycled: nothing here is safely
+    // signalable anymore, not even the initial SIGTERM.
+    if let ExitWait::Child(child) = &wait
+        && child.id().is_none()
+    {
+        tracing::debug!(
+            target: "shared_codex_daemon::stop",
+            scope_kind,
+            scope_id,
+            "owned child already reaped before termination; skipping group signals (pgid may be recycled)"
+        );
+        return LeaderExit::FullyGone;
+    }
+    scope.send(libc::SIGTERM);
+    let deadline = tokio::time::Instant::now() + grace;
+    let (outcome, waited_child) = match wait {
+        ExitWait::Child(child) => {
+            // Observe WITHOUT reaping (#954 review D1): `child.wait()`
+            // would release the zombie and un-pin the pgid before the
+            // final group signal. An unreaped direct child can never leave
+            // `/proc`, so state `Z` is exactly "exited, still pinning".
+            let outcome = match child.id().and_then(|raw| i32::try_from(raw).ok()) {
+                Some(pid) => {
+                    poll_leader_exit(deadline, || {
+                        proc_pid_is_zombie(pid).then_some(LeaderExit::ExitedPinned)
+                    })
+                    .await
+                }
+                // Unreachable after the pre-check above; defensive.
+                None => LeaderExit::FullyGone,
+            };
+            (outcome, Some(child))
+        }
+        ExitWait::VerifiedIdentity {
+            pid,
+            start_time,
+            boot_id,
+        } => (
+            // Post-signal poll: zombie = dead (#953 review D4 posture).
+            // The Z/FullyGone distinction no longer changes the cleanup
+            // (#954 review r2 D1 — a non-owned zombie's pin does not
+            // survive the observation→signal interval; both arms sweep),
+            // but it is kept for the caller-visible outcome and logs.
+            poll_leader_exit(deadline, || {
+                if !verify_owned_pid(pid, start_time, boot_id) {
+                    Some(LeaderExit::FullyGone)
+                } else if proc_pid_is_zombie(pid) {
+                    Some(LeaderExit::ExitedPinned)
+                } else {
+                    None
+                }
+            })
+            .await,
+            None,
+        ),
+        ExitWait::ProcPresence { pid } => (
+            poll_leader_exit(deadline, || {
+                if !proc_pid_present(pid) {
+                    Some(LeaderExit::FullyGone)
+                } else if proc_pid_is_zombie(pid) {
+                    Some(LeaderExit::ExitedPinned)
+                } else {
+                    None
+                }
+            })
+            .await,
+            None,
+        ),
+    };
+    let owned_child = waited_child.is_some();
+    match outcome {
+        LeaderExit::ExitedPinned if owned_child => {
+            // Owned Child: WE hold the unreaped zombie (reaped only after
+            // this signal), so the pgid is provably pinned — the group
+            // SIGKILL is safe (r2-review-verified arm).
+            tracing::debug!(
+                target: "shared_codex_daemon::stop",
+                scope_kind,
+                scope_id,
+                "owned child exited within the stop grace after SIGTERM; held zombie pins the group — final SIGKILL for stragglers"
+            );
+            scope.send(libc::SIGKILL);
+        }
+        LeaderExit::AliveAtDeadline => {
+            tracing::warn!(
+                target: "shared_codex_daemon::stop",
+                scope_kind,
+                scope_id,
+                grace_ms = grace.as_millis() as u64,
+                "stop-grace ceiling elapsed without a verified exit; escalating to SIGKILL"
+            );
+            scope.send(libc::SIGKILL);
+        }
+        LeaderExit::FullyGone if owned_child => {
+            // Defensive-only arm (the pre-signal early return above
+            // handles the already-reaped owned child): keep the r1 skip.
+            tracing::debug!(
+                target: "shared_codex_daemon::stop",
+                scope_kind,
+                scope_id,
+                "owned child already reaped; skipping final SIGKILL"
+            );
+        }
+        LeaderExit::ExitedPinned | LeaderExit::FullyGone => {
+            // Non-owned leader observed zombie or fully reaped (#954
+            // review r2 D1): the external parent may reap the zombie —
+            // or already has — between observation and any group signal,
+            // and the kernel may then recycle the numeric pgid, so NO
+            // group-wide signal is sent from here. Stragglers are swept
+            // individually under per-pid verify-then-signal instead; see
+            // the helper doc (step 3) for the recorded residual.
+            match scope {
+                SignalScope::Group { pgid } => {
+                    let sweep = sigkill_verified_group_members(pgid);
+                    tracing::debug!(
+                        target: "shared_codex_daemon::stop",
+                        scope_kind,
+                        scope_id,
+                        outcome = ?outcome,
+                        killed = ?sweep.killed,
+                        skipped_zombies = ?sweep.skipped_zombies,
+                        verify_failed = ?sweep.verify_failed,
+                        "non-owned leader dead (zombie or reaped); swept remaining group members individually instead of group SIGKILL"
+                    );
+                }
+                SignalScope::Pid { .. } => {
+                    // Pid-fallback scope: the only known target IS the
+                    // dead leader; there is no pgid to enumerate and a
+                    // bare-pid SIGKILL races recycling identically —
+                    // nothing further can be signaled safely.
+                    tracing::debug!(
+                        target: "shared_codex_daemon::stop",
+                        scope_kind,
+                        scope_id,
+                        outcome = ?outcome,
+                        "non-owned pid-scope leader dead; nothing further safely signalable"
+                    );
+                }
+            }
+        }
+    }
+    // Reap / settle so callers' post-checks observe the result. The owned
+    // child is reaped only NOW — after the final signal decision — so its
+    // zombie pinned the group identity for the SIGKILL above.
+    match waited_child {
+        Some(child) => {
+            let _ = tokio::time::timeout(Duration::from_millis(500), child.wait()).await;
+        }
+        None if outcome != LeaderExit::FullyGone => {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        None => {}
+    }
+    outcome
+}
+
+/// #954 — ≤100ms observation poll against the grace deadline, classifying
+/// the leader's state (#954 review D1). Returns
+/// [`LeaderExit::AliveAtDeadline`] when the ceiling elapses without an
+/// exit observation.
+async fn poll_leader_exit(
+    deadline: tokio::time::Instant,
+    mut observe: impl FnMut() -> Option<LeaderExit>,
+) -> LeaderExit {
+    loop {
+        if let Some(outcome) = observe() {
+            return outcome;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return LeaderExit::AliveAtDeadline;
+        }
+        tokio::time::sleep(Duration::from_millis(100).min(deadline - now)).await;
+    }
+}
+
+/// SIGTERM → exit-driven wait up to `grace` → straggler cleanup (#954;
+/// previously a fixed 500ms sleep then SIGKILL): group SIGKILL only while
+/// the leader is provably alive at the deadline; a dead (zombie/reaped)
+/// leader triggers the per-member identity sweep instead (#954 review r2
+/// D1 — this path does not own the leader's zombie).
+async fn reap_verified_process_group(
+    pid: i32,
+    pgid: i32,
+    start_time: u64,
+    boot_id: &str,
+    grace: Duration,
+) {
+    terminate_group_with_grace(
+        SignalScope::Group { pgid },
+        ExitWait::VerifiedIdentity {
+            pid,
+            start_time,
+            boot_id,
+        },
+        grace,
+    )
+    .await;
 
     // Post-signal check: zombie = dead (we just SIGKILLed the group; the
     // leader may linger as a zombie until its parent waits — #953 review D4).
@@ -3205,7 +3925,7 @@ async fn handle_thread_started_notification(
     }
 }
 
-async fn reap_listener_if_alive(sock_path: &Path) -> Result<()> {
+async fn reap_listener_if_alive(sock_path: &Path, grace: Duration) -> Result<()> {
     let Ok(stream) = UnixStream::connect(sock_path).await else {
         return Ok(());
     };
@@ -3244,15 +3964,14 @@ async fn reap_listener_if_alive(sock_path: &Path) -> Result<()> {
             sock = %sock_path.display(),
             "getpgid failed; falling back to pid-only reap of stale socket listener"
         );
-        unsafe {
-            libc::kill(peer_pid, libc::SIGTERM);
-        }
         drop(stream);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        unsafe {
-            libc::kill(peer_pid, libc::SIGKILL);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // #954 — graceful pid-fallback reap (exit observed via /proc).
+        terminate_group_with_grace(
+            SignalScope::Pid { pid: peer_pid },
+            ExitWait::ProcPresence { pid: peer_pid },
+            grace,
+        )
+        .await;
         return Ok(());
     }
 
@@ -3263,11 +3982,18 @@ async fn reap_listener_if_alive(sock_path: &Path) -> Result<()> {
         sock = %sock_path.display(),
         "stale socket has live listener; reaping orphaned daemon pgid before unlink"
     );
-    signal_process_group(pgid, libc::SIGTERM);
     drop(stream);
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    signal_process_group(pgid, libc::SIGKILL);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // #954 — graceful group reap: SIGTERM → exit-driven wait (leader exit
+    // observed via /proc; a post-signal zombie counts as exited) →
+    // straggler cleanup (group SIGKILL only for a leader still alive at
+    // the deadline; otherwise the per-member identity sweep — #954
+    // review r2 D1).
+    terminate_group_with_grace(
+        SignalScope::Group { pgid },
+        ExitWait::ProcPresence { pid: peer_pid },
+        grace,
+    )
+    .await;
     Ok(())
 }
 
@@ -3300,9 +4026,47 @@ impl SpawnedChildGuard {
             .and_then(|child| child.try_wait().ok())
             .flatten()
     }
+
+    /// #954 — explicit graceful reap on the launch error path: SIGTERM →
+    /// exit-driven wait up to `grace` → final group SIGKILL, consuming the
+    /// guard (its Drop belt is disarmed).
+    async fn reap_graceful(mut self, grace: Duration) {
+        let Some(mut child) = self.spawned_child.take() else {
+            return;
+        };
+        tracing::warn!(
+            target: "shared_codex_daemon::stop",
+            pgid = self.pgid,
+            "spawn failed; reaping child gracefully"
+        );
+        terminate_group_with_grace(
+            SignalScope::Group { pgid: self.pgid },
+            ExitWait::Child(&mut child),
+            grace,
+        )
+        .await;
+    }
 }
 
 impl Drop for SpawnedChildGuard {
+    /// #954 — SIGTERM-only belt. With the spawn transition detached from
+    /// its caller, caller cancellation can no longer reach this guard; the
+    /// belt fires only on a panic inside — or a runtime-teardown abort of —
+    /// the detached transition task (abort → local drop → belt TERM). No
+    /// SIGKILL here (and no tokio `kill_on_drop`): the instant SIGKILL is
+    /// the lease-armer #954 removes. A TERM'd codex aborts its backfill
+    /// cleanly (no 900s lease) and self-exits on bind conflict; the
+    /// discoverability contract for a wedged orphan is its argv
+    /// (`--listen unix://<data_dir>/.../codex-appserver`), operator kills
+    /// by VERIFIED pid only.
+    ///
+    /// #954 review D2 — this belt does NOT terminalize the supervisor: a
+    /// panic in the detached task unwinds the serial and can leave
+    /// in-memory `Starting` with heal unarmed (the accepted belt-contract
+    /// residual). The shape is stranded, not lost — the durable row still
+    /// names the child, and if the TERM'd child survives (or was already
+    /// initialized), the next transition or boot reconciliation/adoption
+    /// recovers it.
     fn drop(&mut self) {
         if self.spawned_child.is_none() {
             return;
@@ -3310,22 +4074,20 @@ impl Drop for SpawnedChildGuard {
         tracing::warn!(
             target: "shared_codex_daemon::stop",
             pgid = self.pgid,
-            "spawn aborted; reaping orphan pgid"
+            "spawn transition dropped mid-flight (panic/teardown); belt SIGTERM only"
         );
         signal_process_group(self.pgid, libc::SIGTERM);
-        signal_process_group(self.pgid, libc::SIGKILL);
     }
 }
 
-impl Drop for SharedCodexAppServer {
-    fn drop(&mut self) {
-        if let Ok(core) = self.core.try_lock()
-            && let SupervisorState::Running { runtime, .. } = &core.state
-        {
-            let _ = signal_process_group(runtime.pgid, libc::SIGTERM);
-        }
-    }
-}
+// #954 — `impl Drop for SharedCodexAppServer` is DELETED deliberately.
+// INVARIANT: calm-server shutdown NEVER signals the shared codex daemon;
+// the daemon is left running for the next boot's takeover (#953 re-stamp).
+// The old Drop SIGTERM'd the Running daemon's pgid — it never fired in
+// production while SIGTERM killed the process before drops ran, but WOULD
+// fire once main.rs's graceful shutdown (#954 defect 4) returns from main,
+// silently defeating takeover. Test teardown uses explicit cleanup (or the
+// fixture's pdeathsig hygiene belt), never a supervisor Drop.
 
 #[async_trait::async_trait]
 impl calm_provider::provider::CodexDaemonProbe for SharedCodexAppServer {
