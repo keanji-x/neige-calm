@@ -16,6 +16,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+pulldown-cmark.workspace = true
+
 # Serde + JSON — wire shapes only, no IO.
 serde = { version = "1", features = ["derive"] }
 # `float_roundtrip`: #960 PR3 canonical neige-block fences require
