@@ -11,7 +11,7 @@ use crate::mcp_server::registry::{
     read_only_annotations, require_role,
 };
 use crate::model::CardRole;
-use crate::wave_report::load_report_read_snapshot;
+use crate::wave_report_read::load_report_read_snapshot;
 
 pub const TOOL_COVE_OUTLINE: &str = "calm.cove.outline";
 pub const TOOL_REPORT_BACKLINKS: &str = "calm.report.links.backlinks";
@@ -117,38 +117,54 @@ async fn cove_outline(
     }
 
     let mut omitted_waves = total_waves.saturating_sub(MAX_WAVES);
-    let mut bytes_truncated = false;
-    loop {
-        let response = outline_response(
-            waves.clone(),
-            omitted_waves,
-            &block_truncations,
-            bytes_truncated,
-        );
-        if serde_json::to_vec(&response).map_or(usize::MAX, |bytes| bytes.len())
-            <= MAX_RESPONSE_BYTES
-        {
-            return Ok(response);
+    let initial = outline_response(waves.clone(), omitted_waves, &block_truncations, false);
+    let mut estimated_bytes =
+        serde_json::to_vec(&initial).map_or(usize::MAX, |serialized| serialized.len());
+    let bytes_truncated = estimated_bytes > MAX_RESPONSE_BYTES;
+    // Reserve room for truncation metadata, then remove entries in one reverse
+    // pass. Each removed value is serialized once; the whole response is only
+    // serialized again for the final cap confirmation.
+    let target_bytes = MAX_RESPONSE_BYTES.saturating_sub(4096);
+    if bytes_truncated {
+        for wave in waves.iter_mut().rev() {
+            let Some(wave_id) = wave.get("id").and_then(Value::as_str).map(str::to_owned) else {
+                continue;
+            };
+            let Some(blocks) = wave.get_mut("blocks").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            while estimated_bytes > target_bytes {
+                let Some(block) = blocks.pop() else {
+                    break;
+                };
+                estimated_bytes = estimated_bytes.saturating_sub(
+                    serde_json::to_vec(&block).map_or(0, |serialized| serialized.len() + 1),
+                );
+                *block_truncations.entry(wave_id.clone()).or_default() += 1;
+            }
         }
-        bytes_truncated = true;
-        if let Some((wave_id, blocks)) = waves.iter_mut().rev().find_map(|wave| {
-            let wave_id = wave.get("id")?.as_str()?.to_string();
-            let blocks = wave.get_mut("blocks")?.as_array_mut()?;
-            (!blocks.is_empty()).then_some((wave_id, blocks))
-        }) {
-            blocks.pop();
-            *block_truncations.entry(wave_id).or_default() += 1;
-        } else if let Some(wave) = waves.pop() {
+        while estimated_bytes > target_bytes {
+            let Some(wave) = waves.pop() else {
+                break;
+            };
+            estimated_bytes = estimated_bytes.saturating_sub(
+                serde_json::to_vec(&wave).map_or(0, |serialized| serialized.len() + 1),
+            );
             omitted_waves += 1;
             if let Some(wave_id) = wave.get("id").and_then(Value::as_str) {
                 block_truncations.remove(wave_id);
             }
-        } else {
-            return Err(RpcError::internal(
-                "cove_outline: truncation metadata exceeds response byte cap",
-            ));
         }
     }
+    let response = outline_response(waves, omitted_waves, &block_truncations, bytes_truncated);
+    if serde_json::to_vec(&response).map_or(usize::MAX, |serialized| serialized.len())
+        > MAX_RESPONSE_BYTES
+    {
+        return Err(RpcError::internal(
+            "cove_outline: truncation metadata exceeds response byte cap",
+        ));
+    }
+    Ok(response)
 }
 
 fn outline_response(
@@ -233,17 +249,18 @@ async fn report_backlinks(
     let wave_id = identity.wave_id.ok_or_else(|| {
         RpcError::invalid_params("calm.report.links.backlinks requires a wave-scoped caller")
     })?;
-    let backlinks = crate::report_backlinks::backlinks_for_wave(ctx.repo.as_ref(), &wave_id)
+    let page = crate::report_backlinks::backlinks_for_wave(ctx.repo.as_ref(), &wave_id)
         .await
         .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
     Ok(json!({
-        "backlinks": backlinks.into_iter().map(|link| json!({
+        "backlinks": page.backlinks.into_iter().map(|link| json!({
             "src_wave_id": link.src_wave_id,
             "src_wave_title": link.src_wave_title,
             "src_block_id": link.src_block_id,
             "dst_block_id": link.dst_block_id,
             "label": link.label,
             "updated_at": link.updated_at,
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "truncated": (page.omitted > 0).then_some(json!({"backlinks": page.omitted}))
     }))
 }

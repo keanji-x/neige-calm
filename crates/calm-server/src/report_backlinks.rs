@@ -1,8 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::db::RouteRepo;
 use crate::error::CalmError;
-use crate::wave_report::load_report_read_snapshot;
+use crate::wave_report_read::load_report_read_snapshot;
+
+pub const MAX_BACKLINK_ENTRIES: usize = 500;
+pub const MAX_BACKLINK_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Backlink {
@@ -14,10 +17,15 @@ pub struct Backlink {
     pub updated_at: i64,
 }
 
+pub struct BacklinkPage {
+    pub backlinks: Vec<Backlink>,
+    pub omitted: usize,
+}
+
 pub async fn backlinks_for_wave(
     repo: &dyn RouteRepo,
     wave_id: &str,
-) -> Result<Vec<Backlink>, CalmError> {
+) -> Result<BacklinkPage, CalmError> {
     let target_wave = repo
         .wave_get(wave_id)
         .await?
@@ -34,22 +42,38 @@ pub async fn backlinks_for_wave(
                 "report_backlinks: wave {wave_id} has no wave-report card (invariant violation)"
             ))
         })?;
+    let target_card_id = target_card.id.clone();
     let target_snapshot = load_report_read_snapshot(repo, target_card.id.as_str()).await?;
     let target_block_ids: HashSet<&str> = target_snapshot
         .blocks
         .iter()
         .map(|block| block.id.as_str())
         .collect();
+    let waves: HashMap<_, _> = repo
+        .waves_by_cove(target_wave.cove_id.as_str())
+        .await?
+        .into_iter()
+        .map(|wave| (wave.id.as_str().to_owned(), wave.title))
+        .collect();
 
     let mut backlinks = Vec::new();
+    let mut omitted = 0;
+    let mut bytes: usize = 0;
     for card in report_cards {
-        let source_wave = repo.wave_get(card.wave_id.as_str()).await?.ok_or_else(|| {
+        let source_title = waves.get(card.wave_id.as_str()).ok_or_else(|| {
             CalmError::Internal(format!(
                 "report_backlinks: source wave {} vanished mid-read",
                 card.wave_id
             ))
         })?;
-        let snapshot = load_report_read_snapshot(repo, card.id.as_str()).await?;
+        let snapshot = match load_report_read_snapshot(repo, card.id.as_str()).await {
+            Ok(snapshot) => snapshot,
+            Err(error) if card.id != target_card_id => {
+                tracing::warn!(card_id = %card.id, %error, "skipping unreadable backlink source report");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         for block in snapshot
             .blocks
             .iter()
@@ -60,20 +84,37 @@ pub async fn backlinks_for_wave(
                 .into_iter()
                 .filter(|link| link.dst_wave_id == wave_id)
             {
-                backlinks.push(Backlink {
-                    src_wave_id: source_wave.id.as_str().to_string(),
-                    src_wave_title: source_wave.title.clone(),
+                let backlink = Backlink {
+                    src_wave_id: card.wave_id.as_str().to_string(),
+                    src_wave_title: source_title.clone(),
                     src_block_id: block.id.clone(),
                     dst_block_id: link
                         .dst_block_id
                         .filter(|id| target_block_ids.contains(id.as_str())),
                     label: link.label,
                     updated_at: snapshot.updated_at,
-                });
+                };
+                let entry_bytes = serde_json::to_vec(&(
+                    &backlink.src_wave_id,
+                    &backlink.src_wave_title,
+                    &backlink.src_block_id,
+                    &backlink.dst_block_id,
+                    &backlink.label,
+                    backlink.updated_at,
+                ))
+                .map_or(MAX_BACKLINK_BYTES, |value| value.len());
+                if backlinks.len() < MAX_BACKLINK_ENTRIES
+                    && bytes.saturating_add(entry_bytes) <= MAX_BACKLINK_BYTES
+                {
+                    bytes += entry_bytes;
+                    backlinks.push(backlink);
+                } else {
+                    omitted += 1;
+                }
             }
         }
     }
-    Ok(backlinks)
+    Ok(BacklinkPage { backlinks, omitted })
 }
 
 #[cfg(test)]
@@ -81,7 +122,7 @@ mod tests {
     use super::*;
     use crate::db::sqlite::SqlxRepo;
     use crate::db::{RepoSyncDomainRaw, RouteRepo};
-    use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+    use crate::model::{NewCove, NewWave, RequestTheme};
     use crate::wave_report::{ReportBlock, WaveReportPayload};
     use serde_json::json;
 
@@ -111,13 +152,17 @@ mod tests {
     }
 
     async fn report(repo: &SqlxRepo, wave_id: &str, payload: serde_json::Value) {
-        repo.card_create(NewCard {
-            wave_id: wave_id.into(),
-            kind: "wave-report".into(),
-            sort: None,
-            payload,
-            title: Some("Report".into()),
-        })
+        let id = format!("report_{wave_id}");
+        let payload = serde_json::to_string(&payload).unwrap();
+        sqlx::query(
+            "INSERT INTO cards \
+             (id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at) \
+             VALUES (?1, ?2, 'wave-report', -1, ?3, 'Report', 'reportcard', 0, 1, 1)",
+        )
+        .bind(id)
+        .bind(wave_id)
+        .bind(payload)
+        .execute(repo.pool())
         .await
         .unwrap();
     }
@@ -166,10 +211,10 @@ mod tests {
         let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].src_wave_id, source.id.as_str());
-        assert_eq!(found[0].src_wave_title, "Source");
-        assert_eq!(found[0].label, "target");
+        assert_eq!(found.backlinks.len(), 1);
+        assert_eq!(found.backlinks[0].src_wave_id, source.id.as_str());
+        assert_eq!(found.backlinks[0].src_wave_title, "Source");
+        assert_eq!(found.backlinks[0].label, "target");
     }
 
     #[tokio::test]
@@ -190,7 +235,7 @@ mod tests {
         let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
-        assert!(found.is_empty());
+        assert!(found.backlinks.is_empty());
     }
 
     #[tokio::test]
@@ -210,8 +255,8 @@ mod tests {
         let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].dst_block_id, None);
+        assert_eq!(found.backlinks.len(), 1);
+        assert_eq!(found.backlinks[0].dst_block_id, None);
     }
 
     #[tokio::test]
@@ -231,8 +276,8 @@ mod tests {
         let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
-        assert_eq!(found.len(), 1);
-        assert!(found[0].src_block_id.starts_with("b_"));
+        assert_eq!(found.backlinks.len(), 1);
+        assert!(found.backlinks[0].src_block_id.starts_with("b_"));
     }
 
     #[tokio::test]
@@ -255,6 +300,32 @@ mod tests {
         let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
             .await
             .unwrap();
-        assert!(found.is_empty());
+        assert!(found.backlinks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unreadable_source_report_does_not_blind_other_backlinks() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let corrupt = wave(&repo, cove.id.as_str(), "Corrupt").await;
+        let healthy = wave(&repo, cove.id.as_str(), "Healthy").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        report(&repo, corrupt.id.as_str(), v1("ignored")).await;
+        report(
+            &repo,
+            healthy.id.as_str(),
+            v1(format!("[healthy](neige://wave/{})", target.id)),
+        )
+        .await;
+        sqlx::query("UPDATE cards SET body_crdt = X'00' WHERE wave_id = ?1")
+            .bind(corrupt.id.as_str())
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
+        assert_eq!(found.backlinks.len(), 1);
+        assert_eq!(found.backlinks[0].src_wave_id, healthy.id.as_str());
     }
 }

@@ -62,7 +62,8 @@ use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
 use crate::model::{Card, CardRole, Wave, WaveLifecycle};
-use crate::wave_report::{ReportDocOp, WaveReportPayload, load_report_read_snapshot};
+use crate::wave_report::{ReportDocOp, WaveReportPayload};
+use crate::wave_report_read::load_report_read_snapshot;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

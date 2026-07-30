@@ -51,9 +51,15 @@ pub async fn card_create_with_id_tx(
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // This remains an unguarded wave-report create path. The
-    // one-report-per-wave partial unique index is its only structural
-    // backstop; gating report creation is outside issue #967's scope.
+    // `WaveReportCardHandler::create_mode` keeps REST creation
+    // kernel-only, while the wave-create kernel mint stamps
+    // `CardRole::ReportCard`. The one-report-per-wave partial unique
+    // index keys on that `reportcard` role, not on the card kind.
+    if p.kind == "wave-report" && role != CardRole::ReportCard {
+        return Err(CalmError::BadRequest(
+            "wave-report cards must be kernel-minted with the reportcard role",
+        ));
+    }
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
         .bind(p.wave_id.as_str())
         .fetch_optional(&mut **tx)
@@ -193,9 +199,11 @@ pub async fn card_update_tx(
 ) -> Result<Card> {
     let existing = card_for_update_tx(tx, id).await?;
     let effective_kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
-    if effective_kind == "wave-report" && p.payload.is_some() {
+    let changes_kind_into_report =
+        p.kind.as_deref() == Some("wave-report") && existing.kind != "wave-report";
+    if changes_kind_into_report || (effective_kind == "wave-report" && p.payload.is_some()) {
         return Err(CalmError::BadRequest(
-            "wave-report payloads must go through the report persist boundary \
+            "wave-report kind transitions and payloads must go through the report persist boundary \
              (POST /api/waves/:id/report or the calm.report.* tools)",
         ));
     }

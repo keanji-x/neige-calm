@@ -596,10 +596,12 @@ mod tests {
             "spec prompt must document report write/edit MCP tools"
         );
         assert!(
-            !p.contains("calm.wave.cat")
+            p.contains("calm.cove.outline")
+                && p.contains("calm.report.links.backlinks")
+                && !p.contains("calm.wave.cat")
                 && !p.contains("calm.wave.ls")
                 && !p.contains("calm.report.read"),
-            "spec prompt must not instruct reads via MCP"
+            "spec prompt MCP read allowlist is limited to calm.cove.outline and calm.report.links.backlinks"
         );
         assert!(
             p.contains("[label](neige://wave/<wave_id>#<block_id>)"),

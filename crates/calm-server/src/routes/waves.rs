@@ -1102,11 +1102,24 @@ impl From<report_backlinks::Backlink> for WaveBacklink {
 pub(crate) async fn get_wave_backlinks(
     State(s): State<RouteState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<WaveBacklink>>> {
-    let backlinks = report_backlinks::backlinks_for_wave(s.repo.as_ref(), &id).await?;
-    Ok(Json(
-        backlinks.into_iter().map(WaveBacklink::from).collect(),
-    ))
+) -> Result<impl IntoResponse> {
+    let page = report_backlinks::backlinks_for_wave(s.repo.as_ref(), &id).await?;
+    let mut response = Json(
+        page.backlinks
+            .into_iter()
+            .map(WaveBacklink::from)
+            .collect::<Vec<_>>(),
+    )
+    .into_response();
+    if page.omitted > 0 {
+        response.headers_mut().insert(
+            "x-calm-truncated-backlinks",
+            page.omitted.to_string().parse().map_err(|error| {
+                CalmError::Internal(format!("invalid backlink truncation header: {error}"))
+            })?,
+        );
+    }
+    Ok(response)
 }
 
 /// Request body for `POST /api/waves/:id/report`.
