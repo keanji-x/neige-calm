@@ -153,7 +153,7 @@ describe('ProposalsPanel — list', () => {
   });
 
   it('the header count is dropped rather than reading "0" when only a notice remains', async () => {
-    const list: PendingProposal[] = [
+    let list: PendingProposal[] = [
       proposal({ ops: [{ op: 'delete_block', block_id: 'b_0001', if_rev: 3 }] }),
     ];
     mockList.mockImplementation(
@@ -164,7 +164,7 @@ describe('ProposalsPanel — list', () => {
     );
     mockAccept.mockReturnValue(
       stubMutation(() => {
-        list.length = 0;
+        list = [];
         return Promise.resolve({ decision: 'accepted' });
       }) as unknown as ReturnType<typeof useAcceptProposalMutation>,
     );
@@ -799,7 +799,7 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     // the focus intent would survive indefinitely; whenever a background
     // refetch finally drops the row, focus would jump to the notice while
     // the user is somewhere else entirely.
-    const list: PendingProposal[] = [proposal({ ops: [op] })];
+    let list: PendingProposal[] = [proposal({ ops: [op] })];
     mockList.mockImplementation(
       () =>
         ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
@@ -817,7 +817,7 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument();
 
     // Later: the proposal is withdrawn elsewhere and the list refetches.
-    list.length = 0;
+    list = [];
     rerender(<ProposalsPanel waveId="w_1" blocks={blocks} />);
     const notice = await screen.findByRole('alert');
     expect(notice).toHaveTextContent('stays pending');
@@ -857,11 +857,11 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
 
   it.each([
     ['network', new TypeError('Failed to fetch')],
-    ['5xx', new CalmApiError(503, 'unavailable', 'try again later')],
+    ['HTTP 503', new CalmApiError(503, 'unavailable', 'try again later')],
   ])(
     'a %s failure cannot leave focus intent for a later unrelated refetch',
     async (_kind, failure) => {
-      const list: PendingProposal[] = [proposal({ ops: [op] })];
+      let list: PendingProposal[] = [proposal({ ops: [op] })];
       mockList.mockImplementation(
         () =>
           ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
@@ -881,7 +881,7 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
       expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument();
 
       // Later, an unrelated refresh observes that someone else removed it.
-      list.length = 0;
+      list = [];
       rerender(<ProposalsPanel waveId="w_1" blocks={blocks} />);
       const notice = await screen.findByRole('alert');
       expect(notice).not.toHaveFocus();
@@ -921,11 +921,11 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     );
   });
 
-  it('keeps the stale explanation visible after the row leaves the pending list, and takes focus', async () => {
+  it('successful accept moves focus to its notice after a fresh-array refetch removes the row', async () => {
     // The resolved proposal disappears from the list on the next fetch —
     // the verdict must not disappear with it, and the keyboard user
     // standing on the now-unmounted Accept button must land on it.
-    const list: PendingProposal[] = [proposal({ ops: [op] })];
+    let list: PendingProposal[] = [proposal({ ops: [op] })];
     mockList.mockImplementation(
       () =>
         ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
@@ -934,15 +934,14 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     );
     mockAccept.mockReturnValue(
       stubMutation(() => {
-        list.length = 0;
-        return Promise.resolve({ decision: 'stale', reason: 'heads moved' });
+        list = [];
+        return Promise.resolve({ decision: 'accepted' });
       }) as unknown as ReturnType<typeof useAcceptProposalMutation>,
     );
     render(<ProposalsPanel waveId="w_1" blocks={blocks} />);
     await userEvent.click(screen.getByRole('button', { name: 'Accept' }));
-    const msg = await screen.findByRole('alert');
-    expect(msg).toHaveTextContent('Went stale');
-    expect(msg).toHaveTextContent('heads moved');
+    const msg = await screen.findByRole('status');
+    expect(msg).toHaveTextContent('Accepted');
     expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
     expect(msg).toHaveFocus();
 
@@ -955,8 +954,29 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     expect(screen.queryByLabelText('App proposals awaiting review')).toBeNull();
   });
 
+  it('successful reject moves focus to its notice after a fresh-array refetch removes the row', async () => {
+    let list: PendingProposal[] = [proposal({ ops: [op] })];
+    mockList.mockImplementation(
+      () =>
+        ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
+          typeof useWaveProposalsQuery
+        >,
+    );
+    mockReject.mockReturnValue(
+      stubMutation(() => {
+        list = [];
+        return Promise.resolve({ decision: 'rejected' });
+      }) as unknown as ReturnType<typeof useRejectProposalMutation>,
+    );
+    render(<ProposalsPanel waveId="w_1" blocks={blocks} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    const msg = await screen.findByRole('status');
+    expect(msg).toHaveTextContent('Rejected');
+    expect(msg).toHaveFocus();
+  });
+
   it('a list error afterwards does not delete the verdict notice', async () => {
-    const list: PendingProposal[] = [proposal({ ops: [op] })];
+    let list: PendingProposal[] = [proposal({ ops: [op] })];
     let failing = false;
     mockList.mockImplementation(
       () =>
@@ -967,7 +987,7 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     );
     mockAccept.mockReturnValue(
       stubMutation(() => {
-        list.length = 0;
+        list = [];
         failing = true;
         return Promise.resolve({ decision: 'stale', reason: 'heads moved' });
       }) as unknown as ReturnType<typeof useAcceptProposalMutation>,
@@ -1007,7 +1027,7 @@ describe('ProposalsPanel — verdicts are wave-scoped', () => {
   it('a verdict from one wave does not render over another wave report', async () => {
     // `WaveReportPage` switches waves IN PLACE, so the panel must not
     // carry wave A's outcome into wave B.
-    const list: PendingProposal[] = [
+    let list: PendingProposal[] = [
       proposal({ ops: [{ op: 'delete_block', block_id: 'b_0001', if_rev: 3 }] }),
     ];
     mockList.mockImplementation(
@@ -1018,7 +1038,7 @@ describe('ProposalsPanel — verdicts are wave-scoped', () => {
     );
     mockAccept.mockReturnValue(
       stubMutation(() => {
-        list.length = 0;
+        list = [];
         return Promise.resolve({ decision: 'accepted' });
       }) as unknown as ReturnType<typeof useAcceptProposalMutation>,
     );

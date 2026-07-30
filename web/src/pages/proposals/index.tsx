@@ -55,7 +55,11 @@ type Feedback = { tone: Tone; text: string; staysPending?: boolean };
  *  immediately, and if the message lived on the card it would vanish with
  *  it — taking the stale explanation ("your accept did nothing, and why")
  *  with it. */
-type Outcome = Feedback & { proposalId: string; pluginId: string };
+type Outcome = Feedback & {
+  proposalId: string;
+  pluginId: string;
+  focusWasInside: boolean;
+};
 
 function describeError(error: unknown): Feedback {
   if (error instanceof CalmApiError) {
@@ -262,8 +266,6 @@ function ProposalCard({
 export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
   const query = useWaveProposalsQuery(waveId);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
-  // The proposal whose verdict should take focus once its row is gone.
-  const [focusProposalId, setFocusProposalId] = useState<string | null>(null);
   // `WaveReportPage` handles a wave switch IN PLACE (no remount), so panel
   // state would otherwise survive into a wave the verdict has nothing to
   // do with — a wave-A verdict rendered above wave B's untouched report,
@@ -272,7 +274,6 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
   if (shownWaveId !== waveId) {
     setShownWaveId(waveId);
     setOutcomes([]);
-    setFocusProposalId(null);
   }
 
   const noticeRefs = useRef(new Map<string, HTMLParagraphElement | null>());
@@ -283,18 +284,6 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
     outcome: Feedback | null,
     focusWasInside: boolean,
   ) => {
-    // Arm focus only from observed state: this action has produced an
-    // outcome, focus was in its row, and that row has actually left the
-    // pending set. Error classes cannot tell us whether a request
-    // committed, and retaining an intent while the row remains would let
-    // an unrelated later refetch steal focus.
-    setFocusProposalId(
-      outcome &&
-        focusWasInside &&
-        !proposals.some((p) => p.proposal_id === proposal.proposal_id)
-        ? proposal.proposal_id
-        : null,
-    );
     setOutcomes((current) => {
       const rest = current.filter(
         (o) => o.proposalId !== proposal.proposal_id,
@@ -306,6 +295,7 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
               ...outcome,
               proposalId: proposal.proposal_id,
               pluginId: proposal.plugin_id,
+              focusWasInside,
             },
           ]
         : rest;
@@ -319,16 +309,52 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
   const notices = outcomes.filter((o) => !pendingIds.has(o.proposalId));
   const noticeKey = notices.map((n) => n.proposalId).join('|');
 
+  // Observe immutable query transitions here, never from the async action's
+  // render closure. A first-seen outcome is consumed while its row remains;
+  // that prevents a failed request's notice from stealing focus if an
+  // unrelated later refetch removes the proposal. Query data may update
+  // just before the async continuation records the outcome, so remember a
+  // departure until that first outcome render arrives.
+  const previousPendingIds = useRef(pendingIds);
+  const observedOutcomeIds = useRef(new Set<string>());
+  const departuresAwaitingOutcome = useRef(new Set<string>());
+  const previous = previousPendingIds.current;
+  const departed = new Set(
+    [...previous].filter((proposalId) => !pendingIds.has(proposalId)),
+  );
+  for (const proposalId of departed) {
+    if (!outcomes.some((outcome) => outcome.proposalId === proposalId)) {
+      departuresAwaitingOutcome.current.add(proposalId);
+    }
+  }
+  let focusProposalId: string | null = null;
+  for (const outcome of outcomes) {
+    if (observedOutcomeIds.current.has(outcome.proposalId)) continue;
+    observedOutcomeIds.current.add(outcome.proposalId);
+    if (
+      outcome.focusWasInside &&
+      !pendingIds.has(outcome.proposalId) &&
+      (departed.has(outcome.proposalId) ||
+        departuresAwaitingOutcome.current.has(outcome.proposalId))
+    ) {
+      focusProposalId = outcome.proposalId;
+    }
+    departuresAwaitingOutcome.current.delete(outcome.proposalId);
+  }
+  for (const proposalId of [...observedOutcomeIds.current]) {
+    if (!outcomes.some((outcome) => outcome.proposalId === proposalId)) {
+      observedOutcomeIds.current.delete(proposalId);
+    }
+  }
+  previousPendingIds.current = pendingIds;
+
   // The refetch unmounts the Accept/Reject button the user was standing
   // on. Move focus to the verdict that replaced it, or keyboard users are
   // stranded at document root while the answer renders elsewhere.
   useEffect(() => {
     if (focusProposalId == null) return;
     const el = noticeRefs.current.get(focusProposalId);
-    if (el) {
-      el.focus();
-      setFocusProposalId(null);
-    }
+    el?.focus();
   }, [focusProposalId, noticeKey]);
 
   // A transient list error must NOT swallow the verdict the user just
