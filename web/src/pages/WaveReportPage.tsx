@@ -223,7 +223,7 @@ function ReportContent({
   );
 }
 
-function ReportMarkdown({
+export function ReportMarkdown({
   body,
   blocks,
 }: {
@@ -233,6 +233,7 @@ function ReportMarkdown({
   const hash = useRouterState({
     select: (state) => state.location.hash,
   });
+  const renderedBlockIds = blocks?.map((block) => block.id).join('\0') ?? '';
 
   useEffect(() => {
     const blockId = decodeHash(hash);
@@ -242,7 +243,7 @@ function ReportMarkdown({
     block.scrollIntoView();
     block.classList.remove('report-block--highlight');
     requestAnimationFrame(() => block.classList.add('report-block--highlight'));
-  }, [hash]);
+  }, [hash, renderedBlockIds]);
 
   if (blocks) {
     return (
@@ -268,10 +269,12 @@ function ReportMarkdown({
 
 function BacklinksPanel({
   waveId: currentWaveId,
+  hasRenderedBlocks,
   page,
   error,
 }: {
   waveId: string;
+  hasRenderedBlocks: boolean;
   page?: WaveBacklinksResponse;
   error: Error | null;
 }) {
@@ -297,7 +300,13 @@ function BacklinksPanel({
     return [...grouped.entries()];
   }, [page?.backlinks, currentWaveId]);
 
-  if (groups.length === 0 && !error && !page?.omitted) return null;
+  if (
+    groups.length === 0 &&
+    !error &&
+    !page?.omitted &&
+    !page?.skipped_sources
+  )
+    return null;
   return (
     <section className="report-backlinks" aria-labelledby="report-backlinks-title">
       <h2 id="report-backlinks-title">Backlinks</h2>
@@ -310,6 +319,12 @@ function BacklinksPanel({
         <p role="status">
           {page.omitted} additional backlink{page.omitted === 1 ? '' : 's'} not
           shown.
+        </p>
+      )}
+      {!!page?.skipped_sources && (
+        <p role="status">
+          Backlinks from {page.skipped_sources} source report
+          {page.skipped_sources === 1 ? '' : 's'} could not be loaded.
         </p>
       )}
       {groups.map(([waveId, group]) => (
@@ -327,7 +342,7 @@ function BacklinksPanel({
                 >
                   {entry.label}
                 </Link>
-                {entry.dst_block_id && (
+                {hasRenderedBlocks && entry.dst_block_id && (
                   <span className="report-backlinks-target">
                     {' '}
                     · cites block {entry.dst_block_id}
@@ -495,6 +510,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             {selectedFilePath === 'report.md' && (
               <BacklinksPanel
                 waveId={wave.id}
+                hasRenderedBlocks={reportCard?.blocks != null}
                 page={backlinksQ.data}
                 error={backlinksQ.error}
               />

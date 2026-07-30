@@ -485,3 +485,75 @@ pub(super) fn add_card_event_paths(delta: &mut PathDelta, card_id: &CardId) {
     delta.add(format!("cards/{}/events.json", card_id.as_str()));
     delta.add(format!("cards/{}/conversation.md", card_id.as_str()));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::prelude::*;
+    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+    use crate::model::{NewCove, NewWave, RequestTheme};
+
+    #[tokio::test]
+    async fn report_path_disappears_when_report_card_kind_changes() {
+        let repo = SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open sqlite repo");
+        let cove = repo
+            .cove_create(NewCove {
+                name: "cove".into(),
+                color: "#336699".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id,
+                title: "wave".into(),
+                sort: None,
+                cwd: "/tmp".into(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let mut tx = begin_immediate_tx(repo.pool())
+            .await
+            .expect("begin transaction");
+        sqlx::query(
+            "INSERT INTO cards \
+             (id, wave_id, kind, sort, payload, role, deletable, created_at, updated_at) \
+             VALUES ('report', ?1, 'wave-report', 1.0, ?2, 'reportcard', 0, 1, 1)",
+        )
+        .bind(wave.id.as_str())
+        .bind(r#"{"schemaVersion":2,"summary":"","body":"Report body"}"#)
+        .execute(&mut *tx)
+        .await
+        .expect("insert report card");
+
+        assert!(
+            render_path_tx(&mut tx, &wave.id, "report.md", &CardVisibility::AllRows,)
+                .await
+                .expect("render report before transition")
+                .is_some()
+        );
+
+        sqlx::query(
+            "UPDATE cards SET kind = 'codex', role = 'worker' \
+             WHERE wave_id = ?1 AND kind = 'wave-report'",
+        )
+        .bind(wave.id.as_str())
+        .execute(&mut *tx)
+        .await
+        .expect("force formerly reachable kind transition");
+
+        assert!(
+            render_path_tx(&mut tx, &wave.id, "report.md", &CardVisibility::AllRows,)
+                .await
+                .expect("render report after transition")
+                .is_none()
+        );
+    }
+}

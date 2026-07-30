@@ -27,6 +27,8 @@ const LazyCandlesBlock = lazy(() =>
   import('./candles').then((m) => ({ default: m.ReportCandlesBlock })),
 );
 
+const BLOCK_ID_PATTERN = /^b_[0-9a-f]{4}$/;
+
 function UnsupportedBlock({ block }: { block: ReportBlock }) {
   return (
     <div id={block.id} className="report-block rb-unsupported" role="note">
@@ -36,9 +38,12 @@ function UnsupportedBlock({ block }: { block: ReportBlock }) {
 }
 
 export function reportUrlTransform(url: string): string {
-  return /^neige:\/\/wave\/[^/?#]+(?:#[^#]+)?$/.test(url)
-    ? url
-    : defaultUrlTransform(url);
+  const match = url.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
+  if (!match) return defaultUrlTransform(url);
+  const [, waveId, blockId] = match;
+  return blockId && !BLOCK_ID_PATTERN.test(blockId)
+    ? `neige://wave/${waveId}`
+    : url;
 }
 
 export function ReportLink({
@@ -48,12 +53,7 @@ export function ReportLink({
   const match = href?.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
   if (!match) return <a href={href}>{children}</a>;
   const [, waveId, blockId] = match;
-  let hash: string | undefined = blockId;
-  try {
-    hash = blockId ? decodeURIComponent(blockId) : undefined;
-  } catch {
-    // Preserve a malformed-but-harmless anchor verbatim.
-  }
+  const hash = blockId && BLOCK_ID_PATTERN.test(blockId) ? blockId : undefined;
   return (
     <Link
       to="/wave/$waveId"

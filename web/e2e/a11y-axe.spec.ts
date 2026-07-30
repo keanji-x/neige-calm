@@ -286,9 +286,6 @@ test.describe('a11y · axe', () => {
         // scanning so the wave page's full role tree is in the DOM.
         // The trigger is glyph-only since #594; aria-label "Add card".
         await expect(page.getByRole('button', { name: /add card/i })).toBeVisible();
-        await page
-          .getByRole('button', { name: /grid view — switch to report view/i })
-          .click();
         const backlinks = page.getByRole('region', { name: 'Backlinks' });
         await expect(
           backlinks.getByRole('link', { name: 'Cited report' }),

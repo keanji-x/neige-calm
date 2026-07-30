@@ -192,7 +192,9 @@ function mockWaveFileLists(lists: Record<string, WaveFsEntry[]>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete (Element.prototype as Partial<Element>).scrollIntoView;
   window.localStorage.clear();
+  window.history.replaceState(null, '', window.location.pathname);
 });
 
 describe('WaveReportPage', () => {
@@ -1688,18 +1690,38 @@ describe('WaveReportPage', () => {
           updated_at: 3,
         }],
         omitted: 2,
+        skipped_sources: 1,
       },
       error: null,
     } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
 
     render(
-      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('Report body', {
+            blocks: [
+              {
+                id: 'b_here',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Report body' },
+              },
+            ],
+          }),
+        ]}
+      />,
     );
 
     const panel = screen.getByRole('region', { name: 'Backlinks' });
     expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
     expect(within(panel).getByText('Beta')).toBeInTheDocument();
     expect(within(panel).getByText('2 additional backlinks not shown.')).toBeInTheDocument();
+    expect(
+      within(panel).getByText(
+        'Backlinks from 1 source report could not be loaded.',
+      ),
+    ).toBeInTheDocument();
     expect(within(panel).getByText(/cites block b_here/)).toBeInTheDocument();
     expect(within(panel).getByRole('link', { name: 'First mention' })).toHaveAttribute(
       'href',
@@ -1731,6 +1753,30 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('This wave (self-reference)')).toBeInTheDocument();
   });
 
+  it('does not promise a block target for a flat v1 report', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: {
+        backlinks: [{
+          src_wave_id: 'wave_a',
+          src_wave_title: 'Alpha',
+          src_block_id: 'b_a1',
+          dst_block_id: 'b_here',
+          label: 'Legacy target',
+          updated_at: 1,
+        }],
+        omitted: 0,
+        skipped_sources: 0,
+      },
+      error: null,
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
+    );
+    expect(screen.getByRole('link', { name: 'Legacy target' })).toBeVisible();
+    expect(screen.queryByText(/cites block b_here/)).toBeNull();
+  });
+
   it('surfaces backlink loading errors inline', () => {
     mockUseWaveBacklinksQuery.mockReturnValue({
       data: undefined,
@@ -1747,19 +1793,26 @@ describe('WaveReportPage', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
-        cards={[reportSlot('[Target](neige://wave/wave_2#b_target)')]}
+        cards={[reportSlot('[Target](neige://wave/wave_2#b_cafe)')]}
       />,
     );
     expect(screen.getByRole('link', { name: 'Target' })).toHaveAttribute(
       'href',
-      '/wave/wave_2#b_target',
+      '/wave/wave_2#b_cafe',
     );
   });
 
   it('does not scroll again when only the blocks array identity changes', () => {
     window.history.replaceState(null, '', '#b_present');
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(
+        () => {},
+      );
     const block = {
       id: 'b_present',
       kind: 'prose' as const,
@@ -1777,6 +1830,40 @@ describe('WaveReportPage', () => {
       <WaveReportPage
         wave={makeWave()}
         cards={[reportSlot('fallback', { blocks: [{ ...block }] })]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('scrolls when the hash target arrives after the report starts loading', () => {
+    window.history.replaceState(null, '', '#b_late');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => {});
+    const { rerender } = render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Loading report')]} />,
+    );
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('fallback', {
+            blocks: [
+              {
+                id: 'b_late',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Late block' },
+              },
+            ],
+          }),
+        ]}
       />,
     );
     expect(scrollIntoView).toHaveBeenCalledTimes(1);

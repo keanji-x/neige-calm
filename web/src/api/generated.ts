@@ -1933,6 +1933,7 @@ export interface components {
         WaveBacklinksResponse: {
             backlinks: components["schemas"]["WaveBacklink"][];
             omitted: number;
+            skipped_sources: number;
         };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and

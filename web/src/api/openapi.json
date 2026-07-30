@@ -5487,7 +5487,8 @@
         "description": "A bounded page of report backlinks.",
         "required": [
           "backlinks",
-          "omitted"
+          "omitted",
+          "skipped_sources"
         ],
         "properties": {
           "backlinks": {
@@ -5497,6 +5498,10 @@
             }
           },
           "omitted": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "skipped_sources": {
             "type": "integer",
             "minimum": 0
           }

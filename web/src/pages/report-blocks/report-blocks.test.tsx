@@ -331,12 +331,24 @@ describe('prose report links', () => {
   it('renders a neige wave link as an in-app link with its block anchor', () => {
     render(
       <ReportBlockView
-        block={prose('[Source](neige://wave/wave_2#b_target)')}
+        block={prose('[Source](neige://wave/wave_2#b_cafe)')}
       />,
     );
     expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute(
       'href',
-      '/wave/wave_2#b_target',
+      '/wave/wave_2#b_cafe',
+    );
+  });
+
+  it('degrades an invalid fragment to a whole-report link', () => {
+    render(
+      <ReportBlockView
+        block={prose('[Source](neige://wave/wave_2#section)')}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute(
+      'href',
+      '/wave/wave_2',
     );
   });
 
