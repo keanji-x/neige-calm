@@ -25,7 +25,7 @@
 // which is a second reason the hint cannot be treated as authoritative.
 
 import { ProposalBlockPreview } from './blockPreview';
-import type { OpView, PaneView } from './simulate';
+import { NOT_SIMULATED_NOTE, type OpView, type PaneView } from './simulate';
 
 function Pane({
   side,
@@ -61,6 +61,26 @@ export function ProposalOpDiff({ view }: { view: OpView }) {
     <li className="pp-op">
       <div className="pp-op-head">
         <span className="pp-op-title">{view.headline}</span>
+        {/* Structural ≠ stale (§5.2.1). "Out of date" promises a re-read
+            fixes it; a proposal that contradicts itself can never apply,
+            and the kernel answers 400 (the proposal stays pending). Say
+            the right cause so the user rejects instead of waiting. */}
+        {view.structural != null && (
+          <>
+            <span className="pp-op-hint pp-op-hint--blocked">
+              cannot be applied
+            </span>
+            <span className="pp-op-hint-note">{view.structural}</span>
+          </>
+        )}
+        {/* The batch is atomic: nothing after the first failed op runs, so
+            we do not pretend to know what this one would look like. */}
+        {view.notSimulated === true && (
+          <>
+            <span className="pp-op-hint pp-op-hint--blocked">not previewed</span>
+            <span className="pp-op-hint-note">{NOT_SIMULATED_NOTE}</span>
+          </>
+        )}
         {/* `stale === null` means "we hold no block index" — unknown is
             not the same as out of date, so no hint at all. */}
         {view.stale === true && (

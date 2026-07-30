@@ -24,18 +24,47 @@
 // BOTH panes (a proposed delete or move of an existing app block must not
 // live-mount it either). Weakening this to "drop allow-same-origin" is not
 // equivalent: no plugin-controlled document should load in this path at
-// all. Every other block kind is inert markup/canvas and goes through the
-// shared `ReportBlockView`.
+// all.
+//
+// This gate is DEFAULT-DENY and must stay that way. It is an ALLOWLIST of
+// the kinds proven inert in a preview — not a deny-list naming `app`. A
+// deny-list means the next block kind added to `ReportBlockView` (an
+// embed, a video, anything that loads or executes) silently regains live
+// rendering of UNADJUDICATED content, and nobody touching that file would
+// have any reason to look here. Everything not on the list below — future
+// kinds, misspelled kinds, attacker-chosen kinds — renders as the static
+// descriptor.
+//
+// Adding a kind to the allowlist is a security decision: it asserts the
+// renderer performs no network request, mounts no plugin document, and
+// executes no plugin-authored code. Today:
+//
+//   * prose         — react-markdown, no `rehype-raw`, and in the preview
+//                     a proposal-safe component policy (see
+//                     `ReportBlockView`'s `preview` prop) that renders
+//                     images and links as inert descriptors, so a pending
+//                     proposal cannot make the browser fetch a
+//                     plugin-chosen URL just by being LOOKED at.
+//   * table         — `String()`-coerced text in real DOM nodes.
+//   * chart.candles — a canvas fed numbers, from a bundle-local library.
 // ─────────────────────────────────────────────────────────────────────────
 
 import type { ReportBlock } from '../../cards/builtins/wave-report';
 import { ReportBlockView } from '../report-blocks';
 
+/** The ONLY kinds a proposal pane may render live. See the note above. */
+const INERT_PREVIEW_KINDS: ReadonlySet<string> = new Set([
+  'prose',
+  'table',
+  'chart.candles',
+]);
+
 function asString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function AppBlockDescriptor({ block }: { block: ReportBlock }) {
+/** The static stand-in for any kind not on the allowlist. */
+function InertBlockDescriptor({ block }: { block: ReportBlock }) {
   const payload: Record<string, unknown> = block.payload;
   const src = asString(payload.src);
   const title = asString(payload.title);
@@ -43,7 +72,7 @@ function AppBlockDescriptor({ block }: { block: ReportBlock }) {
 
   return (
     <div className="report-block pp-app" role="note">
-      <p className="pp-app-head">app block — not run in this preview</p>
+      <p className="pp-app-head">{block.kind} block — not run in this preview</p>
       <dl className="pp-app-params">
         <dt>src</dt>
         <dd>
@@ -63,7 +92,9 @@ function AppBlockDescriptor({ block }: { block: ReportBlock }) {
         )}
       </dl>
       <p className="pp-app-why">
-        The embedded app runs only after you accept this proposal.
+        {block.kind === 'app'
+          ? 'The embedded app runs only after you accept this proposal.'
+          : 'This block renders only after you accept this proposal.'}
       </p>
     </div>
   );
@@ -71,6 +102,10 @@ function AppBlockDescriptor({ block }: { block: ReportBlock }) {
 
 /** The renderer every proposal pane must use. */
 export function ProposalBlockPreview({ block }: { block: ReportBlock }) {
-  if (block.kind === 'app') return <AppBlockDescriptor block={block} />;
-  return <ReportBlockView block={block} />;
+  // Default-deny: unknown / future / non-allowlisted kinds get the static
+  // descriptor. Do NOT turn this back into `if (block.kind === 'app')`.
+  if (!INERT_PREVIEW_KINDS.has(block.kind)) {
+    return <InertBlockDescriptor block={block} />;
+  }
+  return <ReportBlockView block={block} preview />;
 }

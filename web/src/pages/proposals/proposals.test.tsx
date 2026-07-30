@@ -320,7 +320,7 @@ describe('ProposalsPanel — §5.2.1 sequential preview', () => {
     expect(within(moveBefore).queryByText('the old paragraph')).toBeNull();
   });
 
-  it('an op anchored on a block an earlier op deleted is flagged, not shown as anchored', () => {
+  it('an op anchored on a block an earlier op deleted is STRUCTURAL, not staleness', () => {
     renderPanel([
       { op: 'delete_block', block_id: 'b_0001', if_rev: 3 },
       {
@@ -331,11 +331,18 @@ describe('ProposalsPanel — §5.2.1 sequential preview', () => {
       },
     ]);
     // The delete itself is clean; the move against the post-delete
-    // document is the one that cannot anchor.
-    expect(screen.getAllByText('may be out of date')).toHaveLength(1);
+    // document is the one that cannot anchor — and the kernel calls that
+    // `BadRequest`, not stale (`ensure_not_self_deleted`). "May be out of
+    // date" would promise a re-read fixes it; nothing fixes it.
+    expect(screen.queryByText('may be out of date')).toBeNull();
     const moveHead = screen.getByLabelText('Before — Move block b_0002')
       .parentElement!.parentElement!;
-    expect(within(moveHead).getByText('may be out of date')).toBeInTheDocument();
+    expect(within(moveHead).getByText('cannot be applied')).toBeInTheDocument();
+    expect(
+      within(moveHead).getByText(
+        /An earlier change in this proposal deletes the block this one is anchored on\./,
+      ),
+    ).toHaveTextContent('re-reading the report cannot make it applicable');
   });
 
   it('a temp-id creation is a real block for the ops that follow it', () => {
@@ -369,6 +376,106 @@ describe('ProposalsPanel — §5.2.1 sequential preview', () => {
     // b_0001 started at position 1; after b_0002 moved to the top it is 2.
     const before = screen.getByLabelText('Before — Delete block b_0001');
     expect(within(before).getByText('Position 2 of 2')).toBeInTheDocument();
+  });
+});
+
+describe('ProposalsPanel — the simulation matches the kernel batch', () => {
+  it('a replace that only reorders keys is idempotent, so the next op is not flagged', () => {
+    // The kernel compares CANONICAL content: `{columns,rows}` and
+    // `{rows,columns}` are the same block, so the rev does not move and
+    // the following op's `if_rev: 1` still matches. A key-order-sensitive
+    // comparison here would bump the rev and warn about nothing.
+    renderPanel([
+      {
+        op: 'upsert_block',
+        block_id: 'b_0002',
+        kind: 'table',
+        payload: {
+          rows: [{ sym: 'OLD-ROW' }],
+          columns: [{ label: 'Symbol', key: 'sym' }],
+        },
+        if_rev: 1,
+      },
+      { op: 'delete_block', block_id: 'b_0002', if_rev: 1 },
+    ]);
+    expect(screen.queryByText('may be out of date')).toBeNull();
+    expect(screen.queryByText('cannot be applied')).toBeNull();
+    expect(screen.queryByText('not previewed')).toBeNull();
+  });
+
+  it('stops at the first op the kernel would reject instead of simulating on', () => {
+    // The batch is atomic: a rev-mismatched replace aborts the whole
+    // proposal, so the ops after it never run and must not be shown as a
+    // state the report could reach.
+    renderPanel([
+      {
+        op: 'upsert_block',
+        block_id: 'b_0001',
+        kind: 'prose',
+        payload: { markdown: 'the new paragraph' },
+        if_rev: 99,
+      },
+      { op: 'delete_block', block_id: 'b_0002', if_rev: 1 },
+    ]);
+    // The failing op keeps its own honest hint…
+    expect(screen.getByText('may be out of date')).toBeInTheDocument();
+    // …and the one after it is explicitly NOT simulated.
+    expect(screen.getByText('not previewed')).toBeInTheDocument();
+    const after = screen.getByLabelText('After — Delete block b_0002');
+    expect(within(after).getByText('Not previewed.')).toBeInTheDocument();
+    expect(within(after).queryByText('Block removed.')).toBeNull();
+    const before = screen.getByLabelText('Before — Delete block b_0002');
+    expect(within(before).queryByText('OLD-ROW')).toBeNull();
+  });
+
+  it('a creation anchored on a temp id nothing creates is structural, and halts', () => {
+    renderPanel([
+      {
+        op: 'upsert_block',
+        temp_id: 't2',
+        kind: 'prose',
+        payload: { markdown: 'brand new' },
+        anchor: { after_block_id: 'temp:never-made' },
+      },
+      { op: 'delete_block', block_id: 'b_0001', if_rev: 3 },
+    ]);
+    expect(screen.queryByText('may be out of date')).toBeNull();
+    expect(screen.getByText('cannot be applied')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /anchored on a block no earlier change in this proposal creates/,
+      ),
+    ).toHaveTextContent('re-reading the report cannot make it applicable');
+    // The unresolved creation is NOT minted into the simulated document…
+    const after = screen.getByLabelText('After — New prose block');
+    expect(within(after).queryByText(/^Position /)).toBeNull();
+    // …and the op behind it is not simulated.
+    expect(screen.getByText('not previewed')).toBeInTheDocument();
+  });
+
+  it('replacing a block this same proposal already deleted reads as self-contradiction', () => {
+    renderPanel([
+      { op: 'delete_block', block_id: 'b_0001', if_rev: 3 },
+      {
+        op: 'upsert_block',
+        block_id: 'b_0001',
+        kind: 'prose',
+        payload: { markdown: 'resurrected' },
+        if_rev: 3,
+      },
+    ]);
+    expect(screen.queryByText('may be out of date')).toBeNull();
+    expect(screen.getByText('cannot be applied')).toBeInTheDocument();
+    const before = screen.getByLabelText('Before — Modify prose block b_0001');
+    expect(
+      within(before).getByText(
+        'An earlier change in this proposal deletes this block.',
+      ),
+    ).toBeInTheDocument();
+    // Not the retryable narration.
+    expect(
+      screen.queryByText('This block is no longer in the report.'),
+    ).toBeNull();
   });
 });
 
@@ -448,6 +555,128 @@ describe('ProposalsPanel — unadjudicated plugin code is never executed (§5.4/
     expect(
       screen.getAllByText('app block — not run in this preview'),
     ).toHaveLength(2);
+  });
+});
+
+describe('ProposalsPanel — the preview renderer is default-deny (§5.4/§5.6)', () => {
+  it('an unknown / future block kind falls back to the static descriptor', () => {
+    // The gate is an ALLOWLIST: a kind nobody has audited (a future
+    // `video`/`embed`, or a kind a plugin simply invented) must not reach
+    // a live renderer just because it is not called "app".
+    const futureBlock: ReportBlock = {
+      id: 'b_vid',
+      rev: 1,
+      kind: 'video',
+      payload: { src: 'https://evil.example/track.mp4', title: 'Clip' },
+    };
+    setList([
+      proposal({
+        ops: [
+          {
+            op: 'upsert_block',
+            block_id: 'b_vid',
+            kind: 'video',
+            payload: { src: 'https://evil.example/next.mp4' },
+            if_rev: 1,
+          },
+        ],
+      }),
+    ]);
+    const { container } = render(
+      <ProposalsPanel waveId="w_1" blocks={[futureBlock]} />,
+    );
+    expect(
+      container.querySelectorAll('iframe, video, embed, object, img'),
+    ).toHaveLength(0);
+    expect(
+      screen.getAllByText('video block — not run in this preview'),
+    ).toHaveLength(2);
+    // Not the "unsupported block kind" placeholder of the live renderer:
+    // this is the deliberate inert descriptor, showing the URL as text.
+    expect(
+      screen.getByText('https://evil.example/next.mp4'),
+    ).toBeInTheDocument();
+  });
+
+  it('a proposed image does not make the browser fetch a plugin-chosen URL', () => {
+    // Zero-click view beacon: `![](…)` would fetch on mere DISPLAY of a
+    // pending proposal, leaking "the adjudicator looked at proposal X"
+    // plus IP/UA/Referer before any accept.
+    setList([
+      proposal({
+        ops: [
+          {
+            op: 'upsert_block',
+            block_id: 'b_0001',
+            kind: 'prose',
+            payload: {
+              markdown: '![a shot](https://evil.example/px.png?who=me)',
+            },
+            if_rev: 3,
+          },
+        ],
+      }),
+    ]);
+    const { container } = render(
+      <ProposalsPanel waveId="w_1" blocks={blocks} />,
+    );
+    expect(
+      container.querySelectorAll('img, iframe, video, embed, object'),
+    ).toHaveLength(0);
+    const after = screen.getByLabelText('After — Modify prose block b_0001');
+    expect(
+      within(after).getByText('https://evil.example/px.png?who=me'),
+    ).toBeInTheDocument();
+    expect(within(after).getByText(/image not loaded in this preview/)).toBeVisible();
+  });
+
+  it('a proposed link is text carrying its destination, not live navigation', () => {
+    setList([
+      proposal({
+        ops: [
+          {
+            op: 'upsert_block',
+            block_id: 'b_0001',
+            kind: 'prose',
+            payload: { markdown: '[totally safe](https://evil.example/go)' },
+            if_rev: 3,
+          },
+        ],
+      }),
+    ]);
+    const { container } = render(
+      <ProposalsPanel waveId="w_1" blocks={blocks} />,
+    );
+    expect(container.querySelectorAll('a')).toHaveLength(0);
+    const after = screen.getByLabelText('After — Modify prose block b_0001');
+    // The destination is READABLE — that is the point of adjudication.
+    expect(within(after).getByText('totally safe')).toBeInTheDocument();
+    expect(
+      within(after).getByText('https://evil.example/go'),
+    ).toBeInTheDocument();
+  });
+
+  it('raw HTML in proposed prose stays escaped (regression pin)', () => {
+    setList([
+      proposal({
+        ops: [
+          {
+            op: 'upsert_block',
+            block_id: 'b_0001',
+            kind: 'prose',
+            payload: {
+              markdown:
+                '<img src=x onerror="alert(1)"><script>alert(2)</script>',
+            },
+            if_rev: 3,
+          },
+        ],
+      }),
+    ]);
+    const { container } = render(
+      <ProposalsPanel waveId="w_1" blocks={blocks} />,
+    );
+    expect(container.querySelectorAll('img, script')).toHaveLength(0);
   });
 });
 
@@ -563,6 +792,37 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     // Still adjudicable — reject is the way out of a structurally broken
     // proposal.
     expect(screen.getByRole('button', { name: 'Reject' })).toBeEnabled();
+  });
+
+  it('a 400 leaves no pending focus intent for a later refetch to cash in', async () => {
+    // The row stays pending after a 400, so no verdict notice mounts and
+    // the focus intent would survive indefinitely; whenever a background
+    // refetch finally drops the row, focus would jump to the notice while
+    // the user is somewhere else entirely.
+    const list: PendingProposal[] = [proposal({ ops: [op] })];
+    mockList.mockImplementation(
+      () =>
+        ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
+          typeof useWaveProposalsQuery
+        >,
+    );
+    mockAccept.mockReturnValue(
+      stubMutation(() =>
+        Promise.reject(new CalmApiError(400, 'bad_request', 'contradicts itself')),
+      ) as unknown as ReturnType<typeof useAcceptProposalMutation>,
+    );
+    const { rerender } = render(<ProposalsPanel waveId="w_1" blocks={blocks} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Accept' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('stays pending');
+    expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument();
+
+    // Later: the proposal is withdrawn elsewhere and the list refetches.
+    list.length = 0;
+    rerender(<ProposalsPanel waveId="w_1" blocks={blocks} />);
+    const notice = await screen.findByRole('alert');
+    expect(notice).toHaveTextContent('stays pending');
+    expect(notice).not.toHaveFocus();
+    expect(document.body).toHaveFocus();
   });
 
   it('409 → says someone else resolved it and the list refreshed', async () => {

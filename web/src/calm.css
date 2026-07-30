@@ -1965,6 +1965,19 @@ select:-webkit-autofill {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
+/* Prose inside a PENDING proposal: images and links are shown as text so
+   that merely LOOKING at unadjudicated plugin content cannot fetch a
+   plugin-chosen URL or navigate anywhere (#955 §5.4/§5.6 — see
+   `pages/report-blocks/index.tsx`). Preview panes only. */
+.rb-inert-media,
+.rb-inert-link {
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.rb-inert-media code,
+.rb-inert-link code {
+  overflow-wrap: anywhere;
+}
 /* ── #955 ④ app proposals: adjudication panel above the report ──────
    Deliberately NOT constrained to the 616px prose measure (it is not part
    of the document; it is the pending change *to* the document) so the
@@ -2160,6 +2173,13 @@ select:-webkit-autofill {
   border-radius: var(--radius-sm);
   color: var(--warn);
   font-size: var(--text-xs);
+}
+/* Structural impossibility / not-simulated are NOT staleness: they read
+   as an error rather than a warning, because no re-read fixes them
+   (#955 §5.2.1 — the kernel's `BadRequest` class). */
+.pp-op-hint--blocked {
+  border-color: var(--error-text);
+  color: var(--error-text);
 }
 /* The qualifier that makes the hint honest must be READABLE, not a
    hover-only `title` on a non-focusable span (#955 §5.6). */

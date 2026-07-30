@@ -21,7 +21,7 @@
 // And one thing the PANES must not get wrong — see `blockPreview.tsx`:
 // unadjudicated plugin content is never executed in the preview.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { CalmApiError } from '../../api/calm';
 import {
   useAcceptProposalMutation,
@@ -46,7 +46,10 @@ export interface ProposalsPanelProps {
 }
 
 type Tone = 'ok' | 'warn' | 'error';
-type Feedback = { tone: Tone; text: string };
+/** `staysPending`: the kernel did NOT resolve the proposal, so its row
+ *  keeps its Accept/Reject buttons and no verdict notice will ever mount
+ *  for it — nothing to move focus to. */
+type Feedback = { tone: Tone; text: string; staysPending?: boolean };
 /** A verdict the user just produced. Held at panel level on purpose: an
  *  `accepted` / `stale` / `rejected` proposal leaves the pending list
  *  immediately, and if the message lived on the card it would vanish with
@@ -60,6 +63,7 @@ function describeError(error: unknown): Feedback {
       case 400:
         return {
           tone: 'error',
+          staysPending: true,
           text: `This proposal cannot be applied to any version of the report, so it stays pending — you can still reject it. Kernel said: ${error.message}`,
         };
       case 409:
@@ -75,6 +79,7 @@ function describeError(error: unknown): Feedback {
       case 403:
         return {
           tone: 'error',
+          staysPending: true,
           text: 'Only the signed-in user may adjudicate proposals.',
         };
       default:
@@ -110,7 +115,13 @@ function ProposalCard({
   // overwrites the user's own success. A synchronous ref closes the gap.
   const inFlight = useRef(false);
   const busy = accept.isPending || reject.isPending;
-  const views = simulateProposal(proposal.ops, blocks);
+  // Walking the ops (and canonicalizing every replace payload) is pure
+  // work over two inputs — no reason to redo it on every keystroke-level
+  // rerender of this card.
+  const views = useMemo(
+    () => simulateProposal(proposal.ops, blocks),
+    [proposal.ops, blocks],
+  );
   const vars = { id: proposal.proposal_id, waveId: proposal.wave_id };
 
   const onAccept = async () => {
@@ -253,7 +264,13 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
     proposal: PendingProposal,
     outcome: Feedback | null,
   ) => {
-    setFocusProposalId(outcome ? proposal.proposal_id : null);
+    // Focus follows the row only when the row is actually going away. A
+    // 400/403 leaves the proposal PENDING: no notice mounts, so the
+    // intent would sit here forever and a later background refetch that
+    // finally drops the row would yank focus while the user is elsewhere.
+    setFocusProposalId(
+      outcome && !outcome.staysPending ? proposal.proposal_id : null,
+    );
     setOutcomes((current) => {
       const rest = current.filter(
         (o) => o.proposalId !== proposal.proposal_id,
