@@ -2111,6 +2111,12 @@ select:-webkit-autofill {
   border-color: var(--error);
   color: var(--error-text);
 }
+/* The verdict notice takes focus when the adjudicated row unmounts under
+   the user's cursor/caret, so it needs a visible focus ring. */
+.pp-feedback:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .pp-dismiss {
   margin-left: var(--space-4);
   padding: var(--space-0);
@@ -2153,6 +2159,13 @@ select:-webkit-autofill {
   border: 1px solid var(--warn-border);
   border-radius: var(--radius-sm);
   color: var(--warn);
+  font-size: var(--text-xs);
+}
+/* The qualifier that makes the hint honest must be READABLE, not a
+   hover-only `title` on a non-focusable span (#955 §5.6). */
+.pp-op-hint-note {
+  flex: 1 1 100%;
+  color: var(--text-3);
   font-size: var(--text-xs);
 }
 .pp-op-panes {
@@ -2221,6 +2234,43 @@ select:-webkit-autofill {
   margin: var(--space-4) var(--space-0) var(--space-0);
   color: var(--text-3);
   font-family: var(--font-code);
+  font-size: var(--text-xs);
+}
+/* An UNADJUDICATED `app` block is described, never mounted — see
+   `pages/proposals/blockPreview.tsx` for why this is a security
+   invariant and not a styling choice. */
+.pp-app {
+  padding: var(--space-5);
+  border: 1px dashed var(--hairline-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+.pp-app-head {
+  margin: var(--space-0);
+  color: var(--text-2);
+  font-family: var(--font-code);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wide);
+}
+.pp-app-params {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-4) var(--space-0) var(--space-0);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+}
+.pp-app-params dt {
+  font-family: var(--font-code);
+}
+.pp-app-params dd {
+  margin: var(--space-0);
+  overflow-wrap: anywhere;
+}
+.pp-app-why {
+  margin: var(--space-4) var(--space-0) var(--space-0);
+  color: var(--text-3);
   font-size: var(--text-xs);
 }
 @media (max-width: 720px) {

@@ -17,7 +17,11 @@
 //     document moved; recorded, report untouched), `400` (structurally
 //     impossible; STAYS pending and can still be rejected), `409`
 //     (already resolved elsewhere; the list refreshes).
+//
+// And one thing the PANES must not get wrong — see `blockPreview.tsx`:
+// unadjudicated plugin content is never executed in the preview.
 
+import { useEffect, useRef } from 'react';
 import { CalmApiError } from '../../api/calm';
 import {
   useAcceptProposalMutation,
@@ -28,12 +32,16 @@ import type { PendingProposal } from '../../api/wire';
 import type { ReportBlock } from '../../cards/builtins/wave-report';
 import { useState } from '../../shared/state';
 import { formatRelativeTime } from '../../shared/relativeTime';
-import { ProposalOpDiff, indexBlocks } from './opDiff';
+import { ProposalOpDiff } from './opDiff';
+import { simulateProposal } from './simulate';
 
 export interface ProposalsPanelProps {
   waveId: string;
   /** The report card's current blocks — the "before" side of every diff,
-   *  and the basis of the advisory staleness hint. */
+   *  and the basis of the advisory staleness hint. `undefined` means the
+   *  page holds NO block index (body-only report, no report card, or an
+   *  unsupported payload version); the panes then render "unknown", never
+   *  "gone". */
   blocks?: ReportBlock[];
 }
 
@@ -73,9 +81,13 @@ function describeError(error: unknown): Feedback {
         return { tone: 'error', text: error.message || `HTTP ${error.status}` };
     }
   }
+  // No HTTP status at all: the request never produced an answer (network
+  // drop, aborted fetch). The server may well have COMMITTED — claiming
+  // "Request failed" next to a report that did change would be a lie.
+  const detail = error instanceof Error && error.message ? ` (${error.message})` : '';
   return {
-    tone: 'error',
-    text: error instanceof Error ? error.message : 'Request failed',
+    tone: 'warn',
+    text: `We could not confirm this decision${detail} — the request did not come back. The list has been refreshed; check the report to see whether it was applied.`,
   };
 }
 
@@ -93,15 +105,26 @@ function ProposalCard({
   const accept = useAcceptProposalMutation();
   const reject = useRejectProposalMutation();
   const setFeedback = onOutcome;
+  // `isPending` only flips on the NEXT render, so two fast clicks both
+  // pass the `busy` check and fire two POSTs — the second one's 409 then
+  // overwrites the user's own success. A synchronous ref closes the gap.
+  const inFlight = useRef(false);
   const busy = accept.isPending || reject.isPending;
-  const index = indexBlocks(blocks);
+  const views = simulateProposal(proposal.ops, blocks);
   const vars = { id: proposal.proposal_id, waveId: proposal.wave_id };
 
   const onAccept = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setFeedback(null);
     try {
       const res = await accept.mutateAsync(vars);
-      if (res.decision === 'stale') {
+      if (res.decision === 'accepted') {
+        setFeedback({
+          tone: 'ok',
+          text: 'Accepted — the report has been updated.',
+        });
+      } else if (res.decision === 'stale') {
         // NOT an error: the kernel adjudicated, and the verdict was
         // "the document moved under this proposal" (§5.6).
         setFeedback({
@@ -111,17 +134,24 @@ function ProposalCard({
             (res.reason ? ` Kernel said: ${res.reason}` : ''),
         });
       } else {
+        // `rejected` / `withdrawn` from an ACCEPT is not a shape §5.6
+        // produces. Say what came back rather than narrating a report
+        // change that did not happen.
         setFeedback({
-          tone: 'ok',
-          text: 'Accepted — the report has been updated.',
+          tone: 'warn',
+          text: `The kernel recorded this proposal as "${res.decision}", not accepted — the report was not changed by this action.`,
         });
       }
     } catch (error) {
       setFeedback(describeError(error));
+    } finally {
+      inFlight.current = false;
     }
   };
 
   const onReject = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setFeedback(null);
     try {
       await reject.mutateAsync(vars);
@@ -131,6 +161,8 @@ function ProposalCard({
       });
     } catch (error) {
       setFeedback(describeError(error));
+    } finally {
+      inFlight.current = false;
     }
   };
 
@@ -184,14 +216,13 @@ function ProposalCard({
         </p>
       )}
       <ul className="pp-ops">
-        {proposal.ops.map((op, i) => (
+        {views.map((view, i) => (
           <ProposalOpDiff
             // Ops are an ordered list applied in sequence, and the same
             // block may legitimately appear twice, so position IS the
             // identity here.
             key={i}
-            op={op}
-            index={index}
+            view={view}
           />
         ))}
       </ul>
@@ -202,12 +233,27 @@ function ProposalCard({
 export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
   const query = useWaveProposalsQuery(waveId);
   const [outcomes, setOutcomes] = useState<Outcome[]>([]);
+  // The proposal whose verdict should take focus once its row is gone.
+  const [focusProposalId, setFocusProposalId] = useState<string | null>(null);
+  // `WaveReportPage` handles a wave switch IN PLACE (no remount), so panel
+  // state would otherwise survive into a wave the verdict has nothing to
+  // do with — a wave-A verdict rendered above wave B's untouched report,
+  // and a panel appearing on a wave with nothing pending.
+  const [shownWaveId, setShownWaveId] = useState(waveId);
+  if (shownWaveId !== waveId) {
+    setShownWaveId(waveId);
+    setOutcomes([]);
+    setFocusProposalId(null);
+  }
+
+  const noticeRefs = useRef(new Map<string, HTMLParagraphElement | null>());
   const proposals = query.data?.proposals ?? [];
 
   const recordOutcome = (
     proposal: PendingProposal,
     outcome: Feedback | null,
   ) => {
+    setFocusProposalId(outcome ? proposal.proposal_id : null);
     setOutcomes((current) => {
       const rest = current.filter(
         (o) => o.proposalId !== proposal.proposal_id,
@@ -225,36 +271,60 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
     });
   };
 
-  if (query.error) {
-    return (
-      <div className="report-empty report-error" role="alert">
-        Could not load app proposals: {query.error.message}
-      </div>
-    );
-  }
-
   const pendingIds = new Set(proposals.map((p) => p.proposal_id));
   // A resolved proposal is gone from the list, but its verdict is the
   // whole point of having pressed the button — especially `stale`, whose
   // message ("nothing was applied, and here is why") has no other home.
   const notices = outcomes.filter((o) => !pendingIds.has(o.proposalId));
+  const noticeKey = notices.map((n) => n.proposalId).join('|');
 
-  // Empty state is *no* state: an adjudication surface with nothing to
-  // adjudicate is noise on every report the channel never touches.
-  if (proposals.length === 0 && notices.length === 0) return null;
+  // The refetch unmounts the Accept/Reject button the user was standing
+  // on. Move focus to the verdict that replaced it, or keyboard users are
+  // stranded at document root while the answer renders elsewhere.
+  useEffect(() => {
+    if (focusProposalId == null) return;
+    const el = noticeRefs.current.get(focusProposalId);
+    if (el) {
+      el.focus();
+      setFocusProposalId(null);
+    }
+  }, [focusProposalId, noticeKey]);
+
+  // A transient list error must NOT swallow the verdict the user just
+  // produced — for a `stale` accept this panel is the only place that
+  // explanation exists.
+  const listError = query.error;
+  if (proposals.length === 0 && notices.length === 0 && listError == null) {
+    // Empty state is *no* state: an adjudication surface with nothing to
+    // adjudicate is noise on every report the channel never touches.
+    return null;
+  }
 
   return (
     <section className="pp-panel" aria-label="App proposals awaiting review">
       <h2 className="pp-panel-head">
         App proposals
-        <span className="pp-count">{proposals.length}</span>
+        {/* No badge when the only thing left is a verdict notice — a
+            header reading "App proposals 0" is worse than no count. */}
+        {proposals.length > 0 && (
+          <span className="pp-count">{proposals.length}</span>
+        )}
       </h2>
       <p className="pp-panel-hint">
         These are proposed by apps and change nothing until you accept them.
       </p>
+      {listError != null && (
+        <p className="pp-feedback pp-feedback--error" role="alert">
+          Could not load app proposals: {listError.message}
+        </p>
+      )}
       {notices.map((notice) => (
         <p
           key={notice.proposalId}
+          ref={(el) => {
+            noticeRefs.current.set(notice.proposalId, el);
+          }}
+          tabIndex={-1}
           className={`pp-feedback pp-feedback--${notice.tone}`}
           role={notice.tone === 'ok' ? 'status' : 'alert'}
         >
@@ -262,6 +332,7 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
           <button
             type="button"
             className="pp-dismiss"
+            aria-label={`Dismiss verdict for proposal ${notice.proposalId} from ${notice.pluginId}`}
             onClick={() =>
               setOutcomes((current) =>
                 current.filter((o) => o.proposalId !== notice.proposalId),
