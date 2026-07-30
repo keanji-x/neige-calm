@@ -259,6 +259,36 @@ pub async fn proposal_pending_by_idem_tx(
     Ok(row)
 }
 
+/// Pool-backed twin of [`proposals_pending_by_wave_tx`] for the
+/// user-facing REST list (PR-b). A read-only list must not take the
+/// single write lock; the adjudication handlers still re-check in-tx.
+pub(super) async fn proposals_pending_by_wave_pool(
+    pool: &sqlx::SqlitePool,
+    wave_id: &str,
+) -> Result<Vec<ProposalRow>> {
+    let rows = sqlx::query_as::<_, ProposalRow>(&format!(
+        "{SELECT_COLS} WHERE wave_id = ?1 AND status = 'pending' ORDER BY submitted_event_id ASC"
+    ))
+    .bind(wave_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Pool-backed twin of [`proposal_get_tx`] — the adjudication routes'
+/// pre-flight lookup (404 shaping, plugin/wave binding). Never the
+/// authority for "still pending": that is the in-tx re-check.
+pub(super) async fn proposal_get_pool(
+    pool: &sqlx::SqlitePool,
+    proposal_id: &str,
+) -> Result<Option<ProposalRow>> {
+    let row = sqlx::query_as::<_, ProposalRow>(&format!("{SELECT_COLS} WHERE proposal_id = ?1"))
+        .bind(proposal_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
+
 /// Single-proposal lookup by id (any status). PR-b's withdraw / accept
 /// handlers re-check `status == "pending"` through this inside their
 /// write tx (already-resolved ⇒ 409).

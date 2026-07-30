@@ -137,6 +137,95 @@ pub enum ReportDocOp {
     /// proposal channel. An empty batch is refused too (a proposal
     /// with no ops is a caller bug, not a conflict).
     Batch(Vec<ReportDocOp>),
+    /// Issue #955 §5.2.1 (PR-b) — the proposal channel's actual entry:
+    /// a [`Batch`](Self::Batch) whose members are the *wire* ops
+    /// (`ProposalOp`), lowered against the live scratch document one at
+    /// a time.
+    ///
+    /// Lowering cannot happen outside the persist transaction, which is
+    /// why this variant exists next to `Batch` rather than the handler
+    /// pre-building one: `temp_id` creations get their durable `b_xxxx`
+    /// id **minted by the kernel here** (§5.2.1), and `anchor`s resolve
+    /// to list indexes against the document *as the predecessors left
+    /// it* — neither is knowable before the ops run. Error classes,
+    /// whole-batch rollback and the exactly-one-event-pair invariant are
+    /// shared with `Batch` (both funnel through the same classifier and
+    /// the same scratch-doc swap).
+    ///
+    /// `base_doc_heads` is the §5.2.1 whole-document anchor. It is
+    /// authoritative **only** for creations with no block-level anchor
+    /// (`at_start` / `at_end`): those have nothing else to anchor on, so
+    /// any committed change since the plugin's snapshot makes the batch
+    /// stale. For every other op it is advisory — the per-block `if_rev`s
+    /// carry the authority, which is exactly what lets a proposal survive
+    /// spec edits to *unrelated* blocks.
+    ProposalBatch {
+        base_doc_heads: String,
+        ops: Vec<calm_types::proposal::ProposalOp>,
+    },
+}
+
+/// Issue #955 §5.6 (PR-b) — accept-time coupling: the pending proposal
+/// whose resolution must commit in the SAME write transaction as its
+/// [`ReportDocOp::ProposalBatch`] apply, so no crash window can produce
+/// "resolved but not written" or "written but still pending".
+///
+/// Presence of this context turns [`persist_report_with_shadow`] into
+/// the accept path: it re-checks the proposal is still pending (and
+/// still owned by `plugin_id` on this wave) inside the tx, prepends the
+/// `ProposalResolved { accepted }` event (actor `User` — the human is
+/// the adjudicator, §5.4), and stamps the plugin attribution onto the
+/// `WaveReportEdited` the apply emits (`author = "plugin"` +
+/// `author_plugin_id`, §5.3).
+#[derive(Debug, Clone)]
+pub struct ProposalAcceptCtx {
+    pub proposal_id: String,
+    /// The SUBMITTING plugin — both the attribution carried into
+    /// `WaveReportEdited.author_plugin_id` and the in-tx ownership bind
+    /// on the resolve event's payload.
+    pub plugin_id: String,
+}
+
+/// Exact message of the in-tx "not pending any more" conflict, so
+/// [`classify_accept_error`] can tell a genuine double-resolve (→ 409)
+/// apart from an anchoring conflict (→ resolve as `stale`). Pinned by
+/// `accept_error_classes_are_disjoint`.
+pub(crate) const PROPOSAL_NOT_PENDING: &str = "proposal is no longer pending";
+
+/// Prefix every anchoring/staleness conflict minted inside a batch
+/// carries. Also pinned by `accept_error_classes_are_disjoint`.
+pub(crate) const PROPOSAL_BATCH_CONFLICT: &str = "proposal batch conflict: ";
+
+/// What went wrong in an accept transaction (§5.6). The split matters: a
+/// lost double-resolve race is a 409 the user must see, while a failed
+/// anchor is not an error at all — it is the `stale` decision, which the
+/// route then records in its own single transaction (no report change).
+#[derive(Debug)]
+pub enum AcceptFailure {
+    /// The proposal was resolved by someone else between the pre-flight
+    /// and this transaction ⇒ 409.
+    NotPending,
+    /// An in-tx anchoring check failed ⇒ resolve the proposal as
+    /// `stale`. Carries the conflict message for the response body.
+    Stale(String),
+    /// Anything else (structural `BadRequest`, `NotFound`, `Internal`) —
+    /// surfaced verbatim; the proposal stays pending.
+    Other(CalmError),
+}
+
+/// Classify the error a proposal-accept [`persist_report_with_shadow`]
+/// call returned. Structural `BadRequest`s deliberately do NOT become
+/// `stale`: per §5.2.1's error split they can never succeed against any
+/// snapshot, so staling them would hide an unfixable proposal behind a
+/// "retry against a fresh baseline" verdict.
+pub fn classify_accept_error(e: CalmError) -> AcceptFailure {
+    match e {
+        CalmError::Conflict(msg) if msg == PROPOSAL_NOT_PENDING => AcceptFailure::NotPending,
+        CalmError::Conflict(msg) if msg.starts_with(PROPOSAL_BATCH_CONFLICT) => {
+            AcceptFailure::Stale(msg)
+        }
+        other => AcceptFailure::Other(other),
+    }
 }
 
 /// `(id, rev)` a block-level [`ReportDocOp`] resolved to: the created/
@@ -151,7 +240,7 @@ pub struct BlockOpOutcome {
 /// The one place the "block not found" `BadRequest` is minted, paired
 /// with [`is_block_not_found`] so the Batch arm can reclassify exactly
 /// this error (and no other `BadRequest`) as proposal staleness.
-fn block_not_found(id: &str) -> CalmError {
+pub(crate) fn block_not_found(id: &str) -> CalmError {
     CalmError::BadRequest(format!("block {id} not found"))
 }
 
@@ -322,35 +411,55 @@ pub(crate) fn apply_report_op(
             // caller-visible `doc` must also stay untouched so a
             // failed batch cannot leak partial state into any
             // subsequent in-tx read.
-            let mut scratch = ReportDoc::from_bytes(&doc.to_bytes())
-                .map_err(|e| CalmError::Internal(format!("wave_report: fork doc: {e}")))?;
+            let mut scratch = fork_doc(doc)?;
             for op in ops {
-                apply_report_op(&mut scratch, op).map_err(|e| match e {
-                    // §5.2.1 staleness vs malformation: rev mismatches
-                    // (already Conflict) and unknown block ids ("the
-                    // block you anchored on is gone" — snapshot decay,
-                    // fixable by re-reading) map to the proposal-stale
-                    // Conflict class. Every other BadRequest is
-                    // structural (missing if_rev, out-of-range index):
-                    // no fresh snapshot can fix it, so it must stay
-                    // BadRequest — mapping it to Conflict would invite
-                    // endless resubmission of an unfixable proposal.
-                    // Internal (corruption) passes through unmapped.
-                    CalmError::Conflict(msg) => {
-                        CalmError::Conflict(format!("proposal batch conflict: {msg}"))
-                    }
-                    CalmError::BadRequest(msg) if is_block_not_found(&msg) => {
-                        CalmError::Conflict(format!("proposal batch conflict: {msg}"))
-                    }
-                    CalmError::BadRequest(msg) => {
-                        CalmError::BadRequest(format!("proposal batch invalid: {msg}"))
-                    }
-                    other => other,
-                })?;
+                apply_report_op(&mut scratch, op).map_err(classify_batch_member_error)?;
             }
             *doc = scratch;
             Ok(None)
         }
+        // #955 §5.2.1 (PR-b) — same machinery as `Batch`, but each
+        // member is lowered from the wire shape against the scratch doc
+        // immediately before it runs (kernel-minted ids for `temp_id`
+        // creations, anchors → indexes). Delegated so the lowering rules
+        // live next to the wire DTO they interpret.
+        ReportDocOp::ProposalBatch {
+            base_doc_heads,
+            ops,
+        } => {
+            crate::wave_report_proposal::apply_proposal_batch(doc, base_doc_heads, ops)?;
+            Ok(None)
+        }
+    }
+}
+
+/// Copy a doc so a failing batch cannot leak partial state into the
+/// caller-visible document (the persist tx would roll the columns back
+/// regardless, but subsequent in-tx reads must see the pre-batch state).
+pub(crate) fn fork_doc(doc: &mut ReportDoc) -> Result<ReportDoc, CalmError> {
+    ReportDoc::from_bytes(&doc.to_bytes())
+        .map_err(|e| CalmError::Internal(format!("wave_report: fork doc: {e}")))
+}
+
+/// §5.2.1 staleness vs malformation, applied to one batch member's
+/// error. Rev mismatches (already `Conflict`) and unknown block ids
+/// ("the block you anchored on is gone" — snapshot decay, fixable by
+/// re-reading) map to the proposal-stale `Conflict` class. Every other
+/// `BadRequest` is structural (missing `if_rev`, out-of-range index,
+/// unresolvable `temp:` reference): no fresh snapshot can fix it, so it
+/// must stay `BadRequest` — mapping it to `Conflict` would invite
+/// endless resubmission of an unfixable proposal. `Internal`
+/// (corruption) passes through unmapped.
+pub(crate) fn classify_batch_member_error(e: CalmError) -> CalmError {
+    match e {
+        CalmError::Conflict(msg) => CalmError::Conflict(format!("{PROPOSAL_BATCH_CONFLICT}{msg}")),
+        CalmError::BadRequest(msg) if is_block_not_found(&msg) => {
+            CalmError::Conflict(format!("{PROPOSAL_BATCH_CONFLICT}{msg}"))
+        }
+        CalmError::BadRequest(msg) => {
+            CalmError::BadRequest(format!("proposal batch invalid: {msg}"))
+        }
+        other => other,
     }
 }
 
@@ -497,9 +606,57 @@ pub async fn persist_report(
         lifecycle,
         auto_promote_draft,
         None,
+        None,
     )
     .await?;
     Ok(updated)
+}
+
+/// Issue #955 §5.6 (PR-b) — the proposal-accept writer: resolve the
+/// pending proposal and apply its lowered ops in ONE transaction.
+///
+/// Wraps [`persist_report_with_shadow`] with the two accept-specific
+/// bindings the design pins: the events carry `actor = Kernel` for the
+/// report change (the kernel writes on the plugin's behalf; plugin
+/// attribution rides on `author`/`author_plugin_id`, §5.3) while the
+/// `ProposalResolved` event inside the same tx carries `actor = User`.
+/// Errors come back classified by [`classify_accept_error`], so the
+/// route can tell "someone else resolved it" (409) from "anchors moved"
+/// (record `stale`).
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_report_proposal_accept(
+    repo: &dyn RouteRepo,
+    events: &EventBus,
+    write: &WriteContext,
+    wave: Wave,
+    report_card: Card,
+    current_payload: WaveReportPayload,
+    base_doc_heads: String,
+    ops: Vec<calm_types::proposal::ProposalOp>,
+    accept: ProposalAcceptCtx,
+) -> Result<Card, AcceptFailure> {
+    persist_report_with_shadow(
+        repo,
+        events,
+        write,
+        ActorId::Kernel,
+        EditAuthor::Plugin,
+        wave,
+        report_card,
+        current_payload,
+        ReportDocOp::ProposalBatch {
+            base_doc_heads,
+            ops,
+        },
+        None,
+        None,
+        false,
+        None,
+        Some(accept),
+    )
+    .await
+    .map(|(card, _)| card)
+    .map_err(classify_accept_error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,6 +674,9 @@ pub(crate) async fn persist_report_with_shadow(
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
+    // `Some` ⇒ this is a #955 §5.6 proposal accept: re-check + resolve
+    // the proposal in the same tx as the apply. See `ProposalAcceptCtx`.
+    proposal: Option<ProposalAcceptCtx>,
 ) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
@@ -548,8 +708,42 @@ pub(crate) async fn persist_report_with_shadow(
             let actor = actor.clone();
             let agent_message = agent_message.clone();
             let recorder_shadow = recorder_shadow.clone();
+            let proposal = proposal.clone();
             Box::pin(async move {
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
+                // #955 §5.6 — the accept path's authoritative pending
+                // re-check, inside the write tx. SQLite's single writer
+                // makes "first commit wins": a concurrent
+                // accept/reject/withdraw either already terminalized the
+                // row (we see it and bail) or serializes behind us.
+                // The wave/plugin binds mirror the projection's
+                // choke-point backstop so a route bug can never resolve
+                // one plugin's proposal under another's identity.
+                if let Some(accept) = proposal.as_ref() {
+                    let row = crate::db::sqlite::proposal_get_tx(tx, &accept.proposal_id)
+                        .await?
+                        .ok_or_else(|| CalmError::Conflict(PROPOSAL_NOT_PENDING.into()))?;
+                    if row.status != "pending"
+                        || row.plugin_id != accept.plugin_id
+                        || row.wave_id != wave_id.as_str()
+                    {
+                        return Err(CalmError::Conflict(PROPOSAL_NOT_PENDING.into()));
+                    }
+                    // Actor is the human adjudicator (§5.4's User-only
+                    // hard clause), even though the report change below
+                    // is written by the kernel — §5.3 accepts the
+                    // mixed-actor transaction explicitly.
+                    events.push((
+                        ActorId::User,
+                        wave_scope.clone(),
+                        Event::ProposalResolved {
+                            wave_id: wave_id.clone(),
+                            proposal_id: accept.proposal_id.clone(),
+                            plugin_id: accept.plugin_id.clone(),
+                            decision: calm_types::proposal::ProposalDecision::Accepted,
+                        },
+                    ));
+                }
                 if auto_promote_draft
                     && let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await?
                 {
@@ -669,12 +863,11 @@ pub(crate) async fn persist_report_with_shadow(
                     wave_id,
                     card_id: report_card_id,
                     author,
-                    // #955 §5.3 — populated by the PR-b accept path
-                    // (which passes `author = Plugin` and threads the
-                    // submitter id through); every PR-a caller writes
-                    // Spec/User/Kernel edits, where the field is None
-                    // by contract.
-                    author_plugin_id: None,
+                    // #955 §5.3 — the accept path (and only it) passes
+                    // `author = Plugin` and threads the submitter id
+                    // through here; Spec/User/Kernel edits leave the
+                    // field None by contract.
+                    author_plugin_id: proposal.as_ref().map(|p| p.plugin_id.clone()),
                     edit_id: uuid::Uuid::new_v4().to_string(),
                     summary_before,
                     summary_after,
@@ -1053,6 +1246,41 @@ mod tests {
         assert_eq!(doc.blocks_snapshot().unwrap().len(), 2, "doc untouched");
     }
 
+    /// #955 §5.6 — the accept path's two conflict classes must never be
+    /// confused: a lost double-resolve race is a 409, a failed anchor is
+    /// the `stale` decision. Both arrive as `CalmError::Conflict`, so the
+    /// sentinel/prefix pair below is load-bearing.
+    #[test]
+    fn accept_error_classes_are_disjoint() {
+        assert!(matches!(
+            classify_accept_error(CalmError::Conflict(PROPOSAL_NOT_PENDING.into())),
+            AcceptFailure::NotPending
+        ));
+        // Anything the batch classifier mints carries the prefix.
+        let batched =
+            classify_batch_member_error(CalmError::Conflict("rev conflict on block b_0001".into()));
+        assert!(matches!(
+            classify_accept_error(batched),
+            AcceptFailure::Stale(_)
+        ));
+        let vanished = classify_batch_member_error(block_not_found("b_0001"));
+        assert!(matches!(
+            classify_accept_error(vanished),
+            AcceptFailure::Stale(_)
+        ));
+        // Structural malformation stays an error — never silently stale.
+        let structural = classify_batch_member_error(CalmError::BadRequest(
+            "if_rev is required when replacing an existing block".into(),
+        ));
+        assert!(matches!(
+            classify_accept_error(structural),
+            AcceptFailure::Other(CalmError::BadRequest(_))
+        ));
+        // And the two sentinels cannot alias each other.
+        assert!(!PROPOSAL_NOT_PENDING.starts_with(PROPOSAL_BATCH_CONFLICT));
+        assert!(!PROPOSAL_BATCH_CONFLICT.starts_with(PROPOSAL_NOT_PENDING));
+    }
+
     #[test]
     fn batch_not_found_classifier_matches_constructor() {
         // Pins the constructor/classifier pair the Batch reclassifier
@@ -1150,6 +1378,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .await
         .expect("seed persist");
@@ -1195,6 +1424,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         )
         .await
         .expect("batch persist");
@@ -1234,6 +1464,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
         )
         .await

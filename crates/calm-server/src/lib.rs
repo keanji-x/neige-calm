@@ -572,6 +572,7 @@ pub mod wave_lifecycle;
 pub mod wave_report;
 pub mod wave_report_doc;
 mod wave_report_guard;
+pub mod wave_report_proposal;
 pub mod wave_vcs;
 pub mod ws;
 
