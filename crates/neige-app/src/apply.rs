@@ -758,7 +758,16 @@ impl HealthcheckOutcome {
 const CALM_START_TIMEOUT_DEFAULT_SECS: u64 = 120;
 const CALM_START_TIMEOUT_FLAG: &str = "--shared-codex-appserver-start-timeout-secs";
 const CALM_START_TIMEOUT_ENV: &str = "CALM_SHARED_CODEX_APPSERVER_START_TIMEOUT_SECS";
-/// Post-boot margin on top of the child start timeout: version probe,
+/// #954 — mirror of calm-server's clap default for
+/// `--shared-codex-appserver-stop-grace-secs`
+/// (`crates/calm-server/src/config.rs`, `default_value_t = 60`). Keep the
+/// two in sync: after an adoption-window lapse calm-server's boot pays up
+/// to this grace reaping the old child before its fresh spawn begins, so
+/// the healthcheck deadline includes it.
+const CALM_STOP_GRACE_DEFAULT_SECS: u64 = 60;
+const CALM_STOP_GRACE_FLAG: &str = "--shared-codex-appserver-stop-grace-secs";
+const CALM_STOP_GRACE_ENV: &str = "CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS";
+/// Post-boot margin on top of the child's worst boot path: version probe,
 /// harness recovery, HTTP bind.
 const HEALTHCHECK_MARGIN: Duration = Duration::from_secs(60);
 
@@ -783,19 +792,65 @@ fn effective_child_start_timeout_from(
     child_envs: &[(String, String)],
     ambient_env: Option<&str>,
 ) -> Duration {
-    let raw = start_timeout_flag_value(child_args)
+    effective_child_secs_from(
+        CALM_START_TIMEOUT_FLAG,
+        CALM_START_TIMEOUT_ENV,
+        CALM_START_TIMEOUT_DEFAULT_SECS,
+        child_args,
+        child_envs,
+        ambient_env,
+    )
+}
+
+/// #954 — the effective `shared_codex_appserver_stop_grace_secs`, a
+/// precedence-parsing sibling of [`effective_child_start_timeout`] with the
+/// identical resolution chain (flag both syntaxes/last-wins → `child_envs`
+/// → ambient env → mirrored default; unparseable ⇒ default).
+fn effective_child_stop_grace(cfg: &SupervisorConfig) -> Duration {
+    let ambient = std::env::var(CALM_STOP_GRACE_ENV).ok();
+    effective_child_stop_grace_from(&cfg.child_args, &cfg.child_envs, ambient.as_deref())
+}
+
+/// Pure resolution core (ambient env injected for tests).
+fn effective_child_stop_grace_from(
+    child_args: &[String],
+    child_envs: &[(String, String)],
+    ambient_env: Option<&str>,
+) -> Duration {
+    effective_child_secs_from(
+        CALM_STOP_GRACE_FLAG,
+        CALM_STOP_GRACE_ENV,
+        CALM_STOP_GRACE_DEFAULT_SECS,
+        child_args,
+        child_envs,
+        ambient_env,
+    )
+}
+
+/// Shared resolution core for the seconds-valued calm-server child knobs
+/// (start timeout, stop grace): one precedence chain, one parsing rule, so
+/// the two derivation inputs cannot drift apart.
+fn effective_child_secs_from(
+    flag: &str,
+    env_key: &str,
+    default_secs: u64,
+    child_args: &[String],
+    child_envs: &[(String, String)],
+    ambient_env: Option<&str>,
+) -> Duration {
+    let raw = secs_flag_value(flag, child_args)
         .or_else(|| {
             // `cmd.envs` applies pairs in order — a later duplicate wins.
             child_envs
                 .iter()
                 .rev()
-                .find(|(key, _)| key == CALM_START_TIMEOUT_ENV)
+                .find(|(key, _)| key == env_key)
                 .map(|(_, value)| value.as_str())
         })
         .or(ambient_env);
     let secs = raw
         .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or(CALM_START_TIMEOUT_DEFAULT_SECS);
+        .unwrap_or(default_secs);
     Duration::from_secs(secs)
 }
 
@@ -803,17 +858,17 @@ fn effective_child_start_timeout_from(
 /// `--flag VALUE` and `--flag=VALUE`. A trailing flag without a value
 /// resolves to an empty (unparseable) value, which falls back to the
 /// default — calm-server would reject that command line anyway.
-fn start_timeout_flag_value(child_args: &[String]) -> Option<&str> {
+fn secs_flag_value<'a>(flag: &str, child_args: &'a [String]) -> Option<&'a str> {
     let mut found = None;
     let mut i = 0;
     while i < child_args.len() {
         let arg = child_args[i].as_str();
         if let Some(inline) = arg
-            .strip_prefix(CALM_START_TIMEOUT_FLAG)
+            .strip_prefix(flag)
             .and_then(|rest| rest.strip_prefix('='))
         {
             found = Some(inline);
-        } else if arg == CALM_START_TIMEOUT_FLAG {
+        } else if arg == flag {
             match child_args.get(i + 1) {
                 Some(value) => {
                     found = Some(value.as_str());
@@ -835,14 +890,24 @@ fn start_timeout_flag_value(child_args: &[String]) -> Option<&str> {
 /// the overflow boundary.
 const HEALTHCHECK_DEADLINE_CEILING: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
-/// #956 — the `/upgrade/apply` healthcheck deadline. Derived, not fixed:
-/// `effective_child_start_timeout + 60s margin`, so raising the child start
-/// timeout automatically raises the healthcheck deadline (the old hardcoded
-/// 60s was SHORTER than calm-server's own 120s default boot allowance).
-/// Clamped to [`HEALTHCHECK_DEADLINE_CEILING`] so the `Instant` add at the
-/// call site cannot panic.
+/// #956/#954 — the `/upgrade/apply` healthcheck deadline. Derived, not
+/// fixed: `2·effective_child_start_timeout + effective_child_stop_grace +
+/// 60s margin`, covering the full worst LEGITIMATE boot path (#954
+/// defect 2) — adoption window for a persisted `starting` child
+/// (≤ start timeout) + graceful reap on window lapse (≤ stop grace) +
+/// fresh cold start (≤ start timeout) — plus the post-boot margin. At
+/// defaults: 2·120 + 60 + 60 = 360s ≥ the 300s worst path; the previous
+/// `start + margin` derivation (180s) reached its deadline before the
+/// fresh spawn even began, firing rollback mid-legitimate-recovery. The
+/// healthcheck POLLS, so healthy boots return at first success — the only
+/// cost is slower rollback on genuinely dead boots, the correct trade
+/// (rolling back a live recovery destroys more than a slow rollback
+/// delays). Clamped to [`HEALTHCHECK_DEADLINE_CEILING`] so the `Instant`
+/// add at the call site cannot panic.
 fn healthcheck_deadline(cfg: &SupervisorConfig) -> Duration {
     effective_child_start_timeout(cfg)
+        .saturating_mul(2)
+        .saturating_add(effective_child_stop_grace(cfg))
         .saturating_add(HEALTHCHECK_MARGIN)
         .min(HEALTHCHECK_DEADLINE_CEILING)
 }
@@ -1397,14 +1462,149 @@ mod tests {
             effective,
             HEALTHCHECK_MARGIN
         );
-        // And raising the timeout raises the deadline (no fixed footgun).
+        // And raising the timeout raises the deadline (no fixed footgun) —
+        // #954: it now enters the derivation twice (window + fresh spawn).
         let raised = supervisor_config(
             args(&["--shared-codex-appserver-start-timeout-secs", "600"]),
             vec![],
         );
         assert_eq!(
             healthcheck_deadline(&raised),
-            Duration::from_secs(600).saturating_add(HEALTHCHECK_MARGIN)
+            Duration::from_secs(2 * 600)
+                .saturating_add(effective_child_stop_grace(&raised))
+                .saturating_add(HEALTHCHECK_MARGIN)
+        );
+    }
+
+    /// #954 defect 2 (failing-first, design test T13) — the boot the
+    /// healthcheck must survive is no longer one cold start: the worst
+    /// LEGITIMATE recovery is adoption window (≤ start timeout) + graceful
+    /// reap (≤ stop grace) + fresh cold start (≤ start timeout) = 300s at
+    /// defaults. The pre-#954 `start + margin` derivation (180s) fired
+    /// rollback mid-legitimate-recovery — certain at the boundary
+    /// (window 120 + reap 60 = 180s before the fresh spawn even begins).
+    #[test]
+    fn healthcheck_deadline_covers_adoption_window_reap_and_respawn_at_defaults() {
+        let cfg = supervisor_config(vec![], vec![]);
+        // Defaults: start timeout 120s, stop grace 60s.
+        let worst_path = Duration::from_secs(120 + 60 + 120);
+        assert!(
+            healthcheck_deadline(&cfg) >= worst_path.saturating_add(HEALTHCHECK_MARGIN),
+            "healthcheck deadline {:?} must cover the worst legitimate boot \
+             path {worst_path:?} (adoption window + graceful reap + fresh \
+             spawn) plus the {:?} margin",
+            healthcheck_deadline(&cfg),
+            HEALTHCHECK_MARGIN
+        );
+        // 2·120 + 60 + 60 = 360s at defaults.
+        assert_eq!(healthcheck_deadline(&cfg), Duration::from_secs(360));
+        // The derived form: both effective knobs enter the formula.
+        let start = effective_child_start_timeout(&cfg);
+        let grace = effective_child_stop_grace(&cfg);
+        assert_eq!(
+            healthcheck_deadline(&cfg),
+            start
+                .saturating_mul(2)
+                .saturating_add(grace)
+                .saturating_add(HEALTHCHECK_MARGIN)
+        );
+        // Raising the stop grace alone widens the deadline too.
+        let raised_grace = supervisor_config(
+            args(&["--shared-codex-appserver-stop-grace-secs", "300"]),
+            vec![],
+        );
+        assert_eq!(
+            healthcheck_deadline(&raised_grace),
+            start
+                .saturating_mul(2)
+                .saturating_add(Duration::from_secs(300))
+                .saturating_add(HEALTHCHECK_MARGIN)
+        );
+    }
+
+    /// #954 T13 — stop-grace precedence chain, mirroring the start-timeout
+    /// cases: flag (both syntaxes, duplicates last-wins) → `child_envs`
+    /// (duplicates last-win) → ambient env → mirrored default; unparseable
+    /// values fall back to the default at every level.
+    #[test]
+    fn effective_stop_grace_defaults_to_mirrored_calm_server_default() {
+        assert_eq!(
+            effective_child_stop_grace_from(&[], &[], None),
+            Duration::from_secs(CALM_STOP_GRACE_DEFAULT_SECS)
+        );
+    }
+
+    #[test]
+    fn effective_stop_grace_flag_space_form_wins_over_env_and_ambient() {
+        let child_args = args(&["--shared-codex-appserver-stop-grace-secs", "90"]);
+        let child_envs = envs(&[("CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS", "45")]);
+        assert_eq!(
+            effective_child_stop_grace_from(&child_args, &child_envs, Some("30")),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn effective_stop_grace_flag_equals_form_wins_and_duplicates_last_win() {
+        let child_args = args(&["--shared-codex-appserver-stop-grace-secs=75"]);
+        assert_eq!(
+            effective_child_stop_grace_from(&child_args, &[], Some("30")),
+            Duration::from_secs(75)
+        );
+        let duplicated = args(&[
+            "--shared-codex-appserver-stop-grace-secs",
+            "90",
+            "--shared-codex-appserver-stop-grace-secs=120",
+        ]);
+        assert_eq!(
+            effective_child_stop_grace_from(&duplicated, &[], None),
+            Duration::from_secs(120)
+        );
+        let reversed = args(&[
+            "--shared-codex-appserver-stop-grace-secs=120",
+            "--shared-codex-appserver-stop-grace-secs",
+            "90",
+        ]);
+        assert_eq!(
+            effective_child_stop_grace_from(&reversed, &[], None),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn effective_stop_grace_child_env_beats_ambient_and_duplicates_last_win() {
+        let child_envs = envs(&[
+            ("CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS", "45"),
+            ("CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS", "50"),
+        ]);
+        assert_eq!(
+            effective_child_stop_grace_from(&[], &child_envs, Some("30")),
+            Duration::from_secs(50)
+        );
+        // Ambient env used when nothing explicit.
+        assert_eq!(
+            effective_child_stop_grace_from(&[], &[], Some("30")),
+            Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn effective_stop_grace_unparseable_values_fall_back_to_default() {
+        let child_args = args(&["--shared-codex-appserver-stop-grace-secs", "soon"]);
+        let child_envs = envs(&[("CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS", "45")]);
+        assert_eq!(
+            effective_child_stop_grace_from(&child_args, &child_envs, None),
+            Duration::from_secs(CALM_STOP_GRACE_DEFAULT_SECS)
+        );
+        let dangling = args(&["--shared-codex-appserver-stop-grace-secs"]);
+        assert_eq!(
+            effective_child_stop_grace_from(&dangling, &[], None),
+            Duration::from_secs(CALM_STOP_GRACE_DEFAULT_SECS)
+        );
+        let bad_env = envs(&[("CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS", "12s")]);
+        assert_eq!(
+            effective_child_stop_grace_from(&[], &bad_env, None),
+            Duration::from_secs(CALM_STOP_GRACE_DEFAULT_SECS)
         );
     }
 
@@ -1519,6 +1719,20 @@ mod tests {
         assert_eq!(deadline, HEALTHCHECK_DEADLINE_CEILING);
         // The exact operation the healthcheck performs must not panic.
         let _ = tokio::time::Instant::now() + deadline;
+        // #954 — an extreme stop grace is clamped identically (saturating
+        // add inside the widened derivation, then the ceiling).
+        let extreme_grace = supervisor_config(
+            args(&[&format!(
+                "--shared-codex-appserver-stop-grace-secs={}",
+                u64::MAX
+            )]),
+            vec![],
+        );
+        assert_eq!(
+            healthcheck_deadline(&extreme_grace),
+            HEALTHCHECK_DEADLINE_CEILING
+        );
+        let _ = tokio::time::Instant::now() + healthcheck_deadline(&extreme_grace);
         // Ordinary deadlines are far below the ceiling — the clamp is
         // overflow protection, not a behavior change.
         let ordinary = supervisor_config(

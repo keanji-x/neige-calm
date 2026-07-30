@@ -161,6 +161,32 @@ pub struct Config {
     )]
     pub shared_codex_appserver_start_timeout_secs: u64,
 
+    /// #954 — stop-grace ceiling: after SIGTERM, how long the supervisor
+    /// waits for the shared codex app-server's verified exit before the
+    /// final group SIGKILL. Exit-driven, not a fixed sleep: a cooperative
+    /// daemon (handles SIGTERM, checkpoints, exits in <2s) pays its actual
+    /// exit time; only a wedged daemon pays the full grace. The default
+    /// (60) matches codex's own supervisor grace
+    /// (`app-server-daemon/src/backend/pid.rs` `STOP_GRACE_PERIOD`).
+    /// Validated 1..=600: 0 would silently restore the instant-SIGKILL
+    /// defect that armed codex's 900s backfill lease on 7/12 (#954); 600
+    /// is a documented sanity cap. Deliberately NOT tied to
+    /// `start_timeout` — shutdown/checkpoint time and cold-start time are
+    /// different budgets.
+    ///
+    /// #954 — the default (60) is mirrored by neige-app's
+    /// `CALM_STOP_GRACE_DEFAULT_SECS` (`crates/neige-app/src/apply.rs`),
+    /// which folds this setting (same clap precedence) into the
+    /// `/upgrade/apply` healthcheck deadline
+    /// (`2·start_timeout + stop_grace + margin`). Keep the two in sync.
+    #[arg(
+        long,
+        env = "CALM_SHARED_CODEX_APPSERVER_STOP_GRACE_SECS",
+        default_value_t = 60,
+        value_parser = clap::value_parser!(u64).range(1..=600)
+    )]
+    pub shared_codex_appserver_stop_grace_secs: u64,
+
     /// Log directory for the shared codex app-server child.
     #[arg(long, env = "CALM_SHARED_CODEX_APPSERVER_LOG_DIR")]
     pub shared_codex_appserver_log_dir: Option<PathBuf>,

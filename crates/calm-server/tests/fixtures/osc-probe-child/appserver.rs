@@ -17,11 +17,80 @@
 //! `turn/completed`).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::UnixListener;
 use tokio_tungstenite::tungstenite::Message;
+
+/// #954 — set by the `SIGTERM` handler installed in
+/// [`install_signal_fixture`]; a monitor thread turns it into the marker
+/// write + clean exit, keeping the handler itself async-signal-safe.
+static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
+}
+
+/// #954 graceful-termination knobs:
+///   * `FAKE_CODEX_IGNORE_SIGTERM`: model a wedged daemon — SIGTERM is
+///     ignored entirely, so only the grace-ceiling SIGKILL can end us.
+///   * `FAKE_CODEX_SIGTERM_MARKER` (+ `FAKE_CODEX_SIGTERM_EXIT_DELAY_MS`):
+///     model a cooperative daemon that checkpoints on SIGTERM — after the
+///     delay it writes the marker file and exits 0. The marker's existence
+///     proves the process was given the delay to shut down cleanly
+///     (an immediate SIGKILL chaser would kill it before the write).
+///
+/// Test-hygiene belt (#954: `kill_on_drop` and the supervisor `Drop` are
+/// gone, so nothing reaps a leaked fake daemon at test teardown anymore):
+/// unless `FAKE_CODEX_NO_PDEATHSIG` is set, ask the kernel to SIGKILL us
+/// when the spawning thread exits (per-test cleanup; tests that model
+/// launcher-death survival opt out explicitly).
+fn install_signal_fixture() {
+    if !env_flag("FAKE_CODEX_NO_PDEATHSIG") {
+        // SAFETY: prctl(PR_SET_PDEATHSIG) only affects this process.
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+        }
+    }
+    if env_flag("FAKE_CODEX_IGNORE_SIGTERM") {
+        // SAFETY: installing SIG_IGN for SIGTERM in this test fixture.
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
+        return;
+    }
+    let Ok(marker) = std::env::var("FAKE_CODEX_SIGTERM_MARKER") else {
+        return;
+    };
+    let delay = env_delay("FAKE_CODEX_SIGTERM_EXIT_DELAY_MS").unwrap_or_default();
+    // SAFETY: installing a handler that only stores an atomic flag.
+    unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            on_sigterm as *const () as usize as libc::sighandler_t,
+        );
+    }
+    std::thread::spawn(move || {
+        loop {
+            if SIGTERM_RECEIVED.load(Ordering::SeqCst) {
+                std::thread::sleep(delay);
+                let _ = std::fs::write(&marker, "sigterm");
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+    // #954 review D4 — readiness handshake: `FAKE_CODEX_HANDLER_READY_MARKER`
+    // is written only AFTER the SIGTERM handler and its monitor thread are
+    // armed, so tests wait on the marker instead of a fixed sleep (a loaded
+    // runner could otherwise deliver a belt TERM to a default-disposition
+    // process and kill it before the cooperative-shutdown marker write).
+    if let Ok(ready) = std::env::var("FAKE_CODEX_HANDLER_READY_MARKER") {
+        let _ = std::fs::write(ready, "armed");
+    }
+}
 
 /// Parse `--listen unix://<path>` out of argv.
 fn listen_sock_path() -> PathBuf {
@@ -42,6 +111,10 @@ fn listen_sock_path() -> PathBuf {
 /// the accept/serve loop until the connection closes or the process is
 /// killed (which is how the test reaps us).
 pub fn run_fake_app_server() {
+    // #954 — SIGTERM fixture + pdeathsig hygiene belt must be armed before
+    // any knob that parks the process (bind delay), so a never-binding
+    // child can still exercise graceful termination.
+    install_signal_fixture();
     // #949 cold-start knobs — model codex's state-db backfill window, where
     // the child is alive for a long time BEFORE the listen socket exists:
     //   * `FAKE_CODEX_EXIT_BEFORE_BIND_CODE`: exit with this code before the
