@@ -571,6 +571,7 @@ pub mod validation;
 pub mod wave_cove_cache;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
+pub mod report_backlinks;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;
