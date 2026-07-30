@@ -204,9 +204,9 @@ export function useWaveDetailQuery(
 
 export function useWaveBacklinksQuery(
   waveId: string | undefined | null,
-  opts?: Partial<UseQueryOptions<api.WaveBacklink[], Error>>,
+  opts?: Partial<UseQueryOptions<api.WaveBacklinksResponse, Error>>,
 ) {
-  return useQuery<api.WaveBacklink[], Error>({
+  return useQuery<api.WaveBacklinksResponse, Error>({
     ...waveBacklinksQueryOptions(waveId ?? ''),
     enabled: !!waveId,
     ...opts,

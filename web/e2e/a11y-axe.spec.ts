@@ -208,6 +208,22 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   // changes.
   const waveTitle = `axe wave ${Date.now()}`;
   const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  const source = await createWaveInCove(
+    page.request,
+    coveId,
+    `axe backlink source ${Date.now()}`,
+  );
+  const reportResponse = await page.request.post(
+    `/api/waves/${source.id}/report`,
+    {
+      data: {
+        summary: 'a11y backlink fixture',
+        body: `[Cited report](neige://wave/${wave.id})`,
+      },
+      headers: { 'content-type': 'application/json' },
+    },
+  );
+  expect(reportResponse.ok()).toBe(true);
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   return { coveId, waveId: wave.id };
@@ -270,6 +286,13 @@ test.describe('a11y · axe', () => {
         // scanning so the wave page's full role tree is in the DOM.
         // The trigger is glyph-only since #594; aria-label "Add card".
         await expect(page.getByRole('button', { name: /add card/i })).toBeVisible();
+        await page
+          .getByRole('button', { name: /grid view — switch to report view/i })
+          .click();
+        const backlinks = page.getByRole('region', { name: 'Backlinks' });
+        await expect(
+          backlinks.getByRole('link', { name: 'Cited report' }),
+        ).toBeVisible();
         await applyTheme(page, theme);
         const { violations } = await axe(page).analyze();
         expect(violations, formatViolations(violations)).toEqual([]);

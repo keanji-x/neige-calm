@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo } from 'react';
-import { Link } from '@tanstack/react-router';
+import { Link, useRouterState } from '@tanstack/react-router';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
 import { useWaveBacklinksQuery, useWaveFileContent } from '../api/queries';
-import type { WaveBacklink } from '../api/calm';
+import type { WaveBacklink, WaveBacklinksResponse } from '../api/calm';
 import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
@@ -15,7 +15,11 @@ import type {
   WaveReportCardData,
 } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
-import { ReportBlockView } from './report-blocks';
+import {
+  ReportBlockView,
+  ReportLink,
+  reportUrlTransform,
+} from './report-blocks';
 import { useWaveFsViewer } from '../wave-fs-viewers';
 import { EventLinePanel } from './EventLinePanel';
 import { SpecConversation, type ReportView } from './SpecConversation';
@@ -226,20 +230,19 @@ function ReportMarkdown({
   body: string;
   blocks?: ReportBlock[];
 }) {
+  const hash = useRouterState({
+    select: (state) => state.location.hash,
+  });
+
   useEffect(() => {
-    const scrollToBlock = () => {
-      const blockId = decodeHash(window.location.hash.slice(1));
-      if (!blockId) return;
-      const block = document.getElementById(blockId);
-      if (!block?.classList.contains('report-block')) return;
-      block.scrollIntoView();
-      block.classList.remove('report-block--highlight');
-      requestAnimationFrame(() => block.classList.add('report-block--highlight'));
-    };
-    scrollToBlock();
-    window.addEventListener('hashchange', scrollToBlock);
-    return () => window.removeEventListener('hashchange', scrollToBlock);
-  }, [blocks]);
+    const blockId = decodeHash(hash);
+    if (!blockId) return;
+    const block = document.getElementById(blockId);
+    if (!block?.classList.contains('report-block')) return;
+    block.scrollIntoView();
+    block.classList.remove('report-block--highlight');
+    requestAnimationFrame(() => block.classList.add('report-block--highlight'));
+  }, [hash]);
 
   if (blocks) {
     return (
@@ -252,13 +255,28 @@ function ReportMarkdown({
   }
   return (
     <div className="report-block report-prose calm-prose">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={reportUrlTransform}
+        components={{ a: ReportLink }}
+      >
+        {body}
+      </ReactMarkdown>
     </div>
   );
 }
 
-function BacklinksPanel({ backlinks }: { backlinks: WaveBacklink[] }) {
+function BacklinksPanel({
+  waveId: currentWaveId,
+  page,
+  error,
+}: {
+  waveId: string;
+  page?: WaveBacklinksResponse;
+  error: Error | null;
+}) {
   const groups = useMemo(() => {
+    const backlinks = page?.backlinks ?? [];
     const grouped = new Map<
       string,
       { title: string; entries: WaveBacklink[] }
@@ -268,18 +286,32 @@ function BacklinksPanel({ backlinks }: { backlinks: WaveBacklink[] }) {
       if (group) group.entries.push(backlink);
       else {
         grouped.set(backlink.src_wave_id, {
-          title: backlink.src_wave_title,
+          title:
+            backlink.src_wave_id === currentWaveId
+              ? 'This wave (self-reference)'
+              : backlink.src_wave_title,
           entries: [backlink],
         });
       }
     }
     return [...grouped.entries()];
-  }, [backlinks]);
+  }, [page?.backlinks, currentWaveId]);
 
-  if (groups.length === 0) return null;
+  if (groups.length === 0 && !error && !page?.omitted) return null;
   return (
-    <section className="report-backlinks" aria-label="Backlinks">
-      <h2>Backlinks</h2>
+    <section className="report-backlinks" aria-labelledby="report-backlinks-title">
+      <h2 id="report-backlinks-title">Backlinks</h2>
+      {error && (
+        <div role="alert" className="report-error">
+          Could not load backlinks: {formatApiError(error)}
+        </div>
+      )}
+      {!!page?.omitted && (
+        <p role="status">
+          {page.omitted} additional backlink{page.omitted === 1 ? '' : 's'} not
+          shown.
+        </p>
+      )}
       {groups.map(([waveId, group]) => (
         <div className="report-backlinks-group" key={waveId}>
           <h3>{group.title}</h3>
@@ -295,6 +327,12 @@ function BacklinksPanel({ backlinks }: { backlinks: WaveBacklink[] }) {
                 >
                   {entry.label}
                 </Link>
+                {entry.dst_block_id && (
+                  <span className="report-backlinks-target">
+                    {' '}
+                    · cites block {entry.dst_block_id}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -455,7 +493,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
               <ReportEmptyState />
             )}
             {selectedFilePath === 'report.md' && (
-              <BacklinksPanel backlinks={backlinksQ.data ?? []} />
+              <BacklinksPanel
+                waveId={wave.id}
+                page={backlinksQ.data}
+                error={backlinksQ.error}
+              />
             )}
           </article>
         </SpecConversation>

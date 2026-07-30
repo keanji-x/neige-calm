@@ -1929,6 +1929,11 @@ export interface components {
             /** Format: int64 */
             updated_at: number;
         };
+        /** @description A bounded page of report backlinks. */
+        WaveBacklinksResponse: {
+            backlinks: components["schemas"]["WaveBacklink"][];
+            omitted: number;
+        };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and
          *     any overlays scoped to the wave (status/progress badges) and its cards.
@@ -2296,6 +2301,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Card patch violates an invariant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Card not found */
@@ -4505,13 +4519,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Report links from other waves in the same cove */
+            /** @description Report links from waves in the same cove */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveBacklink"][];
+                    "application/json": components["schemas"]["WaveBacklinksResponse"];
                 };
             };
             /** @description Wave not found */

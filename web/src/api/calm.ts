@@ -35,7 +35,9 @@ export type WaveFsEntry =
 export type WaveFsContent =
   paths['/api/waves/{id}/files/cat']['get']['responses'][200]['content']['application/json'];
 export type WaveBacklink =
-  paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json'][number];
+  paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json']['backlinks'][number];
+export type WaveBacklinksResponse =
+  paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json'];
 
 export class CalmApiError extends Error {
   status: number;
@@ -179,7 +181,7 @@ export const createWave = (b: NewWaveBody) =>
 export const getWaveDetail = (id: string) =>
   request<KernelWaveDetail>('GET', `/api/waves/${encodeURIComponent(id)}`);
 export const getWaveBacklinks = (id: string) =>
-  request<WaveBacklink[]>(
+  request<WaveBacklinksResponse>(
     'GET',
     `/api/waves/${encodeURIComponent(id)}/backlinks`,
   );

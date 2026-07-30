@@ -33,6 +33,18 @@ import { DARK_THEME_RGB } from '../api/themeRgb';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import type { KernelOverlay, NewOverlayBody } from '../api/wire';
 
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>();
+  return {
+    ...actual,
+    useRouterState: <T,>({
+      select,
+    }: {
+      select: (state: { location: { hash: string } }) => T;
+    }) => select({ location: { hash: window.location.hash.slice(1) } }),
+  };
+});
+
 // WaveGrid is lazy-loaded via React.lazy + an internal dynamic import.
 // For these tests we never actually render any cards, but the Suspense
 // fallback still needs to resolve. Stub the module to a trivial component.

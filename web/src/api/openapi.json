@@ -141,6 +141,16 @@
               }
             }
           },
+          "400": {
+            "description": "Card patch violates an invariant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Card not found",
             "content": {
@@ -2920,14 +2930,11 @@
         ],
         "responses": {
           "200": {
-            "description": "Report links from other waves in the same cove",
+            "description": "Report links from waves in the same cove",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/WaveBacklink"
-                  }
+                  "$ref": "#/components/schemas/WaveBacklinksResponse"
                 }
               }
             }
@@ -5472,6 +5479,26 @@
           "updated_at": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "WaveBacklinksResponse": {
+        "type": "object",
+        "description": "A bounded page of report backlinks.",
+        "required": [
+          "backlinks",
+          "omitted"
+        ],
+        "properties": {
+          "backlinks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveBacklink"
+            }
+          },
+          "omitted": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

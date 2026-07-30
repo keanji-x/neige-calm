@@ -39,6 +39,11 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
     }) => (
       <a href={`/wave/${params.waveId}${hash ? `#${hash}` : ''}`}>{children}</a>
     ),
+    useRouterState: <T,>({
+      select,
+    }: {
+      select: (state: { location: { hash: string } }) => T;
+    }) => select({ location: { hash: window.location.hash.slice(1) } }),
   };
 });
 
@@ -193,7 +198,8 @@ afterEach(() => {
 describe('WaveReportPage', () => {
   beforeEach(() => {
     mockUseWaveBacklinksQuery.mockReturnValue({
-      data: [],
+      data: { backlinks: [], omitted: 0 },
+      error: null,
     } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
     mockUseOverlaysByKindQuery.mockReturnValue({
       data: [],
@@ -1660,30 +1666,30 @@ describe('WaveReportPage', () => {
 
   it('renders backlinks grouped by source wave with source block anchors', () => {
     mockUseWaveBacklinksQuery.mockReturnValue({
-      data: [
-        {
+      data: {
+        backlinks: [{
           src_wave_id: 'wave_a',
           src_wave_title: 'Alpha',
           src_block_id: 'b_a1',
           dst_block_id: 'b_here',
           label: 'First mention',
           updated_at: 1,
-        },
-        {
+        }, {
           src_wave_id: 'wave_a',
           src_wave_title: 'Alpha',
           src_block_id: 'b_a2',
           label: 'Second mention',
           updated_at: 2,
-        },
-        {
+        }, {
           src_wave_id: 'wave_b',
           src_wave_title: 'Beta',
           src_block_id: 'b_b1',
           label: 'Another source',
           updated_at: 3,
-        },
-      ],
+        }],
+        omitted: 2,
+      },
+      error: null,
     } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
 
     render(
@@ -1693,6 +1699,8 @@ describe('WaveReportPage', () => {
     const panel = screen.getByRole('region', { name: 'Backlinks' });
     expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
     expect(within(panel).getByText('Beta')).toBeInTheDocument();
+    expect(within(panel).getByText('2 additional backlinks not shown.')).toBeInTheDocument();
+    expect(within(panel).getByText(/cites block b_here/)).toBeInTheDocument();
     expect(within(panel).getByRole('link', { name: 'First mention' })).toHaveAttribute(
       'href',
       '/wave/wave_a#b_a1',
@@ -1701,6 +1709,77 @@ describe('WaveReportPage', () => {
       'href',
       '/wave/wave_b#b_b1',
     );
+  });
+
+  it('labels self-references distinctly', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: {
+        backlinks: [{
+          src_wave_id: 'wave_1',
+          src_wave_title: 'Spec wave',
+          src_block_id: 'b_source',
+          dst_block_id: 'b_target',
+          label: 'Self citation',
+          updated_at: 1,
+        }],
+        omitted: 0,
+      },
+      error: null,
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />);
+    expect(screen.getByText('This wave (self-reference)')).toBeInTheDocument();
+  });
+
+  it('surfaces backlink loading errors inline', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: undefined,
+      error: new Error('server unavailable'),
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />);
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Could not load backlinks: server unavailable',
+    );
+  });
+
+  it('renders a neige link in a flat-body report as an in-app link', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('[Target](neige://wave/wave_2#b_target)')]}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Target' })).toHaveAttribute(
+      'href',
+      '/wave/wave_2#b_target',
+    );
+  });
+
+  it('does not scroll again when only the blocks array identity changes', () => {
+    window.history.replaceState(null, '', '#b_present');
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const block = {
+      id: 'b_present',
+      kind: 'prose' as const,
+      rev: 1,
+      payload: { markdown: 'Present block' },
+    };
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('fallback', { blocks: [block] })]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('fallback', { blocks: [{ ...block }] })]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
   it('renders no backlinks panel when the result is empty', () => {

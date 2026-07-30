@@ -36,10 +36,12 @@ function UnsupportedBlock({ block }: { block: ReportBlock }) {
 }
 
 export function reportUrlTransform(url: string): string {
-  return url.startsWith('neige:') ? url : defaultUrlTransform(url);
+  return /^neige:\/\/wave\/[^/?#]+(?:#[^#]+)?$/.test(url)
+    ? url
+    : defaultUrlTransform(url);
 }
 
-function ReportLink({
+export function ReportLink({
   href,
   children,
 }: React.ComponentPropsWithoutRef<'a'>) {

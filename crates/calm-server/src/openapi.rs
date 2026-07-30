@@ -38,7 +38,8 @@ use crate::routes::threads::ThreadCardResolution;
 use crate::routes::today::TodayLaunchpad;
 use crate::routes::version::VersionInfo;
 use crate::routes::waves::{
-    UpdateWaveReportBody, WaveBacklink, WaveFsCatQuery, WaveFsLsQuery, WavesWindowQuery,
+    UpdateWaveReportBody, WaveBacklink, WaveBacklinksResponse, WaveFsCatQuery, WaveFsLsQuery,
+    WavesWindowQuery,
 };
 use crate::wave_fs_dto::{
     WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
@@ -151,6 +152,7 @@ use utoipa::OpenApi;
         WaveFsEntry,
         WaveFsContent,
         WaveBacklink,
+        WaveBacklinksResponse,
         WaveFsCardMeta,
         WaveFsRunStatus,
         WaveFsRunVerdictSummary,

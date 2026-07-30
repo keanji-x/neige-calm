@@ -1076,6 +1076,14 @@ pub struct WaveBacklink {
     pub updated_at: i64,
 }
 
+/// A bounded page of report backlinks.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct WaveBacklinksResponse {
+    pub backlinks: Vec<WaveBacklink>,
+    pub omitted: usize,
+}
+
 impl From<report_backlinks::Backlink> for WaveBacklink {
     fn from(value: report_backlinks::Backlink) -> Self {
         Self {
@@ -1095,7 +1103,7 @@ impl From<report_backlinks::Backlink> for WaveBacklink {
     tag = "waves",
     params(("id" = String, Path, description = "Wave id")),
     responses(
-        (status = 200, description = "Report links from other waves in the same cove", body = Vec<WaveBacklink>),
+        (status = 200, description = "Report links from waves in the same cove", body = WaveBacklinksResponse),
         (status = 404, description = "Wave not found", body = ErrorBody),
     ),
 )]
@@ -1104,22 +1112,14 @@ pub(crate) async fn get_wave_backlinks(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let page = report_backlinks::backlinks_for_wave(s.repo.as_ref(), &id).await?;
-    let mut response = Json(
-        page.backlinks
+    Ok(Json(WaveBacklinksResponse {
+        backlinks: page
+            .backlinks
             .into_iter()
             .map(WaveBacklink::from)
             .collect::<Vec<_>>(),
-    )
-    .into_response();
-    if page.omitted > 0 {
-        response.headers_mut().insert(
-            "x-calm-truncated-backlinks",
-            page.omitted.to_string().parse().map_err(|error| {
-                CalmError::Internal(format!("invalid backlink truncation header: {error}"))
-            })?,
-        );
-    }
-    Ok(response)
+        omitted: page.omitted,
+    }))
 }
 
 /// Request body for `POST /api/waves/:id/report`.

@@ -289,8 +289,9 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    let entries = body.as_array().unwrap();
+    let entries = body["backlinks"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
+    assert_eq!(body["omitted"], 0);
     assert_eq!(entries[0]["src_wave_id"], source_wave_id.as_str());
     assert_eq!(entries[0]["src_wave_title"], "report wave");
     assert_eq!(entries[0]["src_block_id"], source_block_id);

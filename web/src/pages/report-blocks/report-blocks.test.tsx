@@ -354,9 +354,18 @@ describe('prose report links', () => {
     const { container } = render(
       <ReportBlockView block={prose('[Unsafe](javascript:alert(1))')} />,
     );
-    expect(
-      container.querySelector('a')?.getAttribute('href')?.startsWith('javascript:'),
-    ).not.toBe(true);
+    const anchor = container.querySelector('a');
+    expect(anchor).not.toBeNull();
+    expect(anchor).toHaveAttribute('href', '');
+  });
+
+  it('neutralises invalid neige destinations', () => {
+    const { container } = render(
+      <ReportBlockView block={prose('[Unsafe](neige:javascript:alert(1))')} />,
+    );
+    const anchor = container.querySelector('a');
+    expect(anchor).not.toBeNull();
+    expect(anchor).toHaveAttribute('href', '');
   });
 });
 
