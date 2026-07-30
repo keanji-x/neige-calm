@@ -226,6 +226,43 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('answer').tagName).toBe('STRONG');
   });
 
+  it('renders derived prose blocks when present', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_0001',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '# Block title\n\nBlock **body**' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByRole('heading', { level: 1, name: 'Block title' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('body').tagName).toBe('STRONG');
+    expect(screen.queryByText('stale body')).not.toBeInTheDocument();
+  });
+
+  it('shows an explicit unsupported-version state', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('', { unsupportedVersion: 2 })]}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('版本不支持，请刷新');
+  });
+
   it('shows the duplicate banner and renders the lowest-sort report', () => {
     render(
       <WaveReportPage

@@ -17,8 +17,16 @@ export interface WaveReportCardData {
   id?: string;
   summary: string;
   body: string;
+  blocks?: ReportBlock[];
   updatedAt?: number;
   unsupportedVersion?: number;
+}
+
+export interface ReportBlock {
+  id: string;
+  kind: string;
+  rev: number;
+  payload: Record<string, unknown>;
 }
 
 /** Strict zod schema for the wire payload. `schemaVersion` may be
@@ -27,6 +35,16 @@ export const waveReportPayloadSchema = z.object({
   schemaVersion: z.number().int().optional(),
   summary: z.string(),
   body: z.string(),
+  blocks: z
+    .array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        rev: z.number().int(),
+        payload: z.record(z.string(), z.unknown()),
+      }),
+    )
+    .optional(),
 });
 
 export const WaveReportEntry: CardEntry<WaveReportCardData> = {
@@ -72,6 +90,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
       id: k.id,
       summary: parsed.data.summary,
       body: parsed.data.body,
+      blocks: parsed.data.blocks,
       updatedAt: k.updated_at,
     };
   },

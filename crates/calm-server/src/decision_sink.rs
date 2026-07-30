@@ -824,11 +824,7 @@ mod tests {
             cove_id: cove.id.as_str().to_string(),
             thread_id: "non-root-thread".to_string(),
         };
-        let next = WaveReportPayload {
-            schema_version: WaveReportPayload::SCHEMA_VERSION,
-            summary: "non-root summary".into(),
-            body: "# Goal\n\nnon-root body\n".into(),
-        };
+        let next = WaveReportPayload::new("non-root summary", "# Goal\n\nnon-root body\n");
         let warnings = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_registry().with(RecorderShadowWarnLayer {
             hits: Arc::clone(&warnings),
@@ -964,11 +960,7 @@ mod tests {
             cove_id: cove.id.as_str().to_string(),
             thread_id: "root-thread".to_string(),
         };
-        let next = WaveReportPayload {
-            schema_version: WaveReportPayload::SCHEMA_VERSION,
-            summary: "root summary".into(),
-            body: "# Goal\n\nroot body\n".into(),
-        };
+        let next = WaveReportPayload::new("root summary", "# Goal\n\nroot body\n");
 
         let updated = sink
             .commit_report_write(

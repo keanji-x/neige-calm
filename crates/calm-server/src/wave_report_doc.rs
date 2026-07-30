@@ -200,12 +200,10 @@ mod tests {
     use super::*;
 
     fn sample_payload() -> WaveReportPayload {
-        WaveReportPayload {
-            schema_version: WaveReportPayload::SCHEMA_VERSION,
-            summary: "spec agent did a thing".to_string(),
-            body: "# Goal\n\nReplace the foo with the bar.\n\n# Progress\n\nfoo->bar.\n"
-                .to_string(),
-        }
+        WaveReportPayload::new(
+            "spec agent did a thing",
+            "# Goal\n\nReplace the foo with the bar.\n\n# Progress\n\nfoo->bar.\n",
+        )
     }
 
     #[test]
@@ -229,11 +227,7 @@ mod tests {
         // The "agent hasn't written a summary yet" case — empty string
         // is a valid value (see WaveReportPayload doc); must round-trip
         // identically through the doc layer.
-        let payload = WaveReportPayload {
-            schema_version: 1,
-            summary: String::new(),
-            body: "# Goal\n".to_string(),
-        };
+        let payload = WaveReportPayload::new("", "# Goal\n");
         let mut doc = ReportDoc::from_payload(&payload);
         let bytes = doc.to_bytes();
         let reloaded = ReportDoc::from_bytes(&bytes).expect("round-trip load");
@@ -306,11 +300,7 @@ mod tests {
         // trimming bugs love to eat.
         let summary = "中文测试 🎉 🇨🇳";
         let body = "line1\r\nline2 中文 🎉 🇨🇳\r\n";
-        let payload = WaveReportPayload {
-            schema_version: 1,
-            summary: summary.to_string(),
-            body: body.to_string(),
-        };
+        let payload = WaveReportPayload::new(summary, body);
 
         let mut doc = ReportDoc::from_payload(&payload);
         let bytes = doc.to_bytes();
@@ -347,11 +337,7 @@ mod tests {
         // survive. PR1 itself never uses the merge path (the kernel
         // is single-writer), but proving this works pins the
         // foundation we're building toward.
-        let payload = WaveReportPayload {
-            schema_version: 1,
-            summary: "shared".to_string(),
-            body: "# A\n\nalpha\n\n# B\n\nbeta\n".to_string(),
-        };
+        let payload = WaveReportPayload::new("shared", "# A\n\nalpha\n\n# B\n\nbeta\n");
         let mut origin = ReportDoc::from_payload(&payload);
         let bytes = origin.to_bytes();
 

@@ -8,7 +8,10 @@ import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { useState } from '../shared/state';
 import { formatUpdatedAt } from '../shared/relativeTime';
-import type { WaveReportCardData } from '../cards/builtins/wave-report';
+import type {
+  ReportBlock,
+  WaveReportCardData,
+} from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
 import { useWaveFsViewer } from '../wave-fs-viewers';
 import { EventLinePanel } from './EventLinePanel';
@@ -100,14 +103,24 @@ function ReportEmptyState() {
   );
 }
 
+function UnsupportedReportVersionState() {
+  return (
+    <div className="report-empty report-error" role="alert">
+      版本不支持，请刷新
+    </div>
+  );
+}
+
 function ReportContent({
   waveId,
   path,
   reportCardBody,
+  reportCardBlocks,
 }: {
   waveId: string;
   path: string;
   reportCardBody?: string;
+  reportCardBlocks?: ReportBlock[];
 }) {
   const contentQ = useWaveFileContent(waveId, path, { enabled: true });
   const isReportMissing =
@@ -134,7 +147,7 @@ function ReportContent({
   if (contentQ.isLoading) {
     if (path === 'report.md' && isFetching) {
       return shouldFallbackToReportCard ? (
-        <ReportMarkdown body={reportCardBody ?? ''} />
+        <ReportMarkdown body={reportCardBody ?? ''} blocks={reportCardBlocks} />
       ) : (
         <ReportEmptyState />
       );
@@ -147,7 +160,7 @@ function ReportContent({
   }
 
   if (shouldFallbackToReportCard) {
-    return <ReportMarkdown body={reportCardBody ?? ''} />;
+    return <ReportMarkdown body={reportCardBody ?? ''} blocks={reportCardBlocks} />;
   }
 
   if (isReportUnavailable) {
@@ -163,7 +176,12 @@ function ReportContent({
   }
 
   if (contentQ.data.content_type === 'text/markdown') {
-    return <ReportMarkdown body={contentQ.data.content} />;
+    return (
+      <ReportMarkdown
+        body={contentQ.data.content}
+        blocks={path === 'report.md' ? reportCardBlocks : undefined}
+      />
+    );
   }
 
   if (isJsonContent(contentQ.data.content_type) && jsonViewer) {
@@ -190,7 +208,30 @@ function ReportContent({
   );
 }
 
-function ReportMarkdown({ body }: { body: string }) {
+function ReportMarkdown({
+  body,
+  blocks,
+}: {
+  body: string;
+  blocks?: ReportBlock[];
+}) {
+  if (blocks) {
+    return (
+      <>
+        {blocks.map((block) => {
+          const markdown =
+            block.kind === 'prose' && typeof block.payload.markdown === 'string'
+              ? block.payload.markdown
+              : '';
+          return (
+            <div className="report-prose calm-prose" key={block.id}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+            </div>
+          );
+        })}
+      </>
+    );
+  }
   return (
     <div className="report-prose calm-prose">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
@@ -334,11 +375,15 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             )}
             <h1 className="report-title">{title}</h1>
             <ReportByline report={reportCard} />
-            {hasReportCard || selectedFilePath !== 'report.md' ? (
+            {selectedFilePath === 'report.md' &&
+            reportCard?.unsupportedVersion != null ? (
+              <UnsupportedReportVersionState />
+            ) : hasReportCard || selectedFilePath !== 'report.md' ? (
               <ReportContent
                 waveId={wave.id}
                 path={selectedFilePath}
                 reportCardBody={reportCard?.body}
+                reportCardBlocks={reportCard?.blocks}
               />
             ) : (
               <ReportEmptyState />

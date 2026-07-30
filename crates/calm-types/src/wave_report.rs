@@ -9,6 +9,18 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
 
+/// A derived, addressable slice of a wave report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct ReportBlock {
+    pub id: String,
+    pub kind: String,
+    pub rev: u32,
+    #[ts(type = "unknown")]
+    pub payload: serde_json::Value,
+}
+
 /// The payload persisted in a wave-report card's `payload` JSON column.
 ///
 /// Wire shape (camelCase to match the rest of the kernel's payloads):
@@ -43,6 +55,10 @@ pub struct WaveReportPayload {
     /// splitting at H1 (`^# `) headings; the kernel does not interpret
     /// the structure.
     pub body: String,
+    /// Derived block cache. `body` remains the authoritative persisted
+    /// projection in schema v1, so older writers may safely omit this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<ReportBlock>>,
 }
 
 impl WaveReportPayload {
@@ -53,14 +69,19 @@ impl WaveReportPayload {
     /// `web/src/api/schemas.ts`.
     pub const SCHEMA_VERSION: u32 = 1;
 
+    pub fn new(summary: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            summary: summary.into(),
+            body: body.into(),
+            blocks: None,
+        }
+    }
+
     /// Canonical "wave was just minted; spec hasn't run yet" payload.
     /// Used by `routes::waves::create_wave` (PR B). Historical
     /// migration seeds stay frozen; freshly-minted waves use this copy.
     pub fn initial() -> Self {
-        Self {
-            schema_version: Self::SCHEMA_VERSION,
-            summary: String::new(),
-            body: "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n".to_string(),
-        }
+        Self::new("", "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
     }
 }

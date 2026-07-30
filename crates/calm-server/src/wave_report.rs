@@ -49,7 +49,8 @@ use std::sync::Arc;
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
 // (Tier-A persisted payload, TS-exported). Re-exported so the
 // `crate::wave_report::WaveReportPayload` path is unchanged.
-pub use calm_types::wave_report::WaveReportPayload;
+use calm_types::report_blocks::{reassign_ids, split_body};
+pub use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 
 // ---------------------------------------------------------------------------
 // Shared persist boundary (Issue #247 PR3)
@@ -297,11 +298,12 @@ pub(crate) async fn persist_report_with_shadow(
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache.
                 let (summary_after, body_after) = doc.project();
-                let projected_payload = WaveReportPayload {
-                    schema_version: WaveReportPayload::SCHEMA_VERSION,
-                    summary: summary_after.clone(),
-                    body: body_after.clone(),
-                };
+                let mut projected_payload =
+                    WaveReportPayload::new(summary_after.clone(), body_after.clone());
+                projected_payload.blocks = Some(reassign_ids(
+                    current_payload.blocks.as_deref().unwrap_or_default(),
+                    &split_body(&body_after),
+                ));
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -361,11 +363,7 @@ mod tests {
 
     #[test]
     fn serde_round_trip_camelcase_wire() {
-        let p = WaveReportPayload {
-            schema_version: 1,
-            summary: "hi".to_string(),
-            body: "# A\n\nb\n".to_string(),
-        };
+        let p = WaveReportPayload::new("hi", "# A\n\nb\n");
         let v = serde_json::to_value(&p).unwrap();
         // Wire shape: camelCase keys. A drift here would break the
         // frontend's zod schema silently — pin via this test.

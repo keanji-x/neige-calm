@@ -181,11 +181,10 @@ async fn report_write(
     };
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
-    let next_payload = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
-        summary: summary_override.unwrap_or_else(|| current.summary.clone()),
+    let next_payload = WaveReportPayload::new(
+        summary_override.unwrap_or_else(|| current.summary.clone()),
         body,
-    };
+    );
     commit_report_write_for_identity(
         &ctx,
         &identity,
@@ -310,11 +309,7 @@ async fn report_edit(
         current.body.replacen(&old_string, &new_string, 1)
     };
 
-    let next_payload = WaveReportPayload {
-        schema_version: WaveReportPayload::SCHEMA_VERSION,
-        summary: current.summary.clone(),
-        body: new_body,
-    };
+    let next_payload = WaveReportPayload::new(current.summary.clone(), new_body);
     commit_report_write_for_identity(
         &ctx,
         &identity,

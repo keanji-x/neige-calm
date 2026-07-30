@@ -33,3 +33,6 @@ ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 # `openapi.rs` document references. Plain feature set — `axum_extras` stays
 # in calm-server with the handlers.
 utoipa = "5"
+
+[dev-dependencies]
+proptest = "1"
