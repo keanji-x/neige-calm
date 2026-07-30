@@ -855,6 +855,40 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     expect(msg).not.toHaveTextContent('Request failed');
   });
 
+  it.each([
+    ['network', new TypeError('Failed to fetch')],
+    ['5xx', new CalmApiError(503, 'unavailable', 'try again later')],
+  ])(
+    'a %s failure cannot leave focus intent for a later unrelated refetch',
+    async (_kind, failure) => {
+      const list: PendingProposal[] = [proposal({ ops: [op] })];
+      mockList.mockImplementation(
+        () =>
+          ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
+            typeof useWaveProposalsQuery
+          >,
+      );
+      mockAccept.mockReturnValue(
+        stubMutation(() => Promise.reject(failure)) as unknown as ReturnType<
+          typeof useAcceptProposalMutation
+        >,
+      );
+      const { rerender } = render(
+        <ProposalsPanel waveId="w_1" blocks={blocks} />,
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Accept' }));
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Accept' })).toBeInTheDocument();
+
+      // Later, an unrelated refresh observes that someone else removed it.
+      list.length = 0;
+      rerender(<ProposalsPanel waveId="w_1" blocks={blocks} />);
+      const notice = await screen.findByRole('alert');
+      expect(notice).not.toHaveFocus();
+      expect(document.body).toHaveFocus();
+    },
+  );
+
   it('two fast clicks fire exactly one POST', async () => {
     // `isPending` only flips on the next render, so the `disabled` prop
     // cannot be the guard here.

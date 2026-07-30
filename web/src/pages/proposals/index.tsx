@@ -105,7 +105,7 @@ function ProposalCard({
   proposal: PendingProposal;
   blocks?: ReportBlock[];
   feedback: Feedback | null;
-  onOutcome: (outcome: Feedback | null) => void;
+  onOutcome: (outcome: Feedback | null, focusWasInside: boolean) => void;
 }) {
   const accept = useAcceptProposalMutation();
   const reject = useRejectProposalMutation();
@@ -114,6 +114,7 @@ function ProposalCard({
   // pass the `busy` check and fire two POSTs — the second one's 409 then
   // overwrites the user's own success. A synchronous ref closes the gap.
   const inFlight = useRef(false);
+  const cardRef = useRef<HTMLElement>(null);
   const busy = accept.isPending || reject.isPending;
   // Walking the ops (and canonicalizing every replace payload) is pure
   // work over two inputs — no reason to redo it on every keystroke-level
@@ -127,34 +128,45 @@ function ProposalCard({
   const onAccept = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
-    setFeedback(null);
+    const focusWasInside =
+      cardRef.current?.contains(document.activeElement) ?? false;
+    setFeedback(null, focusWasInside);
     try {
       const res = await accept.mutateAsync(vars);
       if (res.decision === 'accepted') {
-        setFeedback({
-          tone: 'ok',
-          text: 'Accepted — the report has been updated.',
-        });
+        setFeedback(
+          {
+            tone: 'ok',
+            text: 'Accepted — the report has been updated.',
+          },
+          focusWasInside,
+        );
       } else if (res.decision === 'stale') {
         // NOT an error: the kernel adjudicated, and the verdict was
         // "the document moved under this proposal" (§5.6).
-        setFeedback({
-          tone: 'warn',
-          text:
-            'Went stale — the report moved after this proposal was written, so nothing was applied and the report is unchanged.' +
-            (res.reason ? ` Kernel said: ${res.reason}` : ''),
-        });
+        setFeedback(
+          {
+            tone: 'warn',
+            text:
+              'Went stale — the report moved after this proposal was written, so nothing was applied and the report is unchanged.' +
+              (res.reason ? ` Kernel said: ${res.reason}` : ''),
+          },
+          focusWasInside,
+        );
       } else {
         // `rejected` / `withdrawn` from an ACCEPT is not a shape §5.6
         // produces. Say what came back rather than narrating a report
         // change that did not happen.
-        setFeedback({
-          tone: 'warn',
-          text: `The kernel recorded this proposal as "${res.decision}", not accepted — the report was not changed by this action.`,
-        });
+        setFeedback(
+          {
+            tone: 'warn',
+            text: `The kernel recorded this proposal as "${res.decision}", not accepted — the report was not changed by this action.`,
+          },
+          focusWasInside,
+        );
       }
     } catch (error) {
-      setFeedback(describeError(error));
+      setFeedback(describeError(error), focusWasInside);
     } finally {
       inFlight.current = false;
     }
@@ -163,15 +175,20 @@ function ProposalCard({
   const onReject = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
-    setFeedback(null);
+    const focusWasInside =
+      cardRef.current?.contains(document.activeElement) ?? false;
+    setFeedback(null, focusWasInside);
     try {
       await reject.mutateAsync(vars);
-      setFeedback({
-        tone: 'ok',
-        text: 'Rejected — the report is unchanged.',
-      });
+      setFeedback(
+        {
+          tone: 'ok',
+          text: 'Rejected — the report is unchanged.',
+        },
+        focusWasInside,
+      );
     } catch (error) {
-      setFeedback(describeError(error));
+      setFeedback(describeError(error), focusWasInside);
     } finally {
       inFlight.current = false;
     }
@@ -179,6 +196,7 @@ function ProposalCard({
 
   return (
     <article
+      ref={cardRef}
       className="pp-card"
       aria-label={`Proposal ${proposal.proposal_id} from ${proposal.plugin_id}`}
     >
@@ -263,13 +281,19 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
   const recordOutcome = (
     proposal: PendingProposal,
     outcome: Feedback | null,
+    focusWasInside: boolean,
   ) => {
-    // Focus follows the row only when the row is actually going away. A
-    // 400/403 leaves the proposal PENDING: no notice mounts, so the
-    // intent would sit here forever and a later background refetch that
-    // finally drops the row would yank focus while the user is elsewhere.
+    // Arm focus only from observed state: this action has produced an
+    // outcome, focus was in its row, and that row has actually left the
+    // pending set. Error classes cannot tell us whether a request
+    // committed, and retaining an intent while the row remains would let
+    // an unrelated later refetch steal focus.
     setFocusProposalId(
-      outcome && !outcome.staysPending ? proposal.proposal_id : null,
+      outcome &&
+        focusWasInside &&
+        !proposals.some((p) => p.proposal_id === proposal.proposal_id)
+        ? proposal.proposal_id
+        : null,
     );
     setOutcomes((current) => {
       const rest = current.filter(
@@ -368,7 +392,9 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
           feedback={
             outcomes.find((o) => o.proposalId === proposal.proposal_id) ?? null
           }
-          onOutcome={(outcome) => recordOutcome(proposal, outcome)}
+          onOutcome={(outcome, focusWasInside) =>
+            recordOutcome(proposal, outcome, focusWasInside)
+          }
         />
       ))}
     </section>
