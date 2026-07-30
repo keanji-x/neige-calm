@@ -37,7 +37,14 @@ export interface ProposalsPanelProps {
   blocks?: ReportBlock[];
 }
 
-type Feedback = { tone: 'ok' | 'warn' | 'error'; text: string };
+type Tone = 'ok' | 'warn' | 'error';
+type Feedback = { tone: Tone; text: string };
+/** A verdict the user just produced. Held at panel level on purpose: an
+ *  `accepted` / `stale` / `rejected` proposal leaves the pending list
+ *  immediately, and if the message lived on the card it would vanish with
+ *  it — taking the stale explanation ("your accept did nothing, and why")
+ *  with it. */
+type Outcome = Feedback & { proposalId: string; pluginId: string };
 
 function describeError(error: unknown): Feedback {
   if (error instanceof CalmApiError) {
@@ -75,13 +82,17 @@ function describeError(error: unknown): Feedback {
 function ProposalCard({
   proposal,
   blocks,
+  feedback,
+  onOutcome,
 }: {
   proposal: PendingProposal;
   blocks?: ReportBlock[];
+  feedback: Feedback | null;
+  onOutcome: (outcome: Feedback | null) => void;
 }) {
   const accept = useAcceptProposalMutation();
   const reject = useRejectProposalMutation();
-  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const setFeedback = onOutcome;
   const busy = accept.isPending || reject.isPending;
   const index = indexBlocks(blocks);
   const vars = { id: proposal.proposal_id, waveId: proposal.wave_id };
@@ -190,7 +201,29 @@ function ProposalCard({
 
 export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
   const query = useWaveProposalsQuery(waveId);
+  const [outcomes, setOutcomes] = useState<Outcome[]>([]);
   const proposals = query.data?.proposals ?? [];
+
+  const recordOutcome = (
+    proposal: PendingProposal,
+    outcome: Feedback | null,
+  ) => {
+    setOutcomes((current) => {
+      const rest = current.filter(
+        (o) => o.proposalId !== proposal.proposal_id,
+      );
+      return outcome
+        ? [
+            ...rest,
+            {
+              ...outcome,
+              proposalId: proposal.proposal_id,
+              pluginId: proposal.plugin_id,
+            },
+          ]
+        : rest;
+    });
+  };
 
   if (query.error) {
     return (
@@ -199,9 +232,16 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
       </div>
     );
   }
+
+  const pendingIds = new Set(proposals.map((p) => p.proposal_id));
+  // A resolved proposal is gone from the list, but its verdict is the
+  // whole point of having pressed the button — especially `stale`, whose
+  // message ("nothing was applied, and here is why") has no other home.
+  const notices = outcomes.filter((o) => !pendingIds.has(o.proposalId));
+
   // Empty state is *no* state: an adjudication surface with nothing to
   // adjudicate is noise on every report the channel never touches.
-  if (proposals.length === 0) return null;
+  if (proposals.length === 0 && notices.length === 0) return null;
 
   return (
     <section className="pp-panel" aria-label="App proposals awaiting review">
@@ -212,11 +252,35 @@ export function ProposalsPanel({ waveId, blocks }: ProposalsPanelProps) {
       <p className="pp-panel-hint">
         These are proposed by apps and change nothing until you accept them.
       </p>
+      {notices.map((notice) => (
+        <p
+          key={notice.proposalId}
+          className={`pp-feedback pp-feedback--${notice.tone}`}
+          role={notice.tone === 'ok' ? 'status' : 'alert'}
+        >
+          <span className="pp-plugin">{notice.pluginId}</span> {notice.text}
+          <button
+            type="button"
+            className="pp-dismiss"
+            onClick={() =>
+              setOutcomes((current) =>
+                current.filter((o) => o.proposalId !== notice.proposalId),
+              )
+            }
+          >
+            Dismiss
+          </button>
+        </p>
+      ))}
       {proposals.map((proposal) => (
         <ProposalCard
           key={proposal.proposal_id}
           proposal={proposal}
           blocks={blocks}
+          feedback={
+            outcomes.find((o) => o.proposalId === proposal.proposal_id) ?? null
+          }
+          onOutcome={(outcome) => recordOutcome(proposal, outcome)}
         />
       ))}
     </section>

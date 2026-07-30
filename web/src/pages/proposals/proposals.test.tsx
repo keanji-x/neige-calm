@@ -351,6 +351,34 @@ describe('ProposalsPanel — accept/reject outcomes', () => {
     );
   });
 
+  it('keeps the stale explanation visible after the row leaves the pending list', async () => {
+    // The resolved proposal disappears from the list on the next fetch —
+    // the verdict must not disappear with it.
+    const list: PendingProposal[] = [proposal({ ops: [op] })];
+    mockList.mockImplementation(
+      () =>
+        ({ data: { proposals: list }, error: null }) as unknown as ReturnType<
+          typeof useWaveProposalsQuery
+        >,
+    );
+    mockAccept.mockReturnValue(
+      stubMutation(() => {
+        list.length = 0;
+        return Promise.resolve({ decision: 'stale', reason: 'heads moved' });
+      }) as unknown as ReturnType<typeof useAcceptProposalMutation>,
+    );
+    render(<ProposalsPanel waveId="w_1" blocks={blocks} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Accept' }));
+    const msg = await screen.findByRole('alert');
+    expect(msg).toHaveTextContent('Went stale');
+    expect(msg).toHaveTextContent('heads moved');
+    expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    // Nothing pending and nothing to report → the panel is gone entirely.
+    expect(screen.queryByLabelText('App proposals awaiting review')).toBeNull();
+  });
+
   it('both buttons are keyboard-operable', async () => {
     const stub = stubMutation(() => Promise.resolve({ decision: 'accepted' }));
     mockAccept.mockReturnValue(
