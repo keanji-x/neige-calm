@@ -200,7 +200,7 @@ afterEach(() => {
 describe('WaveReportPage', () => {
   beforeEach(() => {
     mockUseWaveBacklinksQuery.mockReturnValue({
-      data: { backlinks: [], omitted: 0 },
+      data: { backlinks: [], truncated: false, skipped_sources: 0 },
       error: null,
     } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
     mockUseOverlaysByKindQuery.mockReturnValue({
@@ -1689,7 +1689,7 @@ describe('WaveReportPage', () => {
           label: 'Another source',
           updated_at: 3,
         }],
-        omitted: 2,
+        truncated: true,
         skipped_sources: 1,
       },
       error: null,
@@ -1716,7 +1716,9 @@ describe('WaveReportPage', () => {
     const panel = screen.getByRole('region', { name: 'Backlinks' });
     expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
     expect(within(panel).getByText('Beta')).toBeInTheDocument();
-    expect(within(panel).getByText('2 additional backlinks not shown.')).toBeInTheDocument();
+    expect(
+      within(panel).getByText('Some backlinks are not shown.'),
+    ).toBeInTheDocument();
     expect(
       within(panel).getByText(
         'Backlinks from 1 source report could not be loaded.',
@@ -1744,7 +1746,8 @@ describe('WaveReportPage', () => {
           label: 'Self citation',
           updated_at: 1,
         }],
-        omitted: 0,
+        truncated: false,
+        skipped_sources: 0,
       },
       error: null,
     } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
@@ -1764,7 +1767,7 @@ describe('WaveReportPage', () => {
           label: 'Legacy target',
           updated_at: 1,
         }],
-        omitted: 0,
+        truncated: false,
         skipped_sources: 0,
       },
       error: null,

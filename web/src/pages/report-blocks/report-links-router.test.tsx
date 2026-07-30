@@ -7,10 +7,38 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ReportBlock } from '../../cards/builtins/wave-report';
-import { ReportMarkdown } from '../WaveReportPage';
+import type { WaveCardSlot } from '../../types';
+import { WaveReportPage } from '../WaveReportPage';
 import { ReportBlockView } from './index';
+
+vi.mock('../../api/queries', () => ({
+  useOverlaysByKindQuery: vi.fn(() => ({ data: [] })),
+  useWaveBacklinksQuery: vi.fn(() => ({
+    data: { backlinks: [], truncated: false, skipped_sources: 0 },
+    error: null,
+  })),
+  useWaveFileContent: vi.fn(() => ({
+    data: undefined,
+    error: new TypeError('Failed to parse URL from /api/waves/wave_1/fs/report.md'),
+    isLoading: false,
+  })),
+  useWaveFileList: vi.fn(() => ({
+    data: [],
+    error: null,
+    isLoading: false,
+  })),
+}));
+
+vi.mock('../../cards/useCardOverlay', () => ({
+  useCardOverlay: vi.fn(() => null),
+}));
+
+vi.mock('../useEventLineEntries', () => ({
+  useAnyRuntimeLive: vi.fn(() => false),
+  useEventLineEntries: vi.fn(() => []),
+}));
 
 describe('report links with the real router', () => {
   it('resolves the route path, basepath, params, and hash from Link.to', async () => {
@@ -59,7 +87,34 @@ describe('report links with the real router', () => {
       getParentRoute: () => rootRoute,
       path: '/',
       component: () => (
-        <ReportMarkdown body="[Flat target](neige://wave/wave_3#b_1f3a)" />
+        <WaveReportPage
+          wave={{
+            id: 'wave_1',
+            coveId: 'cove_1',
+            title: 'Flat report',
+            lifecycle: 'draft',
+            anyCardNeedsInput: false,
+            progress: 0,
+            eta: '',
+            now: '',
+            createdAt: 0,
+            terminalAt: null,
+            pinnedAt: null,
+            cards: [],
+          }}
+          cards={[
+            {
+              kind: 'card',
+              card: {
+                type: 'wave-report',
+                id: 'report_1',
+                summary: '',
+                body: '[Flat target](neige://wave/wave_3#b_1f3a)',
+              },
+              deletable: false,
+            } as WaveCardSlot,
+          ]}
+        />
       ),
     });
     const waveRoute = createRoute({

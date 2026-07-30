@@ -303,7 +303,7 @@ function BacklinksPanel({
   if (
     groups.length === 0 &&
     !error &&
-    !page?.omitted &&
+    !page?.truncated &&
     !page?.skipped_sources
   )
     return null;
@@ -315,11 +315,8 @@ function BacklinksPanel({
           Could not load backlinks: {formatApiError(error)}
         </div>
       )}
-      {!!page?.omitted && (
-        <p role="status">
-          {page.omitted} additional backlink{page.omitted === 1 ? '' : 's'} not
-          shown.
-        </p>
+      {page?.truncated && (
+        <p role="status">Some backlinks are not shown.</p>
       )}
       {!!page?.skipped_sources && (
         <p role="status">

@@ -5487,7 +5487,7 @@
         "description": "A bounded page of report backlinks.",
         "required": [
           "backlinks",
-          "omitted",
+          "truncated",
           "skipped_sources"
         ],
         "properties": {
@@ -5497,13 +5497,12 @@
               "$ref": "#/components/schemas/WaveBacklink"
             }
           },
-          "omitted": {
-            "type": "integer",
-            "minimum": 0
-          },
           "skipped_sources": {
             "type": "integer",
             "minimum": 0
+          },
+          "truncated": {
+            "type": "boolean"
           }
         }
       },

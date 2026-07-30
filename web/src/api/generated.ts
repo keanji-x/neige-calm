@@ -1932,8 +1932,8 @@ export interface components {
         /** @description A bounded page of report backlinks. */
         WaveBacklinksResponse: {
             backlinks: components["schemas"]["WaveBacklink"][];
-            omitted: number;
             skipped_sources: number;
+            truncated: boolean;
         };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and
