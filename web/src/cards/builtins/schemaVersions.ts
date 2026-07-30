@@ -10,8 +10,11 @@
 // newer frontend stamping a future version against an older kernel is
 // rejected with a clear error.
 //
-// Reads use the helper below: missing field is `1`, since `1` is the
-// only version that exists today across all kernel-owned kinds.
+// Reads use the helper below: missing field is `1`, since every kind
+// started at version `1` — rows written before the field existed (or by
+// a v1 writer) can only be v1. `wave-report` is at v2 since #960 PR2;
+// its reader only rejects versions above the supported constant — v1 and
+// v2 rows share the same optional-blocks parser.
 
 /** `schemaVersion` for `kind: "terminal"` card payloads. */
 export const TERMINAL_PAYLOAD_SCHEMA_VERSION = 1;
@@ -41,11 +44,12 @@ export const OVERLAY_VIEW_MODE_SCHEMA_VERSION = 1;
 
 /**
  * Read `schemaVersion` from a kernel-owned payload. Returns `1` when the
- * field is absent or not a number — version `1` is the only version
- * that has ever shipped, so absent-as-1 is unambiguous and stays
- * backward-compatible with rows written before this field existed.
+ * field is absent or not a number — every kind started at version `1`
+ * and writers have stamped the field ever since, so an absent field can
+ * only mean a v1-era row; absent-as-1 stays unambiguous even now that
+ * `wave-report` is at v2 (#960 PR2 — v2 writers always stamp `2`).
  *
- * Migrators will live here when v2 is introduced.
+ * Migrators (if any kind ever needs an in-place upgrade) will live here.
  */
 export function payloadSchemaVersion(payload: unknown): number {
   if (
