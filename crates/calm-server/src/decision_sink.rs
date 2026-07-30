@@ -442,8 +442,13 @@ impl CardDecisionSink {
             lifecycle,
             true,
             Some(recorder_shadow),
+            // #955 §5.6 — not the proposal-accept path; spec/user edits
+            // resolve nothing.
+            None,
         )
-        .await
+        .await?
+        // Not the proposal path ⇒ the outcome is always `Written`.
+        .into_written()
     }
 }
 

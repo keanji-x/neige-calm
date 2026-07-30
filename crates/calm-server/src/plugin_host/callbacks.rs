@@ -83,7 +83,7 @@ impl<'a> CallbackCtx<'a> {
     /// owned `Option<String>` so callers can borrow into the
     /// `Option<&str>` shape `write_with_event_typed`/`log_pure_event`
     /// expect. Allocation is skipped entirely when `call_id` is None.
-    fn correlation(&self) -> Option<String> {
+    pub(super) fn correlation(&self) -> Option<String> {
         self.call_id.map(|c| format!("user_tool_call:{c}"))
     }
 
@@ -199,6 +199,15 @@ pub async fn dispatch(
         "neige.kv.set" => kv_set(ctx, params).await,
         "neige.kv.list" => kv_list(ctx, params).await,
         "neige.kv.delete" => kv_delete(ctx, params).await,
+        // #955 §5.2 — ④ proposal channel. All three gate on
+        // `permissions.proposals`; implementations live in
+        // `callbacks_proposal` (this file is already at its size ceiling
+        // and the proposal trio is one cohesive surface).
+        "neige.report.get" => super::callbacks_proposal::report_get(ctx, params).await,
+        "neige.proposal.submit" => super::callbacks_proposal::proposal_submit(ctx, params).await,
+        "neige.proposal.withdraw" => {
+            super::callbacks_proposal::proposal_withdraw(ctx, params).await
+        }
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -210,31 +219,53 @@ pub async fn dispatch(
 /// Parse `params` into a per-method struct. Surfaces a JSON-RPC InvalidParams
 /// error with the serde message attached so plugins see exactly which field
 /// failed.
-fn parse_params<T: for<'de> Deserialize<'de>>(method: &str, params: &Value) -> Result<T, RpcError> {
+pub(super) fn parse_params<T: for<'de> Deserialize<'de>>(
+    method: &str,
+    params: &Value,
+) -> Result<T, RpcError> {
     serde_json::from_value::<T>(params.clone())
         .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
 }
 
-fn permission_denied(why: impl Into<String>) -> RpcError {
+/// `InvalidParams` for a rule the serde shape cannot express (a required
+/// field that is present but empty, an unknown enum-ish string, a
+/// cross-field rule). Same code as [`parse_params`]'s failure so plugins
+/// see one "your request was malformed" class.
+pub(super) fn invalid_params_for(method: &str, why: impl std::fmt::Display) -> RpcError {
+    RpcError::invalid_params(format!("{method}: {why}"))
+}
+
+pub(super) fn permission_denied(why: impl Into<String>) -> RpcError {
     RpcError::custom(-32001, why)
 }
 
-fn entity_not_found(what: impl Into<String>) -> RpcError {
+pub(super) fn entity_not_found(what: impl Into<String>) -> RpcError {
     RpcError::custom(-32004, what)
 }
 
-fn quota_exceeded(why: impl Into<String>) -> RpcError {
+pub(super) fn quota_exceeded(why: impl Into<String>) -> RpcError {
     RpcError::custom(-32003, why)
 }
 
-fn internal_repo_err(e: impl std::fmt::Display) -> RpcError {
+/// The RPC counterpart of HTTP 409 — a state precondition the caller can
+/// observe and retry against (e.g. #955's "this proposal is no longer
+/// pending"). Matches the code the MCP tool layer already uses for
+/// `CalmError::Conflict` (`mcp_server::tools`), so one conflict class
+/// spans both agent- and plugin-facing surfaces.
+pub(super) fn rpc_conflict(why: impl Into<String>) -> RpcError {
+    RpcError::custom(-32409, why)
+}
+
+pub(super) fn internal_repo_err(e: impl std::fmt::Display) -> RpcError {
     RpcError::internal(format!("repo: {e}"))
 }
 
 /// Look up the plugin's manifest from the registry. A missing manifest at this
 /// point would mean the plugin was uninstalled mid-connection — we treat it as
 /// an internal error since the supervisor should have stopped the process.
-fn manifest_permissions(ctx: &CallbackCtx<'_>) -> Result<super::manifest::Permissions, RpcError> {
+pub(super) fn manifest_permissions(
+    ctx: &CallbackCtx<'_>,
+) -> Result<super::manifest::Permissions, RpcError> {
     ctx.registry
         .get(ctx.plugin_id)
         .map(|m| m.permissions)

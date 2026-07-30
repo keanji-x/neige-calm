@@ -3,6 +3,8 @@ mod support;
 
 #[path = "cases/http_wave_file.rs"]
 mod http_wave_file;
+#[path = "cases/proposal_channel.rs"]
+mod proposal_channel;
 #[path = "cases/rest_wave_report.rs"]
 mod rest_wave_report;
 #[path = "cases/wave_create_sync_daemon.rs"]

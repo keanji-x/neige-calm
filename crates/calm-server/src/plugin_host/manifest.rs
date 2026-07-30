@@ -247,6 +247,13 @@ pub struct WorkflowDescriptor {
     pub input_schema: Option<Value>,
 }
 
+/// Issue #955 §5.2 — every proposal `subject.kind` the kernel accepts.
+/// `subject.kind` is the ④ channel's single extension point (design D2:
+/// report-only today, wire shape unchanged when a second kind lands), so
+/// this array is simultaneously the manifest allow-list vocabulary and
+/// the `neige.proposal.submit` subject validator.
+pub const PROPOSAL_SUBJECT_KINDS: &[&str] = &["report"];
+
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
 /// layer (Slice C). Defaults are the most-restrictive (nothing granted).
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -267,6 +274,16 @@ pub struct Permissions {
     /// Event-topic globs the plugin may subscribe to. Empty = no events.
     #[serde(default)]
     pub events_subscribe: Vec<String>,
+
+    /// Issue #955 §5.2 — proposal-subject kinds the plugin may propose
+    /// against. Allow-list, no globs, **deny by default**: an empty (or
+    /// absent) list closes the whole ④ channel, so all three of
+    /// `neige.report.get` / `neige.proposal.submit` /
+    /// `neige.proposal.withdraw` refuse. `"report"` is the only kind
+    /// the kernel knows today ([`PROPOSAL_SUBJECT_KINDS`]) — `subject.kind`
+    /// is the wire's single extension point (design D2).
+    #[serde(default)]
+    pub proposals: Vec<String>,
 
     /// Per-plugin KV store cap in bytes. Slice C enforces; 0 = no KV access.
     #[serde(default)]
@@ -627,6 +644,24 @@ impl Permissions {
                 return Err(ManifestError::invalid(
                     format!("permissions.events_subscribe[{i}]"),
                     "topic glob must be non-empty",
+                ));
+            }
+        }
+        // Issue #955 §5.2 — proposals is an allow-list of *known* subject
+        // kinds, rejected at parse time. A typo'd kind would otherwise be
+        // a silently dead grant (`can_propose` compares literally), and
+        // wildcards are deliberately unsupported: new kinds must be
+        // granted explicitly as they land.
+        for (i, kind) in self.proposals.iter().enumerate() {
+            if !PROPOSAL_SUBJECT_KINDS.contains(&kind.as_str()) {
+                return Err(ManifestError::invalid(
+                    format!("permissions.proposals[{i}]"),
+                    format!(
+                        "must be one of [{}]; got `{kind}` (proposal subject kinds \
+                         are kernel-defined — see docs/architecture/\
+                         955-kernel-app-boundary.md §5.2)",
+                        PROPOSAL_SUBJECT_KINDS.join(", ")
+                    ),
                 ));
             }
         }

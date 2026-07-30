@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use utoipa::ToSchema;
 
 /// How a pending proposal was resolved. Two events, four decisions
 /// (design §5.6): `accepted` / `rejected` / `stale` are user-driven
@@ -25,7 +26,7 @@ use ts_rs::TS;
 ///
 /// Wire shape: bare lowercase string (matches the surrounding
 /// event-payload enum conventions, e.g. `EditAuthor`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum ProposalDecision {
@@ -66,7 +67,7 @@ impl ProposalDecision {
 /// `{"after_block_id": "b_0001"}` on the wire; `after_block_id` may
 /// reference a block created earlier in the same proposal via the
 /// `temp:<temp_id>` form.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(rename_all = "snake_case")]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum ProposalAnchor {
@@ -90,7 +91,7 @@ pub enum ProposalAnchor {
 /// one of `block_id` / `temp_id`, anchor mandatory for creations) are
 /// enforced by the PR-b submit handler; the wire type keeps them
 /// `Option` only where two legal shapes share a variant.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 #[ts(export, export_to = "web/src/api/generated-events.ts")]
 pub enum ProposalOp {
@@ -109,6 +110,7 @@ pub enum ProposalOp {
         temp_id: Option<String>,
         kind: String,
         #[ts(type = "unknown")]
+        #[schema(value_type = Object)]
         payload: serde_json::Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
