@@ -45,7 +45,7 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::WaveId;
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::model::{CardPatch, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -196,6 +196,112 @@ async fn login(app: &axum::Router) -> String {
     let first = raw.split(';').next().unwrap();
     assert!(first.starts_with(&format!("{SESSION_COOKIE}=")));
     first.to_string()
+}
+
+#[tokio::test]
+async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
+    let boot = boot().await;
+    let source_wave_id = boot.wave_id.clone();
+    let source_wave = boot
+        .repo
+        .wave_get(source_wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let target_wave = boot
+        .repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: source_wave.cove_id,
+            title: "target wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    boot.repo
+        .card_create(NewCard {
+            wave_id: target_wave.id.clone(),
+            title: None,
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let source_report = boot
+        .repo
+        .cards_by_wave(source_wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    boot.repo
+        .card_update(
+            source_report.id.as_str(),
+            CardPatch {
+                title: None,
+                kind: None,
+                sort: None,
+                payload: Some(json!({
+                    "schemaVersion": 2,
+                    "summary": "",
+                    "body": format!("[Target](neige://wave/{})", target_wave.id),
+                    "blocks": [{
+                        "id": "b_source",
+                        "kind": "prose",
+                        "rev": 1,
+                        "payload": {
+                            "markdown": format!("[Target](neige://wave/{})", target_wave.id)
+                        }
+                    }]
+                })),
+                deletable: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/waves/{}/backlinks", target_wave.id))
+                .header(header::COOKIE, cookie.clone())
+                .header("x-calm-actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["src_wave_id"], source_wave_id.as_str());
+    assert_eq!(entries[0]["src_wave_title"], "report wave");
+    assert_eq!(entries[0]["src_block_id"], "b_source");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/waves/wave_unknown/backlinks")
+                .header(header::COOKIE, cookie)
+                .header("x-calm-actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 /// Collect up to `n` envelopes from the bus, with a short timeout so a

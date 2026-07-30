@@ -52,6 +52,7 @@ use crate::operation::workspace_lease::{
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::WorkflowDescriptor;
 use crate::plugin_host::workflow_input::validate_workflow_input;
+use crate::report_backlinks;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::cove_folders::{is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
@@ -69,7 +70,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 pub fn router() -> Router<AppState> {
@@ -86,6 +87,7 @@ pub fn router() -> Router<AppState> {
         // unchanged; both paths funnel through `wave_report::persist_report`
         // so the dual-event invariant + CRDT write stays one boundary.
         .route("/api/waves/{id}/report", post(update_wave_report))
+        .route("/api/waves/{id}/backlinks", get(get_wave_backlinks))
         .route("/api/waves/{id}/files/ls", get(list_wave_files))
         .route("/api/waves/{id}/files/cat", get(cat_wave_file))
         .route("/api/coves/{cove_id}/waves", get(list_waves_by_cove))
@@ -1061,6 +1063,51 @@ pub(crate) async fn delete_wave(
 // ---------------------------------------------------------------------------
 // Issue #247 PR3 — user-facing wave-report edit endpoint
 // ---------------------------------------------------------------------------
+
+/// A report link from another wave that targets this wave.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub struct WaveBacklink {
+    pub src_wave_id: String,
+    pub src_wave_title: String,
+    pub src_block_id: String,
+    pub dst_block_id: Option<String>,
+    pub label: String,
+    pub updated_at: i64,
+}
+
+impl From<report_backlinks::Backlink> for WaveBacklink {
+    fn from(value: report_backlinks::Backlink) -> Self {
+        Self {
+            src_wave_id: value.src_wave_id,
+            src_wave_title: value.src_wave_title,
+            src_block_id: value.src_block_id,
+            dst_block_id: value.dst_block_id,
+            label: value.label,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/waves/{id}/backlinks",
+    tag = "waves",
+    params(("id" = String, Path, description = "Wave id")),
+    responses(
+        (status = 200, description = "Report links from other waves in the same cove", body = Vec<WaveBacklink>),
+        (status = 404, description = "Wave not found", body = ErrorBody),
+    ),
+)]
+pub(crate) async fn get_wave_backlinks(
+    State(s): State<RouteState>,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<WaveBacklink>>> {
+    let backlinks = report_backlinks::backlinks_for_wave(s.repo.as_ref(), &id).await?;
+    Ok(Json(
+        backlinks.into_iter().map(WaveBacklink::from).collect(),
+    ))
+}
 
 /// Request body for `POST /api/waves/:id/report`.
 ///

@@ -2901,6 +2901,50 @@
         }
       }
     },
+    "/api/waves/{id}/backlinks": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "get_wave_backlinks",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Report links from other waves in the same cove",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WaveBacklink"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves/{id}/files/cat": {
       "get": {
         "tags": [
@@ -5393,6 +5437,41 @@
               "null"
             ],
             "description": "Issue #891 — input JSON for the bound workflow, validated against the\ndescriptor's `input_schema` at create time and persisted verbatim; the\nkernel never interprets it. `#[serde(default)]` hydrates pre-#891\n`wave.updated` replays as `None` (same pattern as `workflow_id`).\nExplicit `unknown` override — see `Card.payload` for the rationale."
+          }
+        }
+      },
+      "WaveBacklink": {
+        "type": "object",
+        "description": "A report link from another wave that targets this wave.",
+        "required": [
+          "src_wave_id",
+          "src_wave_title",
+          "src_block_id",
+          "label",
+          "updated_at"
+        ],
+        "properties": {
+          "dst_block_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "src_block_id": {
+            "type": "string"
+          },
+          "src_wave_id": {
+            "type": "string"
+          },
+          "src_wave_title": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
