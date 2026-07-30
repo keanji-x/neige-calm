@@ -49,8 +49,193 @@ use std::sync::Arc;
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
 // (Tier-A persisted payload, TS-exported). Re-exported so the
 // `crate::wave_report::WaveReportPayload` path is unchanged.
-use calm_types::report_blocks::{reassign_ids, split_body};
 pub use calm_types::wave_report::{ReportBlock, WaveReportPayload};
+
+// ---------------------------------------------------------------------------
+// Report-doc operations (#960 PR2)
+// ---------------------------------------------------------------------------
+
+/// One mutation of the report's CRDT block map, executed *inside* the
+/// persist transaction by [`persist_report_with_shadow`] — the only
+/// place `if_rev` may be checked, because only there is
+/// `ReportDoc::block_rev` the transactional truth (the JSON `blocks`
+/// cache can be arbitrarily stale under D8).
+///
+/// Every variant lands through the same five-step persist sequence and
+/// therefore keeps the dual-event invariant: one successful op = one
+/// `CardUpdated` + one `WaveReportEdited` whose `body_before/after`
+/// are the flat projections.
+#[derive(Debug, Clone)]
+pub enum ReportDocOp {
+    /// Wholesale `(summary, body)` replace — the legacy
+    /// `calm.report.write`/`edit` tools and the REST user-edit path.
+    /// `summary: None` keeps the doc's **current** summary, resolved
+    /// inside the persist transaction against the CRDT truth (#960
+    /// PR2 review: an outside-tx snapshot would let a concurrent
+    /// summary write be silently reverted — TOCTOU).
+    Replace {
+        summary: Option<String>,
+        body: String,
+    },
+    /// `calm.report.write_markdown`: wholesale replace whose body may
+    /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
+    /// stripped unconditionally in-tx (they never reach storage) and
+    /// become exact id-reuse hints; unmarked slices fall back to the
+    /// LCS alignment. `summary: None` keeps the current summary,
+    /// resolved in-tx (same TOCTOU rule as [`Self::Replace`]).
+    WriteMarkdown {
+        summary: Option<String>,
+        body: String,
+    },
+    /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
+    /// default append); `id: Some` replaces and requires `if_rev`.
+    UpsertBlock {
+        id: Option<String>,
+        kind: String,
+        markdown: String,
+        if_rev: Option<u32>,
+        position: Option<usize>,
+    },
+    /// `calm.report.blocks.move`: reorder only, rev untouched.
+    MoveBlock {
+        id: String,
+        to_index: usize,
+        if_rev: Option<u32>,
+    },
+    /// `calm.report.blocks.delete`: `if_rev` is mandatory.
+    DeleteBlock { id: String, if_rev: u32 },
+}
+
+/// `(id, rev)` a block-level [`ReportDocOp`] resolved to: the created/
+/// replaced/moved block's id and its post-op rev. `None` for the
+/// wholesale and delete variants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockOpOutcome {
+    pub id: String,
+    pub rev: u32,
+}
+
+/// Execute `op` against the (already migrated) doc. Returns
+/// `CalmError::Conflict` on an `if_rev` mismatch — the persist closure
+/// propagates it, aborting the transaction, so a conflicting op writes
+/// nothing and emits nothing. Unknown ids / out-of-range indexes are
+/// `CalmError::BadRequest`.
+fn apply_report_op(
+    doc: &mut ReportDoc,
+    op: &ReportDocOp,
+) -> Result<Option<BlockOpOutcome>, CalmError> {
+    fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
+        // A malformed doc/rev is Internal (corruption), never folded
+        // into "block not found" (BadRequest).
+        let current = doc
+            .block_rev(id)
+            .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
+            .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+        if current != expected {
+            return Err(CalmError::Conflict(format!(
+                "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
+                 — re-read the report and retry with the current rev"
+            )));
+        }
+        Ok(current)
+    }
+    let internal = |e: anyhow::Error| CalmError::Internal(format!("wave_report: block op: {e}"));
+    // `summary: None` = keep the current summary. Resolved HERE,
+    // inside the persist transaction, from the doc itself — never from
+    // a caller-side snapshot (which could revert a summary written
+    // between the caller's read and this tx).
+    let tx_summary = |doc: &ReportDoc, summary: &Option<String>| -> Result<String, CalmError> {
+        match summary {
+            Some(summary) => Ok(summary.clone()),
+            None => Ok(doc
+                .project()
+                .map_err(|e| {
+                    CalmError::Internal(format!("wave_report: read current summary: {e}"))
+                })?
+                .0),
+        }
+    };
+    match op {
+        ReportDocOp::Replace { summary, body } => {
+            let summary = tx_summary(doc, summary)?;
+            doc.update(&summary, body).map_err(internal)?;
+            Ok(None)
+        }
+        ReportDocOp::WriteMarkdown { summary, body } => {
+            let summary = tx_summary(doc, summary)?;
+            let marked = calm_types::report_blocks::strip_markers_and_split(body);
+            doc.update_with_hints(&summary, &marked.slices, &marked.hints)
+                .map_err(internal)?;
+            Ok(None)
+        }
+        ReportDocOp::UpsertBlock {
+            id,
+            kind,
+            markdown,
+            if_rev,
+            position,
+        } => match id {
+            Some(id) => {
+                let expected = if_rev.ok_or_else(|| {
+                    CalmError::BadRequest(
+                        "if_rev is required when replacing an existing block".into(),
+                    )
+                })?;
+                check_rev(doc, id, expected)?;
+                let (id, rev) = doc
+                    .upsert_block(Some(id), kind, markdown)
+                    .map_err(internal)?;
+                Ok(Some(BlockOpOutcome { id, rev }))
+            }
+            None => {
+                let len = doc.block_index().map_err(internal)?.len();
+                if let Some(position) = position
+                    && *position > len
+                {
+                    return Err(CalmError::BadRequest(format!(
+                        "position {position} out of range (report has {len} blocks)"
+                    )));
+                }
+                let (id, rev) = doc.upsert_block(None, kind, markdown).map_err(internal)?;
+                if let Some(position) = position
+                    && *position < len
+                {
+                    doc.move_block(&id, *position).map_err(internal)?;
+                }
+                Ok(Some(BlockOpOutcome { id, rev }))
+            }
+        },
+        ReportDocOp::MoveBlock {
+            id,
+            to_index,
+            if_rev,
+        } => {
+            let current = doc
+                .block_rev(id)
+                .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
+                .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+            if let Some(expected) = if_rev {
+                check_rev(doc, id, *expected)?;
+            }
+            let len = doc.block_index().map_err(internal)?.len();
+            if *to_index >= len {
+                return Err(CalmError::BadRequest(format!(
+                    "to_index {to_index} out of range (report has {len} blocks)"
+                )));
+            }
+            doc.move_block(id, *to_index).map_err(internal)?;
+            Ok(Some(BlockOpOutcome {
+                id: id.clone(),
+                rev: current,
+            }))
+        }
+        ReportDocOp::DeleteBlock { id, if_rev } => {
+            check_rev(doc, id, *if_rev)?;
+            doc.delete_block(id).map_err(internal)?;
+            Ok(None)
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared persist boundary (Issue #247 PR3)
@@ -178,7 +363,7 @@ pub async fn persist_report(
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
-    persist_report_with_shadow(
+    let (updated, _outcome) = persist_report_with_shadow(
         repo,
         events,
         write,
@@ -187,13 +372,17 @@ pub async fn persist_report(
         wave,
         report_card,
         current_payload,
-        next,
+        ReportDocOp::Replace {
+            summary: Some(next.summary),
+            body: next.body,
+        },
         agent_message,
         lifecycle,
         auto_promote_draft,
         None,
     )
-    .await
+    .await?;
+    Ok(updated)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -206,12 +395,12 @@ pub(crate) async fn persist_report_with_shadow(
     wave: Wave,
     report_card: Card,
     current_payload: WaveReportPayload,
-    next: WaveReportPayload,
+    op: ReportDocOp,
     agent_message: Option<String>,
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
     recorder_shadow: Option<Arc<dyn RecorderShadowProbe>>,
-) -> Result<Card, CalmError> {
+) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
     let cove_id = wave.cove_id.clone();
@@ -226,15 +415,19 @@ pub(crate) async fn persist_report_with_shadow(
     };
     let report_card_id_inner = report_card_id.clone();
     let wave_id_for_event = wave_id.clone();
-    let (updated, _ids) =
-        write_with_actor_events_typed::<Card, _>(repo, None, events, write, move |tx| {
+    let (updated, _ids) = write_with_actor_events_typed::<(Card, Option<BlockOpOutcome>), _>(
+        repo,
+        None,
+        events,
+        write,
+        move |tx| {
             let id = report_card_id_inner.as_str().to_string();
             let report_card_id = report_card_id_inner.clone();
             let wave_id = wave_id_for_event.clone();
             let scope = scope.clone();
             let wave_scope = wave_scope.clone();
             let current_payload = current_payload.clone();
-            let next = next.clone();
+            let op = op.clone();
             let actor = actor.clone();
             let agent_message = agent_message.clone();
             let recorder_shadow = recorder_shadow.clone();
@@ -276,11 +469,27 @@ pub(crate) async fn persist_report_with_shadow(
                         .await?;
                 }
                 // 1. Load (or lazy-init) the CRDT doc for this card.
+                //    Loaded docs may still carry the pre-#960 layout
+                //    (`ROOT.body` Text, no block map) — migrate them
+                //    in place, reusing the PR1-derived block ids from
+                //    the payload JSON as the id hint. The migrated
+                //    bytes are written back below in this same tx.
                 let existing = card_body_crdt_get_tx(tx, &id).await?;
                 let mut doc = match existing {
-                    Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|e| {
-                        CalmError::Internal(format!("wave_report: load CRDT for card {id}: {e}"))
-                    })?,
+                    Some(bytes) => {
+                        let mut doc = ReportDoc::from_bytes(&bytes).map_err(|e| {
+                            CalmError::Internal(format!(
+                                "wave_report: load CRDT for card {id}: {e}"
+                            ))
+                        })?;
+                        doc.ensure_blocks_layout(current_payload.blocks.as_deref())
+                            .map_err(|e| {
+                                CalmError::Internal(format!(
+                                    "wave_report: migrate CRDT block layout for card {id}: {e}"
+                                ))
+                            })?;
+                        doc
+                    }
                     // Safe: current_payload was read outside the tx,
                     // but is only consulted here when body_crdt is
                     // still NULL in-tx. SQLite's single-writer means
@@ -291,19 +500,35 @@ pub(crate) async fn persist_report_with_shadow(
                     None => ReportDoc::from_payload(&current_payload),
                 };
                 // 2. Capture the pre-write projection for the edit-log
-                //    entry.
-                let (summary_before, body_before) = doc.project();
-                // 3. Apply the proposed update uniformly to both fields.
-                doc.update(&next.summary, &next.body);
+                //    entry. A malformed doc surfaces as Internal here
+                //    (never a panic).
+                let (summary_before, body_before) = doc.project().map_err(|e| {
+                    CalmError::Internal(format!("wave_report: project CRDT for card {id}: {e}"))
+                })?;
+                // 3. Apply the requested op on the doc. `if_rev`
+                //    checks happen in here, against the CRDT truth
+                //    inside this transaction — a conflict aborts the
+                //    tx (nothing written, no events emitted).
+                let outcome = apply_report_op(&mut doc, &op)?;
                 // 4. Project back — these are the authoritative values
-                //    that go into the JSON cache.
-                let (summary_after, body_after) = doc.project();
+                //    that go into the JSON cache. Since #960 PR2 the
+                //    CRDT block map is the source of truth: `body` is
+                //    the per-block concatenation and `blocks` is the
+                //    doc's own snapshot (id/rev alignment already
+                //    happened inside `ReportDoc::update`), so nothing
+                //    is re-derived at the JSON layer.
+                let (summary_after, body_after) = doc.project().map_err(|e| {
+                    CalmError::Internal(format!(
+                        "wave_report: project CRDT post-op for card {id}: {e}"
+                    ))
+                })?;
                 let mut projected_payload =
                     WaveReportPayload::new(summary_after.clone(), body_after.clone());
-                projected_payload.blocks = Some(reassign_ids(
-                    current_payload.blocks.as_deref().unwrap_or_default(),
-                    &split_body(&body_after),
-                ));
+                projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
+                    CalmError::Internal(format!(
+                        "wave_report: snapshot CRDT blocks for card {id}: {e}"
+                    ))
+                })?);
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -340,10 +565,11 @@ pub(crate) async fn persist_report_with_shadow(
                     Event::CardUpdated(updated.clone()),
                 ));
                 events.push((actor, scope, report_edited));
-                Ok((updated, events))
+                Ok(((updated, outcome), events))
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(updated)
 }
 
@@ -370,7 +596,7 @@ mod tests {
         assert_eq!(
             v,
             json!({
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "summary": "hi",
                 "body": "# A\n\nb\n",
             })
@@ -396,6 +622,105 @@ mod tests {
         }))
         .unwrap_err();
         assert!(err.to_string().contains("summary"), "got: {err}");
+    }
+
+    #[test]
+    fn apply_op_with_none_summary_resolves_from_doc_inside_tx() {
+        // #960 PR2 review (write_markdown TOCTOU): `summary: None`
+        // must resolve against the doc — the in-tx truth — not any
+        // caller-side snapshot. Simulate the race by moving the doc's
+        // summary after "the caller read it".
+        let mut doc =
+            ReportDoc::from_payload(&WaveReportPayload::new("stale snapshot", "# A\n\nalpha\n"));
+        doc.update("racing summary", "# A\n\nalpha\n").unwrap();
+
+        let outcome = apply_report_op(
+            &mut doc,
+            &ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: "# A\n\nalpha edited\n".into(),
+            },
+        )
+        .unwrap();
+        assert!(outcome.is_none());
+        let (summary, body) = doc.project().unwrap();
+        assert_eq!(
+            summary, "racing summary",
+            "None must keep the doc's current (in-tx) summary"
+        );
+        assert_eq!(body, "# A\n\nalpha edited\n");
+
+        // Replace with None behaves identically; Some overrides.
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::Replace {
+                summary: None,
+                body: "# B\n\nbeta\n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.project().unwrap().0, "racing summary");
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::Replace {
+                summary: Some("explicit".into()),
+                body: "# C\n\ngamma\n".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(doc.project().unwrap().0, "explicit");
+    }
+
+    #[test]
+    fn apply_op_on_malformed_doc_is_internal_not_bad_request() {
+        use automerge::transaction::Transactable;
+        use automerge::{AutoCommit, ObjType, ROOT};
+
+        // Shape 1: block rev stored as a Str. check_rev must surface
+        // CalmError::Internal (corruption), never fold the broken rev
+        // into "block not found" (BadRequest).
+        let mut raw = AutoCommit::new();
+        let summary_id = raw.put_object(&ROOT, "summary", ObjType::Text).unwrap();
+        raw.update_text(&summary_id, "s").unwrap();
+        let blocks = raw.put_object(&ROOT, "blocks", ObjType::Map).unwrap();
+        let entry = raw.put_object(&blocks, "b_0001", ObjType::Map).unwrap();
+        raw.put(&entry, "kind", "prose").unwrap();
+        raw.put(&entry, "rev", "three").unwrap();
+        let text_id = raw.put_object(&entry, "text", ObjType::Text).unwrap();
+        raw.update_text(&text_id, "# A\n").unwrap();
+        let order = raw.put_object(&ROOT, "order", ObjType::List).unwrap();
+        raw.insert(&order, 0, "b_0001").unwrap();
+        let mut doc = ReportDoc::from_bytes(&raw.save()).unwrap();
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: Some("b_0001".into()),
+                kind: "prose".into(),
+                markdown: "x\n".into(),
+                if_rev: Some(1),
+                position: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
+
+        // Shape 2: blocks map present but no order list. A wholesale
+        // replace must fail Internal-level — the corrupt doc must not
+        // be read as an empty report and silently overwritten.
+        let mut raw = AutoCommit::new();
+        let summary_id = raw.put_object(&ROOT, "summary", ObjType::Text).unwrap();
+        raw.update_text(&summary_id, "s").unwrap();
+        raw.put_object(&ROOT, "blocks", ObjType::Map).unwrap();
+        let mut doc = ReportDoc::from_bytes(&raw.save()).unwrap();
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Replace {
+                summary: Some("s".into()),
+                body: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
     }
 
     #[test]

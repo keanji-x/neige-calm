@@ -17,6 +17,7 @@ pub mod review;
 pub mod wave_file;
 pub mod wave_history;
 pub mod wave_report;
+pub mod wave_report_blocks;
 pub mod wave_state;
 
 /// Register every default tool onto a fresh registry. Callers build
@@ -33,6 +34,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     review::register_into(registry);
     wave_state::register_into(registry);
     wave_report::register_into(registry);
+    wave_report_blocks::register_into(registry);
     wave_file::register_into(registry);
     wave_history::register_into(registry);
     admin::register_into(registry);

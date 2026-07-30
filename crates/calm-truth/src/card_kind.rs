@@ -335,13 +335,13 @@ mod tests {
         let registry = CardKindRegistry::builtins();
         assert!(
             registry
-                .validate_payload("wave-report", &json!({ "schemaVersion": 1, "body": "x" }))
+                .validate_payload("wave-report", &json!({ "schemaVersion": 2, "body": "x" }))
                 .is_err()
         );
         registry
             .validate_payload(
                 "wave-report",
-                &json!({ "schemaVersion": 1, "summary": "s", "body": "x" }),
+                &json!({ "schemaVersion": 2, "summary": "s", "body": "x" }),
             )
             .unwrap();
     }

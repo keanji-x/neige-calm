@@ -2,7 +2,7 @@
 
 use crate::wave_report::ReportBlock;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSlice {
@@ -59,19 +59,81 @@ pub fn flatten(blocks: &[BlockSlice]) -> String {
 
 /// Reuse ids through exact LCS anchors, then similarity-align edited slices
 /// within each unmatched gap. Remaining slices receive a new `b_ffff` id.
+///
+/// Rev semantics (#960 PR2):
+///   * matched block, byte-identical content → `rev` unchanged;
+///   * matched block, content changed → `rev = old.rev + 1`;
+///   * unmatched (brand-new) slice → `rev = 1`.
+///
+/// Matched blocks keep their old `kind`. A matched non-prose block also
+/// keeps its old `payload` verbatim — its payload is not `{ markdown }`
+/// and must not be clobbered by the prose slice text.
+// TODO(#960 PR3): non-prose blocks should be compared against their
+// deterministic flat (fenced) representation instead of an optional
+// `payload.markdown`; today only prose slices reach this function.
 pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Vec<ReportBlock> {
+    reassign_ids_with_hints(old_blocks, new_slices, &[])
+}
+
+/// [`reassign_ids`] with explicit per-slice id hints (#960 PR2's
+/// `write_markdown` marker channel). `hints[i] = Some(id)` pins slice
+/// `i` to the old block carrying `id` **before** the LCS/similarity
+/// passes run; hinted pairs are excluded from both passes, so markers
+/// make otherwise-undecidable inputs (duplicate content) decidable.
+///
+/// A hint is ignored (slice falls back to normal alignment) when the
+/// id does not exist among the old blocks, is duplicated there, or was
+/// already claimed by an earlier hint. `hints` may be shorter than
+/// `new_slices` (missing entries mean "no hint").
+pub fn reassign_ids_with_hints(
+    old_blocks: &[ReportBlock],
+    new_slices: &[BlockSlice],
+    hints: &[Option<String>],
+) -> Vec<ReportBlock> {
+    // First-occurrence-unique old ids are the only reusable ones (a
+    // duplicated id is unattributable — same rule as before hints).
     let mut reusable_ids = HashSet::new();
+    let unique: Vec<bool> = old_blocks
+        .iter()
+        .map(|block| reusable_ids.insert(block.id.as_str()))
+        .collect();
+    let index_by_id: HashMap<&str, usize> = old_blocks
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| unique[*index])
+        .map(|(index, block)| (block.id.as_str(), index))
+        .collect();
+
+    // Hint pass: pin slices to their marked old blocks, first-wins.
+    let mut assignments: Vec<Option<usize>> = vec![None; new_slices.len()];
+    let mut taken = vec![false; old_blocks.len()];
+    for (index, hint) in hints.iter().enumerate().take(new_slices.len()) {
+        if let Some(id) = hint
+            && let Some(&old_index) = index_by_id.get(id.as_str())
+            && !taken[old_index]
+        {
+            assignments[index] = Some(old_index);
+            taken[old_index] = true;
+        }
+    }
+
+    // LCS + similarity over the *unpinned* remainder: pinned old
+    // blocks and pinned slices are masked out with `None`.
     let old_text: Vec<Option<&str>> = old_blocks
         .iter()
-        .map(|block| {
-            reusable_ids
-                .insert(block.id.as_str())
+        .enumerate()
+        .map(|(index, block)| {
+            (unique[index] && !taken[index])
                 .then(|| block_markdown(block))
                 .flatten()
         })
         .collect();
-    let anchors = lcs_matches(&old_text, new_slices);
-    let mut assignments = vec![None; new_slices.len()];
+    let new_text: Vec<Option<&str>> = new_slices
+        .iter()
+        .enumerate()
+        .map(|(index, slice)| assignments[index].is_none().then_some(slice.raw.as_str()))
+        .collect();
+    let anchors = lcs_matches(&old_text, &new_text);
     for &(old, new) in &anchors {
         assignments[new] = Some(old);
     }
@@ -84,7 +146,7 @@ pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Ve
     {
         similarity_matches(
             &old_text[previous_old..anchor_old],
-            &new_slices[previous_new..anchor_new],
+            &new_text[previous_new..anchor_new],
             previous_old,
             previous_new,
             &mut assignments,
@@ -97,16 +159,34 @@ pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Ve
     new_slices
         .iter()
         .enumerate()
-        .map(|(index, slice)| {
-            let id = assignments[index]
-                .map(|old| old_blocks[old].id.clone())
-                .unwrap_or_else(|| mint_id(&slice.raw, index, &mut used));
-            ReportBlock {
-                id,
-                kind: "prose".to_string(),
-                rev: assignments[index].map_or(1, |old| old_blocks[old].rev),
-                payload: json!({ "markdown": slice.raw }),
+        .map(|(index, slice)| match assignments[index] {
+            Some(old_index) => {
+                let old = &old_blocks[old_index];
+                let unchanged = block_markdown(old) == Some(slice.raw.as_str());
+                ReportBlock {
+                    id: old.id.clone(),
+                    kind: old.kind.clone(),
+                    rev: if unchanged {
+                        old.rev
+                    } else {
+                        old.rev.saturating_add(1)
+                    },
+                    // A matched non-prose payload is preserved verbatim —
+                    // it is not `{ markdown }` and must not be clobbered
+                    // by the prose slice text.
+                    payload: if old.kind == "prose" {
+                        json!({ "markdown": slice.raw })
+                    } else {
+                        old.payload.clone()
+                    },
+                }
             }
+            None => ReportBlock {
+                id: mint_id(&slice.raw, index, &mut used),
+                kind: "prose".to_string(),
+                rev: 1,
+                payload: json!({ "markdown": slice.raw }),
+            },
         })
         .collect()
 }
@@ -149,11 +229,17 @@ fn block_markdown(block: &ReportBlock) -> Option<&str> {
         .and_then(serde_json::Value::as_str)
 }
 
-fn lcs_matches(old: &[Option<&str>], new: &[BlockSlice]) -> Vec<(usize, usize)> {
+fn lcs_matches(old: &[Option<&str>], new: &[Option<&str>]) -> Vec<(usize, usize)> {
+    // `None` on either side means "not eligible for matching" (dup /
+    // non-prose old, or hint-pinned entries) — two `None`s must never
+    // compare equal, hence the explicit `is_some` guard.
+    let eq = |old_index: usize, new_index: usize| {
+        old[old_index].is_some() && old[old_index] == new[new_index]
+    };
     let mut lengths = vec![vec![0usize; new.len() + 1]; old.len() + 1];
     for old_index in (0..old.len()).rev() {
         for new_index in (0..new.len()).rev() {
-            lengths[old_index][new_index] = if old[old_index] == Some(&new[new_index].raw) {
+            lengths[old_index][new_index] = if eq(old_index, new_index) {
                 lengths[old_index + 1][new_index + 1] + 1
             } else {
                 lengths[old_index + 1][new_index].max(lengths[old_index][new_index + 1])
@@ -163,7 +249,7 @@ fn lcs_matches(old: &[Option<&str>], new: &[BlockSlice]) -> Vec<(usize, usize)> 
     let (mut old_index, mut new_index) = (0, 0);
     let mut matches = Vec::new();
     while old_index < old.len() && new_index < new.len() {
-        if old[old_index] == Some(&new[new_index].raw) {
+        if eq(old_index, new_index) {
             matches.push((old_index, new_index));
             old_index += 1;
             new_index += 1;
@@ -178,7 +264,7 @@ fn lcs_matches(old: &[Option<&str>], new: &[BlockSlice]) -> Vec<(usize, usize)> 
 
 fn similarity_matches(
     old: &[Option<&str>],
-    new: &[BlockSlice],
+    new: &[Option<&str>],
     old_offset: usize,
     new_offset: usize,
     assignments: &mut [Option<usize>],
@@ -188,8 +274,11 @@ fn similarity_matches(
         let Some(old_text) = old_text else {
             continue;
         };
-        for (new_index, new_slice) in new.iter().enumerate() {
-            let score = similarity(old_text, &new_slice.raw);
+        for (new_index, new_text) in new.iter().enumerate() {
+            let Some(new_text) = new_text else {
+                continue;
+            };
+            let score = similarity(old_text, new_text);
             if score >= 0.5 {
                 scores.push((score, old_index, new_index));
             }
@@ -241,7 +330,12 @@ fn levenshtein(left: &[char], right: &[char]) -> usize {
     previous[right.len()]
 }
 
-fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
+/// Mint a deterministic `b_xxxx` block id from the slice content +
+/// position, probing until it misses every id in `used` (which the
+/// caller must pre-seed with all live ids and which this function
+/// extends with the returned id). Public so the CRDT layer
+/// (`calm-server::wave_report_doc`) mints ids in the same style.
+pub fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
     let mut hash = 0x811c9dc5u32;
     for byte in raw.bytes().chain(index.to_le_bytes()) {
         hash = (hash ^ u32::from(byte)).wrapping_mul(0x01000193);
@@ -253,6 +347,87 @@ fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
         }
     }
     unreachable!("a report cannot contain more than 65,536 distinct block ids")
+}
+
+/// A marker-stripped `write_markdown` body: the cleaned flat markdown
+/// (guaranteed marker-free), its slices, and the per-slice id hints
+/// recovered from the stripped marker lines.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkedBody {
+    pub cleaned: String,
+    pub slices: Vec<BlockSlice>,
+    pub hints: Vec<Option<String>>,
+}
+
+/// Strip every standalone `<!-- neige:b_xxxx -->` marker line out of
+/// `body` **unconditionally** (markers must never reach storage), then
+/// split the cleaned text and bind each stripped id to the slice the
+/// marker preceded. `hints` is index-aligned with `slices`; a slice
+/// with no marker gets `None`, extra/trailing/duplicate markers are
+/// dropped (first marker per slice wins). Feed the result to
+/// [`reassign_ids_with_hints`].
+pub fn strip_markers_and_split(body: &str) -> MarkedBody {
+    let mut cleaned = String::with_capacity(body.len());
+    let mut markers: Vec<(usize, String)> = Vec::new();
+    for line in body.split_inclusive('\n') {
+        match marker_line_id(line) {
+            Some(id) => markers.push((cleaned.len(), id.to_string())),
+            None => cleaned.push_str(line),
+        }
+    }
+    let slices = split_body(&cleaned);
+    let mut starts = Vec::with_capacity(slices.len());
+    let mut offset = 0;
+    for slice in &slices {
+        starts.push(offset);
+        offset += slice.raw.len();
+    }
+    let mut hints = vec![None; slices.len()];
+    for (offset, id) in markers {
+        if offset >= cleaned.len() && !cleaned.is_empty() {
+            // Trailing marker with nothing after it: no block follows.
+            continue;
+        }
+        // The slice whose byte range contains the position the marker
+        // occupied — i.e. the block whose content directly follows it.
+        let index = match starts.binary_search(&offset) {
+            Ok(index) => index,
+            Err(0) => 0,
+            Err(insert) => insert - 1,
+        };
+        if hints[index].is_none() {
+            hints[index] = Some(id);
+        }
+    }
+    MarkedBody {
+        cleaned,
+        slices,
+        hints,
+    }
+}
+
+/// The exact marker line [`strip_markers_and_split`] strips and
+/// `calm.report.read { with_markers: true }` injects.
+pub fn marker_line(id: &str) -> String {
+    format!("<!-- neige:{id} -->\n")
+}
+
+/// `Some(id)` iff `line` (one `split_inclusive('\n')` item) is a
+/// standalone marker line: optional surrounding whitespace around
+/// `<!-- neige:b_hhhh -->` with lowercase-hex `h`, nothing else.
+fn marker_line_id(line: &str) -> Option<&str> {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let id = line
+        .trim_matches([' ', '\t'])
+        .strip_prefix("<!-- neige:")?
+        .strip_suffix(" -->")?;
+    (id.len() == 6
+        && id.starts_with("b_")
+        && id[2..]
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then_some(id)
 }
 
 #[cfg(test)]
@@ -334,6 +509,178 @@ mod tests {
         let new = reassign_ids(&old, &new_slices);
         assert_eq!(new[1].id, old[0].id);
         assert_eq!(new[2].id, old[1].id);
+    }
+
+    #[test]
+    fn rev_increments_on_change_and_holds_on_identical_content() {
+        let first = reassign_ids(&[], &split_body("# A\nalpha\n# B\nbeta\n"));
+        assert!(
+            first.iter().all(|block| block.rev == 1),
+            "new blocks: rev=1"
+        );
+
+        // Byte-identical rewrite: ids and revs both stay put.
+        let same = reassign_ids(&first, &split_body("# A\nalpha\n# B\nbeta\n"));
+        for (before, after) in first.iter().zip(&same) {
+            assert_eq!(after.id, before.id);
+            assert_eq!(after.rev, before.rev);
+        }
+
+        // Editing one block bumps only that block's rev.
+        let edited = reassign_ids(&same, &split_body("# A\nalpha edited\n# B\nbeta\n"));
+        assert_eq!(edited[0].id, first[0].id);
+        assert_eq!(edited[0].rev, 2, "edited block: rev+1");
+        assert_eq!(edited[1].id, first[1].id);
+        assert_eq!(edited[1].rev, 1, "untouched block: rev unchanged");
+
+        // A brand-new block starts at rev=1; survivors keep theirs.
+        let grown = reassign_ids(
+            &edited,
+            &split_body("# A\nalpha edited\n# B\nbeta\n# C\nnew\n"),
+        );
+        assert_eq!(grown[0].rev, 2);
+        assert_eq!(grown[1].rev, 1);
+        assert_eq!(grown[2].rev, 1);
+        assert!(grown[2].id != grown[0].id && grown[2].id != grown[1].id);
+    }
+
+    #[test]
+    fn matched_non_prose_block_keeps_kind_payload_and_rev() {
+        let payload = json!({ "symbol": "0700.HK", "markdown": "# Chart\nflat repr\n" });
+        let old = vec![ReportBlock {
+            id: "b_ch01".to_string(),
+            kind: "chart.candles".to_string(),
+            rev: 3,
+            payload: payload.clone(),
+        }];
+        let reassigned = reassign_ids(&old, &split_body("# Chart\nflat repr\n"));
+        assert_eq!(reassigned.len(), 1);
+        assert_eq!(reassigned[0].id, "b_ch01");
+        assert_eq!(reassigned[0].kind, "chart.candles");
+        assert_eq!(reassigned[0].rev, 3, "identical content: rev unchanged");
+        assert_eq!(
+            reassigned[0].payload, payload,
+            "non-prose payload preserved verbatim"
+        );
+    }
+
+    #[test]
+    fn strip_markers_binds_ids_and_cleans_unconditionally() {
+        let body = "<!-- neige:b_00aa -->\n# A\nalpha\n<!-- neige:b_00bb -->\n# B\nbeta\n";
+        let marked = strip_markers_and_split(body);
+        assert_eq!(marked.cleaned, "# A\nalpha\n# B\nbeta\n");
+        assert!(!marked.cleaned.contains("<!-- neige:"));
+        assert_eq!(marked.slices.len(), 2);
+        assert_eq!(
+            marked.hints,
+            vec![Some("b_00aa".to_string()), Some("b_00bb".to_string())]
+        );
+
+        // Unknown / trailing / duplicate / CRLF / indented markers are
+        // still stripped; binding is best-effort first-wins.
+        let messy =
+            "  <!-- neige:b_0001 -->  \r\n# A\n<!-- neige:b_0002 -->\nmid\n<!-- neige:b_0003 -->\n";
+        let marked = strip_markers_and_split(messy);
+        assert_eq!(marked.cleaned, "# A\nmid\n");
+        assert_eq!(marked.slices.len(), 1);
+        assert_eq!(marked.hints, vec![Some("b_0001".to_string())]);
+
+        // Non-marker lookalikes stay in the body.
+        for keep in [
+            "x <!-- neige:b_0001 -->\n", // not standalone
+            "<!-- neige:b_00G1 -->\n",   // non-hex
+            "<!-- neige:b_00aaa -->\n",  // wrong length
+            "<!-- neige:c_00aa -->\n",   // wrong prefix
+            "<!--neige:b_00aa -->\n",    // malformed comment
+            "<!-- neige:b_00AA -->\n",   // uppercase hex
+        ] {
+            let marked = strip_markers_and_split(keep);
+            assert_eq!(marked.cleaned, keep, "{keep:?} must survive");
+        }
+    }
+
+    #[test]
+    fn marker_hints_make_duplicate_content_decidable() {
+        // Two byte-identical blocks: without markers this input is
+        // undecidable (design §3.4); with markers it must be exact.
+        let old = vec![
+            ReportBlock {
+                id: "b_aaaa".to_string(),
+                kind: "prose".to_string(),
+                rev: 4,
+                payload: json!({ "markdown": "# A\nsame\n" }),
+            },
+            ReportBlock {
+                id: "b_bbbb".to_string(),
+                kind: "prose".to_string(),
+                rev: 7,
+                payload: json!({ "markdown": "# A\nsame\n" }),
+            },
+        ];
+        // Swap the two blocks via markers; edit the second one.
+        let body = "<!-- neige:b_bbbb -->\n# A\nsame\n<!-- neige:b_aaaa -->\n# A\nsame edited\n";
+        let marked = strip_markers_and_split(body);
+        let out = reassign_ids_with_hints(&old, &marked.slices, &marked.hints);
+        assert_eq!(out[0].id, "b_bbbb");
+        assert_eq!(out[0].rev, 7, "identical content: rev holds");
+        assert_eq!(out[1].id, "b_aaaa");
+        assert_eq!(out[1].rev, 5, "edited content: rev+1");
+    }
+
+    #[test]
+    fn unhinted_slices_fall_back_to_lcs_alignment() {
+        let old = reassign_ids(&[], &split_body("# A\nalpha\n# B\nbeta\n"));
+        // Marker only on A; B is edited and must still inherit via LCS
+        // gap similarity; X is brand new.
+        let body = format!(
+            "# X\nnew\n<!-- neige:{} -->\n# A\nalpha\n# B\nbeta edited\n",
+            old[0].id
+        );
+        let marked = strip_markers_and_split(&body);
+        let out = reassign_ids_with_hints(&old, &marked.slices, &marked.hints);
+        assert_eq!(out.len(), 3);
+        assert_ne!(out[0].id, old[0].id);
+        assert_ne!(out[0].id, old[1].id);
+        assert_eq!(out[1].id, old[0].id, "hinted block keeps its id");
+        assert_eq!(
+            out[2].id, old[1].id,
+            "unhinted edit falls back to alignment"
+        );
+        assert_eq!(out[2].rev, old[1].rev + 1);
+    }
+
+    #[test]
+    fn hint_to_unknown_or_duplicate_id_is_ignored() {
+        let old = reassign_ids(&[], &split_body("# A\nalpha\n"));
+        let body = "<!-- neige:b_dead -->\n# A\nalpha\n";
+        let marked = strip_markers_and_split(body);
+        assert_eq!(marked.hints, vec![Some("b_dead".to_string())]);
+        let out = reassign_ids_with_hints(&old, &marked.slices, &marked.hints);
+        // Unknown hint id: LCS still reuses the old id (exact match).
+        assert_eq!(out[0].id, old[0].id);
+        assert_eq!(out[0].rev, old[0].rev);
+    }
+
+    #[test]
+    fn duplicate_hint_ids_only_first_slice_claims_the_block() {
+        // Two slices hinting the same id: first-wins, the second falls
+        // back to normal alignment / a fresh mint — output ids stay
+        // unique (fix for #960 PR2 review failure-major 3).
+        let old = reassign_ids(&[], &split_body("# A\nalpha\n"));
+        let hints = vec![Some(old[0].id.clone()), Some(old[0].id.clone())];
+        let slices = split_body("# A\nalpha\n# Z\nzeta\n");
+        let out = reassign_ids_with_hints(&old, &slices, &hints);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, old[0].id, "first hint claims the block");
+        assert_ne!(out[1].id, old[0].id, "duplicate hint is ignored");
+        assert_eq!(
+            out.iter()
+                .map(|block| block.id.as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            out.len(),
+            "output ids are unique"
+        );
     }
 
     #[test]

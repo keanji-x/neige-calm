@@ -496,9 +496,12 @@ export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "
 export type WaveReportPayload = { 
 /**
  * Tier A persistence contract — see
- * [`crate::validation::WAVE_REPORT_PAYLOAD_SCHEMA_VERSION`].
- * Always `1` today; a future v2 would bump this constant + add a
- * migrator next to it in `validation.rs`.
+ * `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
+ * `validation.rs`. `2` since #960 PR2 (blocks became the
+ * authoritative source; `body` is the flat projection). v1 rows
+ * (absent or `1`) remain readable and are lazily upgraded at the
+ * next persist via the CRDT-layer migrator
+ * (`ReportDoc::ensure_blocks_layout`).
  */
 schemaVersion: number, 
 /**
@@ -515,8 +518,10 @@ summary: string,
  */
 body: string, 
 /**
- * Derived block cache. `body` remains the authoritative persisted
- * projection in schema v1, so older writers may safely omit this.
+ * Block mirror of the authoritative CRDT block map (#960 PR2).
+ * Since schema v2 the CRDT `blocks`/`order` layout is the source
+ * of truth; this JSON field and `body` are both projections the
+ * persist boundary rewrites on every write. v1 rows may omit it.
  */
 blocks?: Array<ReportBlock> | null, };
 

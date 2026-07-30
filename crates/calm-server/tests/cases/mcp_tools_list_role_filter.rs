@@ -15,8 +15,13 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.plan.list",
         "calm.plan.upsert",
         "calm.ratify.request",
+        "calm.report.blocks.delete",
+        "calm.report.blocks.kinds",
+        "calm.report.blocks.move",
+        "calm.report.blocks.upsert",
         "calm.report.edit",
         "calm.report.write",
+        "calm.report.write_markdown",
         "calm.review.round",
         "calm.task.verdict",
     ]

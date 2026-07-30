@@ -150,7 +150,10 @@ async fn backfill_mints_report_card_per_wave() {
     // spec on next edit (see `spec_card.rs` migration paragraph).
     let payload: WaveReportPayload = serde_json::from_value(report.payload.clone())
         .expect("payload is a valid WaveReportPayload");
-    assert_eq!(payload.schema_version, WaveReportPayload::SCHEMA_VERSION);
+    // Migration 0014 SQL stays frozen at the historical v1 shape; v1
+    // rows are lazily upgraded to the current version at their next
+    // persist (#960 PR2), not by the migration.
+    assert_eq!(payload.schema_version, 1);
     assert_eq!(payload.summary, "");
     assert_eq!(
         payload.body, "# Goal\n\n_The spec agent will fill this in._\n",

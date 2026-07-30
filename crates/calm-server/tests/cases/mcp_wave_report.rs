@@ -60,15 +60,15 @@ const SPEC_SESSION_ID: &str = "spec-session";
 /// wave-report card + one worker card. Mirrors the post-`create_wave`
 /// shape (spec + wave-report kernel-owned) plus a worker for the
 /// cross-role tests.
-struct Boot {
-    ctx: Arc<AppContext>,
-    registry: Arc<ToolRegistry>,
-    repo: Arc<dyn Repo>,
-    cove_id: CoveId,
-    wave_id: WaveId,
-    spec_card_id: CardId,
-    report_card_id: CardId,
-    worker_card_id: CardId,
+pub(crate) struct Boot {
+    pub(crate) ctx: Arc<AppContext>,
+    pub(crate) registry: Arc<ToolRegistry>,
+    pub(crate) repo: Arc<dyn Repo>,
+    pub(crate) cove_id: CoveId,
+    pub(crate) wave_id: WaveId,
+    pub(crate) spec_card_id: CardId,
+    pub(crate) report_card_id: CardId,
+    pub(crate) worker_card_id: CardId,
 }
 
 fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
@@ -125,7 +125,7 @@ async fn seed_wave_root_session(
     .expect("seed wave root session");
 }
 
-async fn boot() -> Boot {
+pub(crate) async fn boot() -> Boot {
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
             .await
@@ -240,7 +240,7 @@ async fn boot() -> Boot {
     }
 }
 
-async fn call_tool(
+pub(crate) async fn call_tool(
     boot: &Boot,
     name: &str,
     identity: ToolCallIdentity,
@@ -253,7 +253,7 @@ async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
-fn spec_identity(boot: &Boot) -> ToolCallIdentity {
+pub(crate) fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
         role: CardRole::Spec,
@@ -265,7 +265,7 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-fn worker_identity(boot: &Boot) -> ToolCallIdentity {
+pub(crate) fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
@@ -279,7 +279,10 @@ fn worker_identity(boot: &Boot) -> ToolCallIdentity {
 
 /// Subscribe to the bus and collect `n` envelopes — small helper so
 /// the write/edit tests can assert on the emitted `card.updated`.
-async fn collect_n(events: &EventBus, n: usize) -> Vec<calm_server::event::BroadcastEnvelope> {
+pub(crate) async fn collect_n(
+    events: &EventBus,
+    n: usize,
+) -> Vec<calm_server::event::BroadcastEnvelope> {
     let mut sub = events.subscribe();
     let mut out = Vec::with_capacity(n);
     while out.len() < n {
@@ -316,7 +319,7 @@ async fn read_returns_initial_seeded_body() {
         Some("# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
-    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(1));
+    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(2));
     assert!(
         out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,
         "updated_at is a positive timestamp; got {out:?}",
@@ -385,7 +388,7 @@ async fn write_replaces_body_and_emits_card_updated() {
                 serde_json::from_value(c.payload.clone()).expect("payload deserializes");
             assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
             assert_eq!(payload.summary, "done refactoring");
-            assert_eq!(payload.schema_version, 1);
+            assert_eq!(payload.schema_version, 2);
             assert_eq!(c.updated_at, new_updated_at);
         }
         other => panic!("expected CardUpdated first, got {other:?}"),
