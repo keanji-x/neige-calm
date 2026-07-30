@@ -122,7 +122,10 @@ export function ReportCandlesBlock({
 }) {
   const { resolved: theme } = useTheme();
   const palette = PALETTES[theme];
-  const [rangeKey, setRangeKey] = useState('All');
+  // Default range is 1Y (matches the #960 design demo). When the series
+  // holds less than a year of data the 1Y window naturally starts at the
+  // first bar — and the <2-bar guard below falls back to All outright.
+  const [rangeKey, setRangeKey] = useState('1Y');
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [failed, setFailed] = useState(false);
   const chartHostRef = useRef<HTMLDivElement | null>(null);

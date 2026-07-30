@@ -154,8 +154,10 @@ describe('chart.candles block', () => {
     expect(screen.getByTestId('rb-fig-last')).toHaveTextContent('130.00');
     expect(screen.getByText('阳线')).toBeInTheDocument();
     expect(screen.getByText('阴线')).toBeInTheDocument();
+    // Default range is 1Y (#960 follow-up); with only 30 days of data the
+    // window naturally covers the whole series.
     expect(
-      screen.getByRole('button', { name: 'All' }),
+      screen.getByRole('button', { name: '1Y' }),
     ).toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -166,6 +168,11 @@ describe('chart.candles block', () => {
       />,
     );
     await screen.findByText('0700.HK');
+    // Default 1Y window over 400 daily candles → 366 bars (365 days + the
+    // cutoff bar itself).
+    expect(candleSeriesRecords().at(-1)?.data).toHaveLength(366);
+
+    await userEvent.click(screen.getByRole('button', { name: 'All' }));
     expect(candleSeriesRecords().at(-1)?.data).toHaveLength(400);
 
     await userEvent.click(screen.getByRole('button', { name: '1M' }));
