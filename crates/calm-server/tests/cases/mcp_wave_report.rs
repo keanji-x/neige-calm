@@ -401,6 +401,7 @@ async fn write_replaces_body_and_emits_card_updated() {
             wave_id: w,
             card_id: c,
             author,
+            author_plugin_id: _,
             edit_id,
             summary_before,
             summary_after,
@@ -803,6 +804,7 @@ async fn edit_emits_wave_report_edited_alongside_card_updated() {
             wave_id: w,
             card_id: c,
             author,
+            author_plugin_id: _,
             edit_id,
             summary_before,
             summary_after,
@@ -978,6 +980,7 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
     match ev {
         Event::WaveReportEdited {
             author,
+            author_plugin_id: _,
             body_before,
             body_after,
             summary_after,
@@ -1511,6 +1514,7 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
             wave_id: w,
             card_id: c,
             author,
+            author_plugin_id: _,
             edit_id,
             summary_before,
             summary_after,

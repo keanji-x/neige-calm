@@ -75,6 +75,13 @@ impl SqlxRepo {
         .fetch_one(&mut **tx)
         .await?;
         let id: i64 = row.try_get("id")?;
+        // Issue #955 §5 — fold proposal-channel events into the
+        // `proposals` projection in the SAME tx as the append. This is
+        // the single raw insert every write wrapper funnels through
+        // (mirrors the wave_vcs commit-chain rule: derived state is
+        // only ever written from the event append path), so the
+        // projection can never lag the log it is derived from.
+        super::proposal::proposal_apply_event_tx(tx, id, at, event).await?;
         Ok(id)
     }
 

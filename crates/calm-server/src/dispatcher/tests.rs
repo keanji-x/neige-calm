@@ -147,6 +147,7 @@ fn dispatcher_filter_matches_push_kinds() {
         wave_id: wave.clone(),
         card_id: CardId::from("card"),
         author: EditAuthor::User,
+        author_plugin_id: None,
         edit_id: "e".into(),
         summary_before: String::new(),
         summary_after: String::new(),
@@ -591,6 +592,7 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         wave_id: wave.clone(),
         card_id: spec.clone(),
         author,
+        author_plugin_id: None,
         edit_id: "edit".into(),
         summary_before: String::new(),
         summary_after: String::new(),
@@ -601,6 +603,14 @@ fn event_warrants_spec_push_covers_push_allowlist() {
     assert!(event_warrants_spec_push(
         &report(EditAuthor::User),
         &ActorId::User,
+        &write
+    ));
+    // Issue #955 §5.7 — plugin-authored edits (proposal accept's Batch
+    // apply; envelope actor is Kernel, attribution rides on `author`)
+    // wake the spec exactly like user edits.
+    assert!(event_warrants_spec_push(
+        &report(EditAuthor::Plugin),
+        &ActorId::Kernel,
         &write
     ));
     assert!(!event_warrants_spec_push(
@@ -940,6 +950,7 @@ fn harness_observation_from_event_mapping_pin() {
                 wave_id: wave.clone(),
                 card_id: worker.clone(),
                 author: EditAuthor::User,
+                author_plugin_id: None,
                 edit_id: "e".into(),
                 summary_before: String::new(),
                 summary_after: "s".into(),
@@ -1358,6 +1369,7 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         wave_id: wave.clone(),
         card_id: spec.clone(),
         author,
+        author_plugin_id: None,
         edit_id: "e".into(),
         summary_before: String::new(),
         summary_after: String::new(),
@@ -1416,6 +1428,14 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             true,
         ),
         row(report_edited(EditAuthor::User), ActorId::User, true, true),
+        // #955 §5.7 — plugin-authored report edit pushes like a user
+        // edit; the accept tx emits it with the Kernel envelope actor.
+        row(
+            report_edited(EditAuthor::Plugin),
+            ActorId::Kernel,
+            true,
+            true,
+        ),
         row(
             Event::WorkspaceLeased {
                 wave_id: wave.clone(),
@@ -1668,6 +1688,38 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             Event::WaveDeleted {
                 id: wave.clone(),
                 cove_id: cove.clone(),
+            },
+            ActorId::User,
+            false,
+            false,
+        ),
+        // #955 — proposal lifecycle records never push; the spec wakes
+        // on the plugin-authored `wave.report_edited` the accept tx
+        // emits alongside instead.
+        row(
+            Event::ProposalSubmitted {
+                wave_id: wave.clone(),
+                proposal_id: "pp-1".into(),
+                plugin_id: "dev.neige.invest".into(),
+                subject_kind: "report".into(),
+                base_doc_heads: "ah1:deadbeef".into(),
+                ops: vec![calm_types::proposal::ProposalOp::DeleteBlock {
+                    block_id: "b_0001".into(),
+                    if_rev: 1,
+                }],
+                note: "why".into(),
+                idem_key: "idem-1".into(),
+            },
+            ActorId::Plugin("dev.neige.invest".into()),
+            false,
+            false,
+        ),
+        row(
+            Event::ProposalResolved {
+                wave_id: wave.clone(),
+                proposal_id: "pp-1".into(),
+                plugin_id: "dev.neige.invest".into(),
+                decision: calm_types::proposal::ProposalDecision::Accepted,
             },
             ActorId::User,
             false,

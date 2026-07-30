@@ -254,6 +254,12 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'ratify.resolved': noop(
     'Ratification decisions are spec-observed workflow history; no React Query cache consumes them yet.',
   ),
+  'proposal.submitted': noop(
+    'Proposal adjudication surfaces land in #955 PR-c; no React Query cache consumes proposal rows yet.',
+  ),
+  'proposal.resolved': noop(
+    'Proposal adjudication surfaces land in #955 PR-c; the accepted report change arrives via card.updated / wave.report_edited.',
+  ),
   'forge.scan.completed': noop(
     'Forge scan lifecycle is wave-scoped; no React Query cache consumes forge scan rows yet.',
   ),

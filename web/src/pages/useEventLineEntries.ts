@@ -147,7 +147,11 @@ export function eventToLineEntry(
       }
 
       const author =
-        ev.data.author === 'kernel' ? 'the kernel' : 'the spec agent';
+        ev.data.author === 'kernel'
+          ? 'the kernel'
+          : ev.data.author === 'plugin'
+            ? `plugin ${ev.data.author_plugin_id ?? '(unknown)'}`
+            : 'the spec agent';
       return entry(
         'Report regenerated',
         'agent',

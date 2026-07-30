@@ -557,8 +557,8 @@ describe('PR2 of #247: wave.report_edited', () => {
     }
   });
 
-  it('accepts every author discriminator (spec | user | kernel)', () => {
-    for (const author of ['spec', 'user', 'kernel'] as const) {
+  it('accepts every author discriminator (spec | user | kernel | plugin)', () => {
+    for (const author of ['spec', 'user', 'kernel', 'plugin'] as const) {
       const parsed = wireEventSchema.parse({
         ev: 'wave.report_edited',
         data: {
@@ -575,6 +575,27 @@ describe('PR2 of #247: wave.report_edited', () => {
       if (parsed.ev === 'wave.report_edited') {
         expect(parsed.data.author).toBe(author);
       }
+    }
+  });
+
+  it('parses the #955 plugin author arm with author_plugin_id', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'w',
+        card_id: 'c',
+        author: 'plugin',
+        author_plugin_id: 'dev.neige.invest',
+        edit_id: 'edit-1',
+        summary_before: '',
+        summary_after: '',
+        body_before: '',
+        body_after: '',
+      },
+    });
+    if (parsed.ev === 'wave.report_edited') {
+      expect(parsed.data.author).toBe('plugin');
+      expect(parsed.data.author_plugin_id).toBe('dev.neige.invest');
     }
   });
 
@@ -736,5 +757,97 @@ describe('entity sub-schemas', () => {
       expect(parsed.data.to).toBe('planning');
       expect(parsed.data.agent_message).toBe('planning rationale');
     }
+  });
+});
+
+// ---- #955 §5 PR-a: proposal-channel events ------------------------------
+describe('#955: proposal events', () => {
+  it('parses proposal.submitted with every op shape', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'proposal.submitted',
+      data: {
+        wave_id: 'w-1',
+        proposal_id: 'pp-1',
+        plugin_id: 'dev.neige.invest',
+        subject_kind: 'report',
+        base_doc_heads: 'ah1:deadbeef',
+        ops: [
+          {
+            op: 'upsert_block',
+            block_id: 'b_0001',
+            kind: 'prose',
+            payload: { markdown: 'revised\n' },
+            if_rev: 3,
+          },
+          {
+            op: 'upsert_block',
+            temp_id: 't1',
+            kind: 'prose',
+            payload: { markdown: '# New\n' },
+            anchor: 'at_end',
+          },
+          {
+            op: 'move_block',
+            block_id: 'b_0002',
+            if_rev: 1,
+            anchor: { after_block_id: 'temp:t1' },
+          },
+          { op: 'delete_block', block_id: 'b_0003', if_rev: 2 },
+        ],
+        note: 'why',
+        idem_key: 'idem-1',
+      },
+    });
+    expect(parsed.ev).toBe('proposal.submitted');
+    if (parsed.ev === 'proposal.submitted') {
+      expect(parsed.data.ops).toHaveLength(4);
+      expect(parsed.data.plugin_id).toBe('dev.neige.invest');
+    }
+  });
+
+  it('parses proposal.resolved for every decision', () => {
+    for (const decision of ['accepted', 'rejected', 'stale', 'withdrawn'] as const) {
+      const parsed = wireEventSchema.parse({
+        ev: 'proposal.resolved',
+        data: {
+          wave_id: 'w-1',
+          proposal_id: 'pp-1',
+          plugin_id: 'dev.neige.invest',
+          decision,
+        },
+      });
+      if (parsed.ev === 'proposal.resolved') {
+        expect(parsed.data.decision).toBe(decision);
+      }
+    }
+  });
+
+  it('rejects an unknown decision and a malformed op', () => {
+    expect(
+      wireEventSchema.safeParse({
+        ev: 'proposal.resolved',
+        data: {
+          wave_id: 'w-1',
+          proposal_id: 'pp-1',
+          plugin_id: 'p',
+          decision: 'merged',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      wireEventSchema.safeParse({
+        ev: 'proposal.submitted',
+        data: {
+          wave_id: 'w-1',
+          proposal_id: 'pp-1',
+          plugin_id: 'p',
+          subject_kind: 'report',
+          base_doc_heads: 'ah1:x',
+          ops: [{ op: 'delete_block', block_id: 'b_1' }],
+          note: '',
+          idem_key: 'k',
+        },
+      }).success,
+    ).toBe(false);
   });
 });
