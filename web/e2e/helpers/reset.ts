@@ -89,6 +89,7 @@ export async function createWaveInCove(
   request: APIRequestContext,
   coveId: string,
   title: string,
+  options?: { attachFolder?: boolean },
 ): Promise<{ id: string; title: string }> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
   // #250 PR 2: cwd is required, and we ask the server to attach this
@@ -106,7 +107,7 @@ export async function createWaveInCove(
       cove_id: coveId,
       title,
       cwd: `/tmp/playwright-cove-${coveId}`,
-      attach_folder: true,
+      attach_folder: options?.attachFolder ?? true,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

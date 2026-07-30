@@ -212,6 +212,7 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
     page.request,
     coveId,
     `axe backlink source ${Date.now()}`,
+    { attachFolder: false },
   );
   const reportResponse = await page.request.post(
     `/api/waves/${source.id}/report`,
