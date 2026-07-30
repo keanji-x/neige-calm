@@ -24,14 +24,15 @@
 //! proposal is refused at the door instead of rotting until someone
 //! presses accept.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use calm_types::proposal::{ProposalAnchor, ProposalOp};
 use calm_types::report_blocks;
 
 use crate::error::CalmError;
 use crate::wave_report::{
-    ReportDocOp, apply_report_op, block_not_found, classify_batch_member_error, fork_doc,
+    ReportDocOp, apply_report_op, block_not_found, check_batch_envelope, check_batch_member_kind,
+    classify_batch_member_error, fork_doc,
 };
 use crate::wave_report_doc::ReportDoc;
 
@@ -104,6 +105,14 @@ pub fn validate_proposal_ops(ops: &[ProposalOp]) -> Result<(), String> {
                         }
                     }
                     (None, Some(temp_id)) => {
+                        // NOTE the ordering below: the anchor is validated
+                        // against `declared` BEFORE this op's own `temp_id`
+                        // joins it. §5.2.1 allows a `temp:` reference to a
+                        // *previously* created block only, so
+                        // `{temp_id: "t", anchor: {after_block_id: "temp:t"}}`
+                        // — a creation anchored after itself — must be
+                        // refused here at submit, not survive to accept as
+                        // an unfixable structural 400.
                         if temp_id.is_empty() {
                             return Err(at("`temp_id` must be non-empty".into()));
                         }
@@ -124,13 +133,14 @@ pub fn validate_proposal_ops(ops: &[ProposalOp]) -> Result<(), String> {
                                 "`if_rev` is meaningless when creating a block — omit it".into(),
                             ));
                         }
-                        if anchor.is_none() {
+                        let Some(anchor) = anchor else {
                             return Err(at(
                                 "`anchor` is required when creating a block (at_start, \
                                  at_end, or { after_block_id })"
                                     .into(),
                             ));
-                        }
+                        };
+                        check_anchor_refs(anchor, &declared).map_err(&at)?;
                         declared.push(temp_id);
                     }
                 }
@@ -138,9 +148,6 @@ pub fn validate_proposal_ops(ops: &[ProposalOp]) -> Result<(), String> {
                 // block kind or schema-invalid payload is structural, so
                 // it can never become acceptable later.
                 render_block_content(kind, payload).map_err(&at)?;
-                if let Some(anchor) = anchor {
-                    check_anchor_refs(anchor, &declared).map_err(&at)?;
-                }
             }
             ProposalOp::MoveBlock {
                 block_id, anchor, ..
@@ -190,11 +197,20 @@ fn check_anchor_refs(anchor: &ProposalAnchor, declared: &[&str]) -> Result<(), S
 }
 
 /// Render a proposed block's `(kind, payload)` into the flat text the
-/// document stores. Mirrors `calm.report.blocks.upsert`'s content rules
-/// exactly (prose = markdown that may not smuggle a `neige-block` fence;
-/// data kinds = schema-validated payload rendered to its canonical
-/// fence) so a proposal cannot express a block shape the interactive
-/// tool would have refused.
+/// document stores.
+///
+/// The content *rules* are not restated here: they live in
+/// `calm_types::report_blocks` ([`check_prose_markdown`],
+/// [`render_data_block`], [`unknown_kind_message`]) and are shared with
+/// `calm.report.blocks.upsert`, so a proposal cannot express a block
+/// shape the interactive tool would have refused — and a new data kind
+/// or fence rule cannot land on one surface only. What stays here is the
+/// envelope: this wire shape always carries the markdown inside
+/// `payload.markdown` (the tool also accepts it top-level).
+///
+/// [`check_prose_markdown`]: calm_types::report_blocks::check_prose_markdown
+/// [`render_data_block`]: calm_types::report_blocks::render_data_block
+/// [`unknown_kind_message`]: calm_types::report_blocks::unknown_kind_message
 pub fn render_block_content(kind: &str, payload: &serde_json::Value) -> Result<String, String> {
     if kind == report_blocks::KIND_PROSE {
         let markdown = match payload.get("markdown") {
@@ -203,38 +219,15 @@ pub fn render_block_content(kind: &str, payload: &serde_json::Value) -> Result<S
                 return Err("kind=prose requires `payload.markdown` (string)".to_string());
             }
         };
-        if let Some(first) = report_blocks::invalid_neige_fences(&markdown)
-            .into_iter()
-            .next()
-        {
-            return Err(first);
-        }
-        if report_blocks::split_body(&markdown)
-            .iter()
-            .any(|slice| report_blocks::parse_fence(&slice.raw).is_some())
-        {
-            // `\` + newline swallows the newline AND the next line's
-            // leading whitespace, so the message is one clean sentence.
-            return Err(
-                "prose markdown may not embed a ```neige-block fence — propose the \
-                        data block with its own kind"
-                    .into(),
-            );
-        }
+        report_blocks::check_prose_markdown(&markdown)?;
         Ok(markdown)
     } else if report_blocks::is_data_kind(kind) {
         if !payload.is_object() {
             return Err(format!("kind={kind} requires a `payload` object"));
         }
-        report_blocks::validate_payload(kind, payload)
-            .map_err(|errors| format!("invalid `{kind}` payload: {errors}"))?;
-        Ok(report_blocks::render_fence(kind, payload))
+        report_blocks::render_data_block(kind, payload)
     } else {
-        Err(format!(
-            "unknown block kind `{kind}` — supported kinds: {}, {}",
-            report_blocks::KIND_PROSE,
-            report_blocks::DATA_KINDS.join(", ")
-        ))
+        Err(report_blocks::unknown_kind_message(kind))
     }
 }
 
@@ -256,14 +249,22 @@ pub(crate) fn apply_proposal_batch(
     base_doc_heads: &str,
     ops: &[ProposalOp],
 ) -> Result<(), CalmError> {
-    if ops.is_empty() {
-        return Err(CalmError::BadRequest(
-            "proposal batch invalid: ops must contain at least one operation".into(),
-        ));
-    }
+    // Shared with `ReportDocOp::Batch` (one definition, two arms): a
+    // batch is non-empty and carries at most `MAX_BATCH_OPS` members.
+    // The op-count ceiling matters at APPLY time, not only at submit —
+    // a replayed or legacy `ProposalSubmitted` event carrying more ops
+    // than the submit gate would accept today must not apply.
+    check_batch_envelope(ops.len()).map_err(|e| match e {
+        CalmError::BadRequest(msg) => {
+            CalmError::BadRequest(format!("proposal batch invalid: {msg}"))
+        }
+        other => other,
+    })?;
     // §5.2.1: the whole-document anchor is authoritative only for
     // creations with no block-level anchor. Checked once, up front, on
     // the incoming doc — every op in the batch sees the same baseline.
+    // NOTE the gate is `any(..)`: a proposal that MIXES a block-anchored
+    // op with one at_start/at_end creation is heads-gated as a whole.
     if ops.iter().any(needs_whole_doc_anchor) {
         let current = doc.doc_heads();
         if current != base_doc_heads {
@@ -278,23 +279,38 @@ pub(crate) fn apply_proposal_batch(
     let mut scratch = fork_doc(doc)?;
     // temp_id → the durable block id the kernel minted for it.
     let mut minted: HashMap<String, String> = HashMap::new();
+    // Blocks an EARLIER op of this same batch deleted. Referencing one
+    // is self-contradictory, not stale — see `ensure_not_self_deleted`.
+    let mut deleted: HashSet<String> = HashSet::new();
     for (i, op) in ops.iter().enumerate() {
-        let lowered = lower_proposal_op(&scratch, op, &minted)
+        let lowered = lower_proposal_op(&scratch, op, &minted, &deleted)
+            .map_err(|e| prefix_member_error(i, classify_batch_member_error(e)))?;
+        // Same member-kind ceiling the `Batch` arm applies, on the
+        // LOWERED member — `ProposalOp` cannot express a nested batch or
+        // a wholesale write today, and funnelling through the shared
+        // check is what keeps that true if `Batch` grows a new rule.
+        check_batch_member_kind(&lowered)
             .map_err(|e| prefix_member_error(i, classify_batch_member_error(e)))?;
         let outcome = apply_report_op(&mut scratch, &lowered)
             .map_err(|e| prefix_member_error(i, classify_batch_member_error(e)))?;
-        // Record the kernel-assigned id so later `temp:` anchors resolve.
-        if let ProposalOp::UpsertBlock {
-            temp_id: Some(temp_id),
-            ..
-        } = op
-        {
-            let outcome = outcome.ok_or_else(|| {
-                CalmError::Internal(format!(
-                    "wave_report_proposal: ops[{i}] created a block but reported no id"
-                ))
-            })?;
-            minted.insert(temp_id.clone(), outcome.id);
+        match op {
+            // Record the kernel-assigned id so later `temp:` anchors
+            // resolve.
+            ProposalOp::UpsertBlock {
+                temp_id: Some(temp_id),
+                ..
+            } => {
+                let outcome = outcome.ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "wave_report_proposal: ops[{i}] created a block but reported no id"
+                    ))
+                })?;
+                minted.insert(temp_id.clone(), outcome.id);
+            }
+            ProposalOp::DeleteBlock { block_id, .. } => {
+                deleted.insert(block_id.clone());
+            }
+            _ => {}
         }
     }
     *doc = scratch;
@@ -334,6 +350,7 @@ fn lower_proposal_op(
     doc: &ReportDoc,
     op: &ProposalOp,
     minted: &HashMap<String, String>,
+    deleted: &HashSet<String>,
 ) -> Result<ReportDocOp, CalmError> {
     let order = doc
         .block_index()
@@ -351,6 +368,7 @@ fn lower_proposal_op(
             let content = render_block_content(kind, payload).map_err(CalmError::BadRequest)?;
             match (block_id, temp_id) {
                 (Some(block_id), None) => {
+                    ensure_not_self_deleted(block_id, deleted)?;
                     // Replace. `if_rev` presence was already required at
                     // submit time; re-assert it here because apply is
                     // the authoritative layer (a stored proposal from a
@@ -379,7 +397,7 @@ fn lower_proposal_op(
                         ProposalAnchor::AtStart => 0,
                         ProposalAnchor::AtEnd => ids.len(),
                         ProposalAnchor::AfterBlockId(target) => {
-                            resolve_anchor_index(target, &ids, minted)? + 1
+                            resolve_anchor_index(target, &ids, minted, deleted)? + 1
                         }
                     };
                     Ok(ReportDocOp::UpsertBlock {
@@ -401,6 +419,7 @@ fn lower_proposal_op(
             if_rev,
             anchor,
         } => {
+            ensure_not_self_deleted(block_id, deleted)?;
             let from = ids
                 .iter()
                 .position(|id| *id == block_id.as_str())
@@ -411,7 +430,7 @@ fn lower_proposal_op(
                 ProposalAnchor::AtStart => 0,
                 ProposalAnchor::AtEnd => ids.len().saturating_sub(1),
                 ProposalAnchor::AfterBlockId(target) => {
-                    let target_idx = resolve_anchor_index(target, &ids, minted)?;
+                    let target_idx = resolve_anchor_index(target, &ids, minted, deleted)?;
                     if target_idx == from {
                         return Err(CalmError::BadRequest(
                             "a block cannot be anchored after itself".into(),
@@ -433,10 +452,13 @@ fn lower_proposal_op(
                 if_rev: Some(*if_rev),
             })
         }
-        ProposalOp::DeleteBlock { block_id, if_rev } => Ok(ReportDocOp::DeleteBlock {
-            id: block_id.clone(),
-            if_rev: *if_rev,
-        }),
+        ProposalOp::DeleteBlock { block_id, if_rev } => {
+            ensure_not_self_deleted(block_id, deleted)?;
+            Ok(ReportDocOp::DeleteBlock {
+                id: block_id.clone(),
+                if_rev: *if_rev,
+            })
+        }
     }
 }
 
@@ -446,6 +468,7 @@ fn resolve_anchor_index(
     target: &str,
     ids: &[&str],
     minted: &HashMap<String, String>,
+    deleted: &HashSet<String>,
 ) -> Result<usize, CalmError> {
     let resolved: &str = match target.strip_prefix(TEMP_REF_PREFIX) {
         Some(temp) => minted.get(temp).map(String::as_str).ok_or_else(|| {
@@ -458,11 +481,31 @@ fn resolve_anchor_index(
         })?,
         None => target,
     };
+    ensure_not_self_deleted(resolved, deleted)?;
     ids.iter()
         .position(|id| *id == resolved)
         // Vanished anchor target = snapshot decay ⇒ the caller's
         // classifier maps this to the proposal-stale class (§5.2.1).
         .ok_or_else(|| block_not_found(resolved))
+}
+
+/// A block an EARLIER op of this same batch deleted is a STRUCTURAL
+/// error, not staleness (§5.2.1's error split).
+///
+/// The distinction is the whole point of the split: "absent from the base
+/// document" is snapshot decay — re-read the report, re-propose, and it
+/// can succeed. "This proposal deleted it two ops ago" is
+/// self-contradictory: no snapshot in any future makes it applicable, so
+/// telling the plugin `stale` ("retry against a fresh baseline") would
+/// invite endless resubmission of something that can never apply.
+fn ensure_not_self_deleted(id: &str, deleted: &HashSet<String>) -> Result<(), CalmError> {
+    if deleted.contains(id) {
+        return Err(CalmError::BadRequest(format!(
+            "block `{id}` was deleted by an earlier op of this proposal — no re-read can \
+             make this proposal applicable; drop one of the two ops"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

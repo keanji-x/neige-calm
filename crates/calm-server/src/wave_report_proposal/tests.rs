@@ -137,6 +137,26 @@ fn validate_rejects_forward_and_unknown_temp_refs() {
 }
 
 #[test]
+fn validate_rejects_a_creation_anchored_after_itself() {
+    // §5.2.1 permits a `temp:` reference to a PREVIOUSLY created block
+    // only, so an op anchoring on its own `temp_id` must be refused at
+    // submit — not survive to accept and die there as an unfixable
+    // structural 400. Regression for review finding codex#3.
+    let ops = vec![create("t", ProposalAnchor::AfterBlockId("temp:t".into()))];
+    let err = validate_proposal_ops(&ops).unwrap_err();
+    assert!(
+        err.contains("no earlier op"),
+        "self-anchored creation must be refused at submit: {err}"
+    );
+    // The legal neighbour still passes: op 1 may anchor on op 0's temp id.
+    validate_proposal_ops(&[
+        create("t", ProposalAnchor::AtEnd),
+        create("u", ProposalAnchor::AfterBlockId("temp:t".into())),
+    ])
+    .expect("backward temp ref stays legal");
+}
+
+#[test]
 fn validate_rejects_duplicate_temp_ids() {
     let ops = vec![
         create("t", ProposalAnchor::AtEnd),
@@ -162,7 +182,7 @@ fn validate_rejects_unknown_kind_and_bad_payload() {
     assert!(
         validate_proposal_ops(&[bad_kind])
             .unwrap_err()
-            .contains("unknown block kind")
+            .contains("unknown kind")
     );
     let prose_without_markdown = ProposalOp::UpsertBlock {
         block_id: None,
@@ -386,6 +406,99 @@ fn empty_batch_is_bad_request() {
     let heads = doc.doc_heads();
     let err = apply_proposal_batch(&mut doc, &heads, &[]).unwrap_err();
     assert!(matches!(err, CalmError::BadRequest(_)), "got {err:?}");
+}
+
+#[test]
+fn apply_enforces_the_op_ceiling_even_for_a_stored_event() {
+    // The submit gate is not the only guard: a replayed or legacy
+    // `ProposalSubmitted` carrying more ops than today's ceiling must not
+    // apply either. Shared with `ReportDocOp::Batch` via
+    // `check_batch_envelope`, so the two arms cannot disagree.
+    let (mut doc, _) = two_block_doc();
+    let heads = doc.doc_heads();
+    let before = doc.project().unwrap();
+    let ops: Vec<ProposalOp> = (0..crate::wave_report::MAX_BATCH_OPS + 1)
+        .map(|i| create(&format!("t{i}"), ProposalAnchor::AtEnd))
+        .collect();
+    let err = apply_proposal_batch(&mut doc, &heads, &ops).unwrap_err();
+    assert!(matches!(err, CalmError::BadRequest(_)), "got {err:?}");
+    assert!(format!("{err:?}").contains("op batch limit"), "{err:?}");
+    assert_eq!(doc.project().unwrap(), before, "nothing applied");
+}
+
+#[test]
+fn anchor_on_a_block_this_batch_deleted_is_structural_not_stale() {
+    // Two failure modes that look identical at the doc level but must NOT
+    // be classified alike (review finding subagent#6):
+    //
+    //   * the anchor target is absent from the BASE document — snapshot
+    //     decay, so `stale` is right: re-read, re-propose, it can work;
+    //   * an earlier op of THIS batch deleted the anchor target — the
+    //     proposal contradicts itself, so no re-read can ever fix it and
+    //     `stale` would invite endless resubmission.
+    let (mut doc, blocks) = two_block_doc();
+    let heads = doc.doc_heads();
+    let (a_id, a_rev) = blocks[0].clone();
+
+    // Class 1: absent from the base document ⇒ Conflict (stale).
+    let absent = apply_proposal_batch(
+        &mut doc,
+        &heads,
+        &[create("t", ProposalAnchor::AfterBlockId("b_gone".into()))],
+    )
+    .unwrap_err();
+    assert!(matches!(absent, CalmError::Conflict(_)), "got {absent:?}");
+
+    // Class 2: deleted by ops[0] of this very batch ⇒ BadRequest.
+    let before = doc.project().unwrap();
+    let self_deleted = apply_proposal_batch(
+        &mut doc,
+        &heads,
+        &[
+            ProposalOp::DeleteBlock {
+                block_id: a_id.clone(),
+                if_rev: a_rev,
+            },
+            create("t", ProposalAnchor::AfterBlockId(a_id.clone())),
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        matches!(self_deleted, CalmError::BadRequest(_)),
+        "self-contradictory anchor must be structural, got {self_deleted:?}"
+    );
+    assert!(
+        format!("{self_deleted:?}").contains("deleted by an earlier op"),
+        "{self_deleted:?}"
+    );
+    assert_eq!(doc.project().unwrap(), before, "whole batch rolled back");
+
+    // Same rule for moving and re-deleting a block this batch deleted.
+    for second in [
+        ProposalOp::MoveBlock {
+            block_id: a_id.clone(),
+            if_rev: a_rev,
+            anchor: ProposalAnchor::AtEnd,
+        },
+        ProposalOp::DeleteBlock {
+            block_id: a_id.clone(),
+            if_rev: a_rev,
+        },
+    ] {
+        let err = apply_proposal_batch(
+            &mut doc,
+            &heads,
+            &[
+                ProposalOp::DeleteBlock {
+                    block_id: a_id.clone(),
+                    if_rev: a_rev,
+                },
+                second,
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)), "got {err:?}");
+    }
 }
 
 #[test]

@@ -172,6 +172,61 @@ pub fn flatten(blocks: &[BlockSlice]) -> String {
     blocks.iter().map(|block| block.raw.as_str()).collect()
 }
 
+// ---------------------------------------------------------------------------
+// Block-content rules — the ONE definition of "what a block may hold"
+// ---------------------------------------------------------------------------
+//
+// Every write end that mints a block's stored content funnels through
+// these three helpers: the interactive MCP tool
+// (`calm.report.blocks.upsert`) and the #955 §5.2.1 proposal lowering.
+// They previously carried statement-for-statement copies of the same
+// prose/data-kind rules, which would have drifted the first time a data
+// kind or a fence rule changed. Only the *envelope* (how each surface
+// finds `markdown` / `payload` in its own argument shape, and how it
+// prefixes the resulting message) stays at the call site.
+
+/// Prose content rule: markdown may not smuggle a `neige-block` fence,
+/// well-formed or typo'd. A well-formed one would splinter into its own
+/// block on the next wholesale write; a malformed one would silently
+/// persist a broken data block as prose. Returns the message for the
+/// first violation.
+pub fn check_prose_markdown(markdown: &str) -> Result<(), String> {
+    if let Some(first) = invalid_neige_fences(markdown).into_iter().next() {
+        return Err(first);
+    }
+    if split_body(markdown)
+        .iter()
+        .any(|slice| parse_fence(&slice.raw).is_some())
+    {
+        return Err(
+            "prose markdown may not embed a ```neige-block fence — create the data \
+                    block with its own kind"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Data-kind content rule: the payload is schema-validated and the
+/// stored content is its canonical fence (deterministic pretty JSON).
+/// `payload` must already be known to be an object — each surface words
+/// that check in its own argument vocabulary.
+pub fn render_data_block(kind: &str, payload: &serde_json::Value) -> Result<String, String> {
+    validate_payload(kind, payload)
+        .map_err(|errors| format!("invalid `{kind}` payload: {errors}"))?;
+    Ok(render_fence(kind, payload))
+}
+
+/// The shared "this is not a block kind" message, so the supported-kind
+/// list is enumerated in exactly one place.
+pub fn unknown_kind_message(kind: &str) -> String {
+    format!(
+        "unknown kind `{kind}` — supported kinds: {}, {}",
+        kinds::KIND_PROSE,
+        kinds::DATA_KINDS.join(", ")
+    )
+}
+
 /// A block's contribution to the flat `body` projection: prose blocks
 /// contribute their markdown verbatim; non-prose blocks contribute
 /// their canonical fence ([`fence::render_fence`] — deterministic, so

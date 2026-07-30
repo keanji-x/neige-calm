@@ -24,9 +24,13 @@
 //!     `CardUpdated`/`WaveReportEdited(author = plugin)` pair, all in the
 //!     accept transaction;
 //!   * an anchor moved under the proposal (rev mismatch, vanished block,
-//!     moved `base_doc_heads`) ⇒ `stale`, recorded in its own single
-//!     transaction with **no** report change (§5.6: `stale` is a decision,
-//!     not a third event and not a persistent flag);
+//!     moved `base_doc_heads`) ⇒ `stale`, appended by **that same accept
+//!     transaction** with no report change and then committed (§5.6:
+//!     `stale` is a decision, not a third event and not a persistent
+//!     flag). Recording it in a second transaction would leave a window
+//!     in which a concurrent reject/withdraw commits first and an
+//!     already-authoritatively-stale accept comes back 409 — the verdict
+//!     has to land where it was determined;
 //!   * the proposal is structurally impossible (`400`) ⇒ nothing is
 //!     recorded and it **stays pending**. Per §5.2.1's error split such a
 //!     proposal can never succeed against any snapshot, so calling it
@@ -43,7 +47,8 @@ use crate::ids::ActorId;
 use crate::model::Wave;
 use crate::state::{AppState, RouteState};
 use crate::wave_report::{
-    AcceptFailure, ProposalAcceptCtx, persist_report_proposal_accept, resolve_report_for_wave,
+    AcceptFailure, ProposalAcceptCtx, ProposalAcceptOutcome, persist_report_proposal_accept,
+    resolve_report_for_wave,
 };
 
 use axum::{
@@ -238,22 +243,28 @@ pub(crate) async fn accept_proposal(
     )
     .await
     {
-        Ok(_card) => Ok(Json(ResolveProposalResponse {
+        Ok(ProposalAcceptOutcome::Accepted(_card)) => Ok(Json(ResolveProposalResponse {
             proposal_id: row.proposal_id,
             wave_id: row.wave_id,
             decision: ProposalDecision::Accepted,
             reason: None,
+        })),
+        // Anchors had moved. The accept transaction ITSELF recorded the
+        // `stale` verdict and committed with the report untouched — there
+        // is nothing left for this route to write, which is the whole
+        // point: no window exists in which a concurrent reject/withdraw
+        // could overtake an already-determined stale verdict.
+        Ok(ProposalAcceptOutcome::Stale(reason)) => Ok(Json(ResolveProposalResponse {
+            proposal_id: row.proposal_id,
+            wave_id: row.wave_id,
+            decision: ProposalDecision::Stale,
+            reason: Some(reason),
         })),
         // Someone else resolved it between the pre-flight and the tx.
         Err(AcceptFailure::NotPending) => Err(CalmError::Conflict(format!(
             "proposal {} is no longer pending",
             row.proposal_id
         ))),
-        // Anchors moved ⇒ `stale`, in its own single transaction. The
-        // accept tx rolled back whole, so the report is untouched.
-        Err(AcceptFailure::Stale(reason)) => {
-            record_decision(&s, &row, &wave, ProposalDecision::Stale, Some(reason)).await
-        }
         Err(AcceptFailure::Other(e)) => Err(e),
     }
 }

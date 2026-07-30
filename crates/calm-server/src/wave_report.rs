@@ -196,34 +196,57 @@ pub(crate) const PROPOSAL_NOT_PENDING: &str = "proposal is no longer pending";
 /// carries. Also pinned by `accept_error_classes_are_disjoint`.
 pub(crate) const PROPOSAL_BATCH_CONFLICT: &str = "proposal batch conflict: ";
 
-/// What went wrong in an accept transaction (§5.6). The split matters: a
-/// lost double-resolve race is a 409 the user must see, while a failed
-/// anchor is not an error at all — it is the `stale` decision, which the
-/// route then records in its own single transaction (no report change).
+/// What went wrong in an accept transaction (§5.6). Note what is NOT
+/// here any more: staleness. A failed anchor is not an error, it is the
+/// `stale` verdict, and since the verdict is only authoritative in the
+/// transaction that determined it, that transaction records it itself and
+/// returns [`ProposalAcceptOutcome::Stale`].
 #[derive(Debug)]
 pub enum AcceptFailure {
     /// The proposal was resolved by someone else between the pre-flight
     /// and this transaction ⇒ 409.
     NotPending,
-    /// An in-tx anchoring check failed ⇒ resolve the proposal as
-    /// `stale`. Carries the conflict message for the response body.
-    Stale(String),
     /// Anything else (structural `BadRequest`, `NotFound`, `Internal`) —
     /// surfaced verbatim; the proposal stays pending.
     Other(CalmError),
 }
 
+/// How an accept transaction ended (§5.6). Both variants COMMITTED: the
+/// verdict and its (absence of) report change are one transaction.
+// One-shot return value, moved straight into the response builder and
+// dropped — never stored or collected, so the size gap between "here is
+// the updated card" and "here is why nothing changed" costs nothing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub enum ProposalAcceptOutcome {
+    /// Every anchoring check passed: the report changed and
+    /// `ProposalResolved { accepted }` + `CardUpdated` +
+    /// `WaveReportEdited` committed together.
+    Accepted(Card),
+    /// An anchoring check failed inside the accept transaction. That
+    /// SAME transaction appended `ProposalResolved { stale }` and left
+    /// the report untouched (no `CardUpdated`, no `WaveReportEdited`, the
+    /// card row and CRDT blob never written). Carries the conflict
+    /// message for the response body.
+    ///
+    /// Resolving in-tx is not a nicety: it closes the race where the
+    /// determination is made, the transaction rolls back, and a
+    /// concurrent reject/withdraw commits before a second transaction
+    /// can record the stale verdict — turning an already-authoritatively
+    /// -stale accept into a 409 or a different terminal decision.
+    Stale(String),
+}
+
 /// Classify the error a proposal-accept [`persist_report_with_shadow`]
-/// call returned. Structural `BadRequest`s deliberately do NOT become
-/// `stale`: per §5.2.1's error split they can never succeed against any
-/// snapshot, so staling them would hide an unfixable proposal behind a
-/// "retry against a fresh baseline" verdict.
+/// call returned. Anchoring conflicts never reach here — they are
+/// resolved inside the transaction. Structural `BadRequest`s
+/// deliberately do NOT become `stale` either: per §5.2.1's error split
+/// they can never succeed against any snapshot, so staling them would
+/// hide an unfixable proposal behind a "retry against a fresh baseline"
+/// verdict.
 pub fn classify_accept_error(e: CalmError) -> AcceptFailure {
     match e {
         CalmError::Conflict(msg) if msg == PROPOSAL_NOT_PENDING => AcceptFailure::NotPending,
-        CalmError::Conflict(msg) if msg.starts_with(PROPOSAL_BATCH_CONFLICT) => {
-            AcceptFailure::Stale(msg)
-        }
         other => AcceptFailure::Other(other),
     }
 }
@@ -378,32 +401,9 @@ pub(crate) fn apply_report_op(
             Ok(None)
         }
         ReportDocOp::Batch(ops) => {
-            if ops.is_empty() {
-                return Err(CalmError::BadRequest(
-                    "batch requires at least one op".into(),
-                ));
-            }
+            check_batch_envelope(ops.len())?;
             for member in ops {
-                match member {
-                    ReportDocOp::Batch(_) => {
-                        return Err(CalmError::BadRequest(
-                            "nested batches are not allowed — flatten the op list".into(),
-                        ));
-                    }
-                    // The proposal wire (`ProposalOp`) cannot express
-                    // the wholesale writes; deny them at the kernel
-                    // choke point too so an upstream op-mapping bug
-                    // can never turn a proposal into a full-body
-                    // rewrite (§5.2.2).
-                    ReportDocOp::Replace { .. } | ReportDocOp::WriteMarkdown { .. } => {
-                        return Err(CalmError::BadRequest(
-                            "replace/write_markdown are not allowed inside a batch — \
-                             proposals carry block-level ops only"
-                                .into(),
-                        ));
-                    }
-                    _ => {}
-                }
+                check_batch_member_kind(member)?;
             }
             // Whole-batch atomicity at the doc level: run every op on
             // a scratch copy and only swap it in on full success. The
@@ -430,6 +430,61 @@ pub(crate) fn apply_report_op(
             crate::wave_report_proposal::apply_proposal_batch(doc, base_doc_heads, ops)?;
             Ok(None)
         }
+    }
+}
+
+/// Max members one batch-shaped op may carry. Shared by
+/// [`ReportDocOp::Batch`] and [`ReportDocOp::ProposalBatch`], and by
+/// `neige.proposal.submit`'s §5.2 op quota — one number, so the submit
+/// gate and the apply gate cannot disagree.
+pub const MAX_BATCH_OPS: usize = 32;
+
+/// The shape invariants EVERY batch-shaped op shares (§5.2.2): at least
+/// one member, at most [`MAX_BATCH_OPS`].
+///
+/// Both arms of [`apply_report_op`] funnel through here rather than
+/// re-implementing the check, which is what stops a future rule added
+/// for `Batch` from silently missing `ProposalBatch`. Enforcing the
+/// count at apply time (not only at submit) matters because a replayed
+/// or legacy `ProposalSubmitted` event can carry ops the current submit
+/// gate would have refused.
+pub(crate) fn check_batch_envelope(len: usize) -> Result<(), CalmError> {
+    if len == 0 {
+        return Err(CalmError::BadRequest(
+            "ops must contain at least one operation".into(),
+        ));
+    }
+    if len > MAX_BATCH_OPS {
+        return Err(CalmError::BadRequest(format!(
+            "{len} ops exceeds the {MAX_BATCH_OPS}-op batch limit"
+        )));
+    }
+    Ok(())
+}
+
+/// Member kinds no batch may contain, for either batch flavour.
+///
+/// Nested batches would break the flat "one scratch fork, one pass"
+/// atomicity model. The wholesale writes are denied at this kernel choke
+/// point so an upstream op-mapping bug can never turn a proposal into a
+/// full-body rewrite (§5.2.2) — `ProposalOp` cannot express any of them
+/// today, and routing the proposal path through the same function is
+/// what keeps that a checked fact rather than a hope.
+pub(crate) fn check_batch_member_kind(member: &ReportDocOp) -> Result<(), CalmError> {
+    match member {
+        ReportDocOp::Batch(_) | ReportDocOp::ProposalBatch { .. } => Err(CalmError::BadRequest(
+            "nested batches are not allowed — flatten the op list".into(),
+        )),
+        ReportDocOp::Replace { .. } | ReportDocOp::WriteMarkdown { .. } => {
+            Err(CalmError::BadRequest(
+                "replace/write_markdown are not allowed inside a batch — proposals carry \
+                 block-level ops only"
+                    .into(),
+            ))
+        }
+        ReportDocOp::UpsertBlock { .. }
+        | ReportDocOp::MoveBlock { .. }
+        | ReportDocOp::DeleteBlock { .. } => Ok(()),
     }
 }
 
@@ -589,7 +644,7 @@ pub async fn persist_report(
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
 ) -> Result<Card, CalmError> {
-    let (updated, _outcome) = persist_report_with_shadow(
+    let outcome = persist_report_with_shadow(
         repo,
         events,
         write,
@@ -609,6 +664,7 @@ pub async fn persist_report(
         None,
     )
     .await?;
+    let (updated, _block) = outcome.into_written()?;
     Ok(updated)
 }
 
@@ -620,9 +676,11 @@ pub async fn persist_report(
 /// report change (the kernel writes on the plugin's behalf; plugin
 /// attribution rides on `author`/`author_plugin_id`, §5.3) while the
 /// `ProposalResolved` event inside the same tx carries `actor = User`.
-/// Errors come back classified by [`classify_accept_error`], so the
-/// route can tell "someone else resolved it" (409) from "anchors moved"
-/// (record `stale`).
+///
+/// Both verdicts commit: `accepted` with the report change,
+/// [`ProposalAcceptOutcome::Stale`] with no report change at all. Only a
+/// lost double-resolve race (409) or a structural/internal failure comes
+/// back as an `Err` — see [`classify_accept_error`].
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_report_proposal_accept(
     repo: &dyn RouteRepo,
@@ -634,7 +692,7 @@ pub async fn persist_report_proposal_accept(
     base_doc_heads: String,
     ops: Vec<calm_types::proposal::ProposalOp>,
     accept: ProposalAcceptCtx,
-) -> Result<Card, AcceptFailure> {
+) -> Result<ProposalAcceptOutcome, AcceptFailure> {
     persist_report_with_shadow(
         repo,
         events,
@@ -655,8 +713,46 @@ pub async fn persist_report_proposal_accept(
         Some(accept),
     )
     .await
-    .map(|(card, _)| card)
+    .map(|outcome| match outcome {
+        PersistOutcome::Written { card, .. } => ProposalAcceptOutcome::Accepted(card),
+        PersistOutcome::ProposalStale { reason } => ProposalAcceptOutcome::Stale(reason),
+    })
     .map_err(classify_accept_error)
+}
+
+/// How a [`persist_report_with_shadow`] transaction ended.
+///
+/// Every caller but the #955 accept path only ever sees `Written` (the
+/// stale arm needs a `ProposalAcceptCtx` to exist at all), so they use
+/// [`PersistOutcome::into_written`] to flatten it back.
+// Same one-shot rationale as `ProposalAcceptOutcome`.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub(crate) enum PersistOutcome {
+    /// The op applied: the card row + CRDT blob were rewritten and the
+    /// `CardUpdated` / `WaveReportEdited` pair emitted.
+    Written {
+        card: Card,
+        block: Option<BlockOpOutcome>,
+    },
+    /// #955 §5.6, accept path only: the proposal batch hit an anchoring
+    /// conflict, so this transaction recorded `ProposalResolved { stale }`
+    /// and committed WITHOUT touching the report.
+    ProposalStale { reason: String },
+}
+
+impl PersistOutcome {
+    /// Flatten the outcome for the non-proposal callers. `ProposalStale`
+    /// is unreachable without a `ProposalAcceptCtx`, so seeing it here is
+    /// a kernel bug, not a runtime condition — hence `Internal`.
+    pub(crate) fn into_written(self) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+        match self {
+            PersistOutcome::Written { card, block } => Ok((card, block)),
+            PersistOutcome::ProposalStale { reason } => Err(CalmError::Internal(format!(
+                "wave_report: non-proposal write reported a proposal-stale outcome: {reason}"
+            ))),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -677,7 +773,7 @@ pub(crate) async fn persist_report_with_shadow(
     // `Some` ⇒ this is a #955 §5.6 proposal accept: re-check + resolve
     // the proposal in the same tx as the apply. See `ProposalAcceptCtx`.
     proposal: Option<ProposalAcceptCtx>,
-) -> Result<(Card, Option<BlockOpOutcome>), CalmError> {
+) -> Result<PersistOutcome, CalmError> {
     let report_card_id = report_card.id.clone();
     let wave_id = wave.id.clone();
     let cove_id = wave.cove_id.clone();
@@ -692,12 +788,8 @@ pub(crate) async fn persist_report_with_shadow(
     };
     let report_card_id_inner = report_card_id.clone();
     let wave_id_for_event = wave_id.clone();
-    let (updated, _ids) = write_with_actor_events_typed::<(Card, Option<BlockOpOutcome>), _>(
-        repo,
-        None,
-        events,
-        write,
-        move |tx| {
+    let (updated, _ids) =
+        write_with_actor_events_typed::<PersistOutcome, _>(repo, None, events, write, move |tx| {
             let id = report_card_id_inner.as_str().to_string();
             let report_card_id = report_card_id_inner.clone();
             let wave_id = wave_id_for_event.clone();
@@ -729,21 +821,11 @@ pub(crate) async fn persist_report_with_shadow(
                     {
                         return Err(CalmError::Conflict(PROPOSAL_NOT_PENDING.into()));
                     }
-                    // Actor is the human adjudicator (§5.4's User-only
-                    // hard clause), even though the report change below
-                    // is written by the kernel — §5.3 accepts the
-                    // mixed-actor transaction explicitly.
-                    events.push((
-                        ActorId::User,
-                        wave_scope.clone(),
-                        Event::ProposalResolved {
-                            wave_id: wave_id.clone(),
-                            proposal_id: accept.proposal_id.clone(),
-                            plugin_id: accept.plugin_id.clone(),
-                            decision: calm_types::proposal::ProposalDecision::Accepted,
-                        },
-                    ));
                 }
+                // The resolve event is NOT pushed yet: which decision it
+                // carries is only known once the ops have been tried, and
+                // §5.6 requires the verdict to commit in the very tx that
+                // determined it. See the `apply_report_op` call below.
                 if auto_promote_draft
                     && let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id).await?
                 {
@@ -820,7 +902,61 @@ pub(crate) async fn persist_report_with_shadow(
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the
                 //    tx (nothing written, no events emitted).
-                let outcome = apply_report_op(&mut doc, &op)?;
+                //
+                //    The one exception is the #955 §5.6 accept path: an
+                //    anchoring conflict there is not a failure, it IS the
+                //    `stale` verdict, and the verdict is only
+                //    authoritative in the transaction that determined it.
+                //    So we record it HERE and commit, instead of rolling
+                //    back and racing a second transaction against a
+                //    concurrent reject/withdraw.
+                let outcome = match apply_report_op(&mut doc, &op) {
+                    Ok(outcome) => outcome,
+                    Err(CalmError::Conflict(reason))
+                        if proposal.is_some() && reason.starts_with(PROPOSAL_BATCH_CONFLICT) =>
+                    {
+                        let accept = proposal.as_ref().expect("checked by the guard");
+                        events.push((
+                            ActorId::User,
+                            wave_scope.clone(),
+                            Event::ProposalResolved {
+                                wave_id: wave_id.clone(),
+                                proposal_id: accept.proposal_id.clone(),
+                                plugin_id: accept.plugin_id.clone(),
+                                decision: calm_types::proposal::ProposalDecision::Stale,
+                            },
+                        ));
+                        // Return BEFORE step 4/5: no `card_update_with_crdt_tx`,
+                        // so neither the projected payload nor the CRDT
+                        // blob is written. `apply_proposal_batch` runs on
+                        // its own scratch fork and only swaps it in on
+                        // full success, so `doc` here is byte-identical to
+                        // what was loaded — the in-memory legacy-layout
+                        // migration from step 1 is discarded along with
+                        // it, exactly as it would have been by a rollback.
+                        return Ok((PersistOutcome::ProposalStale { reason }, events));
+                    }
+                    Err(e) => return Err(e),
+                };
+                // The apply succeeded, so the accept path's verdict is
+                // `accepted`; it goes in front of the report events so a
+                // consumer reading the batch in order sees the decision
+                // before its effect. Actor is the human adjudicator
+                // (§5.4's User-only hard clause) even though the report
+                // change below is written by the kernel — §5.3 accepts
+                // the mixed-actor transaction explicitly.
+                if let Some(accept) = proposal.as_ref() {
+                    events.push((
+                        ActorId::User,
+                        wave_scope.clone(),
+                        Event::ProposalResolved {
+                            wave_id: wave_id.clone(),
+                            proposal_id: accept.proposal_id.clone(),
+                            plugin_id: accept.plugin_id.clone(),
+                            decision: calm_types::proposal::ProposalDecision::Accepted,
+                        },
+                    ));
+                }
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache. Since #960 PR2 the
                 //    CRDT block map is the source of truth: `body` is
@@ -881,11 +1017,16 @@ pub(crate) async fn persist_report_with_shadow(
                     Event::CardUpdated(updated.clone()),
                 ));
                 events.push((actor, scope, report_edited));
-                Ok(((updated, outcome), events))
+                Ok((
+                    PersistOutcome::Written {
+                        card: updated,
+                        block: outcome,
+                    },
+                    events,
+                ))
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     Ok(updated)
 }
 
@@ -1256,17 +1397,27 @@ mod tests {
             classify_accept_error(CalmError::Conflict(PROPOSAL_NOT_PENDING.into())),
             AcceptFailure::NotPending
         ));
-        // Anything the batch classifier mints carries the prefix.
+        // Anything the batch classifier mints carries the prefix — which
+        // is the fact the IN-TX stale arm keys on (it can only resolve
+        // `stale` for a conflict it is certain came from the batch, never
+        // for an arbitrary Conflict escaping some other in-tx read).
         let batched =
             classify_batch_member_error(CalmError::Conflict("rev conflict on block b_0001".into()));
+        assert!(
+            matches!(&batched, CalmError::Conflict(msg) if msg.starts_with(PROPOSAL_BATCH_CONFLICT)),
+            "got {batched:?}"
+        );
+        let vanished = classify_batch_member_error(block_not_found("b_0001"));
+        assert!(
+            matches!(&vanished, CalmError::Conflict(msg) if msg.starts_with(PROPOSAL_BATCH_CONFLICT)),
+            "got {vanished:?}"
+        );
+        // Should one ever escape the transaction unrecognized, it must NOT
+        // be mistaken for a double-resolve race — it is a plain error, and
+        // the proposal stays pending rather than silently terminalizing.
         assert!(matches!(
             classify_accept_error(batched),
-            AcceptFailure::Stale(_)
-        ));
-        let vanished = classify_batch_member_error(block_not_found("b_0001"));
-        assert!(matches!(
-            classify_accept_error(vanished),
-            AcceptFailure::Stale(_)
+            AcceptFailure::Other(CalmError::Conflict(_))
         ));
         // Structural malformation stays an error — never silently stale.
         let structural = classify_batch_member_error(CalmError::BadRequest(
@@ -1381,7 +1532,9 @@ mod tests {
             None,
         )
         .await
-        .expect("seed persist");
+        .expect("seed persist")
+        .into_written()
+        .expect("seed wrote the report");
         let seeded: WaveReportPayload =
             serde_json::from_value(updated.payload.clone()).expect("seeded payload");
         let block = seeded.blocks.as_ref().expect("blocks")[0].clone();

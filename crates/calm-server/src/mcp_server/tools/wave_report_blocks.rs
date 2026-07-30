@@ -312,22 +312,11 @@ async fn blocks_upsert(
         // A prose block may not smuggle data blocks: an embedded
         // ```neige-block fence (well-formed or typo'd) would either
         // splinter into its own block on the next wholesale write or
-        // silently persist a malformed data block as prose.
-        if let Some(first) = report_blocks::invalid_neige_fences(&markdown)
-            .into_iter()
-            .next()
-        {
-            return Err(RpcError::invalid_params(format!("{tool}: {first}")));
-        }
-        if report_blocks::split_body(&markdown)
-            .iter()
-            .any(|slice| report_blocks::parse_fence(&slice.raw).is_some())
-        {
-            return Err(RpcError::invalid_params(format!(
-                "{tool}: prose markdown may not embed a ```neige-block fence — create the \
-                 data block with its own kind (see calm.report.blocks.kinds)"
-            )));
-        }
+        // silently persist a malformed data block as prose. The rule
+        // itself lives in `calm_types::report_blocks` — shared with the
+        // #955 proposal lowering so the two cannot drift.
+        report_blocks::check_prose_markdown(&markdown)
+            .map_err(|why| RpcError::invalid_params(format!("{tool}: {why}")))?;
         markdown
     } else if report_blocks::is_data_kind(&kind) {
         // Data kinds take a schema-validated `payload` object; the
@@ -348,15 +337,12 @@ async fn blocks_upsert(
                 )));
             }
         };
-        report_blocks::validate_payload(&kind, payload).map_err(|errors| {
-            RpcError::invalid_params(format!("{tool}: invalid `{kind}` payload: {errors}"))
-        })?;
-        report_blocks::render_fence(&kind, payload)
+        report_blocks::render_data_block(&kind, payload)
+            .map_err(|why| RpcError::invalid_params(format!("{tool}: {why}")))?
     } else {
         return Err(RpcError::invalid_params(format!(
-            "{tool}: unknown kind `{kind}` — supported kinds: prose, {}. \
-             See calm.report.blocks.kinds.",
-            report_blocks::DATA_KINDS.join(", ")
+            "{tool}: {}. See calm.report.blocks.kinds.",
+            report_blocks::unknown_kind_message(&kind)
         )));
     };
     let if_rev = optional_u32(obj, "if_rev", tool)?;

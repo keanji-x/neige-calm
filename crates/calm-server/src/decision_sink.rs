@@ -446,7 +446,9 @@ impl CardDecisionSink {
             // resolve nothing.
             None,
         )
-        .await
+        .await?
+        // Not the proposal path ⇒ the outcome is always `Written`.
+        .into_written()
     }
 }
 

@@ -57,15 +57,29 @@ const SUBJECT_KIND_REPORT: &str = "report";
 // Quotas (§5.2 — hard, enforced at submit)
 // ---------------------------------------------------------------------------
 
-/// Max serialized size of one proposal's `ops` + `note` (§5.2: 64 KiB).
-/// Proposals land in the append-only event log — Tier-A data that is
-/// never GC'd — so an unbounded channel is a disk-burning primitive
-/// (§1.1 判据 3). The numbers are tunable; the ceilings are not optional.
+/// Max serialized size of the COMPLETE persisted proposal (§5.2: 单
+/// proposal 序列化 ≤ 64 KiB).
+///
+/// Measured on the very `Event::ProposalSubmitted` that lands in the
+/// append-only log, not on a hand-picked subset of its fields: Tier-A
+/// data is never GC'd, so any plugin-controlled field left out of the
+/// measurement is a disk-burning primitive (§1.1 判据 3). The numbers
+/// are tunable; the ceilings are not optional.
 const MAX_PROPOSAL_BYTES: usize = 64 * 1024;
-/// Max ops in one proposal (§5.2).
-const MAX_PROPOSAL_OPS: usize = 32;
+/// Max ops in one proposal (§5.2). Same constant the kernel's apply-time
+/// batch ceiling uses, so submit and apply cannot disagree.
+const MAX_PROPOSAL_OPS: usize = crate::wave_report::MAX_BATCH_OPS;
 /// Max `note` length in bytes (§5.2).
 const MAX_NOTE_BYTES: usize = 4 * 1024;
+/// Max `idem_key` length in bytes. Plugin-chosen and persisted verbatim
+/// into the event + the projection's TEXT column, so it needs its own
+/// bound — a precise error beats blowing the whole-payload ceiling with
+/// an unreadable message.
+const MAX_IDEM_KEY_BYTES: usize = 256;
+/// Max `base_doc_heads` length in bytes. Same reasoning: it is an opaque
+/// token the kernel handed out (tens of bytes in practice), but the wire
+/// lets a plugin echo back anything.
+const MAX_BASE_DOC_HEADS_BYTES: usize = 4 * 1024;
 /// Max simultaneously-pending proposals per `(plugin, wave)` (§5.2).
 /// Escape hatches when a plugin hits it: `neige.proposal.withdraw`, or
 /// re-use a pending `idem_key` to recover the id and withdraw that.
@@ -80,6 +94,13 @@ const MAX_PENDING_PER_PLUGIN_WAVE: i64 = 4;
 /// tagged error is exactly right — nothing was written, so there is
 /// nothing to commit — and the handler translates it back into success.
 const IDEM_HIT: &str = "neige.proposal.submit: idempotent replay of proposal ";
+
+/// Prefix on the pending-quota conflict, so it can be told apart from a
+/// genuine DB/serialization `Conflict` coming out of the same
+/// transaction. Without it every non-sentinel in-tx conflict was reported
+/// to the plugin as `quota_exceeded`, which is a lie about a
+/// serialization failure.
+const PENDING_QUOTA: &str = "pending proposal quota: ";
 
 // ---------------------------------------------------------------------------
 // neige.report.get
@@ -101,6 +122,15 @@ struct ReportGetParams {
 /// wire it. Should a general card-read callback ever honour it, it would
 /// bypass this gate, and that relationship must be adjudicated
 /// explicitly at that point — recorded here, not pre-empted.
+///
+/// Related reach, also recorded rather than pre-empted: a plugin's own
+/// iframe can call all three of these methods through
+/// `POST /api/plugins/:id/tool-call` when some view's
+/// `permissions.tools` glob matches AND `permissions.proposals` grants
+/// the kind — so report content can legitimately reach the plugin's own
+/// browser iframe. Attribution stays `Plugin(id)` and adjudication is
+/// not a `neige.*` method, so this is the plugin acting as itself, not a
+/// privilege escalation.
 pub(super) async fn report_get(ctx: &CallbackCtx<'_>, params: Value) -> Result<Value, RpcError> {
     let p: ReportGetParams = parse_params("neige.report.get", &params)?;
     require_propose(ctx, SUBJECT_KIND_REPORT)?;
@@ -121,11 +151,20 @@ pub(super) async fn report_get(ctx: &CallbackCtx<'_>, params: Value) -> Result<V
             // NOT persisted here (this is a read), which means such a
             // doc's `doc_heads` will not match the accept transaction's
             // (which migrates again, with a fresh automerge actor id).
-            // Consequence: on a legacy doc, a proposal whose ONLY anchor
-            // is `at_start`/`at_end` can come back `stale` until some
-            // write migrates the doc for real. Fail-closed, self-healing,
-            // and block-anchored ops (the overwhelming majority) are
-            // unaffected because they never consult `doc_heads`.
+            //
+            // Consequence, stated precisely: the accept-time heads gate
+            // is `ops.iter().any(needs_whole_doc_anchor)`, so ANY
+            // proposal *containing* an `at_start`/`at_end` creation is
+            // heads-gated — mixed proposals (a block-anchored replace
+            // PLUS an at_end create) included, not only proposals whose
+            // sole anchor is whole-document. On a legacy doc all of those
+            // come back `stale` until some write migrates the doc for
+            // real. The same applies to the no-blob legacy seed path
+            // below (`ReportDoc::from_payload`), whose freshly minted
+            // heads can never match the accept tx's either. Only
+            // purely block-anchored proposals are unaffected, because
+            // they never consult `doc_heads` at all. Fail-closed and
+            // self-healing — the first real write ends it.
             doc.ensure_blocks_layout(payload.blocks.as_deref())
                 .map_err(|e| {
                     RpcError::internal(format!(
@@ -207,11 +246,24 @@ pub(super) async fn proposal_submit(
             "`base_doc_heads` is required — read it from neige.report.get",
         ));
     }
+    if p.base_doc_heads.len() > MAX_BASE_DOC_HEADS_BYTES {
+        return Err(quota_exceeded(format!(
+            "{METHOD}: base_doc_heads is {} bytes, over the {MAX_BASE_DOC_HEADS_BYTES}-byte \
+             limit — echo the token neige.report.get returned, verbatim",
+            p.base_doc_heads.len()
+        )));
+    }
     if p.idem_key.trim().is_empty() {
         return Err(invalid_params_for(
             METHOD,
             "`idem_key` is required (pending-scoped idempotency key)",
         ));
+    }
+    if p.idem_key.len() > MAX_IDEM_KEY_BYTES {
+        return Err(quota_exceeded(format!(
+            "{METHOD}: idem_key is {} bytes, over the {MAX_IDEM_KEY_BYTES}-byte limit",
+            p.idem_key.len()
+        )));
     }
     if p.ops.len() > MAX_PROPOSAL_OPS {
         return Err(quota_exceeded(format!(
@@ -226,16 +278,6 @@ pub(super) async fn proposal_submit(
         )));
     }
     validate_proposal_ops(&p.ops).map_err(|e| invalid_params_for(METHOD, e))?;
-    // Whole-proposal size ceiling, measured on the serialization that
-    // actually lands in the event log.
-    let serialized = serde_json::to_vec(&json!({ "ops": &p.ops, "note": &p.note }))
-        .map_err(|e| RpcError::internal(format!("{METHOD}: serialize proposal: {e}")))?;
-    if serialized.len() > MAX_PROPOSAL_BYTES {
-        return Err(quota_exceeded(format!(
-            "{METHOD}: serialized proposal is {} bytes, over the {MAX_PROPOSAL_BYTES}-byte limit",
-            serialized.len()
-        )));
-    }
 
     let plugin_id = ctx.plugin_id.to_string();
     let wave_id = p.subject.wave_id.clone();
@@ -252,13 +294,32 @@ pub(super) async fn proposal_submit(
     // same uuid shape every other kernel id uses.
     let proposal_id = format!("pp_{}", new_id());
     let correlation = ctx.correlation();
-    let subject_kind = p.subject.kind.clone();
-    let base_doc_heads = p.base_doc_heads.clone();
-    let note = p.note.clone();
     let idem_key = p.idem_key.clone();
-    let ops = p.ops.clone();
     let wave_row_id = wave.id.clone();
     let actor = ActorId::Plugin(plugin_id.clone());
+    // Build the event BEFORE the transaction so the whole-proposal
+    // ceiling can be measured on exactly the bytes that get persisted
+    // (§5.2), `base_doc_heads` and `idem_key` included. Every field is
+    // already determined — the transaction only decides WHETHER to
+    // append it.
+    let event = Event::ProposalSubmitted {
+        wave_id: wave_row_id.clone(),
+        proposal_id: proposal_id.clone(),
+        plugin_id: plugin_id.clone(),
+        subject_kind: p.subject.kind.clone(),
+        base_doc_heads: p.base_doc_heads.clone(),
+        ops: p.ops.clone(),
+        note: p.note.clone(),
+        idem_key: p.idem_key.clone(),
+    };
+    let serialized = serde_json::to_vec(&event)
+        .map_err(|e| RpcError::internal(format!("{METHOD}: serialize proposal event: {e}")))?;
+    if serialized.len() > MAX_PROPOSAL_BYTES {
+        return Err(quota_exceeded(format!(
+            "{METHOD}: serialized proposal is {} bytes, over the {MAX_PROPOSAL_BYTES}-byte limit",
+            serialized.len()
+        )));
+    }
 
     let result = write_with_actor_events_typed::<String, _>(
         ctx.repo.as_ref(),
@@ -269,13 +330,10 @@ pub(super) async fn proposal_submit(
             let plugin_id = plugin_id.clone();
             let wave_row_id = wave_row_id.clone();
             let scope = scope.clone();
-            let subject_kind = subject_kind.clone();
-            let base_doc_heads = base_doc_heads.clone();
-            let note = note.clone();
             let idem_key = idem_key.clone();
-            let ops = ops.clone();
             let proposal_id = proposal_id.clone();
             let actor = actor.clone();
+            let event = event.clone();
             Box::pin(async move {
                 // §5.5 subject check, in-tx so it is authoritative: an
                 // outside-tx read could be overtaken by a terminalizing
@@ -306,34 +364,31 @@ pub(super) async fn proposal_submit(
                     proposal_pending_count_tx(tx, &plugin_id, wave_row_id.as_str()).await?;
                 if pending >= MAX_PENDING_PER_PLUGIN_WAVE {
                     return Err(CalmError::Conflict(format!(
-                        "plugin `{plugin_id}` already has {pending} pending proposals on wave \
-                         {wave_row_id} (limit {MAX_PENDING_PER_PLUGIN_WAVE}) — withdraw one \
-                         first"
+                        "{PENDING_QUOTA}plugin `{plugin_id}` already has {pending} pending \
+                         proposals on wave {wave_row_id} (limit \
+                         {MAX_PENDING_PER_PLUGIN_WAVE}) — withdraw one first"
                     )));
                 }
-                let event = Event::ProposalSubmitted {
-                    wave_id: wave_row_id,
-                    proposal_id: proposal_id.clone(),
-                    plugin_id,
-                    subject_kind,
-                    base_doc_heads,
-                    ops,
-                    note,
-                    idem_key,
-                };
                 Ok((proposal_id, vec![(actor, scope, event)]))
             })
         },
     )
     .await;
 
+    // Classify by SENTINEL FIRST, then by class. The two tagged
+    // conflicts this transaction can mint are recognized explicitly;
+    // everything else — including a genuine SQLite serialization or
+    // busy conflict — falls through to `map_write_err` and is reported
+    // as the conflict it is, not mislabeled `quota_exceeded`.
     match result {
         Ok((proposal_id, _)) => Ok(json!({ "proposal_id": proposal_id })),
-        Err(CalmError::Conflict(msg)) => match msg.strip_prefix(IDEM_HIT) {
-            // Idempotent replay: no new row, no new event, original id.
-            Some(existing) => Ok(json!({ "proposal_id": existing })),
-            None => Err(quota_exceeded(format!("{METHOD}: {msg}"))),
-        },
+        // Idempotent replay: no new row, no new event, original id.
+        Err(CalmError::Conflict(msg)) if msg.starts_with(IDEM_HIT) => {
+            Ok(json!({ "proposal_id": &msg[IDEM_HIT.len()..] }))
+        }
+        Err(CalmError::Conflict(msg)) if msg.starts_with(PENDING_QUOTA) => Err(quota_exceeded(
+            format!("{METHOD}: {}", &msg[PENDING_QUOTA.len()..]),
+        )),
         Err(e) => Err(map_write_err(METHOD, e)),
     }
 }
@@ -364,7 +419,10 @@ pub(super) async fn proposal_withdraw(
 ) -> Result<Value, RpcError> {
     const METHOD: &str = "neige.proposal.withdraw";
     let p: ProposalWithdrawParams = parse_params(METHOD, &params)?;
-    require_propose(ctx, SUBJECT_KIND_REPORT)?;
+    // Two gates, in this order on purpose. First: a plugin with NO
+    // `permissions.proposals` grant at all is off the channel entirely
+    // and must not even learn whether a proposal id exists.
+    require_any_propose(ctx)?;
     let plugin_id = ctx.plugin_id.to_string();
     // Pre-flight only shapes the error (404 vs 403 vs 409) and finds the
     // wave scope; the transaction below re-checks everything.
@@ -374,6 +432,12 @@ pub(super) async fn proposal_withdraw(
         .await
         .map_err(internal_repo_err)?
         .ok_or_else(|| entity_not_found(format!("{METHOD}: proposal {}", p.proposal_id)))?;
+    // Second: the kind gate is checked against the ROW's own
+    // `subject_kind`, not a hardcoded one. When a second subject kind
+    // lands, a plugin granted only that kind must still be able to
+    // withdraw its own proposal — otherwise §5.6's quota escape hatch
+    // closes for it and abandoned proposals pin the pending cap forever.
+    require_propose(ctx, &row.subject_kind)?;
     if row.plugin_id != plugin_id {
         // Another plugin's proposal: a denial, not a 404 — the id is a
         // kernel-minted opaque value the caller already holds, so there
@@ -461,6 +525,24 @@ fn require_propose(ctx: &CallbackCtx<'_>, subject_kind: &str) -> Result<(), RpcE
         return Err(permission_denied(format!(
             "plugin `{}` is not granted `permissions.proposals` for subject kind \
              `{subject_kind}`",
+            ctx.plugin_id
+        )));
+    }
+    Ok(())
+}
+
+/// "Is this plugin on the proposal channel at all?" — the kind-agnostic
+/// half of the gate, for `withdraw`, which must read the proposal row
+/// before it knows which kind to check but must not disclose a
+/// proposal's existence to a plugin with no grant whatsoever.
+fn require_any_propose(ctx: &CallbackCtx<'_>) -> Result<(), RpcError> {
+    let perms = manifest_permissions(ctx)?;
+    if !PROPOSAL_SUBJECT_KINDS
+        .iter()
+        .any(|kind| perms.can_propose(kind))
+    {
+        return Err(permission_denied(format!(
+            "plugin `{}` is not granted `permissions.proposals` for any subject kind",
             ctx.plugin_id
         )));
     }

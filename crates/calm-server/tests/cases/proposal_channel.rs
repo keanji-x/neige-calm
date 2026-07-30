@@ -278,14 +278,49 @@ impl Boot {
         payload.body
     }
 
-    /// Every persisted event, in log order, as `(kind, payload)`.
-    async fn event_log(&self) -> Vec<(String, Value)> {
-        self.repo
+    /// Every persisted event, in log order, as `(kind, actor, payload)`.
+    ///
+    /// The ACTOR is carried deliberately: §5.3/§5.4 split it *inside* a
+    /// single accept transaction — `ProposalResolved` = the human
+    /// adjudicator, `CardUpdated`/`WaveReportEdited` = the kernel writing
+    /// on the plugin's behalf, with plugin attribution riding on
+    /// `author`/`author_plugin_id`. Discarding the column left that split
+    /// unasserted: `role_gate` would catch a Plugin-actor resolve, but
+    /// nothing pinned a User-actor `CardUpdated`.
+    ///
+    /// The replay cursor (`events_since`) does not project the `actor`
+    /// column, so it is joined in by id from `events_for_wave`, which
+    /// does. Every event this oracle produces is wave-scoped, so the join
+    /// is total; anything System-scoped would come back with an empty
+    /// actor and fail an assertion loudly rather than pass silently.
+    async fn event_log(&self) -> Vec<(String, String, Value)> {
+        let rows = self
+            .repo
             .events_since(0, i64::MAX)
             .await
-            .expect("read events")
+            .expect("read events");
+        let mut kinds: Vec<&str> = rows
+            .iter()
+            .map(|(_, _, _, event)| event.kind_tag())
+            .collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        let actors: std::collections::HashMap<i64, String> = self
+            .repo
+            .events_for_wave(self.wave_id.as_str(), &kinds, None)
+            .await
+            .expect("read wave events")
             .into_iter()
-            .map(|(_, _, _, event)| (event.kind_tag().to_string(), event.payload_value()))
+            .map(|event| (event.id, event.actor.to_string()))
+            .collect();
+        rows.into_iter()
+            .map(|(id, _, _, event)| {
+                (
+                    event.kind_tag().to_string(),
+                    actors.get(&id).cloned().unwrap_or_default(),
+                    event.payload_value(),
+                )
+            })
             .collect()
     }
 
@@ -533,7 +568,7 @@ async fn submit_then_accept_applies_and_attributes_to_the_plugin() {
     // CardUpdated + one WaveReportEdited, plus the one decision event.
     let log = b.event_log().await;
     let tail = &log[events_before..];
-    let kinds: Vec<&str> = tail.iter().map(|(k, _)| k.as_str()).collect();
+    let kinds: Vec<&str> = tail.iter().map(|(k, _, _)| k.as_str()).collect();
     assert_eq!(
         kinds.iter().filter(|k| **k == "card.updated").count(),
         1,
@@ -549,20 +584,37 @@ async fn submit_then_accept_applies_and_attributes_to_the_plugin() {
         1,
         "exactly one decision: {kinds:?}"
     );
-    let edited = tail
+    let (_, edited_actor, edited) = tail
         .iter()
-        .find(|(k, _)| k == "wave.report_edited")
-        .map(|(_, p)| p)
+        .find(|(k, _, _)| k == "wave.report_edited")
         .expect("report edited event");
     assert_eq!(edited["author"], "plugin", "{edited}");
     assert_eq!(edited["author_plugin_id"], PLUGIN_ID, "{edited}");
-    let decision = tail
+    let (_, decision_actor, decision) = tail
         .iter()
-        .find(|(k, _)| k == "proposal.resolved")
-        .map(|(_, p)| p)
+        .find(|(k, _, _)| k == "proposal.resolved")
         .expect("decision event");
     assert_eq!(decision["decision"], "accepted");
     assert_eq!(decision["plugin_id"], PLUGIN_ID, "submitter attribution");
+
+    // §5.3/§5.4 — the actor split INSIDE the one accept transaction. The
+    // human adjudicates; the kernel writes on the plugin's behalf (plugin
+    // attribution rides on `author`/`author_plugin_id`, asserted above).
+    // A User-actor `CardUpdated` would mean the human was recorded as the
+    // author of text they never wrote.
+    assert_eq!(decision_actor, "user", "the human adjudicates (§5.4)");
+    assert_eq!(
+        edited_actor, "kernel",
+        "the kernel writes the report change (§5.3)"
+    );
+    let (_, card_actor, _) = tail
+        .iter()
+        .find(|(k, _, _)| k == "card.updated")
+        .expect("card updated event");
+    assert_eq!(
+        card_actor, "kernel",
+        "the kernel writes the card row (§5.3)"
+    );
 
     // Re-accepting is a 409 (in-tx pending re-check).
     let (status, _) = rest(
@@ -625,6 +677,115 @@ async fn pending_quota_is_enforced_at_submit() {
 }
 
 #[tokio::test]
+async fn every_persisted_field_is_inside_the_size_ceiling() {
+    // §5.2 caps 单 proposal 序列化 at 64 KiB. The measurement must cover
+    // the WHOLE persisted event: `base_doc_heads` and `idem_key` are
+    // plugin-controlled and land verbatim in the append-only log plus the
+    // projection's TEXT columns, so measuring only `{ops, note}` left a
+    // multi-MB Tier-A write reporting "within quota" (review findings
+    // codex#2 / subagent#1).
+    let b = boot().await;
+    let (blocks, heads) = report_get(&b, PLUGIN_ID).await;
+    let block_id = blocks[0]["id"].as_str().unwrap().to_string();
+    let rev = blocks[0]["rev"].as_u64().unwrap() as u32;
+    let tiny = replace_op(&block_id, rev, "# a\n\na\n");
+
+    // Each oversized single field gets its own precise error, not a
+    // whole-payload message the plugin cannot act on.
+    let mut params = submit_params(&b, &heads, tiny.clone(), "k1");
+    params["idem_key"] = json!("x".repeat(257));
+    let err = b
+        .call(PLUGIN_ID, "neige.proposal.submit", params)
+        .await
+        .expect_err("oversized idem_key must be refused");
+    assert_eq!(err.code, -32003, "{err:?}");
+    assert!(err.message.contains("idem_key"), "{err:?}");
+
+    let mut params = submit_params(&b, &heads, tiny.clone(), "k1");
+    params["base_doc_heads"] = json!("h".repeat(4 * 1024 + 1));
+    let err = b
+        .call(PLUGIN_ID, "neige.proposal.submit", params)
+        .await
+        .expect_err("oversized base_doc_heads must be refused");
+    assert_eq!(err.code, -32003, "{err:?}");
+    assert!(err.message.contains("base_doc_heads"), "{err:?}");
+
+    // And the whole-payload ceiling still catches a request whose fields
+    // are each individually legal: 32 ops × ~4 KiB of markdown, with a
+    // 4 KiB note, is over 64 KiB serialized even though no single bound
+    // is breached.
+    let ops: Vec<Value> = (0..32)
+        .map(|i| {
+            json!({
+                "op": "upsert_block",
+                "temp_id": format!("t{i}"),
+                "kind": "prose",
+                "payload": { "markdown": format!("# {i}\n\n{}\n", "p".repeat(4 * 1024)) },
+                "anchor": "at_end",
+            })
+        })
+        .collect();
+    let mut params = submit_params(&b, &heads, Value::Array(ops), "k1");
+    params["note"] = json!("n".repeat(4 * 1024));
+    let err = b
+        .call(PLUGIN_ID, "neige.proposal.submit", params)
+        .await
+        .expect_err("oversized whole payload must be refused");
+    assert_eq!(err.code, -32003, "{err:?}");
+    assert!(err.message.contains("serialized proposal"), "{err:?}");
+
+    // Nothing was persisted by any of the three refusals.
+    let (status, listed) = {
+        let app = app(b.state.clone(), b.auth_state.clone());
+        let cookie = login(&app).await;
+        rest(
+            &app,
+            &cookie,
+            "GET",
+            &format!("/api/waves/{}/proposals", b.wave_id.as_str()),
+            None,
+        )
+        .await
+    };
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(
+        listed["proposals"].as_array().unwrap().is_empty(),
+        "{listed}"
+    );
+}
+
+#[tokio::test]
+async fn submit_refuses_a_creation_anchored_after_itself() {
+    // §5.2.1 allows a `temp:` reference to a PREVIOUSLY created block
+    // only. Before review finding codex#3 this passed submit and only
+    // died at accept as an unfixable structural 400 — a malformed DTO
+    // rotting in the pending list.
+    let b = boot().await;
+    let (_, heads) = report_get(&b, PLUGIN_ID).await;
+    let err = b
+        .call(
+            PLUGIN_ID,
+            "neige.proposal.submit",
+            submit_params(
+                &b,
+                &heads,
+                json!([{
+                    "op": "upsert_block",
+                    "temp_id": "t",
+                    "kind": "prose",
+                    "payload": { "markdown": "# x\n\nx\n" },
+                    "anchor": { "after_block_id": "temp:t" },
+                }]),
+                "k1",
+            ),
+        )
+        .await
+        .expect_err("a creation anchored after itself must be refused at submit");
+    assert_eq!(err.code, -32602, "invalid-params code: {err:?}");
+    assert!(err.message.contains("no earlier op"), "{err:?}");
+}
+
+#[tokio::test]
 async fn withdraw_releases_the_quota_slot() {
     let b = boot().await;
     let (blocks, heads) = report_get(&b, PLUGIN_ID).await;
@@ -679,13 +840,15 @@ async fn withdraw_releases_the_quota_slot() {
 
     // The withdrawal is in the log with the plugin as actor + submitter.
     let log = b.event_log().await;
-    let withdrawn = log
+    let (_, actor, withdrawn) = log
         .iter()
-        .find(|(k, p)| k == "proposal.resolved" && p["decision"] == "withdrawn")
-        .map(|(_, p)| p)
+        .find(|(k, _, p)| k == "proposal.resolved" && p["decision"] == "withdrawn")
         .expect("withdrawn event");
     assert_eq!(withdrawn["proposal_id"], ids[0]);
     assert_eq!(withdrawn["plugin_id"], PLUGIN_ID);
+    // §5.4 — `withdrawn` is the ONE decision a plugin makes itself, so it
+    // is the one resolution whose actor is the plugin, not the user.
+    assert_eq!(actor, &format!("plugin:{PLUGIN_ID}"), "{withdrawn}");
 
     // Withdrawing twice is a conflict, not a silent success.
     let err = b
@@ -748,19 +911,48 @@ async fn spec_edit_between_submit_and_accept_resolves_stale() {
         "reason explains the failed anchor: {resolved}"
     );
 
-    // The report is untouched and NO report event was emitted.
+    // The report is untouched — byte-identical body — and NO report event
+    // was emitted: the stale verdict is the ONE event the accept
+    // transaction appended before committing.
     assert_eq!(b.body().await, body_after_spec, "report must not change");
-    let tail: Vec<String> = b
-        .event_log()
-        .await
-        .split_off(events_before)
-        .into_iter()
-        .map(|(k, _)| k)
-        .collect();
+    let tail = b.event_log().await.split_off(events_before);
+    let kinds: Vec<&str> = tail.iter().map(|(k, _, _)| k.as_str()).collect();
     assert_eq!(
-        tail,
-        vec!["proposal.resolved".to_string()],
-        "stale is one event, no report change: {tail:?}"
+        kinds,
+        vec!["proposal.resolved"],
+        "stale is one event, no report change: {kinds:?}"
+    );
+    let (_, actor, payload) = &tail[0];
+    assert_eq!(payload["decision"], "stale", "{payload}");
+    assert_eq!(payload["plugin_id"], PLUGIN_ID, "submitter attribution");
+    // §5.4 — the stale verdict is the human's decision, User-actor, even
+    // though nothing was written to the report.
+    assert_eq!(actor, "user", "{payload}");
+
+    // The verdict COMMITTED inside the accept transaction, so the
+    // proposal is already terminal: a reject arriving afterwards loses
+    // (409) instead of overwriting an authoritative stale decision. This
+    // is the race the two-transaction shape used to lose — the stale
+    // determination was made, rolled back, and a concurrent reject could
+    // commit in the window before the verdict was recorded.
+    let (status, body) = rest(
+        &app,
+        &cookie,
+        "POST",
+        &format!("/api/proposals/{proposal_id}/reject"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a reject after the stale commit must lose: {body}"
+    );
+    // And nothing further was appended by the losing attempt.
+    assert_eq!(
+        b.event_log().await.len(),
+        events_before + 1,
+        "the losing reject must append nothing"
     );
 }
 
