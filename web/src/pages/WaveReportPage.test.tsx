@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
 import {
   useOverlaysByKindQuery,
+  useWaveBacklinksQuery,
   useWaveFileContent,
   useWaveFileList,
 } from '../api/queries';
@@ -18,9 +19,28 @@ import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
 vi.mock('../api/queries', () => ({
   useOverlaysByKindQuery: vi.fn(),
+  useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
 }));
+
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>();
+  return {
+    ...actual,
+    Link: ({
+      params,
+      hash,
+      children,
+    }: {
+      params: { waveId: string };
+      hash?: string;
+      children: React.ReactNode;
+    }) => (
+      <a href={`/wave/${params.waveId}${hash ? `#${hash}` : ''}`}>{children}</a>
+    ),
+  };
+});
 
 // The spec-conversation panel's status dot reads `useCardOverlay`, which is
 // React-Query-backed (REST-seeded card overlay snapshot) and would need a
@@ -69,6 +89,7 @@ vi.mock('lightweight-charts', () => ({
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
+const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
@@ -171,6 +192,9 @@ afterEach(() => {
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: [],
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
     mockUseOverlaysByKindQuery.mockReturnValue({
       data: [],
     } as unknown as ReturnType<typeof useOverlaysByKindQuery>);
@@ -1631,6 +1655,85 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
       'aria-pressed',
       'true',
+    );
+  });
+
+  it('renders backlinks grouped by source wave with source block anchors', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: [
+        {
+          src_wave_id: 'wave_a',
+          src_wave_title: 'Alpha',
+          src_block_id: 'b_a1',
+          dst_block_id: 'b_here',
+          label: 'First mention',
+          updated_at: 1,
+        },
+        {
+          src_wave_id: 'wave_a',
+          src_wave_title: 'Alpha',
+          src_block_id: 'b_a2',
+          label: 'Second mention',
+          updated_at: 2,
+        },
+        {
+          src_wave_id: 'wave_b',
+          src_wave_title: 'Beta',
+          src_block_id: 'b_b1',
+          label: 'Another source',
+          updated_at: 3,
+        },
+      ],
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
+    );
+
+    const panel = screen.getByRole('region', { name: 'Backlinks' });
+    expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
+    expect(within(panel).getByText('Beta')).toBeInTheDocument();
+    expect(within(panel).getByRole('link', { name: 'First mention' })).toHaveAttribute(
+      'href',
+      '/wave/wave_a#b_a1',
+    );
+    expect(within(panel).getByRole('link', { name: 'Another source' })).toHaveAttribute(
+      'href',
+      '/wave/wave_b#b_b1',
+    );
+  });
+
+  it('renders no backlinks panel when the result is empty', () => {
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
+    );
+    expect(screen.queryByRole('region', { name: 'Backlinks' })).toBeNull();
+  });
+
+  it('renders normally when the hash names a missing block', () => {
+    window.history.replaceState(null, '', '#b_missing');
+    expect(() =>
+      render(
+        <WaveReportPage
+          wave={makeWave()}
+          cards={[
+            reportSlot('fallback', {
+              blocks: [
+                {
+                  id: 'b_present',
+                  kind: 'prose',
+                  rev: 1,
+                  payload: { markdown: 'Present block' },
+                },
+              ],
+            }),
+          ]}
+        />,
+      ),
+    ).not.toThrow();
+    expect(screen.getByText('Present block')).toBeInTheDocument();
+    expect(document.getElementById('b_present')).not.toHaveClass(
+      'report-block--highlight',
     );
   });
 });

@@ -57,6 +57,7 @@ export const queryKeys = {
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   waveFiles: (waveId: string) => ['wave-files', waveId] as const,
   waveFileList: (waveId: string, path: string | null | undefined) =>
     waveFileListQueryKey(waveId, path),
@@ -113,6 +114,11 @@ export const wavesByCoveQueryOptions = (coveId: string) => ({
 export const waveDetailQueryOptions = (waveId: string) => ({
   queryKey: queryKeys.waveDetail(waveId),
   queryFn: () => api.getWaveDetail(waveId),
+});
+
+export const waveBacklinksQueryOptions = (waveId: string) => ({
+  queryKey: queryKeys.waveBacklinks(waveId),
+  queryFn: () => api.getWaveBacklinks(waveId),
 });
 
 export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
@@ -192,6 +198,17 @@ export function useWaveDetailQuery(
     ...waveDetailQueryOptions(waveId ?? ''),
     enabled: !!waveId,
     placeholderData: keepPreviousData,
+    ...opts,
+  });
+}
+
+export function useWaveBacklinksQuery(
+  waveId: string | undefined | null,
+  opts?: Partial<UseQueryOptions<api.WaveBacklink[], Error>>,
+) {
+  return useQuery<api.WaveBacklink[], Error>({
+    ...waveBacklinksQueryOptions(waveId ?? ''),
+    enabled: !!waveId,
     ...opts,
   });
 }

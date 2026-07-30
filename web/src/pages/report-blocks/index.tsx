@@ -8,7 +8,8 @@
 // mono placeholder so one bad block never takes down the page.
 
 import { lazy, Suspense } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { Link } from '@tanstack/react-router';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   appBlockPayloadSchema,
@@ -26,11 +27,39 @@ const LazyCandlesBlock = lazy(() =>
   import('./candles').then((m) => ({ default: m.ReportCandlesBlock })),
 );
 
-function UnsupportedBlock({ kind }: { kind: string }) {
+function UnsupportedBlock({ block }: { block: ReportBlock }) {
   return (
-    <div className="report-block rb-unsupported" role="note">
-      unsupported block kind {kind}
+    <div id={block.id} className="report-block rb-unsupported" role="note">
+      unsupported block kind {block.kind}
     </div>
+  );
+}
+
+export function reportUrlTransform(url: string): string {
+  return url.startsWith('neige:') ? url : defaultUrlTransform(url);
+}
+
+function ReportLink({
+  href,
+  children,
+}: React.ComponentPropsWithoutRef<'a'>) {
+  const match = href?.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
+  if (!match) return <a href={href}>{children}</a>;
+  const [, waveId, blockId] = match;
+  let hash: string | undefined = blockId;
+  try {
+    hash = blockId ? decodeURIComponent(blockId) : undefined;
+  } catch {
+    // Preserve a malformed-but-harmless anchor verbatim.
+  }
+  return (
+    <Link
+      to="/wave/$waveId"
+      params={{ waveId }}
+      hash={hash}
+    >
+      {children}
+    </Link>
   );
 }
 
@@ -38,10 +67,14 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
   switch (block.kind) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-prose calm-prose">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        <div id={block.id} className="report-block report-prose calm-prose">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            urlTransform={reportUrlTransform}
+            components={{ a: ReportLink }}
+          >
             {parsed.data.markdown}
           </ReactMarkdown>
         </div>
@@ -49,9 +82,9 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
     }
     case 'chart.candles': {
       const parsed = chartCandlesPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-block--breakout">
+        <div id={block.id} className="report-block report-block--breakout">
           <Suspense
             fallback={
               <div className="rb-unsupported" role="status">
@@ -66,23 +99,23 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
     }
     case 'table': {
       const parsed = tableBlockPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-block--breakout">
+        <div id={block.id} className="report-block report-block--breakout">
           <ReportTableBlock payload={parsed.data} />
         </div>
       );
     }
     case 'app': {
       const parsed = appBlockPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-block--breakout">
+        <div id={block.id} className="report-block report-block--breakout">
           <ReportAppBlock payload={parsed.data} />
         </div>
       );
     }
     default:
-      return <UnsupportedBlock kind={block.kind} />;
+      return <UnsupportedBlock block={block} />;
   }
 }

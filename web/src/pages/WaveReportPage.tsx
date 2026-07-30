@@ -1,8 +1,10 @@
-import { lazy, Suspense, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
+import { Link } from '@tanstack/react-router';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
-import { useWaveFileContent } from '../api/queries';
+import { useWaveBacklinksQuery, useWaveFileContent } from '../api/queries';
+import type { WaveBacklink } from '../api/calm';
 import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
@@ -19,6 +21,14 @@ import { EventLinePanel } from './EventLinePanel';
 import { SpecConversation, type ReportView } from './SpecConversation';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { useAnyRuntimeLive, useEventLineEntries } from './useEventLineEntries';
+
+function decodeHash(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -216,6 +226,21 @@ function ReportMarkdown({
   body: string;
   blocks?: ReportBlock[];
 }) {
+  useEffect(() => {
+    const scrollToBlock = () => {
+      const blockId = decodeHash(window.location.hash.slice(1));
+      if (!blockId) return;
+      const block = document.getElementById(blockId);
+      if (!block?.classList.contains('report-block')) return;
+      block.scrollIntoView();
+      block.classList.remove('report-block--highlight');
+      requestAnimationFrame(() => block.classList.add('report-block--highlight'));
+    };
+    scrollToBlock();
+    window.addEventListener('hashchange', scrollToBlock);
+    return () => window.removeEventListener('hashchange', scrollToBlock);
+  }, [blocks]);
+
   if (blocks) {
     return (
       <>
@@ -229,6 +254,53 @@ function ReportMarkdown({
     <div className="report-block report-prose calm-prose">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
     </div>
+  );
+}
+
+function BacklinksPanel({ backlinks }: { backlinks: WaveBacklink[] }) {
+  const groups = useMemo(() => {
+    const grouped = new Map<
+      string,
+      { title: string; entries: WaveBacklink[] }
+    >();
+    for (const backlink of backlinks) {
+      const group = grouped.get(backlink.src_wave_id);
+      if (group) group.entries.push(backlink);
+      else {
+        grouped.set(backlink.src_wave_id, {
+          title: backlink.src_wave_title,
+          entries: [backlink],
+        });
+      }
+    }
+    return [...grouped.entries()];
+  }, [backlinks]);
+
+  if (groups.length === 0) return null;
+  return (
+    <section className="report-backlinks" aria-label="Backlinks">
+      <h2>Backlinks</h2>
+      {groups.map(([waveId, group]) => (
+        <div className="report-backlinks-group" key={waveId}>
+          <h3>{group.title}</h3>
+          <ul>
+            {group.entries.map((entry, index) => (
+              <li
+                key={`${entry.src_block_id}:${entry.dst_block_id ?? ''}:${index}`}
+              >
+                <Link
+                  to="/wave/$waveId"
+                  params={{ waveId }}
+                  hash={entry.src_block_id}
+                >
+                  {entry.label}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -308,6 +380,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const eventEntries = useEventLineEntries(wave.id, cards);
   const live = useAnyRuntimeLive(wave.id, cards);
+  const backlinksQ = useWaveBacklinksQuery(wave.id);
 
   // Sync reset during render so a new wave never renders with the old file path.
   if (lastWaveId !== wave.id) {
@@ -380,6 +453,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
               />
             ) : (
               <ReportEmptyState />
+            )}
+            {selectedFilePath === 'report.md' && (
+              <BacklinksPanel backlinks={backlinksQ.data ?? []} />
             )}
           </article>
         </SpecConversation>

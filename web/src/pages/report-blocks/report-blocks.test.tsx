@@ -5,6 +5,24 @@ import { ReportBlockView } from './index';
 import { ReportAppBlock } from './app';
 import type { ReportBlock } from '../../cards/builtins/wave-report';
 
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>();
+  return {
+    ...actual,
+    Link: ({
+      params,
+      hash,
+      children,
+    }: {
+      params: { waveId: string };
+      hash?: string;
+      children: React.ReactNode;
+    }) => (
+      <a href={`/wave/${params.waveId}${hash ? `#${hash}` : ''}`}>{children}</a>
+    ),
+  };
+});
+
 // lightweight-charts draws on canvas — not available in jsdom. Mock the
 // module surface (v5 API: `chart.addSeries(SeriesType, options)`) and record
 // every series creation so tests can assert the exact config + data the
@@ -298,6 +316,47 @@ describe('chart.candles block', () => {
     );
     expect(histogram).toBeDefined();
     expect(histogram?.data).toHaveLength(10);
+  });
+});
+
+describe('prose report links', () => {
+  const prose = (markdown: string): ReportBlock =>
+    ({
+      id: 'b_prose',
+      kind: 'prose',
+      rev: 1,
+      payload: { markdown },
+    }) as ReportBlock;
+
+  it('renders a neige wave link as an in-app link with its block anchor', () => {
+    render(
+      <ReportBlockView
+        block={prose('[Source](neige://wave/wave_2#b_target)')}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Source' })).toHaveAttribute(
+      'href',
+      '/wave/wave_2#b_target',
+    );
+  });
+
+  it('leaves a non-neige link unchanged', () => {
+    render(
+      <ReportBlockView block={prose('[Docs](https://example.com/guide)')} />,
+    );
+    expect(screen.getByRole('link', { name: 'Docs' })).toHaveAttribute(
+      'href',
+      'https://example.com/guide',
+    );
+  });
+
+  it('still neutralises javascript links', () => {
+    const { container } = render(
+      <ReportBlockView block={prose('[Unsafe](javascript:alert(1))')} />,
+    );
+    expect(
+      container.querySelector('a')?.getAttribute('href')?.startsWith('javascript:'),
+    ).not.toBe(true);
   });
 });
 

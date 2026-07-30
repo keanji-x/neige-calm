@@ -671,6 +671,9 @@ describe('EventBridge', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['wave-files', 'wave_1'],
     });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-backlinks'],
+    });
     cleanup();
   });
 
