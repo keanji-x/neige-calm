@@ -24,10 +24,11 @@
 //!
 //! [`proposals_rebuild_tx`] drops and replays the projection from the
 //! log — the recovery path proving the table carries no state of its
-//! own. `wave.deleted` participates in the replay because the live
-//! hook removes a deleted wave's rows (design §5.5: the projection
-//! hides pending proposals of deleted waves; the append-only history
-//! rows stay).
+//! own. `wave.deleted` and `wave.lifecycle_changed` participate in the
+//! replay because the live hook removes a deleted wave's rows and a
+//! terminalized wave's pending rows (design §5.5: the projection hides
+//! pending proposals of deleted/terminal waves; the append-only event
+//! history stays).
 
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -107,30 +108,61 @@ pub(super) async fn proposal_apply_event_tx(
         }
         Event::ProposalResolved {
             proposal_id,
+            wave_id,
+            plugin_id,
             decision,
-            ..
         } => {
             // Only a pending row terminalizes; a second resolve for the
             // same proposal is a projection no-op (the emitting handler
             // is responsible for the 409, design §5.6 idempotency).
+            //
+            // The `plugin_id`/`wave_id` binds are defense-in-depth: the
+            // role_gate is a pure function of (actor, payload) and
+            // cannot check the payload against the stored row, so a
+            // resolve event whose payload misattributes ownership
+            // (wrong plugin or wave for this proposal_id) must not
+            // terminalize the row — it degrades to a projection no-op.
+            // The factual ownership check itself stays with the PR-b
+            // handlers (design §5.4); this is the choke-point backstop.
             sqlx::query(
                 "UPDATE proposals
                  SET status = ?2, resolved_event_id = ?3, resolved_at = ?4
-                 WHERE proposal_id = ?1 AND status = 'pending'",
+                 WHERE proposal_id = ?1 AND status = 'pending'
+                   AND plugin_id = ?5 AND wave_id = ?6",
             )
             .bind(proposal_id)
             .bind(decision.as_str())
             .bind(event_id)
             .bind(at)
+            .bind(plugin_id)
+            .bind(wave_id.as_str())
             .execute(&mut **tx)
             .await?;
         }
         // Design §5.5 — `wave.deleted` is an append-only event (history
         // rows survive), so the projection is the layer that hides the
         // wave's proposals. Resolved rows go too: their history lives in
-        // the log, and a dangling wave id serves no reader.
+        // the log, and a dangling wave id serves no reader. This is a
+        // deliberate widening of §5.5's wording (which names only the
+        // *pending* rows): the wave row itself is gone, so the log is
+        // the sole remaining truth for the wave's proposal history.
         Event::WaveDeleted { id, .. } => {
             sqlx::query("DELETE FROM proposals WHERE wave_id = ?1")
+                .bind(id.as_str())
+                .execute(&mut **tx)
+                .await?;
+        }
+        // Design §5.5 pairs "WaveDeleted / 终结" for projection removal:
+        // a terminal lifecycle (done / canceled / failed — pinned by
+        // `WaveLifecycle::is_terminal`) hides the wave's *pending*
+        // proposals (they can no longer be adjudicated; quota and idem
+        // slots release). Unlike `wave.deleted`, resolved history rows
+        // stay — the wave still exists and PR-c's adjudication history
+        // reads them. Non-terminal transitions (including reopen) are
+        // projection no-ops; pending rows removed at terminalization do
+        // not resurrect on reopen (the log keeps their truth).
+        Event::WaveLifecycleChanged { id, to, .. } if to.is_terminal() => {
+            sqlx::query("DELETE FROM proposals WHERE wave_id = ?1 AND status = 'pending'")
                 .bind(id.as_str())
                 .execute(&mut **tx)
                 .await?;
@@ -150,7 +182,8 @@ pub async fn proposals_rebuild_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<()
         .await?;
     let rows = sqlx::query(
         "SELECT id, kind, payload, at FROM events
-         WHERE kind IN ('proposal.submitted', 'proposal.resolved', 'wave.deleted')
+         WHERE kind IN ('proposal.submitted', 'proposal.resolved', 'wave.deleted',
+                        'wave.lifecycle_changed')
          ORDER BY id ASC",
     )
     .fetch_all(&mut **tx)
@@ -246,6 +279,7 @@ mod tests {
     use super::*;
     use crate::event::EventScope;
     use crate::ids::{ActorId, CoveId, WaveId};
+    use calm_types::model::WaveLifecycle;
     use calm_types::proposal::{ProposalDecision, ProposalOp};
 
     fn wave_scope(wave: &str) -> EventScope {
@@ -288,12 +322,10 @@ mod tests {
 
     async fn all_rows(repo: &SqlxRepo) -> Vec<ProposalRow> {
         let mut tx = repo.pool().begin().await.expect("begin");
-        sqlx::query_as::<_, ProposalRow>(&format!(
-            "{SELECT_COLS} ORDER BY submitted_event_id ASC"
-        ))
-        .fetch_all(&mut *tx)
-        .await
-        .expect("select all proposals")
+        sqlx::query_as::<_, ProposalRow>(&format!("{SELECT_COLS} ORDER BY submitted_event_id ASC"))
+            .fetch_all(&mut *tx)
+            .await
+            .expect("select all proposals")
     }
 
     #[tokio::test]
@@ -446,6 +478,176 @@ mod tests {
         assert_eq!(row.resolved_event_id, Some(first));
     }
 
+    fn lifecycle(wave: &str, from: WaveLifecycle, to: WaveLifecycle) -> Event {
+        Event::WaveLifecycleChanged {
+            id: WaveId::from(wave),
+            cove_id: CoveId::from("c"),
+            from,
+            to,
+            agent_message: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_with_mismatched_ownership_is_a_projection_noop() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
+        let plugin_a = ActorId::Plugin("plugin-a".into());
+        append(
+            &repo,
+            plugin_a.clone(),
+            "w1",
+            &submitted("w1", "pp-1", "plugin-a", "k1"),
+        )
+        .await;
+        // Spoofed plugin_id: plugin B claims A's proposal (role_gate
+        // passes — actor == payload — but the row belongs to A).
+        append(
+            &repo,
+            ActorId::Plugin("plugin-b".into()),
+            "w1",
+            &resolved("w1", "pp-1", "plugin-b", ProposalDecision::Withdrawn),
+        )
+        .await;
+        // Mismatched wave_id: right plugin, wrong wave.
+        append(
+            &repo,
+            plugin_a.clone(),
+            "w2",
+            &resolved("w2", "pp-1", "plugin-a", ProposalDecision::Withdrawn),
+        )
+        .await;
+        let mut tx = repo.pool().begin().await.expect("begin");
+        let row = proposal_get_tx(&mut tx, "pp-1")
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(
+            row.status, "pending",
+            "a resolve whose payload misattributes plugin/wave must not terminalize the row"
+        );
+        assert_eq!(row.resolved_event_id, None);
+        // A correctly attributed resolve still lands.
+        drop(tx);
+        append(
+            &repo,
+            plugin_a,
+            "w1",
+            &resolved("w1", "pp-1", "plugin-a", ProposalDecision::Withdrawn),
+        )
+        .await;
+        let mut tx = repo.pool().begin().await.expect("begin");
+        let row = proposal_get_tx(&mut tx, "pp-1")
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(row.status, "withdrawn");
+    }
+
+    #[tokio::test]
+    async fn terminal_lifecycle_hides_pending_rows_but_keeps_resolved_history() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
+        let plugin = ActorId::Plugin("p1".into());
+        // w1: one pending + one resolved proposal; w2: untouched control.
+        append(
+            &repo,
+            plugin.clone(),
+            "w1",
+            &submitted("w1", "pp-pending", "p1", "k1"),
+        )
+        .await;
+        append(
+            &repo,
+            plugin.clone(),
+            "w1",
+            &submitted("w1", "pp-done", "p1", "k2"),
+        )
+        .await;
+        append(
+            &repo,
+            ActorId::User,
+            "w1",
+            &resolved("w1", "pp-done", "p1", ProposalDecision::Accepted),
+        )
+        .await;
+        append(
+            &repo,
+            plugin.clone(),
+            "w2",
+            &submitted("w2", "pp-other", "p1", "k1"),
+        )
+        .await;
+        // A non-terminal transition must be a projection no-op.
+        append(
+            &repo,
+            ActorId::User,
+            "w1",
+            &lifecycle("w1", WaveLifecycle::Planning, WaveLifecycle::Working),
+        )
+        .await;
+        {
+            let mut tx = repo.pool().begin().await.expect("begin");
+            assert_eq!(
+                proposals_pending_by_wave_tx(&mut tx, "w1")
+                    .await
+                    .expect("pending")
+                    .len(),
+                1,
+                "non-terminal lifecycle change must not touch pending rows"
+            );
+        }
+        // Terminalize w1: pending row vanishes from every pending-scoped
+        // read; the resolved history row survives.
+        append(
+            &repo,
+            ActorId::User,
+            "w1",
+            &lifecycle("w1", WaveLifecycle::Working, WaveLifecycle::Done),
+        )
+        .await;
+        let mut tx = repo.pool().begin().await.expect("begin");
+        assert!(
+            proposals_pending_by_wave_tx(&mut tx, "w1")
+                .await
+                .expect("pending")
+                .is_empty(),
+            "terminal wave must leave the pending list"
+        );
+        assert_eq!(
+            proposal_pending_count_tx(&mut tx, "p1", "w1")
+                .await
+                .expect("count"),
+            0,
+            "terminalization must release the quota slot"
+        );
+        assert!(
+            proposal_pending_by_idem_tx(&mut tx, "p1", "w1", "k1")
+                .await
+                .expect("idem")
+                .is_none(),
+            "terminalization must release the idem key"
+        );
+        assert!(
+            proposal_get_tx(&mut tx, "pp-pending")
+                .await
+                .expect("get")
+                .is_none(),
+            "the pending row is removed, not restatused"
+        );
+        let kept = proposal_get_tx(&mut tx, "pp-done")
+            .await
+            .expect("get")
+            .expect("resolved history row must survive terminalization");
+        assert_eq!(kept.status, "accepted");
+        // The other wave is untouched.
+        assert_eq!(
+            proposals_pending_by_wave_tx(&mut tx, "w2")
+                .await
+                .expect("pending")
+                .len(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn wave_deleted_removes_the_waves_projection_rows() {
         let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -521,9 +723,48 @@ mod tests {
             },
         )
         .await;
+        // w4: resolved + pending, then wave terminalizes — replay must
+        // reproduce the live fold's asymmetry (pending removed,
+        // resolved history kept).
+        append(
+            &repo,
+            plugin.clone(),
+            "w4",
+            &submitted("w4", "pp-4r", "p1", "k1"),
+        )
+        .await;
+        append(
+            &repo,
+            ActorId::User,
+            "w4",
+            &resolved("w4", "pp-4r", "p1", ProposalDecision::Rejected),
+        )
+        .await;
+        append(
+            &repo,
+            plugin.clone(),
+            "w4",
+            &submitted("w4", "pp-4p", "p1", "k2"),
+        )
+        .await;
+        append(
+            &repo,
+            ActorId::User,
+            "w4",
+            &lifecycle("w4", WaveLifecycle::Working, WaveLifecycle::Canceled),
+        )
+        .await;
 
         let live = all_rows(&repo).await;
-        assert_eq!(live.len(), 2, "pp-1 resolved + pp-2 pending: {live:?}");
+        assert_eq!(
+            live.len(),
+            3,
+            "pp-1 resolved + pp-2 pending + pp-4r resolved: {live:?}"
+        );
+        assert!(
+            live.iter().all(|r| r.proposal_id != "pp-4p"),
+            "terminal wave's pending row must be gone before parity check: {live:?}"
+        );
 
         // Corrupt the projection, then rebuild from the log alone.
         sqlx::query("UPDATE proposals SET status = 'garbage', note = 'tampered'")

@@ -116,19 +116,26 @@ pub enum ReportDocOp {
     /// (delete-then-move) naturally fails. Any failure rolls the WHOLE
     /// batch back — the incoming doc is untouched (the ops run on a
     /// scratch copy that only replaces the real doc on full success)
-    /// and the surrounding persist tx aborts. Failures surface as
-    /// `CalmError::Conflict` (the proposal-stale class): unknown block
-    /// ids and rev mismatches BOTH map there, because for an async
-    /// proposal "the block you anchored on is gone" is staleness, not
-    /// a malformed request. A successful batch flows through the same
-    /// five-step persist sequence exactly once ⇒ exactly one
+    /// and the surrounding persist tx aborts. Failure classes split by
+    /// what a retry can fix: unknown block ids and rev mismatches are
+    /// `CalmError::Conflict` (the proposal-stale class — for an async
+    /// proposal "the block you anchored on is gone/moved" is staleness,
+    /// fixable against a fresh snapshot), while structural
+    /// malformations (invalid member kind, missing `if_rev`,
+    /// out-of-range index) stay `BadRequest` — resubmitting the same
+    /// shape against any snapshot can never succeed, and PR-b must not
+    /// misreport it as stale. A successful batch flows through the
+    /// same five-step persist sequence exactly once ⇒ exactly one
     /// `CardUpdated` + one `WaveReportEdited` pair, and the in-op
-    /// guards (`guard_non_prose_stomp`, fence validation) run
-    /// unchanged inside each constituent op.
+    /// guards run unchanged inside each constituent op.
     ///
-    /// Nested batches are refused (`BadRequest`) — flatten at the
-    /// caller; an empty batch is refused too (a proposal with no ops
-    /// is a caller bug, not a conflict).
+    /// Member kinds are the block-level ops only: nested batches,
+    /// `Replace`, and `WriteMarkdown` are refused (`BadRequest`) — the
+    /// wire `ProposalOp` cannot express the wholesale writes, and the
+    /// kernel-side entry enforces the same ceiling so an op-mapping
+    /// bug upstream can never smuggle a full-body rewrite through the
+    /// proposal channel. An empty batch is refused too (a proposal
+    /// with no ops is a caller bug, not a conflict).
     Batch(Vec<ReportDocOp>),
 }
 
@@ -139,6 +146,20 @@ pub enum ReportDocOp {
 pub struct BlockOpOutcome {
     pub id: String,
     pub rev: u32,
+}
+
+/// The one place the "block not found" `BadRequest` is minted, paired
+/// with [`is_block_not_found`] so the Batch arm can reclassify exactly
+/// this error (and no other `BadRequest`) as proposal staleness.
+fn block_not_found(id: &str) -> CalmError {
+    CalmError::BadRequest(format!("block {id} not found"))
+}
+
+/// True iff `msg` came from [`block_not_found`]. Kept next to the
+/// constructor; `batch_not_found_classifier_matches_constructor` pins
+/// the pair against drift.
+fn is_block_not_found(msg: &str) -> bool {
+    msg.starts_with("block ") && msg.ends_with(" not found")
 }
 
 /// Execute `op` against the (already migrated) doc. Returns
@@ -156,7 +177,7 @@ pub(crate) fn apply_report_op(
         let current = doc
             .block_rev(id)
             .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
-            .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+            .ok_or_else(|| block_not_found(id))?;
         if current != expected {
             return Err(CalmError::Conflict(format!(
                 "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
@@ -246,7 +267,7 @@ pub(crate) fn apply_report_op(
             let current = doc
                 .block_rev(id)
                 .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
-                .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+                .ok_or_else(|| block_not_found(id))?;
             if let Some(expected) = if_rev {
                 check_rev(doc, id, *expected)?;
             }
@@ -273,10 +294,27 @@ pub(crate) fn apply_report_op(
                     "batch requires at least one op".into(),
                 ));
             }
-            if ops.iter().any(|op| matches!(op, ReportDocOp::Batch(_))) {
-                return Err(CalmError::BadRequest(
-                    "nested batches are not allowed — flatten the op list".into(),
-                ));
+            for member in ops {
+                match member {
+                    ReportDocOp::Batch(_) => {
+                        return Err(CalmError::BadRequest(
+                            "nested batches are not allowed — flatten the op list".into(),
+                        ));
+                    }
+                    // The proposal wire (`ProposalOp`) cannot express
+                    // the wholesale writes; deny them at the kernel
+                    // choke point too so an upstream op-mapping bug
+                    // can never turn a proposal into a full-body
+                    // rewrite (§5.2.2).
+                    ReportDocOp::Replace { .. } | ReportDocOp::WriteMarkdown { .. } => {
+                        return Err(CalmError::BadRequest(
+                            "replace/write_markdown are not allowed inside a batch — \
+                             proposals carry block-level ops only"
+                                .into(),
+                        ));
+                    }
+                    _ => {}
+                }
             }
             // Whole-batch atomicity at the doc level: run every op on
             // a scratch copy and only swap it in on full success. The
@@ -288,12 +326,24 @@ pub(crate) fn apply_report_op(
                 .map_err(|e| CalmError::Internal(format!("wave_report: fork doc: {e}")))?;
             for op in ops {
                 apply_report_op(&mut scratch, op).map_err(|e| match e {
-                    // §5.2.1: ANY failed authoritative check makes the
-                    // whole proposal stale — one conflict class, never
-                    // a partial 400. Internal (corruption) passes
-                    // through unmapped.
-                    CalmError::BadRequest(msg) | CalmError::Conflict(msg) => {
+                    // §5.2.1 staleness vs malformation: rev mismatches
+                    // (already Conflict) and unknown block ids ("the
+                    // block you anchored on is gone" — snapshot decay,
+                    // fixable by re-reading) map to the proposal-stale
+                    // Conflict class. Every other BadRequest is
+                    // structural (missing if_rev, out-of-range index):
+                    // no fresh snapshot can fix it, so it must stay
+                    // BadRequest — mapping it to Conflict would invite
+                    // endless resubmission of an unfixable proposal.
+                    // Internal (corruption) passes through unmapped.
+                    CalmError::Conflict(msg) => {
                         CalmError::Conflict(format!("proposal batch conflict: {msg}"))
+                    }
+                    CalmError::BadRequest(msg) if is_block_not_found(&msg) => {
+                        CalmError::Conflict(format!("proposal batch conflict: {msg}"))
+                    }
+                    CalmError::BadRequest(msg) => {
+                        CalmError::BadRequest(format!("proposal batch invalid: {msg}"))
                     }
                     other => other,
                 })?;
@@ -945,6 +995,80 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::BadRequest(_)), "nested: {err:?}");
+    }
+
+    #[test]
+    fn batch_rejects_wholesale_members_as_bad_request() {
+        // §5.2.2 — the proposal wire cannot express Replace /
+        // WriteMarkdown; the kernel entry must deny them too so an
+        // op-mapping bug can never smuggle a full-body rewrite in.
+        let (mut doc, _) = two_block_doc();
+        let before = doc.project().unwrap();
+        for member in [
+            ReportDocOp::Replace {
+                summary: None,
+                body: "# X\n\nstomp\n".into(),
+            },
+            ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: "# X\n\nstomp\n".into(),
+            },
+        ] {
+            let err =
+                apply_report_op(&mut doc, &ReportDocOp::Batch(vec![member.clone()])).unwrap_err();
+            assert!(
+                matches!(err, CalmError::BadRequest(_)),
+                "wholesale member {member:?} must be BadRequest: {err:?}"
+            );
+        }
+        assert_eq!(doc.project().unwrap(), before, "doc untouched");
+    }
+
+    #[test]
+    fn batch_structural_errors_stay_bad_request_not_conflict() {
+        // A structural malformation (missing if_rev, out-of-range
+        // index) can never succeed against ANY snapshot — mapping it
+        // to Conflict would tell the plugin to resubmit forever.
+        let (mut doc, blocks) = two_block_doc();
+        let (a_id, _) = blocks[0].clone();
+        let missing_if_rev = ReportDocOp::UpsertBlock {
+            id: Some(a_id.clone()),
+            kind: "prose".into(),
+            content: "# A\n\nnew\n".into(),
+            if_rev: None,
+            position: None,
+        };
+        let out_of_range = ReportDocOp::MoveBlock {
+            id: a_id,
+            to_index: 99,
+            if_rev: None,
+        };
+        for op in [missing_if_rev, out_of_range] {
+            let err = apply_report_op(&mut doc, &ReportDocOp::Batch(vec![op.clone()])).unwrap_err();
+            assert!(
+                matches!(err, CalmError::BadRequest(_)),
+                "structural member {op:?} must stay BadRequest: {err:?}"
+            );
+        }
+        assert_eq!(doc.blocks_snapshot().unwrap().len(), 2, "doc untouched");
+    }
+
+    #[test]
+    fn batch_not_found_classifier_matches_constructor() {
+        // Pins the constructor/classifier pair the Batch reclassifier
+        // relies on, including an id that itself contains spaces.
+        for id in ["b_0001", "weird id with spaces"] {
+            let CalmError::BadRequest(msg) = block_not_found(id) else {
+                panic!("block_not_found must be BadRequest");
+            };
+            assert!(is_block_not_found(&msg), "constructor output: {msg}");
+        }
+        assert!(!is_block_not_found(
+            "if_rev is required when replacing an existing block"
+        ));
+        assert!(!is_block_not_found(
+            "to_index 99 out of range (report has 2 blocks)"
+        ));
     }
 
     /// Persist-level pin for §5.2.2: one successful Batch ⇒ exactly ONE
