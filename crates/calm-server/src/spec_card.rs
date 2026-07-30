@@ -110,9 +110,9 @@ writes are transactional.
      and inspect incoming links to a report with \
      `calm.report.links.backlinks`.
    * Cross-reference as `[label](neige://wave/<wave_id>#<block_id>)`; omit \
-     `#<block_id>` for the whole report. Get block ids from `calm.report.read` \
-     (own) or `calm.cove.outline` (siblings); links resolve only within the \
-     cove. Missing block anchors fall back to the whole report, so link precisely.
+     `#<block_id>` for the whole report. Get block ids from `calm.cove.outline`, \
+     the single source for the whole cove, including your own wave. Links resolve \
+     only within the cove; missing anchors fall back to the whole report.
    * Keep the wave report current with `calm.report.write` or \
      `calm.report.edit`. Each requires `message` and accepts optional \
      `lifecycle`.
@@ -598,8 +598,12 @@ mod tests {
         assert!(
             !p.contains("calm.wave.cat")
                 && !p.contains("calm.wave.ls")
-                && p.contains("[label](neige://wave/<wave_id>#<block_id>)"),
-            "spec prompt must pin the cross-reference form without restoring retired reads"
+                && !p.contains("calm.report.read"),
+            "spec prompt must not instruct reads via MCP"
+        );
+        assert!(
+            p.contains("[label](neige://wave/<wave_id>#<block_id>)"),
+            "spec prompt must pin the cross-reference form"
         );
     }
 
