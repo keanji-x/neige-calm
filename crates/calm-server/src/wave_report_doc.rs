@@ -130,6 +130,37 @@ impl ReportDoc {
         self.0.save()
     }
 
+    /// Deterministic, opaque encoding of the doc's Automerge canonical
+    /// heads (#955 §5.2) — the `base_doc_heads` anchor `neige.report.get`
+    /// hands to proposing plugins and the accept transaction compares
+    /// against. Change hashes are content-derived, so the token is
+    /// stable across process restarts and save/load round-trips; ANY
+    /// committed change (from any actor) yields a different token.
+    ///
+    /// Encoding: sort the head hashes (hex), hash the sorted sequence
+    /// with SHA-256, and prefix with a scheme tag so a future encoding
+    /// change is detectable rather than silently colliding. Sorting
+    /// makes the token independent of automerge's head ordering; the
+    /// second-stage hash keeps it fixed-size no matter how many
+    /// concurrent heads exist. Consumers MUST treat it as opaque —
+    /// equality is the only defined operation.
+    ///
+    /// `&mut self` because `get_heads` (like `save`) commits any
+    /// pending transaction before reading — call order next to
+    /// `to_bytes` is therefore irrelevant.
+    pub fn doc_heads(&mut self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut heads: Vec<String> = self.0.get_heads().iter().map(|h| h.to_string()).collect();
+        heads.sort();
+        let mut hasher = Sha256::new();
+        for head in &heads {
+            hasher.update(head.as_bytes());
+            // Unambiguous separator: hex never contains NUL.
+            hasher.update([0u8]);
+        }
+        format!("ah1:{:x}", hasher.finalize())
+    }
+
     /// Lazily migrate a legacy (pre-#960) doc to the v2 block layout.
     ///
     /// Returns `Ok(false)` when the doc already has the `blocks` map
@@ -773,6 +804,56 @@ mod tests {
             "spec agent did a thing",
             "# Goal\n\nReplace the foo with the bar.\n\n# Progress\n\nfoo->bar.\n",
         )
+    }
+
+    // ----- #955 §5.2: doc_heads ---------------------------------------
+
+    #[test]
+    fn doc_heads_is_stable_across_save_load_round_trips() {
+        // Restart-survival: the token must be a pure function of the
+        // committed change graph, not of in-process state. Round-trip
+        // through bytes (= what a process restart does) twice.
+        let mut doc = ReportDoc::from_payload(&sample_payload());
+        let token = doc.doc_heads();
+        assert!(token.starts_with("ah1:"), "scheme-tagged token: {token}");
+
+        let mut reloaded = ReportDoc::from_bytes(&doc.to_bytes()).unwrap();
+        assert_eq!(reloaded.doc_heads(), token);
+        let mut reloaded_again = ReportDoc::from_bytes(&reloaded.to_bytes()).unwrap();
+        assert_eq!(reloaded_again.doc_heads(), token);
+    }
+
+    #[test]
+    fn doc_heads_changes_on_any_edit() {
+        let mut doc = ReportDoc::from_payload(&sample_payload());
+        let before = doc.doc_heads();
+
+        // Body edit → new head.
+        doc.update(
+            "spec agent did a thing",
+            "# Goal
+
+changed.
+",
+        )
+        .unwrap();
+        let after_body = doc.doc_heads();
+        assert_ne!(after_body, before, "body edit must move the heads");
+
+        // Summary-only edit → new head again.
+        doc.update(
+            "new summary",
+            "# Goal
+
+changed.
+",
+        )
+        .unwrap();
+        let after_summary = doc.doc_heads();
+        assert_ne!(after_summary, after_body);
+
+        // Re-reading without writing does not move the token.
+        assert_eq!(doc.doc_heads(), after_summary);
     }
 
     /// Serialize a pre-#960 doc: `summary` + `body` Texts at ROOT,

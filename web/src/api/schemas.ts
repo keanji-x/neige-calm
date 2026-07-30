@@ -337,7 +337,10 @@ export const harnessUserMessageEnqueuedSchema = z.object({
  *
  * `author` discriminates who produced the edit. PR2 only emits
  * `'spec'`; PR3 introduces `'user'` for REST-driven edits; `'kernel'`
- * is reserved for future server-internal rewrites.
+ * is reserved for future server-internal rewrites; `'plugin'` (#955)
+ * is the proposal channel's accept apply, with the submitting plugin
+ * carried in the sibling optional `author_plugin_id` (absent for every
+ * other author — old rows replay with the field missing).
  *
  * `edit_id` is a fresh UUID v4 per call so the UI can collapse
  * adjacent retries or correlate timeline entries with a future
@@ -351,7 +354,8 @@ export const waveReportEditedSchema = z.object({
   data: z.object({
     wave_id: z.string(),
     card_id: z.string(),
-    author: z.enum(['spec', 'user', 'kernel']),
+    author: z.enum(['spec', 'user', 'kernel', 'plugin']),
+    author_plugin_id: z.string().optional(),
     edit_id: z.string(),
     summary_before: z.string(),
     summary_after: z.string(),
@@ -679,6 +683,83 @@ export const ratifyResolvedSchema = z.object({
   }),
 });
 
+/**
+ * `ProposalOp` / `ProposalAnchor` mirrors (#955 §5.2.1) — the typed op
+ * vocabulary carried on `proposal.submitted`. Anchor is externally
+ * tagged: bare `'at_start'` / `'at_end'` strings, or an
+ * `{ after_block_id }` object (which may reference an in-batch
+ * `temp:<temp_id>` block).
+ */
+export const proposalAnchorSchema = z.union([
+  z.literal('at_start'),
+  z.literal('at_end'),
+  z.object({ after_block_id: z.string() }),
+]);
+
+export const proposalOpSchema = z.discriminatedUnion('op', [
+  z.object({
+    op: z.literal('upsert_block'),
+    block_id: z.string().optional(),
+    temp_id: z.string().optional(),
+    kind: z.string(),
+    payload: z.unknown(),
+    if_rev: z.number().optional(),
+    anchor: proposalAnchorSchema.optional(),
+  }),
+  z.object({
+    op: z.literal('move_block'),
+    block_id: z.string(),
+    if_rev: z.number(),
+    anchor: proposalAnchorSchema,
+  }),
+  z.object({
+    op: z.literal('delete_block'),
+    block_id: z.string(),
+    if_rev: z.number(),
+  }),
+]);
+
+export const proposalDecisionSchema = z.enum([
+  'accepted',
+  'rejected',
+  'stale',
+  'withdrawn',
+]);
+
+/**
+ * `Event::ProposalSubmitted` — issue #955 §5: a plugin proposed report
+ * edits through the ④ channel. Actor is the submitting plugin;
+ * adjudication is human (see `proposal.resolved`).
+ */
+export const proposalSubmittedSchema = z.object({
+  ev: z.literal('proposal.submitted'),
+  data: z.object({
+    wave_id: z.string(),
+    proposal_id: z.string(),
+    plugin_id: z.string(),
+    subject_kind: z.string(),
+    base_doc_heads: z.string(),
+    ops: z.array(proposalOpSchema),
+    note: z.string(),
+    idem_key: z.string(),
+  }),
+});
+
+/**
+ * `Event::ProposalResolved` — issue #955 §5.6: a pending proposal
+ * reached one of its four terminal decisions. `plugin_id` is the
+ * submitter (role-gate ownership field), not the resolver.
+ */
+export const proposalResolvedSchema = z.object({
+  ev: z.literal('proposal.resolved'),
+  data: z.object({
+    wave_id: z.string(),
+    proposal_id: z.string(),
+    plugin_id: z.string(),
+    decision: proposalDecisionSchema,
+  }),
+});
+
 export const forgeScanCompletedSchema = z.object({
   ev: z.literal('forge.scan.completed'),
   data: z.object({
@@ -857,6 +938,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   reviewRoundSchema,
   ratifyRequestedSchema,
   ratifyResolvedSchema,
+  proposalSubmittedSchema,
+  proposalResolvedSchema,
   forgeScanCompletedSchema,
   forgePrOpenedSchema,
   forgePrDiffReadSchema,
@@ -919,6 +1002,8 @@ export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;
 export type ReviewRoundEvent = z.infer<typeof reviewRoundSchema>;
 export type RatifyRequestedEvent = z.infer<typeof ratifyRequestedSchema>;
 export type RatifyResolvedEvent = z.infer<typeof ratifyResolvedSchema>;
+export type ProposalSubmittedEvent = z.infer<typeof proposalSubmittedSchema>;
+export type ProposalResolvedEvent = z.infer<typeof proposalResolvedSchema>;
 export type ForgeScanCompletedEvent = z.infer<typeof forgeScanCompletedSchema>;
 export type ForgePrOpenedEvent = z.infer<typeof forgePrOpenedSchema>;
 export type ForgePrDiffReadEvent = z.infer<typeof forgePrDiffReadSchema>;

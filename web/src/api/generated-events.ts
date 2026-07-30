@@ -225,7 +225,7 @@ export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: str
  * dance: `EditAuthor` only ever appears as a payload field, never as
  * its own envelope.
  */
-export type EditAuthor = "spec" | "user" | "kernel";
+export type EditAuthor = "spec" | "user" | "kernel" | "plugin";
 
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.
@@ -240,7 +240,14 @@ export type EditAuthor = "spec" | "user" | "kernel";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, 
+/**
+ * Submitting plugin id when `author == EditAuthor::Plugin`
+ * (#955 §5.3); `None` for every other author.
+ * `#[serde(default)]` keeps pre-#955 history rows replayable
+ * (field absent on old events ⇒ `None`).
+ */
+author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for
@@ -290,7 +297,34 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "forge.scan.completed", "data": { wave_id: WaveId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { wave_id: WaveId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { wave_id: WaveId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { wave_id: WaveId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { wave_id: WaveId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { wave_id: WaveId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { wave_id: WaveId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { wave_id: WaveId, proposal_id: string, 
+/**
+ * Submitting plugin. Injected kernel-side from the callback
+ * connection (never trusted from plugin input) and
+ * cross-checked against the envelope actor by `role_gate`.
+ */
+plugin_id: string, 
+/**
+ * Proposal subject kind — `"report"` is the only accepted
+ * value today; this field is the wire's single extension
+ * point (design D2).
+ */
+subject_kind: string, 
+/**
+ * Opaque Automerge canonical-heads token of the snapshot the
+ * plugin proposed against (`ReportDoc::doc_heads`).
+ */
+base_doc_heads: string, ops: Array<ProposalOp>, 
+/**
+ * Human-facing rationale rendered in the adjudication UI.
+ */
+note: string, 
+/**
+ * Pending-scoped idempotency key: while a `(plugin, wave,
+ * idem_key)` proposal is pending, re-submits return the
+ * original proposal id; resolution releases the key.
+ */
+idem_key: string, } } | { "ev": "proposal.resolved", "data": { wave_id: WaveId, proposal_id: string, plugin_id: string, decision: ProposalDecision, } } | { "ev": "forge.scan.completed", "data": { wave_id: WaveId, overlapping_prs: Array<number>, } } | { "ev": "forge.pr.opened", "data": { wave_id: WaveId, pr_number: number, head_sha: string, } } | { "ev": "forge.pr.diff.read", "data": { wave_id: WaveId, pr_number: number, base_sha: string, head_sha: string, artifact_path: string, } } | { "ev": "forge.pr.checks", "data": { wave_id: WaveId, pr_number: number, conclusion: string, } } | { "ev": "forge.issue.read", "data": { wave_id: WaveId, issue_number: number, artifact_path: string, } } | { "ev": "forge.issue.closed", "data": { wave_id: WaveId, issue_number: number, } } | { "ev": "worktree.provisioned", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "worktree.committed", "data": { wave_id: WaveId, card_id: CardId, commit_sha: string, branch: string, } } | { "ev": "worktree.removed", "data": { wave_id: WaveId, card_id: CardId, path: string, } } | { "ev": "task.gate_result", "data": { task_id: string, idempotency_key: string, passed: boolean, failing_step?: string, exit_code?: number, log_tail: string, log_path: string, attempt: number, agent_message?: string, } };
 
 /**
  * Where an event lives in the cove → wave → card hierarchy.
@@ -350,6 +384,47 @@ kind: string,
  * explicit `unknown` override.
  */
 payload: unknown, updated_at: number, };
+
+/**
+ * Position anchor for proposed block creation / moves (design §5.2.1).
+ *
+ * Proposals are asynchronous, so positions are expressed against
+ * stable block ids — never numeric indexes (an unrelated insertion
+ * would silently shift index semantics while every block rev still
+ * matches). Externally-tagged serde gives `"at_start"` / `"at_end"` /
+ * `{"after_block_id": "b_0001"}` on the wire; `after_block_id` may
+ * reference a block created earlier in the same proposal via the
+ * `temp:<temp_id>` form.
+ */
+export type ProposalAnchor = { "after_block_id": string } | "at_start" | "at_end";
+
+/**
+ * How a pending proposal was resolved. Two events, four decisions
+ * (design §5.6): `accepted` / `rejected` / `stale` are user-driven
+ * adjudications (`stale` is the accept attempt whose in-tx anchoring
+ * checks failed); `withdrawn` is the submitting plugin reclaiming its
+ * own pending slot — the only plugin-side exit, so quota can't be
+ * pinned forever by abandoned proposals.
+ *
+ * Wire shape: bare lowercase string (matches the surrounding
+ * event-payload enum conventions, e.g. `EditAuthor`).
+ */
+export type ProposalDecision = "accepted" | "rejected" | "stale" | "withdrawn";
+
+/**
+ * One proposed mutation of the wave-report block document
+ * (design §5.2.1). A deliberately *stricter* sibling of the
+ * interactive `calm.report.blocks.*` tool DTOs: anchoring must be
+ * complete because apply happens asynchronously, and the wholesale
+ * `WriteMarkdown` / `Replace` shapes are excluded on purpose (full
+ * overwrites and string matching cannot be meaningfully proposed).
+ *
+ * Field-requirement rules (`if_rev` mandatory when replacing, exactly
+ * one of `block_id` / `temp_id`, anchor mandatory for creations) are
+ * enforced by the PR-b submit handler; the wire type keeps them
+ * `Option` only where two legal shapes share a variant.
+ */
+export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: string, kind: string, payload: unknown, if_rev?: number, anchor?: ProposalAnchor, } | { "op": "move_block", block_id: string, if_rev: number, anchor: ProposalAnchor, } | { "op": "delete_block", block_id: string, if_rev: number, };
 
 export type RatifyDecision = "grant" | "deny";
 

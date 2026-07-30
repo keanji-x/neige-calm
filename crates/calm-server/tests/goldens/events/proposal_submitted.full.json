@@ -1,0 +1,42 @@
+{
+  "description": "proposal.submitted with every ProposalOp shape: replace-by-id (block_id + if_rev), create (temp_id + anchor), move, delete. Pins the internally-tagged op encoding, the externally-tagged anchor encoding (bare string for at_start/at_end, object for after_block_id incl. temp: refs), and the absent-not-null optional fields.",
+  "wire": {
+    "ev": "proposal.submitted",
+    "data": {
+      "wave_id": "wave-01",
+      "proposal_id": "pp-01",
+      "plugin_id": "dev.neige.invest",
+      "subject_kind": "report",
+      "base_doc_heads": "ah1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "ops": [
+        {
+          "op": "upsert_block",
+          "block_id": "b_0001",
+          "kind": "prose",
+          "payload": { "markdown": "revised intro\n" },
+          "if_rev": 3
+        },
+        {
+          "op": "upsert_block",
+          "temp_id": "t1",
+          "kind": "prose",
+          "payload": { "markdown": "# Fresh section\n" },
+          "anchor": "at_end"
+        },
+        {
+          "op": "move_block",
+          "block_id": "b_0002",
+          "if_rev": 1,
+          "anchor": { "after_block_id": "temp:t1" }
+        },
+        {
+          "op": "delete_block",
+          "block_id": "b_0003",
+          "if_rev": 2
+        }
+      ],
+      "note": "tighten the intro and drop the stale table",
+      "idem_key": "idem-01"
+    }
+  }
+}

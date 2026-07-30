@@ -108,6 +108,35 @@ pub enum ReportDocOp {
     },
     /// `calm.report.blocks.delete`: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
+    /// Issue #955 §5.2.2 — transactional batch apply, the proposal
+    /// channel's persistence entry. Ops validate-and-apply
+    /// **sequentially from one snapshot**: each op is checked against
+    /// the document state produced by its predecessors, so a batch can
+    /// reference blocks it just created and a contradictory sequence
+    /// (delete-then-move) naturally fails. Any failure rolls the WHOLE
+    /// batch back — the incoming doc is untouched (the ops run on a
+    /// scratch copy that only replaces the real doc on full success)
+    /// and the surrounding persist tx aborts. Failure classes split by
+    /// what a retry can fix: unknown block ids and rev mismatches are
+    /// `CalmError::Conflict` (the proposal-stale class — for an async
+    /// proposal "the block you anchored on is gone/moved" is staleness,
+    /// fixable against a fresh snapshot), while structural
+    /// malformations (invalid member kind, missing `if_rev`,
+    /// out-of-range index) stay `BadRequest` — resubmitting the same
+    /// shape against any snapshot can never succeed, and PR-b must not
+    /// misreport it as stale. A successful batch flows through the
+    /// same five-step persist sequence exactly once ⇒ exactly one
+    /// `CardUpdated` + one `WaveReportEdited` pair, and the in-op
+    /// guards run unchanged inside each constituent op.
+    ///
+    /// Member kinds are the block-level ops only: nested batches,
+    /// `Replace`, and `WriteMarkdown` are refused (`BadRequest`) — the
+    /// wire `ProposalOp` cannot express the wholesale writes, and the
+    /// kernel-side entry enforces the same ceiling so an op-mapping
+    /// bug upstream can never smuggle a full-body rewrite through the
+    /// proposal channel. An empty batch is refused too (a proposal
+    /// with no ops is a caller bug, not a conflict).
+    Batch(Vec<ReportDocOp>),
 }
 
 /// `(id, rev)` a block-level [`ReportDocOp`] resolved to: the created/
@@ -117,6 +146,20 @@ pub enum ReportDocOp {
 pub struct BlockOpOutcome {
     pub id: String,
     pub rev: u32,
+}
+
+/// The one place the "block not found" `BadRequest` is minted, paired
+/// with [`is_block_not_found`] so the Batch arm can reclassify exactly
+/// this error (and no other `BadRequest`) as proposal staleness.
+fn block_not_found(id: &str) -> CalmError {
+    CalmError::BadRequest(format!("block {id} not found"))
+}
+
+/// True iff `msg` came from [`block_not_found`]. Kept next to the
+/// constructor; `batch_not_found_classifier_matches_constructor` pins
+/// the pair against drift.
+fn is_block_not_found(msg: &str) -> bool {
+    msg.starts_with("block ") && msg.ends_with(" not found")
 }
 
 /// Execute `op` against the (already migrated) doc. Returns
@@ -134,7 +177,7 @@ pub(crate) fn apply_report_op(
         let current = doc
             .block_rev(id)
             .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
-            .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+            .ok_or_else(|| block_not_found(id))?;
         if current != expected {
             return Err(CalmError::Conflict(format!(
                 "rev conflict on block {id}: current rev is {current}, expected if_rev {expected} \
@@ -224,7 +267,7 @@ pub(crate) fn apply_report_op(
             let current = doc
                 .block_rev(id)
                 .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
-                .ok_or_else(|| CalmError::BadRequest(format!("block {id} not found")))?;
+                .ok_or_else(|| block_not_found(id))?;
             if let Some(expected) = if_rev {
                 check_rev(doc, id, *expected)?;
             }
@@ -243,6 +286,69 @@ pub(crate) fn apply_report_op(
         ReportDocOp::DeleteBlock { id, if_rev } => {
             check_rev(doc, id, *if_rev)?;
             doc.delete_block(id).map_err(internal)?;
+            Ok(None)
+        }
+        ReportDocOp::Batch(ops) => {
+            if ops.is_empty() {
+                return Err(CalmError::BadRequest(
+                    "batch requires at least one op".into(),
+                ));
+            }
+            for member in ops {
+                match member {
+                    ReportDocOp::Batch(_) => {
+                        return Err(CalmError::BadRequest(
+                            "nested batches are not allowed — flatten the op list".into(),
+                        ));
+                    }
+                    // The proposal wire (`ProposalOp`) cannot express
+                    // the wholesale writes; deny them at the kernel
+                    // choke point too so an upstream op-mapping bug
+                    // can never turn a proposal into a full-body
+                    // rewrite (§5.2.2).
+                    ReportDocOp::Replace { .. } | ReportDocOp::WriteMarkdown { .. } => {
+                        return Err(CalmError::BadRequest(
+                            "replace/write_markdown are not allowed inside a batch — \
+                             proposals carry block-level ops only"
+                                .into(),
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            // Whole-batch atomicity at the doc level: run every op on
+            // a scratch copy and only swap it in on full success. The
+            // persist tx would roll back the columns anyway, but the
+            // caller-visible `doc` must also stay untouched so a
+            // failed batch cannot leak partial state into any
+            // subsequent in-tx read.
+            let mut scratch = ReportDoc::from_bytes(&doc.to_bytes())
+                .map_err(|e| CalmError::Internal(format!("wave_report: fork doc: {e}")))?;
+            for op in ops {
+                apply_report_op(&mut scratch, op).map_err(|e| match e {
+                    // §5.2.1 staleness vs malformation: rev mismatches
+                    // (already Conflict) and unknown block ids ("the
+                    // block you anchored on is gone" — snapshot decay,
+                    // fixable by re-reading) map to the proposal-stale
+                    // Conflict class. Every other BadRequest is
+                    // structural (missing if_rev, out-of-range index):
+                    // no fresh snapshot can fix it, so it must stay
+                    // BadRequest — mapping it to Conflict would invite
+                    // endless resubmission of an unfixable proposal.
+                    // Internal (corruption) passes through unmapped.
+                    CalmError::Conflict(msg) => {
+                        CalmError::Conflict(format!("proposal batch conflict: {msg}"))
+                    }
+                    CalmError::BadRequest(msg) if is_block_not_found(&msg) => {
+                        CalmError::Conflict(format!("proposal batch conflict: {msg}"))
+                    }
+                    CalmError::BadRequest(msg) => {
+                        CalmError::BadRequest(format!("proposal batch invalid: {msg}"))
+                    }
+                    other => other,
+                })?;
+            }
+            *doc = scratch;
             Ok(None)
         }
     }
@@ -563,6 +669,12 @@ pub(crate) async fn persist_report_with_shadow(
                     wave_id,
                     card_id: report_card_id,
                     author,
+                    // #955 §5.3 — populated by the PR-b accept path
+                    // (which passes `author = Plugin` and threads the
+                    // submitter id through); every PR-a caller writes
+                    // Spec/User/Kernel edits, where the field is None
+                    // by contract.
+                    author_plugin_id: None,
                     edit_id: uuid::Uuid::new_v4().to_string(),
                     summary_before,
                     summary_after,
@@ -732,6 +844,407 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
+    }
+
+    // ----- #955 §5.2.2: ReportDocOp::Batch --------------------------------
+
+    /// Two-block doc the batch tests operate on. Returns the doc plus
+    /// its `(id, rev)` snapshot in order.
+    fn two_block_doc() -> (ReportDoc, Vec<(String, u32)>) {
+        let doc = ReportDoc::from_payload(&WaveReportPayload::new(
+            "s",
+            "# A\n\nalpha\n\n# B\n\nbeta\n",
+        ));
+        let blocks = doc
+            .blocks_snapshot()
+            .unwrap()
+            .into_iter()
+            .map(|b| (b.id, b.rev))
+            .collect::<Vec<_>>();
+        assert_eq!(blocks.len(), 2, "seed body must split into two blocks");
+        (doc, blocks)
+    }
+
+    #[test]
+    fn batch_applies_ops_sequentially_from_one_snapshot() {
+        let (mut doc, blocks) = two_block_doc();
+        let (a_id, a_rev) = blocks[0].clone();
+        // Create a new block, then delete an existing one — both must
+        // land, in order, through a single op.
+        let outcome = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Batch(vec![
+                ReportDocOp::UpsertBlock {
+                    id: None,
+                    kind: "prose".into(),
+                    content: "# C\n\ngamma\n".into(),
+                    if_rev: None,
+                    position: None,
+                },
+                ReportDocOp::DeleteBlock {
+                    id: a_id.clone(),
+                    if_rev: a_rev,
+                },
+            ]),
+        )
+        .unwrap();
+        assert!(outcome.is_none(), "batch reports no single-block outcome");
+        let after = doc.blocks_snapshot().unwrap();
+        assert_eq!(after.len(), 2, "one created + one deleted: {after:?}");
+        assert!(after.iter().all(|b| b.id != a_id), "block A must be gone");
+        let (_, body) = doc.project().unwrap();
+        assert!(body.contains("gamma"), "created block must project: {body}");
+        assert!(!body.contains("alpha"), "deleted block must not project");
+    }
+
+    #[test]
+    fn batch_mid_failure_rolls_back_the_whole_batch() {
+        let (mut doc, blocks) = two_block_doc();
+        let (a_id, a_rev) = blocks[0].clone();
+        let (b_id, b_rev) = blocks[1].clone();
+        let before = doc.project().unwrap();
+
+        // Op 1 would succeed; op 2 has a stale rev — the WHOLE batch
+        // must roll back, leaving op 1's delete unapplied.
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Batch(vec![
+                ReportDocOp::DeleteBlock {
+                    id: a_id.clone(),
+                    if_rev: a_rev,
+                },
+                ReportDocOp::DeleteBlock {
+                    id: b_id.clone(),
+                    if_rev: b_rev + 41,
+                },
+            ]),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, CalmError::Conflict(_)),
+            "rev mismatch inside a batch is the conflict class: {err:?}"
+        );
+        assert_eq!(
+            doc.project().unwrap(),
+            before,
+            "mid-batch failure must leave the doc untouched"
+        );
+        assert_eq!(doc.blocks_snapshot().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn batch_unknown_block_id_is_conflict_not_bad_request() {
+        // §5.2.1: for an async proposal, an unknown block id means the
+        // anchor vanished under it — staleness, not a malformed
+        // request. (Outside a batch the same op stays BadRequest.)
+        let (mut doc, _) = two_block_doc();
+        let op = ReportDocOp::DeleteBlock {
+            id: "b_gone".into(),
+            if_rev: 1,
+        };
+        let solo = apply_report_op(&mut doc, &op.clone()).unwrap_err();
+        assert!(matches!(solo, CalmError::BadRequest(_)), "solo: {solo:?}");
+        let batched = apply_report_op(&mut doc, &ReportDocOp::Batch(vec![op])).unwrap_err();
+        assert!(
+            matches!(batched, CalmError::Conflict(_)),
+            "batched: {batched:?}"
+        );
+    }
+
+    #[test]
+    fn batch_can_reference_a_block_created_earlier_in_the_batch() {
+        // Sequential validate-and-apply: op 2 replaces content the doc
+        // only holds because op 1 ran first. (Positional temp-id
+        // resolution is the PR-b submit layer's job — here we pin the
+        // underlying sequencing semantics.)
+        let (mut doc, blocks) = two_block_doc();
+        let (a_id, a_rev) = blocks[0].clone();
+        // delete-then-move the SAME block: contradictory sequence must
+        // fail as a whole.
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Batch(vec![
+                ReportDocOp::DeleteBlock {
+                    id: a_id.clone(),
+                    if_rev: a_rev,
+                },
+                ReportDocOp::MoveBlock {
+                    id: a_id.clone(),
+                    to_index: 0,
+                    if_rev: Some(a_rev),
+                },
+            ]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::Conflict(_)), "got {err:?}");
+        assert_eq!(doc.blocks_snapshot().unwrap().len(), 2, "rolled back");
+    }
+
+    #[test]
+    fn batch_rejects_empty_and_nested_shapes() {
+        let (mut doc, blocks) = two_block_doc();
+        let err = apply_report_op(&mut doc, &ReportDocOp::Batch(vec![])).unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)), "empty: {err:?}");
+        let (a_id, a_rev) = blocks[0].clone();
+        let err = apply_report_op(
+            &mut doc,
+            &ReportDocOp::Batch(vec![ReportDocOp::Batch(vec![ReportDocOp::DeleteBlock {
+                id: a_id,
+                if_rev: a_rev,
+            }])]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CalmError::BadRequest(_)), "nested: {err:?}");
+    }
+
+    #[test]
+    fn batch_rejects_wholesale_members_as_bad_request() {
+        // §5.2.2 — the proposal wire cannot express Replace /
+        // WriteMarkdown; the kernel entry must deny them too so an
+        // op-mapping bug can never smuggle a full-body rewrite in.
+        let (mut doc, _) = two_block_doc();
+        let before = doc.project().unwrap();
+        for member in [
+            ReportDocOp::Replace {
+                summary: None,
+                body: "# X\n\nstomp\n".into(),
+            },
+            ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: "# X\n\nstomp\n".into(),
+            },
+        ] {
+            let err =
+                apply_report_op(&mut doc, &ReportDocOp::Batch(vec![member.clone()])).unwrap_err();
+            assert!(
+                matches!(err, CalmError::BadRequest(_)),
+                "wholesale member {member:?} must be BadRequest: {err:?}"
+            );
+        }
+        assert_eq!(doc.project().unwrap(), before, "doc untouched");
+    }
+
+    #[test]
+    fn batch_structural_errors_stay_bad_request_not_conflict() {
+        // A structural malformation (missing if_rev, out-of-range
+        // index) can never succeed against ANY snapshot — mapping it
+        // to Conflict would tell the plugin to resubmit forever.
+        let (mut doc, blocks) = two_block_doc();
+        let (a_id, _) = blocks[0].clone();
+        let missing_if_rev = ReportDocOp::UpsertBlock {
+            id: Some(a_id.clone()),
+            kind: "prose".into(),
+            content: "# A\n\nnew\n".into(),
+            if_rev: None,
+            position: None,
+        };
+        let out_of_range = ReportDocOp::MoveBlock {
+            id: a_id,
+            to_index: 99,
+            if_rev: None,
+        };
+        for op in [missing_if_rev, out_of_range] {
+            let err = apply_report_op(&mut doc, &ReportDocOp::Batch(vec![op.clone()])).unwrap_err();
+            assert!(
+                matches!(err, CalmError::BadRequest(_)),
+                "structural member {op:?} must stay BadRequest: {err:?}"
+            );
+        }
+        assert_eq!(doc.blocks_snapshot().unwrap().len(), 2, "doc untouched");
+    }
+
+    #[test]
+    fn batch_not_found_classifier_matches_constructor() {
+        // Pins the constructor/classifier pair the Batch reclassifier
+        // relies on, including an id that itself contains spaces.
+        for id in ["b_0001", "weird id with spaces"] {
+            let CalmError::BadRequest(msg) = block_not_found(id) else {
+                panic!("block_not_found must be BadRequest");
+            };
+            assert!(is_block_not_found(&msg), "constructor output: {msg}");
+        }
+        assert!(!is_block_not_found(
+            "if_rev is required when replacing an existing block"
+        ));
+        assert!(!is_block_not_found(
+            "to_index 99 out of range (report has 2 blocks)"
+        ));
+    }
+
+    /// Persist-level pin for §5.2.2: one successful Batch ⇒ exactly ONE
+    /// `CardUpdated` + ONE `WaveReportEdited` pair; a conflicting Batch
+    /// ⇒ zero events, untouched row.
+    #[tokio::test]
+    async fn persist_batch_emits_exactly_one_event_pair() {
+        use crate::card_role_cache::CardRoleCache;
+        use crate::db::prelude::*;
+        use crate::db::sqlite::SqlxRepo;
+        use crate::model::{NewCard, NewCove, NewWave};
+        use crate::wave_cove_cache::WaveCoveCache;
+        use std::sync::Arc;
+
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite"),
+        );
+        let cove = repo
+            .cove_create(NewCove {
+                name: "batch".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .expect("create cove");
+        let wave = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id.clone(),
+                title: "batch wave".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: crate::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create wave");
+        let _report_card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                title: None,
+                kind: "wave-report".into(),
+                sort: Some(-1.0),
+                payload: serde_json::to_value(WaveReportPayload::initial())
+                    .expect("initial report payload"),
+            })
+            .await
+            .expect("create report card");
+        let wave_cove_cache = WaveCoveCache::new();
+        repo.seed_wave_cove_cache(&wave_cove_cache)
+            .await
+            .expect("seed wave cove cache");
+        let write = crate::state::WriteContext::new(CardRoleCache::new(), wave_cove_cache);
+        let events = EventBus::new();
+        let route_repo: &dyn RouteRepo = repo.as_ref();
+
+        // Establish the CRDT (initial body → one prose block) so the
+        // batch below has a real block id + rev to anchor on.
+        let (wave_row, card_row, payload) = resolve_report_for_wave(route_repo, wave.id.as_str())
+            .await
+            .expect("resolve report");
+        let (updated, _) = persist_report_with_shadow(
+            route_repo,
+            &events,
+            &write,
+            ActorId::User,
+            EditAuthor::User,
+            wave_row,
+            card_row,
+            payload,
+            ReportDocOp::Replace {
+                summary: Some("seeded".into()),
+                body: "# A\n\nalpha\n".into(),
+            },
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("seed persist");
+        let seeded: WaveReportPayload =
+            serde_json::from_value(updated.payload.clone()).expect("seeded payload");
+        let block = seeded.blocks.as_ref().expect("blocks")[0].clone();
+
+        let baseline = repo
+            .events_since(0, i64::MAX)
+            .await
+            .expect("events baseline")
+            .len();
+
+        let (wave_row, card_row, payload) = resolve_report_for_wave(route_repo, wave.id.as_str())
+            .await
+            .expect("re-resolve report");
+        persist_report_with_shadow(
+            route_repo,
+            &events,
+            &write,
+            ActorId::User,
+            EditAuthor::User,
+            wave_row.clone(),
+            card_row.clone(),
+            payload.clone(),
+            ReportDocOp::Batch(vec![
+                ReportDocOp::UpsertBlock {
+                    id: None,
+                    kind: "prose".into(),
+                    content: "# B\n\nbeta\n".into(),
+                    if_rev: None,
+                    position: None,
+                },
+                ReportDocOp::UpsertBlock {
+                    id: Some(block.id.clone()),
+                    kind: "prose".into(),
+                    content: "# A\n\nalpha v2\n".into(),
+                    if_rev: Some(block.rev),
+                    position: None,
+                },
+            ]),
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect("batch persist");
+
+        let all = repo.events_since(0, i64::MAX).await.expect("events after");
+        let new: Vec<_> = all[baseline..].iter().map(|(_, _, _, ev)| ev).collect();
+        assert_eq!(
+            new.len(),
+            2,
+            "one Batch ⇒ exactly one event pair, got {new:?}"
+        );
+        assert!(matches!(new[0], Event::CardUpdated(_)), "got {new:?}");
+        assert!(
+            matches!(new[1], Event::WaveReportEdited { .. }),
+            "got {new:?}"
+        );
+
+        // A conflicting batch aborts the tx: no events, row untouched.
+        let baseline = all.len();
+        let (wave_row, card_row, payload) = resolve_report_for_wave(route_repo, wave.id.as_str())
+            .await
+            .expect("re-resolve report again");
+        let before_payload = payload.clone();
+        let err = persist_report_with_shadow(
+            route_repo,
+            &events,
+            &write,
+            ActorId::User,
+            EditAuthor::User,
+            wave_row,
+            card_row,
+            payload,
+            ReportDocOp::Batch(vec![ReportDocOp::DeleteBlock {
+                id: block.id.clone(),
+                if_rev: block.rev + 41,
+            }]),
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        .expect_err("stale batch must conflict");
+        assert!(matches!(err, CalmError::Conflict(_)), "got {err:?}");
+        let all = repo.events_since(0, i64::MAX).await.expect("events final");
+        assert_eq!(all.len(), baseline, "failed batch must emit nothing");
+        let (_, _, payload_after) = resolve_report_for_wave(route_repo, wave.id.as_str())
+            .await
+            .expect("resolve after failed batch");
+        assert_eq!(payload_after, before_payload, "row must be untouched");
     }
 
     #[test]

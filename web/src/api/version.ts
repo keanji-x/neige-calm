@@ -79,10 +79,17 @@
  *   lockstep. Older frontends' zod schemas don't know the new
  *   discriminators and would silently drop review/ratify frames, so bump
  *   here.
+ * * `13` — proposal-channel events (issue #955 §5 PR-a):
+ *   `proposal.submitted` / `proposal.resolved` join the WS event union
+ *   and `wave.report_edited` gains the `'plugin'` author arm + optional
+ *   `author_plugin_id`, with backend `SYNC_EVENT_VERSION` bumped
+ *   11 → 12 in lockstep. Older frontends' zod schemas don't know the
+ *   new discriminators (and reject the new author arm) and would
+ *   silently drop those frames, so bump here.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 12;
+export const WEB_COMPAT_VERSION = 13;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here
