@@ -43,17 +43,24 @@ pub(crate) fn mcp_wire_envelope(page: &BacklinkPage) -> serde_json::Value {
     })
 }
 
-fn page_fits_wire_caps(page: &BacklinkPage) -> bool {
-    let rest_fits =
-        serde_json::to_vec(page).is_ok_and(|encoded| encoded.len() <= MAX_BACKLINK_BYTES);
+fn page_fits_wire_caps(page: &BacklinkPage, max_bytes: usize) -> bool {
+    let rest_fits = serde_json::to_vec(page).is_ok_and(|encoded| encoded.len() <= max_bytes);
     let mcp_fits = serde_json::to_vec(&mcp_wire_envelope(page))
-        .is_ok_and(|encoded| encoded.len() <= MAX_BACKLINK_BYTES);
+        .is_ok_and(|encoded| encoded.len() <= max_bytes);
     rest_fits && mcp_fits
 }
 
 pub async fn backlinks_for_wave(
     repo: &dyn RouteRepo,
     wave_id: &str,
+) -> Result<BacklinkPage, CalmError> {
+    backlinks_for_wave_with_byte_cap(repo, wave_id, MAX_BACKLINK_BYTES).await
+}
+
+async fn backlinks_for_wave_with_byte_cap(
+    repo: &dyn RouteRepo,
+    wave_id: &str,
+    max_bytes: usize,
 ) -> Result<BacklinkPage, CalmError> {
     let target_wave = repo
         .wave_get(wave_id)
@@ -143,7 +150,7 @@ pub async fn backlinks_for_wave(
                     truncated: true,
                     skipped_sources: max_skipped_sources,
                 };
-                if !page_fits_wire_caps(&bounded_envelope) {
+                if !page_fits_wire_caps(&bounded_envelope, max_bytes) {
                     backlinks.pop();
                     truncated = true;
                     return false;
@@ -426,5 +433,25 @@ mod tests {
                 <= MAX_BACKLINK_BYTES,
             "serialized MCP response envelope exceeds byte cap"
         );
+    }
+
+    #[tokio::test]
+    async fn backlink_entry_cap_returns_exactly_500_entries() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        let body = (0..=MAX_BACKLINK_ENTRIES)
+            .map(|index| format!("[{index}](neige://wave/{})", target.id))
+            .collect::<Vec<_>>()
+            .join("\n");
+        report(&repo, source.id.as_str(), v1(body)).await;
+
+        let found = backlinks_for_wave_with_byte_cap(&repo, target.id.as_str(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(found.backlinks.len(), MAX_BACKLINK_ENTRIES);
+        assert!(found.truncated);
     }
 }
