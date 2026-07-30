@@ -51,6 +51,9 @@ pub async fn card_create_with_id_tx(
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
+    // This remains an unguarded wave-report create path. The
+    // one-report-per-wave partial unique index is its only structural
+    // backstop; gating report creation is outside issue #967's scope.
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
         .bind(p.wave_id.as_str())
         .fetch_optional(&mut **tx)
@@ -130,12 +133,8 @@ pub async fn card_create_tx(
     card_create_with_id_tx(tx, new_id(), p, CardRole::Worker, true, card_role_cache).await
 }
 
-pub async fn card_update_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    p: CardPatch,
-) -> Result<Card> {
-    let mut c = sqlx::query_as::<_, crate::db::rows::CardRow>(
+async fn card_for_update_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Card> {
+    sqlx::query_as::<_, crate::db::rows::CardRow>(
         r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
            FROM cards WHERE id = ?1"#,
     )
@@ -143,8 +142,14 @@ pub async fn card_update_tx(
     .fetch_optional(&mut **tx)
     .await?
     .map(Card::from)
-    .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
+    .ok_or_else(|| CalmError::NotFound(format!("card {id}")))
+}
 
+async fn card_update_inner_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    mut c: Card,
+    p: CardPatch,
+) -> Result<Card> {
     if let Some(v) = p.kind {
         c.kind = v;
     }
@@ -181,9 +186,27 @@ pub async fn card_update_tx(
     Ok(c)
 }
 
+pub async fn card_update_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    p: CardPatch,
+) -> Result<Card> {
+    let existing = card_for_update_tx(tx, id).await?;
+    let effective_kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
+    if effective_kind == "wave-report" && p.payload.is_some() {
+        return Err(CalmError::BadRequest(
+            "wave-report payloads must go through the report persist boundary \
+             (POST /api/waves/:id/report or the calm.report.* tools)",
+        ));
+    }
+    card_update_inner_tx(tx, existing, p).await
+}
+
 /// Issue #247 PR1 — wave-report-specific transactional update that
 /// rewrites both the legacy `payload` JSON column AND the new opaque
-/// CRDT blob in `body_crdt` in one statement. Wraps [`card_update_tx`]
+/// CRDT blob in `body_crdt` in one statement. Uses the private ungated
+/// update path because this function is the report persist boundary's
+/// JSON+CRDT seam.
 /// for the JSON+timestamps path, then re-runs a single UPDATE to
 /// stamp the blob. Both writes happen inside the supplied `tx` so a
 /// rollback drops them together — the JSON cache and the CRDT
@@ -205,7 +228,8 @@ pub async fn card_update_with_crdt_tx(
     // Reuse the existing JSON+timestamps update path so the two
     // codepaths can't drift on what `updated_at` / payload-text
     // semantics look like.
-    let card = card_update_tx(tx, id, p).await?;
+    let existing = card_for_update_tx(tx, id).await?;
+    let card = card_update_inner_tx(tx, existing, p).await?;
     // Second statement: stamp the opaque CRDT bytes onto the row.
     // Split into its own UPDATE (rather than extending the one above)
     // so plain `card_update_tx` callers never sqlx-bind a `Vec<u8>`

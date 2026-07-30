@@ -7,7 +7,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_create_with_id_tx, card_update_tx, session_mark_superseded_runtime_tx,
     session_set_status_tx, session_start_runtime_tx, terminal_create_tx, wave_update_tx,
 };
-use calm_server::event::{Event, EventBus, EventScope, WaveUpdatedPayload};
+use calm_server::event::{EditAuthor, Event, EventBus, EventScope, WaveUpdatedPayload};
 use calm_server::harness::HarnessSnapshot;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::model::{
@@ -21,7 +21,7 @@ use calm_server::session_projection_repo::{
 use calm_server::state::WriteContext;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_fs_view::WaveFsView;
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::wave_report::{WaveReportPayload, persist_report};
 use calm_server::wave_vcs::{self, DiffStatus, MANIFEST_SCHEMA_VERSION};
 use serde_json::json;
 use sqlx::{Row, SqlitePool};
@@ -2714,46 +2714,47 @@ async fn since_last_turn_report_diff_uses_dynamic_fence_for_markdown_code_blocks
     let bus = EventBus::new();
     let (roles, _coves, write) = write_context();
     let report = add_report_card(&repo, &bus, &roles, &write, &wave.id, &cove.id).await;
-    let payload = |body: &str| {
-        serde_json::to_value(WaveReportPayload::new("", body)).expect("report payload")
-    };
     let old_body = "# Goal\n\n```text\nstable\n```\n\nold line\n";
     let new_body = "# Goal\n\n```text\nstable\n```\n\nnew line\n";
-    let report = update_card_with_event(
+    let initial = WaveReportPayload::initial();
+    let old_payload = WaveReportPayload::new("", old_body);
+    let report = persist_report(
         &repo,
         &bus,
         &write,
-        &report,
-        &cove.id,
-        CardPatch {
-            title: None,
-            kind: None,
-            sort: None,
-            payload: Some(payload(old_body)),
-            deletable: None,
-        },
+        ActorId::Kernel,
+        EditAuthor::Kernel,
+        wave.clone(),
+        report,
+        initial,
+        old_payload.clone(),
+        None,
+        None,
+        false,
     )
-    .await;
+    .await
+    .expect("persist old report");
     let before = wave_vcs::head(repo.pool(), &wave.id)
         .await
         .unwrap()
         .expect("head before report edit");
 
-    update_card_with_event(
+    persist_report(
         &repo,
         &bus,
         &write,
-        &report,
-        &cove.id,
-        CardPatch {
-            title: None,
-            kind: None,
-            sort: None,
-            payload: Some(payload(new_body)),
-            deletable: None,
-        },
+        ActorId::Kernel,
+        EditAuthor::Kernel,
+        wave.clone(),
+        report,
+        old_payload,
+        WaveReportPayload::new("", new_body),
+        None,
+        None,
+        false,
     )
-    .await;
+    .await
+    .expect("persist new report");
     let after = wave_vcs::head(repo.pool(), &wave.id)
         .await
         .unwrap()
