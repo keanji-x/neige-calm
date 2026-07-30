@@ -1081,7 +1081,7 @@ pub struct WaveBacklink {
 #[serde(rename_all = "snake_case")]
 pub struct WaveBacklinksResponse {
     pub backlinks: Vec<WaveBacklink>,
-    pub omitted: usize,
+    pub truncated: bool,
     pub skipped_sources: usize,
 }
 
@@ -1119,7 +1119,7 @@ pub(crate) async fn get_wave_backlinks(
             .into_iter()
             .map(WaveBacklink::from)
             .collect::<Vec<_>>(),
-        omitted: page.omitted,
+        truncated: page.truncated,
         skipped_sources: page.skipped_sources,
     }))
 }

@@ -495,6 +495,7 @@ mod tests {
 
     #[tokio::test]
     async fn report_path_disappears_when_report_card_kind_changes() {
+        // Intentionally pins pre-existing rendering behavior now unreachable through the API.
         let repo = SqlxRepo::open("sqlite::memory:")
             .await
             .expect("open sqlite repo");

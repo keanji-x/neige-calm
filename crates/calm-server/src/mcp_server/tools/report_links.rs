@@ -252,19 +252,5 @@ async fn report_backlinks(
     let page = crate::report_backlinks::backlinks_for_wave(ctx.repo.as_ref(), &wave_id)
         .await
         .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
-    let mut response = json!({
-        "backlinks": page.backlinks.into_iter().map(|link| json!({
-            "src_wave_id": link.src_wave_id,
-            "src_wave_title": link.src_wave_title,
-            "src_block_id": link.src_block_id,
-            "dst_block_id": link.dst_block_id,
-            "label": link.label,
-            "updated_at": link.updated_at,
-        })).collect::<Vec<_>>(),
-        "skipped_sources": page.skipped_sources,
-    });
-    if page.omitted > 0 {
-        response["truncated"] = json!({"backlinks": page.omitted});
-    }
-    Ok(response)
+    Ok(crate::report_backlinks::mcp_payload(&page))
 }

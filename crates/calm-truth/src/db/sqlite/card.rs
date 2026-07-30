@@ -51,10 +51,13 @@ pub async fn card_create_with_id_tx(
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // `WaveReportCardHandler::create_mode` keeps REST creation
-    // kernel-only, while the wave-create kernel mint stamps
-    // `CardRole::ReportCard`. The one-report-per-wave partial unique
-    // index keys on that `reportcard` role, not on the card kind.
+    // `WaveReportCardHandler::create_mode` keeps REST creation kernel-only,
+    // while the wave-create kernel mint stamps `CardRole::ReportCard`.
+    // `RepoSyncDomainRaw::card_create` also reaches this seam and deliberately
+    // forwards fixture payloads verbatim (notably populated v1 reports in
+    // `mcp_report_links`), so payload canonicality remains outside this guard.
+    // The one-report-per-wave partial unique index keys on the `reportcard`
+    // role, not on the card kind.
     if p.kind == "wave-report" && role != CardRole::ReportCard {
         return Err(CalmError::BadRequest(
             "wave-report cards must be kernel-minted with the reportcard role",
@@ -331,14 +334,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wave_report_create_requires_reportcard_role() {
+    async fn wave_report_create_guard_checks_role_but_not_fixture_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let wave = wave(&repo).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut arbitrary_report = new_card(wave.id.as_str(), "wave-report");
+        arbitrary_report.payload = serde_json::json!({"arbitrary": "fixture payload"});
         let error = card_create_with_id_tx(
             &mut tx,
             "bad_report".into(),
-            new_card(wave.id.as_str(), "wave-report"),
+            arbitrary_report.clone(),
             CardRole::Worker,
             false,
             repo.card_role_cache(),
@@ -348,6 +353,21 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "bad request: wave-report cards must be kernel-minted with the reportcard role"
+        );
+
+        let accepted = card_create_with_id_tx(
+            &mut tx,
+            "fixture_report".into(),
+            arbitrary_report,
+            CardRole::ReportCard,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            accepted.payload,
+            serde_json::json!({"arbitrary": "fixture payload"})
         );
     }
 

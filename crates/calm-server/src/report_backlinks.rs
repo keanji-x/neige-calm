@@ -18,11 +18,37 @@ pub struct Backlink {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BacklinkPage {
     pub backlinks: Vec<Backlink>,
-    pub omitted: usize,
+    pub truncated: bool,
     pub skipped_sources: usize,
+}
+
+pub(crate) fn mcp_payload(page: &BacklinkPage) -> serde_json::Value {
+    serde_json::json!({
+        "backlinks": page.backlinks,
+        "truncated": page.truncated,
+        "skipped_sources": page.skipped_sources,
+    })
+}
+
+pub(crate) fn mcp_wire_envelope(page: &BacklinkPage) -> serde_json::Value {
+    let payload = mcp_payload(page);
+    let text = serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string());
+    serde_json::json!({
+        "content": [{ "type": "text", "text": text }],
+        "structuredContent": payload,
+        "isError": false,
+    })
+}
+
+fn page_fits_wire_caps(page: &BacklinkPage) -> bool {
+    let rest_fits =
+        serde_json::to_vec(page).is_ok_and(|encoded| encoded.len() <= MAX_BACKLINK_BYTES);
+    let mcp_fits = serde_json::to_vec(&mcp_wire_envelope(page))
+        .is_ok_and(|encoded| encoded.len() <= MAX_BACKLINK_BYTES);
+    rest_fits && mcp_fits
 }
 
 pub async fn backlinks_for_wave(
@@ -60,7 +86,7 @@ pub async fn backlinks_for_wave(
         .collect();
 
     let mut backlinks = Vec::new();
-    let mut omitted = 0;
+    let mut truncated = false;
     let mut skipped_sources = 0;
     let mut readable_non_target_sources = 0;
     let non_target_sources = report_cards
@@ -108,20 +134,18 @@ pub async fn backlinks_for_wave(
                     updated_at: snapshot.updated_at,
                 };
                 if backlinks.len() == MAX_BACKLINK_ENTRIES {
-                    omitted = 1;
+                    truncated = true;
                     return false;
                 }
                 backlinks.push(backlink);
                 let bounded_envelope = BacklinkPage {
                     backlinks: backlinks.clone(),
-                    omitted: 1,
+                    truncated: true,
                     skipped_sources: max_skipped_sources,
                 };
-                let fits = serde_json::to_vec(&bounded_envelope)
-                    .is_ok_and(|encoded| encoded.len() <= MAX_BACKLINK_BYTES);
-                if !fits {
+                if !page_fits_wire_caps(&bounded_envelope) {
                     backlinks.pop();
-                    omitted = 1;
+                    truncated = true;
                     return false;
                 }
                 true
@@ -138,7 +162,7 @@ pub async fn backlinks_for_wave(
     }
     Ok(BacklinkPage {
         backlinks,
-        omitted,
+        truncated,
         skipped_sources,
     })
 }
@@ -375,24 +399,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backlink_entry_cap_stops_scan_and_reports_truncation() {
+    async fn backlink_byte_cap_bounds_rest_and_mcp_wire_envelopes() {
         let repo = fresh_repo().await;
         let cove = cove(&repo, "one").await;
         let target = wave(&repo, cove.id.as_str(), "Target").await;
         let source = wave(&repo, cove.id.as_str(), "Source").await;
         report(&repo, target.id.as_str(), target_payload()).await;
-        let body = (0..=MAX_BACKLINK_ENTRIES)
-            .map(|index| format!("[{index}](neige://wave/{})", target.id))
+        let large_label = "x".repeat(512);
+        let body = (0..MAX_BACKLINK_ENTRIES)
+            .map(|index| format!("[{index}-{large_label}](neige://wave/{})", target.id))
             .collect::<Vec<_>>()
             .join("\n");
         report(&repo, source.id.as_str(), v1(body)).await;
 
         let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
-        assert!(found.backlinks.len() <= MAX_BACKLINK_ENTRIES);
-        assert!(found.omitted > 0);
+        assert!(found.truncated);
+        assert!(found.backlinks.len() < MAX_BACKLINK_ENTRIES);
         assert!(
             serde_json::to_vec(&found).unwrap().len() <= MAX_BACKLINK_BYTES,
             "serialized REST envelope exceeds byte cap"
+        );
+        assert!(
+            serde_json::to_vec(&mcp_wire_envelope(&found))
+                .unwrap()
+                .len()
+                <= MAX_BACKLINK_BYTES,
+            "serialized MCP response envelope exceeds byte cap"
         );
     }
 }
