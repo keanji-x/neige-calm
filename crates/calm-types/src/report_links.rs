@@ -20,6 +20,16 @@ struct PendingLink {
 /// Return valid report links in document order.
 pub fn extract_links(markdown: &str) -> Vec<ReportLinkRef> {
     let mut links = Vec::new();
+    visit_links(markdown, |link| {
+        links.push(link);
+        true
+    });
+    links
+}
+
+/// Visit valid report links in document order, stopping parsing when the
+/// visitor returns `false`. Returns whether the entire markdown was scanned.
+pub fn visit_links(markdown: &str, mut visitor: impl FnMut(ReportLinkRef) -> bool) -> bool {
     let mut pending = None;
 
     for event in Parser::new(markdown) {
@@ -33,12 +43,14 @@ pub fn extract_links(markdown: &str) -> Vec<ReportLinkRef> {
                     });
             }
             Event::End(TagEnd::Link) => {
-                if let Some(link) = pending.take() {
-                    links.push(ReportLinkRef {
+                if let Some(link) = pending.take()
+                    && !visitor(ReportLinkRef {
                         dst_wave_id: link.dst_wave_id,
                         dst_block_id: link.dst_block_id,
                         label: link.label,
-                    });
+                    })
+                {
+                    return false;
                 }
             }
             Event::Text(text) | Event::Code(text) => {
@@ -55,7 +67,7 @@ pub fn extract_links(markdown: &str) -> Vec<ReportLinkRef> {
         }
     }
 
-    links
+    true
 }
 
 fn parse_destination(destination: &str) -> Option<(String, Option<String>)> {
@@ -165,5 +177,19 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("w1", "first emphasis"), ("w2", "second code")]
         );
+    }
+
+    #[test]
+    fn visitor_can_stop_before_later_links_are_parsed() {
+        let mut visited = Vec::new();
+        let completed = visit_links(
+            "[first](neige://wave/w1) [second](neige://wave/w2)",
+            |link| {
+                visited.push(link.dst_wave_id);
+                false
+            },
+        );
+        assert!(!completed);
+        assert_eq!(visited, ["w1"]);
     }
 }

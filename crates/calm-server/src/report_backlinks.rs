@@ -3,11 +3,12 @@ use std::collections::{HashMap, HashSet};
 use crate::db::RouteRepo;
 use crate::error::CalmError;
 use crate::wave_report_read::load_report_read_snapshot;
+use serde::Serialize;
 
 pub const MAX_BACKLINK_ENTRIES: usize = 500;
 pub const MAX_BACKLINK_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Backlink {
     pub src_wave_id: String,
     pub src_wave_title: String,
@@ -17,9 +18,11 @@ pub struct Backlink {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Serialize)]
 pub struct BacklinkPage {
     pub backlinks: Vec<Backlink>,
     pub omitted: usize,
+    pub skipped_sources: usize,
 }
 
 pub async fn backlinks_for_wave(
@@ -58,8 +61,14 @@ pub async fn backlinks_for_wave(
 
     let mut backlinks = Vec::new();
     let mut omitted = 0;
-    let mut bytes: usize = 0;
-    for card in report_cards {
+    let mut skipped_sources = 0;
+    let mut readable_non_target_sources = 0;
+    let non_target_sources = report_cards
+        .iter()
+        .filter(|card| card.id != target_card_id)
+        .count();
+    let max_skipped_sources = non_target_sources;
+    'cards: for card in report_cards {
         let source_title = waves.get(card.wave_id.as_str()).ok_or_else(|| {
             CalmError::Internal(format!(
                 "report_backlinks: source wave {} vanished mid-read",
@@ -70,20 +79,24 @@ pub async fn backlinks_for_wave(
             Ok(snapshot) => snapshot,
             Err(error) if card.id != target_card_id => {
                 tracing::warn!(card_id = %card.id, %error, "skipping unreadable backlink source report");
+                skipped_sources += 1;
                 continue;
             }
             Err(error) => return Err(error),
         };
+        if card.id != target_card_id {
+            readable_non_target_sources += 1;
+        }
         for block in snapshot
             .blocks
             .iter()
             .filter(|block| block.kind == calm_types::report_blocks::KIND_PROSE)
         {
             let markdown = calm_types::report_blocks::flat_text(block);
-            for link in calm_types::report_links::extract_links(&markdown)
-                .into_iter()
-                .filter(|link| link.dst_wave_id == wave_id)
-            {
+            let scanned_all_links = calm_types::report_links::visit_links(&markdown, |link| {
+                if link.dst_wave_id != wave_id {
+                    return true;
+                }
                 let backlink = Backlink {
                     src_wave_id: card.wave_id.as_str().to_string(),
                     src_wave_title: source_title.clone(),
@@ -94,27 +107,40 @@ pub async fn backlinks_for_wave(
                     label: link.label,
                     updated_at: snapshot.updated_at,
                 };
-                let entry_bytes = serde_json::to_vec(&(
-                    &backlink.src_wave_id,
-                    &backlink.src_wave_title,
-                    &backlink.src_block_id,
-                    &backlink.dst_block_id,
-                    &backlink.label,
-                    backlink.updated_at,
-                ))
-                .map_or(MAX_BACKLINK_BYTES, |value| value.len());
-                if backlinks.len() < MAX_BACKLINK_ENTRIES
-                    && bytes.saturating_add(entry_bytes) <= MAX_BACKLINK_BYTES
-                {
-                    bytes += entry_bytes;
-                    backlinks.push(backlink);
-                } else {
-                    omitted += 1;
+                if backlinks.len() == MAX_BACKLINK_ENTRIES {
+                    omitted = 1;
+                    return false;
                 }
+                backlinks.push(backlink);
+                let bounded_envelope = BacklinkPage {
+                    backlinks: backlinks.clone(),
+                    omitted: 1,
+                    skipped_sources: max_skipped_sources,
+                };
+                let fits = serde_json::to_vec(&bounded_envelope)
+                    .is_ok_and(|encoded| encoded.len() <= MAX_BACKLINK_BYTES);
+                if !fits {
+                    backlinks.pop();
+                    omitted = 1;
+                    return false;
+                }
+                true
+            });
+            if !scanned_all_links {
+                break 'cards;
             }
         }
     }
-    Ok(BacklinkPage { backlinks, omitted })
+    if non_target_sources > 0 && readable_non_target_sources == 0 {
+        return Err(CalmError::Internal(format!(
+            "report_backlinks: all {skipped_sources} source reports were unreadable"
+        )));
+    }
+    Ok(BacklinkPage {
+        backlinks,
+        omitted,
+        skipped_sources,
+    })
 }
 
 #[cfg(test)]
@@ -152,17 +178,13 @@ mod tests {
     }
 
     async fn report(repo: &SqlxRepo, wave_id: &str, payload: serde_json::Value) {
-        let id = format!("report_{wave_id}");
-        let payload = serde_json::to_string(&payload).unwrap();
-        sqlx::query(
-            "INSERT INTO cards \
-             (id, wave_id, kind, sort, payload, title, role, deletable, created_at, updated_at) \
-             VALUES (?1, ?2, 'wave-report', -1, ?3, 'Report', 'reportcard', 0, 1, 1)",
-        )
-        .bind(id)
-        .bind(wave_id)
-        .bind(payload)
-        .execute(repo.pool())
+        repo.card_create(crate::model::NewCard {
+            wave_id: wave_id.into(),
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload,
+            title: Some("Report".into()),
+        })
         .await
         .unwrap();
     }
@@ -327,5 +349,50 @@ mod tests {
         let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
         assert_eq!(found.backlinks.len(), 1);
         assert_eq!(found.backlinks[0].src_wave_id, healthy.id.as_str());
+        assert_eq!(found.skipped_sources, 1);
+    }
+
+    #[tokio::test]
+    async fn every_non_target_source_unreadable_is_an_error() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let corrupt = wave(&repo, cove.id.as_str(), "Corrupt").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        report(&repo, corrupt.id.as_str(), v1("ignored")).await;
+        sqlx::query("UPDATE cards SET body_crdt = X'00' WHERE wave_id = ?1")
+            .bind(corrupt.id.as_str())
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let error = backlinks_for_wave(&repo, target.id.as_str())
+            .await
+            .expect_err("all unreadable sources must fail");
+        assert!(
+            matches!(error, CalmError::Internal(message) if message.contains("all 1 source reports were unreadable"))
+        );
+    }
+
+    #[tokio::test]
+    async fn backlink_entry_cap_stops_scan_and_reports_truncation() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        let body = (0..=MAX_BACKLINK_ENTRIES)
+            .map(|index| format!("[{index}](neige://wave/{})", target.id))
+            .collect::<Vec<_>>()
+            .join("\n");
+        report(&repo, source.id.as_str(), v1(body)).await;
+
+        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
+        assert!(found.backlinks.len() <= MAX_BACKLINK_ENTRIES);
+        assert!(found.omitted > 0);
+        assert!(
+            serde_json::to_vec(&found).unwrap().len() <= MAX_BACKLINK_BYTES,
+            "serialized REST envelope exceeds byte cap"
+        );
     }
 }

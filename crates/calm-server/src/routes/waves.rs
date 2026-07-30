@@ -1082,6 +1082,7 @@ pub struct WaveBacklink {
 pub struct WaveBacklinksResponse {
     pub backlinks: Vec<WaveBacklink>,
     pub omitted: usize,
+    pub skipped_sources: usize,
 }
 
 impl From<report_backlinks::Backlink> for WaveBacklink {
@@ -1119,6 +1120,7 @@ pub(crate) async fn get_wave_backlinks(
             .map(WaveBacklink::from)
             .collect::<Vec<_>>(),
         omitted: page.omitted,
+        skipped_sources: page.skipped_sources,
     }))
 }
 

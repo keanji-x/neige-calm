@@ -2657,7 +2657,7 @@ async fn hook_event_transcript_is_capped_to_recent_events_with_live_vcs_parity()
 }
 
 #[tokio::test]
-async fn card_retarget_from_wave_report_removes_report_blob() {
+async fn card_retarget_from_wave_report_is_refused_and_preserves_report_blob() {
     let repo = fresh_repo().await;
     let cove = make_cove(&repo).await;
     let wave = make_wave(&repo, cove.id.as_str()).await;
@@ -2671,12 +2671,10 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
     let before = head_manifest(&repo, &wave.id).await;
     assert!(before.entries.contains_key("report.md"));
 
-    update_card_with_event(
-        &repo,
-        &bus,
-        &write,
-        &report,
-        &cove.id,
+    let mut tx = repo.pool().begin().await.expect("begin report retarget");
+    let error = card_update_tx(
+        &mut tx,
+        report.id.as_str(),
         CardPatch {
             title: None,
             kind: Some("terminal".into()),
@@ -2685,24 +2683,21 @@ async fn card_retarget_from_wave_report_removes_report_blob() {
             deletable: None,
         },
     )
-    .await;
+    .await
+    .expect_err("wave-report retarget must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("wave-report kind transitions and payloads")
+    );
+    tx.rollback().await.unwrap();
 
     let after = head_manifest(&repo, &wave.id).await;
-    assert!(!after.entries.contains_key("report.md"));
-    let block =
-        wave_vcs::since_last_turn_block(repo.pool(), &wave.id, Some(&before_head), None, None)
-            .await
-            .unwrap()
-            .block
-            .expect("diff block");
-    assert!(block.contains("report.md deleted"), "block = {block}");
-    assert!(
-        !block.contains("report.md deleted (unified patch follows)"),
-        "deleted report should not advertise an inline hunk: {block}"
-    );
-    assert!(
-        !block.contains("--- a/report.md"),
-        "deleted report should not include a full-content patch: {block}"
+    assert_eq!(after, before);
+    assert!(after.entries.contains_key("report.md"));
+    assert_eq!(
+        wave_vcs::head(repo.pool(), &wave.id).await.unwrap(),
+        Some(before_head)
     );
 }
 

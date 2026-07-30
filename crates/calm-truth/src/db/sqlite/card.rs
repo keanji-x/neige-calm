@@ -198,10 +198,10 @@ pub async fn card_update_tx(
     p: CardPatch,
 ) -> Result<Card> {
     let existing = card_for_update_tx(tx, id).await?;
-    let effective_kind = p.kind.as_deref().unwrap_or(existing.kind.as_str());
-    let changes_kind_into_report =
-        p.kind.as_deref() == Some("wave-report") && existing.kind != "wave-report";
-    if changes_kind_into_report || (effective_kind == "wave-report" && p.payload.is_some()) {
+    let targets_report = p.kind.as_deref() == Some("wave-report");
+    let transitions_from_report = existing.kind == "wave-report" && p.kind.is_some();
+    let updates_report_payload = existing.kind == "wave-report" && p.payload.is_some();
+    if transitions_from_report || targets_report || updates_report_payload {
         return Err(CalmError::BadRequest(
             "wave-report kind transitions and payloads must go through the report persist boundary \
              (POST /api/waves/:id/report or the calm.report.* tools)",
@@ -214,11 +214,10 @@ pub async fn card_update_tx(
 /// rewrites both the legacy `payload` JSON column AND the new opaque
 /// CRDT blob in `body_crdt` in one statement. Uses the private ungated
 /// update path because this function is the report persist boundary's
-/// JSON+CRDT seam.
-/// for the JSON+timestamps path, then re-runs a single UPDATE to
-/// stamp the blob. Both writes happen inside the supplied `tx` so a
-/// rollback drops them together — the JSON cache and the CRDT
-/// authoritative bytes never drift.
+/// JSON+CRDT seam. It runs the shared JSON/timestamps update, then a
+/// single UPDATE to stamp the blob. Both writes happen inside the
+/// supplied `tx` so a rollback drops them together — the JSON cache
+/// and the CRDT authoritative bytes never drift.
 ///
 /// `body_crdt` is the `automerge::AutoCommit::save()` bytes from
 /// `wave_report_doc::ReportDoc::to_bytes`; the kernel never
@@ -237,6 +236,16 @@ pub async fn card_update_with_crdt_tx(
     // codepaths can't drift on what `updated_at` / payload-text
     // semantics look like.
     let existing = card_for_update_tx(tx, id).await?;
+    if existing.kind != "wave-report" {
+        return Err(CalmError::BadRequest(
+            "card_update_with_crdt_tx is restricted to wave-report cards",
+        ));
+    }
+    if p.kind.as_deref().is_some_and(|kind| kind != existing.kind) {
+        return Err(CalmError::BadRequest(
+            "card_update_with_crdt_tx cannot change card kind",
+        ));
+    }
     let card = card_update_inner_tx(tx, existing, p).await?;
     // Second statement: stamp the opaque CRDT bytes onto the row.
     // Split into its own UPDATE (rather than extending the one above)
@@ -279,6 +288,146 @@ pub async fn card_body_crdt_get_tx(
             .fetch_optional(&mut **tx)
             .await?;
     Ok(row.and_then(|(blob,)| blob))
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod tests {
+    use super::*;
+    use crate::db::RepoSyncDomainRaw;
+    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+
+    async fn wave(repo: &SqlxRepo) -> Wave {
+        let cove = repo
+            .cove_create(NewCove {
+                name: "cards".into(),
+                color: "#123456".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        repo.wave_create(NewWave {
+            cove_id: cove.id,
+            title: "wave".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            workflow_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap()
+    }
+
+    fn new_card(wave_id: &str, kind: &str) -> NewCard {
+        NewCard {
+            wave_id: wave_id.into(),
+            kind: kind.into(),
+            sort: None,
+            payload: serde_json::json!({}),
+            title: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn wave_report_create_requires_reportcard_role() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let error = card_create_with_id_tx(
+            &mut tx,
+            "bad_report".into(),
+            new_card(wave.id.as_str(), "wave-report"),
+            CardRole::Worker,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "bad request: wave-report cards must be kernel-minted with the reportcard role"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_wave_report_create_mints_kernel_owned_reportcard() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let card = repo
+            .card_create(new_card(wave.id.as_str(), "wave-report"))
+            .await
+            .unwrap();
+        let (role, deletable): (String, bool) =
+            sqlx::query_as("SELECT role, deletable FROM cards WHERE id = ?1")
+                .bind(card.id.as_str())
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(role, CardRole::ReportCard.as_db_str());
+        assert!(!deletable);
+        assert!(!card.deletable);
+        assert_eq!(
+            repo.card_role_cache().get(&card.id),
+            Some(CardRole::ReportCard)
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_wave_report_create_refuses_second_report_for_wave() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        repo.card_create(new_card(wave.id.as_str(), "wave-report"))
+            .await
+            .unwrap();
+        let error = repo
+            .card_create(new_card(wave.id.as_str(), "wave-report"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, CalmError::Db(_)),
+            "unique index error: {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn crdt_update_seam_rejects_non_report_and_kind_change() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let worker = repo
+            .card_create(new_card(wave.id.as_str(), "worker"))
+            .await
+            .unwrap();
+        let report = repo
+            .card_create(new_card(wave.id.as_str(), "wave-report"))
+            .await
+            .unwrap();
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let non_report =
+            card_update_with_crdt_tx(&mut tx, worker.id.as_str(), CardPatch::default(), vec![1])
+                .await
+                .unwrap_err();
+        assert_eq!(
+            non_report.to_string(),
+            "bad request: card_update_with_crdt_tx is restricted to wave-report cards"
+        );
+        let kind_change = card_update_with_crdt_tx(
+            &mut tx,
+            report.id.as_str(),
+            CardPatch {
+                kind: Some("worker".into()),
+                ..CardPatch::default()
+            },
+            vec![1],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            kind_change.to_string(),
+            "bad request: card_update_with_crdt_tx cannot change card kind"
+        );
+    }
 }
 
 pub async fn card_delete_tx(

@@ -3,7 +3,11 @@ use crate::error::CalmError;
 use crate::wave_report::WaveReportPayload;
 use calm_types::wave_report::ReportBlock;
 
-/// One self-consistent report snapshot derived from a single row read.
+/// One self-consistent `calm.report.read` snapshot: `summary`, flat
+/// `body` text, and the block index all derived from a SINGLE row
+/// read (`card_get_with_body_crdt` fetches payload JSON + CRDT bytes
+/// atomically), so a concurrent persist between two awaits can never
+/// tear `text` against `blocks` (#960 PR2 review round 2).
 pub struct ReportReadSnapshot {
     pub updated_at: i64,
     pub schema_version: u32,
@@ -12,8 +16,27 @@ pub struct ReportReadSnapshot {
     pub blocks: Vec<ReportBlock>,
 }
 
-/// Load a report snapshot, preferring the JSON block cache, then the
-/// authoritative CRDT, and deterministically deriving ids for legacy rows.
+/// Load the read snapshot for the report card.
+///
+/// Source selection (the CRDT is the source of truth, the JSON cache
+/// is best-effort — #960 PR2 review):
+///
+///   1. `payload.blocks` present (the common case — the persist
+///      boundary rewrites the cache on every write): everything comes
+///      from the JSON payload of the one fetched row.
+///   2. Cache missing but the row holds a migrated (v2) doc:
+///      `summary`/`body`/`blocks` are ALL projected from that one doc
+///      — ids/revs the write path will actually check, and
+///      `flatten(blocks) == body` holds by construction. Never mix
+///      `payload.body` with CRDT-derived blocks. (A cache dropped by
+///      a pre-#960 binary — design D8 — must not make `read` hand out
+///      re-derived ids that diverge from the doc, e.g. after a
+///      `blocks.move`.)
+///   3. `body_crdt` NULL (pure v1 row) or a legacy not-yet-migrated
+///      doc layout: derive the index deterministically (`reassign_ids`
+///      over `split_body` of the served body) — byte-identical to
+///      what the CRDT seed / lazy migrator will mint on first write
+///      with the same (absent) hint, so the ids stay valid targets.
 pub async fn load_report_read_snapshot(
     repo: &dyn RouteRepo,
     report_card_id: &str,
@@ -34,6 +57,7 @@ pub async fn load_report_read_snapshot(
     let derive = |body: &str| {
         calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
     };
+    // 1. Cache present: serve the JSON payload of this one row.
     if let Some(blocks) = payload.blocks {
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
@@ -43,6 +67,8 @@ pub async fn load_report_read_snapshot(
             blocks,
         });
     }
+    // 3a. Pure v1 row (no CRDT yet): the seed will run `reassign_ids`
+    //     over the same body with the same (absent) hints.
     let Some(bytes) = bytes else {
         let blocks = derive(&payload.body);
         return Ok(ReportReadSnapshot {
@@ -60,10 +86,15 @@ pub async fn load_report_read_snapshot(
     })?;
     let internal =
         |e: anyhow::Error| CalmError::Internal(format!("wave_report: card {report_card_id}: {e}"));
+    // 2 + 3b. Everything from the one doc: summary, body, and (for a
+    //     v2 layout) the block snapshot — internally consistent by
+    //     construction.
     let (summary, body) = doc.project().map_err(internal)?;
     let blocks = if doc.has_blocks_layout().map_err(internal)? {
         doc.blocks_snapshot().map_err(internal)?
     } else {
+        // Legacy doc layout: mirror the migrator's derivation from
+        // the doc's own projected body.
         derive(&body)
     };
     Ok(ReportReadSnapshot {
