@@ -26,10 +26,6 @@
 //! ```
 
 pub mod actor;
-/// #322 — aspect / join-point framework: OCP-shaped invariant enforcement.
-/// See [`aspect`] module docs for the closed-set / open-impl split. Lives at
-/// the module-list head so reviewers see the framework boundary up top.
-pub mod aspect;
 pub mod auth;
 pub mod card_kind;
 pub mod forge_trust;
