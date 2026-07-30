@@ -1,76 +1,36 @@
-//! Lossless markdown slicing and best-effort report-block identity reuse.
+//! Best-effort report-block identity reuse across wholesale rewrites
+//! (design §3.4) — LCS anchors + gap similarity + explicit marker
+//! hints.
+//!
+//! #960 PR3: alignment is fence-aware. Every slice and every old
+//! block is compared through its **canonical flat text** — prose is
+//! the markdown verbatim, a non-prose block is its deterministic
+//! `neige-block` fence ([`super::fence::render_fence`]) — so a fence
+//! re-serialized with different JSON formatting still matches its
+//! block exactly, and a byte-preserved fence keeps id, kind, payload
+//! and rev.
 
+use super::fence::{NonProseFence, parse_fence, render_fence};
+use super::kinds::KIND_PROSE;
+use super::{BlockSlice, flat_text};
 use crate::wave_report::ReportBlock;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockSlice {
-    pub raw: String,
-}
-
-/// Split at line-start ATX H1/H2 headings, except while inside a fenced
-/// code block. Every input byte belongs to exactly one returned slice.
-pub fn split_body(body: &str) -> Vec<BlockSlice> {
-    let mut starts = Vec::new();
-    let mut offset = 0;
-    let mut fence: Option<(u8, usize)> = None;
-
-    for line_with_ending in body.split_inclusive('\n') {
-        let line = line_with_ending
-            .strip_suffix('\n')
-            .unwrap_or(line_with_ending);
-        let line = line.strip_suffix('\r').unwrap_or(line);
-
-        if let Some((marker, minimum)) = fence {
-            let fence_line = strip_fence_indent(line);
-            if fence_run(fence_line, marker)
-                .is_some_and(|length| length >= minimum && fence_tail_is_blank(fence_line, length))
-            {
-                fence = None;
-            }
-        } else if let Some((marker, length)) = opening_fence(line) {
-            fence = Some((marker, length));
-        } else if is_h1_or_h2(line) {
-            starts.push(offset);
-        }
-        offset += line_with_ending.len();
-    }
-
-    if body.is_empty() {
-        return vec![BlockSlice { raw: String::new() }];
-    }
-
-    if starts.first() != Some(&0) {
-        starts.insert(0, 0);
-    }
-    starts
-        .iter()
-        .enumerate()
-        .map(|(index, start)| BlockSlice {
-            raw: body[*start..starts.get(index + 1).copied().unwrap_or(body.len())].to_string(),
-        })
-        .collect()
-}
-
-pub fn flatten(blocks: &[BlockSlice]) -> String {
-    blocks.iter().map(|block| block.raw.as_str()).collect()
-}
-
-/// Reuse ids through exact LCS anchors, then similarity-align edited slices
-/// within each unmatched gap. Remaining slices receive a new `b_ffff` id.
+/// Reuse ids through exact LCS anchors, then similarity-align edited
+/// slices within each unmatched gap. Remaining slices receive a new
+/// `b_ffff` id.
 ///
 /// Rev semantics (#960 PR2):
-///   * matched block, byte-identical content → `rev` unchanged;
+///   * matched block, canonical-identical content → `rev` unchanged;
 ///   * matched block, content changed → `rev = old.rev + 1`;
 ///   * unmatched (brand-new) slice → `rev = 1`.
 ///
-/// Matched blocks keep their old `kind`. A matched non-prose block also
-/// keeps its old `payload` verbatim — its payload is not `{ markdown }`
-/// and must not be clobbered by the prose slice text.
-// TODO(#960 PR3): non-prose blocks should be compared against their
-// deterministic flat (fenced) representation instead of an optional
-// `payload.markdown`; today only prose slices reach this function.
+/// Kind/payload come from the slice's own nature: a fence slice
+/// yields its parsed kind + payload, a prose slice yields
+/// `prose`/`{ markdown }`. (Server write paths guarantee a non-prose
+/// block is never stomped by a prose slice — the `Replace` guard in
+/// calm-server refuses such writes before alignment lands.)
 pub fn reassign_ids(old_blocks: &[ReportBlock], new_slices: &[BlockSlice]) -> Vec<ReportBlock> {
     reassign_ids_with_hints(old_blocks, new_slices, &[])
 }
@@ -90,6 +50,20 @@ pub fn reassign_ids_with_hints(
     new_slices: &[BlockSlice],
     hints: &[Option<String>],
 ) -> Vec<ReportBlock> {
+    // Per-slice nature: canonical comparison text + parsed fence.
+    let fences: Vec<Option<NonProseFence>> = new_slices
+        .iter()
+        .map(|slice| parse_fence(&slice.raw))
+        .collect();
+    let canonical: Vec<String> = new_slices
+        .iter()
+        .zip(&fences)
+        .map(|(slice, fence)| match fence {
+            Some(fence) => render_fence(&fence.kind, &fence.payload),
+            None => slice.raw.clone(),
+        })
+        .collect();
+
     // First-occurrence-unique old ids are the only reusable ones (a
     // duplicated id is unattributable — same rule as before hints).
     let mut reusable_ids = HashSet::new();
@@ -119,19 +93,20 @@ pub fn reassign_ids_with_hints(
 
     // LCS + similarity over the *unpinned* remainder: pinned old
     // blocks and pinned slices are masked out with `None`.
-    let old_text: Vec<Option<&str>> = old_blocks
+    let old_flat: Vec<Option<String>> = old_blocks
         .iter()
         .enumerate()
         .map(|(index, block)| {
             (unique[index] && !taken[index])
-                .then(|| block_markdown(block))
+                .then(|| comparable_flat(block))
                 .flatten()
         })
         .collect();
-    let new_text: Vec<Option<&str>> = new_slices
+    let mut old_text: Vec<Option<&str>> = old_flat.iter().map(Option::as_deref).collect();
+    let mut new_text: Vec<Option<&str>> = canonical
         .iter()
         .enumerate()
-        .map(|(index, slice)| assignments[index].is_none().then_some(slice.raw.as_str()))
+        .map(|(index, text)| assignments[index].is_none().then_some(text.as_str()))
         .collect();
     let anchors = lcs_matches(&old_text, &new_text);
     for &(old, new) in &anchors {
@@ -144,6 +119,24 @@ pub fn reassign_ids_with_hints(
         .iter()
         .chain(std::iter::once(&(old_blocks.len(), new_slices.len())))
     {
+        // Same-kind non-prose pre-pass (#960 PR3 review round 1): a
+        // heavily re-parameterized data block (e.g. a chart whose
+        // candles were all replaced) falls below the 0.5 similarity
+        // threshold on its full fence text and would mint a new id.
+        // Within this gap, when the old side has exactly ONE eligible
+        // non-prose block of kind K and the new side exactly ONE
+        // fence slice of kind K, pair them directly — identity is
+        // unambiguous regardless of content distance. More than one
+        // of the same kind falls back to the similarity logic.
+        same_kind_pairs(
+            old_blocks,
+            &fences,
+            (previous_old, anchor_old),
+            (previous_new, anchor_new),
+            &mut old_text,
+            &mut new_text,
+            &mut assignments,
+        );
         similarity_matches(
             &old_text[previous_old..anchor_old],
             &new_text[previous_new..anchor_new],
@@ -159,79 +152,100 @@ pub fn reassign_ids_with_hints(
     new_slices
         .iter()
         .enumerate()
-        .map(|(index, slice)| match assignments[index] {
-            Some(old_index) => {
-                let old = &old_blocks[old_index];
-                let unchanged = block_markdown(old) == Some(slice.raw.as_str());
-                ReportBlock {
-                    id: old.id.clone(),
-                    kind: old.kind.clone(),
-                    rev: if unchanged {
+        .map(|(index, slice)| {
+            let (id, rev) = match assignments[index] {
+                Some(old_index) => {
+                    let old = &old_blocks[old_index];
+                    let unchanged = comparable_flat(old).as_deref() == Some(&canonical[index]);
+                    let rev = if unchanged {
                         old.rev
                     } else {
                         old.rev.saturating_add(1)
-                    },
-                    // A matched non-prose payload is preserved verbatim —
-                    // it is not `{ markdown }` and must not be clobbered
-                    // by the prose slice text.
-                    payload: if old.kind == "prose" {
-                        json!({ "markdown": slice.raw })
-                    } else {
-                        old.payload.clone()
-                    },
+                    };
+                    (old.id.clone(), rev)
                 }
+                None => (mint_id(&slice.raw, index, &mut used), 1),
+            };
+            match &fences[index] {
+                Some(fence) => ReportBlock {
+                    id,
+                    kind: fence.kind.clone(),
+                    rev,
+                    payload: fence.payload.clone(),
+                },
+                None => ReportBlock {
+                    id,
+                    kind: KIND_PROSE.to_string(),
+                    rev,
+                    payload: json!({ "markdown": slice.raw }),
+                },
             }
-            None => ReportBlock {
-                id: mint_id(&slice.raw, index, &mut used),
-                kind: "prose".to_string(),
-                rev: 1,
-                payload: json!({ "markdown": slice.raw }),
-            },
         })
         .collect()
 }
 
-fn is_h1_or_h2(line: &str) -> bool {
-    line.starts_with("# ") || line.starts_with("## ")
+/// The comparison text of an existing block: prose markdown verbatim
+/// (`None` for a malformed prose payload — never matchable, same rule
+/// as before), or the canonical fence for a non-prose block.
+fn comparable_flat(block: &ReportBlock) -> Option<String> {
+    if block.kind == KIND_PROSE {
+        block
+            .payload
+            .get("markdown")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    } else {
+        Some(flat_text(block))
+    }
 }
 
-fn fence_run(line: &str, marker: u8) -> Option<usize> {
-    let length = line.bytes().take_while(|byte| *byte == marker).count();
-    (length >= 3).then_some(length)
-}
-
-fn opening_fence(line: &str) -> Option<(u8, usize)> {
-    let line = strip_fence_indent(line);
-    b"`~".iter().copied().find_map(|marker| {
-        fence_run(line, marker)
-            .filter(|&length| marker != b'`' || !line[length..].contains('`'))
-            .map(|length| (marker, length))
-    })
-}
-
-fn strip_fence_indent(line: &str) -> &str {
-    let indent = line
-        .bytes()
-        .take_while(|byte| *byte == b' ')
-        .take(4)
-        .count();
-    if indent <= 3 { &line[indent..] } else { line }
-}
-
-fn fence_tail_is_blank(line: &str, run: usize) -> bool {
-    line[run..].bytes().all(|byte| matches!(byte, b' ' | b'\t'))
-}
-
-fn block_markdown(block: &ReportBlock) -> Option<&str> {
-    block
-        .payload
-        .get("markdown")
-        .and_then(serde_json::Value::as_str)
+/// Pair the unique same-kind non-prose (old block, new fence slice)
+/// per kind within one LCS gap. Paired entries are assigned and
+/// masked out of both sides so the similarity pass skips them.
+fn same_kind_pairs(
+    old_blocks: &[ReportBlock],
+    fences: &[Option<NonProseFence>],
+    (old_start, old_end): (usize, usize),
+    (new_start, new_end): (usize, usize),
+    old_text: &mut [Option<&str>],
+    new_text: &mut [Option<&str>],
+    assignments: &mut [Option<usize>],
+) {
+    let mut old_by_kind: HashMap<&str, Vec<usize>> = HashMap::new();
+    for index in old_start..old_end {
+        if old_text[index].is_some() && old_blocks[index].kind != KIND_PROSE {
+            old_by_kind
+                .entry(old_blocks[index].kind.as_str())
+                .or_default()
+                .push(index);
+        }
+    }
+    let mut new_by_kind: HashMap<&str, Vec<usize>> = HashMap::new();
+    for index in new_start..new_end {
+        if new_text[index].is_some()
+            && let Some(fence) = &fences[index]
+        {
+            new_by_kind
+                .entry(fence.kind.as_str())
+                .or_default()
+                .push(index);
+        }
+    }
+    for (kind, old_indexes) in old_by_kind {
+        if let ([old_index], Some([new_index])) = (
+            old_indexes.as_slice(),
+            new_by_kind.get(kind).map(Vec::as_slice),
+        ) {
+            assignments[*new_index] = Some(*old_index);
+            old_text[*old_index] = None;
+            new_text[*new_index] = None;
+        }
+    }
 }
 
 fn lcs_matches(old: &[Option<&str>], new: &[Option<&str>]) -> Vec<(usize, usize)> {
     // `None` on either side means "not eligible for matching" (dup /
-    // non-prose old, or hint-pinned entries) — two `None`s must never
+    // malformed old, or hint-pinned entries) — two `None`s must never
     // compare equal, hence the explicit `is_some` guard.
     let eq = |old_index: usize, new_index: usize| {
         old[old_index].is_some() && old[old_index] == new[new_index]
@@ -349,157 +363,10 @@ pub fn mint_id(raw: &str, index: usize, used: &mut HashSet<String>) -> String {
     unreachable!("a report cannot contain more than 65,536 distinct block ids")
 }
 
-/// A marker-stripped `write_markdown` body: the cleaned flat markdown
-/// (guaranteed marker-free), its slices, and the per-slice id hints
-/// recovered from the stripped marker lines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MarkedBody {
-    pub cleaned: String,
-    pub slices: Vec<BlockSlice>,
-    pub hints: Vec<Option<String>>,
-}
-
-/// Strip every standalone `<!-- neige:b_xxxx -->` marker line out of
-/// `body` **unconditionally** (markers must never reach storage), then
-/// split the cleaned text and bind each stripped id to the slice the
-/// marker preceded. `hints` is index-aligned with `slices`; a slice
-/// with no marker gets `None`, extra/trailing/duplicate markers are
-/// dropped (first marker per slice wins). Feed the result to
-/// [`reassign_ids_with_hints`].
-pub fn strip_markers_and_split(body: &str) -> MarkedBody {
-    let mut cleaned = String::with_capacity(body.len());
-    let mut markers: Vec<(usize, String)> = Vec::new();
-    for line in body.split_inclusive('\n') {
-        match marker_line_id(line) {
-            Some(id) => markers.push((cleaned.len(), id.to_string())),
-            None => cleaned.push_str(line),
-        }
-    }
-    let slices = split_body(&cleaned);
-    let mut starts = Vec::with_capacity(slices.len());
-    let mut offset = 0;
-    for slice in &slices {
-        starts.push(offset);
-        offset += slice.raw.len();
-    }
-    let mut hints = vec![None; slices.len()];
-    for (offset, id) in markers {
-        if offset >= cleaned.len() && !cleaned.is_empty() {
-            // Trailing marker with nothing after it: no block follows.
-            continue;
-        }
-        // The slice whose byte range contains the position the marker
-        // occupied — i.e. the block whose content directly follows it.
-        let index = match starts.binary_search(&offset) {
-            Ok(index) => index,
-            Err(0) => 0,
-            Err(insert) => insert - 1,
-        };
-        if hints[index].is_none() {
-            hints[index] = Some(id);
-        }
-    }
-    MarkedBody {
-        cleaned,
-        slices,
-        hints,
-    }
-}
-
-/// The exact marker line [`strip_markers_and_split`] strips and
-/// `calm.report.read { with_markers: true }` injects.
-pub fn marker_line(id: &str) -> String {
-    format!("<!-- neige:{id} -->\n")
-}
-
-/// `Some(id)` iff `line` (one `split_inclusive('\n')` item) is a
-/// standalone marker line: optional surrounding whitespace around
-/// `<!-- neige:b_hhhh -->` with lowercase-hex `h`, nothing else.
-fn marker_line_id(line: &str) -> Option<&str> {
-    let line = line.strip_suffix('\n').unwrap_or(line);
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    let id = line
-        .trim_matches([' ', '\t'])
-        .strip_prefix("<!-- neige:")?
-        .strip_suffix(" -->")?;
-    (id.len() == 6
-        && id.starts_with("b_")
-        && id[2..]
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-    .then_some(id)
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::{split_body, strip_markers_and_split};
     use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        #[test]
-        fn split_and_flatten_is_byte_exact(body in any::<String>()) {
-            prop_assert_eq!(flatten(&split_body(&body)), body);
-        }
-
-        #[test]
-        fn markdown_state_machine_is_byte_exact(
-            fragments in prop::collection::vec(
-                prop::sample::select(vec![
-                    "# A", "## B", "```", "~~~", "   ```", "    ```", "```x`y",
-                    "text", "\n", "\r\n", "", "    indented", "\t", "\u{00a0}",
-                ]),
-                0..40,
-            ),
-        ) {
-            let body = fragments.concat();
-            prop_assert_eq!(flatten(&split_body(&body)), body);
-        }
-    }
-
-    #[test]
-    fn tricky_markdown_stays_lossless_and_only_real_headings_split() {
-        let body = "preamble\r\n\r\n# A\r\n~~~md\r\n# fenced\r\n~~~\r\n    # indented\r\n> # quoted\r\n## B";
-        let blocks = split_body(body);
-        assert_eq!(flatten(&blocks), body);
-        assert_eq!(blocks.len(), 3);
-        assert!(blocks[1].raw.contains("# fenced"));
-        assert!(blocks[1].raw.contains("# indented"));
-        assert!(blocks[1].raw.contains("# quoted"));
-    }
-
-    #[test]
-    fn empty_and_heading_only_documents_are_lossless() {
-        for body in ["", "# A", "# A\n", "\r\n\r\n", "# A\r\n\r\n## B"] {
-            assert_eq!(flatten(&split_body(body)), body);
-        }
-    }
-
-    #[test]
-    fn commonmark_fence_edges_split_only_real_headings() {
-        let cases = [
-            ("```\r\n# code\r\n```\r\n# real", 2),
-            ("```\n# code\n```\n# real\n", 2),
-            ("   ```rust\n# code\n   ```\n# real\n", 2),
-            ("~~~rust\n# code\n~~~~~~\n# real\n", 2),
-            ("   ~~~\n# code\n   ~~~\n# real\n", 2),
-            ("    ```\n# real\n", 2),
-            ("```foo`bar\n# A\n```\n# B\n", 2),
-            ("```\n```\u{00a0}\n# still-code\n", 1),
-            ("```\n# code\n# still-code", 1),
-        ];
-
-        for (body, expected_blocks) in cases {
-            let blocks = split_body(body);
-            assert_eq!(flatten(&blocks), body, "{body:?}");
-            assert_eq!(blocks.len(), expected_blocks, "{body:?}");
-        }
-
-        assert!(
-            split_body("```foo`bar\n# A\n```\n# B\n")[1]
-                .raw
-                .starts_with("# A\n")
-        );
-    }
 
     #[test]
     fn edited_block_inherits_id_after_an_insertion() {
@@ -545,58 +412,158 @@ mod tests {
     }
 
     #[test]
-    fn matched_non_prose_block_keeps_kind_payload_and_rev() {
-        let payload = json!({ "symbol": "0700.HK", "markdown": "# Chart\nflat repr\n" });
+    fn byte_preserved_fence_keeps_id_kind_payload_and_rev() {
+        // #960 PR3: a non-prose block's flat form IS its canonical
+        // fence. A wholesale rewrite that carries the fence through
+        // verbatim must preserve everything.
+        let payload = serde_json::json!({ "src": "/apps/x", "title": "工具" });
         let old = vec![ReportBlock {
-            id: "b_ch01".to_string(),
-            kind: "chart.candles".to_string(),
+            id: "b_ap01".to_string(),
+            kind: "app".to_string(),
             rev: 3,
             payload: payload.clone(),
         }];
-        let reassigned = reassign_ids(&old, &split_body("# Chart\nflat repr\n"));
-        assert_eq!(reassigned.len(), 1);
-        assert_eq!(reassigned[0].id, "b_ch01");
-        assert_eq!(reassigned[0].kind, "chart.candles");
-        assert_eq!(reassigned[0].rev, 3, "identical content: rev unchanged");
+        let flat = flat_text(&old[0]);
+        let body = format!("# Intro\nprose\n{flat}");
+        let reassigned = reassign_ids(&old, &split_body(&body));
+        assert_eq!(reassigned.len(), 2);
+        assert_eq!(reassigned[1].id, "b_ap01");
+        assert_eq!(reassigned[1].kind, "app");
+        assert_eq!(reassigned[1].rev, 3, "identical fence: rev unchanged");
+        assert_eq!(reassigned[1].payload, payload, "payload preserved");
+    }
+
+    #[test]
+    fn reformatted_fence_json_still_matches_and_changed_params_bump_rev() {
+        let old = vec![ReportBlock {
+            id: "b_ap01".to_string(),
+            kind: "app".to_string(),
+            rev: 5,
+            payload: serde_json::json!({ "src": "/x", "height": 300 }),
+        }];
+        // Same payload, hostile formatting (compact, different key
+        // order): canonical comparison must still match exactly.
+        let body = "```neige-block app\n{\"height\":300,\"src\":\"/x\"}\n```\n";
+        let same = reassign_ids(&old, &split_body(body));
+        assert_eq!(same.len(), 1);
+        assert_eq!(same[0].id, "b_ap01");
+        assert_eq!(same[0].rev, 5, "reformatted-but-equal payload: rev holds");
         assert_eq!(
-            reassigned[0].payload, payload,
-            "non-prose payload preserved verbatim"
+            same[0].payload,
+            serde_json::json!({ "src": "/x", "height": 300 })
+        );
+
+        // Changed parameter: id reused (similar), rev bumps.
+        let body = "```neige-block app\n{\"height\":301,\"src\":\"/x\"}\n```\n";
+        let changed = reassign_ids(&old, &split_body(body));
+        assert_eq!(changed[0].id, "b_ap01");
+        assert_eq!(changed[0].rev, 6, "changed payload: rev+1");
+        assert_eq!(
+            changed[0].payload,
+            serde_json::json!({ "src": "/x", "height": 301 })
         );
     }
 
     #[test]
-    fn strip_markers_binds_ids_and_cleans_unconditionally() {
-        let body = "<!-- neige:b_00aa -->\n# A\nalpha\n<!-- neige:b_00bb -->\n# B\nbeta\n";
-        let marked = strip_markers_and_split(body);
-        assert_eq!(marked.cleaned, "# A\nalpha\n# B\nbeta\n");
-        assert!(!marked.cleaned.contains("<!-- neige:"));
-        assert_eq!(marked.slices.len(), 2);
-        assert_eq!(
-            marked.hints,
-            vec![Some("b_00aa".to_string()), Some("b_00bb".to_string())]
+    fn fence_block_alignment_survives_insertions() {
+        // Non-prose blocks participate in LCS like any other slice.
+        let chart = ReportBlock {
+            id: "b_ch01".to_string(),
+            kind: "chart.candles".to_string(),
+            rev: 2,
+            payload: serde_json::json!({
+                "symbol": "0700.HK",
+                "candles": [[1, 1, 1, 1, 1], [2, 2, 2, 2, 2]],
+            }),
+        };
+        let prose_slices = split_body("# A\nalpha\n");
+        let mut old = reassign_ids(&[], &prose_slices);
+        old.push(chart.clone());
+        let body = format!("# New\nintro\n# A\nalpha\n{}", flat_text(&chart));
+        let out = reassign_ids(&old, &split_body(&body));
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].id, old[0].id, "prose keeps id across insertion");
+        assert_eq!(out[2].id, "b_ch01", "fence keeps id across insertion");
+        assert_eq!(out[2].rev, 2);
+        assert_eq!(out[2].payload, chart.payload);
+    }
+
+    #[test]
+    fn heavily_reparameterized_data_block_keeps_id_via_same_kind_pairing() {
+        // #960 PR3 review round 1: a large parameter edit drops fence
+        // similarity below 0.5 — the unique same-kind pre-pass must
+        // still pair the blocks (id inherited, rev+1).
+        //
+        // app: src "/x" → long path.
+        let old = vec![ReportBlock {
+            id: "b_ap01".to_string(),
+            kind: "app".to_string(),
+            rev: 2,
+            payload: serde_json::json!({ "src": "/x" }),
+        }];
+        let long_src = format!("/apps/deeply/nested/{}", "z".repeat(120));
+        let body = format!(
+            "```neige-block app\n{{\"src\": \"{long_src}\", \"title\": \"tooling\"}}\n```\n"
         );
+        let out = reassign_ids(&old, &split_body(&body));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "b_ap01", "id survives the large edit");
+        assert_eq!(out[0].rev, 3, "changed payload: rev+1");
+        assert_eq!(out[0].payload["src"], serde_json::json!(long_src));
 
-        // Unknown / trailing / duplicate / CRLF / indented markers are
-        // still stripped; binding is best-effort first-wins.
-        let messy =
-            "  <!-- neige:b_0001 -->  \r\n# A\n<!-- neige:b_0002 -->\nmid\n<!-- neige:b_0003 -->\n";
-        let marked = strip_markers_and_split(messy);
-        assert_eq!(marked.cleaned, "# A\nmid\n");
-        assert_eq!(marked.slices.len(), 1);
-        assert_eq!(marked.hints, vec![Some("b_0001".to_string())]);
+        // chart: most candles replaced, surrounded by prose that also
+        // changed — still pairs inside the gap.
+        let chart = ReportBlock {
+            id: "b_ch01".to_string(),
+            kind: "chart.candles".to_string(),
+            rev: 4,
+            payload: serde_json::json!({
+                "symbol": "0700.HK",
+                "candles": [[1, 1, 1, 1, 1], [2, 2, 2, 2, 2]],
+            }),
+        };
+        let mut old = reassign_ids(&[], &split_body("# A\nalpha\n"));
+        old.push(chart);
+        let new_candles: Vec<serde_json::Value> = (100..160)
+            .map(|i| serde_json::json!([i, i * 7, i * 9, i * 3, i * 5]))
+            .collect();
+        let new_fence = flat_text(&ReportBlock {
+            id: String::new(),
+            kind: "chart.candles".to_string(),
+            rev: 0,
+            payload: serde_json::json!({ "symbol": "9988.HK", "candles": new_candles }),
+        });
+        let out = reassign_ids(&old, &split_body(&format!("# A\nalpha\n{new_fence}")));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].id, "b_ch01", "chart id survives wholesale re-data");
+        assert_eq!(out[1].rev, 5, "rev+1");
 
-        // Non-marker lookalikes stay in the body.
-        for keep in [
-            "x <!-- neige:b_0001 -->\n", // not standalone
-            "<!-- neige:b_00G1 -->\n",   // non-hex
-            "<!-- neige:b_00aaa -->\n",  // wrong length
-            "<!-- neige:c_00aa -->\n",   // wrong prefix
-            "<!--neige:b_00aa -->\n",    // malformed comment
-            "<!-- neige:b_00AA -->\n",   // uppercase hex
-        ] {
-            let marked = strip_markers_and_split(keep);
-            assert_eq!(marked.cleaned, keep, "{keep:?} must survive");
-        }
+        // Two same-kind blocks in one gap: ambiguity falls back to
+        // similarity — the byte-identical one is LCS-anchored, the
+        // remaining one-on-one pair still resolves via the pre-pass.
+        let a = ReportBlock {
+            id: "b_a".to_string(),
+            kind: "app".to_string(),
+            rev: 1,
+            payload: serde_json::json!({ "src": "/keep" }),
+        };
+        let b = ReportBlock {
+            id: "b_b".to_string(),
+            kind: "app".to_string(),
+            rev: 1,
+            payload: serde_json::json!({ "src": "/rewrite" }),
+        };
+        let body = format!(
+            "{}```neige-block app\n{{\"src\": \"/totally/different/{}\"}}\n```\n",
+            flat_text(&a),
+            "w".repeat(80)
+        );
+        let out = reassign_ids(&[a, b], &split_body(&body));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "b_a", "identical fence LCS-anchored");
+        assert_eq!(out[0].rev, 1);
+        assert_eq!(out[1].id, "b_b", "leftover same-kind pair inherits");
+        assert_eq!(out[1].rev, 2);
     }
 
     #[test]
@@ -608,13 +575,13 @@ mod tests {
                 id: "b_aaaa".to_string(),
                 kind: "prose".to_string(),
                 rev: 4,
-                payload: json!({ "markdown": "# A\nsame\n" }),
+                payload: serde_json::json!({ "markdown": "# A\nsame\n" }),
             },
             ReportBlock {
                 id: "b_bbbb".to_string(),
                 kind: "prose".to_string(),
                 rev: 7,
-                payload: json!({ "markdown": "# A\nsame\n" }),
+                payload: serde_json::json!({ "markdown": "# A\nsame\n" }),
             },
         ];
         // Swap the two blocks via markers; edit the second one.
@@ -690,19 +657,19 @@ mod tests {
                 id: "dup".to_string(),
                 kind: "prose".to_string(),
                 rev: 1,
-                payload: json!({ "markdown": "# A\n" }),
+                payload: serde_json::json!({ "markdown": "# A\n" }),
             },
             ReportBlock {
                 id: "dup".to_string(),
                 kind: "prose".to_string(),
                 rev: 1,
-                payload: json!({ "markdown": "# B\n" }),
+                payload: serde_json::json!({ "markdown": "# B\n" }),
             },
             ReportBlock {
                 id: "broken".to_string(),
                 kind: "prose".to_string(),
                 rev: 1,
-                payload: json!({}),
+                payload: serde_json::json!({}),
             },
         ];
         let reassigned = reassign_ids(&old, &split_body("# A\n# B\n"));

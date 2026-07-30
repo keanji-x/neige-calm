@@ -18,7 +18,11 @@ edition = "2024"
 [dependencies]
 # Serde + JSON — wire shapes only, no IO.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip`: #960 PR3 canonical neige-block fences require
+# parse(render(payload)) to be byte-stable; serde_json's default float
+# parser is not correctly rounded, which would make a re-parsed canonical
+# fence render differently (spurious rev bumps / stomp-guard rejections).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 # Errors
 thiserror = "1"

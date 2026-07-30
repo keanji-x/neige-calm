@@ -42,6 +42,7 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::wave_report::resolve_report_for_caller;
 use crate::model::CardRole;
 use crate::wave_report::{BlockOpOutcome, ReportDocOp};
+use calm_types::report_blocks;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -82,8 +83,9 @@ fn kinds_descriptor() -> ToolDescriptor {
         description: "Spec-only: list the block kinds a wave report can \
              contain. Returns `{ kinds: [{ kind, schema, usage }] }` \
              where `schema` is the JSON Schema of that kind's payload. \
-             Currently only `prose` exists; richer kinds \
-             (chart.candles, table, app) arrive in a later release."
+             Kinds: `prose` (markdown), `chart.candles` (inline candle \
+             chart), `table` (comparison table), `app` (embedded \
+             same-origin mini-app)."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -94,8 +96,10 @@ fn kinds_descriptor() -> ToolDescriptor {
     }
 }
 
-/// The static kind table. PR3 extends this with `chart.candles` /
-/// `table` / `app`; keep it the single source the tool serves.
+/// The static kind table — the single self-description source a spec
+/// agent discovers the block vocabulary from. Payload validation for
+/// the data kinds lives in `calm_types::report_blocks::kinds` (the
+/// schemas here must stay in lock-step with it).
 fn kinds_table() -> Value {
     json!({
         "kinds": [
@@ -104,6 +108,7 @@ fn kinds_table() -> Value {
                 "schema": {
                     "type": "object",
                     "required": ["markdown"],
+                    "additionalProperties": false,
                     "properties": {
                         "markdown": { "type": "string", "description": "The block's Markdown source." }
                     }
@@ -112,7 +117,112 @@ fn kinds_table() -> Value {
                      `calm.report.blocks.upsert` passing the content in the \
                      top-level `markdown` argument. Blocks are split at \
                      H1/H2 headings, so a prose block conventionally starts \
-                     with one."
+                     with one. Prose markdown may NOT embed ```neige-block \
+                     fences — data goes in its own block."
+            },
+            {
+                "kind": "chart.candles",
+                "schema": {
+                    "type": "object",
+                    "required": ["symbol", "candles"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "symbol": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Instrument label, e.g. \"0700.HK\"." },
+                        "period": { "type": "string", "enum": ["day", "week", "month"], "description": "Candle period (default day)." },
+                        "candles": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": report_blocks::MAX_CHART_CANDLES,
+                            "description": "Inline candle rows, oldest first. You fetch the data yourself and write it in; the reader filters ranges client-side.",
+                            "items": {
+                                "type": "array",
+                                "minItems": 5,
+                                "maxItems": 6,
+                                "items": { "type": "number" },
+                                "description": "[ts_ms, open, high, low, close, volume?]"
+                            }
+                        },
+                        "overlays": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["ma20", "ma60"] },
+                            "description": "Moving-average overlays to render."
+                        },
+                        "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS }
+                    }
+                },
+                "usage": "Candlestick chart with inline data. Minimal example \
+                     — calm.report.blocks.upsert { \"kind\": \"chart.candles\", \
+                     \"payload\": { \"symbol\": \"0700.HK\", \"candles\": \
+                     [[1719800000000, 371.2, 380.0, 370.0, 378.4, 12000000], \
+                     [1719886400000, 378.4, 382.0, 375.0, 379.8, 9800000]] } }. \
+                     The kernel has no market-data source: include every \
+                     candle you want rendered. Limits: at most 5000 candles \
+                     and 256KB of JSON per block — downsample older history \
+                     if you exceed either."
+            },
+            {
+                "kind": "table",
+                "schema": {
+                    "type": "object",
+                    "required": ["columns", "rows"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "columns": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": report_blocks::MAX_TABLE_COLUMNS,
+                            "items": {
+                                "type": "object",
+                                "required": ["key", "label"],
+                                "additionalProperties": false,
+                                "properties": {
+                                    "key": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Row-object key; unique per table." },
+                                    "label": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Rendered column header." },
+                                    "align": { "type": "string", "enum": ["left", "right"] }
+                                }
+                            }
+                        },
+                        "rows": {
+                            "type": "array",
+                            "maxItems": report_blocks::MAX_TABLE_ROWS,
+                            "items": {
+                                "type": "object",
+                                "description": "Every key MUST be a declared column `key` (JSON Schema cannot express this — it is enforced server-side). Counter-example: with columns [{\"key\": \"pe\", …}], a row { \"PE\": 18.2 } is rejected with `rows[0].PE: not a declared column key`. Values are string | number | null.",
+                                "additionalProperties": { "type": ["string", "number", "null"], "maxLength": report_blocks::MAX_STRING_CHARS }
+                            }
+                        },
+                        "caption": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "highlight": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "description": "Row key VALUE to visually highlight." }
+                    }
+                },
+                "usage": "Structured comparison table. Minimal example — \
+                     calm.report.blocks.upsert { \"kind\": \"table\", \"payload\": \
+                     { \"columns\": [{ \"key\": \"name\", \"label\": \"公司\" }, \
+                     { \"key\": \"pe\", \"label\": \"PE\", \"align\": \"right\" }], \
+                     \"rows\": [{ \"name\": \"腾讯\", \"pe\": 18.2 }] } }. Row \
+                     keys must be declared column keys — { \"columns\": \
+                     [{\"key\": \"pe\", …}], \"rows\": [{ \"PE\": 1 }] } is \
+                     rejected. Limits: 32 columns, 500 rows, 2048 chars per \
+                     string, 256KB of JSON per block."
+            },
+            {
+                "kind": "app",
+                "schema": {
+                    "type": "object",
+                    "required": ["src"],
+                    "additionalProperties": false,
+                    "properties": {
+                        "src": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/(?![/\\\\])[^\\\\]*$", "description": "Same-origin absolute path: starts with `/`, not `//`, no backslashes, no scheme — full URLs (https://…) are NOT accepted. Rendered in the sandboxed AppBridge iframe." },
+                        "title": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "height": { "type": "number", "minimum": 120, "maximum": 2000, "description": "Iframe height in px (default chosen by the renderer)." }
+                    }
+                },
+                "usage": "Embed a same-origin mini-app in the report. Minimal \
+                     example — calm.report.blocks.upsert { \"kind\": \"app\", \
+                     \"payload\": { \"src\": \"/apps/screener\", \"title\": \
+                     \"选股器\", \"height\": 600 } }. `src` must be a \
+                     same-origin absolute path (`/…`); full URLs and \
+                     backslashes are rejected."
             }
         ]
     })
@@ -139,21 +249,23 @@ fn upsert_descriptor() -> ToolDescriptor {
              or inserted at `position`). With `id`: replaces that \
              block's content and REQUIRES `if_rev` (the rev you read); \
              a mismatch returns error -32001 (rev conflict) and writes \
-             nothing — re-read and retry. `kind` must be `prose` for \
-             now (see calm.report.blocks.kinds); prose content goes in \
-             `markdown`. Returns `{ id, rev, updated_at }` — keep the \
-             returned rev for your next edit of the same block. Get \
-             ids/revs from `calm.report.read`'s `blocks` index. The \
-             report summary is not touched."
+             nothing — re-read and retry. Kinds (see \
+             calm.report.blocks.kinds for payload schemas): `prose` \
+             takes its content in `markdown`; `chart.candles` / \
+             `table` / `app` take a schema-validated `payload` object \
+             (and must NOT pass `markdown`). Returns `{ id, rev, \
+             updated_at }` — keep the returned rev for your next edit \
+             of the same block. Get ids/revs from `calm.report.read`'s \
+             `blocks` index. The report summary is not touched."
             .into(),
         input_schema: json!({
             "type": "object",
             "required": ["kind"],
             "properties": {
                 "id": { "type": "string", "description": "Existing block id to replace. Omit to create a new block." },
-                "kind": { "type": "string", "description": "Block kind; only `prose` is accepted today." },
-                "markdown": { "type": "string", "description": "Prose content (required for kind=prose)." },
-                "payload": { "type": "object", "description": "Kind-specific payload; for prose, `{ markdown }` (alternative to the top-level `markdown`)." },
+                "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app"], "description": "Block kind." },
+                "markdown": { "type": "string", "description": "Prose content (kind=prose only)." },
+                "payload": { "type": "object", "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`." },
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },
                 "position": { "type": "integer", "minimum": 0, "description": "Insertion index for a NEW block (default: append)." }
             }
@@ -177,31 +289,75 @@ async fn blocks_upsert(
         .and_then(Value::as_str)
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `kind` (string)")))?
         .to_string();
-    if kind != "prose" {
-        return Err(RpcError::invalid_params(format!(
-            "{tool}: unsupported kind `{kind}` — only `prose` exists today; \
-             chart.candles/table/app land in a later release (PR3). \
-             See calm.report.blocks.kinds."
-        )));
-    }
-    // Prose content: top-level `markdown`, falling back to
-    // `payload.markdown` (the shape blocks.kinds documents).
-    let markdown = match obj.get("markdown") {
-        Some(Value::String(s)) => s.clone(),
-        None | Some(Value::Null) => match obj.get("payload").and_then(|p| p.get("markdown")) {
+    let content = if kind == report_blocks::KIND_PROSE {
+        // Prose content: top-level `markdown`, falling back to
+        // `payload.markdown` (the shape blocks.kinds documents).
+        let markdown = match obj.get("markdown") {
             Some(Value::String(s)) => s.clone(),
-            _ => {
+            None | Some(Value::Null) => match obj.get("payload").and_then(|p| p.get("markdown")) {
+                Some(Value::String(s)) => s.clone(),
+                _ => {
+                    return Err(RpcError::invalid_params(format!(
+                        "{tool}: kind=prose requires `markdown` (string), either \
+                         top-level or inside `payload`"
+                    )));
+                }
+            },
+            Some(_) => {
                 return Err(RpcError::invalid_params(format!(
-                    "{tool}: kind=prose requires `markdown` (string), either \
-                     top-level or inside `payload`"
+                    "{tool}: `markdown` must be a string if provided"
                 )));
             }
-        },
-        Some(_) => {
+        };
+        // A prose block may not smuggle data blocks: an embedded
+        // ```neige-block fence (well-formed or typo'd) would either
+        // splinter into its own block on the next wholesale write or
+        // silently persist a malformed data block as prose.
+        if let Some(first) = report_blocks::invalid_neige_fences(&markdown)
+            .into_iter()
+            .next()
+        {
+            return Err(RpcError::invalid_params(format!("{tool}: {first}")));
+        }
+        if report_blocks::split_body(&markdown)
+            .iter()
+            .any(|slice| report_blocks::parse_fence(&slice.raw).is_some())
+        {
             return Err(RpcError::invalid_params(format!(
-                "{tool}: `markdown` must be a string if provided"
+                "{tool}: prose markdown may not embed a ```neige-block fence — create the \
+                 data block with its own kind (see calm.report.blocks.kinds)"
             )));
         }
+        markdown
+    } else if report_blocks::is_data_kind(&kind) {
+        // Data kinds take a schema-validated `payload` object; the
+        // stored content is its canonical fence (deterministic pretty
+        // JSON — design §3.5).
+        if !matches!(obj.get("markdown"), None | Some(Value::Null)) {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `markdown` is only valid for kind=prose — pass the {kind} data in \
+                 `payload` (see calm.report.blocks.kinds)"
+            )));
+        }
+        let payload = match obj.get("payload") {
+            Some(payload @ Value::Object(_)) => payload,
+            _ => {
+                return Err(RpcError::invalid_params(format!(
+                    "{tool}: kind={kind} requires a `payload` object (see \
+                     calm.report.blocks.kinds for its schema)"
+                )));
+            }
+        };
+        report_blocks::validate_payload(&kind, payload).map_err(|errors| {
+            RpcError::invalid_params(format!("{tool}: invalid `{kind}` payload: {errors}"))
+        })?;
+        report_blocks::render_fence(&kind, payload)
+    } else {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: unknown kind `{kind}` — supported kinds: prose, {}. \
+             See calm.report.blocks.kinds.",
+            report_blocks::DATA_KINDS.join(", ")
+        )));
     };
     let if_rev = optional_u32(obj, "if_rev", tool)?;
     let position = optional_index(obj, "position", tool)?;
@@ -232,7 +388,7 @@ async fn blocks_upsert(
         ReportDocOp::UpsertBlock {
             id,
             kind,
-            markdown,
+            content,
             if_rev,
             position,
         },
@@ -367,7 +523,12 @@ fn write_markdown_descriptor() -> ToolDescriptor {
              block id (its rev bumps only if the content changed). \
              Marker lines are ALWAYS stripped server-side and never \
              stored; blocks without markers are re-matched \
-             best-effort. Prefer `calm.report.blocks.*` for targeted \
+             best-effort. Non-prose blocks appear in the body as \
+             ```neige-block <kind>``` fences: keep a fence verbatim to \
+             preserve that block, edit its JSON to update it (rev+1), \
+             drop it to delete it — every fence must be well-formed \
+             and schema-valid or the whole write is rejected (-32602). \
+             Prefer `calm.report.blocks.*` for targeted \
              edits; use this for large restructurings. Omitting \
              `summary` keeps the existing one. Returns \
              `{ updated_at }`."

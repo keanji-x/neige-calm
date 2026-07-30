@@ -13,6 +13,7 @@ import type {
   WaveReportCardData,
 } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
+import { ReportBlockView } from './report-blocks';
 import { useWaveFsViewer } from '../wave-fs-viewers';
 import { EventLinePanel } from './EventLinePanel';
 import { SpecConversation, type ReportView } from './SpecConversation';
@@ -218,22 +219,14 @@ function ReportMarkdown({
   if (blocks) {
     return (
       <>
-        {blocks.map((block) => {
-          const markdown =
-            block.kind === 'prose' && typeof block.payload.markdown === 'string'
-              ? block.payload.markdown
-              : '';
-          return (
-            <div className="report-prose calm-prose" key={block.id}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
-            </div>
-          );
-        })}
+        {blocks.map((block) => (
+          <ReportBlockView key={block.id} block={block} />
+        ))}
       </>
     );
   }
   return (
-    <div className="report-prose calm-prose">
+    <div className="report-block report-prose calm-prose">
       <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
     </div>
   );

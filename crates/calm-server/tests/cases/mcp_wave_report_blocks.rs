@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use crate::mcp_wave_report::{Boot, boot, call_tool, collect_n, spec_identity, worker_identity};
 use calm_server::event::Event;
-use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_WRITE;
+use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::wave_report_blocks::{
     RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
@@ -95,7 +95,7 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn kinds_returns_prose_schema() {
+async fn kinds_returns_all_four_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -109,20 +109,113 @@ async fn kinds_returns_prose_schema() {
         .get("kinds")
         .and_then(Value::as_array)
         .expect("kinds array");
-    assert_eq!(kinds.len(), 1, "PR2 ships prose only");
+    let names: Vec<&str> = kinds
+        .iter()
+        .map(|k| k.get("kind").and_then(Value::as_str).unwrap())
+        .collect();
+    assert_eq!(names, ["prose", "chart.candles", "table", "app"]);
+    for kind in kinds {
+        assert_eq!(
+            kind.pointer("/schema/type").and_then(Value::as_str),
+            Some("object"),
+            "{kind}"
+        );
+        assert!(
+            kind.get("usage")
+                .and_then(Value::as_str)
+                .is_some_and(|usage| !usage.is_empty()),
+            "{kind}"
+        );
+    }
     let prose = &kinds[0];
-    assert_eq!(prose.get("kind").and_then(Value::as_str), Some("prose"));
     assert_eq!(
         prose.pointer("/schema/required/0").and_then(Value::as_str),
         Some("markdown"),
     );
+    let chart = &kinds[1];
     assert_eq!(
-        prose
-            .pointer("/schema/properties/markdown/type")
-            .and_then(Value::as_str),
-        Some("string"),
+        chart.pointer("/schema/required").unwrap(),
+        &json!(["symbol", "candles"]),
     );
-    assert!(prose.get("usage").and_then(Value::as_str).is_some());
+    assert_eq!(
+        chart
+            .pointer("/schema/properties/candles/minItems")
+            .and_then(Value::as_u64),
+        Some(2),
+    );
+    assert!(
+        chart
+            .get("usage")
+            .and_then(Value::as_str)
+            .unwrap()
+            .contains("blocks.upsert"),
+        "usage carries a minimal example"
+    );
+    let table = &kinds[2];
+    assert_eq!(
+        table.pointer("/schema/required").unwrap(),
+        &json!(["columns", "rows"]),
+    );
+    let app = &kinds[3];
+    assert_eq!(app.pointer("/schema/required").unwrap(), &json!(["src"]));
+    assert_eq!(
+        app.pointer("/schema/properties/height/maximum")
+            .and_then(Value::as_u64),
+        Some(2000),
+    );
+
+    // #960 PR3 review round 1: advertised limits mirror the Rust
+    // validator (calm_types::report_blocks::kinds) so agents can
+    // self-limit before the round-trip.
+    assert_eq!(
+        chart
+            .pointer("/schema/properties/candles/maxItems")
+            .and_then(Value::as_u64),
+        Some(5000),
+    );
+    assert_eq!(
+        chart
+            .pointer("/schema/properties/symbol/maxLength")
+            .and_then(Value::as_u64),
+        Some(2048),
+    );
+    assert_eq!(
+        table
+            .pointer("/schema/properties/columns/maxItems")
+            .and_then(Value::as_u64),
+        Some(32),
+    );
+    assert_eq!(
+        table
+            .pointer("/schema/properties/rows/maxItems")
+            .and_then(Value::as_u64),
+        Some(500),
+    );
+    assert!(
+        table
+            .pointer("/schema/properties/rows/items/description")
+            .and_then(Value::as_str)
+            .is_some_and(|d| d.contains("declared column") && d.contains("PE")),
+        "row-key rule + counter-example in the description"
+    );
+    assert_eq!(
+        table
+            .pointer("/schema/properties/rows/items/additionalProperties/maxLength")
+            .and_then(Value::as_u64),
+        Some(2048),
+        "string cell values advertise the 2048-char cap"
+    );
+    assert_eq!(
+        app.pointer("/schema/properties/src/pattern")
+            .and_then(Value::as_str),
+        Some("^/(?![/\\\\])[^\\\\]*$"),
+    );
+    assert!(
+        app.pointer("/schema/properties/src/description")
+            .and_then(Value::as_str)
+            .is_some_and(|d| d.contains("NOT accepted")),
+        "src description forbids full URLs"
+    );
 }
 
 #[tokio::test]
@@ -363,19 +456,113 @@ async fn upsert_rev_conflict_returns_32001_and_writes_nothing() {
 }
 
 #[tokio::test]
-async fn upsert_rejects_non_prose_kind() {
+async fn upsert_rejects_unknown_kind_and_invalid_payloads() {
     let boot = boot().await;
+    let before = current_payload(&boot).await;
+    // Unknown kind.
     let err = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "chart.candles", "payload": { "symbol": "0700.HK" } }),
+        json!({ "kind": "metrics", "payload": {} }),
     )
     .await
-    .expect_err("non-prose kind must be rejected in PR2");
+    .expect_err("unknown kind must be rejected");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
-    assert!(err.message.contains("prose"), "msg = {err:?}");
-    assert!(err.message.contains("PR3"), "msg = {err:?}");
+    assert!(err.message.contains("unknown kind"), "msg = {err:?}");
+    // Data kind without payload / with markdown.
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "kind": "chart.candles" }),
+    )
+    .await
+    .expect_err("missing payload");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("payload"), "msg = {err:?}");
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "kind": "table", "markdown": "# nope\n", "payload": { "columns": [], "rows": [] } }),
+    )
+    .await
+    .expect_err("markdown on a data kind");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("only valid for kind=prose"),
+        "msg = {err:?}"
+    );
+    // Schema violations carry field-level paths.
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "kind": "chart.candles", "payload": { "symbol": "0700.HK", "candles": [[1, 2, 3, 4, 5]], "range": "1y" } }),
+    )
+    .await
+    .expect_err("schema-invalid chart payload");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("at least 2 candles"), "msg = {err:?}");
+    assert!(
+        err.message.contains("range: unknown field"),
+        "msg = {err:?}"
+    );
+    for src in [
+        "https://evil.example/x",
+        // Backslash bypass (#960 PR3 review round 1): browsers
+        // normalize `/\host` into a protocol-relative URL.
+        "/\\evil.example/x",
+        "/apps\\x",
+    ] {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            spec_identity(&boot),
+            json!({ "kind": "app", "payload": { "src": src } }),
+        )
+        .await
+        .expect_err("non-same-origin app src");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("src"), "{src} → {err:?}");
+    }
+    // Oversized payload: limit named in the error (-32602 path).
+    let candles: Vec<Value> = (0..5001i64).map(|i| json!([i, 1, 2, 0, 1])).collect();
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "kind": "chart.candles", "payload": { "symbol": "X", "candles": candles } }),
+    )
+    .await
+    .expect_err("over-cap candles");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("limit is 5000"), "msg = {err:?}");
+    // Nothing was written by any of the rejected calls.
+    assert_eq!(current_payload(&boot).await, before);
+}
+
+#[tokio::test]
+async fn upsert_prose_rejects_embedded_neige_fences() {
+    let boot = boot().await;
+    for markdown in [
+        // Well-formed fence smuggled inside prose.
+        "# A\n```neige-block app\n{\"src\": \"/x\"}\n```\n",
+        // Typo'd fence (bad JSON) — must not silently persist as prose.
+        "# A\n```neige-block app\nnot json\n```\n",
+    ] {
+        let err = call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            spec_identity(&boot),
+            json!({ "kind": "prose", "markdown": markdown }),
+        )
+        .await
+        .expect_err("prose with embedded fence must be rejected");
+        assert_eq!(err.code, RpcError::INVALID_PARAMS);
+        assert!(err.message.contains("neige-block"), "msg = {err:?}");
+    }
 }
 
 #[tokio::test]
@@ -830,6 +1017,212 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
         ),
     );
     assert_eq!(index_of(&marked), truth);
+}
+
+// ---------------------------------------------------------------------------
+// #960 PR3 — data kinds end-to-end + prose-shim stomp guard
+// ---------------------------------------------------------------------------
+
+const CHART_PAYLOAD_V1: &str = r#"{
+    "symbol": "0700.HK",
+    "period": "day",
+    "candles": [[1719800000000, 371.2, 380.0, 370.0, 378.4, 12000000],
+                [1719886400000, 378.4, 382.0, 375.0, 379.8, 9800000]],
+    "overlays": ["ma20"]
+}"#;
+
+/// Upsert one chart block after the seed prose; returns `(id, rev)`.
+async fn upsert_chart(boot: &Boot, payload: Value) -> (String, u64) {
+    let out = call_tool(
+        boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(boot),
+        json!({ "kind": "chart.candles", "payload": payload }),
+    )
+    .await
+    .expect("chart upsert succeeds");
+    (
+        out.get("id").and_then(Value::as_str).unwrap().to_string(),
+        out.get("rev").and_then(Value::as_u64).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
+    let boot = boot().await;
+    let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
+    let (id, rev) = upsert_chart(&boot, payload.clone()).await;
+    assert_eq!(rev, 1);
+
+    // Flat body carries the canonical fence (no id/rev inside — D9).
+    let stored = current_payload(&boot).await;
+    let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
+    assert_eq!(stored.body, format!("{SEED_BODY}{fence}"));
+    assert!(!fence.contains(&id), "fence must not embed the block id");
+
+    // JSON blocks cache mirrors the typed payload (what the frontend
+    // zod schema will consume), not a `{ markdown }` wrapper.
+    let blocks = stored.blocks.expect("blocks cache");
+    assert_eq!(blocks[1].id, id);
+    assert_eq!(blocks[1].kind, "chart.candles");
+    assert_eq!(blocks[1].payload, payload);
+
+    // read index reports the kind; with_markers text embeds the fence.
+    let out = read(&boot, json!({ "with_markers": true })).await;
+    assert_eq!(
+        out.pointer("/blocks/1/kind").and_then(Value::as_str),
+        Some("chart.candles"),
+    );
+    let text = out.get("text").and_then(Value::as_str).unwrap();
+    assert!(text.contains(&fence), "marker read embeds the fence");
+    assert!(text.contains(&format!("<!-- neige:{id} -->")));
+
+    // Replacing with different params bumps rev and changes the body.
+    let mut v2 = payload.clone();
+    v2["overlays"] = json!(["ma20", "ma60"]);
+    let out = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({ "id": id, "kind": "chart.candles", "payload": v2, "if_rev": rev }),
+    )
+    .await
+    .expect("chart replace succeeds");
+    assert_eq!(out.get("rev").and_then(Value::as_u64), Some(2));
+}
+
+#[tokio::test]
+async fn chart_param_change_yields_a_distinct_body_for_observation_hashing() {
+    // Hard acceptance (design §3.5 / B-5): two documents that differ
+    // ONLY in a chart parameter must produce different flat bodies —
+    // the dispatcher's SHA256 observation fingerprint is taken over
+    // `body_after`, so byte-equality here would merge distinct states.
+    let boot_a = boot().await;
+    let boot_b = boot().await;
+    let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
+    upsert_chart(&boot_a, payload.clone()).await;
+    let mut tweaked = payload;
+    // One candle close price differs.
+    tweaked["candles"][1][4] = json!(379.9);
+    upsert_chart(&boot_b, tweaked).await;
+
+    let body_a = current_payload(&boot_a).await.body;
+    let body_b = current_payload(&boot_b).await.body;
+    assert_ne!(body_a, body_b, "chart params must be observable in body");
+}
+
+#[tokio::test]
+async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
+    let boot = boot().await;
+    let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
+    let (id, _) = upsert_chart(&boot, payload).await;
+    let before = current_payload(&boot).await;
+    let mut rx = boot.ctx.events.subscribe();
+
+    // write: fence dropped.
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({ "body": "# 概要\n\nprose only now\n", "message": "stomp" }),
+    )
+    .await
+    .expect_err("write dropping the fence must fail");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains(&id), "msg = {err:?}");
+    assert!(err.message.contains("blocks.upsert"), "guidance: {err:?}");
+
+    // edit: old_string lands inside the fence JSON.
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_EDIT,
+        spec_identity(&boot),
+        json!({ "old_string": "\"ma20\"", "new_string": "\"ma60\"", "message": "stomp" }),
+    )
+    .await
+    .expect_err("edit inside the fence must fail");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains(&id), "msg = {err:?}");
+
+    // Storage unchanged, zero events (tx aborted).
+    assert_eq!(current_payload(&boot).await, before);
+    let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
+    assert!(
+        no_event.is_err(),
+        "guarded write emitted event: {no_event:?}"
+    );
+}
+
+#[tokio::test]
+async fn write_preserving_the_fence_verbatim_passes_and_holds_id_rev() {
+    let boot = boot().await;
+    let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
+    let (id, rev) = upsert_chart(&boot, payload.clone()).await;
+    let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
+
+    // Whole-document rewrite via the prose shim carrying the fence
+    // through byte-for-byte: legal.
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": format!("# 概要\n\nrewritten prose\n{fence}# 新节\n\ntail\n"),
+            "message": "legal whole-document rewrite"
+        }),
+    )
+    .await
+    .expect("fence-preserving write passes");
+
+    let stored = current_payload(&boot).await;
+    assert!(stored.body.contains(&fence));
+    let blocks = stored.blocks.expect("blocks cache");
+    let chart = blocks.iter().find(|b| b.id == id).expect("chart survives");
+    assert_eq!(chart.kind, "chart.candles");
+    assert_eq!(u64::from(chart.rev), rev, "untouched fence: rev holds");
+    assert_eq!(chart.payload, payload);
+}
+
+#[tokio::test]
+async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences() {
+    let boot = boot().await;
+    let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
+    let (id, rev) = upsert_chart(&boot, payload.clone()).await;
+    let prose_index = index_of(&read(&boot, json!({})).await);
+    let (prose_id, prose_rev) = prose_index[0].clone();
+    let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
+
+    // Malformed fence JSON: whole write rejected, nothing lands.
+    let before = current_payload(&boot).await;
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# 概要\n```neige-block chart.candles\n{oops\n```\n" }),
+    )
+    .await
+    .expect_err("malformed fence must reject the whole write");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("neige-block"), "msg = {err:?}");
+    assert_eq!(current_payload(&boot).await, before);
+
+    // Editing the fence JSON through write_markdown: that block gets
+    // rev+1, the prose block is untouched.
+    let edited = fence.replace("\"ma20\"", "\"ma20\", \"ma60\"");
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": format!("{SEED_BODY}{edited}") }),
+    )
+    .await
+    .expect("fence-editing write_markdown passes");
+    let index = index_of(&read(&boot, json!({})).await);
+    assert_eq!(index[0], (prose_id, prose_rev), "prose untouched");
+    assert_eq!(index[1].0, id, "fence keeps its id");
+    assert_eq!(index[1].1, rev + 1, "edited fence: rev+1");
+    let blocks = current_payload(&boot).await.blocks.expect("blocks cache");
+    assert_eq!(blocks[1].payload["overlays"], json!(["ma20", "ma60"]));
 }
 
 #[tokio::test]

@@ -46,6 +46,27 @@ vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
   ),
 }));
 
+// Chart blocks lazy-load lightweight-charts, which needs a real canvas.
+// Stub the v5 module surface; series assertions live in
+// `report-blocks/report-blocks.test.tsx`.
+vi.mock('lightweight-charts', () => ({
+  CandlestickSeries: {},
+  LineSeries: {},
+  HistogramSeries: {},
+  ColorType: { Solid: 'solid' },
+  LineStyle: { Solid: 0, Dashed: 2 },
+  createChart: () => ({
+    addSeries: () => ({
+      setData: () => {},
+      priceScale: () => ({ applyOptions: () => {} }),
+    }),
+    subscribeCrosshairMove: () => {},
+    unsubscribeCrosshairMove: () => {},
+    timeScale: () => ({ fitContent: () => {} }),
+    remove: () => {},
+  }),
+}));
+
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
@@ -250,6 +271,99 @@ describe('WaveReportPage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('body').tagName).toBe('STRONG');
     expect(screen.queryByText('stale body')).not.toBeInTheDocument();
+  });
+
+  it('renders mixed blocks (prose + chart + table + prose) in order', async () => {
+    const day = 86_400_000;
+    const t0 = Date.UTC(2026, 0, 5);
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_1',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Opening paragraph' },
+              },
+              {
+                id: 'b_2',
+                kind: 'chart.candles',
+                rev: 1,
+                payload: {
+                  symbol: '0700.HK',
+                  candles: [
+                    [t0, 100, 102, 99, 101],
+                    [t0 + day, 101, 103, 100, 102],
+                  ],
+                },
+              },
+              {
+                id: 'b_3',
+                kind: 'table',
+                rev: 1,
+                payload: {
+                  columns: [{ key: 'k', label: 'Key' }],
+                  rows: [{ k: 'v1' }],
+                },
+              },
+              {
+                id: 'b_4',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Closing paragraph' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    // Chart mounts through React.lazy — wait for its figure to appear.
+    expect(await screen.findByText('0700.HK')).toBeInTheDocument();
+    expect(screen.getByText('Opening paragraph')).toBeInTheDocument();
+    expect(screen.getByText('Closing paragraph')).toBeInTheDocument();
+    expect(screen.getByRole('table')).toBeInTheDocument();
+
+    const article = container.querySelector('.report-doc');
+    const blockEls = Array.from(
+      article?.querySelectorAll('.report-block') ?? [],
+    );
+    expect(blockEls).toHaveLength(4);
+    expect(blockEls[0]).toHaveTextContent('Opening paragraph');
+    expect(blockEls[1]).toHaveClass('report-block--breakout');
+    expect(blockEls[1]).toHaveTextContent('0700.HK');
+    expect(blockEls[2]).toHaveClass('report-block--breakout');
+    expect(blockEls[2]).toHaveTextContent('v1');
+    expect(blockEls[3]).toHaveTextContent('Closing paragraph');
+  });
+
+  it('degrades an unknown block kind to a placeholder without dropping siblings', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_1',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Still here' },
+              },
+              { id: 'b_2', kind: 'holo.gram', rev: 1, payload: {} },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText('Still here')).toBeInTheDocument();
+    expect(screen.getByRole('note')).toHaveTextContent(
+      'unsupported block kind holo.gram',
+    );
   });
 
   it('shows an explicit unsupported-version state', () => {

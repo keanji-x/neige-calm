@@ -44,6 +44,7 @@ use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
+use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
@@ -89,10 +90,13 @@ pub enum ReportDocOp {
     },
     /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
     /// default append); `id: Some` replaces and requires `if_rev`.
+    /// `content` is the block's flat text: markdown for `prose`, the
+    /// canonical `neige-block` fence (already rendered + validated by
+    /// the tool layer) for data kinds (#960 PR3).
     UpsertBlock {
         id: Option<String>,
         kind: String,
-        markdown: String,
+        content: String,
         if_rev: Option<u32>,
         position: Option<usize>,
     },
@@ -120,7 +124,7 @@ pub struct BlockOpOutcome {
 /// propagates it, aborting the transaction, so a conflicting op writes
 /// nothing and emits nothing. Unknown ids / out-of-range indexes are
 /// `CalmError::BadRequest`.
-fn apply_report_op(
+pub(crate) fn apply_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
 ) -> Result<Option<BlockOpOutcome>, CalmError> {
@@ -158,12 +162,19 @@ fn apply_report_op(
     match op {
         ReportDocOp::Replace { summary, body } => {
             let summary = tx_summary(doc, summary)?;
+            validate_body_fences(body)?;
+            guard_non_prose_stomp(doc, body)?;
             doc.update(&summary, body).map_err(internal)?;
             Ok(None)
         }
         ReportDocOp::WriteMarkdown { summary, body } => {
             let summary = tx_summary(doc, summary)?;
             let marked = calm_types::report_blocks::strip_markers_and_split(body);
+            // The escape hatch MAY rewrite/delete non-prose blocks
+            // (that is its point), but every fence it carries must be
+            // well-formed and schema-valid — reject the whole write
+            // otherwise (#960 PR3).
+            validate_body_fences(&marked.cleaned)?;
             doc.update_with_hints(&summary, &marked.slices, &marked.hints)
                 .map_err(internal)?;
             Ok(None)
@@ -171,7 +182,7 @@ fn apply_report_op(
         ReportDocOp::UpsertBlock {
             id,
             kind,
-            markdown,
+            content,
             if_rev,
             position,
         } => match id {
@@ -183,7 +194,7 @@ fn apply_report_op(
                 })?;
                 check_rev(doc, id, expected)?;
                 let (id, rev) = doc
-                    .upsert_block(Some(id), kind, markdown)
+                    .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
                 Ok(Some(BlockOpOutcome { id, rev }))
             }
@@ -196,7 +207,7 @@ fn apply_report_op(
                         "position {position} out of range (report has {len} blocks)"
                     )));
                 }
-                let (id, rev) = doc.upsert_block(None, kind, markdown).map_err(internal)?;
+                let (id, rev) = doc.upsert_block(None, kind, content).map_err(internal)?;
                 if let Some(position) = position
                     && *position < len
                 {
@@ -696,7 +707,7 @@ mod tests {
             &ReportDocOp::UpsertBlock {
                 id: Some("b_0001".into()),
                 kind: "prose".into(),
-                markdown: "x\n".into(),
+                content: "x\n".into(),
                 if_rev: Some(1),
                 position: None,
             },
