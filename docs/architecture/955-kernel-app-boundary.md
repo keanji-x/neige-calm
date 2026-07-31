@@ -50,22 +50,22 @@
 ```text
 ┌─ agent 层 ──────────────────────────────────────────────
 │  spec agent              worker (codex / claude)
-└──┬────────────────────────────────┬────────────────────
-   │ calm.*                         │ ③ plugin.<id>_<tool>
+└──┬──────────────────────────────────┬────────────────────
+   │ calm.*                           │ ③ plugin.<id>_<tool>
    │ 内核自有工具                     │    内核代理
-   ▼                                │    fail-closed
-╔═ 内核平面 ═════════════════════════│════════════════════
+   ▼                                  │    fail-closed
+╔═ 内核平面 ═════════════════════════ │════════════════════
 ║  事实源与授权    event log · role_gate · ActorId
 ║  可恢复副作用    operation · scheduler · gate
 ║  持久化契约      Tier-A payload (wave-report / codex / claude / terminal / spec)
 ║  内容寻址存储    wave_vcs (commit 链 / diff / GC)
 ║  app 宿主        进程监管 · MCP stdio · ui:// 资源
-╚══▲═════════════════════════════════│═════════════════════
-   │ ①                               │ ②
-   │ neige.* ×10                     │ tools/call
+╚══▲═════════════════════════════════ │═════════════════════
+   │ ①                                │ ②
+   │ neige.* ×10                      │ tools/call
    │ 受 manifest permissions 门禁     │ resources/read
    │                                  ▼
-┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄ 边 界 膜 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄ 边 界 膜 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
    │   ✗ 改内核拥有的卡           ✗ 写 wave_vcs / wave FS
    │   ✗ 定义可执行 gate          ✗ 绕过 role_gate
    │                                  │
@@ -251,12 +251,12 @@ kv 写。`kv.get/list` 与 `event.subscribe` 无持久写。
 
 | 拦截 | 位置 | 为什么对 |
 |---|---|---|
-| 改内核拥有的卡（`wave-report` / `codex` / `claude` / `terminal` / `spec`） | `perms.rs` `can_card_modify` 前缀检查 + `deletable` 硬闸 | 否则 CRDT 合并（#960 block 文档）、Tier-A schemaVersion 校验、`WaveReportEdited` 编辑日志三样一起失守。④ proposal 曾试图在此开切面，但它把 app 变成第三个报告写者，引入丢更新、撤销安全、顺序版本、租约等复杂度，又没有真实消费者，故已撤回 |
+| 改内核拥有的卡（`wave-report` / `codex` / `claude` / `terminal` / `spec`） | `perms.rs` `can_card_modify` 前缀检查 + `deletable` 硬闸 | 否则 CRDT 合并（#960 block 文档）、Tier-A schemaVersion 校验、`WaveReportEdited` 编辑日志三样一起失守。④ proposal 曾试图在此开切面，但它把 app 变成第三个报告写者，引入丢更新、撤销安全、顺序版本、租约等复杂度，又没有真实消费者，故已撤回[^proposal-residue] |
 | 写 `wave_vcs` / wave FS | 无回调（词表里没有 VCS 形状的方法；wave_vcs 写入只从事件追加路径可达） | 配额与 GC 只能有一个负责人（判据 3） |
 | 定义**可执行**的 gate | `manifest.rs` `WorkflowDescriptor::gates` 明注 "Advisory, prompt-only … NEVER executed as a shell command" | 真 gate 由 spec 从目标仓库工具链经 `calm.plan.upsert` 写；否则 manifest 成了远程执行面 |
 | 绕过 `role_gate` / 审计（对 overlay/card 写而言） | `CallbackCtx.repo` 收窄为 `RouteRepo`（raw 同步域写类型不可达）+ 写事务内 `enforce_role` | 写路径唯一（判据 1）。kv 裸写是记录在案的例外（§2.1） |
 
-一条**防御纵深观察**（非行为变化，留给 #489）[^proposal-residue]：硬闸 `enforce_role` 对
+一条**防御纵深观察**（非行为变化，留给 #489）：硬闸 `enforce_role` 对
 `ActorId::Plugin` 在 `WaveUpdated` / dispatch 类事件上是放行的
 （`role_gate.rs` 注释明言 unrestricted）——今天安全，因为 §2.1 的回调
 词表根本没有能发这些事件的方法，纵深依赖"词表封闭"这一事实。#489 落
