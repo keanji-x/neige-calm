@@ -1757,9 +1757,10 @@ export interface components {
         /**
          * @description Request body for `POST /api/waves/:id/report`.
          *
-         *     Both fields are required `String`s (per `WaveReportPayload`'s
-         *     [[required-over-option]] rule). An empty `summary` is a valid
-         *     value; the caller must commit to *some* string.
+         *     `summary` and `body` are required `String`s (per
+         *     `WaveReportPayload`'s [[required-over-option]] rule), and
+         *     `ifDocRev` is the required document-wide revision anchor. An empty
+         *     `summary` is valid; the caller must commit to *some* string.
          *
          *     **No `author` field.** Author is derived server-side from the
          *     authenticated session and pinned to [`EditAuthor::User`] for this
@@ -1788,7 +1789,7 @@ export interface components {
              * @description Expected document revision from the latest report read. Use zero
              *     for a document that has never been persisted through the CRDT path.
              */
-            ifRev: number;
+            ifDocRev: number;
             /**
              * @description One-line summary the wave-list sidebars surface. Empty string
              *     is a valid value; the caller must commit.

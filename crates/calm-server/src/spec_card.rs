@@ -147,12 +147,18 @@ Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave
 * **用中文写** — body / summary / 各种 MCP 工具调用里的 `message` 字段 \
   都用中文。读者听众是同一个人，不要混语言。
 
-READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
+READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是当前正文，
+`docRev` 是下一次整文档写必须携带的锚。`neige cat report.md` 只返回 body，
+不提供 `docRev`，因此不能用它为整文档写取锚。WRITE/EDIT 用：
 
-  * `calm.report.write(body, summary?, message, lifecycle?)` — 整体替换 \
+  * `calm.report.write(body, if_doc_rev, summary?, message, lifecycle?)` — 整体替换 \
     （首选 — 用来重写 section 或重组报告）。
-  * `calm.report.edit(old_string, new_string, replace_all?, message, lifecycle?)` \
+  * `calm.report.edit(old_string, new_string, if_doc_rev, replace_all?, message, lifecycle?)` \
     — 字符串替换（精修局部时用）。
+
+整文档写必须把最近一次 `calm.report.read` 返回的 `docRev` 原样作为
+`if_doc_rev` 传入；写响应会返回新的 `docRev`，后续写使用这个新锚。它不是
+`calm.report.blocks.*` 使用的块级 `if_rev`，两者不可混用。
 
 **Section 结构**（按这个顺序用 H1，UI 按 H1 切成可折叠卡片）：
 
@@ -177,7 +183,7 @@ READ 当前 body 用 `neige cat report.md`。WRITE/EDIT 用：
   * 被阻塞 → 在 `# 待你定` 写明白具体要什么
   * 当前状态发生变化 → 重写 `# 概要`
 
-**初次接管旧格式报告：** 当 `neige cat report.md` 返回的还是旧的英文 \
+**初次接管旧格式报告：** 当 `calm.report.read` 返回的 body 还是旧的英文 \
 `# Goal / # Progress / # Needs attention / # Results / # Timeline` \
 格式时，**一次性整体 REWRITE 成新的中文 section 结构**（用 `calm.report.write` \
 整体替换），不要在旧格式上做局部 edit — partial 迁移会产生中英混杂、 \
@@ -200,7 +206,7 @@ section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，
 用户可以直接编辑报告。当用户编辑后，内核会用 `wave.report_edited` \
 （author = \"user\"）observation 唤醒你。该 turn 开始时：
 
-1. 跑 `neige cat report.md` 拿最新 body。
+1. 调 `calm.report.read` 拿最新 body 和 `docRev`。
 2. 把用户的修改当作 ground truth — 不要覆盖。
 3. 然后继续你的任务。**不要** 盲目 `report.write` 你之前的草稿。
 
@@ -573,7 +579,7 @@ mod tests {
         );
         assert!(
             p.contains("neige cat report.md"),
-            "spec prompt must document reading the report through neige"
+            "spec prompt must explain why the body-only neige view cannot supply an anchor"
         );
         assert!(
             p.contains("runs/<task_id>"),
@@ -600,13 +606,21 @@ mod tests {
                 && p.contains("calm.report.links.backlinks")
                 && !p.contains("calm.wave.cat")
                 && !p.contains("calm.wave.ls")
-                && !p.contains("calm.report.read"),
-            "spec prompt MCP read allowlist is limited to calm.cove.outline and calm.report.links.backlinks"
+                && p.contains("calm.report.read"),
+            "spec prompt must include the anchored report read alongside retained read tools"
         );
         assert!(
             p.contains("[label](neige://wave/<wave_id>#<block_id>)"),
             "spec prompt must pin the cross-reference form"
         );
+    }
+
+    #[test]
+    fn spec_prompt_pins_whole_document_revision_anchor_contract() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+        assert!(p.contains("`calm.report.read` 返回的 `docRev`") && p.contains("`if_doc_rev`"));
+        assert!(p.contains("写响应会返回新的 `docRev`"));
+        assert!(p.contains("块级 `if_rev`") && p.contains("不可混用"));
     }
 
     #[test]

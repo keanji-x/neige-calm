@@ -212,7 +212,7 @@ export const updateWaveReport = (
   request<{ schemaVersion: number; docRev: number; summary: string; body: string }>(
     'POST',
     `/api/waves/${encodeURIComponent(id)}/report`,
-    { summary: b.summary, body: b.body, ifRev: b.docRev },
+    { summary: b.summary, body: b.body, ifDocRev: b.docRev },
   );
 
 export const listWaveFiles = (waveId: string, path?: string | null) => {

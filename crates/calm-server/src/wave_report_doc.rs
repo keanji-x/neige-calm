@@ -132,7 +132,11 @@ impl ReportDoc {
 
     /// Increment `doc_rev` after a successful mutation. Called inside
     /// the persist transaction so the revision and report bytes commit
-    /// atomically. Overflow is treated as corrupted/exhausted state.
+    /// atomically. This root scalar is a last-writer-wins register, so
+    /// callers must serialize mutations through the persist transaction;
+    /// concurrently merged branches could otherwise both publish N+1 and
+    /// make a stale N+1 anchor appear current. Overflow is treated as
+    /// corrupted/exhausted state.
     pub fn increment_doc_rev(&mut self) -> Result<u64> {
         let next = self.doc_rev()?.checked_add(1).context("doc_rev overflow")?;
         self.0

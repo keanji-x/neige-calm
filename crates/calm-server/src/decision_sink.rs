@@ -387,7 +387,7 @@ impl CardDecisionSink {
         agent_message: String,
         lifecycle: Option<WaveLifecycle>,
     ) -> Result<Card, CalmError> {
-        let if_rev = current_payload.doc_rev;
+        let if_doc_rev = current_payload.doc_rev;
         let (updated, _outcome) = self
             .commit_report_op(
                 identity,
@@ -397,7 +397,7 @@ impl CardDecisionSink {
                 ReportDocOp::Replace {
                     summary: Some(next.summary),
                     body: next.body,
-                    if_rev,
+                    if_doc_rev,
                 },
                 Some(agent_message),
                 lifecycle,

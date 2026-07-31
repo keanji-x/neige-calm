@@ -338,6 +338,14 @@ mod tests {
                 .validate_payload("wave-report", &json!({ "schemaVersion": 3, "body": "x" }))
                 .is_err()
         );
+        assert!(
+            registry
+                .validate_payload(
+                    "wave-report",
+                    &json!({ "schemaVersion": 3, "docRev": "x", "summary": "s", "body": "x" }),
+                )
+                .is_err()
+        );
         registry
             .validate_payload(
                 "wave-report",

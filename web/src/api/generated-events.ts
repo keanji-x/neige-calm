@@ -586,7 +586,7 @@ schemaVersion: number,
  * from the authoritative CRDT root and increments after every
  * successful report persist (whole-document or block-level).
  */
-docRev: number,
+docRev: number, 
 /**
  * One-line summary used by sidebars / wave-list previews. Empty
  * string is valid (means "spec agent has not produced a summary

@@ -124,6 +124,7 @@ impl CardKindHandler for WaveReportCardHandler {
         struct WaveReportShape {
             #[serde(default)]
             schema_version: Option<u32>,
+            doc_rev: u64,
             summary: String,
             body: String,
         }

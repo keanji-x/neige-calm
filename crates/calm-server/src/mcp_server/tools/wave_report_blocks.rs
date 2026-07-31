@@ -12,12 +12,13 @@
 //! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, position? }` | Create (`id` absent) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
 //! | `calm.report.blocks.move`   | `{ id, to_index, if_rev? }` | Reorder; rev untouched. |
 //! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. |
-//! | `calm.report.write_markdown`| `{ body, summary?, if_rev }` | Escape hatch: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
+//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev }` | Escape hatch: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
 //!
 //! ## Concurrency contract
 //!
-//! `if_rev` is checked **inside the persist transaction against the
-//! CRDT truth** (`ReportDoc::block_rev`), never against the JSON
+//! Block `if_rev` and document `if_doc_rev` are checked **inside the
+//! persist transaction against the appropriate CRDT truth**
+//! (`ReportDoc::block_rev` / `ReportDoc::doc_rev`), never against the JSON
 //! cache. A mismatch returns JSON-RPC error `-32001` ("rev conflict",
 //! carrying both revs), the transaction aborts, nothing is written and
 //! no events are emitted. A successful op keeps the dual-event
@@ -409,7 +410,7 @@ fn move_descriptor() -> ToolDescriptor {
             "properties": {
                 "id": { "type": "string" },
                 "to_index": { "type": "integer", "minimum": 0 },
-                "if_rev": { "type": "integer", "minimum": 0 }
+                "if_rev": { "type": "integer", "minimum": 0, "description": "The revision of this specific report block; not the document-wide docRev." }
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -466,7 +467,7 @@ fn delete_descriptor() -> ToolDescriptor {
             "required": ["id", "if_rev"],
             "properties": {
                 "id": { "type": "string" },
-                "if_rev": { "type": "integer", "minimum": 0 }
+                "if_rev": { "type": "integer", "minimum": 0, "description": "The revision of this specific report block; not the document-wide docRev." }
             }
         }),
         annotations: Some(role_gated_write_annotations()),
@@ -528,10 +529,10 @@ fn write_markdown_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["body", "if_rev"],
+            "required": ["body", "if_doc_rev"],
             "properties": {
                 "body": { "type": "string", "description": "Full report Markdown, optionally with `<!-- neige:b_xxxx -->` marker lines." },
-                "if_rev": { "type": "integer", "minimum": 0 },
+                "if_doc_rev": { "type": "integer", "minimum": 0, "description": "The document-wide docRev returned by calm.report.read; not a block rev." },
                 "summary": { "type": "string" }
             }
         }),
@@ -550,9 +551,9 @@ async fn write_markdown(
     let obj = require_object(&args, tool)?;
     let body = required_string(obj, "body", tool)?;
     let summary_override = optional_string(obj, "summary", tool)?;
-    let if_rev = optional_u64(obj, "if_rev", tool)?.ok_or_else(|| {
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
         RpcError::invalid_params(format!(
-            "{tool}: `if_rev` is required (use 0 for a new document)"
+            "{tool}: `if_doc_rev` is required (use 0 for a new document)"
         ))
     })?;
 
@@ -565,7 +566,7 @@ async fn write_markdown(
     let op = ReportDocOp::WriteMarkdown {
         summary: summary_override,
         body,
-        if_rev,
+        if_doc_rev,
     };
     let (card, _none) = match CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(&identity, wave, report_card, current, op, None, None)

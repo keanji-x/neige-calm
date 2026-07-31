@@ -5231,9 +5231,9 @@
       },
       "UpdateWaveReportBody": {
         "type": "object",
-        "description": "Request body for `POST /api/waves/:id/report`.\n\nBoth fields are required `String`s (per `WaveReportPayload`'s\n[[required-over-option]] rule). An empty `summary` is a valid\nvalue; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
+        "description": "Request body for `POST /api/waves/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`WaveReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
         "required": [
-          "ifRev",
+          "ifDocRev",
           "summary",
           "body"
         ],
@@ -5242,7 +5242,7 @@
             "type": "string",
             "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."
           },
-          "ifRev": {
+          "ifDocRev": {
             "type": "integer",
             "format": "int64",
             "description": "Expected document revision from the latest report read. Use zero\nfor a document that has never been persisted through the CRDT path.",

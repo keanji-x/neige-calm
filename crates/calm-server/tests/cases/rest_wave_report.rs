@@ -239,7 +239,8 @@ async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
                 .header("content-type", "application/json")
                 .header(header::COOKIE, cookie)
                 .body(Body::from(
-                    json!({"summary": "human", "body": "# Human stale\n", "ifRev": 0}).to_string(),
+                    json!({"summary": "human", "body": "# Human stale\n", "ifDocRev": 0})
+                        .to_string(),
                 ))
                 .unwrap(),
         )
@@ -456,7 +457,7 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     let body = serde_json::to_vec(&json!({
         "summary": "user wrote this",
         "body": "# Goal\n\nuser edit body\n",
-        "ifRev": 0,
+        "ifDocRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -554,7 +555,7 @@ async fn extra_author_field_in_body_is_rejected() {
     let body = serde_json::to_vec(&json!({
         "summary": "spoof attempt",
         "body": "# Goal\n\npretending to be spec\n",
-        "ifRev": 0,
+        "ifDocRev": 0,
         // The hostile field — must be rejected.
         "author": "spec",
     }))
@@ -602,7 +603,7 @@ async fn missing_session_returns_401_and_emits_nothing() {
     let body = serde_json::to_vec(&json!({
         "summary": "no cookie",
         "body": "# Goal\n\nshould 401\n",
-        "ifRev": 0,
+        "ifDocRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -637,7 +638,7 @@ async fn nonexistent_wave_returns_404_and_emits_nothing() {
     let body = serde_json::to_vec(&json!({
         "summary": "ghost wave",
         "body": "# Goal\n\nghost\n",
-        "ifRev": 0,
+        "ifDocRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -701,7 +702,7 @@ async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing()
         let body = serde_json::to_vec(&json!({
             "summary": format!("disguised-as-{declared_actor}"),
             "body": "# Goal\n\nshould 403\n",
-            "ifRev": 0,
+            "ifDocRev": 0,
         }))
         .unwrap();
         let resp = app
@@ -753,7 +754,7 @@ async fn explicit_user_actor_header_succeeds() {
     let body = serde_json::to_vec(&json!({
         "summary": "explicit user",
         "body": "# Goal\n\nexplicit user\n",
-        "ifRev": 0,
+        "ifDocRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -791,7 +792,7 @@ async fn generic_patch_rejects_wave_report_payload_and_preserves_json_and_crdt()
     let persisted = json!({
         "summary": "persisted",
         "body": "# Goal\n\npersist boundary content\n",
-        "ifRev": 0,
+        "ifDocRev": 0,
     });
     let response = app
         .clone()

@@ -81,7 +81,7 @@ pub enum ReportDocOp {
     Replace {
         summary: Option<String>,
         body: String,
-        if_rev: u64,
+        if_doc_rev: u64,
     },
     /// `calm.report.write_markdown`: wholesale replace whose body may
     /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
@@ -92,7 +92,7 @@ pub enum ReportDocOp {
     WriteMarkdown {
         summary: Option<String>,
         body: String,
-        if_rev: u64,
+        if_doc_rev: u64,
     },
     /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
     /// default append); `id: Some` replaces and requires `if_rev`.
@@ -173,9 +173,9 @@ pub(crate) fn apply_report_op(
         ReportDocOp::Replace {
             summary,
             body,
-            if_rev,
+            if_doc_rev,
         } => {
-            check_doc_rev(doc, *if_rev)?;
+            check_doc_rev(doc, *if_doc_rev)?;
             let summary = tx_summary(doc, summary)?;
             validate_body_fences(body)?;
             guard_non_prose_stomp(doc, body)?;
@@ -185,9 +185,9 @@ pub(crate) fn apply_report_op(
         ReportDocOp::WriteMarkdown {
             summary,
             body,
-            if_rev,
+            if_doc_rev,
         } => {
-            check_doc_rev(doc, *if_rev)?;
+            check_doc_rev(doc, *if_doc_rev)?;
             let summary = tx_summary(doc, summary)?;
             let marked = calm_types::report_blocks::strip_markers_and_split(body);
             // The escape hatch MAY rewrite/delete non-prose blocks
@@ -289,7 +289,7 @@ fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
         .map_err(|e| CalmError::Internal(format!("wave_report: doc rev: {e}")))?;
     if current != expected {
         return Err(CalmError::Conflict(format!(
-            "document revision conflict: current doc_rev is {current}, expected if_rev {expected} \
+            "document revision conflict: current doc_rev is {current}, expected if_doc_rev {expected} \
              — re-read the report and retry with the current docRev"
         )));
     }
@@ -418,7 +418,7 @@ pub async fn persist_report(
     report_card: Card,
     current_payload: WaveReportPayload,
     next: WaveReportPayload,
-    if_rev: u64,
+    if_doc_rev: u64,
     agent_message: Option<String>,
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
@@ -435,7 +435,7 @@ pub async fn persist_report(
         ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
-            if_rev,
+            if_doc_rev,
         },
         agent_message,
         lifecycle,
@@ -705,7 +705,7 @@ mod tests {
             &ReportDocOp::WriteMarkdown {
                 summary: None,
                 body: "# A\n\nalpha edited\n".into(),
-                if_rev: 0,
+                if_doc_rev: 0,
             },
         )
         .unwrap();
@@ -723,7 +723,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: None,
                 body: "# B\n\nbeta\n".into(),
-                if_rev: 0,
+                if_doc_rev: 0,
             },
         )
         .unwrap();
@@ -733,7 +733,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: Some("explicit".into()),
                 body: "# C\n\ngamma\n".into(),
-                if_rev: 0,
+                if_doc_rev: 0,
             },
         )
         .unwrap();
@@ -761,7 +761,7 @@ mod tests {
             ReportDocOp::Replace {
                 summary: Some(payload.summary.clone()),
                 body: payload.body.clone(),
-                if_rev: 0,
+                if_doc_rev: 0,
             },
         );
         assert_advances(
@@ -769,7 +769,7 @@ mod tests {
             ReportDocOp::WriteMarkdown {
                 summary: None,
                 body: payload.body.clone(),
-                if_rev: 0,
+                if_doc_rev: 0,
             },
         );
         assert_advances(
@@ -845,7 +845,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: Some("s".into()),
                 body: String::new(),
-                if_rev: 0,
+                if_doc_rev: 0,
             },
         )
         .unwrap_err();

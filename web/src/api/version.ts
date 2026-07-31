@@ -89,7 +89,7 @@
  * * `14` — issue #973 withdrew the proposal REST endpoints and web UI.
  *   Historical proposal event variants remain parseable, so the backend
  *   `SYNC_EVENT_VERSION` stays 12.
- * * `15` — issue #979 adds required `ifRev` to whole-document report
+ * * `15` — issue #979 adds required `ifDocRev` to whole-document report
  *   writes and exposes `docRev` on report payloads.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
