@@ -3593,6 +3593,33 @@
           "claude"
         ]
       },
+      "BacklinkQuote": {
+        "type": "object",
+        "required": [
+          "before",
+          "label",
+          "after",
+          "head_elided",
+          "tail_elided"
+        ],
+        "properties": {
+          "after": {
+            "type": "string"
+          },
+          "before": {
+            "type": "string"
+          },
+          "head_elided": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string"
+          },
+          "tail_elided": {
+            "type": "boolean"
+          }
+        }
+      },
       "Card": {
         "type": "object",
         "required": [
@@ -5455,6 +5482,7 @@
           "src_wave_title",
           "src_block_id",
           "label",
+          "quote",
           "updated_at"
         ],
         "properties": {
@@ -5466,6 +5494,9 @@
           },
           "label": {
             "type": "string"
+          },
+          "quote": {
+            "$ref": "#/components/schemas/BacklinkQuote"
           },
           "src_block_id": {
             "type": "string"

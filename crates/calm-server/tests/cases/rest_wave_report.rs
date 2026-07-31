@@ -288,6 +288,16 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
     assert_eq!(entries[0]["src_wave_id"], source_wave_id.as_str());
     assert_eq!(entries[0]["src_wave_title"], "report wave");
     assert_eq!(entries[0]["src_block_id"], source_block_id);
+    assert_eq!(
+        entries[0]["quote"],
+        json!({
+            "before": "",
+            "label": "Target",
+            "after": "",
+            "head_elided": false,
+            "tail_elided": false,
+        })
+    );
 
     let response = app
         .oneshot(

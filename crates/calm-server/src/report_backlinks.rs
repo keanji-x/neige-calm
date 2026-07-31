@@ -4,9 +4,21 @@ use crate::db::RouteRepo;
 use crate::error::CalmError;
 use crate::wave_report_read::load_report_read_snapshot;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 pub const MAX_BACKLINK_ENTRIES: usize = 500;
 pub const MAX_BACKLINK_BYTES: usize = 64 * 1024;
+const QUOTE_BEFORE_CHARS: usize = 34;
+const QUOTE_AFTER_CHARS: usize = 40;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct BacklinkQuote {
+    pub before: String,
+    pub label: String,
+    pub after: String,
+    pub head_elided: bool,
+    pub tail_elided: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Backlink {
@@ -15,6 +27,8 @@ pub struct Backlink {
     pub src_block_id: String,
     pub dst_block_id: Option<String>,
     pub label: String,
+    #[serde(skip_serializing)]
+    pub quote: BacklinkQuote,
     pub updated_at: i64,
 }
 
@@ -44,10 +58,49 @@ pub(crate) fn mcp_wire_envelope(page: &BacklinkPage) -> serde_json::Value {
 }
 
 fn page_fits_wire_caps(page: &BacklinkPage, max_bytes: usize) -> bool {
-    let rest_fits = serde_json::to_vec(page).is_ok_and(|encoded| encoded.len() <= max_bytes);
+    let rest_page = crate::routes::waves::WaveBacklinksResponse::from(page.clone());
+    let rest_fits = serde_json::to_vec(&rest_page).is_ok_and(|encoded| encoded.len() <= max_bytes);
     let mcp_fits = serde_json::to_vec(&mcp_wire_envelope(page))
         .is_ok_and(|encoded| encoded.len() <= max_bytes);
     rest_fits && mcp_fits
+}
+
+fn quote_for_link(plain: &str, link: &calm_types::report_links::ScannedLink) -> BacklinkQuote {
+    let prefix = plain
+        .get(..link.label_start)
+        .expect("scanned link start is a character boundary");
+    let before_start = prefix
+        .char_indices()
+        .rev()
+        .nth(QUOTE_BEFORE_CHARS - 1)
+        .map_or(0, |(index, _)| index);
+
+    let suffix = plain
+        .get(link.label_end..)
+        .expect("scanned link end is a character boundary");
+    let after_end = suffix
+        .char_indices()
+        .nth(QUOTE_AFTER_CHARS)
+        .map_or(plain.len(), |(index, _)| link.label_end + index);
+
+    let before = plain
+        .get(before_start..link.label_start)
+        .expect("quote start is a character boundary")
+        .trim_matches('\n')
+        .to_string();
+    let after = plain
+        .get(link.label_end..after_end)
+        .expect("quote end is a character boundary")
+        .trim_matches('\n')
+        .to_string();
+
+    BacklinkQuote {
+        before,
+        label: link.label.clone(),
+        after,
+        head_elided: before_start > 0,
+        tail_elided: after_end < plain.len(),
+    }
 }
 
 pub async fn backlinks_for_wave(
@@ -126,10 +179,12 @@ async fn backlinks_for_wave_with_byte_cap(
             .filter(|block| block.kind == calm_types::report_blocks::KIND_PROSE)
         {
             let markdown = calm_types::report_blocks::flat_text(block);
-            let scanned_all_links = calm_types::report_links::visit_links(&markdown, |link| {
+            let scan = calm_types::report_links::scan_links(&markdown);
+            for link in scan.links {
                 if link.dst_wave_id != wave_id {
-                    return true;
+                    continue;
                 }
+                let quote = quote_for_link(&scan.plain, &link);
                 let backlink = Backlink {
                     src_wave_id: card.wave_id.as_str().to_string(),
                     src_wave_title: source_title.clone(),
@@ -137,12 +192,13 @@ async fn backlinks_for_wave_with_byte_cap(
                     dst_block_id: link
                         .dst_block_id
                         .filter(|id| target_block_ids.contains(id.as_str())),
-                    label: link.label,
+                    label: link.label.clone(),
+                    quote,
                     updated_at: snapshot.updated_at,
                 };
                 if backlinks.len() == MAX_BACKLINK_ENTRIES {
                     truncated = true;
-                    return false;
+                    break 'cards;
                 }
                 backlinks.push(backlink);
                 let bounded_envelope = BacklinkPage {
@@ -153,12 +209,8 @@ async fn backlinks_for_wave_with_byte_cap(
                 if !page_fits_wire_caps(&bounded_envelope, max_bytes) {
                     backlinks.pop();
                     truncated = true;
-                    return false;
+                    break 'cards;
                 }
-                true
-            });
-            if !scanned_all_links {
-                break 'cards;
             }
         }
     }
@@ -272,6 +324,87 @@ mod tests {
         SqlxRepo::open("sqlite::memory:").await.unwrap()
     }
 
+    fn scan_quote(markdown: &str) -> BacklinkQuote {
+        let scan = calm_types::report_links::scan_links(markdown);
+        assert_eq!(scan.links.len(), 1);
+        quote_for_link(&scan.plain, &scan.links[0])
+    }
+
+    #[test]
+    fn quote_window_counts_pure_chinese_characters() {
+        let before = "甲".repeat(36);
+        let after = "乙".repeat(42);
+        let quote = scan_quote(&format!("{before}[目标](neige://wave/w1){after}"));
+
+        assert_eq!(quote.before, "甲".repeat(QUOTE_BEFORE_CHARS));
+        assert_eq!(quote.label, "目标");
+        assert_eq!(quote.after, "乙".repeat(QUOTE_AFTER_CHARS));
+        assert!(quote.head_elided);
+        assert!(quote.tail_elided);
+    }
+
+    #[test]
+    fn quote_window_preserves_mixed_chinese_and_english() {
+        let quote = scan_quote("甲a乙b [混合](neige://wave/w1) 丙c丁d");
+
+        assert_eq!(quote.before, "甲a乙b ");
+        assert_eq!(quote.label, "混合");
+        assert_eq!(quote.after, " 丙c丁d");
+        assert!(!quote.head_elided);
+        assert!(!quote.tail_elided);
+    }
+
+    #[test]
+    fn quote_window_counts_emoji_as_characters() {
+        let before = "😀".repeat(35);
+        let after = "🧭".repeat(41);
+        let quote = scan_quote(&format!("{before}[方向](neige://wave/w1){after}"));
+
+        assert_eq!(quote.before.chars().count(), QUOTE_BEFORE_CHARS);
+        assert_eq!(quote.after.chars().count(), QUOTE_AFTER_CHARS);
+        assert!(quote.head_elided);
+        assert!(quote.tail_elided);
+    }
+
+    #[test]
+    fn quote_at_plain_text_start_is_not_head_elided() {
+        let quote = scan_quote(&format!(
+            "[start](neige://wave/w1){}",
+            "x".repeat(QUOTE_AFTER_CHARS + 1)
+        ));
+
+        assert_eq!(quote.before, "");
+        assert!(!quote.head_elided);
+        assert!(quote.tail_elided);
+    }
+
+    #[test]
+    fn quote_at_markdown_end_is_not_tail_elided() {
+        let quote = scan_quote("prefix [end](neige://wave/w1)");
+
+        assert_eq!(quote.after, "");
+        assert!(!quote.tail_elided);
+    }
+
+    #[test]
+    fn quote_trims_block_boundary_newlines_without_changing_elision() {
+        let quote = scan_quote("first\n\n[second](neige://wave/w1)\n\nthird");
+
+        assert_eq!(quote.before, "first");
+        assert_eq!(quote.after, "third");
+        assert!(!quote.head_elided);
+        assert!(!quote.tail_elided);
+    }
+
+    #[test]
+    fn empty_link_label_remains_empty_in_quote() {
+        let quote = scan_quote("left [](neige://wave/w1) right");
+
+        assert_eq!(quote.before, "left ");
+        assert_eq!(quote.label, "");
+        assert_eq!(quote.after, " right");
+    }
+
     #[tokio::test]
     async fn backlink_found_across_two_waves_in_one_cove() {
         let repo = fresh_repo().await;
@@ -293,6 +426,16 @@ mod tests {
         assert_eq!(found.backlinks[0].src_wave_id, source.id.as_str());
         assert_eq!(found.backlinks[0].src_wave_title, "Source");
         assert_eq!(found.backlinks[0].label, "target");
+        assert_eq!(
+            found.backlinks[0].quote,
+            BacklinkQuote {
+                before: String::new(),
+                label: "target".into(),
+                after: String::new(),
+                head_elided: false,
+                tail_elided: false,
+            }
+        );
     }
 
     #[tokio::test]
@@ -463,7 +606,12 @@ mod tests {
         assert!(found.truncated);
         assert!(found.backlinks.len() < MAX_BACKLINK_ENTRIES);
         assert!(
-            serde_json::to_vec(&found).unwrap().len() <= MAX_BACKLINK_BYTES,
+            serde_json::to_vec(&crate::routes::waves::WaveBacklinksResponse::from(
+                found.clone()
+            ))
+            .unwrap()
+            .len()
+                <= MAX_BACKLINK_BYTES,
             "serialized REST envelope exceeds byte cap"
         );
         assert!(
@@ -473,6 +621,77 @@ mod tests {
                 <= MAX_BACKLINK_BYTES,
             "serialized MCP response envelope exceeds byte cap"
         );
+    }
+
+    #[tokio::test]
+    async fn backlink_byte_cap_is_enforced_when_rest_quote_is_the_tighter_envelope() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        let before = "甲".repeat(QUOTE_BEFORE_CHARS);
+        let after = "乙".repeat(QUOTE_AFTER_CHARS);
+        let body = (0..MAX_BACKLINK_ENTRIES)
+            .map(|index| format!("{before}[{index}](neige://wave/{}){after}", target.id))
+            .collect::<Vec<_>>()
+            .join("\n");
+        report(&repo, source.id.as_str(), v1(body)).await;
+
+        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
+        let rest_bytes = serde_json::to_vec(&crate::routes::waves::WaveBacklinksResponse::from(
+            found.clone(),
+        ))
+        .unwrap()
+        .len();
+        let mcp_bytes = serde_json::to_vec(&mcp_wire_envelope(&found))
+            .unwrap()
+            .len();
+
+        assert!(found.truncated);
+        assert!(
+            rest_bytes <= MAX_BACKLINK_BYTES,
+            "REST envelope is {rest_bytes} bytes"
+        );
+        assert!(
+            mcp_bytes <= MAX_BACKLINK_BYTES,
+            "MCP envelope is {mcp_bytes} bytes"
+        );
+        assert!(
+            rest_bytes > mcp_bytes,
+            "fixture must make the REST quote payload the tighter envelope"
+        );
+    }
+
+    #[test]
+    fn quote_is_present_on_rest_dto_and_absent_from_mcp_payload() {
+        let backlink = Backlink {
+            src_wave_id: "source".into(),
+            src_wave_title: "Source".into(),
+            src_block_id: "b_1234".into(),
+            dst_block_id: None,
+            label: "target".into(),
+            quote: BacklinkQuote {
+                before: "before ".into(),
+                label: "target".into(),
+                after: " after".into(),
+                head_elided: false,
+                tail_elided: false,
+            },
+            updated_at: 1,
+        };
+        let page = BacklinkPage {
+            backlinks: vec![backlink],
+            truncated: false,
+            skipped_sources: 0,
+        };
+
+        let rest = serde_json::to_value(crate::routes::waves::WaveBacklinksResponse::from(
+            page.clone(),
+        ))
+        .unwrap();
+        assert_eq!(rest["backlinks"][0]["quote"]["before"], "before ");
+        assert!(mcp_payload(&page)["backlinks"][0].get("quote").is_none());
     }
 
     #[tokio::test]

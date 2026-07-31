@@ -894,6 +894,13 @@ export interface components {
     schemas: {
         /** @enum {string} */
         AgentProvider: "codex" | "claude";
+        BacklinkQuote: {
+            after: string;
+            before: string;
+            head_elided: boolean;
+            label: string;
+            tail_elided: boolean;
+        };
         Card: {
             /** Format: int64 */
             created_at: number;
@@ -1923,6 +1930,7 @@ export interface components {
         WaveBacklink: {
             dst_block_id?: string | null;
             label: string;
+            quote: components["schemas"]["BacklinkQuote"];
             src_block_id: string;
             src_wave_id: string;
             src_wave_title: string;

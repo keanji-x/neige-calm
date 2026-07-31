@@ -1073,6 +1073,7 @@ pub struct WaveBacklink {
     pub src_block_id: String,
     pub dst_block_id: Option<String>,
     pub label: String,
+    pub quote: report_backlinks::BacklinkQuote,
     pub updated_at: i64,
 }
 
@@ -1093,7 +1094,22 @@ impl From<report_backlinks::Backlink> for WaveBacklink {
             src_block_id: value.src_block_id,
             dst_block_id: value.dst_block_id,
             label: value.label,
+            quote: value.quote,
             updated_at: value.updated_at,
+        }
+    }
+}
+
+impl From<report_backlinks::BacklinkPage> for WaveBacklinksResponse {
+    fn from(value: report_backlinks::BacklinkPage) -> Self {
+        Self {
+            backlinks: value
+                .backlinks
+                .into_iter()
+                .map(WaveBacklink::from)
+                .collect(),
+            truncated: value.truncated,
+            skipped_sources: value.skipped_sources,
         }
     }
 }
@@ -1113,15 +1129,7 @@ pub(crate) async fn get_wave_backlinks(
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse> {
     let page = report_backlinks::backlinks_for_wave(s.repo.as_ref(), &id).await?;
-    Ok(Json(WaveBacklinksResponse {
-        backlinks: page
-            .backlinks
-            .into_iter()
-            .map(WaveBacklink::from)
-            .collect::<Vec<_>>(),
-        truncated: page.truncated,
-        skipped_sources: page.skipped_sources,
-    }))
+    Ok(Json(WaveBacklinksResponse::from(page)))
 }
 
 /// Request body for `POST /api/waves/:id/report`.
