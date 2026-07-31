@@ -122,6 +122,29 @@ export async function createWaveInCove(
   return wave;
 }
 
+/** Seed a wave report directly through the replay API origin. */
+export async function seedWaveReport(
+  request: APIRequestContext,
+  waveId: string,
+  summary: string,
+  body: string,
+): Promise<void> {
+  const waveUrl = `http://127.0.0.1:${REPLAY_PORT}/api/waves/${encodeURIComponent(waveId)}`;
+  const reportUrl = `${waveUrl}/report`;
+  const response = await request.post(reportUrl, {
+    data: { summary, body },
+    headers: { 'content-type': 'application/json' },
+  });
+  if (!response.ok()) {
+    const responseBody = await response.text().catch(() => '<unreadable body>');
+    const waveResponse = await request.get(waveUrl);
+    const waveBody = await waveResponse.text().catch(() => '<unreadable body>');
+    throw new Error(
+      `seedWaveReport: POST ${reportUrl} → ${response.status()} ${response.statusText()}: ${responseBody}; GET ${waveUrl} → ${waveResponse.status()} ${waveResponse.statusText()}: ${waveBody}`,
+    );
+  }
+}
+
 /**
  * Seed a renderer-free worker card for specs that need populated card
  * surfaces but do not care about terminal/codex daemon startup. The direct

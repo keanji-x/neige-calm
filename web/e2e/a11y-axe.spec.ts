@@ -37,6 +37,7 @@ import {
   createIframeCard,
   resetReplayServer,
   createWaveInCove,
+  seedWaveReport,
   seedWaveViewMode,
 } from './helpers/reset';
 
@@ -214,25 +215,12 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
     `axe backlink source ${Date.now()}`,
     { attachFolder: false },
   );
-  const reportResponse = await page.request.post(
-    `/api/waves/${source.id}/report`,
-    {
-      data: {
-        summary: 'a11y backlink fixture',
-        body: `[Cited report](neige://wave/${wave.id})`,
-      },
-      headers: { 'content-type': 'application/json' },
-    },
+  await seedWaveReport(
+    page.request,
+    source.id,
+    'a11y backlink fixture',
+    `[Cited report](neige://wave/${wave.id})`,
   );
-  if (!reportResponse.ok()) {
-    const reportBody = await reportResponse.text().catch(() => '<unreadable body>');
-    const sourceUrl = `/api/waves/${source.id}`;
-    const sourceResponse = await page.request.get(sourceUrl);
-    const sourceBody = await sourceResponse.text().catch(() => '<unreadable body>');
-    throw new Error(
-      `createAxeBacklinkFixture: POST /api/waves/${source.id}/report → ${reportResponse.status()} ${reportResponse.statusText()}: ${reportBody}; GET ${sourceUrl} → ${sourceResponse.status()} ${sourceResponse.statusText()}: ${sourceBody}`,
-    );
-  }
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   return { coveId, waveId: wave.id };
