@@ -433,3 +433,6 @@ mod deadlock_semantics_tests;
 
 #[cfg(test)]
 mod pool_memory_anchor_tests;
+
+#[cfg(test)]
+mod proposal_withdraw_upgrade_tests;
