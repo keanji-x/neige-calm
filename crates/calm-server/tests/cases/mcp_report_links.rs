@@ -64,7 +64,8 @@ async fn strip_report_cache_and_crdt(
     wave: &calm_server::model::Wave,
 ) {
     sqlx::query(
-        "UPDATE cards SET body_crdt = NULL, payload = json_remove(payload, '$.blocks') \
+        "UPDATE cards SET body_crdt = NULL, \
+         payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
          WHERE wave_id = ?1 AND kind = 'wave-report'",
     )
     .bind(wave.id.as_str())

@@ -350,6 +350,15 @@ mod tests {
             v1(format!("# Legacy\n\n[old](neige://wave/{})\n", target.id)),
         )
         .await;
+        sqlx::query(
+            "UPDATE cards SET body_crdt = NULL, \
+             payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
+             WHERE wave_id = ?1 AND kind = 'wave-report'",
+        )
+        .bind(source.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
 
         let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
             .await

@@ -36,6 +36,11 @@ pub async fn terminal_get_by_card_tx(
 /// without re-fetching the row after insert. The standalone
 /// [`card_create_tx`] wrapper preserves the original "mint inside the
 /// helper" contract for every other caller.
+///
+/// The wave-report guard below covers every Rust API creation path. Direct SQL
+/// through [`SqlxRepo::pool`](super::SqlxRepo::pool) and frozen historical
+/// migration seeds do not pass through this Rust boundary and are outside its
+/// guarantee.
 pub async fn card_create_with_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: String,
@@ -53,16 +58,22 @@ pub async fn card_create_with_id_tx(
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // A wave-report can only be born as a kernel-owned ReportCard with the
-    // canonical initial payload. All report content must arrive later through
-    // the report persist boundary, which writes the payload and CRDT together.
+    // A wave-report can only be born through Rust as a kernel-owned ReportCard
+    // with the canonical initial payload. All report content must arrive later
+    // through the report persist boundary, which writes payload and CRDT together.
     if p.kind == "wave-report" {
         if role != CardRole::ReportCard {
             return Err(CalmError::BadRequest(
                 "wave-report cards must be kernel-minted with the reportcard role",
             ));
         }
-        if p.payload != serde_json::to_value(WaveReportPayload::initial())? {
+        let Ok(payload) = serde_json::from_value::<WaveReportPayload>(p.payload.clone()) else {
+            return Err(CalmError::BadRequest(
+                "wave-report cards must be created with the canonical initial payload; \
+                 use the report persist boundary to add content",
+            ));
+        };
+        if payload != WaveReportPayload::initial() {
             return Err(CalmError::BadRequest(
                 "wave-report cards must be created with the canonical initial payload; \
                  use the report persist boundary to add content",
@@ -384,6 +395,25 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(accepted.payload, canonical_report.payload);
+    }
+
+    #[tokio::test]
+    async fn wave_report_create_accepts_canonical_payload_with_null_blocks() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut canonical_report = new_card(wave.id.as_str(), "wave-report");
+        canonical_report.payload["blocks"] = serde_json::Value::Null;
+        card_create_with_id_tx(
+            &mut tx,
+            "canonical_report_with_null_blocks".into(),
+            canonical_report,
+            CardRole::ReportCard,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
