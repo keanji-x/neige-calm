@@ -12,6 +12,7 @@ import {
   useWaveBacklinksQuery,
   useWaveFileContent,
   useWaveFileList,
+  useWavesByCoveQuery,
 } from '../api/queries';
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
@@ -22,6 +23,7 @@ vi.mock('../api/queries', () => ({
   useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
+  useWavesByCoveQuery: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -96,8 +98,14 @@ const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
+const mockUseWavesByCoveQuery = vi.mocked(useWavesByCoveQuery);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
+const REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:outlinks:collapsed';
+const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:backlinks:collapsed';
+const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
@@ -192,6 +200,7 @@ function mockWaveFileLists(lists: Record<string, WaveFsEntry[]>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   delete (Element.prototype as Partial<Element>).scrollIntoView;
   window.localStorage.clear();
   window.history.replaceState(null, '', window.location.pathname);
@@ -206,6 +215,9 @@ describe('WaveReportPage', () => {
     mockUseOverlaysByKindQuery.mockReturnValue({
       data: [],
     } as unknown as ReturnType<typeof useOverlaysByKindQuery>);
+    mockUseWavesByCoveQuery.mockReturnValue({
+      data: [],
+    } as unknown as ReturnType<typeof useWavesByCoveQuery>);
     const files: WaveFsEntry[] = [
       { name: 'report.md', kind: 'file' },
       { name: 'wave.json', kind: 'file' },
@@ -303,6 +315,72 @@ describe('WaveReportPage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('body').tagName).toBe('STRONG');
     expect(screen.queryByText('stale body')).not.toBeInTheDocument();
+  });
+
+  it('numbers a three-prose-block report as 01/02/03 in one body scope', () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_1',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## First' },
+              },
+              {
+                id: 'b_2',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## Second' },
+              },
+              {
+                id: 'b_3',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## Third' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(within(outline).getByRole('link', { name: '01 First' }))
+      .toBeInTheDocument();
+    expect(within(outline).getByRole('link', { name: '02 Second' }))
+      .toBeInTheDocument();
+    expect(within(outline).getByRole('link', { name: '03 Third' }))
+      .toBeInTheDocument();
+    const reportBody = container.querySelector('.report-body');
+    expect(reportBody?.querySelectorAll(':scope > .report-prose')).toHaveLength(3);
+
+    const first = within(outline).getByRole('link', { name: '01 First' });
+    fireEvent.click(first);
+    fireEvent.click(first);
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('explains the body-only outline downgrade without inert links', () => {
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('## Flat heading')]} />,
+    );
+
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(
+      within(outline).getByText(
+        'Outline navigation requires structured report blocks.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(outline).queryByRole('link')).toBeNull();
   });
 
   it('renders mixed blocks (prose + chart + table + prose) in order', async () => {
@@ -407,6 +485,11 @@ describe('WaveReportPage', () => {
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent('版本不支持，请刷新');
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(
+      within(outline).getByText('Outline unavailable for this report version.'),
+    ).toBeInTheDocument();
+    expect(within(outline).queryByRole('link')).toBeNull();
   });
 
   it('shows the duplicate banner and renders the lowest-sort report', () => {
@@ -632,20 +715,112 @@ describe('WaveReportPage', () => {
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
   });
 
-  it('renders a real Event line panel instead of the PR-E placeholder', () => {
+  it('persists each collapsible rail section independently', () => {
+    const props = {
+      wave: makeWave(),
+      cards: [reportSlot('Rail body')],
+    };
+    const { unmount } = render(<WaveReportPage {...props} />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Collapse Referenced documents' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Files' }));
+
+    expect(
+      window.localStorage.getItem(REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY),
+    ).toBe('true');
+    expect(
+      window.localStorage.getItem(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
+    ).toBeNull();
+    expect(
+      window.localStorage.getItem(REPORT_FILES_COLLAPSED_STORAGE_KEY),
+    ).toBe('true');
+
+    unmount();
+    render(<WaveReportPage {...props} />);
+    expect(
+      screen.getByRole('button', { name: 'Expand Referenced documents' }),
+    ).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Collapse Backlinks' }))
+      .toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Expand Files' }))
+      .toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('defaults the report rail to collapsed at the narrow-screen breakpoint', () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: true })) as unknown as typeof window.matchMedia,
+    );
+
     render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Narrow body')]} />,
+    );
+
+    expect(screen.getByLabelText('Report context'))
+      .toHaveClass('report-rail--collapsed');
+    expect(screen.getByRole('button', { name: 'Expand report rail' }))
+      .toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('renders the four rail sections in order with Event line removed', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
-        cards={[reportSlot('Event rail body')]}
+        cards={[reportSlot('Rail body')]}
       />,
     );
 
-    const eventLine = screen.getByRole('region', { name: 'Event line' });
-    expect(within(eventLine).getByText('Event line')).toBeInTheDocument();
-    expect(within(eventLine).getByText('Nothing yet.')).toBeInTheDocument();
+    const rail = screen.getByLabelText('Report context');
     expect(
-      screen.queryByText('Activity timeline appears here. (Wired in PR-E.)'),
-    ).not.toBeInTheDocument();
+      Array.from(rail.querySelectorAll(':scope > section')).map((section) =>
+        section.getAttribute('aria-label'),
+      ),
+    ).toEqual(['Outline', 'Referenced documents', 'Backlinks', 'Files']);
+    expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
+    const page = container.querySelector('.report-page');
+    expect(page?.firstElementChild).toBe(rail);
+    expect(page?.lastElementChild).toHaveClass('report-center');
+  });
+
+  it('derives referenced documents in first-seen order and marks missing waves', () => {
+    mockUseWavesByCoveQuery.mockReturnValue({
+      data: [{ id: 'wave_known', title: 'Known wave' }],
+    } as unknown as ReturnType<typeof useWavesByCoveQuery>);
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale', {
+            blocks: [
+              {
+                id: 'b_links',
+                kind: 'prose',
+                rev: 1,
+                payload: {
+                  markdown:
+                    '[Known](neige://wave/wave_known#b_target) then ' +
+                    '[Missing](neige://wave/wave_missing) and ' +
+                    '[Known again](neige://wave/wave_known#b_other)',
+                },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const outlinks = screen.getByRole('region', {
+      name: 'Referenced documents',
+    });
+    expect(within(outlinks).getByRole('link', { name: 'Known wave' }))
+      .toHaveAttribute('href', '/wave/wave_known#b_target');
+    expect(within(outlinks).getByText('wave_missing'))
+      .toHaveClass('report-outlink--dead');
+    expect(within(outlinks).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(outlinks).queryByText(/blocks/i)).toBeNull();
   });
 
   it('defaults the main column to report.md content', () => {
@@ -1675,18 +1850,39 @@ describe('WaveReportPage', () => {
           src_block_id: 'b_a1',
           dst_block_id: 'b_here',
           label: 'First mention',
+          quote: {
+            before: 'context before ',
+            label: 'First mention',
+            after: ' context after',
+            head_elided: true,
+            tail_elided: true,
+          },
           updated_at: 1,
         }, {
           src_wave_id: 'wave_a',
           src_wave_title: 'Alpha',
           src_block_id: 'b_a2',
-          label: 'Second mention',
+          label: '',
+          quote: {
+            before: 'Empty label context',
+            label: '',
+            after: ' remains readable',
+            head_elided: false,
+            tail_elided: false,
+          },
           updated_at: 2,
         }, {
           src_wave_id: 'wave_b',
           src_wave_title: 'Beta',
           src_block_id: 'b_b1',
           label: 'Another source',
+          quote: {
+            before: '',
+            label: 'Another source',
+            after: '',
+            head_elided: false,
+            tail_elided: false,
+          },
           updated_at: 3,
         }],
         truncated: true,
@@ -1725,10 +1921,15 @@ describe('WaveReportPage', () => {
       ),
     ).toBeInTheDocument();
     expect(within(panel).getByText(/cites block b_here/)).toBeInTheDocument();
-    expect(within(panel).getByRole('link', { name: 'First mention' })).toHaveAttribute(
-      'href',
-      '/wave/wave_a#b_a1',
-    );
+    const quotedLink = within(panel).getByRole('link', {
+      name: '…context before First mention context after…',
+    });
+    expect(quotedLink).toHaveAttribute('href', '/wave/wave_a#b_a1');
+    expect(within(quotedLink).getByText('First mention').tagName).toBe('B');
+    const emptyLabelLink = within(panel).getByRole('link', {
+      name: 'Empty label context remains readable',
+    });
+    expect(emptyLabelLink.querySelector('b')).toBeNull();
     expect(within(panel).getByRole('link', { name: 'Another source' })).toHaveAttribute(
       'href',
       '/wave/wave_b#b_b1',
@@ -1872,11 +2073,12 @@ describe('WaveReportPage', () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
-  it('renders no backlinks panel when the result is empty', () => {
+  it('keeps the backlinks section visible with an empty state', () => {
     render(
       <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
     );
-    expect(screen.queryByRole('region', { name: 'Backlinks' })).toBeNull();
+    const backlinks = screen.getByRole('region', { name: 'Backlinks' });
+    expect(within(backlinks).getByText('No backlinks yet.')).toBeInTheDocument();
   });
 
   it('renders normally when the hash names a missing block', () => {

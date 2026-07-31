@@ -75,7 +75,7 @@ async function writeReport(page: Page, waveId: string, body: string): Promise<vo
   await expectOk(res, 'POST /api/waves/:id/report');
 }
 
-test('wave report view renders real report data and staged rail controls', async ({
+test('wave report view renders real report data and report rail controls', async ({
   page,
 }) => {
   await login(page);
@@ -93,10 +93,11 @@ test('wave report view renders real report data and staged rail controls', async
   ).toBeVisible();
   await expect(page.getByText('Report smoke body with')).toBeVisible();
   await expect(page.getByRole('tree', { name: /Wave files/i })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Event line' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Outline' })).toBeVisible();
   await expect(
-    page.getByText('Activity timeline appears here. (Wired in PR-E.)'),
-  ).toHaveCount(0);
+    page.getByRole('region', { name: 'Referenced documents' }),
+  ).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Backlinks' })).toBeVisible();
 
   const conversationTab = page.getByRole('button', { name: 'Conversation' });
   await expect(conversationTab).toBeEnabled();
