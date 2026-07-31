@@ -378,6 +378,72 @@ describe('WaveReportPage', () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
   });
 
+  it('scrolls a multi-H2 outline link to its matching heading', async () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [{
+              id: 'b_multi',
+              kind: 'prose',
+              rev: 1,
+              payload: { markdown: '## First\n\nFirst body\n\n## Second' },
+            }],
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: '02 Second' }));
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(
+      document.getElementById('b_multi-h2'),
+    );
+    await waitFor(() => {
+      expect(document.getElementById('b_multi'))
+        .toHaveClass('report-block--highlight');
+    });
+  });
+
+  it('shows a leading chart as an unnumbered top-level outline entry', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_chart',
+                kind: 'chart.candles',
+                rev: 1,
+                payload: { symbol: '0700.HK', candles: [] },
+              },
+              {
+                id: 'b_section',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## Market' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(within(outline).getByRole('link', { name: '0700.HK' }))
+      .toHaveAttribute('href', '#b_chart');
+    expect(within(outline).getByRole('link', { name: '01 Market' }))
+      .toHaveAttribute('href', '#b_section-h1');
+  });
+
   it('explains the body-only outline downgrade without inert links', () => {
     render(
       <WaveReportPage wave={makeWave()} cards={[reportSlot('## Flat heading')]} />,
@@ -441,7 +507,10 @@ describe('WaveReportPage', () => {
     );
 
     // Chart mounts through React.lazy — wait for its figure to appear.
-    expect(await screen.findByText('0700.HK')).toBeInTheDocument();
+    const reportBody = container.querySelector('.report-body');
+    expect(reportBody).not.toBeNull();
+    expect(await within(reportBody as HTMLElement).findByText('0700.HK'))
+      .toBeInTheDocument();
     expect(screen.getByText('Opening paragraph')).toBeInTheDocument();
     expect(screen.getByText('Closing paragraph')).toBeInTheDocument();
     expect(screen.getByRole('table')).toBeInTheDocument();

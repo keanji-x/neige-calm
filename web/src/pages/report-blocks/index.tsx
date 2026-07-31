@@ -20,6 +20,7 @@ import {
 } from '../../cards/builtins/wave-report';
 import { ReportTableBlock } from './table';
 import { ReportAppBlock } from './app';
+import { reportH2Id } from '../report-outline';
 
 // lightweight-charts (~45KB gz) only loads when a report actually carries a
 // candle chart — same pattern as the lazily loaded CodeMirror pane.
@@ -70,12 +71,20 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
       if (!parsed.success) return <UnsupportedBlock block={block} />;
+      let h2Index = 0;
       return (
         <div id={block.id} className="report-block report-prose calm-prose">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             urlTransform={reportUrlTransform}
-            components={{ a: ReportLink }}
+            components={{
+              a: ReportLink,
+              h2: ({ children }) => {
+                const id = reportH2Id(block.id, h2Index);
+                h2Index += 1;
+                return <h2 id={id}>{children}</h2>;
+              },
+            }}
           >
             {parsed.data.markdown}
           </ReactMarkdown>

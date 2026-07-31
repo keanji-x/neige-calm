@@ -3223,7 +3223,7 @@ select:-webkit-autofill {
     padding: var(--space-10) var(--space-8) var(--space-12);
   }
   .report-conversation-drawer {
-    position: absolute;
+    position: fixed;
     z-index: var(--z-raised);
     right: var(--space-0);
     bottom: var(--space-0);
@@ -3231,14 +3231,21 @@ select:-webkit-autofill {
     max-height: 58vh;
   }
   .report-conversation-drawer-panel {
+    height: 0;
     max-height: 58vh;
-    overflow: auto;
-    border-top: 1px solid transparent;
+    overflow: hidden;
+    border-top: 0 solid transparent;
     border-left: none;
     box-shadow: var(--shadow);
-    height: 58vh;
+    transition:
+      height var(--motion-medium) ease,
+      border-color var(--motion-quick),
+      visibility 0s linear var(--motion-medium);
   }
   .report-conversation-drawer--open .report-conversation-drawer-panel {
+    height: 58vh;
+    overflow: auto;
+    border-top-width: 1px;
     border-top-color: var(--hairline);
   }
   .report-conversation-toggle {

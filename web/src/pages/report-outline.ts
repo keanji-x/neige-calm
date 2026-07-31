@@ -10,7 +10,7 @@ export interface ReportOutlineChild {
 export interface ReportOutlineItem {
   blockId: string;
   label: string;
-  number: number;
+  number: number | null;
   children: ReportOutlineChild[];
 }
 
@@ -50,6 +50,10 @@ function blockLabel(block: ReportBlock): string {
   return block.kind;
 }
 
+export function reportH2Id(blockId: string, index: number): string {
+  return `${blockId}-h${index + 1}`;
+}
+
 /** Derive report navigation from persisted blocks without touching React. */
 export function deriveOutline(
   blocks: readonly ReportBlock[] | undefined,
@@ -57,6 +61,7 @@ export function deriveOutline(
   if (!blocks) return [];
 
   const outline: ReportOutlineItem[] = [];
+  let sectionNumber = 0;
   for (const block of blocks) {
     if (block.kind === 'prose') {
       const markdown = (block.payload as Record<string, unknown>).markdown;
@@ -64,11 +69,12 @@ export function deriveOutline(
       const root = fromMarkdown(markdown);
       const labels: string[] = [];
       collectH2Labels(root, labels);
-      for (const label of labels) {
+      for (const [index, label] of labels.entries()) {
+        sectionNumber += 1;
         outline.push({
-          blockId: block.id,
+          blockId: reportH2Id(block.id, index),
           label,
-          number: outline.length + 1,
+          number: sectionNumber,
           children: [],
         });
       }
@@ -76,7 +82,15 @@ export function deriveOutline(
     }
 
     const parent = outline.at(-1);
-    if (!parent) continue;
+    if (!parent || parent.number === null) {
+      outline.push({
+        blockId: block.id,
+        label: blockLabel(block),
+        number: null,
+        children: [],
+      });
+      continue;
+    }
     parent.children.push({
       blockId: block.id,
       kind: block.kind,

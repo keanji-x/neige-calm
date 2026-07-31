@@ -121,9 +121,10 @@ function writeCollapsedState(key: string, collapsed: boolean): void {
 }
 
 function revealReportBlock(blockId: string): void {
-  const block = document.getElementById(blockId);
-  if (!block?.classList.contains('report-block')) return;
-  block.scrollIntoView();
+  const target = document.getElementById(blockId);
+  const block = target?.closest('.report-block');
+  if (!target || !block) return;
+  target.scrollIntoView();
   block.classList.remove('report-block--highlight');
   requestAnimationFrame(() => block.classList.add('report-block--highlight'));
 }
@@ -379,6 +380,8 @@ function OutlinePanel({
       aria-label={ariaLabel}
       onClick={(event) => {
         event.preventDefault();
+        // Deliberately bypass TanStack Router: this local scroll marker does
+        // not need to trigger route state or the deep-link arrival effect.
         window.history.replaceState(null, '', `#${encodeURIComponent(blockId)}`);
         revealReportBlock(blockId);
       }}
@@ -390,16 +393,20 @@ function OutlinePanel({
   return (
     <ol className="report-outline-list">
       {outline.map((item) => (
-        <li key={`${item.blockId}:${item.number}`}>
+        <li key={item.blockId}>
           {outlineLink(
             item.blockId,
             <>
-              <span className="report-outline-number">
-                {String(item.number).padStart(2, '0')}
-              </span>
+              {item.number !== null && (
+                <span className="report-outline-number">
+                  {String(item.number).padStart(2, '0')}
+                </span>
+              )}
               <span>{item.label}</span>
             </>,
-            `${String(item.number).padStart(2, '0')} ${item.label}`,
+            item.number === null
+              ? item.label
+              : `${String(item.number).padStart(2, '0')} ${item.label}`,
           )}
           {item.children.length > 0 && (
             <ul>
@@ -416,6 +423,8 @@ function OutlinePanel({
   );
 }
 
+// TODO(#975): when `/links` lands, delete report-outlinks-interim.ts and this
+// panel, then remove useWavesByCoveQuery plus its title lookup/dead-link marker.
 function InterimOutlinksPanel({
   outlinks,
   waves,

@@ -114,6 +114,57 @@ test('wave report view renders real report data and report rail controls', async
   await expect(followUp).toHaveValue('Can you summarize the key risk?');
 });
 
+test('narrow conversation drawer stays docked to the viewport', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(
+    page,
+    wave.id,
+    Array.from({ length: 80 }, (_, index) => `Long report row ${index}.`).join(
+      '\n\n',
+    ),
+  );
+
+  await page.goto(`/calm/wave/${wave.id}`);
+  const reportPage = page.locator('.report-page');
+  await reportPage.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+
+  const drawer = page.getByRole('complementary', {
+    name: 'Conversation drawer',
+  });
+  const panel = drawer.locator('.report-conversation-drawer-panel');
+  const openToggle = page.getByRole('button', {
+    name: 'Open conversation drawer',
+  });
+  await expect(panel).toHaveCSS('height', '0px');
+  await expect.poll(async () => (await openToggle.boundingBox())?.y)
+    .toBeCloseTo(815, 0);
+
+  await openToggle.click();
+  const closeToggle = page.getByRole('button', {
+    name: 'Close conversation drawer',
+  });
+  await expect.poll(async () => (await panel.boundingBox())?.height)
+    .toBeCloseTo(844 * 0.58, 0);
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    return box == null ? undefined : box.y + box.height;
+  }).toBeCloseTo(844, 0);
+
+  await closeToggle.click();
+  await expect(panel).toHaveCSS('height', '0px');
+  await expect.poll(async () => (await openToggle.boundingBox())?.y)
+    .toBeCloseTo(815, 0);
+});
+
 test('report H2 counters match the outline sequence across prose blocks', async ({
   page,
 }) => {

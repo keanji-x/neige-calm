@@ -132,6 +132,26 @@ beforeEach(() => {
   lw.reset();
 });
 
+describe('prose block', () => {
+  it('stamps deterministic ids onto each H2 in document order', () => {
+    render(
+      <ReportBlockView
+        block={{
+          id: 'b_multi',
+          kind: 'prose',
+          rev: 1,
+          payload: { markdown: '## First\n\nBody\n\n## Second' },
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('heading', { level: 2, name: 'First' }))
+      .toHaveAttribute('id', 'b_multi-h1');
+    expect(screen.getByRole('heading', { level: 2, name: 'Second' }))
+      .toHaveAttribute('id', 'b_multi-h2');
+  });
+});
+
 describe('chart.candles block', () => {
   it('renders a hollow-up red/green candlestick series from inline data', async () => {
     render(
