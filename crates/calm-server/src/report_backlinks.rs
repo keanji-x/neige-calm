@@ -83,16 +83,21 @@ fn quote_for_link(plain: &str, link: &calm_types::report_links::ScannedLink) -> 
         .nth(QUOTE_AFTER_CHARS)
         .map_or(plain.len(), |(index, _)| link.label_end + index);
 
+    let before = plain
+        .get(before_start..link.label_start)
+        .expect("quote start is a character boundary")
+        .trim_matches('\n')
+        .to_string();
+    let after = plain
+        .get(link.label_end..after_end)
+        .expect("quote end is a character boundary")
+        .trim_matches('\n')
+        .to_string();
+
     BacklinkQuote {
-        before: plain
-            .get(before_start..link.label_start)
-            .expect("quote start is a character boundary")
-            .to_string(),
+        before,
         label: link.label.clone(),
-        after: plain
-            .get(link.label_end..after_end)
-            .expect("quote end is a character boundary")
-            .to_string(),
+        after,
         head_elided: before_start > 0,
         tail_elided: after_end < plain.len(),
     }
@@ -344,7 +349,7 @@ mod tests {
 
         assert_eq!(quote.before, "甲a乙b ");
         assert_eq!(quote.label, "混合");
-        assert_eq!(quote.after, " 丙c丁d\n");
+        assert_eq!(quote.after, " 丙c丁d");
         assert!(!quote.head_elided);
         assert!(!quote.tail_elided);
     }
@@ -377,7 +382,17 @@ mod tests {
     fn quote_at_markdown_end_is_not_tail_elided() {
         let quote = scan_quote("prefix [end](neige://wave/w1)");
 
-        assert_eq!(quote.after, "\n");
+        assert_eq!(quote.after, "");
+        assert!(!quote.tail_elided);
+    }
+
+    #[test]
+    fn quote_trims_block_boundary_newlines_without_changing_elision() {
+        let quote = scan_quote("first\n\n[second](neige://wave/w1)\n\nthird");
+
+        assert_eq!(quote.before, "first");
+        assert_eq!(quote.after, "third");
+        assert!(!quote.head_elided);
         assert!(!quote.tail_elided);
     }
 
@@ -387,7 +402,7 @@ mod tests {
 
         assert_eq!(quote.before, "left ");
         assert_eq!(quote.label, "");
-        assert_eq!(quote.after, " right\n");
+        assert_eq!(quote.after, " right");
     }
 
     #[tokio::test]
@@ -416,7 +431,7 @@ mod tests {
             BacklinkQuote {
                 before: String::new(),
                 label: "target".into(),
-                after: "\n".into(),
+                after: String::new(),
                 head_elided: false,
                 tail_elided: false,
             }
@@ -605,6 +620,46 @@ mod tests {
                 .len()
                 <= MAX_BACKLINK_BYTES,
             "serialized MCP response envelope exceeds byte cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn backlink_byte_cap_is_enforced_when_rest_quote_is_the_tighter_envelope() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        let before = "甲".repeat(QUOTE_BEFORE_CHARS);
+        let after = "乙".repeat(QUOTE_AFTER_CHARS);
+        let body = (0..MAX_BACKLINK_ENTRIES)
+            .map(|index| format!("{before}[{index}](neige://wave/{}){after}", target.id))
+            .collect::<Vec<_>>()
+            .join("\n");
+        report(&repo, source.id.as_str(), v1(body)).await;
+
+        let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
+        let rest_bytes = serde_json::to_vec(&crate::routes::waves::WaveBacklinksResponse::from(
+            found.clone(),
+        ))
+        .unwrap()
+        .len();
+        let mcp_bytes = serde_json::to_vec(&mcp_wire_envelope(&found))
+            .unwrap()
+            .len();
+
+        assert!(found.truncated);
+        assert!(
+            rest_bytes <= MAX_BACKLINK_BYTES,
+            "REST envelope is {rest_bytes} bytes"
+        );
+        assert!(
+            mcp_bytes <= MAX_BACKLINK_BYTES,
+            "MCP envelope is {mcp_bytes} bytes"
+        );
+        assert!(
+            rest_bytes > mcp_bytes,
+            "fixture must make the REST quote payload the tighter envelope"
         );
     }
 

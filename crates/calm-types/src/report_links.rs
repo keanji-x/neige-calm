@@ -288,6 +288,45 @@ mod tests {
     }
 
     #[test]
+    fn scan_separates_adjacent_list_items() {
+        assert_eq!(scan_links("- first\n- second").plain, "first\nsecond\n\n");
+    }
+
+    #[test]
+    fn scan_separates_adjacent_table_cells() {
+        assert_eq!(
+            scan_links("| first | second |\n| --- | --- |").plain,
+            "first\nsecond\n\n"
+        );
+    }
+
+    #[test]
+    fn scan_preserves_table_row_boundaries() {
+        assert_eq!(
+            scan_links("| head |\n| --- |\n| body |").plain,
+            "head\nbody\n\n\n"
+        );
+    }
+
+    #[test]
+    fn scan_separates_adjacent_footnote_definitions() {
+        assert_eq!(
+            scan_links("[^one]: first\n[^two]: second").plain,
+            "first\n\nsecond\n\n"
+        );
+    }
+
+    #[test]
+    fn scan_separates_heading_from_following_block() {
+        assert_eq!(scan_links("# heading\nbody").plain, "heading\nbody\n");
+    }
+
+    #[test]
+    fn scan_preserves_block_quote_boundary() {
+        assert_eq!(scan_links("> quoted\n\nafter").plain, "quoted\n\nafter\n");
+    }
+
+    #[test]
     fn standalone_image_alt_is_not_plain_text() {
         let scan = scan_links("before ![hidden](image.png) after");
 

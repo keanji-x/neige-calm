@@ -293,7 +293,7 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
         json!({
             "before": "",
             "label": "Target",
-            "after": "\n",
+            "after": "",
             "head_elided": false,
             "tail_elided": false,
         })

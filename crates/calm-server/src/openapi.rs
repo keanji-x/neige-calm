@@ -17,6 +17,7 @@ use crate::model::{
     FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay,
     NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
+use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
     CreateCardBody, GetSpecRunResponse, HarnessItemsQuery, InterruptSpecCardResponse,
     ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, ViaToolCall,
@@ -152,6 +153,7 @@ use utoipa::OpenApi;
         WaveFsEntry,
         WaveFsContent,
         WaveBacklink,
+        BacklinkQuote,
         WaveBacklinksResponse,
         WaveFsCardMeta,
         WaveFsRunStatus,
