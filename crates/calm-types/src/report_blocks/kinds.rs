@@ -192,7 +192,11 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
     if let Some(priority) = map.get("priority")
         && priority.as_i64().is_none()
     {
-        errors.push("priority: must be an integer".into());
+        errors.push(format!(
+            "priority: must be an integer between {} and {}",
+            i64::MIN,
+            i64::MAX
+        ));
     }
     if let Some(context) = map.get("context") {
         check_nested_string_caps("context", context, errors);
@@ -831,6 +835,17 @@ mod tests {
             validate_payload(KIND_TASK, &payload)
                 .unwrap_err()
                 .contains("surprise: unknown field")
+        );
+    }
+
+    #[test]
+    fn task_priority_rejects_integer_outside_i64_range() {
+        let mut payload = valid_task();
+        payload["priority"] = json!(9_223_372_036_854_775_808_u64);
+
+        assert_eq!(
+            validate_payload(KIND_TASK, &payload).unwrap_err(),
+            "priority: must be an integer between -9223372036854775808 and 9223372036854775807"
         );
     }
 

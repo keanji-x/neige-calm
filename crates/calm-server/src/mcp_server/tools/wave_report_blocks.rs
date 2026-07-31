@@ -226,6 +226,9 @@ fn kinds_table() -> Value {
                      same-origin absolute path (`/…`); full URLs and \
                      backslashes are rejected."
             },
+            // Keep this schema in sync with `report_blocks::validate_payload`'s
+            // task validation. Any constraint changed here must be changed there,
+            // and vice versa.
             {
                 "kind": "task",
                 "schema": {
@@ -282,7 +285,12 @@ fn kinds_table() -> Value {
                         },
                         "no_gate_reason": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                         "depends_on": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS } },
-                        "priority": { "type": "integer", "default": 0 },
+                        "priority": {
+                            "type": "integer",
+                            "minimum": i64::MIN,
+                            "maximum": i64::MAX,
+                            "default": 0
+                        },
                         "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
                         "context": { "$ref": "#/$defs/contextValue", "description": "Arbitrary JSON; every nested string is limited to 2048 characters." },
                         "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
@@ -795,6 +803,8 @@ mod task_kind_contract_tests {
         for field in ["goal", "acceptance", "no_gate_reason"] {
             assert_eq!(properties[field]["pattern"], "\\S");
         }
+        assert_eq!(properties["priority"]["minimum"], i64::MIN);
+        assert_eq!(properties["priority"]["maximum"], i64::MAX);
         for field in ["cwd", "gate"] {
             let cwd = if field == "gate" {
                 &properties[field]["properties"]["cwd"]
