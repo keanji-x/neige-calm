@@ -456,11 +456,8 @@ pub(super) fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDel
         | Event::WorktreeProvisioned { .. }
         | Event::WorktreeCommitted { .. }
         | Event::WorktreeRemoved { .. } => {}
-        // Issue #955 §5: proposal lifecycle is adjudication history —
-        // the report only changes when an accept lands the Batch apply,
-        // and THAT write dirties paths via its own `CardUpdated` +
-        // `WaveReportEdited` pair in the same tx. The proposal events
-        // themselves change no tracked wave-fs bytes.
+        // Historical proposal lifecycle events are adjudication history
+        // and do not change tracked wave-fs bytes.
         Event::ProposalSubmitted { .. } | Event::ProposalResolved { .. } => {}
     }
     delta

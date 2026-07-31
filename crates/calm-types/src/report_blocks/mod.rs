@@ -177,13 +177,12 @@ pub fn flatten(blocks: &[BlockSlice]) -> String {
 // ---------------------------------------------------------------------------
 //
 // Every write end that mints a block's stored content funnels through
-// these three helpers: the interactive MCP tool
-// (`calm.report.blocks.upsert`) and the #955 §5.2.1 proposal lowering.
-// They previously carried statement-for-statement copies of the same
-// prose/data-kind rules, which would have drifted the first time a data
-// kind or a fence rule changed. Only the *envelope* (how each surface
-// finds `markdown` / `payload` in its own argument shape, and how it
-// prefixes the resulting message) stays at the call site.
+// these three helpers. The write paths previously carried
+// statement-for-statement copies of the same prose/data-kind rules,
+// which would have drifted the first time a data kind or a fence rule
+// changed. Only the *envelope* (how each surface finds `markdown` /
+// `payload` in its own argument shape, and how it prefixes the
+// resulting message) stays at the call site.
 
 /// Prose content rule: markdown may not smuggle a `neige-block` fence,
 /// well-formed or typo'd. A well-formed one would splinter into its own

@@ -1,11 +1,8 @@
 -- Issue #955 §5 (PR-a) — `proposals` projection table.
 --
 -- The event log (`proposal.submitted` / `proposal.resolved`) stays the
--- sole truth; this table is a rebuildable projection maintained by the
--- event append path (see calm-truth `db/sqlite/proposal.rs`) so pending
--- lists, per-(plugin, wave) quota counts, and pending-scoped idem_key
--- lookups are readable inside a write transaction without a group-by
--- scan over the whole log.
+-- sole truth; this rebuildable projection was removed by migration 0066
+-- when the proposal channel was withdrawn in #973.
 
 CREATE TABLE proposals (
     proposal_id        TEXT PRIMARY KEY,

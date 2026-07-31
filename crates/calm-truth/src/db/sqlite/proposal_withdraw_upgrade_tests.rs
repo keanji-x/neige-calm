@@ -3,10 +3,8 @@ use std::borrow::Cow;
 use sqlx::sqlite::SqlitePoolOptions;
 
 use super::{SqlxRepo, check_no_unknown_future_migrations};
-use crate::card_role_cache::CardRoleCache;
 use crate::db::RepoEventWrite;
 use crate::event::Event;
-use crate::wave_cove_cache::WaveCoveCache;
 
 fn migrator_through_0065() -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
@@ -18,15 +16,6 @@ fn migrator_through_0065() -> sqlx::migrate::Migrator {
                 .collect(),
         ),
         ..sqlx::migrate::Migrator::DEFAULT
-    }
-}
-
-fn repo_for_pool(pool: sqlx::SqlitePool) -> SqlxRepo {
-    SqlxRepo {
-        pool,
-        card_role_cache: CardRoleCache::new(),
-        wave_cove_cache: WaveCoveCache::new(),
-        _memory_cache_anchor: None,
     }
 }
 
@@ -118,21 +107,16 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
     .await
     .expect("seed proposals projection row");
 
-    // This is the exact guard called by SqlxRepo::open before migrations.
-    check_no_unknown_future_migrations(&pool, &crate::MIGRATOR)
-        .await
-        .expect("new binary accepts a database at 0065");
-    let repo = repo_for_pool(pool.clone());
-    assert_historical_proposal_replay(&repo).await;
+    pool.close().await;
 
-    crate::MIGRATOR
-        .run(&pool)
+    let repo = SqlxRepo::open(&url)
         .await
-        .expect("upgrade fixture through migration 0066");
+        .expect("new binary starts on and upgrades a database at 0065");
+    assert_historical_proposal_replay(&repo).await;
     let proposals_table: Option<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'proposals'",
     )
-    .fetch_optional(&pool)
+    .fetch_optional(&repo.pool)
     .await
     .expect("inspect upgraded schema");
     assert!(
@@ -140,12 +124,14 @@ async fn proposal_projection_upgrade_and_unsupported_rollback_are_explicit() {
         "migration 0066 must drop the proposals projection"
     );
 
-    check_no_unknown_future_migrations(&pool, &crate::MIGRATOR)
+    repo.pool.close().await;
+
+    let repo = SqlxRepo::open(&url)
         .await
-        .expect("new binary still accepts the database after 0066");
+        .expect("new binary still starts after migration 0066");
     assert_historical_proposal_replay(&repo).await;
 
-    let rollback_error = check_no_unknown_future_migrations(&pool, &old_migrator)
+    let rollback_error = check_no_unknown_future_migrations(&repo.pool, &old_migrator)
         .await
         .expect_err("old binary must refuse a database upgraded through 0066")
         .to_string();

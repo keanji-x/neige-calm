@@ -1,17 +1,8 @@
 //! Issue #955 §5 (PR-a) — proposal-channel wire vocabulary.
 //!
-//! Apps (plugins) cannot write kernel-owned documents; the ④ proposal
-//! channel lets them *propose* report edits that a human accepts or
-//! rejects (design: `docs/architecture/955-kernel-app-boundary.md` §5).
-//! The types here are the Tier-A payload vocabulary carried by
-//! `Event::ProposalSubmitted` / `Event::ProposalResolved`, so they live
-//! in calm-types next to the other persisted event payloads and are
-//! TS-exported for the frontend mirror.
-//!
-//! PR-a only pins the wire shape + the event identity; the callback
-//! surface (`neige.report.get` / `neige.proposal.submit` /
-//! `neige.proposal.withdraw`) and the REST adjudication routes land in
-//! PR-b.
+//! The proposal channel was withdrawn in #973. These types remain only
+//! to deserialize historical `Event::ProposalSubmitted` and
+//! `Event::ProposalResolved` events.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

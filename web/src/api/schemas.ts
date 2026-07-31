@@ -337,10 +337,11 @@ export const harnessUserMessageEnqueuedSchema = z.object({
  *
  * `author` discriminates who produced the edit. PR2 only emits
  * `'spec'`; PR3 introduces `'user'` for REST-driven edits; `'kernel'`
- * is reserved for future server-internal rewrites; `'plugin'` (#955)
- * is the proposal channel's accept apply, with the submitting plugin
- * carried in the sibling optional `author_plugin_id` (absent for every
- * other author — old rows replay with the field missing).
+ * is reserved for future server-internal rewrites; `'plugin'` is
+ * reserved for historical proposal-channel events, with no emitter
+ * today. Attribution is carried in the sibling optional
+ * `author_plugin_id` (absent for every other author — old rows replay
+ * with the field missing).
  *
  * `edit_id` is a fresh UUID v4 per call so the UI can collapse
  * adjacent retries or correlate timeline entries with a future
