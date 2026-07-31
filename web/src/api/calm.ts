@@ -24,9 +24,7 @@ import type {
   NewOverlayBody,
   NewTerminalCardBody,
   NewWaveBody,
-  PendingProposalsResponse,
   ReadFileResponse,
-  ResolveProposalResponse,
   SettingsBag,
   SettingsPutBody,
   WavePatchBody,
@@ -234,39 +232,6 @@ export const catWaveFile = (waveId: string, path: string) => {
     `/api/waves/${encodeURIComponent(waveId)}/files/cat?${qs.toString()}`,
   );
 };
-
-// ---------------- proposals (issue #955 ④) ----------------
-//
-// `docs/architecture/955-kernel-app-boundary.md` §5.5/§5.6. All three
-// routes are user-only at the kernel (403 for any other actor) and again
-// inside the write transaction via `role_gate`.
-//
-// `accept` has THREE honest outcomes and the UI must not collapse them:
-//   * 200 `decision: "accepted"` — the report changed in the same tx;
-//   * 200 `decision: "stale"`    — the anchors had moved; the verdict was
-//     recorded and the report is UNCHANGED (a successful adjudication,
-//     not an error);
-//   * 400                        — the proposal is structurally impossible
-//     and STAYS pending (the user can still reject it);
-//   * 409                        — someone/something else resolved it
-//     first; refresh the list.
-export const listWaveProposals = (waveId: string) =>
-  request<PendingProposalsResponse>(
-    'GET',
-    `/api/waves/${encodeURIComponent(waveId)}/proposals`,
-  );
-
-export const acceptProposal = (id: string) =>
-  request<ResolveProposalResponse>(
-    'POST',
-    `/api/proposals/${encodeURIComponent(id)}/accept`,
-  );
-
-export const rejectProposal = (id: string) =>
-  request<ResolveProposalResponse>(
-    'POST',
-    `/api/proposals/${encodeURIComponent(id)}/reject`,
-  );
 
 // ---------------- cards ----------------
 

@@ -421,8 +421,9 @@ export type ProposalDecision = "accepted" | "rejected" | "stale" | "withdrawn";
  *
  * Field-requirement rules (`if_rev` mandatory when replacing, exactly
  * one of `block_id` / `temp_id`, anchor mandatory for creations) are
- * enforced by the PR-b submit handler; the wire type keeps them
- * `Option` only where two legal shapes share a variant.
+ * historical: before the channel was withdrawn in #973, these constraints
+ * were enforced by its submit handler. The wire type keeps them `Option`
+ * only where two legal shapes share a variant.
  */
 export type ProposalOp = { "op": "upsert_block", block_id?: string, temp_id?: string, kind: string, payload: unknown, if_rev?: number, anchor?: ProposalAnchor, } | { "op": "move_block", block_id: string, if_rev: number, anchor: ProposalAnchor, } | { "op": "delete_block", block_id: string, if_rev: number, };
 

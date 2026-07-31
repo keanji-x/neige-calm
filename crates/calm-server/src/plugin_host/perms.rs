@@ -98,24 +98,6 @@ impl Permissions {
             .any(|g| g == "*" || g == ev_glob)
     }
 
-    /// Issue #955 §5.2 — may the plugin propose against this subject kind?
-    ///
-    /// Gates all THREE `neige.*` proposal methods, including the read-only
-    /// `neige.report.get`: the baseline read exists only so a proposal can
-    /// be anchored, so a plugin that cannot propose has no business
-    /// reading the report either (design §5.2's "读基线").
-    ///
-    /// Literal allow-list match, **deny by default** — no globs, and no
-    /// `"*"` firehose. Proposal subject kinds are kernel-defined
-    /// (`PROPOSAL_SUBJECT_KINDS`) and each new one must be granted
-    /// explicitly, so a manifest written today cannot silently acquire
-    /// write-adjacent reach over an entity kind that ships tomorrow.
-    /// Manifest parse already rejected unknown kinds, so a grant here is
-    /// always meaningful.
-    pub fn can_propose(&self, subject_kind: &str) -> bool {
-        self.proposals.iter().any(|k| k == subject_kind)
-    }
-
     /// Per-plugin KV byte budget. Manifest value if positive; otherwise the
     /// design-doc default of 1 MiB. A `0` value in the manifest is treated as
     /// "unset" — disabling KV is expressed by simply not granting any keys
@@ -180,7 +162,6 @@ impl Manifest {
 
 #[cfg(test)]
 mod tests {
-    use super::super::manifest::ManifestError;
     use super::*;
 
     fn perms(json: &str) -> Permissions {
@@ -296,43 +277,8 @@ mod tests {
         assert!(!p.can_subscribe("card:*"));
     }
 
-    // ---- can_propose (#955 §5.2) -------------------------------------------
-
     #[test]
-    fn propose_allows_listed_subject_kind() {
-        let p = perms(r#"{ "proposals": ["report"] }"#);
-        assert!(p.can_propose("report"));
-    }
-
-    #[test]
-    fn propose_denies_unlisted_subject_kind() {
-        // A future kind must be granted explicitly — a `report` grant
-        // never widens to it.
-        let p = perms(r#"{ "proposals": ["report"] }"#);
-        assert!(!p.can_propose("plan"));
-        assert!(!p.can_propose(""));
-    }
-
-    #[test]
-    fn propose_denies_empty_default() {
-        // Absent field = channel closed (design §5.2: 缺省空 = 三个方法都不可用).
-        let p = perms("{}");
-        assert!(!p.can_propose("report"));
-        let p2 = perms(r#"{ "proposals": [] }"#);
-        assert!(!p2.can_propose("report"));
-    }
-
-    #[test]
-    fn propose_has_no_wildcard_grant() {
-        // `"*"` is NOT a firehose here (unlike events_subscribe /
-        // ui.tools) — and manifest validation rejects it outright, so a
-        // hand-built Permissions carrying it still grants nothing.
-        let p = perms(r#"{ "proposals": ["*"] }"#);
-        assert!(!p.can_propose("report"));
-    }
-
-    #[test]
-    fn manifest_rejects_unknown_proposal_subject_kind() {
+    fn manifest_accepts_deprecated_proposals_field() {
         let json = r#"{
             "manifest_version": 1,
             "id": "dev.example",
@@ -340,29 +286,10 @@ mod tests {
             "min_kernel_version": "0.0.1",
             "display_name": "X",
             "entrypoint": { "command": "bin/x" },
-            "permissions": { "proposals": ["report", "plan"] }
-        }"#;
-        let err = Manifest::parse(json).expect_err("unknown kind must be rejected");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason }
-                if field == "permissions.proposals[1]" && reason.contains("report")),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn manifest_accepts_known_proposal_subject_kind() {
-        let json = r#"{
-            "manifest_version": 1,
-            "id": "dev.example",
-            "version": "0.1.0",
-            "min_kernel_version": "0.0.1",
-            "display_name": "X",
-            "entrypoint": { "command": "bin/x" },
-            "permissions": { "proposals": ["report"] }
+            "permissions": { "proposals": ["report", "legacy-kind"] }
         }"#;
         let m = Manifest::parse(json).expect("valid manifest");
-        assert!(m.permissions.can_propose("report"));
+        assert_eq!(m.permissions.proposals, ["report", "legacy-kind"]);
     }
 
     // ---- kv_quota_bytes -----------------------------------------------------

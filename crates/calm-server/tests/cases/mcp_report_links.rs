@@ -177,6 +177,45 @@ async fn backlinks_returns_linking_wave_for_callers_wave() {
 }
 
 #[tokio::test]
+async fn backlinks_returns_link_from_footnote_definition_with_stable_shape() {
+    let boot = boot().await;
+    let source = add_wave(
+        &boot,
+        boot.cove_id.as_str(),
+        "Footnote source",
+        format!("[^note]: [footnote](neige://wave/{})\n", boot.wave_id),
+    )
+    .await;
+
+    let value = call_tool(
+        &boot,
+        TOOL_REPORT_BACKLINKS,
+        spec_identity(&boot),
+        json!({}),
+    )
+    .await
+    .unwrap();
+    let backlink = &value["backlinks"][0];
+    let src_block_id = backlink["src_block_id"].as_str().unwrap();
+    let updated_at = backlink["updated_at"].as_i64().unwrap();
+    assert_eq!(
+        value,
+        json!({
+            "backlinks": [{
+                "src_wave_id": source.id,
+                "src_wave_title": "Footnote source",
+                "src_block_id": src_block_id,
+                "dst_block_id": null,
+                "label": "footnote",
+                "updated_at": updated_at,
+            }],
+            "truncated": false,
+            "skipped_sources": 0,
+        })
+    );
+}
+
+#[tokio::test]
 async fn report_link_reads_reject_non_spec_caller() {
     let boot = boot().await;
     for tool in [TOOL_COVE_OUTLINE, TOOL_REPORT_BACKLINKS] {

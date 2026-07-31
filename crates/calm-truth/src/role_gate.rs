@@ -440,8 +440,9 @@ pub fn enforce_role(
     //     pending slot — `ActorId::Plugin(id)` with `id` equal to the
     //     payload's submitter `plugin_id`, nothing else. The
     //     "pending AND actually owned by this plugin" *factual* check
-    //     lives with the PR-b withdraw handler inside the same write
-    //     tx; this clause pins the identity half.
+    //     lived with the withdraw handler inside the same write tx before
+    //     the channel was withdrawn in #973; this clause pins the identity
+    //     half for historical events.
     if let Event::ProposalResolved {
         plugin_id,
         decision,

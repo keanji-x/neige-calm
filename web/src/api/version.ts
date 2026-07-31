@@ -86,10 +86,13 @@
  *   11 → 12 in lockstep. Older frontends' zod schemas don't know the
  *   new discriminators (and reject the new author arm) and would
  *   silently drop those frames, so bump here.
+ * * `14` — issue #973 withdrew the proposal REST endpoints and web UI.
+ *   Historical proposal event variants remain parseable, so the backend
+ *   `SYNC_EVENT_VERSION` stays 12.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 13;
+export const WEB_COMPAT_VERSION = 14;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here

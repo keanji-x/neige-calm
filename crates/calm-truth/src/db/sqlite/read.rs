@@ -482,32 +482,6 @@ impl RepoRead for SqlxRepo {
         })
     }
 
-    // ------------------------------------------------------------- proposals
-    // Issue #955 §5.2 / §5.5 (PR-b) — pool-backed reads for the
-    // `neige.report.get` baseline and the adjudication list/pre-flight.
-    async fn card_body_crdt(&self, card_id: &str) -> Result<Option<Vec<u8>>> {
-        let row: Option<(Option<Vec<u8>>,)> =
-            sqlx::query_as(r#"SELECT body_crdt FROM cards WHERE id = ?1"#)
-                .bind(card_id)
-                .fetch_optional(&self.pool)
-                .await?;
-        Ok(row.and_then(|(blob,)| blob))
-    }
-
-    async fn proposals_pending_by_wave(
-        &self,
-        wave_id: &str,
-    ) -> Result<Vec<super::proposal::ProposalRow>> {
-        super::proposal::proposals_pending_by_wave_pool(&self.pool, wave_id).await
-    }
-
-    async fn proposal_get(
-        &self,
-        proposal_id: &str,
-    ) -> Result<Option<super::proposal::ProposalRow>> {
-        super::proposal::proposal_get_pool(&self.pool, proposal_id).await
-    }
-
     // -------------------------------------------------------------- overlays
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>> {
         let rows = sqlx::query_as::<_, crate::db::rows::OverlayRow>(

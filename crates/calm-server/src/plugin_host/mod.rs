@@ -18,7 +18,6 @@
 
 pub mod auth;
 pub mod callbacks;
-pub mod callbacks_proposal;
 pub mod error;
 pub mod events;
 mod glob;
