@@ -37,6 +37,7 @@ import {
   createIframeCard,
   resetReplayServer,
   createWaveInCove,
+  seedWaveReport,
   seedWaveViewMode,
 } from './helpers/reset';
 
@@ -208,6 +209,18 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   // changes.
   const waveTitle = `axe wave ${Date.now()}`;
   const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  const source = await createWaveInCove(
+    page.request,
+    coveId,
+    `axe backlink source ${Date.now()}`,
+    { attachFolder: false },
+  );
+  await seedWaveReport(
+    page.request,
+    source.id,
+    'a11y backlink fixture',
+    `[Cited report](neige://wave/${wave.id})`,
+  );
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   return { coveId, waveId: wave.id };
@@ -270,6 +283,10 @@ test.describe('a11y · axe', () => {
         // scanning so the wave page's full role tree is in the DOM.
         // The trigger is glyph-only since #594; aria-label "Add card".
         await expect(page.getByRole('button', { name: /add card/i })).toBeVisible();
+        const backlinks = page.getByRole('region', { name: 'Backlinks' });
+        await expect(
+          backlinks.getByRole('link', { name: 'Cited report' }),
+        ).toBeVisible();
         await applyTheme(page, theme);
         const { violations } = await axe(page).analyze();
         expect(violations, formatViolations(violations)).toEqual([]);

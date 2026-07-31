@@ -37,7 +37,10 @@ use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::threads::ThreadCardResolution;
 use crate::routes::today::TodayLaunchpad;
 use crate::routes::version::VersionInfo;
-use crate::routes::waves::{UpdateWaveReportBody, WaveFsCatQuery, WaveFsLsQuery, WavesWindowQuery};
+use crate::routes::waves::{
+    UpdateWaveReportBody, WaveBacklink, WaveBacklinksResponse, WaveFsCatQuery, WaveFsLsQuery,
+    WavesWindowQuery,
+};
 use crate::wave_fs_dto::{
     WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
     WaveFsRunIndexEntry, WaveFsRunStatus, WaveFsRunVerdict, WaveFsRunVerdictSummary,
@@ -71,6 +74,7 @@ use utoipa::OpenApi;
         crate::routes::waves::create_wave,
         crate::routes::waves::update_wave,
         crate::routes::waves::delete_wave,
+        crate::routes::waves::get_wave_backlinks,
         // Issue #247 PR3 — user-facing wave-report edit endpoint
         crate::routes::waves::update_wave_report,
         crate::routes::waves::list_wave_files,
@@ -151,6 +155,8 @@ use utoipa::OpenApi;
         WaveFsCatQuery,
         WaveFsEntry,
         WaveFsContent,
+        WaveBacklink,
+        WaveBacklinksResponse,
         WaveFsCardMeta,
         WaveFsRunStatus,
         WaveFsRunVerdictSummary,

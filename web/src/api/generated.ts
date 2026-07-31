@@ -765,6 +765,22 @@ export interface paths {
         patch: operations["update_wave"];
         trace?: never;
     };
+    "/api/waves/{id}/backlinks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_wave_backlinks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves/{id}/files/cat": {
         parameters: {
             query?: never;
@@ -2060,6 +2076,22 @@ export interface components {
              */
             workflow_input?: Record<string, never> | null;
         };
+        /** @description A report link from another wave that targets this wave. */
+        WaveBacklink: {
+            dst_block_id?: string | null;
+            label: string;
+            src_block_id: string;
+            src_wave_id: string;
+            src_wave_title: string;
+            /** Format: int64 */
+            updated_at: number;
+        };
+        /** @description A bounded page of report backlinks. */
+        WaveBacklinksResponse: {
+            backlinks: components["schemas"]["WaveBacklink"][];
+            skipped_sources: number;
+            truncated: boolean;
+        };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and
          *     any overlays scoped to the wave (status/progress badges) and its cards.
@@ -2427,6 +2459,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Card"];
+                };
+            };
+            /** @description Card patch violates an invariant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Card not found */
@@ -4742,6 +4783,38 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_wave_backlinks: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Report links from waves in the same cove */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveBacklinksResponse"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

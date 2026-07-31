@@ -47,6 +47,7 @@ pub trait ServerRepoReadExt {
     async fn task_get(&self, id: &str) -> Result<Option<Task>>;
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
+    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
@@ -178,6 +179,11 @@ where
     }
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>> {
         calm_truth::db::RepoRead::cards_by_wave(self, wave_id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>> {
+        calm_truth::db::RepoRead::wave_report_cards_by_cove(self, cove_id)
             .await
             .map_err(Into::into)
     }

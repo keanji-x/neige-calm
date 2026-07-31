@@ -280,6 +280,20 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(Card::from).collect())
     }
 
+    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>> {
+        let rows = sqlx::query_as::<_, crate::db::rows::CardRow>(
+            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
+               FROM cards
+               WHERE kind = 'wave-report'
+                 AND wave_id IN (SELECT id FROM waves WHERE cove_id = ?1)
+               ORDER BY wave_id ASC, id ASC"#,
+        )
+        .bind(cove_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(Card::from).collect())
+    }
+
     async fn card_get(&self, id: &str) -> Result<Option<Card>> {
         let row = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at

@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WaveReportPage } from './WaveReportPage';
 import {
   useOverlaysByKindQuery,
+  useWaveBacklinksQuery,
   useWaveFileContent,
   useWaveFileList,
 } from '../api/queries';
@@ -18,6 +19,7 @@ import type { WaveReportCardData } from '../cards/builtins/wave-report';
 
 vi.mock('../api/queries', () => ({
   useOverlaysByKindQuery: vi.fn(),
+  useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
   // #955 ④ — the proposals panel hangs off the report document. With no
@@ -27,6 +29,29 @@ vi.mock('../api/queries', () => ({
   useAcceptProposalMutation: vi.fn(),
   useRejectProposalMutation: vi.fn(),
 }));
+
+vi.mock('@tanstack/react-router', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-router')>();
+  return {
+    ...actual,
+    Link: ({
+      params,
+      hash,
+      children,
+    }: {
+      params: { waveId: string };
+      hash?: string;
+      children: React.ReactNode;
+    }) => (
+      <a href={`/wave/${params.waveId}${hash ? `#${hash}` : ''}`}>{children}</a>
+    ),
+    useRouterState: <T,>({
+      select,
+    }: {
+      select: (state: { location: { hash: string } }) => T;
+    }) => select({ location: { hash: window.location.hash.slice(1) } }),
+  };
+});
 
 // The spec-conversation panel's status dot reads `useCardOverlay`, which is
 // React-Query-backed (REST-seeded card overlay snapshot) and would need a
@@ -75,6 +100,7 @@ vi.mock('lightweight-charts', () => ({
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
+const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
@@ -172,11 +198,17 @@ function mockWaveFileLists(lists: Record<string, WaveFsEntry[]>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete (Element.prototype as Partial<Element>).scrollIntoView;
   window.localStorage.clear();
+  window.history.replaceState(null, '', window.location.pathname);
 });
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: { backlinks: [], truncated: false, skipped_sources: 0 },
+      error: null,
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
     mockUseOverlaysByKindQuery.mockReturnValue({
       data: [],
     } as unknown as ReturnType<typeof useOverlaysByKindQuery>);
@@ -1637,6 +1669,246 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
       'aria-pressed',
       'true',
+    );
+  });
+
+  it('renders backlinks grouped by source wave with source block anchors', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: {
+        backlinks: [{
+          src_wave_id: 'wave_a',
+          src_wave_title: 'Alpha',
+          src_block_id: 'b_a1',
+          dst_block_id: 'b_here',
+          label: 'First mention',
+          updated_at: 1,
+        }, {
+          src_wave_id: 'wave_a',
+          src_wave_title: 'Alpha',
+          src_block_id: 'b_a2',
+          label: 'Second mention',
+          updated_at: 2,
+        }, {
+          src_wave_id: 'wave_b',
+          src_wave_title: 'Beta',
+          src_block_id: 'b_b1',
+          label: 'Another source',
+          updated_at: 3,
+        }],
+        truncated: true,
+        skipped_sources: 1,
+      },
+      error: null,
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('Report body', {
+            blocks: [
+              {
+                id: 'b_here',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Report body' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const panel = screen.getByRole('region', { name: 'Backlinks' });
+    expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
+    expect(within(panel).getByText('Beta')).toBeInTheDocument();
+    expect(
+      within(panel).getByText('Some backlinks are not shown.'),
+    ).toBeInTheDocument();
+    expect(
+      within(panel).getByText(
+        'Backlinks from 1 source report could not be loaded.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText(/cites block b_here/)).toBeInTheDocument();
+    expect(within(panel).getByRole('link', { name: 'First mention' })).toHaveAttribute(
+      'href',
+      '/wave/wave_a#b_a1',
+    );
+    expect(within(panel).getByRole('link', { name: 'Another source' })).toHaveAttribute(
+      'href',
+      '/wave/wave_b#b_b1',
+    );
+  });
+
+  it('labels self-references distinctly', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: {
+        backlinks: [{
+          src_wave_id: 'wave_1',
+          src_wave_title: 'Spec wave',
+          src_block_id: 'b_source',
+          dst_block_id: 'b_target',
+          label: 'Self citation',
+          updated_at: 1,
+        }],
+        truncated: false,
+        skipped_sources: 0,
+      },
+      error: null,
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />);
+    expect(screen.getByText('This wave (self-reference)')).toBeInTheDocument();
+  });
+
+  it('does not promise a block target for a flat v1 report', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: {
+        backlinks: [{
+          src_wave_id: 'wave_a',
+          src_wave_title: 'Alpha',
+          src_block_id: 'b_a1',
+          dst_block_id: 'b_here',
+          label: 'Legacy target',
+          updated_at: 1,
+        }],
+        truncated: false,
+        skipped_sources: 0,
+      },
+      error: null,
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
+    );
+    expect(screen.getByRole('link', { name: 'Legacy target' })).toBeVisible();
+    expect(screen.queryByText(/cites block b_here/)).toBeNull();
+  });
+
+  it('surfaces backlink loading errors inline', () => {
+    mockUseWaveBacklinksQuery.mockReturnValue({
+      data: undefined,
+      error: new Error('server unavailable'),
+    } as unknown as ReturnType<typeof useWaveBacklinksQuery>);
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />);
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Could not load backlinks: server unavailable',
+    );
+  });
+
+  it('renders a neige link in a flat-body report as an in-app link', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('[Target](neige://wave/wave_2#b_cafe)')]}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'Target' })).toHaveAttribute(
+      'href',
+      '/wave/wave_2#b_cafe',
+    );
+  });
+
+  it('does not scroll again when only the blocks array identity changes', () => {
+    window.history.replaceState(null, '', '#b_present');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(
+        () => {},
+      );
+    const block = {
+      id: 'b_present',
+      kind: 'prose' as const,
+      rev: 1,
+      payload: { markdown: 'Present block' },
+    };
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('fallback', { blocks: [block] })]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('fallback', { blocks: [{ ...block }] })]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('scrolls when the hash target arrives after the report starts loading', () => {
+    window.history.replaceState(null, '', '#b_late');
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, 'scrollIntoView')
+      .mockImplementation(() => {});
+    const { rerender } = render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Loading report')]} />,
+    );
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('fallback', {
+            blocks: [
+              {
+                id: 'b_late',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: 'Late block' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no backlinks panel when the result is empty', () => {
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
+    );
+    expect(screen.queryByRole('region', { name: 'Backlinks' })).toBeNull();
+  });
+
+  it('renders normally when the hash names a missing block', () => {
+    window.history.replaceState(null, '', '#b_missing');
+    expect(() =>
+      render(
+        <WaveReportPage
+          wave={makeWave()}
+          cards={[
+            reportSlot('fallback', {
+              blocks: [
+                {
+                  id: 'b_present',
+                  kind: 'prose',
+                  rev: 1,
+                  payload: { markdown: 'Present block' },
+                },
+              ],
+            }),
+          ]}
+        />,
+      ),
+    ).not.toThrow();
+    expect(screen.getByText('Present block')).toBeInTheDocument();
+    expect(document.getElementById('b_present')).not.toHaveClass(
+      'report-block--highlight',
     );
   });
 });

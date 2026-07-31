@@ -8,7 +8,11 @@
 // mono placeholder so one bad block never takes down the page.
 
 import { lazy, Suspense } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import { Link } from '@tanstack/react-router';
+import ReactMarkdown, {
+  defaultUrlTransform,
+  type Components,
+} from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   appBlockPayloadSchema,
@@ -26,11 +30,41 @@ const LazyCandlesBlock = lazy(() =>
   import('./candles').then((m) => ({ default: m.ReportCandlesBlock })),
 );
 
-function UnsupportedBlock({ kind }: { kind: string }) {
+const BLOCK_ID_PATTERN = /^b_[0-9a-f]{4}$/;
+
+function UnsupportedBlock({ block }: { block: ReportBlock }) {
   return (
-    <div className="report-block rb-unsupported" role="note">
-      unsupported block kind {kind}
+    <div id={block.id} className="report-block rb-unsupported" role="note">
+      unsupported block kind {block.kind}
     </div>
+  );
+}
+
+export function reportUrlTransform(url: string): string {
+  const match = url.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
+  if (!match) return defaultUrlTransform(url);
+  const [, waveId, blockId] = match;
+  return blockId && !BLOCK_ID_PATTERN.test(blockId)
+    ? `neige://wave/${waveId}`
+    : url;
+}
+
+export function ReportLink({
+  href,
+  children,
+}: React.ComponentPropsWithoutRef<'a'>) {
+  const match = href?.match(/^neige:\/\/wave\/([^/?#]+)(?:#([^#]+))?$/);
+  if (!match) return <a href={href}>{children}</a>;
+  const [, waveId, blockId] = match;
+  const hash = blockId && BLOCK_ID_PATTERN.test(blockId) ? blockId : undefined;
+  return (
+    <Link
+      to="/wave/$waveId"
+      params={{ waveId }}
+      hash={hash}
+    >
+      {children}
+    </Link>
   );
 }
 
@@ -80,12 +114,13 @@ export function ReportBlockView({
   switch (block.kind) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-prose calm-prose">
+        <div id={block.id} className="report-block report-prose calm-prose">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
-            components={preview ? previewProseComponents : undefined}
+            urlTransform={reportUrlTransform}
+            components={preview ? previewProseComponents : { a: ReportLink }}
           >
             {parsed.data.markdown}
           </ReactMarkdown>
@@ -94,9 +129,9 @@ export function ReportBlockView({
     }
     case 'chart.candles': {
       const parsed = chartCandlesPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-block--breakout">
+        <div id={block.id} className="report-block report-block--breakout">
           <Suspense
             fallback={
               <div className="rb-unsupported" role="status">
@@ -111,23 +146,23 @@ export function ReportBlockView({
     }
     case 'table': {
       const parsed = tableBlockPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-block--breakout">
+        <div id={block.id} className="report-block report-block--breakout">
           <ReportTableBlock payload={parsed.data} />
         </div>
       );
     }
     case 'app': {
       const parsed = appBlockPayloadSchema.safeParse(block.payload);
-      if (!parsed.success) return <UnsupportedBlock kind={block.kind} />;
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
-        <div className="report-block report-block--breakout">
+        <div id={block.id} className="report-block report-block--breakout">
           <ReportAppBlock payload={parsed.data} />
         </div>
       );
     }
     default:
-      return <UnsupportedBlock kind={block.kind} />;
+      return <UnsupportedBlock block={block} />;
   }
 }

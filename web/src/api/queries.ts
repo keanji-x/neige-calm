@@ -59,6 +59,7 @@ export const queryKeys = {
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   waveFiles: (waveId: string) => ['wave-files', waveId] as const,
   /** Issue #955 ④ — the wave's pending app proposals awaiting human
    *  adjudication. Its own key (not a slice of `waveDetail`) because the
@@ -119,6 +120,11 @@ export const wavesByCoveQueryOptions = (coveId: string) => ({
 export const waveDetailQueryOptions = (waveId: string) => ({
   queryKey: queryKeys.waveDetail(waveId),
   queryFn: () => api.getWaveDetail(waveId),
+});
+
+export const waveBacklinksQueryOptions = (waveId: string) => ({
+  queryKey: queryKeys.waveBacklinks(waveId),
+  queryFn: () => api.getWaveBacklinks(waveId),
 });
 
 export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
@@ -198,6 +204,17 @@ export function useWaveDetailQuery(
     ...waveDetailQueryOptions(waveId ?? ''),
     enabled: !!waveId,
     placeholderData: keepPreviousData,
+    ...opts,
+  });
+}
+
+export function useWaveBacklinksQuery(
+  waveId: string | undefined | null,
+  opts?: Partial<UseQueryOptions<api.WaveBacklinksResponse, Error>>,
+) {
+  return useQuery<api.WaveBacklinksResponse, Error>({
+    ...waveBacklinksQueryOptions(waveId ?? ''),
+    enabled: !!waveId,
     ...opts,
   });
 }

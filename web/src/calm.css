@@ -1959,6 +1959,41 @@ select:-webkit-autofill {
 .report-block--breakout + .report-block--breakout {
   margin-top: var(--space-12);
 }
+.report-block--highlight {
+  animation: report-block-highlight 1.8s ease-out;
+}
+@keyframes report-block-highlight {
+  from {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 var(--space-3) var(--accent-soft);
+  }
+  to {
+    background: transparent;
+    box-shadow: 0 0 0 var(--space-3) transparent;
+  }
+}
+.report-backlinks {
+  max-width: 616px;
+  margin-top: var(--space-16);
+  padding-top: var(--space-8);
+  border-top: 1px solid var(--hairline);
+}
+.report-backlinks > h2 {
+  margin-block: var(--space-0) var(--space-6);
+  font-size: var(--text-lg);
+}
+.report-backlinks-group + .report-backlinks-group {
+  margin-top: var(--space-6);
+}
+.report-backlinks-group h3 {
+  margin-block: var(--space-0) var(--space-2);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+.report-backlinks-group ul {
+  margin: var(--space-0);
+  padding-left: var(--space-6);
+}
 .rb-unsupported {
   margin-top: var(--space-10);
   color: var(--text-4);

@@ -184,9 +184,9 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     'Report view card-topic consumers observe queued user messages directly.',
   ),
   'wave.report_edited': {
-    keys: (ev) => [waveFilesKey(ev.data.wave_id)],
+    keys: (ev) => [waveFilesKey(ev.data.wave_id), ['wave-backlinks']],
     reason:
-      'report.md in the wave file projection changes when the report is edited.',
+      'Report edits change the wave file projection and may change backlinks for any wave.',
   },
   'overlay.set': {
     keys: overlayInvalidationKeys,

@@ -17,6 +17,9 @@ members = [
     "crates/e2e-egress-proxy",
 ]
 
+[workspace.dependencies]
+pulldown-cmark = "0.13"
+
 [profile.dev]
 debug = 1
 incremental = false

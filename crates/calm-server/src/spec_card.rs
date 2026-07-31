@@ -106,6 +106,13 @@ writes are transactional.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the wave in the same write.
+   * Discover report structure across the cove with `calm.cove.outline`, \
+     and inspect incoming links to a report with \
+     `calm.report.links.backlinks`.
+   * Cross-reference as `[label](neige://wave/<wave_id>#<block_id>)`; omit \
+     `#<block_id>` for the whole report. Get block ids from `calm.cove.outline`, \
+     the single source for the whole cove, including your own wave. Links resolve \
+     only within the cove; missing anchors fall back to the whole report.
    * Keep the wave report current with `calm.report.write` or \
      `calm.report.edit`. Each requires `message` and accepts optional \
      `lifecycle`.
@@ -544,6 +551,8 @@ mod tests {
                 && p.contains("calm.plan.cancel")
                 && p.contains("calm.plan.list")
                 && p.contains("calm.task.verdict")
+                && p.contains("calm.cove.outline")
+                && p.contains("calm.report.links.backlinks")
                 && p.contains("calm.report.write")
                 && p.contains("calm.report.edit"),
             "prompt must document retained wave/task write tools and omit retired update_wave_state"
@@ -587,10 +596,16 @@ mod tests {
             "spec prompt must document report write/edit MCP tools"
         );
         assert!(
-            !p.contains("calm.wave.cat")
+            p.contains("calm.cove.outline")
+                && p.contains("calm.report.links.backlinks")
+                && !p.contains("calm.wave.cat")
                 && !p.contains("calm.wave.ls")
                 && !p.contains("calm.report.read"),
-            "spec prompt must not instruct reads via MCP"
+            "spec prompt MCP read allowlist is limited to calm.cove.outline and calm.report.links.backlinks"
+        );
+        assert!(
+            p.contains("[label](neige://wave/<wave_id>#<block_id>)"),
+            "spec prompt must pin the cross-reference form"
         );
     }
 

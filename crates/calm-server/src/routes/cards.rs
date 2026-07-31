@@ -517,6 +517,7 @@ fn tool_call_bad_gateway(plugin_id: &str, tool_name: &str, detail: &str) -> Resp
     request_body = CardPatch,
     responses(
         (status = 200, description = "Card updated", body = Card),
+        (status = 400, description = "Card patch violates an invariant", body = ErrorBody),
         (status = 404, description = "Card not found", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

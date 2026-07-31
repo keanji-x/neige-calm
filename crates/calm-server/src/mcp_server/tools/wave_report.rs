@@ -63,6 +63,7 @@ use crate::mcp_server::tools::lifecycle_args::{
 };
 use crate::model::{Card, CardRole, Wave, WaveLifecycle};
 use crate::wave_report::{ReportDocOp, WaveReportPayload};
+use crate::wave_report_read::load_report_read_snapshot;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -121,111 +122,6 @@ fn read_descriptor() -> ToolDescriptor {
     }
 }
 
-/// One self-consistent `calm.report.read` snapshot: `summary`, flat
-/// `body` text, and the block index all derived from a SINGLE row
-/// read (`card_get_with_body_crdt` fetches payload JSON + CRDT bytes
-/// atomically), so a concurrent persist between two awaits can never
-/// tear `text` against `blocks` (#960 PR2 review round 2).
-pub(crate) struct ReportReadSnapshot {
-    pub updated_at: i64,
-    pub schema_version: u32,
-    pub summary: String,
-    pub body: String,
-    pub blocks: Vec<crate::wave_report::ReportBlock>,
-}
-
-/// Load the read snapshot for the report card.
-///
-/// Source selection (the CRDT is the source of truth, the JSON cache
-/// is best-effort — #960 PR2 review):
-///
-///   1. `payload.blocks` present (the common case — the persist
-///      boundary rewrites the cache on every write): everything comes
-///      from the JSON payload of the one fetched row.
-///   2. Cache missing but the row holds a migrated (v2) doc:
-///      `summary`/`body`/`blocks` are ALL projected from that one doc
-///      — ids/revs the write path will actually check, and
-///      `flatten(blocks) == body` holds by construction. Never mix
-///      `payload.body` with CRDT-derived blocks. (A cache dropped by
-///      a pre-#960 binary — design D8 — must not make `read` hand out
-///      re-derived ids that diverge from the doc, e.g. after a
-///      `blocks.move`.)
-///   3. `body_crdt` NULL (pure v1 row) or a legacy not-yet-migrated
-///      doc layout: derive the index deterministically (`reassign_ids`
-///      over `split_body` of the served body) — byte-identical to
-///      what the CRDT seed / lazy migrator will mint on first write
-///      with the same (absent) hint, so the ids stay valid targets.
-pub(crate) async fn load_report_read_snapshot(
-    ctx: &Arc<AppContext>,
-    report_card_id: &str,
-) -> Result<ReportReadSnapshot, RpcError> {
-    let (card, bytes) = ctx
-        .repo
-        .card_get_with_body_crdt(report_card_id)
-        .await
-        .map_err(|e| RpcError::internal(format!("wave_report: read report row: {e}")))?
-        .ok_or_else(|| {
-            RpcError::internal(format!(
-                "wave_report: report card {report_card_id} vanished mid-read"
-            ))
-        })?;
-    let payload: WaveReportPayload = serde_json::from_value(card.payload.clone()).map_err(|e| {
-        RpcError::internal(format!(
-            "wave_report: malformed payload on card {report_card_id}: {e}"
-        ))
-    })?;
-    let derive = |body: &str| {
-        calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
-    };
-    // 1. Cache present: serve the JSON payload of this one row.
-    if let Some(blocks) = payload.blocks {
-        return Ok(ReportReadSnapshot {
-            updated_at: card.updated_at,
-            schema_version: payload.schema_version,
-            summary: payload.summary,
-            body: payload.body,
-            blocks,
-        });
-    }
-    // 3a. Pure v1 row (no CRDT yet): the seed will run `reassign_ids`
-    //     over the same body with the same (absent) hints.
-    let Some(bytes) = bytes else {
-        let blocks = derive(&payload.body);
-        return Ok(ReportReadSnapshot {
-            updated_at: card.updated_at,
-            schema_version: payload.schema_version,
-            summary: payload.summary,
-            body: payload.body,
-            blocks,
-        });
-    };
-    let doc = crate::wave_report_doc::ReportDoc::from_bytes(&bytes).map_err(|e| {
-        RpcError::internal(format!(
-            "wave_report: load CRDT for card {report_card_id}: {e}"
-        ))
-    })?;
-    let internal =
-        |e: anyhow::Error| RpcError::internal(format!("wave_report: card {report_card_id}: {e}"));
-    // 2 + 3b. Everything from the one doc: summary, body, and (for a
-    //     v2 layout) the block snapshot — internally consistent by
-    //     construction.
-    let (summary, body) = doc.project().map_err(internal)?;
-    let blocks = if doc.has_blocks_layout().map_err(internal)? {
-        doc.blocks_snapshot().map_err(internal)?
-    } else {
-        // Legacy doc layout: mirror the migrator's derivation from
-        // the doc's own projected body.
-        derive(&body)
-    };
-    Ok(ReportReadSnapshot {
-        updated_at: card.updated_at,
-        schema_version: payload.schema_version,
-        summary,
-        body,
-        blocks,
-    })
-}
-
 pub(crate) async fn report_read(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
@@ -245,7 +141,9 @@ pub(crate) async fn report_read(
     // card id; the response body comes from ONE fresh row snapshot so
     // `summary`/`text`/`blocks` can never tear against each other.
     let (_, _, report_card, _) = resolve_report_for_caller(&ctx, &identity).await?;
-    let snapshot = load_report_read_snapshot(&ctx, report_card.id.as_str()).await?;
+    let snapshot = load_report_read_snapshot(ctx.repo.as_ref(), report_card.id.as_str())
+        .await
+        .map_err(|e| RpcError::internal(format!("wave_report: {e}")))?;
     let text = if with_markers {
         snapshot
             .blocks

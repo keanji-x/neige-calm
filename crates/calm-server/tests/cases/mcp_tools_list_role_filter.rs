@@ -11,6 +11,7 @@ use support::mcp::{
 
 fn expected_spec_toolset() -> Vec<&'static str> {
     vec![
+        "calm.cove.outline",
         "calm.plan.cancel",
         "calm.plan.list",
         "calm.plan.upsert",
@@ -20,6 +21,7 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.report.blocks.move",
         "calm.report.blocks.upsert",
         "calm.report.edit",
+        "calm.report.links.backlinks",
         "calm.report.write",
         "calm.report.write_markdown",
         "calm.review.round",

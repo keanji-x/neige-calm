@@ -44,12 +44,12 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, Event, EventBus};
-use calm_server::ids::WaveId;
+use calm_server::ids::{ActorId, WaveId};
 use calm_server::model::{NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
-use calm_server::wave_report::WaveReportPayload;
+use calm_server::wave_report::{WaveReportPayload, persist_report};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -65,7 +65,7 @@ struct Boot {
     auth_state: AuthState,
     wave_id: WaveId,
     /// Repo used to seed fixtures + read back post-write state.
-    repo: Arc<dyn Repo>,
+    repo: Arc<SqlxRepo>,
 }
 
 async fn boot() -> Boot {
@@ -91,21 +91,15 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
-    // Mint the wave-report card the same way `routes::waves::create_wave`
-    // does (kind = "wave-report", seed payload = `WaveReportPayload::initial()`).
-    // We bypass the role gate / kernel-owned bit here — those are MCP-
-    // side concerns; the REST endpoint resolves the report card by
-    // `kind == "wave-report"` (matching the in-handler resolver).
-    let _report_card = repo
-        .card_create(NewCard {
-            wave_id: wave.id.clone(),
-            title: None,
-            kind: "wave-report".into(),
-            sort: Some(-1.0),
-            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
-        })
-        .await
-        .unwrap();
+    repo.card_create(NewCard {
+        wave_id: wave.id.clone(),
+        kind: "wave-report".into(),
+        sort: Some(-1.0),
+        payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        title: None,
+    })
+    .await
+    .unwrap();
 
     let state = AppState::from_parts(
         repo.clone(),
@@ -196,6 +190,117 @@ async fn login(app: &axum::Router) -> String {
     let first = raw.split(';').next().unwrap();
     assert!(first.starts_with(&format!("{SESSION_COOKIE}=")));
     first.to_string()
+}
+
+#[tokio::test]
+async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
+    let boot = boot().await;
+    let source_wave_id = boot.wave_id.clone();
+    let source_wave = boot
+        .repo
+        .wave_get(source_wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let target_wave = boot
+        .repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: source_wave.cove_id.clone(),
+            title: "target wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    boot.repo
+        .card_create(NewCard {
+            wave_id: target_wave.id.clone(),
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+            title: None,
+        })
+        .await
+        .unwrap();
+
+    let source_report = boot
+        .repo
+        .cards_by_wave(source_wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    let updated_report = persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::Kernel,
+        EditAuthor::Kernel,
+        source_wave,
+        source_report,
+        WaveReportPayload::initial(),
+        WaveReportPayload::new("", format!("[Target](neige://wave/{})", target_wave.id)),
+        None,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+    let updated_payload: WaveReportPayload =
+        serde_json::from_value(updated_report.payload).unwrap();
+    let source_block_id = updated_payload
+        .blocks
+        .and_then(|blocks| blocks.into_iter().next())
+        .map(|block| block.id)
+        .expect("persisted report has a prose block");
+    sqlx::query("UPDATE cards SET payload = json_remove(payload, '$.blocks') WHERE id = ?1")
+        .bind(updated_report.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/waves/{}/backlinks", target_wave.id))
+                .header(header::COOKIE, cookie.clone())
+                .header("x-calm-actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let entries = body["backlinks"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(body["truncated"], false);
+    assert_eq!(body["skipped_sources"], 0);
+    assert_eq!(entries[0]["src_wave_id"], source_wave_id.as_str());
+    assert_eq!(entries[0]["src_wave_title"], "report wave");
+    assert_eq!(entries[0]["src_block_id"], source_block_id);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/waves/wave_unknown/backlinks")
+                .header(header::COOKIE, cookie)
+                .header("x-calm-actor", "user")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 /// Collect up to `n` envelopes from the bus, with a short timeout so a
@@ -559,6 +664,205 @@ async fn explicit_user_actor_header_succeeds() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn generic_patch_rejects_wave_report_payload_and_preserves_json_and_crdt() {
+    let boot = boot().await;
+    let wave_id = boot.wave_id.clone();
+    let repo = boot.repo.clone();
+    let report = repo
+        .cards_by_wave(wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    let report_id = report.id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+
+    let persisted = json!({
+        "summary": "persisted",
+        "body": "# Goal\n\npersist boundary content\n",
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{wave_id}/report"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(persisted.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let before = repo
+        .card_get_with_body_crdt(report_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(before.1.is_some(), "persist boundary must seed body_crdt");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{report_id}"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({
+                        "payload": WaveReportPayload::new(
+                            "bypass",
+                            "# Goal\n\nmust not be persisted\n"
+                        )
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(error.contains("report persist boundary"), "error = {error}");
+
+    let after = repo
+        .card_get_with_body_crdt(report_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.0.payload, before.0.payload);
+    assert_eq!(after.1, before.1);
+}
+
+#[tokio::test]
+async fn generic_patch_rejects_worker_retarget_to_wave_report_with_payload() {
+    let boot = boot().await;
+    let worker = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            title: None,
+            kind: "worker".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", worker.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({
+                        "kind": "wave-report",
+                        "payload": WaveReportPayload::new("", "# Goal\n")
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn generic_patch_rejects_wave_report_round_trip_without_payload() {
+    let boot = boot().await;
+    let report = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let away = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", report.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(
+                    json!({"kind": "worker", "payload": {"arbitrary": true}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(away.status(), StatusCode::BAD_REQUEST);
+
+    let back = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", report.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(json!({"kind": "wave-report"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(back.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn generic_patch_allows_wave_report_title_and_sort_without_payload() {
+    let boot = boot().await;
+    let report = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/cards/{}", report.id))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({"title": "Report", "sort": 12.5}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let card: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(card["title"], "Report");
+    assert_eq!(card["sort"], 12.5);
+}
+
 // ---------------------------------------------------------------------------
 // Root-cause lock for the codex-e2e report-card fixture gap.
 //
@@ -642,10 +946,10 @@ async fn resolve_report_for_wave_ok_when_report_card_present() {
     // the fixed fixture) does: kind "wave-report", sort -1.0, initial payload.
     repo.card_create(NewCard {
         wave_id: wave_id.clone(),
-        title: None,
         kind: "wave-report".into(),
         sort: Some(-1.0),
         payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        title: None,
     })
     .await
     .unwrap();

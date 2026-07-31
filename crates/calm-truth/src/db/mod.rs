@@ -363,6 +363,7 @@ pub trait RepoRead: Send + Sync + 'static {
 
     // ---- cards
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
+    async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
     /// #960 PR2 review — atomic single-row fetch of a card together
     /// with its opaque CRDT blob (`cards.body_crdt`). One SELECT, one

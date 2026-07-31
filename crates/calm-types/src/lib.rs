@@ -38,6 +38,7 @@ pub mod model;
 pub mod observation;
 pub mod proposal;
 pub mod report_blocks;
+pub mod report_links;
 pub mod runtime;
 pub mod wave_fs_dto;
 pub mod wave_lifecycle;

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use sqlx::Row;
 
 use super::{
-    SqlxRepo, begin_immediate_tx, card_create_tx, card_delete_tx, card_update_tx, cove_create_tx,
-    cove_delete_tx, cove_update_tx, overlay_delete_by_entity_tx,
+    SqlxRepo, begin_immediate_tx, card_create_tx, card_create_with_id_tx, card_delete_tx,
+    card_update_tx, cove_create_tx, cove_delete_tx, cove_update_tx, overlay_delete_by_entity_tx,
     overlay_delete_card_overlays_by_wave_tx, overlay_delete_subtree_by_cove_tx, overlay_delete_tx,
     overlay_upsert_tx, session_commit_exit_tx, session_insert_tx,
     session_record_activity_by_thread_tx, session_record_activity_tx, session_set_liveness_tx,
@@ -326,7 +326,22 @@ impl RepoSyncDomainRaw for SqlxRepo {
     // ---------------------------------------------------------------- cards
     async fn card_create(&self, p: NewCard) -> Result<Card> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = card_create_tx(&mut tx, p, &self.card_role_cache).await?;
+        let out = if p.kind == "wave-report" {
+            // Raw domain fixtures and kernel-side callers have no role
+            // parameter; preserve their report-mint semantics by making the
+            // required role explicit at the guarded insert boundary.
+            card_create_with_id_tx(
+                &mut tx,
+                new_id(),
+                p,
+                CardRole::ReportCard,
+                false,
+                &self.card_role_cache,
+            )
+            .await?
+        } else {
+            card_create_tx(&mut tx, p, &self.card_role_cache).await?
+        };
         tx.commit().await?;
         Ok(out)
     }

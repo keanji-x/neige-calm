@@ -31,7 +31,6 @@ use calm_server::mcp_server::tools::wave_report_blocks::{
     RPC_REV_CONFLICT, TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_KINDS, TOOL_REPORT_BLOCKS_MOVE,
     TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
-use calm_server::model::CardPatch;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
@@ -69,6 +68,23 @@ async fn read(boot: &Boot, args: Value) -> Value {
     call_tool(boot, TOOL_REPORT_READ, spec_identity(boot), args)
         .await
         .expect("spec can read the report")
+}
+
+async fn overwrite_report_payload_cache(boot: &Boot, payload: Value) {
+    let card_id = boot.report_card_id.to_string();
+    let payload = serde_json::to_string(&payload).expect("serialize stale payload cache");
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+                .bind(payload)
+                .bind(card_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("simulate a stale payload cache from a pre-gate binary");
 }
 
 /// Seed a two-block body through the legacy write tool.
@@ -922,19 +938,7 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
         .expect("payload object")
         .remove("blocks")
         .expect("blocks cache was present");
-    boot.repo
-        .card_update(
-            boot.report_card_id.as_str(),
-            CardPatch {
-                title: None,
-                kind: None,
-                sort: None,
-                payload: Some(payload),
-                deletable: None,
-            },
-        )
-        .await
-        .expect("strip blocks cache");
+    overwrite_report_payload_cache(&boot, payload).await;
 
     // Read must serve the CRDT truth (same ids/revs/order as before).
     let out = read(&boot, json!({})).await;
@@ -974,23 +978,15 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
     let truth = index_of(&read(&boot, json!({})).await);
 
     // Stale cache row: body/summary rewritten, blocks dropped.
-    boot.repo
-        .card_update(
-            boot.report_card_id.as_str(),
-            CardPatch {
-                title: None,
-                kind: None,
-                sort: None,
-                payload: Some(json!({
-                    "schemaVersion": 2,
-                    "summary": "STALE SUMMARY",
-                    "body": "STALE BODY\n",
-                })),
-                deletable: None,
-            },
-        )
-        .await
-        .expect("write stale cache");
+    overwrite_report_payload_cache(
+        &boot,
+        json!({
+            "schemaVersion": 2,
+            "summary": "STALE SUMMARY",
+            "body": "STALE BODY\n",
+        }),
+    )
+    .await;
 
     let out = read(&boot, json!({})).await;
     assert_eq!(

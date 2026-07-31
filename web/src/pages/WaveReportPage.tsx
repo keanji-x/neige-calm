@@ -1,8 +1,10 @@
-import { lazy, Suspense, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
+import { Link, useRouterState } from '@tanstack/react-router';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
-import { useWaveFileContent } from '../api/queries';
+import { useWaveBacklinksQuery, useWaveFileContent } from '../api/queries';
+import type { WaveBacklink, WaveBacklinksResponse } from '../api/calm';
 import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
 import { waveDisplayTitle } from '../shared/waveTitle';
@@ -13,13 +15,25 @@ import type {
   WaveReportCardData,
 } from '../cards/builtins/wave-report';
 import { WaveFileTree } from '../cards/wave-file-tree';
-import { ReportBlockView } from './report-blocks';
+import {
+  ReportBlockView,
+  ReportLink,
+  reportUrlTransform,
+} from './report-blocks';
 import { ProposalsPanel } from './proposals';
 import { useWaveFsViewer } from '../wave-fs-viewers';
 import { EventLinePanel } from './EventLinePanel';
 import { SpecConversation, type ReportView } from './SpecConversation';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { useAnyRuntimeLive, useEventLineEntries } from './useEventLineEntries';
+
+function decodeHash(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 
 export interface WaveReportPageProps {
   wave: Wave;
@@ -210,13 +224,28 @@ function ReportContent({
   );
 }
 
-function ReportMarkdown({
+export function ReportMarkdown({
   body,
   blocks,
 }: {
   body: string;
   blocks?: ReportBlock[];
 }) {
+  const hash = useRouterState({
+    select: (state) => state.location.hash,
+  });
+  const renderedBlockIds = blocks?.map((block) => block.id).join('\0') ?? '';
+
+  useEffect(() => {
+    const blockId = decodeHash(hash);
+    if (!blockId) return;
+    const block = document.getElementById(blockId);
+    if (!block?.classList.contains('report-block')) return;
+    block.scrollIntoView();
+    block.classList.remove('report-block--highlight');
+    requestAnimationFrame(() => block.classList.add('report-block--highlight'));
+  }, [hash, renderedBlockIds]);
+
   if (blocks) {
     return (
       <>
@@ -228,8 +257,101 @@ function ReportMarkdown({
   }
   return (
     <div className="report-block report-prose calm-prose">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{body}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={reportUrlTransform}
+        components={{ a: ReportLink }}
+      >
+        {body}
+      </ReactMarkdown>
     </div>
+  );
+}
+
+function BacklinksPanel({
+  waveId: currentWaveId,
+  hasRenderedBlocks,
+  page,
+  error,
+}: {
+  waveId: string;
+  hasRenderedBlocks: boolean;
+  page?: WaveBacklinksResponse;
+  error: Error | null;
+}) {
+  const groups = useMemo(() => {
+    const backlinks = page?.backlinks ?? [];
+    const grouped = new Map<
+      string,
+      { title: string; entries: WaveBacklink[] }
+    >();
+    for (const backlink of backlinks) {
+      const group = grouped.get(backlink.src_wave_id);
+      if (group) group.entries.push(backlink);
+      else {
+        grouped.set(backlink.src_wave_id, {
+          title:
+            backlink.src_wave_id === currentWaveId
+              ? 'This wave (self-reference)'
+              : backlink.src_wave_title,
+          entries: [backlink],
+        });
+      }
+    }
+    return [...grouped.entries()];
+  }, [page?.backlinks, currentWaveId]);
+
+  if (
+    groups.length === 0 &&
+    !error &&
+    !page?.truncated &&
+    !page?.skipped_sources
+  )
+    return null;
+  return (
+    <section className="report-backlinks" aria-labelledby="report-backlinks-title">
+      <h2 id="report-backlinks-title">Backlinks</h2>
+      {error && (
+        <div role="alert" className="report-error">
+          Could not load backlinks: {formatApiError(error)}
+        </div>
+      )}
+      {page?.truncated && (
+        <p role="status">Some backlinks are not shown.</p>
+      )}
+      {!!page?.skipped_sources && (
+        <p role="status">
+          Backlinks from {page.skipped_sources} source report
+          {page.skipped_sources === 1 ? '' : 's'} could not be loaded.
+        </p>
+      )}
+      {groups.map(([waveId, group]) => (
+        <div className="report-backlinks-group" key={waveId}>
+          <h3>{group.title}</h3>
+          <ul>
+            {group.entries.map((entry, index) => (
+              <li
+                key={`${entry.src_block_id}:${entry.dst_block_id ?? ''}:${index}`}
+              >
+                <Link
+                  to="/wave/$waveId"
+                  params={{ waveId }}
+                  hash={entry.src_block_id}
+                >
+                  {entry.label}
+                </Link>
+                {hasRenderedBlocks && entry.dst_block_id && (
+                  <span className="report-backlinks-target">
+                    {' '}
+                    · cites block {entry.dst_block_id}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -309,6 +431,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const eventEntries = useEventLineEntries(wave.id, cards);
   const live = useAnyRuntimeLive(wave.id, cards);
+  const backlinksQ = useWaveBacklinksQuery(wave.id);
 
   // Sync reset during render so a new wave never renders with the old file path.
   if (lastWaveId !== wave.id) {
@@ -388,6 +511,14 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
               />
             ) : (
               <ReportEmptyState />
+            )}
+            {selectedFilePath === 'report.md' && (
+              <BacklinksPanel
+                waveId={wave.id}
+                hasRenderedBlocks={reportCard?.blocks != null}
+                page={backlinksQ.data}
+                error={backlinksQ.error}
+              />
             )}
           </article>
         </SpecConversation>
