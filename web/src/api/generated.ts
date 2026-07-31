@@ -1757,9 +1757,10 @@ export interface components {
         /**
          * @description Request body for `POST /api/waves/:id/report`.
          *
-         *     Both fields are required `String`s (per `WaveReportPayload`'s
-         *     [[required-over-option]] rule). An empty `summary` is a valid
-         *     value; the caller must commit to *some* string.
+         *     `summary` and `body` are required `String`s (per
+         *     `WaveReportPayload`'s [[required-over-option]] rule), and
+         *     `ifDocRev` is the required document-wide revision anchor. An empty
+         *     `summary` is valid; the caller must commit to *some* string.
          *
          *     **No `author` field.** Author is derived server-side from the
          *     authenticated session and pinned to [`EditAuthor::User`] for this
@@ -1783,6 +1784,12 @@ export interface components {
              *     the structure.
              */
             body: string;
+            /**
+             * Format: int64
+             * @description Expected document revision from the latest report read. Use zero
+             *     for a document that has never been persisted through the CRDT path.
+             */
+            ifDocRev: number;
             /**
              * @description One-line summary the wave-list sidebars surface. Empty string
              *     is a valid value; the caller must commit.
@@ -2105,7 +2112,8 @@ export interface components {
          *
          *     ```json
          *     {
-         *       "schemaVersion": 1,
+         *       "schemaVersion": 3,
+         *       "docRev": 7,
          *       "summary": "Refactored the dispatcher into a typed actor",
          *       "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
          *     }
@@ -2131,13 +2139,20 @@ export interface components {
              */
             body: string;
             /**
+             * Format: int64
+             * @description Document-wide optimistic-concurrency revision. This is mirrored
+             *     from the authoritative CRDT root and increments after every
+             *     successful report persist (whole-document or block-level).
+             */
+            docRev: number;
+            /**
              * Format: int32
              * @description Tier A persistence contract — see
              *     `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-             *     `validation.rs`. `2` since #960 PR2 (blocks became the
-             *     authoritative source; `body` is the flat projection). v1 rows
-             *     (absent or `1`) remain readable and are lazily upgraded at the
-             *     next persist via the CRDT-layer migrator
+             *     `validation.rs`. `3` since #979 added document-wide optimistic
+             *     concurrency; blocks remain authoritative and `body` is their
+             *     flat projection. v1/v2 rows remain readable and are lazily
+             *     upgraded at the next persist via the CRDT-layer migrator
              *     (`ReportDoc::ensure_blocks_layout`).
              */
             schemaVersion: number;
@@ -4735,6 +4750,15 @@ export interface operations {
             };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Report document revision conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

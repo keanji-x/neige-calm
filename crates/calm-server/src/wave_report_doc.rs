@@ -71,6 +71,9 @@ const FIELD_SUMMARY: &str = "summary";
 const FIELD_BLOCKS: &str = "blocks";
 /// Field key for the block-id order list at the doc root (v2 layout).
 const FIELD_ORDER: &str = "order";
+/// Document-wide optimistic-concurrency revision (Uint). Legacy docs
+/// omit it and therefore read as revision zero until their first write.
+const FIELD_DOC_REV: &str = "doc_rev";
 /// Field key for the legacy (pre-#960) body text object. Only the
 /// migrator and the read-only projection fallback may touch it.
 const LEGACY_FIELD_BODY: &str = "body";
@@ -111,6 +114,35 @@ impl ReportDoc {
         );
         Self::write_blocks_layout(&mut doc, &blocks);
         Self(doc)
+    }
+
+    /// Read the authoritative document revision from the CRDT root.
+    /// Missing (legacy) fields are revision zero.
+    pub fn doc_rev(&self) -> Result<u64> {
+        let Some((value, _)) = self.0.get(&ROOT, FIELD_DOC_REV).context("read doc_rev")? else {
+            return Ok(0);
+        };
+        match value {
+            Value::Scalar(value) => value
+                .to_u64()
+                .context("doc_rev must be an unsigned integer"),
+            Value::Object(_) => bail!("doc_rev must be a scalar"),
+        }
+    }
+
+    /// Increment `doc_rev` after a successful mutation. Called inside
+    /// the persist transaction so the revision and report bytes commit
+    /// atomically. This root scalar is a last-writer-wins register, so
+    /// callers must serialize mutations through the persist transaction;
+    /// concurrently merged branches could otherwise both publish N+1 and
+    /// make a stale N+1 anchor appear current. Overflow is treated as
+    /// corrupted/exhausted state.
+    pub fn increment_doc_rev(&mut self) -> Result<u64> {
+        let next = self.doc_rev()?.checked_add(1).context("doc_rev overflow")?;
+        self.0
+            .put(&ROOT, FIELD_DOC_REV, next)
+            .context("write doc_rev")?;
+        Ok(next)
     }
 
     /// Load a doc from its `to_bytes` serialization. Pure load — no

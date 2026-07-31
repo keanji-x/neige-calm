@@ -96,7 +96,8 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
         json!({
             "body": "# A\n\nalpha\n\n# B\n\nbeta\n",
             "summary": "seeded",
-            "message": "seed two blocks"
+            "message": "seed two blocks",
+            "if_doc_rev": 0
         }),
     )
     .await
@@ -104,6 +105,69 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
     let index = index_of(&read(boot, json!({})).await);
     assert_eq!(index.len(), 2, "two H1 sections → two blocks");
     index
+}
+
+#[tokio::test]
+async fn block_write_invalidates_previously_read_whole_document_revision() {
+    let boot = boot().await;
+    let before = read(&boot, json!({})).await;
+    assert_eq!(before["docRev"], 0);
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "payload": {"markdown": "# Added\n"}}),
+    )
+    .await
+    .unwrap();
+
+    let conflict = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({"body": "# stale rewrite\n", "if_doc_rev": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.code, RPC_REV_CONFLICT);
+    assert!(conflict.message.contains("current doc_rev is 1"));
+    let after = read(&boot, json!({})).await;
+    assert_eq!(after["docRev"], 1);
+    assert_ne!(after["body"], "# stale rewrite\n");
+}
+
+#[tokio::test]
+async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
+    let boot = boot().await;
+    let created = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "markdown": "# Added\n"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created["rev"], 1);
+    assert_eq!(created["docRev"], 1);
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "# accidental overwrite\n",
+            "message": "wrong revision domain",
+            "if_rev": 1
+        }),
+    )
+    .await
+    .expect_err("a block if_rev must not satisfy the document anchor");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("if_doc_rev"));
+    assert_ne!(
+        read(&boot, json!({})).await["body"],
+        "# accidental overwrite\n"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +388,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
     assert!(id.starts_with("b_"));
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(1));
     assert!(out.get("updated_at").and_then(Value::as_i64).is_some());
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
     // Dual-event invariant: exactly one CardUpdated + one
     // WaveReportEdited, flat projections, summary untouched.
@@ -615,6 +680,7 @@ async fn move_reorders_without_touching_rev() {
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(ids[1].1));
 
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n# A\n\nalpha\n\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(
@@ -702,7 +768,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     assert_eq!(current_payload(&boot).await, before);
 
     // Matching if_rev deletes.
-    call_tool(
+    let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
         spec_identity(&boot),
@@ -711,6 +777,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     .await
     .expect("delete succeeds");
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(index, vec![(ids[1].0.clone(), ids[1].1)]);
@@ -719,6 +786,42 @@ async fn delete_requires_if_rev_and_honors_it() {
 // ---------------------------------------------------------------------------
 // write_markdown
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict() {
+    let boot = boot().await;
+    let missing = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# Missing rev\n" }),
+    )
+    .await
+    .expect_err("write_markdown without if_doc_rev must be rejected");
+    assert_eq!(missing.code, RpcError::INVALID_PARAMS);
+
+    let first = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# First\n", "if_doc_rev": 0 }),
+    )
+    .await
+    .expect("fresh revision succeeds");
+    assert_eq!(first["docRev"], 1);
+
+    let stale = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# Stale\n", "if_doc_rev": 0 }),
+    )
+    .await
+    .expect_err("stale whole-document anchor must conflict");
+    assert_eq!(stale.code, RPC_REV_CONFLICT);
+    assert!(stale.message.contains("current doc_rev is 1"));
+    assert_eq!(current_payload(&boot).await.body, "# First\n");
+}
 
 #[tokio::test]
 async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
@@ -734,11 +837,11 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
         "<!-- neige:{} -->\n# A\n\nalpha\n\n<!-- neige:{} -->\n# B\n\nbeta edited\n",
         ids[0].0, ids[1].0
     );
-    call_tool(
+    let out = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": body }),
+        json!({ "body": body, "if_doc_rev": 1 }),
     )
     .await
     .expect("write_markdown succeeds");
@@ -755,6 +858,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
 
     // Hard assertion: markers never reach storage nor the event log.
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# A\n\nalpha\n\n# B\n\nbeta edited\n");
     assert!(!payload.body.contains("<!-- neige:"));
     assert_eq!(payload.summary, "seeded", "omitted summary is preserved");
@@ -789,7 +893,8 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
         spec_identity(&boot),
         json!({
             "body": "# A\nsame\n# A\nsame\n",
-            "message": "seed duplicate blocks"
+            "message": "seed duplicate blocks",
+            "if_doc_rev": 0
         }),
     )
     .await
@@ -806,7 +911,7 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": body }),
+        json!({ "body": body, "if_doc_rev": 1 }),
     )
     .await
     .expect("write_markdown succeeds");
@@ -828,7 +933,8 @@ async fn write_markdown_without_markers_falls_back_to_lcs() {
         spec_identity(&boot),
         json!({
             "body": "# X\n\nbrand new\n\n# A\n\nalpha touched\n\n# B\n\nbeta\n",
-            "summary": "restructured"
+            "summary": "restructured",
+            "if_doc_rev": 1
         }),
     )
     .await
@@ -1120,7 +1226,7 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "# 概要\n\nprose only now\n", "message": "stomp" }),
+        json!({ "body": "# 概要\n\nprose only now\n", "message": "stomp", "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("write dropping the fence must fail");
@@ -1133,7 +1239,7 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "\"ma20\"", "new_string": "\"ma60\"", "message": "stomp" }),
+        json!({ "old_string": "\"ma20\"", "new_string": "\"ma60\"", "message": "stomp", "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("edit inside the fence must fail");
@@ -1164,7 +1270,8 @@ async fn write_preserving_the_fence_verbatim_passes_and_holds_id_rev() {
         spec_identity(&boot),
         json!({
             "body": format!("# 概要\n\nrewritten prose\n{fence}# 新节\n\ntail\n"),
-            "message": "legal whole-document rewrite"
+            "message": "legal whole-document rewrite",
+            "if_doc_rev": 1
         }),
     )
     .await
@@ -1194,7 +1301,7 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": "# 概要\n```neige-block chart.candles\n{oops\n```\n" }),
+        json!({ "body": "# 概要\n```neige-block chart.candles\n{oops\n```\n", "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("malformed fence must reject the whole write");
@@ -1209,7 +1316,7 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": format!("{SEED_BODY}{edited}") }),
+        json!({ "body": format!("{SEED_BODY}{edited}"), "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect("fence-editing write_markdown passes");

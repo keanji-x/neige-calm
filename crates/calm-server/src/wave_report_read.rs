@@ -11,6 +11,7 @@ use calm_types::wave_report::ReportBlock;
 pub struct ReportReadSnapshot {
     pub updated_at: i64,
     pub schema_version: u32,
+    pub doc_rev: u64,
     pub summary: String,
     pub body: String,
     pub blocks: Vec<ReportBlock>,
@@ -57,23 +58,14 @@ pub async fn load_report_read_snapshot(
     let derive = |body: &str| {
         calm_types::report_blocks::reassign_ids(&[], &calm_types::report_blocks::split_body(body))
     };
-    // 1. Cache present: serve the JSON payload of this one row.
-    if let Some(blocks) = payload.blocks {
-        return Ok(ReportReadSnapshot {
-            updated_at: card.updated_at,
-            schema_version: payload.schema_version,
-            summary: payload.summary,
-            body: payload.body,
-            blocks,
-        });
-    }
-    // 3a. Pure v1 row (no CRDT yet): the seed will run `reassign_ids`
+    // Pure legacy row (no CRDT yet): doc_rev is zero and the seed will run `reassign_ids`
     //     over the same body with the same (absent) hints.
     let Some(bytes) = bytes else {
         let blocks = derive(&payload.body);
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
             schema_version: payload.schema_version,
+            doc_rev: 0,
             summary: payload.summary,
             body: payload.body,
             blocks,
@@ -84,6 +76,23 @@ pub async fn load_report_read_snapshot(
             "wave_report: load CRDT for card {report_card_id}: {e}"
         ))
     })?;
+    let doc_rev = doc.doc_rev().map_err(|e| {
+        CalmError::Internal(format!(
+            "wave_report: read doc rev for card {report_card_id}: {e}"
+        ))
+    })?;
+    // Cache may provide the projection, but revision always comes from
+    // the CRDT root rather than the JSON mirror.
+    if let Some(blocks) = payload.blocks {
+        return Ok(ReportReadSnapshot {
+            updated_at: card.updated_at,
+            schema_version: payload.schema_version,
+            doc_rev,
+            summary: payload.summary,
+            body: payload.body,
+            blocks,
+        });
+    }
     let internal =
         |e: anyhow::Error| CalmError::Internal(format!("wave_report: card {report_card_id}: {e}"));
     // 2 + 3b. Everything from the one doc: summary, body, and (for a
@@ -100,6 +109,7 @@ pub async fn load_report_read_snapshot(
     Ok(ReportReadSnapshot {
         updated_at: card.updated_at,
         schema_version: payload.schema_version,
+        doc_rev,
         summary,
         body,
         blocks,
@@ -189,6 +199,7 @@ mod tests {
             card,
             current,
             next,
+            0,
             None,
             None,
             false,

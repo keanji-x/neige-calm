@@ -14,7 +14,8 @@
 // started at version `1` — rows written before the field existed (or by
 // a v1 writer) can only be v1. `wave-report` is at v2 since #960 PR2;
 // its reader only rejects versions above the supported constant — v1 and
-// v2 rows share the same optional-blocks parser.
+// v2 rows share the same optional-blocks parser. v3 adds the document-wide
+// `docRev` optimistic-concurrency anchor for whole-document report writes.
 
 /** `schemaVersion` for `kind: "terminal"` card payloads. */
 export const TERMINAL_PAYLOAD_SCHEMA_VERSION = 1;
@@ -25,8 +26,8 @@ export const SPEC_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "claude"` card payloads. */
 export const CLAUDE_PAYLOAD_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "wave-report"` card payloads (issue #229 PR B;
- *  v2 adds the `blocks` array — issue #960 PR2). */
-export const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION = 2;
+ *  v2 adds the `blocks` array; v3 adds `docRev` — issue #979). */
+export const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION = 3;
 /** `schemaVersion` for `kind: "status"` overlay payloads. */
 export const OVERLAY_STATUS_SCHEMA_VERSION = 1;
 /** `schemaVersion` for `kind: "progress"` overlay payloads. */

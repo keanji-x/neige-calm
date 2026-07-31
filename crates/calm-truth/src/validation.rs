@@ -78,15 +78,14 @@ pub const CLAUDE_PAYLOAD_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Card.payload` when `kind == "wave-report"` (issue
 /// #229 PR B). Mirrors `calm_types::wave_report::WaveReportPayload::SCHEMA_VERSION`.
 ///
-/// `2` since #960 PR2: the CRDT block map is authoritative and every
-/// persist writes a v2 payload. There is no JSON-shape migrator — v1
-/// rows (absent or `schemaVersion: 1`) deserialize into the same
-/// struct (`blocks` is optional) and are lazily upgraded to v2 on
+/// `3` since #979: the CRDT root carries `doc_rev`, mirrored as
+/// `docRev` in the payload. There is no SQL migration — v1/v2 rows
+/// deserialize with revision zero and are lazily upgraded to v3 on
 /// their next write through `persist_report`, whose CRDT migrator
 /// (`ReportDoc::ensure_blocks_layout`) rebuilds the block layout. The
 /// read path carries no version guard for this kind, so v1 rows stay
 /// readable in place.
-pub const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 2;
+pub const WAVE_REPORT_PAYLOAD_SCHEMA_VERSION: u32 = 3;
 /// `schemaVersion` for `Overlay.payload` when `kind == "status"`.
 pub const OVERLAY_STATUS_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "progress"`.
@@ -1279,7 +1278,7 @@ mod tests {
     fn wave_report_happy() {
         validate_builtin_card(
             "wave-report",
-            &json!({ "schemaVersion": 2, "summary": "", "body": "# Goal\n" }),
+            &json!({ "schemaVersion": 3, "docRev": 1, "summary": "", "body": "# Goal\n" }),
         )
         .unwrap();
     }
@@ -1287,8 +1286,8 @@ mod tests {
     #[test]
     fn wave_report_accepts_missing_schema_version() {
         // Missing schemaVersion is accepted — legacy v1 rows never
-        // carried one reliably; they are lazily upgraded to v2 at the
-        // next persist (#960 PR2), not rejected at the write gate.
+        // carried one reliably; they are lazily upgraded at the next
+        // persist, not rejected at the write gate.
         validate_builtin_card(
             "wave-report",
             &json!({ "summary": "hi", "body": "# Done\n" }),
@@ -1297,10 +1296,23 @@ mod tests {
     }
 
     #[test]
+    fn wave_report_v3_rejects_missing_doc_rev() {
+        let err = validate_builtin_card(
+            "wave-report",
+            &json!({ "schemaVersion": 3, "summary": "", "body": "# Goal\n" }),
+        )
+        .unwrap_err();
+        let Some(msg) = bad_request_message(&err) else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("docRev"), "msg = {msg}");
+    }
+
+    #[test]
     fn wave_report_rejects_missing_summary() {
         let err = validate_builtin_card(
             "wave-report",
-            &json!({ "schemaVersion": 2, "body": "# Goal" }),
+            &json!({ "schemaVersion": 3, "body": "# Goal" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
@@ -1313,7 +1325,7 @@ mod tests {
     fn wave_report_rejects_missing_body() {
         let err = validate_builtin_card(
             "wave-report",
-            &json!({ "schemaVersion": 2, "summary": "x" }),
+            &json!({ "schemaVersion": 3, "summary": "x" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
@@ -1326,7 +1338,7 @@ mod tests {
     fn wave_report_rejects_wrong_field_type() {
         let err = validate_builtin_card(
             "wave-report",
-            &json!({ "schemaVersion": 2, "summary": 42, "body": "x" }),
+            &json!({ "schemaVersion": 3, "summary": 42, "body": "x" }),
         )
         .unwrap_err();
         assert!(is_bad_request(&err));
@@ -1336,14 +1348,30 @@ mod tests {
     fn wave_report_rejects_unknown_schema_version() {
         let err = validate_builtin_card(
             "wave-report",
-            &json!({ "schemaVersion": 3, "summary": "", "body": "" }),
+            &json!({ "schemaVersion": 4, "summary": "", "body": "" }),
         )
         .unwrap_err();
         let Some(msg) = bad_request_message(&err) else {
             panic!("expected BadRequest");
         };
         assert!(msg.contains("wave-report"), "msg = {msg}");
-        assert!(msg.contains('3'), "msg = {msg}");
+        assert!(msg.contains('4'), "msg = {msg}");
+    }
+
+    #[test]
+    fn wave_report_rejects_declared_legacy_schema_versions() {
+        for version in [1, 2] {
+            let err = validate_builtin_card(
+                "wave-report",
+                &json!({ "schemaVersion": version, "summary": "", "body": "" }),
+            )
+            .unwrap_err();
+            let Some(msg) = bad_request_message(&err) else {
+                panic!("expected BadRequest");
+            };
+            assert!(msg.contains(&version.to_string()), "msg = {msg}");
+            assert!(msg.contains('3'), "msg = {msg}");
+        }
     }
 
     #[test]
@@ -1354,7 +1382,8 @@ mod tests {
         validate_builtin_card(
             "wave-report",
             &json!({
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "docRev": 0,
                 "summary": "",
                 "body": "x",
                 "futureField": "tolerated"

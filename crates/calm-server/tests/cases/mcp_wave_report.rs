@@ -253,6 +253,16 @@ pub(crate) async fn call_tool(
     handler(boot.ctx.clone(), identity, args).await
 }
 
+async fn current_doc_rev(boot: &Boot) -> u64 {
+    calm_server::wave_report_read::load_report_read_snapshot(
+        boot.repo.as_ref(),
+        boot.report_card_id.as_str(),
+    )
+    .await
+    .expect("read current document revision")
+    .doc_rev
+}
+
 pub(crate) fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
@@ -319,7 +329,8 @@ async fn read_returns_initial_seeded_body() {
         Some("# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
-    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(2));
+    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(3));
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(0));
     assert!(
         out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,
         "updated_at is a positive timestamp; got {out:?}",
@@ -341,6 +352,45 @@ async fn read_refuses_worker() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer() {
+    let boot = boot().await;
+    let missing = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({"body": "# A\n", "message": "missing revision"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(missing.code, -32602);
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({"body": "# First\n", "message": "first writer", "if_doc_rev": 0}),
+    )
+    .await
+    .unwrap();
+    let conflict = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({"body": "# Stale\n", "message": "second writer", "if_doc_rev": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.code, -32001);
+    assert!(conflict.message.contains("current doc_rev is 1"));
+    assert!(conflict.message.contains("expected if_doc_rev 0"));
+    assert!(conflict.message.contains("re-read"));
+    let read = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["body"], "# First\n", "stale writer must not win");
+}
+
+#[tokio::test]
 async fn write_replaces_body_and_emits_card_updated() {
     let boot = boot().await;
     let events = boot.ctx.events.clone();
@@ -360,7 +410,8 @@ async fn write_replaces_body_and_emits_card_updated() {
         json!({
             "body": "# Goal\n\nrefactored everything\n",
             "summary": "done refactoring",
-            "message": "rewrite report"
+            "message": "rewrite report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -369,6 +420,7 @@ async fn write_replaces_body_and_emits_card_updated() {
         .get("updated_at")
         .and_then(Value::as_i64)
         .expect("updated_at i64");
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
     // Bus saw exactly two envelopes: CardUpdated first (preserves
     // pre-PR2 broadcast order so the generic "re-fetch" signal lands
@@ -388,7 +440,8 @@ async fn write_replaces_body_and_emits_card_updated() {
                 serde_json::from_value(c.payload.clone()).expect("payload deserializes");
             assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
             assert_eq!(payload.summary, "done refactoring");
-            assert_eq!(payload.schema_version, 2);
+            assert_eq!(payload.schema_version, 3);
+            assert_eq!(payload.doc_rev, 1);
             assert_eq!(c.updated_at, new_updated_at);
         }
         other => panic!("expected CardUpdated first, got {other:?}"),
@@ -491,7 +544,7 @@ async fn write_requires_non_empty_message() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "empty message\n", "message": "   " }),
+        json!({ "body": "empty message\n", "message": "   ", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
     .expect_err("empty message must be rejected");
@@ -513,7 +566,8 @@ async fn write_without_lifecycle_keeps_wave_state_and_records_agent_message() {
         spec_identity(&boot),
         json!({
             "body": "no lifecycle body\n",
-            "message": "write without lifecycle"
+            "message": "write without lifecycle",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -560,7 +614,8 @@ async fn write_from_draft_auto_promotes_with_lifecycle_changed_event() {
         spec_identity(&boot),
         json!({
             "body": "auto-promote body\n",
-            "message": "write from draft"
+            "message": "write from draft",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -636,6 +691,7 @@ async fn write_lifecycle_legal_emits_wave_updated_and_report_events() {
         json!({
             "body": "dispatching body\n",
             "message": "report moves dispatching",
+            "if_doc_rev": current_doc_rev(&boot).await,
             "lifecycle": "dispatching"
         }),
     )
@@ -718,6 +774,7 @@ async fn write_lifecycle_illegal_rolls_back_report_and_events() {
         json!({
             "body": "should rollback\n",
             "message": "illegal report lifecycle",
+            "if_doc_rev": current_doc_rev(&boot).await,
             "lifecycle": "done"
         }),
     )
@@ -761,7 +818,8 @@ async fn edit_emits_wave_report_edited_alongside_card_updated() {
         json!({
             "body": "before XYZ after\n",
             "summary": "before-summary",
-            "message": "seed report"
+            "message": "seed report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -783,7 +841,8 @@ async fn edit_emits_wave_report_edited_alongside_card_updated() {
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
-            "message": "edit report"
+            "message": "edit report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -842,7 +901,8 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
         json!({
             "body": "stable body\n",
             "summary": "stable summary",
-            "message": "first stable report"
+            "message": "first stable report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -875,7 +935,8 @@ async fn write_with_unchanged_content_still_emits_wave_report_edited() {
         json!({
             "body": "stable body\n",
             "summary": "stable summary",
-            "message": "second stable report"
+            "message": "second stable report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -943,7 +1004,8 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
         json!({
             "body": "scoped body\n",
             "summary": "scoped summary",
-            "message": "scoped report"
+            "message": "scoped report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1009,7 +1071,8 @@ async fn write_preserves_summary_when_omitted() {
         json!({
             "body": "a",
             "summary": "preserved",
-            "message": "set summary"
+            "message": "set summary",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1019,7 +1082,7 @@ async fn write_preserves_summary_when_omitted() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "b", "message": "preserve summary" }),
+        json!({ "body": "b", "message": "preserve summary", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
     .unwrap();
@@ -1042,7 +1105,7 @@ async fn write_refuses_worker() {
         &boot,
         TOOL_REPORT_WRITE,
         worker_identity(&boot),
-        json!({ "body": "evil", "message": "worker write" }),
+        json!({ "body": "evil", "message": "worker write", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
     .expect_err("worker must be denied");
@@ -1056,7 +1119,7 @@ async fn write_rejects_missing_body() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "summary": "no body", "message": "missing body" }),
+        json!({ "summary": "no body", "message": "missing body", "if_doc_rev": current_doc_rev(&boot).await }),
     )
     .await
     .expect_err("missing body must be rejected");
@@ -1078,7 +1141,8 @@ async fn edit_unique_substring_replacement_happy_path() {
         spec_identity(&boot),
         json!({
             "body": "# Goal\n\nuntouched marker XYZ here\n",
-            "message": "seed edit body"
+            "message": "seed edit body",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1091,7 +1155,8 @@ async fn edit_unique_substring_replacement_happy_path() {
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
-            "message": "replace marker"
+            "message": "replace marker",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1133,7 +1198,8 @@ async fn edit_requires_non_empty_message() {
         json!({
             "old_string": "Goal",
             "new_string": "Plan",
-            "message": "\n\t "
+            "message": "\n\t ",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1154,7 +1220,8 @@ async fn edit_without_lifecycle_keeps_wave_state_and_records_agent_message() {
         spec_identity(&boot),
         json!({
             "body": "before XYZ after\n",
-            "message": "seed edit no lifecycle"
+            "message": "seed edit no lifecycle",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1168,7 +1235,8 @@ async fn edit_without_lifecycle_keeps_wave_state_and_records_agent_message() {
         json!({
             "old_string": "XYZ",
             "new_string": "ABC",
-            "message": "edit without lifecycle"
+            "message": "edit without lifecycle",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1209,7 +1277,8 @@ async fn edit_lifecycle_legal_emits_wave_updated_and_report_events() {
         spec_identity(&boot),
         json!({
             "body": "before XYZ after\n",
-            "message": "seed edit lifecycle"
+            "message": "seed edit lifecycle",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1224,6 +1293,7 @@ async fn edit_lifecycle_legal_emits_wave_updated_and_report_events() {
             "old_string": "XYZ",
             "new_string": "ABC",
             "message": "edit moves dispatching",
+            "if_doc_rev": current_doc_rev(&boot).await,
             "lifecycle": "dispatching"
         }),
     )
@@ -1289,7 +1359,8 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
         spec_identity(&boot),
         json!({
             "body": "before XYZ after\n",
-            "message": "seed illegal edit"
+            "message": "seed illegal edit",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1316,6 +1387,7 @@ async fn edit_lifecycle_illegal_rolls_back_report_and_events() {
             "old_string": "XYZ",
             "new_string": "ABC",
             "message": "illegal edit lifecycle",
+            "if_doc_rev": current_doc_rev(&boot).await,
             "lifecycle": "done"
         }),
     )
@@ -1354,7 +1426,8 @@ async fn edit_rejects_old_string_not_found() {
         json!({
             "old_string": "nowhere-in-body",
             "new_string": "x",
-            "message": "missing old string"
+            "message": "missing old string",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1372,7 +1445,8 @@ async fn edit_rejects_duplicate_without_replace_all() {
         spec_identity(&boot),
         json!({
             "body": "TODO foo\nTODO bar\n",
-            "message": "seed duplicates"
+            "message": "seed duplicates",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1384,7 +1458,8 @@ async fn edit_rejects_duplicate_without_replace_all() {
         json!({
             "old_string": "TODO",
             "new_string": "DONE",
-            "message": "duplicate replace"
+            "message": "duplicate replace",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1403,7 +1478,8 @@ async fn edit_replace_all_on_duplicates() {
         spec_identity(&boot),
         json!({
             "body": "TODO foo\nTODO bar\nTODO baz\n",
-            "message": "seed replace all"
+            "message": "seed replace all",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1416,7 +1492,8 @@ async fn edit_replace_all_on_duplicates() {
             "old_string": "TODO",
             "new_string": "DONE",
             "replace_all": true,
-            "message": "replace all"
+            "message": "replace all",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1455,7 +1532,8 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         json!({
             "body": "stable\n",
             "summary": "stable-summary",
-            "message": "seed equal edit"
+            "message": "seed equal edit",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1483,7 +1561,8 @@ async fn edit_with_identical_old_and_new_still_emits_both_events() {
         json!({
             "old_string": "stable",
             "new_string": "stable",
-            "message": "equal edit"
+            "message": "equal edit",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1565,7 +1644,8 @@ async fn edit_refuses_worker() {
         json!({
             "old_string": "Goal",
             "new_string": "Pwn",
-            "message": "worker edit"
+            "message": "worker edit",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await
@@ -1655,7 +1735,8 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         json!({
             "body": "wave 2 only\n",
             "summary": "wave 2",
-            "message": "wave 2 report"
+            "message": "wave 2 report",
+            "if_doc_rev": current_doc_rev(&boot).await
         }),
     )
     .await

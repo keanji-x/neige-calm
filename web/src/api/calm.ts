@@ -207,12 +207,12 @@ export const deleteWave = (id: string) =>
  */
 export const updateWaveReport = (
   id: string,
-  b: { summary: string; body: string },
+  b: { summary: string; body: string; docRev: number },
 ) =>
-  request<{ schemaVersion: number; summary: string; body: string }>(
+  request<{ schemaVersion: number; docRev: number; summary: string; body: string }>(
     'POST',
     `/api/waves/${encodeURIComponent(id)}/report`,
-    b,
+    { summary: b.summary, body: b.body, ifDocRev: b.docRev },
   );
 
 export const listWaveFiles = (waveId: string, path?: string | null) => {

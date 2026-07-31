@@ -99,6 +99,7 @@ describe('waveReportPayloadSchema', () => {
     ).toMatchObject({
       summary: 'summary',
       body: '# Report\n',
+      docRev: 0,
     });
   });
 
@@ -118,6 +119,7 @@ describe('WaveReportEntry.Component', () => {
       summary: 'summary',
       body: '# Report\n',
       updatedAt: 2000,
+      docRev: 0,
     };
     expect(WaveReportEntry.Component({ card })).toBeNull();
   });

@@ -167,6 +167,7 @@ function makeReportSlot(body = 'Report body'): WaveCardSlot {
     id: 'report_1',
     summary: '',
     body,
+    docRev: 0,
     updatedAt: 2_000,
   };
   return { kind: 'card', card, sort: -1, deletable: false };

@@ -69,7 +69,7 @@ async function createWave(
 
 async function writeReport(page: Page, waveId: string, body: string): Promise<void> {
   const res = await page.request.post(`/api/waves/${waveId}/report`, {
-    data: { summary: 'report files smoke', body },
+    data: { summary: 'report files smoke', body, ifDocRev: 0 },
     headers: { 'content-type': 'application/json' },
   });
   await expectOk(res, 'POST /api/waves/:id/report');

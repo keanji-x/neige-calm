@@ -21,6 +21,7 @@ function report(id = 'report_1'): WaveCardSlot {
     id,
     summary: '',
     body: '# Report',
+    docRev: 0,
   };
   return { kind: 'card', card, sort: -1, deletable: false };
 }
