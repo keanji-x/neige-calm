@@ -558,7 +558,8 @@ export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "
  *
  * ```json
  * {
- *   "schemaVersion": 1,
+ *   "schemaVersion": 3,
+ *   "docRev": 7,
  *   "summary": "Refactored the dispatcher into a typed actor",
  *   "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
  * }
@@ -573,10 +574,10 @@ export type WaveReportPayload = {
 /**
  * Tier A persistence contract — see
  * `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
- * `validation.rs`. `2` since #960 PR2 (blocks became the
- * authoritative source; `body` is the flat projection). v1 rows
- * (absent or `1`) remain readable and are lazily upgraded at the
- * next persist via the CRDT-layer migrator
+ * `validation.rs`. `3` since #979 added document-wide optimistic
+ * concurrency; blocks remain authoritative and `body` is their
+ * flat projection. v1/v2 rows remain readable and are lazily
+ * upgraded at the next persist via the CRDT-layer migrator
  * (`ReportDoc::ensure_blocks_layout`).
  */
 schemaVersion: number, 

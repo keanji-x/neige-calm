@@ -434,6 +434,7 @@ async fn write_replaces_body_and_emits_card_updated() {
         .get("updated_at")
         .and_then(Value::as_i64)
         .expect("updated_at i64");
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
     // Bus saw exactly two envelopes: CardUpdated first (preserves
     // pre-PR2 broadcast order so the generic "re-fetch" signal lands

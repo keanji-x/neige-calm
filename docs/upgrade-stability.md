@@ -76,7 +76,7 @@ Tier D surfaces in neige-calm today:
 |---|---|---|
 | DB schema | A | `sqlx::migrate!` forward-only at `crates/calm-server/src/db/sqlite.rs`; old-binary-against-new-DB refusal still TBD. |
 | Sync event envelope | A | `event_version` column landed (migration `0006_events_version.sql`); `SYNC_EVENT_VERSION = 1` at `event.rs:254`; threaded through `BroadcastEnvelope` at `event.rs:573-578`. |
-| Card payload (kernel kinds) | A | `Card.payload` is `serde_json::Value`; per-kind `schemaVersion` + migrator still TBD. |
+| Card payload (kernel kinds) | A | `Card.payload` is `serde_json::Value`; wave-report is `schemaVersion: 3` with a local v1/v2 migrator, while other per-kind migrations remain incremental work. Wave-report downgrade is unsafe during mixed-version writes: an old binary can overwrite JSON back to v2, drop `docRev`, and leave CRDT `doc_rev` unchanged, creating a lost-write window. |
 | Plugin manifest | A | `manifest_version` hard-gated; `min_kernel_version` compared via semver at `plugin_host/mod.rs:317` (issue #45). |
 | MCP protocolVersion | B | **Landed.** Exact-match compare on plugin's echoed `result.protocolVersion` at `plugin_host/mcp.rs:410-419`; mismatch → `McpError::ProtocolVersionMismatch`. |
 | MCP capability versions | B | **Landed.** Exact `version` compare via `has_kernel_callbacks_capability` at `plugin_host/mcp.rs:467-496`; any mismatch → treat as absent + `warn!` log. |

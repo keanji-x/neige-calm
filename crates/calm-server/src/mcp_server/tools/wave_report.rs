@@ -194,7 +194,7 @@ fn write_descriptor() -> ToolDescriptor {
              `calm.report.write_markdown` for full rewrites that \
              preserve block identity via markers. Behaves like the \
              codex `Write` file tool — clobbers prior content; block \
-             ids are re-derived best-effort. Returns `{ updated_at }`. \
+             ids are re-derived best-effort. Returns `{ updated_at, docRev }`. \
              Omitting `summary` leaves the existing summary unchanged. \
              `message` is required and is persisted as `agent_message`; \
              optional `lifecycle` advances the wave state machine in \
@@ -284,7 +284,7 @@ fn edit_descriptor() -> ToolDescriptor {
              write that still bumps `updated_at` and emits the same \
              `CardUpdated` + `WaveReportEdited` event pair as every \
              other persist (with `body_before == body_after`). \
-             Returns `{ updated_at }`. The summary is preserved — \
+             Returns `{ updated_at, docRev }`. The summary is preserved — \
              call `calm.report.write` to update both at once. `message` \
              is required and is persisted as `agent_message`; optional \
              `lifecycle` advances the wave state machine in the same \
@@ -503,7 +503,7 @@ pub(crate) async fn load_report_for_wave(
 /// (Spec maps to `ActorId::AiSpecSession`; `require_role` upstream guarantees
 /// the role is Spec by the time we reach this site), tags every write as the
 /// spec-MCP emitter inside the sink, and projects the returned
-/// `Card` into the MCP wire shape `{ updated_at }`. The error mapping
+/// `Card` into the MCP wire shape `{ updated_at, docRev }`. The error mapping
 /// reproduces the pre-PR3 contract
 /// (`CalmError::Forbidden` → `-32403`, anything else → internal).
 ///
@@ -549,7 +549,10 @@ async fn commit_report_write_for_identity(
         )
         .await
     {
-        Ok((updated, _outcome)) => Ok(json!({ "updated_at": updated.updated_at })),
+        Ok((updated, _outcome)) => {
+            let doc_rev = updated_report_doc_rev(&updated, "wave_report")?;
+            Ok(json!({ "updated_at": updated.updated_at, "docRev": doc_rev }))
+        }
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
             -32403,
             format!("wave_report: forbidden: {msg}"),
@@ -566,6 +569,13 @@ async fn commit_report_write_for_identity(
         )),
         Err(e) => Err(RpcError::internal(format!("wave_report: {e}"))),
     }
+}
+
+pub(crate) fn updated_report_doc_rev(card: &Card, tool: &str) -> Result<u64, RpcError> {
+    card.payload
+        .get("docRev")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RpcError::internal(format!("{tool}: updated report payload has no docRev")))
 }
 
 fn required_doc_rev(obj: &serde_json::Map<String, Value>, tool: &str) -> Result<u64, RpcError> {

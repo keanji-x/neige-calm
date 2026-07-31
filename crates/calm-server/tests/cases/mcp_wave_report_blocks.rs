@@ -355,6 +355,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
     assert!(id.starts_with("b_"));
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(1));
     assert!(out.get("updated_at").and_then(Value::as_i64).is_some());
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
     // Dual-event invariant: exactly one CardUpdated + one
     // WaveReportEdited, flat projections, summary untouched.
@@ -646,6 +647,7 @@ async fn move_reorders_without_touching_rev() {
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(ids[1].1));
 
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n# A\n\nalpha\n\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(
@@ -733,7 +735,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     assert_eq!(current_payload(&boot).await, before);
 
     // Matching if_rev deletes.
-    call_tool(
+    let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
         spec_identity(&boot),
@@ -742,6 +744,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     .await
     .expect("delete succeeds");
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(index, vec![(ids[1].0.clone(), ids[1].1)]);
@@ -750,6 +753,42 @@ async fn delete_requires_if_rev_and_honors_it() {
 // ---------------------------------------------------------------------------
 // write_markdown
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn write_markdown_requires_if_rev_and_maps_stale_revision_to_conflict() {
+    let boot = boot().await;
+    let missing = call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# Missing rev\n" }),
+    )
+    .await
+    .expect_err("write_markdown without if_rev must be rejected");
+    assert_eq!(missing.code, RpcError::INVALID_PARAMS);
+
+    let first = call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# First\n", "if_rev": 0 }),
+    )
+    .await
+    .expect("fresh revision succeeds");
+    assert_eq!(first["docRev"], 1);
+
+    let stale = call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# Stale\n", "if_rev": 0 }),
+    )
+    .await
+    .expect_err("stale whole-document anchor must conflict");
+    assert_eq!(stale.code, RPC_REV_CONFLICT);
+    assert!(stale.message.contains("current doc_rev is 1"));
+    assert_eq!(current_payload(&boot).await.body, "# First\n");
+}
 
 #[tokio::test]
 async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
@@ -765,7 +804,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
         "<!-- neige:{} -->\n# A\n\nalpha\n\n<!-- neige:{} -->\n# B\n\nbeta edited\n",
         ids[0].0, ids[1].0
     );
-    call_tool(
+    let out = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
@@ -786,6 +825,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
 
     // Hard assertion: markers never reach storage nor the event log.
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# A\n\nalpha\n\n# B\n\nbeta edited\n");
     assert!(!payload.body.contains("<!-- neige:"));
     assert_eq!(payload.summary, "seeded", "omitted summary is preserved");

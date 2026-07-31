@@ -6025,7 +6025,7 @@
       },
       "WaveReportPayload": {
         "type": "object",
-        "description": "The payload persisted in a wave-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 1,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the WaveReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
+        "description": "The payload persisted in a wave-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 3,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the WaveReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
         "required": [
           "schemaVersion",
           "docRev",
@@ -6056,7 +6056,7 @@
           "schemaVersion": {
             "type": "integer",
             "format": "int32",
-            "description": "Tier A persistence contract — see\n`WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `2` since #960 PR2 (blocks became the\nauthoritative source; `body` is the flat projection). v1 rows\n(absent or `1`) remain readable and are lazily upgraded at the\nnext persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
+            "description": "Tier A persistence contract — see\n`WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `3` since #979 added document-wide optimistic\nconcurrency; blocks remain authoritative and `body` is their\nflat projection. v1/v2 rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
             "minimum": 0
           },
           "summary": {

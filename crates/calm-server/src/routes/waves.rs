@@ -1157,8 +1157,7 @@ pub(crate) async fn get_wave_backlinks(
 pub struct UpdateWaveReportBody {
     /// Expected document revision from the latest report read. Use zero
     /// for a document that has never been persisted through the CRDT path.
-    #[schema(value_type = u64, required = true)]
-    pub if_rev: Option<u64>,
+    pub if_rev: u64,
     /// One-line summary the wave-list sidebars surface. Empty string
     /// is a valid value; the caller must commit.
     pub summary: String,
@@ -1264,9 +1263,7 @@ pub(crate) async fn update_wave_report(
     // Build the next payload from the request body. `schemaVersion` is
     // always the current constant — the field is not on the wire shape
     // (see `UpdateWaveReportBody` doc) so we stamp it here.
-    let if_rev = body.if_rev.ok_or_else(|| {
-        CalmError::BadRequest("wave-report edit: missing `ifRev` (use 0 for a new document)".into())
-    })?;
+    let if_rev = body.if_rev;
     let next = WaveReportPayload::new(body.summary, body.body);
 
     // Persist + emit. `EditAuthor::User` is the load-bearing

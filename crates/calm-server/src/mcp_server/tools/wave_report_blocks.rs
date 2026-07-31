@@ -9,10 +9,10 @@
 //! | Tool | Shape | Notes |
 //! |---|---|---|
 //! | `calm.report.blocks.kinds`  | `{}` | Self-describing kind vocabulary (static). |
-//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, position? }` | Create (`id` absent) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at }`. |
+//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, position? }` | Create (`id` absent) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
 //! | `calm.report.blocks.move`   | `{ id, to_index, if_rev? }` | Reorder; rev untouched. |
 //! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. |
-//! | `calm.report.write_markdown`| `{ body, summary? }` | Escape hatch: full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
+//! | `calm.report.write_markdown`| `{ body, summary?, if_rev }` | Escape hatch: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
 //!
 //! ## Concurrency contract
 //!
@@ -39,7 +39,7 @@ use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
     read_only_annotations, require_role, role_gated_write_annotations,
 };
-use crate::mcp_server::tools::wave_report::resolve_report_for_caller;
+use crate::mcp_server::tools::wave_report::{resolve_report_for_caller, updated_report_doc_rev};
 use crate::model::CardRole;
 use crate::wave_report::{BlockOpOutcome, ReportDocOp};
 use calm_types::report_blocks;
@@ -254,7 +254,7 @@ fn upsert_descriptor() -> ToolDescriptor {
              takes its content in `markdown`; `chart.candles` / \
              `table` / `app` take a schema-validated `payload` object \
              (and must NOT pass `markdown`). Returns `{ id, rev, \
-             updated_at }` — keep the returned rev for your next edit \
+             updated_at, docRev }` — keep the returned rev for your next edit \
              of the same block. Get ids/revs from `calm.report.read`'s \
              `blocks` index. The report summary is not touched."
             .into(),
@@ -383,7 +383,10 @@ async fn blocks_upsert(
     let (card, block) = outcome;
     let block = block
         .ok_or_else(|| RpcError::internal(format!("{tool}: upsert produced no block outcome")))?;
-    Ok(json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at }))
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(
+        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +401,7 @@ fn move_descriptor() -> ToolDescriptor {
              are untouched — ordering is not content. Optional \
              `if_rev` guards against concurrent edits of the same \
              block (mismatch → error -32001, nothing written). Returns \
-             `{ id, rev, updated_at }`."
+             `{ id, rev, updated_at, docRev }`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -440,7 +443,10 @@ async fn blocks_move(
     .await?;
     let block = block
         .ok_or_else(|| RpcError::internal(format!("{tool}: move produced no block outcome")))?;
-    Ok(json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at }))
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(
+        json!({ "id": block.id, "rev": block.rev, "updated_at": card.updated_at, "docRev": doc_rev }),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +459,7 @@ fn delete_descriptor() -> ToolDescriptor {
         description: "Spec-only: delete a report block. `if_rev` is \
              REQUIRED (destructive op): pass the rev you last read; a \
              mismatch returns error -32001 (rev conflict) and deletes \
-             nothing. Returns `{ updated_at }`."
+             nothing. Returns `{ updated_at, docRev }`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -491,7 +497,8 @@ async fn blocks_delete(
         ReportDocOp::DeleteBlock { id, if_rev },
     )
     .await?;
-    Ok(json!({ "updated_at": card.updated_at }))
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +524,7 @@ fn write_markdown_descriptor() -> ToolDescriptor {
              Prefer `calm.report.blocks.*` for targeted \
              edits; use this for large restructurings. Omitting \
              `summary` keeps the existing one. Returns \
-             `{ updated_at }`."
+             `{ updated_at, docRev }`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -567,7 +574,8 @@ async fn write_markdown(
         Ok(out) => out,
         Err(e) => return Err(map_commit_err(tool, e)),
     };
-    Ok(json!({ "updated_at": card.updated_at }))
+    let doc_rev = updated_report_doc_rev(&card, tool)?;
+    Ok(json!({ "updated_at": card.updated_at, "docRev": doc_rev }))
 }
 
 // ---------------------------------------------------------------------------
