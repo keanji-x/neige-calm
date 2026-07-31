@@ -19,6 +19,24 @@ fn migrator_through_0065() -> sqlx::migrate::Migrator {
     }
 }
 
+#[test]
+fn historical_0065_migration_checksum_is_immutable() {
+    // sqlx checksums the entire migration, including comments. Changing an
+    // applied migration makes existing databases fail startup with VersionMismatch.
+    const HISTORICAL_CHECKSUM: [u8; 48] = [
+        0x6e, 0xd8, 0x67, 0x26, 0x24, 0xda, 0xfa, 0xc1, 0x03, 0xbd, 0x0d, 0x8b, 0xbc, 0x7c, 0x14,
+        0x0b, 0xc0, 0x3e, 0x7e, 0xea, 0x57, 0x76, 0xbc, 0x5f, 0x4f, 0x2e, 0xfa, 0xd4, 0x93, 0x37,
+        0x22, 0xab, 0x73, 0x49, 0x41, 0x1e, 0xde, 0xbb, 0xc5, 0x15, 0xdb, 0x20, 0x30, 0xc0, 0x35,
+        0xed, 0xf4, 0x22,
+    ];
+    let migration = crate::MIGRATOR
+        .iter()
+        .find(|migration| migration.version == 65)
+        .expect("migration 0065 must exist");
+
+    assert_eq!(migration.checksum.as_ref(), HISTORICAL_CHECKSUM);
+}
+
 async fn assert_historical_proposal_replay(repo: &SqlxRepo) {
     let events = repo
         .events_since(0, 100)
