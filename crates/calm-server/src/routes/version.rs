@@ -148,7 +148,10 @@ pub const API_VERSION: &str = "1";
 ///   new discriminators (and rejects the new author arm), so its
 ///   proposal/report-edit frames would silently drop. The compat modal
 ///   forces a hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 13;
+/// * `14` — issue #973 withdrew the proposal REST endpoints and web UI.
+///   Historical proposal event variants and `author_plugin_id` remain
+///   parseable, so `SYNC_EVENT_VERSION` stays 12.
+pub const WEB_COMPAT_VERSION: u32 = 14;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

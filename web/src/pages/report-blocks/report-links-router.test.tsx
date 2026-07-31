@@ -29,10 +29,6 @@ vi.mock('../../api/queries', () => ({
     error: null,
     isLoading: false,
   })),
-  useWaveProposalsQuery: vi.fn(() => ({
-    data: { proposals: [] },
-    error: null,
-  })),
 }));
 
 vi.mock('../../cards/useCardOverlay', () => ({

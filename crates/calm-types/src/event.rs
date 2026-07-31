@@ -159,11 +159,10 @@ pub enum EditAuthor {
     /// Server-internal rewrite — FSM scaffolding, migrations, etc.
     /// Reserved; no emitter today.
     Kernel,
-    /// Proposal-channel apply (#955 §5.3): the kernel landed an
-    /// accepted plugin proposal on the report. The envelope actor of
-    /// that write is `Kernel` (the kernel writes on the plugin's
-    /// behalf inside the accept transaction); plugin attribution rides
-    /// in the sibling `WaveReportEdited::author_plugin_id` field.
+    /// Historical proposal-channel apply author.
+    /// Reserved; no emitter today.
+    /// Plugin attribution rides in the sibling
+    /// `WaveReportEdited::author_plugin_id` field.
     /// Deliberately a unit variant — a data-carrying `Plugin(String)`
     /// would change the bare-lowercase wire encoding and drop `Copy`.
     Plugin,
