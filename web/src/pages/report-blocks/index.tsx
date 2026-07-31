@@ -9,6 +9,7 @@
 
 import { lazy, Suspense } from 'react';
 import { Link } from '@tanstack/react-router';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -20,6 +21,7 @@ import {
 } from '../../cards/builtins/wave-report';
 import { ReportTableBlock } from './table';
 import { ReportAppBlock } from './app';
+import { BLOCK_ID_PATTERN } from '../report-link-ids';
 import { reportH2Id } from '../report-outline';
 
 // lightweight-charts (~45KB gz) only loads when a report actually carries a
@@ -28,7 +30,28 @@ const LazyCandlesBlock = lazy(() =>
   import('./candles').then((m) => ({ default: m.ReportCandlesBlock })),
 );
 
-const BLOCK_ID_PATTERN = /^b_[0-9a-f]{4}$/;
+type PositionedMarkdownNode = {
+  type?: unknown;
+  depth?: unknown;
+  position?: { start?: { offset?: unknown } };
+  children?: unknown;
+};
+
+function collectH2Offsets(node: unknown): number[] {
+  if (typeof node !== 'object' || node === null) return [];
+  const candidate = node as PositionedMarkdownNode;
+  const offset = candidate.position?.start?.offset;
+  const ownOffset =
+    candidate.type === 'heading' &&
+    candidate.depth === 2 &&
+    typeof offset === 'number'
+      ? [offset]
+      : [];
+  const childOffsets = Array.isArray(candidate.children)
+    ? candidate.children.flatMap(collectH2Offsets)
+    : [];
+  return [...ownOffset, ...childOffsets];
+}
 
 function UnsupportedBlock({ block }: { block: ReportBlock }) {
   return (
@@ -71,7 +94,7 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
       if (!parsed.success) return <UnsupportedBlock block={block} />;
-      let h2Index = 0;
+      const h2Offsets = collectH2Offsets(fromMarkdown(parsed.data.markdown));
       return (
         <div id={block.id} className="report-block report-prose calm-prose">
           <ReactMarkdown
@@ -79,10 +102,21 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
             urlTransform={reportUrlTransform}
             components={{
               a: ReportLink,
-              h2: ({ children }) => {
-                const id = reportH2Id(block.id, h2Index);
-                h2Index += 1;
-                return <h2 id={id}>{children}</h2>;
+              h2: ({ children, node }) => {
+                const offset = node?.position?.start.offset;
+                const h2Index =
+                  typeof offset === 'number' ? h2Offsets.indexOf(offset) : -1;
+                return (
+                  <h2
+                    id={
+                      h2Index >= 0
+                        ? reportH2Id(block.id, h2Index)
+                        : undefined
+                    }
+                  >
+                    {children}
+                  </h2>
+                );
               },
             }}
           >

@@ -43,4 +43,22 @@ describe('deriveInterimReportOutlinks', () => {
       { waveId: 'wave_real', blockId: 'b_cafe' },
     ]);
   });
+
+  it.each(['section', 'b_1F3a'])(
+    'degrades invalid block fragment %s to a whole-report link',
+    (fragment) => {
+      const blocks = [{
+        id: 'b_invalid_fragment',
+        kind: 'prose',
+        rev: 1,
+        payload: {
+          markdown: `[Report](neige://wave/wave_target#${fragment})`,
+        },
+      }] as ReportBlock[];
+
+      expect(deriveInterimReportOutlinks(blocks)).toEqual([
+        { waveId: 'wave_target', blockId: undefined },
+      ]);
+    },
+  );
 });

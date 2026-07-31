@@ -3200,6 +3200,8 @@ select:-webkit-autofill {
 
 @media (max-width: 980px) {
   .report-page {
+    --report-conversation-drawer-height: 58vh;
+
     grid-template-columns: minmax(0, 1fr);
     overflow: auto;
   }
@@ -3209,6 +3211,11 @@ select:-webkit-autofill {
   .report-page--conversation-open,
   .report-page--rail-collapsed.report-page--conversation-open {
     grid-template-columns: minmax(0, 1fr);
+    scroll-padding-bottom: var(--report-conversation-drawer-height);
+  }
+  .report-page--conversation-open .report-document-scroll {
+    padding-bottom: var(--report-conversation-drawer-height);
+    scroll-padding-bottom: var(--report-conversation-drawer-height);
   }
   .report-center {
     /* Block flow on narrow: the page (not the column) is the scroll
@@ -3228,11 +3235,11 @@ select:-webkit-autofill {
     right: var(--space-0);
     bottom: var(--space-0);
     left: var(--space-0);
-    max-height: 58vh;
+    max-height: var(--report-conversation-drawer-height);
   }
   .report-conversation-drawer-panel {
     height: 0;
-    max-height: 58vh;
+    max-height: var(--report-conversation-drawer-height);
     overflow: hidden;
     border-top: 0 solid transparent;
     border-left: none;
@@ -3243,7 +3250,7 @@ select:-webkit-autofill {
       visibility 0s linear var(--motion-medium);
   }
   .report-conversation-drawer--open .report-conversation-drawer-panel {
-    height: 58vh;
+    height: var(--report-conversation-drawer-height);
     overflow: auto;
     border-top-width: 1px;
     border-top-color: var(--hairline);

@@ -1,5 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
 import { ReportAppBlock } from './app';
@@ -133,22 +134,23 @@ beforeEach(() => {
 });
 
 describe('prose block', () => {
-  it('stamps deterministic ids onto each H2 in document order', () => {
+  it('stamps deterministic ids onto each H2 in StrictMode', () => {
     render(
-      <ReportBlockView
-        block={{
-          id: 'b_multi',
-          kind: 'prose',
-          rev: 1,
-          payload: { markdown: '## First\n\nBody\n\n## Second' },
-        }}
-      />,
+      <StrictMode>
+        <ReportBlockView
+          block={{
+            id: 'b_multi',
+            kind: 'prose',
+            rev: 1,
+            payload: { markdown: '## First\n\nBody\n\n## Second' },
+          }}
+        />
+      </StrictMode>,
     );
 
-    expect(screen.getByRole('heading', { level: 2, name: 'First' }))
-      .toHaveAttribute('id', 'b_multi-h1');
-    expect(screen.getByRole('heading', { level: 2, name: 'Second' }))
-      .toHaveAttribute('id', 'b_multi-h2');
+    expect(
+      screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.id),
+    ).toEqual(['b_multi-h1', 'b_multi-h2']);
   });
 });
 

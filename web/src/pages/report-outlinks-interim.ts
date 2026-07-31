@@ -1,5 +1,6 @@
 import type { ReportBlock } from '../cards/builtins/wave-report';
 import { fromMarkdown } from 'mdast-util-from-markdown';
+import { BLOCK_ID_PATTERN } from './report-link-ids';
 
 // Temporary client-only bridge for issue #975. Delete this entire module once
 // the `/links` endpoint lands; server-derived outlinks will replace it.
@@ -48,7 +49,14 @@ export function deriveInterimReportOutlinks(
       const waveId = match[1];
       if (seen.has(waveId)) continue;
       seen.add(waveId);
-      outlinks.push({ waveId, blockId: match[2] });
+      const blockId = match[2];
+      outlinks.push({
+        waveId,
+        blockId:
+          blockId != null && BLOCK_ID_PATTERN.test(blockId)
+            ? blockId
+            : undefined,
+      });
     }
   }
   return outlinks;

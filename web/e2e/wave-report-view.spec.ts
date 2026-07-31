@@ -132,10 +132,6 @@ test('narrow conversation drawer stays docked to the viewport', async ({
   );
 
   await page.goto(`/calm/wave/${wave.id}`);
-  const reportPage = page.locator('.report-page');
-  await reportPage.evaluate((element) => {
-    element.scrollTop = element.scrollHeight;
-  });
 
   const drawer = page.getByRole('complementary', {
     name: 'Conversation drawer',
@@ -145,24 +141,70 @@ test('narrow conversation drawer stays docked to the viewport', async ({
     name: 'Open conversation drawer',
   });
   await expect(panel).toHaveCSS('height', '0px');
-  await expect.poll(async () => (await openToggle.boundingBox())?.y)
-    .toBeCloseTo(815, 0);
+  await expect.poll(async () => {
+    const box = await openToggle.boundingBox();
+    return box == null ? undefined : box.y + box.height;
+  }).toBeCloseTo(await page.evaluate(() => window.innerHeight), 0);
 
   await openToggle.click();
   const closeToggle = page.getByRole('button', {
     name: 'Close conversation drawer',
   });
-  await expect.poll(async () => (await panel.boundingBox())?.height)
-    .toBeCloseTo(844 * 0.58, 0);
   await expect.poll(async () => {
     const box = await panel.boundingBox();
-    return box == null ? undefined : box.y + box.height;
-  }).toBeCloseTo(844, 0);
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+    return box == null ? undefined : box.height / viewportHeight;
+  }).toBeCloseTo(0.58, 2);
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+    return box == null ? undefined : box.y + box.height - viewportHeight;
+  }).toBeCloseTo(0, 0);
+  const scrollPosition = await page.locator('.report-body p').last().evaluate(
+    (paragraph) => {
+      let root = paragraph.parentElement;
+      while (root != null) {
+        const overflowY = getComputedStyle(root).overflowY;
+        if (
+          (overflowY === 'auto' || overflowY === 'scroll') &&
+          root.scrollHeight > root.clientHeight
+        ) {
+          root.scrollTop = root.scrollHeight;
+          return {
+            scrollTop: root.scrollTop,
+            maxScrollTop: root.scrollHeight - root.clientHeight,
+          };
+        }
+        root = root.parentElement;
+      }
+      throw new Error('report has no effective scrolling ancestor');
+    },
+  );
+  expect(scrollPosition.scrollTop).toBeGreaterThan(0);
+  expect(scrollPosition.scrollTop).toBeCloseTo(
+    scrollPosition.maxScrollTop,
+    0,
+  );
+  await expect.poll(async () => {
+    const paragraph = await page.locator('.report-body p').last().boundingBox();
+    const panelBox = await panel.boundingBox();
+    return paragraph == null || panelBox == null
+      ? undefined
+      : paragraph.y + paragraph.height - panelBox.y;
+  }).toBeLessThanOrEqual(0);
+  await expect.poll(async () => {
+    const box = await panel.boundingBox();
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+    return box == null ? undefined : box.y + box.height - viewportHeight;
+  }).toBeCloseTo(0, 0);
 
   await closeToggle.click();
   await expect(panel).toHaveCSS('height', '0px');
-  await expect.poll(async () => (await openToggle.boundingBox())?.y)
-    .toBeCloseTo(815, 0);
+  await expect.poll(async () => {
+    const box = await openToggle.boundingBox();
+    const viewportHeight = await page.evaluate(() => window.innerHeight);
+    return box == null ? undefined : box.y + box.height - viewportHeight;
+  }).toBeCloseTo(0, 0);
 });
 
 test('report H2 counters match the outline sequence across prose blocks', async ({

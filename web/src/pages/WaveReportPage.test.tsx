@@ -880,9 +880,9 @@ describe('WaveReportPage', () => {
                 rev: 1,
                 payload: {
                   markdown:
-                    '[Known](neige://wave/wave_known#b_target) then ' +
+                    '[Known](neige://wave/wave_known#b_cafe) then ' +
                     '[Missing](neige://wave/wave_missing) and ' +
-                    '[Known again](neige://wave/wave_known#b_other)',
+                    '[Known again](neige://wave/wave_known#b_f00d)',
                 },
               },
             ],
@@ -895,7 +895,7 @@ describe('WaveReportPage', () => {
       name: 'Referenced documents',
     });
     expect(within(outlinks).getByRole('link', { name: 'Known wave' }))
-      .toHaveAttribute('href', '/wave/wave_known#b_target');
+      .toHaveAttribute('href', '/wave/wave_known#b_cafe');
     expect(within(outlinks).getByText('wave_missing'))
       .toHaveClass('report-outlink--dead');
     expect(within(outlinks).getAllByRole('listitem')).toHaveLength(2);
