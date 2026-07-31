@@ -261,7 +261,7 @@ async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
 }
 
 #[tokio::test]
-async fn rest_whole_document_write_requires_if_rev() {
+async fn rest_whole_document_write_requires_if_doc_rev() {
     let boot = boot().await;
     let wave_id = boot.wave_id.clone();
     let app = app(boot.state, boot.auth_state);

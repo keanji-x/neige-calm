@@ -94,7 +94,7 @@ fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
         description: "Spec-only: read the wave's report. Returns \
-             `{ text, body, summary, schemaVersion, updated_at, \
+             `{ text, body, summary, schemaVersion, docRev, updated_at, \
              blocks }` — `text` is the flat Markdown (`body` is a \
              legacy alias with the same value) and `blocks` is the \
              addressable index `[{ id, kind, rev }]` in document \

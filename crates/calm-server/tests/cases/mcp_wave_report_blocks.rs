@@ -24,9 +24,7 @@
 
 use std::time::Duration;
 
-use crate::mcp_wave_report::{
-    Boot, boot, call_tool, call_tool_without_defaults, collect_n, spec_identity, worker_identity,
-};
+use crate::mcp_wave_report::{Boot, boot, call_tool, collect_n, spec_identity, worker_identity};
 use calm_server::event::Event;
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::wave_report_blocks::{
@@ -123,7 +121,7 @@ async fn block_write_invalidates_previously_read_whole_document_revision() {
     .await
     .unwrap();
 
-    let conflict = call_tool_without_defaults(
+    let conflict = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
@@ -792,7 +790,7 @@ async fn delete_requires_if_rev_and_honors_it() {
 #[tokio::test]
 async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict() {
     let boot = boot().await;
-    let missing = call_tool_without_defaults(
+    let missing = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
@@ -802,7 +800,7 @@ async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict(
     .expect_err("write_markdown without if_doc_rev must be rejected");
     assert_eq!(missing.code, RpcError::INVALID_PARAMS);
 
-    let first = call_tool_without_defaults(
+    let first = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
@@ -812,7 +810,7 @@ async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict(
     .expect("fresh revision succeeds");
     assert_eq!(first["docRev"], 1);
 
-    let stale = call_tool_without_defaults(
+    let stale = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),

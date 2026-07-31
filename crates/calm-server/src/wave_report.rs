@@ -17,6 +17,16 @@
 //! UI iterations on the section vocabulary, and avoids a second
 //! storage-shape negotiation if the section list ever needs to change.
 //!
+//! The persisted payload has this wire shape:
+//!
+//! | Field | Meaning |
+//! | --- | --- |
+//! | `schemaVersion` | Tier-A payload schema version |
+//! | `docRev` | optimistic-concurrency anchor returned by `calm.report.read` |
+//! | `summary` | short report summary |
+//! | `body` | complete Markdown document |
+//! | `blocks` | optional derived block index |
+//!
 //! ## Schema versioning (Tier A persistence contract)
 //!
 //! See `docs/upgrade-stability.md`. The struct carries `schema_version`

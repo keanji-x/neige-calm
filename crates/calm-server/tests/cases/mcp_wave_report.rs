@@ -263,16 +263,6 @@ async fn current_doc_rev(boot: &Boot) -> u64 {
     .doc_rev
 }
 
-pub(crate) async fn call_tool_without_defaults(
-    boot: &Boot,
-    name: &str,
-    identity: ToolCallIdentity,
-    args: Value,
-) -> Result<Value, RpcError> {
-    let handler = boot.registry.lookup(name).expect("tool registered");
-    handler(boot.ctx.clone(), identity, args).await
-}
-
 pub(crate) fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.spec_card_id.as_str().to_string(),
@@ -364,7 +354,7 @@ async fn read_refuses_worker() {
 #[tokio::test]
 async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer() {
     let boot = boot().await;
-    let missing = call_tool_without_defaults(
+    let missing = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
@@ -374,7 +364,7 @@ async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer(
     .unwrap_err();
     assert_eq!(missing.code, -32602);
 
-    call_tool_without_defaults(
+    call_tool(
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
@@ -382,7 +372,7 @@ async fn whole_document_write_requires_if_doc_rev_and_rejects_stale_spec_writer(
     )
     .await
     .unwrap();
-    let conflict = call_tool_without_defaults(
+    let conflict = call_tool(
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
