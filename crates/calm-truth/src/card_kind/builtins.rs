@@ -125,15 +125,20 @@ impl CardKindHandler for WaveReportCardHandler {
             #[serde(default)]
             schema_version: Option<u32>,
             #[serde(default)]
-            doc_rev: u64,
+            doc_rev: Option<u64>,
             summary: String,
             body: String,
         }
 
-        check_schema_version(self.kind_id(), payload, WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)?;
-        serde_json::from_value::<WaveReportShape>(payload.clone())
-            .map(|_| ())
-            .map_err(|e| bad(self.kind_id(), e))
+        check_wave_report_schema_version(self.kind_id(), payload)?;
+        let shape = serde_json::from_value::<WaveReportShape>(payload.clone())
+            .map_err(|e| bad(self.kind_id(), e))?;
+        if shape.schema_version == Some(WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)
+            && shape.doc_rev.is_none()
+        {
+            return Err(bad(self.kind_id(), "missing field `docRev`"));
+        }
+        Ok(())
     }
 }
 
@@ -204,6 +209,25 @@ fn check_schema_version(kind: &str, payload: &Value, expected: u32) -> CardKindR
     } else {
         Err(raw_bad(format!(
             "unsupported schemaVersion {version} for kind `{kind}`; this kernel supports {expected}"
+        )))
+    }
+}
+
+fn check_wave_report_schema_version(kind: &str, payload: &Value) -> CardKindResult<()> {
+    let Some(raw) = payload.get("schemaVersion") else {
+        return Ok(());
+    };
+    let Some(version) = raw.as_u64() else {
+        return Err(raw_bad(format!(
+            "invalid schemaVersion for kind `{kind}`: expected u32, got {raw}"
+        )));
+    };
+    if (1..=u64::from(WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)).contains(&version) {
+        Ok(())
+    } else {
+        Err(raw_bad(format!(
+            "unsupported schemaVersion {version} for kind `{kind}`; this kernel supports 1 through {}",
+            WAVE_REPORT_PAYLOAD_SCHEMA_VERSION
         )))
     }
 }

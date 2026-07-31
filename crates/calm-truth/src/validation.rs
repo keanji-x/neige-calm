@@ -1296,6 +1296,19 @@ mod tests {
     }
 
     #[test]
+    fn wave_report_v3_rejects_missing_doc_rev() {
+        let err = validate_builtin_card(
+            "wave-report",
+            &json!({ "schemaVersion": 3, "summary": "", "body": "# Goal\n" }),
+        )
+        .unwrap_err();
+        let Some(msg) = bad_request_message(&err) else {
+            panic!("expected BadRequest");
+        };
+        assert!(msg.contains("docRev"), "msg = {msg}");
+    }
+
+    #[test]
     fn wave_report_rejects_missing_summary() {
         let err = validate_builtin_card(
             "wave-report",
@@ -1354,6 +1367,7 @@ mod tests {
             "wave-report",
             &json!({
                 "schemaVersion": 3,
+                "docRev": 0,
                 "summary": "",
                 "body": "x",
                 "futureField": "tolerated"
