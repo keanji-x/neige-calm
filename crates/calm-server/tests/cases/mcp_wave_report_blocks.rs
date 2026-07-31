@@ -217,6 +217,20 @@ async fn kinds_returns_all_five_schemas() {
         chart.pointer("/schema/required").unwrap(),
         &json!(["symbol", "candles"]),
     );
+    let task = &kinds[4];
+    assert_eq!(
+        task.pointer("/schema/properties/context/$ref"),
+        Some(&json!("#/$defs/contextValue"))
+    );
+    assert_eq!(
+        task.pointer("/schema/$defs/contextValue/oneOf/0/maxLength"),
+        Some(&json!(calm_types::report_blocks::MAX_STRING_CHARS))
+    );
+    assert!(
+        task["usage"]
+            .as_str()
+            .is_some_and(|usage| usage.contains("context") && usage.contains("2048"))
+    );
     assert_eq!(
         chart
             .pointer("/schema/properties/candles/minItems")

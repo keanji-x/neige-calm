@@ -179,9 +179,9 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
             Ok(gate) => {
                 if let Err(error) = validate_gate_shape(key.unwrap_or("<invalid>"), &gate) {
                     let detail = error
-                        .split_once(": ")
-                        .map_or(error.as_str(), |(_, detail)| detail);
-                    errors.push(format!("gate: {detail}"));
+                        .strip_prefix(&format!("task {}: ", key.unwrap_or("<invalid>")))
+                        .unwrap_or(error.as_str());
+                    errors.push(detail.to_string());
                 }
                 check_gate_strings(&gate, errors);
             }
@@ -801,7 +801,6 @@ mod tests {
             ("kind", json!("shell"), "kind:"),
             ("goal", json!("  "), "goal:"),
             ("acceptance", json!(7), "acceptance:"),
-            ("gate", json!({"steps":[]}), "gate:"),
             ("no_gate_reason", json!(" "), "no_gate_reason:"),
             ("depends_on", json!([1]), "depends_on[0]"),
             ("priority", json!(1.5), "priority:"),
@@ -817,6 +816,12 @@ mod tests {
             let error = validate_payload(KIND_TASK, &payload).unwrap_err();
             assert!(error.contains(expected), "{field}: {error}");
         }
+        let mut empty_gate = valid_task();
+        empty_gate["gate"] = json!({"steps":[]});
+        assert_eq!(
+            validate_payload(KIND_TASK, &empty_gate).unwrap_err(),
+            "gate.steps must be non-empty"
+        );
         let mut arbitrary_context = valid_task();
         arbitrary_context["context"] = json!([1, true, {"nested": "ok"}]);
         assert_eq!(validate_payload(KIND_TASK, &arbitrary_context), Ok(()));

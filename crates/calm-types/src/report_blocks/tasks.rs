@@ -127,17 +127,30 @@ pub fn dup_keys(declarations: &[TaskDeclaration]) -> Vec<String> {
     duplicates
 }
 
+/// Keys blocked by an uncleared tombstone in the current document.
+pub fn tombstoned_keys(declarations: &[TaskDeclaration]) -> Vec<String> {
+    declarations
+        .iter()
+        .filter(|declaration| declaration.tombstone)
+        .map(|declaration| declaration.key.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 pub fn unknown_deps(
     declarations: &[TaskDeclaration],
     known_task_keys: &[String],
 ) -> Vec<(String, String)> {
     let known: BTreeSet<&str> = declarations
         .iter()
+        .filter(|declaration| !declaration.tombstone)
         .map(|d| d.key.as_str())
         .chain(known_task_keys.iter().map(String::as_str))
         .collect();
     declarations
         .iter()
+        .filter(|declaration| !declaration.tombstone)
         .flat_map(|declaration| {
             declaration
                 .depends_on
@@ -154,6 +167,7 @@ pub fn gate_rule_violations(declarations: &[TaskDeclaration], require_gates: boo
     }
     declarations
         .iter()
+        .filter(|declaration| !declaration.tombstone)
         .filter(|declaration| {
             declaration.kind != "terminal"
                 && declaration.gate.is_none()
@@ -282,6 +296,7 @@ pub fn find_cycles(graph: &BTreeMap<String, Vec<String>>) -> Vec<Vec<String>> {
 pub fn declaration_graph(declarations: &[TaskDeclaration]) -> BTreeMap<String, Vec<String>> {
     declarations
         .iter()
+        .filter(|declaration| !declaration.tombstone)
         .map(|d| (d.key.clone(), d.depends_on.clone()))
         .collect()
 }
@@ -350,7 +365,11 @@ pub fn project_task_declarations(
         };
         declarations.push(declaration);
     }
-    for duplicate in dup_keys(&declarations) {
+    let tombstoned: BTreeSet<String> = tombstoned_keys(&declarations).into_iter().collect();
+    for duplicate in dup_keys(&declarations)
+        .into_iter()
+        .filter(|duplicate| !tombstoned.contains(duplicate))
+    {
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
             block.kind == super::KIND_TASK
                 && block.payload.get("key").and_then(Value::as_str) == Some(duplicate.as_str())
@@ -358,6 +377,18 @@ pub fn project_task_declarations(
             diagnostics[index].push(Diagnostic::new(
                 "key",
                 format!("duplicate key `{duplicate}`"),
+            ));
+        }
+    }
+    for key in &tombstoned {
+        for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
+            block.kind == super::KIND_TASK
+                && block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())
+                && block.payload.get("tombstone").is_none_or(Value::is_null)
+        }) {
+            diagnostics[index].push(Diagnostic::new(
+                "key",
+                format!("task key `{key}` has an uncleared tombstone"),
             ));
         }
     }
@@ -400,6 +431,13 @@ mod tests {
         }
     }
 
+    fn tombstone(key: &str) -> TaskDeclaration {
+        TaskDeclaration {
+            tombstone: true,
+            ..declaration(key, &[])
+        }
+    }
+
     #[test]
     fn pure_predicates_cover_duplicates_unknown_dependencies_cycles_and_gate_policy() {
         let declarations = vec![declaration("a", &["missing"]), declaration("a", &[])];
@@ -413,6 +451,40 @@ mod tests {
         assert_eq!(
             find_cycle(&graph),
             Some(vec!["a".into(), "b".into(), "a".into()])
+        );
+    }
+
+    #[test]
+    fn tombstones_only_participate_in_duplicate_and_tombstone_predicates() {
+        let declarations = vec![declaration("consumer", &["removed"]), tombstone("removed")];
+        assert!(dup_keys(&declarations).is_empty());
+        assert_eq!(tombstoned_keys(&declarations), vec!["removed"]);
+        assert_eq!(
+            unknown_deps(&declarations, &[]),
+            vec![("consumer".into(), "removed".into())]
+        );
+        assert!(gate_rule_violations(&declarations, true).contains(&"consumer".into()));
+        assert!(!gate_rule_violations(&declarations, true).contains(&"removed".into()));
+        assert!(!declaration_graph(&declarations).contains_key("removed"));
+
+        let duplicate = vec![tombstone("removed"), declaration("removed", &[])];
+        assert_eq!(dup_keys(&duplicate), vec!["removed"]);
+    }
+
+    #[test]
+    fn find_cycles_returns_one_path_per_disjoint_component() {
+        let graph = declaration_graph(&[
+            declaration("a", &["b"]),
+            declaration("b", &["a"]),
+            declaration("x", &["y"]),
+            declaration("y", &["x"]),
+        ]);
+        assert_eq!(
+            find_cycles(&graph),
+            vec![
+                vec![String::from("a"), String::from("b"), String::from("a")],
+                vec![String::from("x"), String::from("y"), String::from("x")]
+            ]
         );
     }
 
@@ -445,6 +517,33 @@ mod tests {
                 .iter()
                 .flatten()
                 .any(|d| d.message.contains("duplicate key"))
+        );
+    }
+
+    #[test]
+    fn projection_gives_redeclaration_the_tombstone_diagnostic() {
+        let blocks = vec![
+            ReportBlock {
+                id: "b_0001".into(),
+                kind: super::super::KIND_TASK.into(),
+                rev: 0,
+                payload: json!({"key":"removed","tombstone":{},"declared_by":"spec","tombstoned_by":"user"}),
+            },
+            ReportBlock {
+                id: "b_0002".into(),
+                kind: super::super::KIND_TASK.into(),
+                rev: 0,
+                payload: json!({"key":"removed","kind":"codex","goal":"again","ready":true,"declared_by":"spec"}),
+            },
+        ];
+        let (declarations, diagnostics) = project_task_declarations(&blocks);
+        assert_eq!(dup_keys(&declarations), vec!["removed"]);
+        assert!(diagnostics[0].is_empty());
+        assert_eq!(diagnostics[1].len(), 1);
+        assert_eq!(diagnostics[1][0].path, "key");
+        assert_eq!(
+            diagnostics[1][0].message,
+            "task key `removed` has an uncleared tombstone"
         );
     }
 

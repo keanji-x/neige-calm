@@ -935,7 +935,7 @@ fn project_task_declarations(
 /// 读路径（`taskDiagnostics`）**调的是这同一个函数**，不是两份实现。
 ///
 /// 需要 DB 的四类（逐条已核实，见规则 3′）：跨 cove 引用、`unknown_deps`
-/// （签名自带一份 `&[Task]`，**且它规范地只含该 wave 的*在飞*行**——
+/// （第二个入参是从该 wave 的*在飞*行派生出的已知 task key 列表——
 /// `status IN ('dispatched','running','verifying')`，见规则 3‴）、
 /// `spec_task_ceiling` 超限（**不是**裸 `count(*)`：对声明集合的确定性准入，
 /// 规则 3″）、`declare-and-wait` 未放行（`effective_policy` =
@@ -1032,8 +1032,10 @@ async fn tasks_rebuild_tx(
 
    - 把四条规则各自抽成 **calm-types 里的纯谓词**（NEW）：
      `dup_keys(&[Decl]) -> Vec<Key>`、
-     `unknown_deps(&[Decl], in_flight: &[Task]) -> Vec<(Key, Dep)>`
-     （第二个入参是**在飞行**，规范约束见规则 3‴）、
+     `unknown_deps(&[Decl], known_task_keys: &[String]) -> Vec<(Key, Dep)>`
+     （第二个入参是从**在飞行**派生出的已知 key 列表，规范约束见规则 3‴；
+     不能写成 `&[Task]`，因为 `Task` 定义在 `calm-truth`，底层
+     `calm-types` 依赖它会把 crate DAG 反过来）、
      `find_cycle(&BTreeMap<..>) -> Option<Vec<String>>`（从 `plan.rs:524` **移动**过去）、
      `gate_rule_violations(&[Decl], require_gates: bool) -> Vec<Key>`；
    - **`resolve_plan_batch` 重构为调用同一批谓词**，只保留"首个违规 → `Err`"的
@@ -1053,7 +1055,7 @@ async fn tasks_rebuild_tx(
    | payload schema / `goal`·`acceptance` 非空 / `gate_rule_violations` | 只需本块 | 纯函数 `project_task_declarations` |
    | `dup_keys` / `find_cycle` | 只需本文档的全部块 | 纯函数 |
    | **`tombstoned_keys`：同 `key` 存在未清除的墓碑块**（NEW，r6 通道 A MINOR）| 只需本文档的全部块 | 纯函数 |
-   | `unknown_deps` | **该 wave 的*在飞*行 `&[Task]`**（`status IN ('dispatched','running','verifying')`；**不是**全部非终结行——规范约束见规则 3‴，r7）| `evaluate_schedulability_tx` |
+   | `unknown_deps` | 从**该 wave 的*在飞*行**派生出的已知 task key 列表 `&[String]`（`status IN ('dispatched','running','verifying')`；**不是**全部非终结行——规范约束见规则 3‴，r7）| `evaluate_schedulability_tx` |
    | 引用越 cove | **DB**（§5.1 明写"执行点在 `project_tasks_tx`，纯 `validate_payload` 看不到 cove"） | 同上 |
    | `spec_task_ceiling` 超限 | **一次 `SELECT count(*)`（只数**在飞行**）+ 对声明集合的确定性准入**（规则 3″、§8(A)；**不是**裸 `count(*)`，也**不数 `pending` 行**）| 同上 |
    | `declare-and-wait` 未放行 | **`effective_policy(wave)`** = `waves.automation_policy` 列 + 文档里有无 `tombstoned_by:"user"` 的墓碑（§6.6 的派生规则，r5 ⑰；两个输入这里本来都有） | 同上 |
@@ -1175,9 +1177,9 @@ async fn tasks_rebuild_tx(
    的表）当时仍写着裸 `&[Task]`，于是**同一个谓词在本文的两处有两个不同的
    规范**。规则 3‴ 把 §11.1 的那条收窄写进 §4.2，让它只有一处定义：
 
-   > **`unknown_deps` 的第二个入参 = 该 wave 内
-   > `status IN ('dispatched','running','verifying')` 的行。
-   > `pending` 行一律不在其中；终结行本来也不在。**
+   > **`unknown_deps` 的第二个入参 = 从该 wave 内
+   > `status IN ('dispatched','running','verifying')` 的行派生出的 key 列表。
+   > `pending` 行的 key 一律不在其中；终结行本来也不在。**
 
    **不修会怎样（⑳ 的失败类在另一个诊断上原样重现）**：ceiling = ∞、
    声明 `k1` 与 `k2`（`depends_on: [k1]`），两者都已落 `pending` 行；
@@ -2976,7 +2978,7 @@ worker_sessions / waves / coves / …` 然后 `seed_events(fixture)`。
   (1) 删除阶段只删同时满足三个条件的行：
         origin = 'block'  且  当前文档不再把该 key 声明为「可调度」  且  status = 'pending'
       —— 即"从未派发过、可调度的声明已消失"的行。
-      「可调度」是**当前文档 + 该 wave 的策略列 + 同 wave 的在飞 tasks 行**
+      「可调度」是**当前文档 + 该 wave 的策略列 + 从同 wave 在飞 tasks 行派生出的已知 key 列表**
       的函数（r3 ⑫ 统一；r4 ⑭ 更正措辞与实现位置；r5 ⑯⑰、**r6 ⑳** 见下）：
         存在非墓碑 task 块 ∧ ready == true ∧ 该块的诊断为空
         ∧（effective_policy(wave) = declare-and-wait 且 declared_by = 'spec' 时）
@@ -3003,7 +3005,7 @@ worker_sessions / waves / coves / …` 然后 `seed_events(fixture)`。
 
 **"纯函数"这个词在 r3 里是错的**（r4 通道 A MAJOR，成立，改设计方向 ⑭）。
 上面 (1) 的谓词**在它自己那句话里**就含 `automation_policy`——那是 `waves` 的
-**列**，不是文档；同理 `unknown_deps` 要 `&[Task]`、跨 cove 判定要读 wave 的
+**列**，不是文档；同理 `unknown_deps` 要从在飞 tasks 行派生出的已知 key 列表、跨 cove 判定要读 wave 的
 `cove_id`、`spec_task_ceiling` 要 `count(*)`。r3 写成"当前文档的纯函数"之后，
 §4.2 规则 7 又把读端诊断定义成"按需调用那个纯函数"，两处叠加的后果是：
 **规则 1/4 会删掉一条 pending 行，而读端渲染不出删它的原因**——一种静默降级。

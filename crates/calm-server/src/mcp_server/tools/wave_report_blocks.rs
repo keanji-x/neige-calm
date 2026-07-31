@@ -231,6 +231,16 @@ fn kinds_table() -> Value {
                 "schema": {
                     "type": "object",
                     "additionalProperties": false,
+                    "$defs": {
+                        "contextValue": {
+                            "oneOf": [
+                                { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                                { "type": "array", "items": { "$ref": "#/$defs/contextValue" } },
+                                { "type": "object", "additionalProperties": { "$ref": "#/$defs/contextValue" } },
+                                { "type": ["number", "boolean", "null"] }
+                            ]
+                        }
+                    },
                     "oneOf": [
                         {
                             "required": ["key", "kind", "goal", "ready", "declared_by"],
@@ -274,7 +284,7 @@ fn kinds_table() -> Value {
                         "depends_on": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS } },
                         "priority": { "type": "integer", "default": 0 },
                         "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
-                        "context": {},
+                        "context": { "$ref": "#/$defs/contextValue", "description": "Arbitrary JSON; every nested string is limited to 2048 characters." },
                         "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
                         "ready": { "type": "boolean" },
                         "declared_by": { "type": "string", "enum": ["spec"] },
@@ -285,7 +295,7 @@ fn kinds_table() -> Value {
                     },
                     "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}. Slice 1 only accepts declared_by=spec."
                 },
-                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them."
+                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
     })
