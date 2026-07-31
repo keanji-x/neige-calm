@@ -134,7 +134,7 @@ beforeEach(() => {
 });
 
 describe('prose block', () => {
-  it('stamps deterministic ids onto each H2 in StrictMode', () => {
+  it('stamps deterministic ids onto H1 and H2 in document order', () => {
     render(
       <StrictMode>
         <ReportBlockView
@@ -142,15 +142,17 @@ describe('prose block', () => {
             id: 'b_multi',
             kind: 'prose',
             rev: 1,
-            payload: { markdown: '## First\n\nBody\n\n## Second' },
+            payload: { markdown: '# First\n\nBody\n\n## Second\n\n# Third' },
           }}
         />
       </StrictMode>,
     );
 
-    expect(
-      screen.getAllByRole('heading', { level: 2 }).map((heading) => heading.id),
-    ).toEqual(['b_multi-h1', 'b_multi-h2']);
+    expect(screen.getAllByRole('heading').map((heading) => heading.id)).toEqual([
+      'b_multi-h1',
+      'b_multi-h2',
+      'b_multi-h3',
+    ]);
   });
 });
 

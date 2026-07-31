@@ -1809,7 +1809,7 @@ select:-webkit-autofill {
 }
 /* Shared "calm prose" typography — used by wave report bodies, spec
    conversation agent turns, and the file-viewer markdown preview. The
-   report-specific H2 decimal counter lives in .report-prose below and
+   report-specific section counter lives in .report-prose below and
    is layered on top; anything visually shared belongs here. */
 .calm-prose {
   margin-top: var(--space-10);
@@ -1917,16 +1917,17 @@ select:-webkit-autofill {
   border: none;
   border-top: 1px solid var(--hairline);
 }
-/* Wave-report-only overlay: decimal-leading-zero H2 counter. The report body
-   spans every prose block; each conversation turn owns an independent scope. */
+/* Wave-report-only overlay: one decimal-leading-zero counter for H1 and H2 in
+   document order. The report body spans every prose block; each conversation
+   turn owns an independent scope. */
 .report-body,
 .report-convo-body {
   counter-reset: report-h2;
 }
-.report-prose h2 {
+.report-prose :is(h1, h2) {
   counter-increment: report-h2;
 }
-.report-prose h2::before {
+.report-prose :is(h1, h2)::before {
   content: counter(report-h2, decimal-leading-zero) " ";
   margin-right: var(--space-3);
   color: var(--accent);

@@ -31,14 +31,17 @@ function nodeText(node: unknown): string {
   return candidate.children.map(nodeText).join('');
 }
 
-function collectH2Labels(node: unknown, labels: string[]): void {
+function collectSectionLabels(node: unknown, labels: string[]): void {
   if (typeof node !== 'object' || node === null) return;
   const candidate = node as MarkdownNode;
-  if (candidate.type === 'heading' && candidate.depth === 2) {
+  if (
+    candidate.type === 'heading' &&
+    (candidate.depth === 1 || candidate.depth === 2)
+  ) {
     labels.push(nodeText(candidate));
   }
   if (!Array.isArray(candidate.children)) return;
-  for (const child of candidate.children) collectH2Labels(child, labels);
+  for (const child of candidate.children) collectSectionLabels(child, labels);
 }
 
 function blockLabel(block: ReportBlock): string {
@@ -50,7 +53,7 @@ function blockLabel(block: ReportBlock): string {
   return block.kind;
 }
 
-export function reportH2Id(blockId: string, index: number): string {
+export function reportHeadingId(blockId: string, index: number): string {
   return `${blockId}-h${index + 1}`;
 }
 
@@ -68,11 +71,11 @@ export function deriveOutline(
       if (typeof markdown !== 'string') continue;
       const root = fromMarkdown(markdown);
       const labels: string[] = [];
-      collectH2Labels(root, labels);
+      collectSectionLabels(root, labels);
       for (const [index, label] of labels.entries()) {
         sectionNumber += 1;
         outline.push({
-          blockId: reportH2Id(block.id, index),
+          blockId: reportHeadingId(block.id, index),
           label,
           number: sectionNumber,
           children: [],

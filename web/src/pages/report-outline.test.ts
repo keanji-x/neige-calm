@@ -7,10 +7,48 @@ function prose(id: string, markdown: string): ReportBlock {
 }
 
 describe('deriveOutline', () => {
-  it('extracts H2 headings in document order and ignores other heading levels', () => {
+  it('extracts pure H1 reports in document order', () => {
     expect(
       deriveOutline([
-        prose('b_1', '# Report\n\n## First *section*'),
+        prose('b_1', '# Summary\n\n# Findings\n\n# Recommendation'),
+      ]),
+    ).toMatchObject([
+      { blockId: 'b_1-h1', label: 'Summary', number: 1 },
+      { blockId: 'b_1-h2', label: 'Findings', number: 2 },
+      { blockId: 'b_1-h3', label: 'Recommendation', number: 3 },
+    ]);
+  });
+
+  it('numbers mixed H1 and H2 headings in document order', () => {
+    expect(
+      deriveOutline([
+        prose('b_1', '# Summary\n\n## Evidence\n\n# Recommendation'),
+      ]),
+    ).toMatchObject([
+      { blockId: 'b_1-h1', label: 'Summary', number: 1 },
+      { blockId: 'b_1-h2', label: 'Evidence', number: 2 },
+      { blockId: 'b_1-h3', label: 'Recommendation', number: 3 },
+    ]);
+  });
+
+  it('keeps an H1 after an H2 in source order across prose blocks', () => {
+    expect(
+      deriveOutline([
+        prose('b_1', '## First'),
+        prose('b_2', '# Second'),
+        prose('b_3', '## Third'),
+      ]),
+    ).toMatchObject([
+      { blockId: 'b_1-h1', label: 'First', number: 1 },
+      { blockId: 'b_2-h1', label: 'Second', number: 2 },
+      { blockId: 'b_3-h1', label: 'Third', number: 3 },
+    ]);
+  });
+
+  it('extracts H2 headings in document order and ignores deeper levels', () => {
+    expect(
+      deriveOutline([
+        prose('b_1', '### Report\n\n## First *section*'),
         prose('b_2', 'Second section\n--------------'),
         prose('b_3', '### Detail\n\n> ## Third `section`'),
       ]),
@@ -29,7 +67,7 @@ describe('deriveOutline', () => {
       ]);
   });
 
-  it('does not treat fenced or indented code as H2 headings', () => {
+  it('does not treat fenced or indented code as section headings', () => {
     expect(
       deriveOutline([
         prose(
@@ -40,9 +78,9 @@ describe('deriveOutline', () => {
     ).toMatchObject([{ label: 'Real heading', number: 1 }]);
   });
 
-  it('uses the child label fallback chain and nests blocks under the preceding H2', () => {
+  it('uses the child label fallback chain and nests blocks under the preceding section', () => {
     const blocks = [
-      prose('b_head', '## Market'),
+      prose('b_head', '# Market'),
       {
         id: 'b_chart',
         kind: 'chart.candles',
