@@ -293,6 +293,11 @@ mod tests {
     }
 
     #[test]
+    fn scan_separates_fenced_code_block_from_following_block() {
+        assert_eq!(scan_links("```\na\n```\n\nb").plain, "a\n\nb\n");
+    }
+
+    #[test]
     fn scan_separates_adjacent_table_cells() {
         assert_eq!(
             scan_links("| first | second |\n| --- | --- |").plain,
