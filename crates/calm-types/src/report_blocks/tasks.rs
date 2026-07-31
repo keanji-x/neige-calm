@@ -117,13 +117,14 @@ pub fn validate_gate_shape(key: &str, gate: &GateInput) -> Result<(), String> {
 
 pub fn dup_keys(declarations: &[TaskDeclaration]) -> Vec<String> {
     let mut seen = BTreeSet::new();
-    let mut duplicates = BTreeSet::new();
+    let mut emitted = BTreeSet::new();
+    let mut duplicates = Vec::new();
     for declaration in declarations {
-        if !seen.insert(declaration.key.as_str()) {
-            duplicates.insert(declaration.key.clone());
+        if !seen.insert(declaration.key.as_str()) && emitted.insert(declaration.key.as_str()) {
+            duplicates.push(declaration.key.clone());
         }
     }
-    duplicates.into_iter().collect()
+    duplicates
 }
 
 pub fn unknown_deps(
@@ -210,6 +211,74 @@ pub fn find_cycle(graph: &BTreeMap<String, Vec<String>>) -> Option<Vec<String>> 
     None
 }
 
+fn reachable(graph: &BTreeMap<String, Vec<String>>, from: &str, to: &str) -> bool {
+    let mut pending = vec![from];
+    let mut seen = BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        for dependency in graph.get(node).into_iter().flatten() {
+            if dependency == to {
+                return true;
+            }
+            if graph.contains_key(dependency) {
+                pending.push(dependency);
+            }
+        }
+    }
+    false
+}
+
+fn cyclic_components(
+    graph: &BTreeMap<String, Vec<String>>,
+) -> Vec<(BTreeSet<String>, Vec<String>)> {
+    let mut assigned = BTreeSet::new();
+    let mut components = Vec::new();
+    for node in graph.keys() {
+        if assigned.contains(node) {
+            continue;
+        }
+        let members: BTreeSet<String> = graph
+            .keys()
+            .filter(|candidate| {
+                reachable(graph, node, candidate) && reachable(graph, candidate, node)
+            })
+            .cloned()
+            .collect();
+        let cyclic = members.len() > 1
+            || graph
+                .get(node)
+                .is_some_and(|dependencies| dependencies.contains(node));
+        if !cyclic {
+            continue;
+        }
+        assigned.extend(members.iter().cloned());
+        let component_graph: BTreeMap<String, Vec<String>> = members
+            .iter()
+            .map(|key| {
+                let dependencies = graph[key]
+                    .iter()
+                    .filter(|dependency| members.contains(*dependency))
+                    .cloned()
+                    .collect();
+                (key.clone(), dependencies)
+            })
+            .collect();
+        let cycle = find_cycle(&component_graph).expect("cyclic component has a cycle");
+        components.push((members, cycle));
+    }
+    components
+}
+
+/// Finds a representative path for every cyclic component.
+pub fn find_cycles(graph: &BTreeMap<String, Vec<String>>) -> Vec<Vec<String>> {
+    cyclic_components(graph)
+        .into_iter()
+        .map(|(_, cycle)| cycle)
+        .collect()
+}
+
 pub fn declaration_graph(declarations: &[TaskDeclaration]) -> BTreeMap<String, Vec<String>> {
     declarations
         .iter()
@@ -283,7 +352,8 @@ pub fn project_task_declarations(
     }
     for duplicate in dup_keys(&declarations) {
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
-            block.payload.get("key").and_then(Value::as_str) == Some(duplicate.as_str())
+            block.kind == super::KIND_TASK
+                && block.payload.get("key").and_then(Value::as_str) == Some(duplicate.as_str())
         }) {
             diagnostics[index].push(Diagnostic::new(
                 "key",
@@ -292,28 +362,18 @@ pub fn project_task_declarations(
         }
     }
     let graph = declaration_graph(&declarations);
-    if let Some(cycle) = find_cycle(&graph) {
-        let keys: BTreeSet<&str> = cycle.iter().map(String::as_str).collect();
+    for (keys, cycle) in cyclic_components(&graph) {
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
-            block
-                .payload
-                .get("key")
-                .and_then(Value::as_str)
-                .is_some_and(|key| keys.contains(key))
+            block.kind == super::KIND_TASK
+                && block
+                    .payload
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| keys.contains(key))
         }) {
             diagnostics[index].push(Diagnostic::new(
                 "depends_on",
                 format!("dependency cycle: {}", cycle.join(" -> ")),
-            ));
-        }
-    }
-    for (key, dependency) in unknown_deps(&declarations, &[]) {
-        for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
-            block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())
-        }) {
-            diagnostics[index].push(Diagnostic::new(
-                "depends_on",
-                format!("unknown dependency `{dependency}`"),
             ));
         }
     }
@@ -357,13 +417,19 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_keys_follow_the_order_they_first_repeat() {
+        let declarations = ["z", "z", "a", "a"].map(|key| declaration(key, &[]));
+        assert_eq!(dup_keys(&declarations), vec!["z", "a"]);
+    }
+
+    #[test]
     fn projection_is_pure_and_reports_document_level_diagnostics() {
         let blocks = vec![
             ReportBlock {
                 id: "b_0001".into(),
                 kind: super::super::KIND_TASK.into(),
                 rev: 0,
-                payload: json!({"key":"a","kind":"codex","goal":"g","depends_on":["missing"],"ready":true,"declared_by":"spec"}),
+                payload: json!({"key":"a","kind":"codex","goal":"g","depends_on":[],"ready":true,"declared_by":"spec"}),
             },
             ReportBlock {
                 id: "b_0002".into(),
@@ -380,11 +446,36 @@ mod tests {
                 .flatten()
                 .any(|d| d.message.contains("duplicate key"))
         );
-        assert!(
-            diagnostics
-                .iter()
-                .flatten()
-                .any(|d| d.message.contains("unknown dependency"))
-        );
+    }
+
+    #[test]
+    fn projection_reports_every_disjoint_cycle_only_on_task_blocks() {
+        let task = |id: &str, key: &str, dependency: &str| ReportBlock {
+            id: id.into(),
+            kind: super::super::KIND_TASK.into(),
+            rev: 0,
+            payload: json!({"key":key,"kind":"codex","goal":"g","depends_on":[dependency],"ready":true,"declared_by":"spec"}),
+        };
+        let mut blocks = vec![
+            task("b_0001", "a", "b"),
+            task("b_0002", "b", "a"),
+            task("b_0003", "x", "y"),
+            task("b_0004", "y", "x"),
+        ];
+        blocks.push(ReportBlock {
+            id: "b_0005".into(),
+            kind: "prose".into(),
+            rev: 0,
+            payload: json!({"key":"a","markdown":"not a task"}),
+        });
+        let (_, diagnostics) = project_task_declarations(&blocks);
+        for block_diagnostics in diagnostics.iter().take(4) {
+            assert!(
+                block_diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("dependency cycle"))
+            );
+        }
+        assert!(diagnostics[4].is_empty());
     }
 }

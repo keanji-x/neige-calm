@@ -254,33 +254,33 @@ fn kinds_table() -> Value {
                     "properties": {
                         "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
                         "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
-                        "goal": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS },
-                        "acceptance": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "goal": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                        "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                         "gate": {
                             "type": "object", "additionalProperties": false, "required": ["steps"],
                             "properties": {
-                                "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/" },
+                                "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
                                 "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200 },
                                 "steps": { "type": "array", "minItems": 1, "items": {
                                     "type": "object", "additionalProperties": false, "required": ["name", "cmd"],
                                     "properties": {
-                                        "name": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS },
-                                        "cmd": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS }
+                                        "name": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" },
+                                        "cmd": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" }
                                     }
                                 }}
                             }
                         },
-                        "no_gate_reason": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS },
+                        "no_gate_reason": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
                         "depends_on": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS } },
                         "priority": { "type": "integer", "default": 0 },
-                        "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^/" },
+                        "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
                         "context": {},
                         "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
                         "ready": { "type": "boolean" },
                         "declared_by": { "type": "string", "enum": ["spec"] },
                         "released_by_user": { "type": "boolean", "default": false },
                         "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
-                        "tombstone": {},
+                        "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                         "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
                     },
                     "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}. Slice 1 only accepts declared_by=spec."
@@ -780,6 +780,28 @@ mod task_kind_contract_tests {
             task["schema"]["properties"]["declared_by"]["enum"],
             json!(["spec"])
         );
+        let properties = &task["schema"]["properties"];
+        assert_eq!(properties["acceptance"]["minLength"], 1);
+        for field in ["goal", "acceptance", "no_gate_reason"] {
+            assert_eq!(properties[field]["pattern"], "\\S");
+        }
+        for field in ["cwd", "gate"] {
+            let cwd = if field == "gate" {
+                &properties[field]["properties"]["cwd"]
+            } else {
+                &properties[field]
+            };
+            assert!(cwd["pattern"].as_str().unwrap().contains("\\x00-\\x1F"));
+            assert!(!cwd["pattern"].as_str().unwrap().starts_with("^/"));
+        }
+        for field in ["name", "cmd"] {
+            assert!(
+                properties["gate"]["properties"]["steps"]["items"]["properties"][field]["pattern"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\\x00-\\x1F")
+            );
+        }
         assert!(task["usage"].as_str().unwrap().contains("ready: true"));
 
         let kinds = kinds_descriptor();

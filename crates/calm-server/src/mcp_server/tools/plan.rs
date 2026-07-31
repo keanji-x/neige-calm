@@ -347,8 +347,10 @@ fn resolve_plan_batch(
     batch: &[NormalizedTask],
 ) -> Result<Vec<PlanOutcome>, String> {
     // Rule 1 (uniqueness half) — duplicate keys within the batch.
-    let batch_declarations: Vec<TaskDeclaration> =
-        batch.iter().map(declaration_from_normalized).collect();
+    let batch_declarations: Vec<TaskDeclaration> = batch
+        .iter()
+        .map(declaration_from_normalized)
+        .collect::<Result<_, _>>()?;
     if let Some(key) = dup_keys(&batch_declarations).first() {
         return Err(format!("duplicate key `{key}` in batch"));
     }
@@ -358,6 +360,8 @@ fn resolve_plan_batch(
 
     // Rule 3 — unknown deps: every dep names an existing wave task or a
     // task in the same batch.
+    // Only persisted task-row keys are known here. Tombstones never project a
+    // row, so they cannot accidentally satisfy a dependency through this input.
     let existing_keys: Vec<String> = existing.iter().map(|task| task.key.clone()).collect();
     if let Some((key, dependency)) = unknown_deps(&batch_declarations, &existing_keys).first() {
         return Err(format!(
@@ -406,8 +410,14 @@ fn resolve_plan_batch(
     Ok(outcomes)
 }
 
-fn declaration_from_normalized(task: &NormalizedTask) -> TaskDeclaration {
-    TaskDeclaration {
+fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration, String> {
+    let gate = task
+        .gate_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("task {}: invalid normalized gate_json: {error}", task.key))?;
+    Ok(TaskDeclaration {
         block_id: String::new(),
         key: task.key.clone(),
         kind: match task.kind {
@@ -418,15 +428,12 @@ fn declaration_from_normalized(task: &NormalizedTask) -> TaskDeclaration {
         .into(),
         goal: task.goal.clone(),
         acceptance: task.acceptance_criteria.clone(),
-        gate: task
-            .gate_json
-            .as_deref()
-            .and_then(|gate| serde_json::from_str(gate).ok()),
+        gate,
         no_gate_reason: task.has_no_gate_reason.then(String::new),
         depends_on: task.depends_on.clone(),
         ready: true,
         tombstone: false,
-    }
+    })
 }
 
 /// Rule 5 equality: the stored row vs. the candidate's normalized
@@ -677,7 +684,8 @@ async fn plan_upsert(
                             matches!(outcome, PlanOutcome::Created | PlanOutcome::Updated)
                         })
                         .map(|(task, _)| declaration_from_normalized(task))
-                        .collect();
+                        .collect::<Result<_, _>>()
+                        .map_err(CalmError::BadRequest)?;
                     if let Some(key) = gate_rule_violations(&changed, true).first() {
                         return Err(CalmError::BadRequest(format!(
                             "task {key}: this wave requires verification gates for agent \
@@ -1318,10 +1326,9 @@ mod tests {
         use calm_types::wave_report::ReportBlock;
 
         // Exhaust the 4^3 dependency graphs over three keys (none, or
-        // one edge to a/b/c). This is a small property test, not a set
-        // of hand-picked examples: unknown deps are covered separately
-        // below and rule-2/non-pending mutability is intentionally out
-        // of scope per the projection contract.
+        // one edge to a/b/c). This is a small property test for the
+        // document-local cycle rule; DB-backed unknown dependencies and
+        // rule-2/non-pending mutability are intentionally out of scope.
         let choices: [Option<&str>; 4] = [None, Some("a"), Some("b"), Some("c")];
         for a in choices {
             for b in choices {
@@ -1347,21 +1354,27 @@ mod tests {
                 }
             }
         }
+    }
 
-        let unknown = vec![normalized("a", &["missing"])];
-        let blocks = vec![ReportBlock {
-            id: "b_0001".into(),
-            kind: "task".into(),
-            rev: 0,
-            payload: json!({"key":"a","kind":"codex","goal":"do it","depends_on":["missing"],"ready":true,"declared_by":"spec"}),
-        }];
+    #[test]
+    fn resolver_reports_the_first_duplicate_in_batch_order() {
+        let batch = ["z", "z", "a", "a"].map(|key| normalized(key, &[]));
         assert_eq!(
-            resolve_plan_batch(&[], &unknown).is_err(),
-            project_task_declarations(&blocks)
-                .1
-                .iter()
-                .any(|items| !items.is_empty())
+            resolve_plan_batch(&[], &batch).unwrap_err(),
+            "duplicate key `z` in batch"
         );
+    }
+
+    #[test]
+    fn normalized_declaration_gate_round_trips_and_invalid_json_fails() {
+        let mut task = normalized("a", &[]);
+        task.gate_json = Some(r#"{"steps":[{"name":"test","cmd":"cargo test"}]}"#.into());
+        let declaration = declaration_from_normalized(&task).expect("valid gate JSON");
+        assert_eq!(declaration.gate.unwrap().steps[0].cmd, "cargo test");
+
+        task.gate_json = Some("{".into());
+        let error = declaration_from_normalized(&task).unwrap_err();
+        assert!(error.contains("invalid normalized gate_json"), "{error}");
     }
 
     #[test]

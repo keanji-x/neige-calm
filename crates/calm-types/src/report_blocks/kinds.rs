@@ -144,7 +144,21 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
         }
         validate_declared_by(map, errors);
         required_enum(map, "tombstoned_by", &["spec", "user"], errors);
-        check_nested_string_caps("tombstone", &map["tombstone"], errors);
+        match &map["tombstone"] {
+            Value::Object(value) => {
+                reject_unknown(value, &["reason"], errors);
+                if let Some(reason) = value.get("reason") {
+                    match reason {
+                        Value::Null => {}
+                        Value::String(reason) => {
+                            check_string_cap("tombstone.reason", reason, errors)
+                        }
+                        _ => errors.push("tombstone.reason: must be a string or null".into()),
+                    }
+                }
+            }
+            _ => errors.push("tombstone: must be an object".into()),
+        }
         return;
     }
 
@@ -837,6 +851,14 @@ mod tests {
                 .unwrap_err()
                 .contains("kind: must be absent")
         );
+        for invalid in [json!(false), json!(0), json!("")] {
+            let payload = json!({"key":"old","tombstone":invalid,"declared_by":"spec","tombstoned_by":"user"});
+            assert!(
+                validate_payload(KIND_TASK, &payload)
+                    .unwrap_err()
+                    .contains("tombstone: must be an object")
+            );
+        }
         let mut live = valid_task();
         live["tombstoned_by"] = json!("spec");
         assert!(
