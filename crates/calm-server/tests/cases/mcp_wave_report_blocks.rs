@@ -175,7 +175,7 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn kinds_returns_all_four_schemas() {
+async fn kinds_returns_all_five_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -193,7 +193,7 @@ async fn kinds_returns_all_four_schemas() {
         .iter()
         .map(|k| k.get("kind").and_then(Value::as_str).unwrap())
         .collect();
-    assert_eq!(names, ["prose", "chart.candles", "table", "app"]);
+    assert_eq!(names, ["prose", "chart.candles", "table", "app", "task"]);
     for kind in kinds {
         assert_eq!(
             kind.pointer("/schema/type").and_then(Value::as_str),
@@ -242,6 +242,15 @@ async fn kinds_returns_all_four_schemas() {
         app.pointer("/schema/properties/height/maximum")
             .and_then(Value::as_u64),
         Some(2000),
+    );
+    let task = &kinds[4];
+    assert_eq!(
+        task.pointer("/schema/additionalProperties"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        task.pointer("/schema/properties/declared_by/enum"),
+        Some(&json!(["spec"]))
     );
 
     // #960 PR3 review round 1: advertised limits mirror the Rust

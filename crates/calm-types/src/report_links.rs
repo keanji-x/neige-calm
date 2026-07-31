@@ -135,7 +135,7 @@ fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
     LinkScan { plain, links }
 }
 
-fn parse_destination(destination: &str) -> Option<(String, Option<String>)> {
+pub fn parse_destination(destination: &str) -> Option<(String, Option<String>)> {
     let path = destination.strip_prefix(WAVE_LINK_PREFIX)?;
     let (wave_id, fragment) = match path.split_once('#') {
         Some((wave_id, fragment)) => (wave_id, Some(fragment)),
@@ -149,7 +149,7 @@ fn parse_destination(destination: &str) -> Option<(String, Option<String>)> {
     Some((wave_id.to_string(), block_id.map(str::to_string)))
 }
 
-fn is_block_id(id: &str) -> bool {
+pub fn is_block_id(id: &str) -> bool {
     id.len() == 6
         && id.starts_with("b_")
         && id[2..]
