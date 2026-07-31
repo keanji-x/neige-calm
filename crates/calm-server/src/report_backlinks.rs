@@ -177,10 +177,15 @@ async fn backlinks_for_wave_with_byte_cap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_role_cache::CardRoleCache;
     use crate::db::sqlite::SqlxRepo;
-    use crate::db::{RepoSyncDomainRaw, RouteRepo};
+    use crate::db::{RepoSyncDomainRaw, RouteRepo, ServerRepoReadExt};
+    use crate::event::{EditAuthor, EventBus};
+    use crate::ids::ActorId;
     use crate::model::{NewCove, NewWave, RequestTheme};
-    use crate::wave_report::{ReportBlock, WaveReportPayload};
+    use crate::state::WriteContext;
+    use crate::wave_cove_cache::WaveCoveCache;
+    use crate::wave_report::{ReportBlock, WaveReportPayload, persist_report};
     use serde_json::json;
 
     async fn cove(repo: &SqlxRepo, name: &str) -> crate::model::Cove {
@@ -209,13 +214,33 @@ mod tests {
     }
 
     async fn report(repo: &SqlxRepo, wave_id: &str, payload: serde_json::Value) {
-        repo.card_create(crate::model::NewCard {
-            wave_id: wave_id.into(),
-            kind: "wave-report".into(),
-            sort: Some(-1.0),
-            payload,
-            title: Some("Report".into()),
-        })
+        let initial = WaveReportPayload::initial();
+        let card = repo
+            .card_create(crate::model::NewCard {
+                wave_id: wave_id.into(),
+                kind: "wave-report".into(),
+                sort: Some(-1.0),
+                payload: serde_json::to_value(&initial).unwrap(),
+                title: Some("Report".into()),
+            })
+            .await
+            .unwrap();
+        let wave = repo.wave_get(wave_id).await.unwrap().unwrap();
+        let next: WaveReportPayload = serde_json::from_value(payload).unwrap();
+        persist_report(
+            repo,
+            &EventBus::new(),
+            &WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            ActorId::Kernel,
+            EditAuthor::Kernel,
+            wave,
+            card,
+            initial,
+            next,
+            None,
+            None,
+            false,
+        )
         .await
         .unwrap();
     }
@@ -371,11 +396,14 @@ mod tests {
             v1(format!("[healthy](neige://wave/{})", target.id)),
         )
         .await;
-        sqlx::query("UPDATE cards SET body_crdt = X'00' WHERE wave_id = ?1")
-            .bind(corrupt.id.as_str())
-            .execute(repo.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE cards SET body_crdt = X'00', payload = json_remove(payload, '$.blocks') \
+             WHERE wave_id = ?1",
+        )
+        .bind(corrupt.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
 
         let found = backlinks_for_wave(&repo, target.id.as_str()).await.unwrap();
         assert_eq!(found.backlinks.len(), 1);
@@ -391,11 +419,14 @@ mod tests {
         let corrupt = wave(&repo, cove.id.as_str(), "Corrupt").await;
         report(&repo, target.id.as_str(), target_payload()).await;
         report(&repo, corrupt.id.as_str(), v1("ignored")).await;
-        sqlx::query("UPDATE cards SET body_crdt = X'00' WHERE wave_id = ?1")
-            .bind(corrupt.id.as_str())
-            .execute(repo.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE cards SET body_crdt = X'00', payload = json_remove(payload, '$.blocks') \
+             WHERE wave_id = ?1",
+        )
+        .bind(corrupt.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
 
         let error = backlinks_for_wave(&repo, target.id.as_str())
             .await
