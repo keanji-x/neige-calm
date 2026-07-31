@@ -45,8 +45,7 @@
 
 ## 0.1 全景
 
-三个平面、四条穿越边界的通道、四道拦截。①②③ 今天已存在，④ 是本文
-提议新增的唯一切面（§5）。
+三个平面、三条穿越边界的通道、四道拦截。
 
 ```text
 ┌─ agent 层 ──────────────────────────────────────────────
@@ -61,17 +60,16 @@
 ║  持久化契约      Tier-A payload (wave-report / codex / claude / terminal / spec)
 ║  内容寻址存储    wave_vcs (commit 链 / diff / GC)
 ║  app 宿主        进程监管 · MCP stdio · ui:// 资源
-╚══▲══════════════▲══════════════════│════════════════════
-   │ ①            ┊ ④【提议】         │ ②
-   │ neige.* ×10  ┊ proposal 通道     │ tools/call
-   │ 受 manifest  ┊ app 提议          │ resources/read
-   │ permissions  ┊ → 人 accept/reject│
-   │ 门禁         ┊                   ▼
-┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄┼┄┄┄┄┄ 边 界 膜 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+╚══▲══════════════════════════════════│════════════════════
+   │ ①                                │ ②
+   │ neige.* ×10                      │ tools/call
+   │ 受 manifest permissions 门禁      │ resources/read
+   │                                   ▼
+┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄ 边 界 膜 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
    │   ✗ 改内核拥有的卡           ✗ 写 wave_vcs / wave FS
    │   ✗ 定义可执行 gate          ✗ 绕过 role_gate
-   │              ┊                   │
-┌──┴──────────────┴───────────────────┴─ app 平面 (plugin) ─
+   │                                   │
+┌──┴───────────────────────────────────┴─ app 平面 (plugin) ─
 │  exposes_tools · workflow descriptor · ui://<plugin>/<view>
 │  overlay (kind 自定义) · 私有 kv (配额) · event.subscribe
 └─────────────────────────────────────────────────────────
@@ -84,8 +82,6 @@
                  resources/read 语义上是内核自己解析 ui://，不出进程
 ③  agent → app   内核把 plugin 工具代理成 plugin.<id>_<tool>，
                  可见性由 plugin_scope_for_wave fail-closed 决定
-④  app ⇢ 内核    【提议】跨边界的写不发写权限，发提议；
-                 内核持有文档与 apply，人 accept / reject（§5）
 ```
 
 > 与 issue #955 全景图的差异（本文以代码为准）：回调是 ×10 不是 ×9
@@ -117,7 +113,7 @@ flowchart TD
   T2 -->|否| T3{"做错会烧盘<br/>或破坏一致性？"}
   T3 -->|是| K
   T3 -->|否| A["app"]
-  K --> KX["跨边界要写内核的东西？<br/>→ 走 ④ proposal，不发写权限"]
+  K --> KX["跨边界要写内核的东西？<br/>→ 由唯一逻辑作者 spec agent 代写"]
 ```
 
 用一个真实场景（个股投研 workflow）跑一遍：
@@ -126,7 +122,7 @@ flowchart TD
 裸数据存档 + 版本化   T1 是(进 wave_vcs 写事务) ────────────→ 内核 · 缺写入口(见 D3)
 文档批注 / 讨论       T1 否 → T2 否 → T3 否 ──────────────→ app  · 不缺(overlay + ui://)
 到期提醒             T1 否 → T2 否(仅一个消费者) → T3 否 ──→ app  · 不缺(kv + 自带 timer)
-文档正文 in-place 改  T1 是(改 Tier-A 卡) ──────────────────→ 内核 · 缺切面 → ④
+文档正文 in-place 改  T1 是(改 Tier-A 卡) ──────────────────→ 内核 · app 不直写
 ```
 
 ### 1.2 内核持有
@@ -158,8 +154,8 @@ plugin，却占着"切面"这个词——下一个想找 plugin 扩展点的人�
 
 **结论（D1）：删除。** 理由：它没有任何 join point、没有消费者；"未来
 内核不变量注册表"这个用途等真出现第一个不变量时再立文件，届时叫
-`kernel_invariants.rs`，不叫 aspect。占位抽象违反"先有真实消费者"原则
-（与 D2 同一原则）。删除属 ≤200 行清理，随 ④ 的 PR 一并带走或单独一刀。
+`kernel_invariants.rs`，不叫 aspect。占位抽象违反"先有真实消费者"原则。
+删除属 ≤200 行清理；④ 后来也因没有真实消费者而撤回，两者遵循同一原则。
 
 ---
 
@@ -253,7 +249,7 @@ kv 写。`kv.get/list` 与 `event.subscribe` 无持久写。
 
 | 拦截 | 位置 | 为什么对 |
 |---|---|---|
-| 改内核拥有的卡（`wave-report` / `codex` / `claude` / `terminal` / `spec`） | `perms.rs` `can_card_modify` 前缀检查 + `deletable` 硬闸 | 否则 CRDT 合并（#960 block 文档）、Tier-A schemaVersion 校验、`WaveReportEdited` 编辑日志三样一起失守 |
+| 改内核拥有的卡（`wave-report` / `codex` / `claude` / `terminal` / `spec`） | `perms.rs` `can_card_modify` 前缀检查 + `deletable` 硬闸 | 否则 CRDT 合并（#960 block 文档）、Tier-A schemaVersion 校验、`WaveReportEdited` 编辑日志三样一起失守。④ proposal 曾试图在此开切面，但它把 app 变成第三个报告写者，引入丢更新、撤销安全、顺序版本、租约等复杂度，又没有真实消费者，故已撤回 |
 | 写 `wave_vcs` / wave FS | 无回调（词表里没有 VCS 形状的方法；wave_vcs 写入只从事件追加路径可达） | 配额与 GC 只能有一个负责人（判据 3） |
 | 定义**可执行**的 gate | `manifest.rs` `WorkflowDescriptor::gates` 明注 "Advisory, prompt-only … NEVER executed as a shell command" | 真 gate 由 spec 从目标仓库工具链经 `calm.plan.upsert` 写；否则 manifest 成了远程执行面 |
 | 绕过 `role_gate` / 审计（对 overlay/card 写而言） | `CallbackCtx.repo` 收窄为 `RouteRepo`（raw 同步域写类型不可达）+ 写事务内 `enforce_role` | 写路径唯一（判据 1）。kv 裸写是记录在案的例外（§2.1） |
@@ -289,31 +285,47 @@ wave.workflow_id = None                 wave.workflow_id = Some("equity-research
 **后果：两个 app 无法在同一个 wave 里协作。** 这是当前最硬的表达上限，
 由 #761（workflow 组合）解决；本文只负责把它写下来。
 
-**(b) app 无法修改内核文档正文——只能另起炉灶。**
+**(b) app 无法直接修改内核文档正文。**
 wave-report 的全部写口（`calm.report.write/edit` + `calm.report.blocks.*`）
 都是 `require_role(Spec)`；REST 侧唯一例外是人（`EditAuthor::User`）。
 "只有 spec 能改报告"今天只活在 MCP 入口软闸，硬闸 `role_gate` 对
 wave-report 没有条款——plugin 反正够不着（§3.2 第一行），但这条不变量
-没有第二层。app 想改 report 正文，唯一出路是 fork 一份
-`ui://<plugin>/report`，代价是重建 CRDT 合并、块级 rev、编辑日志、用户
-改动唤醒 spec、`report.md` 投影——**这是分叉产品，不是扩展**。④ 正是
-它的替代。
+没有第二层。这条限制成立，不是待补的洞。app 通过 ③ 工具向 agent 提供
+数据与建议，由 spec agent 以报告唯一逻辑作者的身份判断是否写入、如何
+组织；overlay 与 `ui://` 承载不应进入报告正文的 app 内容。另做一份
+`ui://<plugin>/report` 会重建 CRDT 合并、块级 rev、编辑日志、用户改动
+唤醒 spec、`report.md` 投影——**这是分叉产品，不是扩展**。
 
 ---
 
-## 4. 关键设计主张：跨边界的写，不发写权限，发 proposal
+## 4. 单写者原则
 
-> 内核持有文档与 apply；app 只提议；人 accept / reject。
+> **报告只有一个逻辑作者：spec agent。** 人可以直接覆写；人的编辑唤醒
+> spec 去调和。app 通过工具（③）、overlay、`ui://` 贡献，不写报告文档。
 
-理由：
+准确说，这是**单一逻辑作者 + 人可覆写**。app 若直接或经裁决后落笔，会成为
+第三个写者；即使机械上能合并，多个写者拼出的报告也没有一个主体对取舍与
+组织负责。agent 代写保留这层编辑判断以及既有门禁。
 
-- 比放宽 `can_card_modify` 安全——CRDT 冲突解决、Tier-A 校验、事件日志
-  全部留在内核；
-- 可扩展——任何 app 对任何内核实体提议，内核统一做 diff / accept /
-  reject / 审计；
-- 避免 §3.3(b) 的分叉。
+**规范化范围**：本原则只约束 **wave-report 文档**。plugin 自有命名空间的
+card、terminal card、overlay、`ui://` 界面、dispatcher/worker 路径以及其他
+内核状态不在范围内。内核为持久化、迁移所作的机械写入也不算“作者”。
 
-## 5. ④ proposal 通道设计（D2：report-only 落地，wire 形状可扩展）
+**这是策略，不是机制（如实记）**：今天报告 CRDT 的写者包括 spec MCP 与
+REST 人工编辑；spec 身份按会话区分，双开即两个活的 spec 写者。整文档写路径
+`Replace` / `WriteMarkdown` 也没有 `if_rev`，spec 与人的并发编辑实际是
+last-writer-wins。因此单写者是产品策略与设计纪律，并非代码强制的不变量；
+机制化并发控制应另行设计，不能假称本文已经保证。
+
+## 5. 附录：曾经考虑过的 ④ proposal 方案（已撤回）
+
+以下保留当时的 wire 形状、状态机与安全约束，仅供 #489 在未来真的出现
+受限信任层及真实消费者时取用，**不是当前能力或实施计划**。方案撤回的原因是：
+它仍让 app 成为报告的第三个写者，复杂度集中在多写者的丢更新、撤销安全、
+id/顺序版本、seen 归因与租约问题；同时没有真实消费者，违反“先有真实消费者”
+原则。现行结论以 §3.2、§3.3(b) 与 §4 为准。
+
+### 5.0 历史方案摘要（原 D2：report-only，wire 形状可扩展）
 
 ### 5.1 复用什么
 
@@ -545,24 +557,28 @@ spec 的工作产品，plugin 改了它 spec 必须知道。**现状 dispatcher 
 | # | 问题 | 裁决 | 理由 |
 |---|---|---|---|
 | D1 | `aspect.rs` 去留 | **删除** | 空壳占词，无消费者；见 §1.3 |
-| D2 | proposal 做多通用 | **report-only，wire 可扩展** | 先有真实消费者；subject.kind 是唯一扩展点，见 §5.2 |
-| D3 | wave FS 可写 `data/` 落地后要不要 `neige.wave.put` | **不给** | 等于开第二条写 `wave_vcs` 的路，配额与 GC 归属要重想；app 想存东西有 kv。若未来某 app 真需要"进 wave 历史的产物"，按 §1.1 判据 1 它是内核缺口，应表达为 proposal 的新 subject kind，而不是直写权限 |
+| D2 | proposal 做多通用 | **已被 D5 supersede**（原裁决：report-only，wire 可扩展） | 原 wire 留在 §5，仅作历史参考 |
+| D3 | wave FS 可写 `data/` 落地后要不要 `neige.wave.put` | **部分被 D5 supersede；仍不给直写** | 不开第二条写 `wave_vcs` 的路；原裁决中“未来表达为 proposal subject kind”的出口由 D5 撤回，app 用 kv、③、overlay 或 `ui://` |
 | D4 | app 自带 timer 要不要内核兜底 | **接受静默丢失** | 只有一个消费者，按判据 2 不构成内核原语；plugin 熔断后到期任务丢失的可见性问题留给 #489 的 plugin 健康面 |
+| D5 | 报告写者模型 | **单一逻辑作者 + 人可覆写；撤回 ④** | spec agent 对报告整体负责；app 经 ③、overlay、`ui://` 贡献。**本项 supersede D2，并 supersede D3 中“未来以 proposal subject kind 写入”的结论**；D3 的“不开放 `neige.wave.put` 直写”仍成立。历史 wire 仅留 §5 附录供 #489 参考 |
 
 ## 7. 验收对照（issue #955）
 
 - 三条判据 → §1.1；双向能力清单 + "做不到"清单及理由 → §2 / §3.2；
-- 两个表达限制 → §3.3；proposal 通道定稿 → §5；`aspect.rs` 结论 → §1.3 / D1；
+- 两个表达限制 → §3.3；报告单写者原则 → §4 / D5；撤回的 proposal wire
+  仅作历史附录 → §5；`aspect.rs` 结论 → §1.3 / D1；
 - #489 可直接建立在 §0（边界定性 / 进程隔离缺口）、§2.5（trust 现状
-  语义）与 §3.2（纵深观察）之上。
+  语义）与 §3.2（纵深观察）之上；若未来出现受限信任层与真实消费者，
+  可取用 §5 的历史 wire 形状。
 
 ## Related
 
 - #489 plugin origin / trust / capability 分层（后继，依赖本文；承接
-  §0 进程隔离、§2.5 trust 数据化、§3.2 role_gate 收紧）
+  §0 进程隔离、§2.5 trust 数据化、§3.2 role_gate 收紧；§5 历史 wire
+  仅在出现受限信任层与真实消费者时供取用）
 - #800 内核内部概念模型与事实源边界（姊妹篇，不同轴）
 - #761 workflow 组合（解 §3.3(a) 的单绑定上限）
-- #960 wave-report block 文档（§5 的 ops 词表与 UI 呈现基础；§5.2.2
-  的 Batch apply 是对其持久化层的唯一扩展）
+- #960 wave-report block 文档（现行报告写路径基础；④ 撤回后不再要求
+  §5.2.2 历史方案中的 Batch apply）
 - #330（closed）"Neige 需要的是产出与证据，不是协作文档平台"——§1.1
   判据的动机
