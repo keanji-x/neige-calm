@@ -113,3 +113,75 @@ test('wave report view renders real report data and report rail controls', async
   await followUp.fill('Can you summarize the key risk?');
   await expect(followUp).toHaveValue('Can you summarize the key risk?');
 });
+
+test('report H2 counters match the outline sequence across prose blocks', async ({
+  page,
+}) => {
+  await login(page);
+
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(
+    page,
+    wave.id,
+    [
+      '# Counter report',
+      '',
+      '## First section',
+      '',
+      'First section body.',
+      '',
+      '## Second section',
+      '',
+      'Second section body.',
+      '',
+      '## Third section',
+      '',
+      'Third section body.',
+    ].join('\n'),
+  );
+
+  await page.goto(`/calm/wave/${wave.id}`);
+
+  const headings = page.locator('.report-body .report-prose h2');
+  await expect(headings).toHaveCount(3);
+  const computedBeforeContents = await headings.evaluateAll((elements) =>
+    elements.map((element) =>
+      getComputedStyle(element, '::before').content,
+    ),
+  );
+  // Chromium exposes the computed counter expression, not its painted value.
+  expect(computedBeforeContents).toEqual(
+    Array(3).fill('counter(report-h2, decimal-leading-zero) " "'),
+  );
+  const headingLabels = await headings.allTextContents();
+  const session = await page.context().newCDPSession(page);
+  const { nodes } = await session.send('Accessibility.getFullAXTree');
+  const nodesById = new Map(nodes.map((node) => [node.nodeId, node]));
+  const renderedBodyCounters = headingLabels.map((label) => {
+    const heading = nodes.find(
+      (node) =>
+        node.role?.value === 'heading' &&
+        String(node.name?.value).trim() === label,
+    );
+    const pending = [...(heading?.childIds ?? [])];
+    while (pending.length > 0) {
+      const node = nodesById.get(pending.shift()!);
+      if (
+        node?.role?.value === 'StaticText' &&
+        /^\d{2}$/.test(String(node.name?.value))
+      ) {
+        return node.name?.value;
+      }
+      pending.push(...(node?.childIds ?? []));
+    }
+    return undefined;
+  });
+  expect(renderedBodyCounters).toEqual(['01', '02', '03']);
+
+  const outlineCounters = await page
+    .locator('.report-outline-list > li .report-outline-number')
+    .allTextContents();
+  expect(renderedBodyCounters).toEqual(outlineCounters);
+});
