@@ -1,6 +1,8 @@
 use sqlx::Sqlite;
 use sqlx::Transaction;
 
+use calm_types::wave_report::WaveReportPayload;
+
 use super::infra::next_sort_scoped_in_tx;
 use super::overlay_delete_by_entity_tx;
 use super::session_row::{
@@ -34,6 +36,11 @@ pub async fn terminal_get_by_card_tx(
 /// without re-fetching the row after insert. The standalone
 /// [`card_create_tx`] wrapper preserves the original "mint inside the
 /// helper" contract for every other caller.
+///
+/// The wave-report guard below covers every Rust API creation path. Direct SQL
+/// through [`SqlxRepo::pool`](super::SqlxRepo::pool) and frozen historical
+/// migration seeds do not pass through this Rust boundary and are outside its
+/// guarantee.
 pub async fn card_create_with_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: String,
@@ -51,17 +58,27 @@ pub async fn card_create_with_id_tx(
     deletable: bool,
     card_role_cache: &CardRoleCache,
 ) -> Result<Card> {
-    // `WaveReportCardHandler::create_mode` keeps REST creation kernel-only,
-    // while the wave-create kernel mint stamps `CardRole::ReportCard`.
-    // `RepoSyncDomainRaw::card_create` also reaches this seam and deliberately
-    // forwards fixture payloads verbatim (notably populated v1 reports in
-    // `mcp_report_links`), so payload canonicality remains outside this guard.
-    // The one-report-per-wave partial unique index keys on the `reportcard`
-    // role, not on the card kind.
-    if p.kind == "wave-report" && role != CardRole::ReportCard {
-        return Err(CalmError::BadRequest(
-            "wave-report cards must be kernel-minted with the reportcard role",
-        ));
+    // A wave-report can only be born through Rust as a kernel-owned ReportCard
+    // with the canonical initial payload. All report content must arrive later
+    // through the report persist boundary, which writes payload and CRDT together.
+    if p.kind == "wave-report" {
+        if role != CardRole::ReportCard {
+            return Err(CalmError::BadRequest(
+                "wave-report cards must be kernel-minted with the reportcard role",
+            ));
+        }
+        let Ok(payload) = serde_json::from_value::<WaveReportPayload>(p.payload.clone()) else {
+            return Err(CalmError::BadRequest(
+                "wave-report cards must be created with the canonical initial payload; \
+                 use the report persist boundary to add content",
+            ));
+        };
+        if payload != WaveReportPayload::initial() {
+            return Err(CalmError::BadRequest(
+                "wave-report cards must be created with the canonical initial payload; \
+                 use the report persist boundary to add content",
+            ));
+        }
     }
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
         .bind(p.wave_id.as_str())
@@ -328,13 +345,17 @@ mod tests {
             wave_id: wave_id.into(),
             kind: kind.into(),
             sort: None,
-            payload: serde_json::json!({}),
+            payload: if kind == "wave-report" {
+                serde_json::to_value(WaveReportPayload::initial()).unwrap()
+            } else {
+                serde_json::json!({})
+            },
             title: None,
         }
     }
 
     #[tokio::test]
-    async fn wave_report_create_guard_checks_role_but_not_fixture_payload() {
+    async fn wave_report_create_refuses_non_canonical_payload() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let wave = wave(&repo).await;
         let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
@@ -343,7 +364,67 @@ mod tests {
         let error = card_create_with_id_tx(
             &mut tx,
             "bad_report".into(),
-            arbitrary_report.clone(),
+            arbitrary_report,
+            CardRole::ReportCard,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "bad request: wave-report cards must be created with the canonical initial payload; \
+             use the report persist boundary to add content"
+        );
+    }
+
+    #[tokio::test]
+    async fn wave_report_create_accepts_canonical_payload() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let canonical_report = new_card(wave.id.as_str(), "wave-report");
+        let accepted = card_create_with_id_tx(
+            &mut tx,
+            "canonical_report".into(),
+            canonical_report.clone(),
+            CardRole::ReportCard,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(accepted.payload, canonical_report.payload);
+    }
+
+    #[tokio::test]
+    async fn wave_report_create_accepts_canonical_payload_with_null_blocks() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let mut canonical_report = new_card(wave.id.as_str(), "wave-report");
+        canonical_report.payload["blocks"] = serde_json::Value::Null;
+        card_create_with_id_tx(
+            &mut tx,
+            "canonical_report_with_null_blocks".into(),
+            canonical_report,
+            CardRole::ReportCard,
+            false,
+            repo.card_role_cache(),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wave_report_create_refuses_non_reportcard_role() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let wave = wave(&repo).await;
+        let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+        let error = card_create_with_id_tx(
+            &mut tx,
+            "bad_role".into(),
+            new_card(wave.id.as_str(), "wave-report"),
             CardRole::Worker,
             false,
             repo.card_role_cache(),
@@ -353,21 +434,6 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "bad request: wave-report cards must be kernel-minted with the reportcard role"
-        );
-
-        let accepted = card_create_with_id_tx(
-            &mut tx,
-            "fixture_report".into(),
-            arbitrary_report,
-            CardRole::ReportCard,
-            false,
-            repo.card_role_cache(),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            accepted.payload,
-            serde_json::json!({"arbitrary": "fixture payload"})
         );
     }
 

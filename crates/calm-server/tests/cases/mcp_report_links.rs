@@ -2,6 +2,8 @@
 
 use calm_server::mcp_server::tools::report_links::{TOOL_COVE_OUTLINE, TOOL_REPORT_BACKLINKS};
 use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::wave_report::{WaveReportPayload, persist_report};
+use calm_server::{event::EditAuthor, ids::ActorId};
 use serde_json::{Value, json};
 
 use crate::mcp_wave_report::{boot, call_tool, spec_identity, worker_identity};
@@ -26,17 +28,50 @@ async fn add_wave(
         })
         .await
         .unwrap();
-    boot.repo
+    let initial = WaveReportPayload::initial();
+    let report = boot
+        .repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
             kind: "wave-report".into(),
             sort: Some(-1.0),
-            payload: json!({ "schemaVersion": 1, "summary": "", "body": body }),
+            payload: serde_json::to_value(&initial).unwrap(),
             title: None,
         })
         .await
         .unwrap();
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.ctx.events,
+        &boot.ctx.write,
+        ActorId::Kernel,
+        EditAuthor::Kernel,
+        wave.clone(),
+        report,
+        initial,
+        WaveReportPayload::new("", body),
+        None,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     wave
+}
+
+async fn strip_report_cache_and_crdt(
+    boot: &crate::mcp_wave_report::Boot,
+    wave: &calm_server::model::Wave,
+) {
+    sqlx::query(
+        "UPDATE cards SET body_crdt = NULL, \
+         payload = json_set(json_remove(payload, '$.blocks'), '$.schemaVersion', 1) \
+         WHERE wave_id = ?1 AND kind = 'wave-report'",
+    )
+    .bind(wave.id.as_str())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
@@ -65,7 +100,6 @@ async fn outline_lists_same_cove_sibling_but_not_other_cove() {
         "# Outside\n".into(),
     )
     .await;
-
     let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
         .await
         .unwrap();
@@ -84,6 +118,7 @@ async fn outline_derives_blocks_for_v1_report_without_crdt() {
         "# Legacy heading\n\nBody\n".into(),
     )
     .await;
+    strip_report_cache_and_crdt(&boot, &legacy).await;
 
     let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
         .await
