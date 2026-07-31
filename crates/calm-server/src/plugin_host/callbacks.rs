@@ -199,15 +199,6 @@ pub async fn dispatch(
         "neige.kv.set" => kv_set(ctx, params).await,
         "neige.kv.list" => kv_list(ctx, params).await,
         "neige.kv.delete" => kv_delete(ctx, params).await,
-        // #955 §5.2 — ④ proposal channel. All three gate on
-        // `permissions.proposals`; implementations live in
-        // `callbacks_proposal` (this file is already at its size ceiling
-        // and the proposal trio is one cohesive surface).
-        "neige.report.get" => super::callbacks_proposal::report_get(ctx, params).await,
-        "neige.proposal.submit" => super::callbacks_proposal::proposal_submit(ctx, params).await,
-        "neige.proposal.withdraw" => {
-            super::callbacks_proposal::proposal_withdraw(ctx, params).await
-        }
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -227,14 +218,6 @@ pub(super) fn parse_params<T: for<'de> Deserialize<'de>>(
         .map_err(|e| RpcError::invalid_params(format!("{method}: {e}")))
 }
 
-/// `InvalidParams` for a rule the serde shape cannot express (a required
-/// field that is present but empty, an unknown enum-ish string, a
-/// cross-field rule). Same code as [`parse_params`]'s failure so plugins
-/// see one "your request was malformed" class.
-pub(super) fn invalid_params_for(method: &str, why: impl std::fmt::Display) -> RpcError {
-    RpcError::invalid_params(format!("{method}: {why}"))
-}
-
 pub(super) fn permission_denied(why: impl Into<String>) -> RpcError {
     RpcError::custom(-32001, why)
 }
@@ -245,15 +228,6 @@ pub(super) fn entity_not_found(what: impl Into<String>) -> RpcError {
 
 pub(super) fn quota_exceeded(why: impl Into<String>) -> RpcError {
     RpcError::custom(-32003, why)
-}
-
-/// The RPC counterpart of HTTP 409 — a state precondition the caller can
-/// observe and retry against (e.g. #955's "this proposal is no longer
-/// pending"). Matches the code the MCP tool layer already uses for
-/// `CalmError::Conflict` (`mcp_server::tools`), so one conflict class
-/// spans both agent- and plugin-facing surfaces.
-pub(super) fn rpc_conflict(why: impl Into<String>) -> RpcError {
-    RpcError::custom(-32409, why)
 }
 
 pub(super) fn internal_repo_err(e: impl std::fmt::Display) -> RpcError {

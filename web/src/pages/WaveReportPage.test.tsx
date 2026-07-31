@@ -22,12 +22,6 @@ vi.mock('../api/queries', () => ({
   useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
-  // #955 ④ — the proposals panel hangs off the report document. With no
-  // pending rows it renders nothing, so these assertions are unaffected;
-  // the panel's own behavior is covered in `proposals/proposals.test.tsx`.
-  useWaveProposalsQuery: vi.fn(() => ({ data: undefined, error: null })),
-  useAcceptProposalMutation: vi.fn(),
-  useRejectProposalMutation: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {

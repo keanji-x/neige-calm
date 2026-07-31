@@ -16,7 +16,6 @@ pub mod coves;
 pub mod fs;
 pub mod overlays;
 pub mod plugins;
-pub mod proposals;
 pub mod settings;
 pub mod terminal;
 pub mod terminal_cards;
@@ -57,7 +56,6 @@ pub fn protected_router() -> Router<AppState> {
         .merge(cards::router())
         .merge(overlays::router())
         .merge(plugins::router())
-        .merge(proposals::router())
         .merge(terminal::router())
         .merge(terminal_cards::router())
         .merge(today::router())

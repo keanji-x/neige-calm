@@ -25,9 +25,6 @@ vi.mock('./calm', () => ({
   createCard: vi.fn(),
   updateCard: vi.fn(),
   deleteCard: vi.fn(),
-  listWaveProposals: vi.fn(),
-  acceptProposal: vi.fn(),
-  rejectProposal: vi.fn(),
 }));
 
 import * as api from './calm';
@@ -39,8 +36,6 @@ import {
   useCovesQuery,
   useWaveDetailQuery,
   useCreateCoveMutation,
-  useAcceptProposalMutation,
-  useRejectProposalMutation,
 } from './queries';
 
 // --- helpers -----------------------------------------------------------
@@ -251,75 +246,5 @@ describe('useCreateCoveMutation', () => {
 
     expect(api.createCove).toHaveBeenCalledWith({ name: 'New', color: '#fff' });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['coves'] });
-  });
-});
-
-// --- #955 ④ proposal adjudication ---------------------------------------
-//
-// The panel tests mock `queries.ts` wholesale, so THIS is the only place
-// the `onSettled` refresh contract is exercised. It is `onSettled`, not
-// `onSuccess`, on purpose: a 409 means someone else resolved the
-// proposal, which is exactly when the list the user is looking at is
-// stale and must be refetched.
-
-describe('proposal adjudication mutations (#955 §5.6)', () => {
-  it('accept invalidates BOTH the pending list and the wave detail on success', async () => {
-    (api.acceptProposal as ReturnType<typeof vi.fn>).mockResolvedValue({
-      proposal_id: 'pp_1',
-      decision: 'accepted',
-    });
-    const client = makeClient();
-    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
-    const { result } = renderHook(() => useAcceptProposalMutation(), {
-      wrapper: wrapper(client),
-    });
-
-    await result.current.mutateAsync({ id: 'pp_1', waveId: 'w1' });
-
-    expect(api.acceptProposal).toHaveBeenCalledWith('pp_1');
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: ['wave-proposals', 'w1'],
-    });
-    // An `accepted` verdict rewrote the report card in the same
-    // transaction, so the wave detail is stale too.
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['wave', 'w1'] });
-  });
-
-  it('accept still refreshes the list when the request FAILS (409 path)', async () => {
-    (api.acceptProposal as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new Error('conflict'),
-    );
-    const client = makeClient();
-    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
-    const { result } = renderHook(() => useAcceptProposalMutation(), {
-      wrapper: wrapper(client),
-    });
-
-    await expect(
-      result.current.mutateAsync({ id: 'pp_1', waveId: 'w1' }),
-    ).rejects.toThrow('conflict');
-
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: ['wave-proposals', 'w1'],
-    });
-  });
-
-  it('reject calls the reject endpoint and refreshes the same keys', async () => {
-    (api.rejectProposal as ReturnType<typeof vi.fn>).mockResolvedValue({
-      proposal_id: 'pp_1',
-      decision: 'rejected',
-    });
-    const client = makeClient();
-    const invalidateSpy = vi.spyOn(client, 'invalidateQueries');
-    const { result } = renderHook(() => useRejectProposalMutation(), {
-      wrapper: wrapper(client),
-    });
-
-    await result.current.mutateAsync({ id: 'pp_1', waveId: 'w1' });
-
-    expect(api.rejectProposal).toHaveBeenCalledWith('pp_1');
-    expect(invalidateSpy).toHaveBeenCalledWith({
-      queryKey: ['wave-proposals', 'w1'],
-    });
   });
 });

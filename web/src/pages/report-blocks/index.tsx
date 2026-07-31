@@ -9,10 +9,7 @@
 
 import { lazy, Suspense } from 'react';
 import { Link } from '@tanstack/react-router';
-import ReactMarkdown, {
-  defaultUrlTransform,
-  type Components,
-} from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   appBlockPayloadSchema,
@@ -68,49 +65,7 @@ export function ReportLink({
   );
 }
 
-// Proposal-safe prose policy (issue #955 §5.4/§5.6) — PREVIEW ONLY.
-//
-// In the accepted report, markdown images and links are ordinary content:
-// a human put them there. In a PENDING proposal they are not — the
-// markdown is unadjudicated plugin text, and `![](https://x/px.png?who=…)`
-// makes the browser perform a plugin-chosen request the instant the
-// adjudicator merely LOOKS at the proposal (a zero-click view beacon,
-// carrying IP / UA / Referer), before any accept. Links are live
-// navigation into a plugin-chosen destination.
-//
-// So in the preview both degrade to inert descriptors that show the URL
-// as TEXT: nothing loads, nothing navigates, and the adjudicator can
-// actually see where the content points before deciding. This policy is
-// scoped to the `preview` flag on purpose — the accepted report's
-// rendering is untouched.
-const previewProseComponents: Components = {
-  img({ src, alt }) {
-    const url = typeof src === 'string' ? src : '';
-    return (
-      <span className="rb-inert-media">
-        image not loaded in this preview
-        {alt ? ` — ${alt}` : ''} <code>{url}</code>
-      </span>
-    );
-  },
-  a({ href, children }) {
-    const url = typeof href === 'string' ? href : '';
-    return (
-      <span className="rb-inert-link">
-        {children} <code>{url}</code>
-      </span>
-    );
-  },
-};
-
-export function ReportBlockView({
-  block,
-  preview = false,
-}: {
-  block: ReportBlock;
-  /** Render for a PENDING proposal pane: media and links are inert. */
-  preview?: boolean;
-}) {
+export function ReportBlockView({ block }: { block: ReportBlock }) {
   switch (block.kind) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
@@ -120,7 +75,7 @@ export function ReportBlockView({
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             urlTransform={reportUrlTransform}
-            components={preview ? previewProseComponents : { a: ReportLink }}
+            components={{ a: ReportLink }}
           >
             {parsed.data.markdown}
           </ReactMarkdown>

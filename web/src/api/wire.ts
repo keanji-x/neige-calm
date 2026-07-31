@@ -131,38 +131,6 @@ export type NewTerminalCardBody = Schemas['NewTerminalCardBody'];
 export type NewCodexCardBody = Schemas['NewCodexCardBody'];
 export type NewClaudeCardBody = Schemas['NewClaudeCardBody'];
 
-// ---------------- proposals (issue #955 ④) ----------------
-//
-// The ④ proposal channel: an app (plugin) proposes report-block edits and
-// the human accepts or rejects them (design
-// `docs/architecture/955-kernel-app-boundary.md` §5.5/§5.6). Only the
-// pending list + the two adjudication verbs are user-facing; `withdrawn`
-// is a plugin-side decision the UI can only observe.
-export type ProposalAnchor = Schemas['ProposalAnchor'];
-export type ProposalDecision = Schemas['ProposalDecision'];
-
-/** `payload` overridden to `unknown` for the same reason as `KernelCard`:
- *  utoipa emits Rust's `serde_json::Value` as `Record<string, never>`,
- *  which cannot hold a real block payload. The per-kind zod schemas in
- *  `cards/builtins/wave-report` are what actually narrow it. */
-type RawProposalOp = Schemas['ProposalOp'];
-export type ProposalUpsertOp = Omit<
-  Extract<RawProposalOp, { op: 'upsert_block' }>,
-  'payload'
-> & { payload: unknown };
-export type ProposalMoveOp = Extract<RawProposalOp, { op: 'move_block' }>;
-export type ProposalDeleteOp = Extract<RawProposalOp, { op: 'delete_block' }>;
-export type ProposalOp =
-  | ProposalUpsertOp
-  | ProposalMoveOp
-  | ProposalDeleteOp;
-
-export type PendingProposal = Omit<Schemas['PendingProposal'], 'ops'> & {
-  ops: ProposalOp[];
-};
-export type PendingProposalsResponse = { proposals: PendingProposal[] };
-export type ResolveProposalResponse = Schemas['ResolveProposalResponse'];
-
 // ---------------- fs ----------------
 //
 // Used by the DirectoryPicker widget that backs the codex `cwd` field.
