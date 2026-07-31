@@ -24,7 +24,9 @@
 
 use std::time::Duration;
 
-use crate::mcp_wave_report::{Boot, boot, call_tool, collect_n, spec_identity, worker_identity};
+use crate::mcp_wave_report::{
+    Boot, boot, call_tool, call_tool_without_defaults, collect_n, spec_identity, worker_identity,
+};
 use calm_server::event::Event;
 use calm_server::mcp_server::tools::wave_report::{TOOL_REPORT_EDIT, TOOL_REPORT_WRITE};
 use calm_server::mcp_server::tools::wave_report_blocks::{
@@ -104,6 +106,35 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
     let index = index_of(&read(boot, json!({})).await);
     assert_eq!(index.len(), 2, "two H1 sections → two blocks");
     index
+}
+
+#[tokio::test]
+async fn block_write_invalidates_previously_read_whole_document_revision() {
+    let boot = boot().await;
+    let before = read(&boot, json!({})).await;
+    assert_eq!(before["docRev"], 0);
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "payload": {"markdown": "# Added\n"}}),
+    )
+    .await
+    .unwrap();
+
+    let conflict = call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({"body": "# stale rewrite\n", "if_rev": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.code, RPC_REV_CONFLICT);
+    assert!(conflict.message.contains("current doc_rev is 1"));
+    let after = read(&boot, json!({})).await;
+    assert_eq!(after["docRev"], 1);
+    assert_ne!(after["body"], "# stale rewrite\n");
 }
 
 // ---------------------------------------------------------------------------

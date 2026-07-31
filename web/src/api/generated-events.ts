@@ -581,6 +581,12 @@ export type WaveReportPayload = {
  */
 schemaVersion: number, 
 /**
+ * Document-wide optimistic-concurrency revision. This is mirrored
+ * from the authoritative CRDT root and increments after every
+ * successful report persist (whole-document or block-level).
+ */
+docRev: number,
+/**
  * One-line summary used by sidebars / wave-list previews. Empty
  * string is valid (means "spec agent has not produced a summary
  * yet"); the field stays a required `String` per the

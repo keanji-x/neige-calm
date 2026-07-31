@@ -17,6 +17,7 @@ export interface WaveReportCardData {
   id?: string;
   summary: string;
   body: string;
+  docRev: number;
   blocks?: ReportBlock[];
   updatedAt?: number;
   unsupportedVersion?: number;
@@ -161,6 +162,7 @@ export type ReportBlock = z.infer<typeof reportBlockSchema>;
  *  absent (treated as v1). */
 export const waveReportPayloadSchema = z.object({
   schemaVersion: z.number().int().optional(),
+  docRev: z.number().int().nonnegative().default(0),
   summary: z.string(),
   body: z.string(),
   blocks: z.array(reportBlockSchema).optional(),
@@ -191,6 +193,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
         title: k.title,
         summary: '',
         body: '',
+        docRev: 0,
         updatedAt: k.updated_at,
         unsupportedVersion: version,
       };
@@ -209,6 +212,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
       id: k.id,
       summary: parsed.data.summary,
       body: parsed.data.body,
+      docRev: parsed.data.docRev,
       blocks: parsed.data.blocks,
       updatedAt: k.updated_at,
     };

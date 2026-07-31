@@ -244,12 +244,37 @@ pub(crate) async fn call_tool(
     boot: &Boot,
     name: &str,
     identity: ToolCallIdentity,
-    args: Value,
+    mut args: Value,
 ) -> Result<Value, RpcError> {
+    if matches!(
+        name,
+        TOOL_REPORT_WRITE | TOOL_REPORT_EDIT | "calm.report.write_markdown"
+    ) && args.get("if_rev").is_none()
+    {
+        let snapshot = calm_server::wave_report_read::load_report_read_snapshot(
+            boot.repo.as_ref(),
+            boot.report_card_id.as_str(),
+        )
+        .await
+        .expect("read doc rev for whole-document test write");
+        args.as_object_mut()
+            .expect("tool args object")
+            .insert("if_rev".into(), json!(snapshot.doc_rev));
+    }
     let handler = boot
         .registry
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
+    handler(boot.ctx.clone(), identity, args).await
+}
+
+pub(crate) async fn call_tool_without_defaults(
+    boot: &Boot,
+    name: &str,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, RpcError> {
+    let handler = boot.registry.lookup(name).expect("tool registered");
     handler(boot.ctx.clone(), identity, args).await
 }
 
@@ -319,7 +344,8 @@ async fn read_returns_initial_seeded_body() {
         Some("# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
     );
     assert_eq!(out.get("summary").and_then(Value::as_str), Some(""));
-    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(2));
+    assert_eq!(out.get("schemaVersion").and_then(Value::as_u64), Some(3));
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(0));
     assert!(
         out.get("updated_at").and_then(Value::as_i64).unwrap_or(0) > 0,
         "updated_at is a positive timestamp; got {out:?}",
@@ -339,6 +365,45 @@ async fn read_refuses_worker() {
 // ---------------------------------------------------------------------------
 // calm.report.write
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn whole_document_write_requires_if_rev_and_rejects_stale_spec_writer() {
+    let boot = boot().await;
+    let missing = call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({"body": "# A\n", "message": "missing revision"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(missing.code, -32602);
+
+    call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({"body": "# First\n", "message": "first writer", "if_rev": 0}),
+    )
+    .await
+    .unwrap();
+    let conflict = call_tool_without_defaults(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({"body": "# Stale\n", "message": "second writer", "if_rev": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.code, -32001);
+    assert!(conflict.message.contains("current doc_rev is 1"));
+    assert!(conflict.message.contains("expected if_rev 0"));
+    assert!(conflict.message.contains("re-read"));
+    let read = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    assert_eq!(read["body"], "# First\n", "stale writer must not win");
+}
 
 #[tokio::test]
 async fn write_replaces_body_and_emits_card_updated() {
@@ -388,7 +453,8 @@ async fn write_replaces_body_and_emits_card_updated() {
                 serde_json::from_value(c.payload.clone()).expect("payload deserializes");
             assert_eq!(payload.body, "# Goal\n\nrefactored everything\n");
             assert_eq!(payload.summary, "done refactoring");
-            assert_eq!(payload.schema_version, 2);
+            assert_eq!(payload.schema_version, 3);
+            assert_eq!(payload.doc_rev, 1);
             assert_eq!(c.updated_at, new_updated_at);
         }
         other => panic!("expected CardUpdated first, got {other:?}"),

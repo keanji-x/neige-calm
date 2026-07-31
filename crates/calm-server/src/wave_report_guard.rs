@@ -119,6 +119,7 @@ mod tests {
                 &ReportDocOp::Replace {
                     summary: None,
                     body: body.clone(),
+                    if_rev: 0,
                 },
             )
             .unwrap_err();
@@ -143,6 +144,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: None,
                 body: format!("# A\n\nalpha rewritten\n{fence_text}# B\n\nnew section\n"),
+                if_rev: 0,
             },
         )
         .unwrap();
@@ -163,10 +165,12 @@ mod tests {
             ReportDocOp::Replace {
                 summary: None,
                 body: bad_json.into(),
+                if_rev: 0,
             },
             ReportDocOp::WriteMarkdown {
                 summary: None,
                 body: bad_json.into(),
+                if_rev: 0,
             },
         ] {
             let err = apply_report_op(&mut doc, &op).unwrap_err();
@@ -183,6 +187,7 @@ mod tests {
             &ReportDocOp::WriteMarkdown {
                 summary: None,
                 body: bad_schema.into(),
+                if_rev: 0,
             },
         )
         .unwrap_err();
@@ -198,6 +203,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: None,
                 body: unknown.into(),
+                if_rev: 0,
             },
         )
         .unwrap_err();
@@ -219,6 +225,7 @@ mod tests {
             &ReportDocOp::WriteMarkdown {
                 summary: None,
                 body,
+                if_rev: 0,
             },
         )
         .unwrap();

@@ -193,6 +193,96 @@ async fn login(app: &axum::Router) -> String {
 }
 
 #[tokio::test]
+async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
+    let boot = boot().await;
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let report = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::Kernel,
+        EditAuthor::Spec,
+        wave,
+        report,
+        WaveReportPayload::initial(),
+        WaveReportPayload::new("spec", "# Spec won\n"),
+        0,
+        None,
+        None,
+        false,
+    )
+    .await
+    .unwrap();
+
+    let wave_id = boot.wave_id.clone();
+    let repo = boot.repo.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{wave_id}/report"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({"summary": "human", "body": "# Human stale\n", "ifRev": 0}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let cards = repo.cards_by_wave(wave_id.as_str()).await.unwrap();
+    let payload: WaveReportPayload = serde_json::from_value(
+        cards
+            .into_iter()
+            .find(|c| c.kind == "wave-report")
+            .unwrap()
+            .payload,
+    )
+    .unwrap();
+    assert_eq!(payload.body, "# Spec won\n");
+    assert_eq!(payload.doc_rev, 1);
+}
+
+#[tokio::test]
+async fn rest_whole_document_write_requires_if_rev() {
+    let boot = boot().await;
+    let wave_id = boot.wave_id.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{wave_id}/report"))
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    json!({"summary": "missing", "body": "# Missing rev\n"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
     let boot = boot().await;
     let source_wave_id = boot.wave_id.clone();
@@ -245,6 +335,7 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
         source_report,
         WaveReportPayload::initial(),
         WaveReportPayload::new("", format!("[Target](neige://wave/{})", target_wave.id)),
+        0,
         None,
         None,
         false,
@@ -365,6 +456,7 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     let body = serde_json::to_vec(&json!({
         "summary": "user wrote this",
         "body": "# Goal\n\nuser edit body\n",
+        "ifRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -387,9 +479,10 @@ async fn happy_path_user_edit_returns_payload_and_emits_user_authored_event() {
     assert_eq!(v["summary"], "user wrote this");
     assert_eq!(v["body"], "# Goal\n\nuser edit body\n");
     assert_eq!(
-        v["schemaVersion"], 2,
+        v["schemaVersion"], 3,
         "schemaVersion is server-pinned to the current constant"
     );
+    assert_eq!(v["docRev"], 1);
 
     // Bus — exactly two envelopes: CardUpdated first (preserves the
     // pre-PR2 broadcast order), WaveReportEdited second with
@@ -461,6 +554,7 @@ async fn extra_author_field_in_body_is_rejected() {
     let body = serde_json::to_vec(&json!({
         "summary": "spoof attempt",
         "body": "# Goal\n\npretending to be spec\n",
+        "ifRev": 0,
         // The hostile field — must be rejected.
         "author": "spec",
     }))
@@ -508,6 +602,7 @@ async fn missing_session_returns_401_and_emits_nothing() {
     let body = serde_json::to_vec(&json!({
         "summary": "no cookie",
         "body": "# Goal\n\nshould 401\n",
+        "ifRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -542,6 +637,7 @@ async fn nonexistent_wave_returns_404_and_emits_nothing() {
     let body = serde_json::to_vec(&json!({
         "summary": "ghost wave",
         "body": "# Goal\n\nghost\n",
+        "ifRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -605,6 +701,7 @@ async fn non_user_actors_via_header_are_all_rejected_with_403_and_emit_nothing()
         let body = serde_json::to_vec(&json!({
             "summary": format!("disguised-as-{declared_actor}"),
             "body": "# Goal\n\nshould 403\n",
+            "ifRev": 0,
         }))
         .unwrap();
         let resp = app
@@ -656,6 +753,7 @@ async fn explicit_user_actor_header_succeeds() {
     let body = serde_json::to_vec(&json!({
         "summary": "explicit user",
         "body": "# Goal\n\nexplicit user\n",
+        "ifRev": 0,
     }))
     .unwrap();
     let resp = app
@@ -693,6 +791,7 @@ async fn generic_patch_rejects_wave_report_payload_and_preserves_json_and_crdt()
     let persisted = json!({
         "summary": "persisted",
         "body": "# Goal\n\npersist boundary content\n",
+        "ifRev": 0,
     });
     let response = app
         .clone()

@@ -521,9 +521,10 @@ fn write_markdown_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["body"],
+            "required": ["body", "if_rev"],
             "properties": {
                 "body": { "type": "string", "description": "Full report Markdown, optionally with `<!-- neige:b_xxxx -->` marker lines." },
+                "if_rev": { "type": "integer", "minimum": 0 },
                 "summary": { "type": "string" }
             }
         }),
@@ -542,6 +543,11 @@ async fn write_markdown(
     let obj = require_object(&args, tool)?;
     let body = required_string(obj, "body", tool)?;
     let summary_override = optional_string(obj, "summary", tool)?;
+    let if_rev = optional_u64(obj, "if_rev", tool)?.ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: `if_rev` is required (use 0 for a new document)"
+        ))
+    })?;
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
     // Omitted summary = keep the existing one. The op carries `None`
@@ -552,6 +558,7 @@ async fn write_markdown(
     let op = ReportDocOp::WriteMarkdown {
         summary: summary_override,
         body,
+        if_rev,
     };
     let (card, _none) = match CardDecisionSink::from_app_context(&ctx)
         .commit_report_op(&identity, wave, report_card, current, op, None, None)
@@ -647,6 +654,21 @@ fn optional_u32(
                     "{tool}: `{key}` must be a non-negative integer (u32)"
                 ))
             }),
+    }
+}
+
+fn optional_u64(
+    obj: &serde_json::Map<String, Value>,
+    key: &str,
+    tool: &str,
+) -> Result<Option<u64>, RpcError> {
+    match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            RpcError::invalid_params(format!(
+                "{tool}: `{key}` must be a non-negative integer (u64)"
+            ))
+        }),
     }
 }
 

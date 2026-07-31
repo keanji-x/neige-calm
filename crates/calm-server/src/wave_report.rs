@@ -77,6 +77,7 @@ pub enum ReportDocOp {
     Replace {
         summary: Option<String>,
         body: String,
+        if_rev: u64,
     },
     /// `calm.report.write_markdown`: wholesale replace whose body may
     /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
@@ -87,6 +88,7 @@ pub enum ReportDocOp {
     WriteMarkdown {
         summary: Option<String>,
         body: String,
+        if_rev: u64,
     },
     /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
     /// default append); `id: Some` replaces and requires `if_rev`.
@@ -164,14 +166,24 @@ pub(crate) fn apply_report_op(
         }
     };
     match op {
-        ReportDocOp::Replace { summary, body } => {
+        ReportDocOp::Replace {
+            summary,
+            body,
+            if_rev,
+        } => {
+            check_doc_rev(doc, *if_rev)?;
             let summary = tx_summary(doc, summary)?;
             validate_body_fences(body)?;
             guard_non_prose_stomp(doc, body)?;
             doc.update(&summary, body).map_err(internal)?;
             Ok(None)
         }
-        ReportDocOp::WriteMarkdown { summary, body } => {
+        ReportDocOp::WriteMarkdown {
+            summary,
+            body,
+            if_rev,
+        } => {
+            check_doc_rev(doc, *if_rev)?;
             let summary = tx_summary(doc, summary)?;
             let marked = calm_types::report_blocks::strip_markers_and_split(body);
             // The escape hatch MAY rewrite/delete non-prose blocks
@@ -250,6 +262,19 @@ pub(crate) fn apply_report_op(
             Ok(None)
         }
     }
+}
+
+fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
+    let current = doc
+        .doc_rev()
+        .map_err(|e| CalmError::Internal(format!("wave_report: doc rev: {e}")))?;
+    if current != expected {
+        return Err(CalmError::Conflict(format!(
+            "document revision conflict: current doc_rev is {current}, expected if_rev {expected} \
+             — re-read the report and retry with the current docRev"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +399,7 @@ pub async fn persist_report(
     report_card: Card,
     current_payload: WaveReportPayload,
     next: WaveReportPayload,
+    if_rev: u64,
     agent_message: Option<String>,
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
@@ -390,6 +416,7 @@ pub async fn persist_report(
         ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
+            if_rev,
         },
         agent_message,
         lifecycle,
@@ -525,6 +552,11 @@ pub(crate) async fn persist_report_with_shadow(
                 //    inside this transaction — a conflict aborts the
                 //    tx (nothing written, no events emitted).
                 let outcome = apply_report_op(&mut doc, &op)?;
+                let doc_rev = doc.increment_doc_rev().map_err(|e| {
+                    CalmError::Internal(format!(
+                        "wave_report: increment doc rev for card {id}: {e}"
+                    ))
+                })?;
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache. Since #960 PR2 the
                 //    CRDT block map is the source of truth: `body` is
@@ -539,6 +571,7 @@ pub(crate) async fn persist_report_with_shadow(
                 })?;
                 let mut projected_payload =
                     WaveReportPayload::new(summary_after.clone(), body_after.clone());
+                projected_payload.doc_rev = doc_rev;
                 projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
                     CalmError::Internal(format!(
                         "wave_report: snapshot CRDT blocks for card {id}: {e}"
@@ -614,7 +647,8 @@ mod tests {
         assert_eq!(
             v,
             json!({
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "docRev": 0,
                 "summary": "hi",
                 "body": "# A\n\nb\n",
             })
@@ -657,6 +691,7 @@ mod tests {
             &ReportDocOp::WriteMarkdown {
                 summary: None,
                 body: "# A\n\nalpha edited\n".into(),
+                if_rev: 0,
             },
         )
         .unwrap();
@@ -674,6 +709,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: None,
                 body: "# B\n\nbeta\n".into(),
+                if_rev: 0,
             },
         )
         .unwrap();
@@ -683,6 +719,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: Some("explicit".into()),
                 body: "# C\n\ngamma\n".into(),
+                if_rev: 0,
             },
         )
         .unwrap();
@@ -735,6 +772,7 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: Some("s".into()),
                 body: String::new(),
+                if_rev: 0,
             },
         )
         .unwrap_err();

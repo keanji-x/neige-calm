@@ -1784,6 +1784,12 @@ export interface components {
              */
             body: string;
             /**
+             * Format: int64
+             * @description Expected document revision from the latest report read. Use zero
+             *     for a document that has never been persisted through the CRDT path.
+             */
+            ifRev: number;
+            /**
              * @description One-line summary the wave-list sidebars surface. Empty string
              *     is a valid value; the caller must commit.
              */
@@ -2130,6 +2136,13 @@ export interface components {
              *     the structure.
              */
             body: string;
+            /**
+             * Format: int64
+             * @description Document-wide optimistic-concurrency revision. This is mirrored
+             *     from the authoritative CRDT root and increments after every
+             *     successful report persist (whole-document or block-level).
+             */
+            docRev: number;
             /**
              * Format: int32
              * @description Tier A persistence contract — see
@@ -4735,6 +4748,15 @@ export interface operations {
             };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Report document revision conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -289,6 +289,7 @@ mod tests {
             card,
             initial,
             next,
+            0,
             None,
             None,
             false,
@@ -308,6 +309,7 @@ mod tests {
     fn target_payload() -> serde_json::Value {
         serde_json::to_value(WaveReportPayload {
             schema_version: 2,
+            doc_rev: 0,
             summary: String::new(),
             body: "# Target\n".into(),
             blocks: Some(vec![ReportBlock {

@@ -127,6 +127,7 @@ function reportSlot(
     id: 'report_1',
     summary: '',
     body,
+    docRev: 0,
   };
   return {
     kind: 'card',

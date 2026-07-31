@@ -174,6 +174,7 @@ pub(crate) async fn report_read(
         "body": text,
         "summary": snapshot.summary,
         "schemaVersion": snapshot.schema_version,
+        "docRev": snapshot.doc_rev,
         "updated_at": snapshot.updated_at,
         "blocks": index,
     }))
@@ -201,9 +202,10 @@ fn write_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["body", "message"],
+            "required": ["body", "message", "if_rev"],
             "properties": {
                 "body": { "type": "string" },
+                "if_rev": { "type": "integer", "minimum": 0 },
                 "summary": { "type": "string" },
                 "message": message_schema(),
                 "lifecycle": lifecycle_schema()
@@ -229,6 +231,7 @@ async fn report_write(
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError::invalid_params("calm.report.write: missing `body` (string)"))?
         .to_string();
+    let if_rev = required_doc_rev(obj, "calm.report.write")?;
     // `summary` is optional — if omitted, retain the existing one.
     let summary_override = match obj.get("summary") {
         None | Some(Value::Null) => None,
@@ -257,6 +260,7 @@ async fn report_write(
             body,
             agent_message: write_args.message,
             lifecycle: write_args.lifecycle,
+            if_rev,
         },
     )
     .await
@@ -288,10 +292,11 @@ fn edit_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["old_string", "new_string", "message"],
+            "required": ["old_string", "new_string", "message", "if_rev"],
             "properties": {
                 "old_string": { "type": "string", "minLength": 1 },
                 "new_string": { "type": "string" },
+                "if_rev": { "type": "integer", "minimum": 0 },
                 "replace_all": { "type": "boolean" },
                 "message": message_schema(),
                 "lifecycle": lifecycle_schema()
@@ -338,6 +343,7 @@ async fn report_edit(
             ));
         }
     };
+    let if_rev = required_doc_rev(obj, "calm.report.edit")?;
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
 
@@ -387,6 +393,7 @@ async fn report_edit(
             body: new_body,
             agent_message: write_args.message,
             lifecycle: write_args.lifecycle,
+            if_rev,
         },
     )
     .await
@@ -518,6 +525,7 @@ struct ReportSinkCall {
     body: String,
     agent_message: String,
     lifecycle: Option<WaveLifecycle>,
+    if_rev: u64,
 }
 
 async fn commit_report_write_for_identity(
@@ -534,6 +542,7 @@ async fn commit_report_write_for_identity(
             ReportDocOp::Replace {
                 summary: call.summary,
                 body: call.body,
+                if_rev: call.if_rev,
             },
             Some(call.agent_message),
             call.lifecycle,
@@ -551,8 +560,20 @@ async fn commit_report_write_for_identity(
         Err(CalmError::BadRequest(msg)) => {
             Err(RpcError::invalid_params(format!("wave_report: {msg}")))
         }
+        Err(CalmError::Conflict(msg)) => Err(RpcError::custom(
+            crate::mcp_server::tools::wave_report_blocks::RPC_REV_CONFLICT,
+            format!("wave_report: {msg}"),
+        )),
         Err(e) => Err(RpcError::internal(format!("wave_report: {e}"))),
     }
+}
+
+fn required_doc_rev(obj: &serde_json::Map<String, Value>, tool: &str) -> Result<u64, RpcError> {
+    obj.get("if_rev").and_then(Value::as_u64).ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: missing `if_rev` (non-negative integer; use 0 for a new document)"
+        ))
+    })
 }
 
 #[cfg(test)]
