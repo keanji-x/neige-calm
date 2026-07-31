@@ -2436,6 +2436,158 @@
         }
       }
     },
+    "/api/proposals/{id}/accept": {
+      "post": {
+        "tags": [
+          "proposals"
+        ],
+        "operationId": "accept_proposal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Proposal id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposal resolved — `accepted` (report changed) or `stale` (anchors moved, report untouched)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveProposalResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Proposal is structurally invalid; it stays pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal or its wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Proposal is no longer pending (already resolved)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/proposals/{id}/reject": {
+      "post": {
+        "tags": [
+          "proposals"
+        ],
+        "operationId": "reject_proposal",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Proposal id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Proposal rejected; report untouched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveProposalResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal or its wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Proposal is no longer pending (already resolved)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/settings": {
       "get": {
         "tags": [
@@ -3500,6 +3652,67 @@
           },
           "500": {
             "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{wave_id}/proposals": {
+      "get": {
+        "tags": [
+          "proposals"
+        ],
+        "operationId": "list_wave_proposals",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending proposals for the wave, submission order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingProposalsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Actor is not the authenticated user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
             "content": {
               "application/json": {
                 "schema": {
@@ -4679,6 +4892,67 @@
           }
         }
       },
+      "PendingProposal": {
+        "type": "object",
+        "description": "One pending proposal, as the adjudication UI needs it.\n\n`plugin_id` is rendered verbatim even when the plugin has been\nuninstalled (§5.5: a pending proposal lives in the event log, not in a\nplugin process — it stays adjudicable and the UI shows the raw id).\n`ops` is the typed `ProposalOp` list so PR-c can render before/after\nblocks without re-parsing JSON text.",
+        "required": [
+          "proposal_id",
+          "wave_id",
+          "plugin_id",
+          "subject_kind",
+          "base_doc_heads",
+          "ops",
+          "note",
+          "created_at"
+        ],
+        "properties": {
+          "base_doc_heads": {
+            "type": "string",
+            "description": "Opaque baseline token the proposal was written against."
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "note": {
+            "type": "string",
+            "description": "Human-facing rationale the plugin supplied."
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProposalOp"
+            }
+          },
+          "plugin_id": {
+            "type": "string",
+            "description": "Submitting plugin's manifest id — may name an uninstalled plugin."
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "subject_kind": {
+            "type": "string"
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
+      "PendingProposalsResponse": {
+        "type": "object",
+        "required": [
+          "proposals"
+        ],
+        "properties": {
+          "proposals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PendingProposal"
+            }
+          }
+        }
+      },
       "Plugin": {
         "type": "object",
         "required": [
@@ -4808,6 +5082,160 @@
             "type": "string"
           }
         }
+      },
+      "ProposalAnchor": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Place directly after the referenced block (`b_xxxx`, or\n`temp:<temp_id>` for a block minted earlier in the batch).",
+            "required": [
+              "after_block_id"
+            ],
+            "properties": {
+              "after_block_id": {
+                "type": "string",
+                "description": "Place directly after the referenced block (`b_xxxx`, or\n`temp:<temp_id>` for a block minted earlier in the batch)."
+              }
+            }
+          },
+          {
+            "type": "string",
+            "description": "Place at the head of the document.",
+            "enum": [
+              "at_start"
+            ]
+          },
+          {
+            "type": "string",
+            "description": "Place at the tail of the document.",
+            "enum": [
+              "at_end"
+            ]
+          }
+        ],
+        "description": "Position anchor for proposed block creation / moves (design §5.2.1).\n\nProposals are asynchronous, so positions are expressed against\nstable block ids — never numeric indexes (an unrelated insertion\nwould silently shift index semantics while every block rev still\nmatches). Externally-tagged serde gives `\"at_start\"` / `\"at_end\"` /\n`{\"after_block_id\": \"b_0001\"}` on the wire; `after_block_id` may\nreference a block created earlier in the same proposal via the\n`temp:<temp_id>` form."
+      },
+      "ProposalDecision": {
+        "type": "string",
+        "description": "How a pending proposal was resolved. Two events, four decisions\n(design §5.6): `accepted` / `rejected` / `stale` are user-driven\nadjudications (`stale` is the accept attempt whose in-tx anchoring\nchecks failed); `withdrawn` is the submitting plugin reclaiming its\nown pending slot — the only plugin-side exit, so quota can't be\npinned forever by abandoned proposals.\n\nWire shape: bare lowercase string (matches the surrounding\nevent-payload enum conventions, e.g. `EditAuthor`).",
+        "enum": [
+          "accepted",
+          "rejected",
+          "stale",
+          "withdrawn"
+        ]
+      },
+      "ProposalOp": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Replace an existing block (`block_id` + mandatory `if_rev`) or\ncreate a new one (`temp_id` + mandatory `anchor`; the durable\n`b_xxxx` id is minted by the kernel at apply time). `payload`\nis the kind-specific block payload — `{ \"markdown\": … }` for\nprose, the schema-validated object for data kinds (the same\nvocabulary `calm.report.blocks.kinds` documents).",
+            "required": [
+              "kind",
+              "payload",
+              "op"
+            ],
+            "properties": {
+              "anchor": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ProposalAnchor"
+                  }
+                ]
+              },
+              "block_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "if_rev": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string"
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "upsert_block"
+                ]
+              },
+              "payload": {
+                "type": "object"
+              },
+              "temp_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Reorder an existing block. `if_rev` is mandatory (async\nanchoring must be complete, unlike the interactive move tool).",
+            "required": [
+              "block_id",
+              "if_rev",
+              "anchor",
+              "op"
+            ],
+            "properties": {
+              "anchor": {
+                "$ref": "#/components/schemas/ProposalAnchor"
+              },
+              "block_id": {
+                "type": "string"
+              },
+              "if_rev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "move_block"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Delete an existing block; `if_rev` mandatory.",
+            "required": [
+              "block_id",
+              "if_rev",
+              "op"
+            ],
+            "properties": {
+              "block_id": {
+                "type": "string"
+              },
+              "if_rev": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "op": {
+                "type": "string",
+                "enum": [
+                  "delete_block"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "One proposed mutation of the wave-report block document\n(design §5.2.1). A deliberately *stricter* sibling of the\ninteractive `calm.report.blocks.*` tool DTOs: anchoring must be\ncomplete because apply happens asynchronously, and the wholesale\n`WriteMarkdown` / `Replace` shapes are excluded on purpose (full\noverwrites and string matching cannot be meaningfully proposed).\n\nField-requirement rules (`if_rev` mandatory when replacing, exactly\none of `block_id` / `temp_id`, anchor mandatory for creations) are\nenforced by the PR-b submit handler; the wire type keeps them\n`Option` only where two legal shapes share a variant."
       },
       "RatifyCardDecision": {
         "type": "string",
@@ -4981,6 +5409,33 @@
                 "$ref": "#/components/schemas/Wave"
               }
             ]
+          }
+        }
+      },
+      "ResolveProposalResponse": {
+        "type": "object",
+        "description": "Adjudication result. `decision` is the verdict actually recorded —\nnotably `stale` when the user pressed accept but the anchors had moved,\nwhich is a successful adjudication, not an error.",
+        "required": [
+          "proposal_id",
+          "wave_id",
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ProposalDecision"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present for `stale`: which anchoring check failed, so the UI can\nexplain why the change was not applied."
+          },
+          "wave_id": {
+            "type": "string"
           }
         }
       },

@@ -624,6 +624,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/proposals/{id}/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["accept_proposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/proposals/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reject_proposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings": {
         parameters: {
             query?: never;
@@ -866,6 +898,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["create_codex_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/waves/{wave_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_proposals"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1523,6 +1571,32 @@ export interface components {
             entity_id?: string | null;
             entity_kind: string;
         };
+        /**
+         * @description One pending proposal, as the adjudication UI needs it.
+         *
+         *     `plugin_id` is rendered verbatim even when the plugin has been
+         *     uninstalled (§5.5: a pending proposal lives in the event log, not in a
+         *     plugin process — it stays adjudicable and the UI shows the raw id).
+         *     `ops` is the typed `ProposalOp` list so PR-c can render before/after
+         *     blocks without re-parsing JSON text.
+         */
+        PendingProposal: {
+            /** @description Opaque baseline token the proposal was written against. */
+            base_doc_heads: string;
+            /** Format: int64 */
+            created_at: number;
+            /** @description Human-facing rationale the plugin supplied. */
+            note: string;
+            ops: components["schemas"]["ProposalOp"][];
+            /** @description Submitting plugin's manifest id — may name an uninstalled plugin. */
+            plugin_id: string;
+            proposal_id: string;
+            subject_kind: string;
+            wave_id: string;
+        };
+        PendingProposalsResponse: {
+            proposals: components["schemas"]["PendingProposal"][];
+        };
         Plugin: {
             enabled: boolean;
             id: string;
@@ -1571,6 +1645,74 @@ export interface components {
              */
             state: string;
             version: string;
+        };
+        /**
+         * @description Position anchor for proposed block creation / moves (design §5.2.1).
+         *
+         *     Proposals are asynchronous, so positions are expressed against
+         *     stable block ids — never numeric indexes (an unrelated insertion
+         *     would silently shift index semantics while every block rev still
+         *     matches). Externally-tagged serde gives `"at_start"` / `"at_end"` /
+         *     `{"after_block_id": "b_0001"}` on the wire; `after_block_id` may
+         *     reference a block created earlier in the same proposal via the
+         *     `temp:<temp_id>` form.
+         */
+        ProposalAnchor: {
+            /**
+             * @description Place directly after the referenced block (`b_xxxx`, or
+             *     `temp:<temp_id>` for a block minted earlier in the batch).
+             */
+            after_block_id: string;
+        } | "at_start" | "at_end";
+        /**
+         * @description How a pending proposal was resolved. Two events, four decisions
+         *     (design §5.6): `accepted` / `rejected` / `stale` are user-driven
+         *     adjudications (`stale` is the accept attempt whose in-tx anchoring
+         *     checks failed); `withdrawn` is the submitting plugin reclaiming its
+         *     own pending slot — the only plugin-side exit, so quota can't be
+         *     pinned forever by abandoned proposals.
+         *
+         *     Wire shape: bare lowercase string (matches the surrounding
+         *     event-payload enum conventions, e.g. `EditAuthor`).
+         * @enum {string}
+         */
+        ProposalDecision: "accepted" | "rejected" | "stale" | "withdrawn";
+        /**
+         * @description One proposed mutation of the wave-report block document
+         *     (design §5.2.1). A deliberately *stricter* sibling of the
+         *     interactive `calm.report.blocks.*` tool DTOs: anchoring must be
+         *     complete because apply happens asynchronously, and the wholesale
+         *     `WriteMarkdown` / `Replace` shapes are excluded on purpose (full
+         *     overwrites and string matching cannot be meaningfully proposed).
+         *
+         *     Field-requirement rules (`if_rev` mandatory when replacing, exactly
+         *     one of `block_id` / `temp_id`, anchor mandatory for creations) are
+         *     enforced by the PR-b submit handler; the wire type keeps them
+         *     `Option` only where two legal shapes share a variant.
+         */
+        ProposalOp: {
+            anchor?: null | components["schemas"]["ProposalAnchor"];
+            block_id?: string | null;
+            /** Format: int32 */
+            if_rev?: number | null;
+            kind: string;
+            /** @enum {string} */
+            op: "upsert_block";
+            payload: Record<string, never>;
+            temp_id?: string | null;
+        } | {
+            anchor: components["schemas"]["ProposalAnchor"];
+            block_id: string;
+            /** Format: int32 */
+            if_rev: number;
+            /** @enum {string} */
+            op: "move_block";
+        } | {
+            block_id: string;
+            /** Format: int32 */
+            if_rev: number;
+            /** @enum {string} */
+            op: "delete_block";
         };
         /** @enum {string} */
         RatifyCardDecision: "grant" | "deny";
@@ -1621,6 +1763,21 @@ export interface components {
             new_thread_id: string;
             terminal_id: string;
             wave?: null | components["schemas"]["Wave"];
+        };
+        /**
+         * @description Adjudication result. `decision` is the verdict actually recorded —
+         *     notably `stale` when the user pressed accept but the anchors had moved,
+         *     which is a successful adjudication, not an error.
+         */
+        ResolveProposalResponse: {
+            decision: components["schemas"]["ProposalDecision"];
+            proposal_id: string;
+            /**
+             * @description Present for `stale`: which anchoring check failed, so the UI can
+             *     explain why the change was not applied.
+             */
+            reason?: string | null;
+            wave_id: string;
         };
         ResolveQuery: {
             /**
@@ -4121,6 +4278,133 @@ export interface operations {
             };
         };
     };
+    accept_proposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Proposal id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proposal resolved — `accepted` (report changed) or `stale` (anchors moved, report untouched) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveProposalResponse"];
+                };
+            };
+            /** @description Proposal is structurally invalid; it stays pending */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Actor is not the authenticated user */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Proposal or its wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Proposal is no longer pending (already resolved) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    reject_proposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Proposal id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proposal rejected; report untouched */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveProposalResponse"];
+                };
+            };
+            /** @description Actor is not the authenticated user */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Proposal or its wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Proposal is no longer pending (already resolved) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     get_settings: {
         parameters: {
             query?: never;
@@ -4958,6 +5242,56 @@ export interface operations {
                 };
             };
             /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_wave_proposals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pending proposals for the wave, submission order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingProposalsResponse"];
+                };
+            };
+            /** @description Actor is not the authenticated user */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
             500: {
                 headers: {
                     [name: string]: unknown;

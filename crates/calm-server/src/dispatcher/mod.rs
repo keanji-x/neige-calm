@@ -85,7 +85,16 @@ pub(crate) fn event_warrants_spec_push_with_role(
         // tasks-row lookup and lives with the async callers — see
         // `is_gated_self_report`).
         Event::TaskGateResult { .. } => true,
-        Event::WaveReportEdited { author, .. } => *author == EditAuthor::User,
+        // Issue #955 §5.7 — plugin-authored report edits (the accept
+        // transaction's Batch apply) wake the spec exactly like user
+        // edits: the report is the spec's work product, and neither a
+        // user nor a plugin edit was authored by the spec itself, so
+        // no self-push loop is possible. Spec/Kernel authors stay
+        // suppressed (the spec wrote those — or the kernel rewrote on
+        // its behalf — and pushing them back would loop).
+        Event::WaveReportEdited { author, .. } => {
+            matches!(author, EditAuthor::User | EditAuthor::Plugin)
+        }
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
         | Event::ReviewRound { .. }
@@ -129,6 +138,8 @@ pub(crate) fn event_warrants_spec_push_with_role(
         | Event::TaskDispatched { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgeIssueRead { .. }
+        | Event::ProposalSubmitted { .. }
+        | Event::ProposalResolved { .. }
         | Event::WorktreeRemoved { .. } => false,
     }
 }
@@ -912,8 +923,9 @@ impl Inner {
         };
 
         // #293 — push branch. The wave-event kinds the filter matches route
-        // HERE. For `wave.report_edited` we act ONLY on a User-authored edit —
-        // Spec/AI-authored edits are the spec writing its own report, and
+        // HERE. For `wave.report_edited` we act ONLY on a User- or
+        // Plugin-authored edit (#955 §5.7) — Spec/Kernel-authored edits are
+        // the spec writing its own report, and
         // pushing those back would be a feedback loop. Worker hook events
         // also return from here, even when ignored, because they are
         // lifecycle notices rather than scheduler requests.
@@ -971,15 +983,16 @@ impl Inner {
             Event::WaveReportEdited {
                 author, wave_id, ..
             } => {
-                // Only user edits warrant a push. The spec authored
-                // Spec/Kernel edits itself; re-notifying it would loop.
+                // Only user/plugin edits warrant a push (#955 §5.7).
+                // The spec authored Spec/Kernel edits itself;
+                // re-notifying it would loop.
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {
                     self.observe_harness(wave_id.clone(), &envelope.event, envelope.id)
                         .await;
                 } else {
                     tracing::trace!(
                         ?author,
-                        "dispatcher push: ignoring non-user wave.report_edited"
+                        "dispatcher push: ignoring spec/kernel-authored wave.report_edited"
                     );
                 }
             }
@@ -1059,6 +1072,14 @@ impl Inner {
             | Event::TaskDispatched { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
+            // Issue #955 — proposal lifecycle events reach the spec
+            // indirectly: an accepted proposal lands a plugin-authored
+            // `wave.report_edited` in the same tx, and THAT frame is
+            // the wake-up. The proposal records themselves are
+            // adjudication history (user/plugin facing), so they are
+            // not in the dispatcher's kind filter.
+            | Event::ProposalSubmitted { .. }
+            | Event::ProposalResolved { .. }
             | Event::WorktreeRemoved { .. } => {
                 tracing::warn!(
                     kind = envelope.event.kind_tag(),
@@ -1429,6 +1450,8 @@ pub(crate) fn harness_observation_from_event(
         | Event::TaskDispatched { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgeIssueRead { .. }
+        | Event::ProposalSubmitted { .. }
+        | Event::ProposalResolved { .. }
         | Event::WorktreeRemoved { .. } => None,
     }
 }

@@ -522,6 +522,31 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
 
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
+
+    /// Issue #955 §5.2 (PR-b) — the raw Automerge blob backing a card's
+    /// report doc, read outside a write transaction. `neige.report.get`
+    /// is a pure read (blocks + `doc_heads` baseline), so it must not
+    /// take SQLite's single write lock just to project a snapshot; the
+    /// in-tx twin
+    /// ([`card_body_crdt_get_tx`](sqlite::card_body_crdt_get_tx)) stays
+    /// the only reader on the write path.
+    ///
+    /// `None` = the row exists but has no blob yet (pre-#247 seed) OR
+    /// the card row is absent; callers that need to distinguish read the
+    /// card row itself first.
+    async fn card_body_crdt(&self, card_id: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Issue #955 §5.5 (PR-b) — pending proposals for one wave, in
+    /// submission order. Backs the user-facing adjudication list; the
+    /// authoritative in-tx twin is
+    /// [`proposals_pending_by_wave_tx`](sqlite::proposals_pending_by_wave_tx).
+    async fn proposals_pending_by_wave(&self, wave_id: &str) -> Result<Vec<sqlite::ProposalRow>>;
+
+    /// Issue #955 §5.5 (PR-b) — single proposal by id, any status. Used
+    /// as the adjudication routes' pre-flight (404 / wrong-wave shaping);
+    /// the authoritative pending re-check happens in-tx via
+    /// [`proposal_get_tx`](sqlite::proposal_get_tx).
+    async fn proposal_get(&self, proposal_id: &str) -> Result<Option<sqlite::ProposalRow>>;
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent

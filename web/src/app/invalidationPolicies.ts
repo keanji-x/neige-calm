@@ -254,6 +254,22 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'ratify.resolved': noop(
     'Ratification decisions are spec-observed workflow history; no React Query cache consumes them yet.',
   ),
+  'proposal.submitted': {
+    keys: (ev) => [queryKeys.waveProposals(ev.data.wave_id)],
+    reason:
+      'A new pending proposal must appear in the wave report page adjudication panel (#955 PR-c).',
+  },
+  'proposal.resolved': {
+    // Only the pending list — the report change an `accepted` verdict
+    // wrote in the same transaction arrives on its own through
+    // card.updated / wave.report_edited, which already invalidate the
+    // wave detail. `withdrawn` (the plugin reclaiming its own pending
+    // slot) has no other event at all, so this is the only signal that
+    // drops the row.
+    keys: (ev) => [queryKeys.waveProposals(ev.data.wave_id)],
+    reason:
+      'Any of accepted/rejected/stale/withdrawn removes the row from the pending list (#955 PR-c).',
+  },
   'forge.scan.completed': noop(
     'Forge scan lifecycle is wave-scoped; no React Query cache consumes forge scan rows yet.',
   ),

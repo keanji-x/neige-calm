@@ -39,6 +39,8 @@ import type {
   NewCardBody,
   NewCoveBody,
   NewWaveBody,
+  PendingProposalsResponse,
+  ResolveProposalResponse,
   SettingsBag,
   SettingsPutBody,
   WavePatchBody,
@@ -59,6 +61,10 @@ export const queryKeys = {
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   waveFiles: (waveId: string) => ['wave-files', waveId] as const,
+  /** Issue #955 ④ — the wave's pending app proposals awaiting human
+   *  adjudication. Its own key (not a slice of `waveDetail`) because the
+   *  list is a separate route and is invalidated by different events. */
+  waveProposals: (waveId: string) => ['wave-proposals', waveId] as const,
   waveFileList: (waveId: string, path: string | null | undefined) =>
     waveFileListQueryKey(waveId, path),
   waveFileContent: (waveId: string, path: string | null | undefined) =>
@@ -573,6 +579,66 @@ export function useDeleteCardMutation() {
       void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
     },
   });
+}
+
+// ---------------- proposals (issue #955 ④) ----------------
+//
+// One query (the wave's pending list) + the two adjudication verbs.
+// Design: `docs/architecture/955-kernel-app-boundary.md` §5.5/§5.6.
+//
+// Deliberately NOT optimistic. `accept` has an outcome the client cannot
+// predict — the kernel may answer `stale` (anchors moved, report
+// untouched) or `400` (structurally impossible, proposal STAYS pending) —
+// so optimistically dropping the row would show the user a resolution
+// that did not happen. Every outcome invalidates and refetches instead;
+// `proposal.submitted` / `proposal.resolved` WS events invalidate the
+// same key (`app/invalidationPolicies.ts`) so a decision made elsewhere
+// (or a plugin's own `withdraw`) also lands.
+
+export const waveProposalsQueryOptions = (waveId: string) => ({
+  queryKey: queryKeys.waveProposals(waveId),
+  queryFn: () => api.listWaveProposals(waveId),
+});
+
+export function useWaveProposalsQuery(
+  waveId: string,
+  opts?: { enabled?: boolean },
+) {
+  return useQuery<PendingProposalsResponse, Error>({
+    ...waveProposalsQueryOptions(waveId),
+    enabled: (opts?.enabled ?? true) && waveId.length > 0,
+  });
+}
+
+/** Shared post-adjudication refresh: the pending list always, and the
+ *  wave detail too because an `accepted` verdict rewrote the report card
+ *  in the same transaction. */
+function useResolveProposalMutation(
+  mutationFn: (id: string) => Promise<ResolveProposalResponse>,
+) {
+  const qc = useQueryClient();
+  return useMutation<
+    ResolveProposalResponse,
+    Error,
+    { id: string; waveId: string }
+  >({
+    mutationFn: ({ id }) => mutationFn(id),
+    // `onSettled`, not `onSuccess`: a 409 means someone else resolved it,
+    // so the stale list the user is looking at is exactly what needs
+    // refetching.
+    onSettled: (_res, _err, { waveId }) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.waveProposals(waveId) });
+      void qc.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    },
+  });
+}
+
+export function useAcceptProposalMutation() {
+  return useResolveProposalMutation(api.acceptProposal);
+}
+
+export function useRejectProposalMutation() {
+  return useResolveProposalMutation(api.rejectProposal);
 }
 
 // ---------------- settings ----------------

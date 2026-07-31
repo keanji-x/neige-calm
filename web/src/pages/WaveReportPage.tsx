@@ -20,6 +20,7 @@ import {
   ReportLink,
   reportUrlTransform,
 } from './report-blocks';
+import { ProposalsPanel } from './proposals';
 import { useWaveFsViewer } from '../wave-fs-viewers';
 import { EventLinePanel } from './EventLinePanel';
 import { SpecConversation, type ReportView } from './SpecConversation';
@@ -491,6 +492,13 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             )}
             <h1 className="report-title">{title}</h1>
             <ReportByline report={reportCard} />
+            {/* Issue #955 ④ — app proposals about THIS document, above the
+                document they would change. Renders nothing when nothing is
+                pending, and only on the report itself (a proposal cannot
+                target an arbitrary wave file). */}
+            {selectedFilePath === 'report.md' && (
+              <ProposalsPanel waveId={wave.id} blocks={reportCard?.blocks} />
+            )}
             {selectedFilePath === 'report.md' &&
             reportCard?.unsupportedVersion != null ? (
               <UnsupportedReportVersionState />

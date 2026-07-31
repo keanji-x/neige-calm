@@ -1,0 +1,12 @@
+{
+  "description": "proposal.resolved with decision=accepted — the user-authored adjudication arm. plugin_id is the SUBMITTER (role_gate's withdrawn-ownership field), not the resolver.",
+  "wire": {
+    "ev": "proposal.resolved",
+    "data": {
+      "wave_id": "wave-01",
+      "proposal_id": "pp-01",
+      "plugin_id": "dev.neige.invest",
+      "decision": "accepted"
+    }
+  }
+}

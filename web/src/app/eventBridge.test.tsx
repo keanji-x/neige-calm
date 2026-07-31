@@ -485,6 +485,67 @@ describe('EventBridge', () => {
     cleanup();
   });
 
+  // ---- #955 ④ proposal channel ---------------------------------------
+  //
+  // The panel tests mock `queries.ts`, so these two rows are the only
+  // coverage the proposal invalidation policies get.
+
+  it('proposal.submitted invalidates the wave pending-proposal list', () => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(
+      <Wrapper>
+        <EventBridge syncEventVersion={1} />
+      </Wrapper>,
+    );
+    fakeStream.emit({
+      ev: 'proposal.submitted',
+      data: {
+        wave_id: 'wave_1',
+        proposal_id: 'pp_1',
+        plugin_id: 'quotes',
+        subject_kind: 'report',
+        base_doc_heads: 'ah1:deadbeef',
+        ops: [{ op: 'delete_block', block_id: 'b_0001', if_rev: 1 }],
+        note: 'Refresh the price table.',
+        idem_key: 'k1',
+      },
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-proposals', 'wave_1'],
+    });
+    cleanup();
+  });
+
+  it('proposal.resolved invalidates the pending list for every decision', () => {
+    // Including `withdrawn`, which has no other event at all — this is
+    // the only signal that drops the row.
+    for (const decision of ['accepted', 'rejected', 'stale', 'withdrawn']) {
+      const client = makeClient();
+      const invalidate = vi.spyOn(client, 'invalidateQueries');
+      const Wrapper = wrap(client);
+      render(
+        <Wrapper>
+          <EventBridge syncEventVersion={1} />
+        </Wrapper>,
+      );
+      fakeStream.emit({
+        ev: 'proposal.resolved',
+        data: {
+          wave_id: 'wave_1',
+          proposal_id: 'pp_1',
+          plugin_id: 'quotes',
+          decision,
+        },
+      } as Parameters<typeof fakeStream.emit>[0]);
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ['wave-proposals', 'wave_1'],
+      });
+      cleanup();
+    }
+  });
+
   // ---- Sync engine phase 2 (Scope D) control frames -------------------
 
   it('_replay_complete triggers a defensive batch invalidateQueries', () => {

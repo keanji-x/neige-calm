@@ -140,7 +140,15 @@ pub const API_VERSION: &str = "1";
 ///   lockstep. A v11 frontend's zod `WireEvent` union doesn't know the
 ///   new discriminators, so its review/ratify frames would silently
 ///   drop. The compat modal forces a hard refresh.
-pub const WEB_COMPAT_VERSION: u32 = 12;
+/// * `13` — proposal-channel events (issue #955 §5 PR-a):
+///   `proposal.submitted` / `proposal.resolved` join the WS event union
+///   and `wave.report_edited` gains the `"plugin"` author arm +
+///   optional `author_plugin_id`, with `SYNC_EVENT_VERSION` bumped
+///   11 → 12 in lockstep. A v12 frontend's zod union doesn't know the
+///   new discriminators (and rejects the new author arm), so its
+///   proposal/report-edit frames would silently drop. The compat modal
+///   forces a hard refresh.
+pub const WEB_COMPAT_VERSION: u32 = 13;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

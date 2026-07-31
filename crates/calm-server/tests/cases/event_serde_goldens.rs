@@ -32,6 +32,7 @@ use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -409,6 +410,7 @@ golden_test!(
         wave_id: WaveId::from("wave-01"),
         card_id: CardId::from("card-01"),
         author: EditAuthor::Spec,
+        author_plugin_id: None,
         edit_id: "edit-0001".into(),
         summary_before: "old summary".into(),
         summary_after: "new summary".into(),
@@ -425,11 +427,29 @@ golden_test!(
         wave_id: WaveId::from("wave-01"),
         card_id: CardId::from("card-01"),
         author: EditAuthor::User,
+        author_plugin_id: None,
         edit_id: "edit-0002".into(),
         summary_before: String::new(),
         summary_after: "s".into(),
         body_before: String::new(),
         body_after: "b".into(),
+        agent_message: None,
+    }
+);
+
+golden_test!(
+    wave_report_edited_plugin,
+    "wave_report_edited.plugin.json",
+    Event::WaveReportEdited {
+        wave_id: WaveId::from("wave-01"),
+        card_id: CardId::from("card-01"),
+        author: EditAuthor::Plugin,
+        author_plugin_id: Some("dev.neige.invest".into()),
+        edit_id: "edit-0003".into(),
+        summary_before: "s".into(),
+        summary_after: "s".into(),
+        body_before: "old body".into(),
+        body_after: "proposed body".into(),
         agent_message: None,
     }
 );
@@ -785,6 +805,89 @@ golden_test!(
 );
 
 golden_test!(
+    proposal_submitted_full,
+    "proposal_submitted.full.json",
+    Event::ProposalSubmitted {
+        wave_id: WaveId::from("wave-01"),
+        proposal_id: "pp-01".into(),
+        plugin_id: "dev.neige.invest".into(),
+        subject_kind: "report".into(),
+        base_doc_heads: "ah1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            .into(),
+        ops: vec![
+            ProposalOp::UpsertBlock {
+                block_id: Some("b_0001".into()),
+                temp_id: None,
+                kind: "prose".into(),
+                payload: json!({"markdown": "revised intro\n"}),
+                if_rev: Some(3),
+                anchor: None,
+            },
+            ProposalOp::UpsertBlock {
+                block_id: None,
+                temp_id: Some("t1".into()),
+                kind: "prose".into(),
+                payload: json!({"markdown": "# Fresh section\n"}),
+                if_rev: None,
+                anchor: Some(ProposalAnchor::AtEnd),
+            },
+            ProposalOp::MoveBlock {
+                block_id: "b_0002".into(),
+                if_rev: 1,
+                anchor: ProposalAnchor::AfterBlockId("temp:t1".into()),
+            },
+            ProposalOp::DeleteBlock {
+                block_id: "b_0003".into(),
+                if_rev: 2,
+            },
+        ],
+        note: "tighten the intro and drop the stale table".into(),
+        idem_key: "idem-01".into(),
+    }
+);
+
+golden_test!(
+    proposal_submitted_min,
+    "proposal_submitted.min.json",
+    Event::ProposalSubmitted {
+        wave_id: WaveId::from("wave-01"),
+        proposal_id: "pp-01".into(),
+        plugin_id: "dev.neige.invest".into(),
+        subject_kind: "report".into(),
+        base_doc_heads: "ah1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            .into(),
+        ops: vec![ProposalOp::DeleteBlock {
+            block_id: "b_0001".into(),
+            if_rev: 1,
+        }],
+        note: String::new(),
+        idem_key: "idem-01".into(),
+    }
+);
+
+golden_test!(
+    proposal_resolved_full,
+    "proposal_resolved.full.json",
+    Event::ProposalResolved {
+        wave_id: WaveId::from("wave-01"),
+        proposal_id: "pp-01".into(),
+        plugin_id: "dev.neige.invest".into(),
+        decision: ProposalDecision::Accepted,
+    }
+);
+
+golden_test!(
+    proposal_resolved_min,
+    "proposal_resolved.min.json",
+    Event::ProposalResolved {
+        wave_id: WaveId::from("wave-01"),
+        proposal_id: "pp-01".into(),
+        plugin_id: "dev.neige.invest".into(),
+        decision: ProposalDecision::Withdrawn,
+    }
+);
+
+golden_test!(
     forge_scan_completed,
     "forge_scan_completed.json",
     Event::ForgeScanCompleted {
@@ -941,7 +1044,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 46] = [
+const ALL_KIND_TAGS: [&str; 48] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -978,6 +1081,8 @@ const ALL_KIND_TAGS: [&str; 46] = [
     "review.round",
     "ratify.requested",
     "ratify.resolved",
+    "proposal.submitted",
+    "proposal.resolved",
     "forge.scan.completed",
     "forge.pr.opened",
     "forge.pr.diff.read",
@@ -1022,7 +1127,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 65,
+        files, 70,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1079,6 +1184,8 @@ fn kind_tag_list_matches_enum() {
             Event::ReviewRound { .. } => "review.round",
             Event::RatifyRequested { .. } => "ratify.requested",
             Event::RatifyResolved { .. } => "ratify.resolved",
+            Event::ProposalSubmitted { .. } => "proposal.submitted",
+            Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
             Event::ForgePrOpened { .. } => "forge.pr.opened",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
@@ -1097,7 +1204,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        46,
+        48,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

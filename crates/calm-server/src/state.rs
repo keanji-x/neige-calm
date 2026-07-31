@@ -3,7 +3,6 @@
 //! `Clone` is cheap — everything inside is wrapped in `Arc` or already
 //! reference-counted internally.
 
-use crate::aspect::AspectRegistry;
 use crate::card_kind::CardKindRegistry;
 use crate::card_role_cache::CardRoleCache;
 use crate::config::Config;
@@ -97,7 +96,6 @@ pub struct RouteState {
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
     pub write: WriteContext,
-    pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
     pub harness: HarnessRegistry,
     pub(crate) hook_ingest_cache: Arc<StdMutex<HookIngestCache>>,
@@ -154,7 +152,6 @@ pub struct BootState {
     pub shared_codex_appserver: Arc<SharedCodexAppServer>,
     pub pending_codex_threads: Arc<PendingThreadStartRegistry>,
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
-    pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
     pub worker_flow: Arc<WorkerFlowDriver>,
 }
@@ -172,7 +169,6 @@ impl BootState {
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
             write: write.clone(),
-            aspects: self.aspects.clone(),
             operation_runtime: self.operation_runtime.clone(),
             harness: self.harness.clone(),
             hook_ingest_cache,
@@ -213,7 +209,6 @@ impl BootState {
             shared_codex_appserver: self.shared_codex_appserver,
             pending_codex_threads: self.pending_codex_threads,
             pending_codex_threads_spawn_serial: self.pending_codex_threads_spawn_serial,
-            aspects: self.aspects,
             operation_runtime: self.operation_runtime,
             worker_flow: self.worker_flow,
             raw: self.repo,
@@ -316,11 +311,6 @@ pub struct AppState {
     /// Serializes the shared empty-card `(pending register, PTY spawn)` pair
     /// so FIFO pending attribution matches actual TUI fresh-start order.
     pub pending_codex_threads_spawn_serial: Arc<Mutex<()>>,
-    /// #322 — aspect / join-point framework registry. `Arc` so route
-    /// handlers, the dispatcher, and any future aspect-enforcing callsite
-    /// share one registry without re-installing aspects per request. The set
-    /// of aspects is fixed at boot — no runtime mutation.
-    pub aspects: Arc<AspectRegistry>,
     pub operation_runtime: Arc<OperationRuntime>,
     pub worker_flow: Arc<WorkerFlowDriver>,
     /// Full-capability handle. Held separately from `repo` so the gate at
@@ -336,14 +326,6 @@ pub struct AppState {
     route: RouteState,
     worker: WorkerState,
     codex_shell: CodexShellState,
-}
-
-/// #322 — boot-time aspect registration. The single source of truth for
-/// "which aspects ship in the kernel" — both [`AppState::new`] (production)
-/// and [`AppState::from_parts`] (tests / replay lib) go through this so a
-/// new aspect lands on every code path that constructs an `AppState`.
-fn build_aspect_registry() -> Arc<AspectRegistry> {
-    Arc::new(AspectRegistry::new())
 }
 
 struct OperationAdapterInputs {
@@ -709,7 +691,6 @@ impl AppState {
             shared_codex_appserver,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
-            aspects: build_aspect_registry(),
             operation_runtime,
             worker_flow,
         }
@@ -1147,7 +1128,6 @@ impl AppState {
             shared_codex_appserver,
             pending_codex_threads,
             pending_codex_threads_spawn_serial,
-            aspects: build_aspect_registry(),
             operation_runtime,
             worker_flow,
         };

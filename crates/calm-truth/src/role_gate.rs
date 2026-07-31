@@ -61,6 +61,7 @@ use crate::ids::{ActorId, CardId};
 use crate::model::CardRole;
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::worker::WorkerSessionId;
+use calm_types::proposal::ProposalDecision;
 use thiserror::Error;
 
 /// Reasons the gate may refuse a write. Surfaced verbatim into the
@@ -126,6 +127,25 @@ pub enum RoleViolation {
 
     #[error("only User may emit ratify.resolved (actor={actor})")]
     NotUserForRatifyResolved { actor: String },
+
+    #[error(
+        "only the submitting plugin may emit proposal.submitted (actor={actor}, payload plugin_id={payload_plugin})"
+    )]
+    NotSubmitterPluginForProposalSubmitted {
+        actor: String,
+        payload_plugin: String,
+    },
+
+    #[error("only User may emit proposal.resolved with decision {decision} (actor={actor})")]
+    NotUserForProposalResolved { decision: String, actor: String },
+
+    #[error(
+        "only the submitting plugin may emit proposal.resolved{{withdrawn}} (actor={actor}, payload plugin_id={payload_plugin})"
+    )]
+    NotSubmitterPluginForProposalWithdrawn {
+        actor: String,
+        payload_plugin: String,
+    },
 
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
@@ -382,6 +402,72 @@ pub fn enforce_role(
                 return Err(RoleViolation::NotUserForRatifyResolved {
                     actor: actor.to_string(),
                 });
+            }
+        }
+    }
+
+    // --- (2.10) `proposal.submitted` is submitting-plugin-only. ---
+    //
+    // Issue #955 §5.4. The proposal channel's authority model: only a
+    // plugin may open a proposal, and only for itself — the payload's
+    // `plugin_id` (kernel-injected at the callback layer) must equal
+    // the envelope actor's plugin id. The gate is a pure function over
+    // `(actor, event, scope)`, so this field comparison IS the in-tx
+    // hard clause; the connection-injection itself happens upstream.
+    // Every other actor family (User, Kernel, spec, workers, sessions)
+    // is refused — a proposal forged by anything but the named plugin
+    // would corrupt the channel's attribution invariant (§5.3).
+    if let Event::ProposalSubmitted { plugin_id, .. } = event {
+        match actor {
+            ActorId::Plugin(id) if id == plugin_id => {}
+            _ => {
+                return Err(RoleViolation::NotSubmitterPluginForProposalSubmitted {
+                    actor: actor.to_string(),
+                    payload_plugin: plugin_id.clone(),
+                });
+            }
+        }
+    }
+
+    // --- (2.11) `proposal.resolved` splits by decision. ---
+    //
+    // Issue #955 §5.4, mirroring the ratify rule in (2.9):
+    //   * `accepted` / `rejected` / `stale` are the human half of the
+    //     adjudication (stale is the accept attempt whose in-tx
+    //     anchoring checks failed — still user-triggered). User-only:
+    //     a plugin, spec, or the kernel must never self-approve.
+    //   * `withdrawn` is the submitting plugin reclaiming its own
+    //     pending slot — `ActorId::Plugin(id)` with `id` equal to the
+    //     payload's submitter `plugin_id`, nothing else. The
+    //     "pending AND actually owned by this plugin" *factual* check
+    //     lives with the PR-b withdraw handler inside the same write
+    //     tx; this clause pins the identity half.
+    if let Event::ProposalResolved {
+        plugin_id,
+        decision,
+        ..
+    } = event
+    {
+        match decision {
+            ProposalDecision::Withdrawn => match actor {
+                ActorId::Plugin(id) if id == plugin_id => {}
+                _ => {
+                    return Err(RoleViolation::NotSubmitterPluginForProposalWithdrawn {
+                        actor: actor.to_string(),
+                        payload_plugin: plugin_id.clone(),
+                    });
+                }
+            },
+            ProposalDecision::Accepted | ProposalDecision::Rejected | ProposalDecision::Stale => {
+                match actor {
+                    ActorId::User => {}
+                    _ => {
+                        return Err(RoleViolation::NotUserForProposalResolved {
+                            decision: decision.as_str().to_string(),
+                            actor: actor.to_string(),
+                        });
+                    }
+                }
             }
         }
     }
@@ -1699,5 +1785,206 @@ mod tests {
             &wcc,
         );
         assert!(matches!(res, Err(RoleViolation::EmptyAiCardId)));
+    }
+
+    // ---- Issue #955 §5.4: proposal-channel hard clauses ------------------
+
+    use calm_types::proposal::{ProposalDecision, ProposalOp};
+
+    fn proposal_submitted(plugin: &str) -> Event {
+        Event::ProposalSubmitted {
+            wave_id: WaveId::from("w"),
+            proposal_id: "pp-1".into(),
+            plugin_id: plugin.into(),
+            subject_kind: "report".into(),
+            base_doc_heads: "ah1:deadbeef".into(),
+            ops: vec![ProposalOp::DeleteBlock {
+                block_id: "b_0001".into(),
+                if_rev: 1,
+            }],
+            note: "why".into(),
+            idem_key: "idem-1".into(),
+        }
+    }
+
+    fn proposal_resolved(plugin: &str, decision: ProposalDecision) -> Event {
+        Event::ProposalResolved {
+            wave_id: WaveId::from("w"),
+            proposal_id: "pp-1".into(),
+            plugin_id: plugin.into(),
+            decision,
+        }
+    }
+
+    #[test]
+    fn proposal_submitted_allows_only_the_named_plugin() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = proposal_submitted("dev.neige.invest");
+
+        // The submitting plugin itself passes.
+        let res = enforce_role(
+            &ActorId::Plugin("dev.neige.invest".into()),
+            &event,
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "submitting plugin must pass: {res:?}");
+
+        // A DIFFERENT plugin is refused — actor/payload id mismatch.
+        let err = enforce_role(
+            &ActorId::Plugin("dev.neige.other".into()),
+            &event,
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("mismatched plugin must be refused proposal.submitted");
+        assert!(
+            matches!(
+                err,
+                RoleViolation::NotSubmitterPluginForProposalSubmitted { .. }
+            ),
+            "expected NotSubmitterPluginForProposalSubmitted, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn proposal_submitted_denies_every_non_plugin_actor() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        let event = proposal_submitted("dev.neige.invest");
+
+        for (actor, label) in [
+            (ActorId::User, "User"),
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (
+                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+                "AiSpecSession",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                .expect_err(&format!("{label} must be refused proposal.submitted"));
+            assert!(
+                matches!(
+                    err,
+                    RoleViolation::NotSubmitterPluginForProposalSubmitted { .. }
+                ),
+                "{label}: expected NotSubmitterPluginForProposalSubmitted, got {err:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_resolved_adjudications_are_user_only() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+
+        for decision in [
+            ProposalDecision::Accepted,
+            ProposalDecision::Rejected,
+            ProposalDecision::Stale,
+        ] {
+            let event = proposal_resolved("dev.neige.invest", decision);
+
+            let res = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc);
+            assert!(
+                res.is_ok(),
+                "User must resolve {}: {res:?}",
+                decision.as_str()
+            );
+
+            // Everyone else is refused — INCLUDING the submitting
+            // plugin (no self-approval, §5.1 authority model).
+            for (actor, label) in [
+                (
+                    ActorId::Plugin("dev.neige.invest".into()),
+                    "Plugin(submitter)",
+                ),
+                (ActorId::Plugin("dev.neige.other".into()), "Plugin(other)"),
+                (ActorId::Kernel, "Kernel"),
+                (ActorId::KernelDispatcher, "KernelDispatcher"),
+                (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+                (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+                (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+                (
+                    ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+                    "AiSpecSession",
+                ),
+            ] {
+                let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc)
+                    .expect_err(&format!(
+                        "{label} must be refused proposal.resolved{{{}}}",
+                        decision.as_str()
+                    ));
+                assert!(
+                    matches!(err, RoleViolation::NotUserForProposalResolved { .. }),
+                    "{label}/{}: expected NotUserForProposalResolved, got {err:?}",
+                    decision.as_str(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn proposal_withdrawn_is_submitter_plugin_only() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let spec = CardId::from("spec-1");
+        let worker = CardId::from("worker-1");
+        cache.insert(spec.clone(), CardRole::Spec, WaveId::from("w"));
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        let event = proposal_resolved("dev.neige.invest", ProposalDecision::Withdrawn);
+
+        // The submitter reclaims its own pending slot.
+        let res = enforce_role(
+            &ActorId::Plugin("dev.neige.invest".into()),
+            &event,
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        );
+        assert!(res.is_ok(), "submitter must withdraw: {res:?}");
+
+        // Everyone else is refused — including the USER (withdraw is
+        // the plugin's exit; the user's exits are reject/accept) and a
+        // different plugin.
+        for (actor, label) in [
+            (ActorId::User, "User"),
+            (ActorId::Plugin("dev.neige.other".into()), "Plugin(other)"),
+            (ActorId::Kernel, "Kernel"),
+            (ActorId::KernelDispatcher, "KernelDispatcher"),
+            (ActorId::AiSpec(spec.clone()), "AiSpec(spec)"),
+            (ActorId::AiCodex(worker.clone()), "AiCodex(worker)"),
+            (ActorId::AiClaude(worker.clone()), "AiClaude(worker)"),
+            (
+                ActorId::AiSpecSession(WorkerSessionId::from("sess-spec")),
+                "AiSpecSession",
+            ),
+        ] {
+            let err = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc).expect_err(
+                &format!("{label} must be refused proposal.resolved{{withdrawn}}"),
+            );
+            assert!(
+                matches!(
+                    err,
+                    RoleViolation::NotSubmitterPluginForProposalWithdrawn { .. }
+                ),
+                "{label}: expected NotSubmitterPluginForProposalWithdrawn, got {err:?}",
+            );
+        }
     }
 }

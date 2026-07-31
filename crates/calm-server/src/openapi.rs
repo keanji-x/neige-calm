@@ -91,6 +91,10 @@ use utoipa::OpenApi;
         crate::routes::cards::get_spec_run,
         crate::routes::cards::reset_spec_card,
         crate::routes::cards::delete_card,
+        // ---- proposals (#955 §5.5/§5.6) ----
+        crate::routes::proposals::list_wave_proposals,
+        crate::routes::proposals::accept_proposal,
+        crate::routes::proposals::reject_proposal,
         // ---- overlays ----
         crate::routes::overlays::list_overlays,
         crate::routes::overlays::upsert_overlay,
@@ -181,6 +185,13 @@ use utoipa::OpenApi;
         // surfaced in the OpenAPI doc so frontend codegen + external
         // consumers see the v1 contract).
         crate::wave_report::WaveReportPayload,
+        // Issue #955 §5.5/§5.6 — proposal adjudication DTOs.
+        crate::routes::proposals::PendingProposal,
+        crate::routes::proposals::PendingProposalsResponse,
+        crate::routes::proposals::ResolveProposalResponse,
+        calm_types::proposal::ProposalDecision,
+        calm_types::proposal::ProposalOp,
+        calm_types::proposal::ProposalAnchor,
         Overlay,
         NewOverlay,
         Terminal,

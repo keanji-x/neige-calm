@@ -26,6 +26,7 @@
 use crate::harness::HarnessPhaseTag;
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
+use crate::proposal::{ProposalDecision, ProposalOp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::ops::Deref;
@@ -158,6 +159,14 @@ pub enum EditAuthor {
     /// Server-internal rewrite — FSM scaffolding, migrations, etc.
     /// Reserved; no emitter today.
     Kernel,
+    /// Proposal-channel apply (#955 §5.3): the kernel landed an
+    /// accepted plugin proposal on the report. The envelope actor of
+    /// that write is `Kernel` (the kernel writes on the plugin's
+    /// behalf inside the accept transaction); plugin attribution rides
+    /// in the sibling `WaveReportEdited::author_plugin_id` field.
+    /// Deliberately a unit variant — a data-carrying `Plugin(String)`
+    /// would change the bare-lowercase wire encoding and drop `Copy`.
+    Plugin,
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +350,13 @@ impl EventScope {
 /// * `11` — review/ratify workflow events (issue #760 slice ⑤-b-i).
 ///   Adds `review.round`, `ratify.requested`, and `ratify.resolved`
 ///   to the event union.
-pub const SYNC_EVENT_VERSION: u32 = 11;
+/// * `12` — proposal-channel events (issue #955 §5 PR-a). Adds
+///   `proposal.submitted` / `proposal.resolved` to the event union and
+///   extends `wave.report_edited` with the `"plugin"` author arm +
+///   optional `author_plugin_id`. A v11 tab's zod union doesn't know
+///   the new discriminators (and rejects the new author arm), so it
+///   would silently fail zod past the new frames without this bump.
+pub const SYNC_EVENT_VERSION: u32 = 12;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -553,6 +568,13 @@ pub enum Event {
         wave_id: WaveId,
         card_id: CardId,
         author: EditAuthor,
+        /// Submitting plugin id when `author == EditAuthor::Plugin`
+        /// (#955 §5.3); `None` for every other author.
+        /// `#[serde(default)]` keeps pre-#955 history rows replayable
+        /// (field absent on old events ⇒ `None`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        author_plugin_id: Option<String>,
         edit_id: String,
         summary_before: String,
         summary_after: String,
@@ -834,6 +856,51 @@ pub enum Event {
     RatifyResolved {
         wave_id: WaveId,
         decision: RatifyDecision,
+    },
+
+    /// Issue #955 §5 — a plugin submitted a report-edit proposal
+    /// through the ④ channel. Append-only Tier-A record: the full op
+    /// list + anchors ride on the payload so the pending set (and the
+    /// `proposals` projection table) can be rebuilt from the event log
+    /// alone. Actor is `ActorId::Plugin(plugin_id)` — the in-tx role
+    /// gate refuses every other actor family and any actor/payload
+    /// plugin-id mismatch (design §5.4).
+    #[serde(rename = "proposal.submitted")]
+    ProposalSubmitted {
+        wave_id: WaveId,
+        proposal_id: String,
+        /// Submitting plugin. Injected kernel-side from the callback
+        /// connection (never trusted from plugin input) and
+        /// cross-checked against the envelope actor by `role_gate`.
+        plugin_id: String,
+        /// Proposal subject kind — `"report"` is the only accepted
+        /// value today; this field is the wire's single extension
+        /// point (design D2).
+        subject_kind: String,
+        /// Opaque Automerge canonical-heads token of the snapshot the
+        /// plugin proposed against (`ReportDoc::doc_heads`).
+        base_doc_heads: String,
+        ops: Vec<ProposalOp>,
+        /// Human-facing rationale rendered in the adjudication UI.
+        note: String,
+        /// Pending-scoped idempotency key: while a `(plugin, wave,
+        /// idem_key)` proposal is pending, re-submits return the
+        /// original proposal id; resolution releases the key.
+        idem_key: String,
+    },
+    /// Issue #955 §5.6 — a pending proposal reached one of its four
+    /// terminal decisions. `plugin_id` is the SUBMITTER (not the
+    /// resolver): the pure-function role gate only sees
+    /// `(actor, event, scope)`, so the payload must carry the
+    /// submitter id for the withdrawn-ownership check
+    /// (`withdrawn` ⇒ `ActorId::Plugin(plugin_id)` only;
+    /// `accepted`/`rejected`/`stale` ⇒ `ActorId::User` only).
+    #[serde(rename = "proposal.resolved")]
+    ProposalResolved {
+        wave_id: WaveId,
+        proposal_id: String,
+        plugin_id: String,
+        decision: ProposalDecision,
     },
     #[serde(rename = "forge.scan.completed")]
     ForgeScanCompleted {
@@ -1215,6 +1282,21 @@ impl Event {
                 entity_kind: Some("wave".into()),
                 entity_id: Some(wave_id.to_string()),
             },
+            // Issue #955 — proposal events carry genuine plugin
+            // attribution (the submitter) with wave entity scope, so a
+            // plugin's `neige.event.subscribe` classifier clauses can
+            // narrow its view to its own proposals (design §5.5).
+            Event::ProposalSubmitted {
+                wave_id, plugin_id, ..
+            }
+            | Event::ProposalResolved {
+                wave_id, plugin_id, ..
+            } => EventMetadata {
+                kind_tag,
+                plugin_id: Some(plugin_id.clone()),
+                entity_kind: Some("wave".into()),
+                entity_id: Some(wave_id.to_string()),
+            },
             Event::WorktreeProvisioned { card_id, .. }
             | Event::WorktreeCommitted { card_id, .. }
             | Event::WorktreeRemoved { card_id, .. } => EventMetadata {
@@ -1277,6 +1359,8 @@ impl Event {
             Event::ReviewRound { .. } => "review.round",
             Event::RatifyRequested { .. } => "ratify.requested",
             Event::RatifyResolved { .. } => "ratify.resolved",
+            Event::ProposalSubmitted { .. } => "proposal.submitted",
+            Event::ProposalResolved { .. } => "proposal.resolved",
             Event::ForgeScanCompleted { .. } => "forge.scan.completed",
             Event::ForgePrOpened { .. } => "forge.pr.opened",
             Event::ForgePrDiffRead { .. } => "forge.pr.diff.read",
@@ -1474,6 +1558,21 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::ForgeIssueClosed { wave_id, .. } => {
             vec![format!("wave:{}", wave_id), "*".into()]
         }
+
+        // Issue #955 — proposal events fan out to the wave timeline AND
+        // the submitting plugin's topic so a plugin can observe its own
+        // resolutions via the existing subscribe surface (design §5.5).
+        Event::ProposalSubmitted {
+            wave_id, plugin_id, ..
+        }
+        | Event::ProposalResolved {
+            wave_id, plugin_id, ..
+        } => vec![
+            format!("wave:{}", wave_id),
+            format!("plugin:{}", plugin_id),
+            "plugin:*".into(),
+            "*".into(),
+        ],
 
         Event::WorktreeProvisioned {
             wave_id, card_id, ..
@@ -2468,9 +2567,18 @@ mod scope_tests {
             serde_json::to_string(&EditAuthor::Kernel).unwrap(),
             r#""kernel""#
         );
+        assert_eq!(
+            serde_json::to_string(&EditAuthor::Plugin).unwrap(),
+            r#""plugin""#
+        );
 
         // Round-trip back through Deserialize.
-        for variant in [EditAuthor::Spec, EditAuthor::User, EditAuthor::Kernel] {
+        for variant in [
+            EditAuthor::Spec,
+            EditAuthor::User,
+            EditAuthor::Kernel,
+            EditAuthor::Plugin,
+        ] {
             let s = serde_json::to_string(&variant).unwrap();
             let back: EditAuthor = serde_json::from_str(&s).unwrap();
             assert_eq!(back, variant, "round-trip mismatch for {variant:?}");
@@ -2535,7 +2643,7 @@ mod scope_tests {
         // the variant the same way the sync-engine replay does for
         // every other variant. Cover every `EditAuthor` arm so a
         // future serde tweak that breaks one of them surfaces here.
-        for author_str in ["spec", "user", "kernel"] {
+        for author_str in ["spec", "user", "kernel", "plugin"] {
             let payload = serde_json::json!({
                 "wave_id": "w-1",
                 "card_id": "card-1",
@@ -2553,7 +2661,8 @@ mod scope_tests {
                 Event::WaveReportEdited { author, .. } => match (author_str, author) {
                     ("spec", EditAuthor::Spec)
                     | ("user", EditAuthor::User)
-                    | ("kernel", EditAuthor::Kernel) => {}
+                    | ("kernel", EditAuthor::Kernel)
+                    | ("plugin", EditAuthor::Plugin) => {}
                     (expected, actual) => {
                         panic!("author mismatch: expected {expected}, deserialized into {actual:?}")
                     }
@@ -2634,6 +2743,7 @@ mod scope_tests {
             wave_id: WaveId::from("w-1"),
             card_id: CardId::from("card-1"),
             author: EditAuthor::Spec,
+            author_plugin_id: None,
             edit_id: "edit-uuid-1".into(),
             summary_before: "old summary".into(),
             summary_after: "new summary".into(),
@@ -2816,6 +2926,25 @@ mod scope_tests {
             Event::RatifyResolved {
                 wave_id: WaveId::from("wave-1"),
                 decision: RatifyDecision::Grant,
+            },
+            Event::ProposalSubmitted {
+                wave_id: WaveId::from("wave-1"),
+                proposal_id: "pp-1".into(),
+                plugin_id: "dev.neige.invest".into(),
+                subject_kind: "report".into(),
+                base_doc_heads: "ah1:deadbeef".into(),
+                ops: vec![crate::proposal::ProposalOp::DeleteBlock {
+                    block_id: "b_0001".into(),
+                    if_rev: 1,
+                }],
+                note: "why".into(),
+                idem_key: "idem-1".into(),
+            },
+            Event::ProposalResolved {
+                wave_id: WaveId::from("wave-1"),
+                proposal_id: "pp-1".into(),
+                plugin_id: "dev.neige.invest".into(),
+                decision: ProposalDecision::Accepted,
             },
             Event::ForgeScanCompleted {
                 wave_id: WaveId::from("wave-1"),

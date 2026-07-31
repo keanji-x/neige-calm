@@ -128,7 +128,11 @@ pub async fn auto_transition_if_current_in_tx(
     ]))
 }
 
-async fn wave_get_tx(
+/// In-tx wave row read. `pub(crate)` since #955 PR-b: the proposal
+/// submit handler re-checks "wave exists and is not terminal" inside its
+/// own write transaction (§5.5), which an outside-tx read cannot make
+/// authoritative.
+pub(crate) async fn wave_get_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &crate::ids::WaveId,
 ) -> Result<Wave, CalmError> {
