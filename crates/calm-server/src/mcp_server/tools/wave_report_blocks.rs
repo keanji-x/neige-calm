@@ -86,7 +86,8 @@ fn kinds_descriptor() -> ToolDescriptor {
              where `schema` is the JSON Schema of that kind's payload. \
              Kinds: `prose` (markdown), `chart.candles` (inline candle \
              chart), `table` (comparison table), `app` (embedded \
-             same-origin mini-app)."
+             same-origin mini-app), `task` (validated task declaration; \
+             projection lands in a later slice)."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -224,6 +225,85 @@ fn kinds_table() -> Value {
                      \"选股器\", \"height\": 600 } }. `src` must be a \
                      same-origin absolute path (`/…`); full URLs and \
                      backslashes are rejected."
+            },
+            // Keep this schema in sync with `report_blocks::validate_payload`'s
+            // task validation. Any constraint changed here must be changed there,
+            // and vice versa.
+            {
+                "kind": "task",
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "$defs": {
+                        "contextValue": {
+                            "oneOf": [
+                                { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS },
+                                { "type": "array", "items": { "$ref": "#/$defs/contextValue" } },
+                                { "type": "object", "additionalProperties": { "$ref": "#/$defs/contextValue" } },
+                                { "type": ["number", "boolean", "null"] }
+                            ]
+                        }
+                    },
+                    "oneOf": [
+                        {
+                            "required": ["key", "kind", "goal", "ready", "declared_by"],
+                            "properties": { "tombstone": { "type": "null" } },
+                            "not": { "required": ["tombstoned_by"] }
+                        },
+                        {
+                            "required": ["key", "tombstone", "declared_by", "tombstoned_by"],
+                            "properties": { "tombstone": { "not": { "type": "null" } } },
+                            "not": { "anyOf": [
+                                { "required": ["kind"] }, { "required": ["goal"] },
+                                { "required": ["acceptance"] }, { "required": ["gate"] },
+                                { "required": ["no_gate_reason"] }, { "required": ["depends_on"] },
+                                { "required": ["priority"] }, { "required": ["cwd"] },
+                                { "required": ["context"] }, { "required": ["refs"] },
+                                { "required": ["ready"] }, { "required": ["released_by_user"] },
+                                { "required": ["spawn"] }
+                            ] }
+                        }
+                    ],
+                    "properties": {
+                        "key": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+                        "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
+                        "goal": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                        "acceptance": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                        "gate": {
+                            "type": "object", "additionalProperties": false, "required": ["steps"],
+                            "properties": {
+                                "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
+                                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200 },
+                                "steps": { "type": "array", "minItems": 1, "items": {
+                                    "type": "object", "additionalProperties": false, "required": ["name", "cmd"],
+                                    "properties": {
+                                        "name": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" },
+                                        "cmd": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^(?=.*\\S)[^\\x00-\\x1F\\x7F]*$" }
+                                    }
+                                }}
+                            }
+                        },
+                        "no_gate_reason": { "type": "string", "minLength": 1, "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "\\S" },
+                        "depends_on": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS } },
+                        "priority": {
+                            "type": "integer",
+                            "minimum": i64::MIN,
+                            "maximum": i64::MAX,
+                            "default": 0
+                        },
+                        "cwd": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^[^\\S\\x00-\\x1F\\x7F]*/[^\\x00-\\x1F\\x7F]*$" },
+                        "context": { "$ref": "#/$defs/contextValue", "description": "Arbitrary JSON; every nested string is limited to 2048 characters." },
+                        "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
+                        "ready": { "type": "boolean" },
+                        "declared_by": { "type": "string", "enum": ["spec"] },
+                        "released_by_user": { "type": "boolean", "default": false },
+                        "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
+                        "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
+                        "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
+                    },
+                    "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}. Slice 1 only accepts declared_by=spec."
+                },
+                "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Every string nested anywhere in `context` is limited to 2048 characters."
             }
         ]
     })
@@ -253,7 +333,7 @@ fn upsert_descriptor() -> ToolDescriptor {
              nothing — re-read and retry. Kinds (see \
              calm.report.blocks.kinds for payload schemas): `prose` \
              takes its content in `markdown`; `chart.candles` / \
-             `table` / `app` take a schema-validated `payload` object \
+             `table` / `app` / `task` take a schema-validated `payload` object \
              (and must NOT pass `markdown`). Returns `{ id, rev, \
              updated_at, docRev }` — keep the returned rev for your next edit \
              of the same block. Get ids/revs from `calm.report.read`'s \
@@ -264,7 +344,7 @@ fn upsert_descriptor() -> ToolDescriptor {
             "required": ["kind"],
             "properties": {
                 "id": { "type": "string", "description": "Existing block id to replace. Omit to create a new block." },
-                "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app"], "description": "Block kind." },
+                "kind": { "type": "string", "enum": ["prose", "chart.candles", "table", "app", "task"], "description": "Block kind." },
                 "markdown": { "type": "string", "description": "Prose content (kind=prose only)." },
                 "payload": { "type": "object", "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`." },
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },
@@ -697,5 +777,63 @@ fn optional_index(
                     "{tool}: `{key}` must be a non-negative integer index"
                 ))
             }),
+    }
+}
+
+#[cfg(test)]
+mod task_kind_contract_tests {
+    use super::*;
+
+    #[test]
+    fn task_is_advertised_by_both_block_tool_contracts() {
+        let table = kinds_table();
+        let task = table["kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|kind| kind["kind"] == "task")
+            .expect("task kind table entry");
+        assert_eq!(task["schema"]["additionalProperties"], false);
+        assert_eq!(
+            task["schema"]["properties"]["declared_by"]["enum"],
+            json!(["spec"])
+        );
+        let properties = &task["schema"]["properties"];
+        assert_eq!(properties["acceptance"]["minLength"], 1);
+        for field in ["goal", "acceptance", "no_gate_reason"] {
+            assert_eq!(properties[field]["pattern"], "\\S");
+        }
+        assert_eq!(properties["priority"]["minimum"], i64::MIN);
+        assert_eq!(properties["priority"]["maximum"], i64::MAX);
+        for field in ["cwd", "gate"] {
+            let cwd = if field == "gate" {
+                &properties[field]["properties"]["cwd"]
+            } else {
+                &properties[field]
+            };
+            assert!(cwd["pattern"].as_str().unwrap().contains("\\x00-\\x1F"));
+            assert!(!cwd["pattern"].as_str().unwrap().starts_with("^/"));
+        }
+        for field in ["name", "cmd"] {
+            assert!(
+                properties["gate"]["properties"]["steps"]["items"]["properties"][field]["pattern"]
+                    .as_str()
+                    .unwrap()
+                    .contains("\\x00-\\x1F")
+            );
+        }
+        assert!(task["usage"].as_str().unwrap().contains("ready: true"));
+
+        let kinds = kinds_descriptor();
+        assert!(kinds.description.contains("`task`"));
+        let upsert = upsert_descriptor();
+        assert!(upsert.description.contains("/ `task`"));
+        assert!(
+            upsert.input_schema["properties"]["kind"]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|kind| kind == "task")
+        );
     }
 }

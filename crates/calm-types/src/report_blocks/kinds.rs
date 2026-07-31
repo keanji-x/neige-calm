@@ -18,10 +18,14 @@
 
 use serde_json::{Map, Value};
 
+use super::tasks::{GateInput, key_is_valid, validate_gate_shape};
+use crate::report_links::parse_destination;
+
 pub const KIND_PROSE: &str = "prose";
 pub const KIND_CHART_CANDLES: &str = "chart.candles";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_APP: &str = "app";
+pub const KIND_TASK: &str = "task";
 
 // -- payload size caps (#960 PR3 review round 1) ----------------------
 //
@@ -42,7 +46,7 @@ pub const MAX_STRING_CHARS: usize = 2048;
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 3] = [KIND_CHART_CANDLES, KIND_TABLE, KIND_APP];
+pub const DATA_KINDS: [&str; 4] = [KIND_CHART_CANDLES, KIND_TABLE, KIND_APP, KIND_TASK];
 
 pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
@@ -64,6 +68,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_CHART_CANDLES => validate_chart(map, &mut errors),
         KIND_TABLE => validate_table(map, &mut errors),
         KIND_APP => validate_app(map, &mut errors),
+        KIND_TASK => validate_task(map, &mut errors),
         other => errors.push(format!(
             "unknown block kind `{other}` — known data kinds: {}",
             DATA_KINDS.join(", ")
@@ -87,6 +92,255 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err(errors.join("; "))
+    }
+}
+
+fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    const TASK_FIELDS: &[&str] = &[
+        "key",
+        "kind",
+        "goal",
+        "acceptance",
+        "gate",
+        "no_gate_reason",
+        "depends_on",
+        "priority",
+        "cwd",
+        "context",
+        "refs",
+        "ready",
+        "declared_by",
+        "released_by_user",
+        "spawn",
+        "tombstone",
+        "tombstoned_by",
+    ];
+    reject_unknown(map, TASK_FIELDS, errors);
+
+    let key = match map.get("key") {
+        Some(Value::String(key)) if key_is_valid(key) => {
+            check_string_cap("key", key, errors);
+            Some(key.as_str())
+        }
+        Some(Value::String(_)) => {
+            errors.push("key: must match ^[a-z0-9][a-z0-9._-]{0,63}$".into());
+            None
+        }
+        _ => {
+            errors.push("key: required string matching ^[a-z0-9][a-z0-9._-]{0,63}$".into());
+            None
+        }
+    };
+
+    let tombstone = map.get("tombstone").is_some_and(|value| !value.is_null());
+    if tombstone {
+        for field in TASK_FIELDS
+            .iter()
+            .filter(|field| !["key", "tombstone", "declared_by", "tombstoned_by"].contains(field))
+        {
+            if map.contains_key(*field) {
+                errors.push(format!("{field}: must be absent from a tombstone task"));
+            }
+        }
+        validate_declared_by(map, errors);
+        required_enum(map, "tombstoned_by", &["spec", "user"], errors);
+        match &map["tombstone"] {
+            Value::Object(value) => {
+                reject_unknown(value, &["reason"], errors);
+                if let Some(reason) = value.get("reason") {
+                    match reason {
+                        Value::Null => {}
+                        Value::String(reason) => {
+                            check_string_cap("tombstone.reason", reason, errors)
+                        }
+                        _ => errors.push("tombstone.reason: must be a string or null".into()),
+                    }
+                }
+            }
+            _ => errors.push("tombstone: must be an object".into()),
+        }
+        return;
+    }
+
+    if map.contains_key("tombstoned_by") {
+        errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
+    }
+    match map.get("kind").and_then(Value::as_str) {
+        Some("codex" | "claude" | "terminal") => {}
+        _ => errors
+            .push("kind: required; must be one of \"codex\" | \"claude\" | \"terminal\"".into()),
+    }
+    required_non_empty_string(map, "goal", errors);
+    optional_non_empty_string(map, "acceptance", errors);
+    optional_non_empty_string(map, "no_gate_reason", errors);
+    optional_abs_path(map, "cwd", errors);
+    if let Some(gate) = map.get("gate") {
+        match serde_json::from_value::<GateInput>(gate.clone()) {
+            Ok(gate) => {
+                if let Err(error) = validate_gate_shape(key.unwrap_or("<invalid>"), &gate) {
+                    let detail = error
+                        .strip_prefix(&format!("task {}: ", key.unwrap_or("<invalid>")))
+                        .unwrap_or(error.as_str());
+                    errors.push(detail.to_string());
+                }
+                check_gate_strings(&gate, errors);
+            }
+            Err(error) => errors.push(format!("gate: invalid shape: {error}")),
+        }
+    }
+    optional_string_array(map, "depends_on", false, errors);
+    if let Some(priority) = map.get("priority")
+        && priority.as_i64().is_none()
+    {
+        errors.push(format!(
+            "priority: must be an integer between {} and {}",
+            i64::MIN,
+            i64::MAX
+        ));
+    }
+    if let Some(context) = map.get("context") {
+        check_nested_string_caps("context", context, errors);
+    }
+    match map.get("refs") {
+        None => {}
+        Some(Value::Array(refs)) => {
+            for (index, reference) in refs.iter().enumerate() {
+                match reference.as_str() {
+                    Some(reference) => {
+                        check_string_cap(&format!("refs[{index}]"), reference, errors);
+                        if !matches!(parse_destination(reference), Some((_, Some(_)))) {
+                            errors.push(format!("refs[{index}]: must be a neige://wave/<wave>#b_xxxx block reference"));
+                        }
+                    }
+                    None => errors.push(format!("refs[{index}]: must be a string")),
+                }
+            }
+        }
+        Some(_) => errors.push("refs: must be an array".into()),
+    }
+    if !matches!(map.get("ready"), Some(Value::Bool(_))) {
+        errors.push("ready: required boolean".into());
+    }
+    validate_declared_by(map, errors);
+    if let Some(value) = map.get("released_by_user")
+        && !value.is_boolean()
+    {
+        errors.push("released_by_user: must be a boolean".into());
+    }
+    if let Some(value) = map.get("spawn")
+        && !matches!(value.as_str(), Some("in-wave" | "sub-wave"))
+    {
+        errors.push("spawn: must be one of \"in-wave\" | \"sub-wave\"".into());
+    }
+}
+
+fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    if !matches!(map.get("declared_by").and_then(Value::as_str), Some("spec")) {
+        errors.push("declared_by: required; slice 1 only accepts \"spec\"".into());
+    }
+}
+
+fn required_enum(
+    map: &Map<String, Value>,
+    field: &str,
+    allowed: &[&str],
+    errors: &mut Vec<String>,
+) {
+    if !map
+        .get(field)
+        .and_then(Value::as_str)
+        .is_some_and(|value| allowed.contains(&value))
+    {
+        errors.push(format!(
+            "{field}: required; must be one of {}",
+            allowed
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+}
+
+fn required_non_empty_string(map: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    match map.get(field) {
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            check_string_cap(field, value, errors)
+        }
+        _ => errors.push(format!("{field}: required non-empty string")),
+    }
+}
+
+fn optional_non_empty_string(map: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    if map.contains_key(field) {
+        required_non_empty_string(map, field, errors);
+    }
+}
+
+fn optional_abs_path(map: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    if let Some(value) = map.get(field) {
+        match value.as_str() {
+            Some(path)
+                if path.trim().starts_with('/') && !path.chars().any(|c| c.is_ascii_control()) =>
+            {
+                check_string_cap(field, path, errors)
+            }
+            _ => errors.push(format!(
+                "{field}: must be an absolute path without ASCII control characters"
+            )),
+        }
+    }
+}
+
+fn check_nested_string_caps(path: &str, value: &Value, errors: &mut Vec<String>) {
+    match value {
+        Value::String(value) => check_string_cap(path, value, errors),
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                check_nested_string_caps(&format!("{path}[{index}]"), value, errors);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                check_string_cap(&format!("{path}.{key}"), key, errors);
+                check_nested_string_caps(&format!("{path}.{key}"), value, errors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn optional_string_array(
+    map: &Map<String, Value>,
+    field: &str,
+    non_empty: bool,
+    errors: &mut Vec<String>,
+) {
+    if let Some(value) = map.get(field) {
+        match value.as_array() {
+            Some(values) if !non_empty || !values.is_empty() => {
+                for (index, value) in values.iter().enumerate() {
+                    match value.as_str() {
+                        Some(value) => {
+                            check_string_cap(&format!("{field}[{index}]"), value, errors)
+                        }
+                        None => errors.push(format!("{field}[{index}]: must be a string")),
+                    }
+                }
+            }
+            Some(_) => errors.push(format!("{field}: must be non-empty")),
+            None => errors.push(format!("{field}: must be an array")),
+        }
+    }
+}
+
+fn check_gate_strings(gate: &GateInput, errors: &mut Vec<String>) {
+    if let Some(cwd) = &gate.cwd {
+        check_string_cap("gate.cwd", cwd, errors);
+    }
+    for (index, step) in gate.steps.iter().enumerate() {
+        check_string_cap(&format!("gate.steps[{index}].name"), &step.name, errors);
+        check_string_cap(&format!("gate.steps[{index}].cmd"), &step.cmd, errors);
     }
 }
 
@@ -528,5 +782,109 @@ mod tests {
         assert!(err.contains("unknown block kind `metrics`"), "{err}");
         assert!(!is_data_kind("prose"));
         assert!(is_data_kind("chart.candles"));
+        assert!(is_data_kind("task"));
+    }
+
+    fn valid_task() -> Value {
+        json!({
+            "key": "impl-parser", "kind": "codex", "goal": "split parser",
+            "acceptance": "tests pass", "gate": { "cwd": "/repo", "timeout_secs": 1800,
+                "steps": [{ "name": "test", "cmd": "cargo test" }] },
+            "no_gate_reason": "not used by policy when gate exists", "depends_on": ["design"],
+            "priority": 0, "cwd": "/repo", "context": {},
+            "refs": ["neige://wave/w1#b_1f3a"], "ready": true,
+            "declared_by": "spec", "released_by_user": false, "spawn": "in-wave"
+        })
+    }
+
+    #[test]
+    fn task_payload_validates_every_field_and_unknown_fields() {
+        assert_eq!(validate_payload(KIND_TASK, &valid_task()), Ok(()));
+        let cases = [
+            ("key", json!("Bad Key"), "key:"),
+            ("kind", json!("shell"), "kind:"),
+            ("goal", json!("  "), "goal:"),
+            ("acceptance", json!(7), "acceptance:"),
+            ("no_gate_reason", json!(" "), "no_gate_reason:"),
+            ("depends_on", json!([1]), "depends_on[0]"),
+            ("priority", json!(1.5), "priority:"),
+            ("cwd", json!("relative"), "cwd:"),
+            ("refs", json!(["neige://wave/w1"]), "refs[0]"),
+            ("ready", json!("yes"), "ready:"),
+            ("released_by_user", json!(1), "released_by_user:"),
+            ("spawn", json!("process"), "spawn:"),
+        ];
+        for (field, value, expected) in cases {
+            let mut payload = valid_task();
+            payload[field] = value;
+            let error = validate_payload(KIND_TASK, &payload).unwrap_err();
+            assert!(error.contains(expected), "{field}: {error}");
+        }
+        let mut empty_gate = valid_task();
+        empty_gate["gate"] = json!({"steps":[]});
+        assert_eq!(
+            validate_payload(KIND_TASK, &empty_gate).unwrap_err(),
+            "gate.steps must be non-empty"
+        );
+        let mut arbitrary_context = valid_task();
+        arbitrary_context["context"] = json!([1, true, {"nested": "ok"}]);
+        assert_eq!(validate_payload(KIND_TASK, &arbitrary_context), Ok(()));
+        let mut payload = valid_task();
+        payload["surprise"] = json!(true);
+        assert!(
+            validate_payload(KIND_TASK, &payload)
+                .unwrap_err()
+                .contains("surprise: unknown field")
+        );
+    }
+
+    #[test]
+    fn task_priority_rejects_integer_outside_i64_range() {
+        let mut payload = valid_task();
+        payload["priority"] = json!(9_223_372_036_854_775_808_u64);
+
+        assert_eq!(
+            validate_payload(KIND_TASK, &payload).unwrap_err(),
+            "priority: must be an integer between -9223372036854775808 and 9223372036854775807"
+        );
+    }
+
+    #[test]
+    fn task_declared_by_user_is_rejected_in_slice_one() {
+        let mut payload = valid_task();
+        payload["declared_by"] = json!("user");
+        assert!(
+            validate_payload(KIND_TASK, &payload)
+                .unwrap_err()
+                .contains("only accepts \"spec\"")
+        );
+    }
+
+    #[test]
+    fn task_tombstone_is_a_closed_shape() {
+        let tombstone = json!({"key":"old","tombstone":{"reason":"removed"},"declared_by":"spec","tombstoned_by":"user"});
+        assert_eq!(validate_payload(KIND_TASK, &tombstone), Ok(()));
+        let mut extra = tombstone.clone();
+        extra["kind"] = json!("codex");
+        assert!(
+            validate_payload(KIND_TASK, &extra)
+                .unwrap_err()
+                .contains("kind: must be absent")
+        );
+        for invalid in [json!(false), json!(0), json!("")] {
+            let payload = json!({"key":"old","tombstone":invalid,"declared_by":"spec","tombstoned_by":"user"});
+            assert!(
+                validate_payload(KIND_TASK, &payload)
+                    .unwrap_err()
+                    .contains("tombstone: must be an object")
+            );
+        }
+        let mut live = valid_task();
+        live["tombstoned_by"] = json!("spec");
+        assert!(
+            validate_payload(KIND_TASK, &live)
+                .unwrap_err()
+                .contains("must be absent")
+        );
     }
 }

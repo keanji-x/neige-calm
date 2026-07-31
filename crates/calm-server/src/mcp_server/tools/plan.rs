@@ -59,9 +59,16 @@ use crate::mcp_server::tools::lifecycle_args::{
 };
 use crate::model::{CardRole, Task, TaskKind, TaskStatus, Wave, now_ms};
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
+use calm_types::report_blocks::tasks::{
+    GATE_TIMEOUT_MAX_SECS, TaskDeclaration, dup_keys, find_cycle, gate_rule_violations,
+    unknown_deps,
+};
+pub use calm_types::report_blocks::tasks::{
+    GateInput, GateStepInput, key_is_valid, validate_gate_shape,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
@@ -71,9 +78,6 @@ pub const TOOL_PLAN_LIST: &str = "calm.plan.list";
 /// Gate timeout defaults/caps (design §4.1 rule 7). The task-verify
 /// adapter re-clamps defensively at run time
 /// (`task_verify_adapter::GateSpec::timeout_secs_clamped`).
-const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
-const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
-
 pub fn register_into(registry: &mut ToolRegistry) {
     registry.register(plan_upsert_descriptor(), wrap(plan_upsert));
     registry.register(plan_cancel_descriptor(), wrap(plan_cancel));
@@ -116,23 +120,6 @@ pub struct PlanTaskInput {
     pub no_gate_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GateInput {
-    #[serde(default)]
-    pub cwd: Option<String>,
-    #[serde(default)]
-    pub timeout_secs: Option<i64>,
-    pub steps: Vec<GateStepInput>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GateStepInput {
-    pub name: String,
-    pub cmd: String,
-}
-
 /// A batch entry after field-level validation + normalization. The
 /// stored row is a pure function of this struct, which is what makes
 /// the rule-5 "byte-identical normalized payload" idempotency check
@@ -157,22 +144,6 @@ struct NormalizedTask {
     /// Rule 6 escape hatch was supplied (the reason itself is folded
     /// into `context_json` for the audit trail).
     has_no_gate_reason: bool,
-}
-
-/// Rule 1 key shape: `^[a-z0-9][a-z0-9._-]{0,63}$` (1..=64 chars).
-/// Hand-rolled — the crate has no regex dependency and the grammar is
-/// trivial.
-pub(crate) fn key_is_valid(key: &str) -> bool {
-    let bytes = key.as_bytes();
-    if bytes.is_empty() || bytes.len() > 64 {
-        return false;
-    }
-    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 /// Rule 7 cwd shape: absolute, non-empty, no ASCII control characters
@@ -345,44 +316,6 @@ fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
     serde_json::to_string(&Value::Object(obj)).map_err(|e| format!("task {key}: gate: {e}"))
 }
 
-/// Rule 7 gate shape: non-empty `steps`, non-empty `name`/`cmd` with no
-/// ASCII control characters (same check as the codex-create cwd
-/// normalization), absolute `cwd` when present, `timeout_secs` in
-/// `1..=7200` (default 1800).
-pub(crate) fn validate_gate_shape(key: &str, gate: &GateInput) -> Result<(), String> {
-    if gate.steps.is_empty() {
-        return Err(format!("task {key}: gate.steps must be non-empty"));
-    }
-    for (i, step) in gate.steps.iter().enumerate() {
-        if step.name.trim().is_empty() {
-            return Err(format!(
-                "task {key}: gate.steps[{i}].name must be non-empty"
-            ));
-        }
-        if step.cmd.trim().is_empty() {
-            return Err(format!("task {key}: gate.steps[{i}].cmd must be non-empty"));
-        }
-        if step.name.chars().any(|c| c.is_ascii_control())
-            || step.cmd.chars().any(|c| c.is_ascii_control())
-        {
-            return Err(format!(
-                "task {key}: gate.steps[{i}] must not contain ASCII control characters"
-            ));
-        }
-    }
-    if let Some(raw) = gate.cwd.as_deref() {
-        validate_abs_path("gate.cwd", key, raw)?;
-    }
-    let timeout = gate.timeout_secs.unwrap_or(GATE_TIMEOUT_DEFAULT_SECS);
-    if timeout <= 0 || timeout > GATE_TIMEOUT_MAX_SECS {
-        return Err(format!(
-            "task {key}: gate.timeout_secs must be in 1..={GATE_TIMEOUT_MAX_SECS} \
-             (default {GATE_TIMEOUT_DEFAULT_SECS}), got {timeout}"
-        ));
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // Batch resolution (rules 1 uniqueness, 3, 4, 5)
 // ---------------------------------------------------------------------------
@@ -414,11 +347,12 @@ fn resolve_plan_batch(
     batch: &[NormalizedTask],
 ) -> Result<Vec<PlanOutcome>, String> {
     // Rule 1 (uniqueness half) — duplicate keys within the batch.
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    for t in batch {
-        if !seen.insert(t.key.as_str()) {
-            return Err(format!("duplicate key `{}` in batch", t.key));
-        }
+    let batch_declarations: Vec<TaskDeclaration> = batch
+        .iter()
+        .map(declaration_from_normalized)
+        .collect::<Result<_, _>>()?;
+    if let Some(key) = dup_keys(&batch_declarations).first() {
+        return Err(format!("duplicate key `{key}` in batch"));
     }
 
     let existing_by_key: HashMap<&str, &Task> =
@@ -426,21 +360,14 @@ fn resolve_plan_batch(
 
     // Rule 3 — unknown deps: every dep names an existing wave task or a
     // task in the same batch.
-    let known: BTreeSet<&str> = existing_by_key
-        .keys()
-        .copied()
-        .chain(batch.iter().map(|t| t.key.as_str()))
-        .collect();
-    for t in batch {
-        for dep in &t.depends_on {
-            if !known.contains(dep.as_str()) {
-                return Err(format!(
-                    "task {}: unknown dependency `{dep}` (must name an existing wave \
-                     task or a task in this batch)",
-                    t.key
-                ));
-            }
-        }
+    // Only persisted task-row keys are known here. Tombstones never project a
+    // row, so they cannot accidentally satisfy a dependency through this input.
+    let existing_keys: Vec<String> = existing.iter().map(|task| task.key.clone()).collect();
+    if let Some((key, dependency)) = unknown_deps(&batch_declarations, &existing_keys).first() {
+        return Err(format!(
+            "task {key}: unknown dependency `{dependency}` (must name an existing wave \
+             task or a task in this batch)"
+        ));
     }
 
     // Rule 5 — mutability: pending rows are freely revisable; a
@@ -469,18 +396,44 @@ fn resolve_plan_batch(
     // Rule 4 — cycle detection over the post-upsert view: existing
     // tasks' frozen deps plus the batch's (which override same-key
     // pending rows).
-    let mut graph: BTreeMap<&str, Vec<String>> = existing
+    let mut graph: BTreeMap<String, Vec<String>> = existing
         .iter()
-        .map(|t| (t.key.as_str(), t.depends_on()))
+        .map(|t| (t.key.clone(), t.depends_on()))
         .collect();
     for t in batch {
-        graph.insert(t.key.as_str(), t.depends_on.clone());
+        graph.insert(t.key.clone(), t.depends_on.clone());
     }
     if let Some(cycle) = find_cycle(&graph) {
         return Err(format!("dependency cycle: {}", cycle.join(" -> ")));
     }
 
     Ok(outcomes)
+}
+
+fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration, String> {
+    let gate = task
+        .gate_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("task {}: invalid normalized gate_json: {error}", task.key))?;
+    Ok(TaskDeclaration {
+        block_id: String::new(),
+        key: task.key.clone(),
+        kind: match task.kind {
+            TaskKind::Codex => "codex",
+            TaskKind::Claude => "claude",
+            TaskKind::Terminal => "terminal",
+        }
+        .into(),
+        goal: task.goal.clone(),
+        acceptance: task.acceptance_criteria.clone(),
+        gate,
+        no_gate_reason: task.has_no_gate_reason.then(String::new),
+        depends_on: task.depends_on.clone(),
+        ready: true,
+        tombstone: false,
+    })
 }
 
 /// Rule 5 equality: the stored row vs. the candidate's normalized
@@ -515,61 +468,6 @@ fn task_payload_equal(row: &Task, cand: &NormalizedTask) -> bool {
         && row_deps == cand.depends_on
         && row.priority == cand.priority
         && opt_json_eq(&row.gate_json, &cand.gate_json)
-}
-
-/// DFS cycle finder. Returns the cycle path (first node repeated at the
-/// end, e.g. `["a", "b", "a"]`) or `None`. Edges to keys outside the
-/// graph are ignored — rule 3 already rejected unknown deps for batch
-/// entries, and existing rows' deps were validated at their own write.
-fn find_cycle(graph: &BTreeMap<&str, Vec<String>>) -> Option<Vec<String>> {
-    const WHITE: u8 = 0;
-    const GRAY: u8 = 1;
-    const BLACK: u8 = 2;
-
-    fn visit(
-        node: &str,
-        graph: &BTreeMap<&str, Vec<String>>,
-        color: &mut HashMap<String, u8>,
-        path: &mut Vec<String>,
-    ) -> Option<Vec<String>> {
-        color.insert(node.to_string(), GRAY);
-        path.push(node.to_string());
-        for dep in graph.get(node).into_iter().flatten() {
-            if !graph.contains_key(dep.as_str()) {
-                continue;
-            }
-            match color.get(dep.as_str()).copied().unwrap_or(WHITE) {
-                GRAY => {
-                    // Back-edge — slice the current path from the first
-                    // occurrence of `dep` and close the loop.
-                    let start = path.iter().position(|k| k == dep).unwrap_or(0);
-                    let mut cycle: Vec<String> = path[start..].to_vec();
-                    cycle.push(dep.clone());
-                    return Some(cycle);
-                }
-                WHITE => {
-                    if let Some(cycle) = visit(dep, graph, color, path) {
-                        return Some(cycle);
-                    }
-                }
-                _ => {}
-            }
-        }
-        path.pop();
-        color.insert(node.to_string(), BLACK);
-        None
-    }
-
-    let mut color: HashMap<String, u8> = HashMap::new();
-    let mut path: Vec<String> = Vec::new();
-    for node in graph.keys() {
-        if color.get(*node).copied().unwrap_or(WHITE) == WHITE
-            && let Some(cycle) = visit(node, graph, &mut color, &mut path)
-        {
-            return Some(cycle);
-        }
-    }
-    None
 }
 
 /// Build the fresh-row form of a normalized batch entry. Updates reuse
@@ -779,18 +677,20 @@ async fn plan_upsert(
                 // In-tx read so the policy and the rows it admitted
                 // commit atomically.
                 if wave_require_task_gates_tx(tx, &wave_id_str).await? {
-                    for (t, outcome) in batch.iter().zip(&outcomes) {
-                        if matches!(outcome, PlanOutcome::Created | PlanOutcome::Updated)
-                            && matches!(t.kind, TaskKind::Codex | TaskKind::Claude)
-                            && t.gate_json.is_none()
-                            && !t.has_no_gate_reason
-                        {
-                            return Err(CalmError::BadRequest(format!(
-                                "task {}: this wave requires verification gates for agent \
-                                 tasks (rule 6); declare `gate` or record `no_gate_reason`",
-                                t.key
-                            )));
-                        }
+                    let changed: Vec<TaskDeclaration> = batch
+                        .iter()
+                        .zip(&outcomes)
+                        .filter(|(_, outcome)| {
+                            matches!(outcome, PlanOutcome::Created | PlanOutcome::Updated)
+                        })
+                        .map(|(task, _)| declaration_from_normalized(task))
+                        .collect::<Result<_, _>>()
+                        .map_err(CalmError::BadRequest)?;
+                    if let Some(key) = gate_rule_violations(&changed, true).first() {
+                        return Err(CalmError::BadRequest(format!(
+                            "task {key}: this wave requires verification gates for agent \
+                             tasks (rule 6); declare `gate` or record `no_gate_reason`"
+                        )));
                     }
                 }
 
@@ -1418,6 +1318,89 @@ mod tests {
         let err = resolve_plan_batch(&existing, &[normalized("new", &["old"])])
             .expect_err("cross-set cycle");
         assert!(err.contains("dependency cycle:"), "err = {err}");
+    }
+
+    #[test]
+    fn resolver_and_task_block_diagnostics_are_equivalent_for_batch_rules() {
+        use calm_types::report_blocks::tasks::project_task_declarations;
+        use calm_types::wave_report::ReportBlock;
+
+        // Exhaust the 4^3 dependency graphs over three keys (none, or
+        // one edge to a/b/c). This is a small property test for the
+        // document-local cycle rule; DB-backed unknown dependencies and
+        // rule-2/non-pending mutability are intentionally out of scope.
+        let choices: [Option<&str>; 4] = [None, Some("a"), Some("b"), Some("c")];
+        for a in choices {
+            for b in choices {
+                for c in choices {
+                    let dependencies = [a, b, c];
+                    let batch: Vec<NormalizedTask> = ["a", "b", "c"]
+                        .into_iter()
+                        .zip(dependencies)
+                        .map(|(key, dependency)| {
+                            normalized(key, &dependency.into_iter().collect::<Vec<_>>())
+                        })
+                        .collect();
+                    let blocks: Vec<ReportBlock> = batch.iter().enumerate().map(|(index, task)| ReportBlock {
+                        id: format!("b_{index:04x}"), kind: "task".into(), rev: 0,
+                        payload: json!({"key":task.key,"kind":"codex","goal":"do it","depends_on":task.depends_on,"ready":true,"declared_by":"spec"}),
+                    }).collect();
+                    let diagnostics = project_task_declarations(&blocks).1;
+                    assert_eq!(
+                        resolve_plan_batch(&[], &batch).is_err(),
+                        diagnostics.iter().any(|items| !items.is_empty()),
+                        "dependencies={dependencies:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolver_reports_the_first_duplicate_in_batch_order() {
+        let batch = ["z", "z", "a", "a"].map(|key| normalized(key, &[]));
+        assert_eq!(
+            resolve_plan_batch(&[], &batch).unwrap_err(),
+            "duplicate key `z` in batch"
+        );
+    }
+
+    #[test]
+    fn normalized_declaration_gate_round_trips_and_invalid_json_fails() {
+        let mut task = normalized("a", &[]);
+        task.gate_json = Some(r#"{"steps":[{"name":"test","cmd":"cargo test"}]}"#.into());
+        let declaration = declaration_from_normalized(&task).expect("valid gate JSON");
+        assert_eq!(declaration.gate.unwrap().steps[0].cmd, "cargo test");
+
+        task.gate_json = Some("{".into());
+        let error = declaration_from_normalized(&task).unwrap_err();
+        assert!(error.contains("invalid normalized gate_json"), "{error}");
+    }
+
+    #[test]
+    fn resolver_refactor_preserves_legacy_error_order_and_outcomes() {
+        let cases = [
+            (
+                vec![normalized("a", &[]), normalized("a", &[])],
+                "duplicate key `a` in batch",
+            ),
+            (
+                vec![normalized("a", &["missing"])],
+                "task a: unknown dependency `missing`",
+            ),
+            (
+                vec![normalized("a", &["b"]), normalized("b", &["a"])],
+                "dependency cycle: a -> b -> a",
+            ),
+        ];
+        for (batch, legacy_error) in cases {
+            let error = resolve_plan_batch(&[], &batch).expect_err("legacy-invalid batch");
+            assert!(error.starts_with(legacy_error), "{error}");
+        }
+        assert_eq!(
+            resolve_plan_batch(&[], &[normalized("a", &[])]),
+            Ok(vec![PlanOutcome::Created])
+        );
     }
 
     // -------------------------------------------------------- rule 5: mutability

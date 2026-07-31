@@ -175,7 +175,7 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn kinds_returns_all_four_schemas() {
+async fn kinds_returns_all_five_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -193,7 +193,7 @@ async fn kinds_returns_all_four_schemas() {
         .iter()
         .map(|k| k.get("kind").and_then(Value::as_str).unwrap())
         .collect();
-    assert_eq!(names, ["prose", "chart.candles", "table", "app"]);
+    assert_eq!(names, ["prose", "chart.candles", "table", "app", "task"]);
     for kind in kinds {
         assert_eq!(
             kind.pointer("/schema/type").and_then(Value::as_str),
@@ -216,6 +216,20 @@ async fn kinds_returns_all_four_schemas() {
     assert_eq!(
         chart.pointer("/schema/required").unwrap(),
         &json!(["symbol", "candles"]),
+    );
+    let task = &kinds[4];
+    assert_eq!(
+        task.pointer("/schema/properties/context/$ref"),
+        Some(&json!("#/$defs/contextValue"))
+    );
+    assert_eq!(
+        task.pointer("/schema/$defs/contextValue/oneOf/0/maxLength"),
+        Some(&json!(calm_types::report_blocks::MAX_STRING_CHARS))
+    );
+    assert!(
+        task["usage"]
+            .as_str()
+            .is_some_and(|usage| usage.contains("context") && usage.contains("2048"))
     );
     assert_eq!(
         chart
@@ -242,6 +256,15 @@ async fn kinds_returns_all_four_schemas() {
         app.pointer("/schema/properties/height/maximum")
             .and_then(Value::as_u64),
         Some(2000),
+    );
+    let task = &kinds[4];
+    assert_eq!(
+        task.pointer("/schema/additionalProperties"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        task.pointer("/schema/properties/declared_by/enum"),
+        Some(&json!(["spec"]))
     );
 
     // #960 PR3 review round 1: advertised limits mirror the Rust
