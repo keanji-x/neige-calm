@@ -223,9 +223,6 @@ async fn run_serve(
     // developer debugging tool, not an externally reachable surface,
     // and binding the same `4040` port as the real server means the
     // dev frontend (same-origin) doesn't need CORS anyway.
-    let rest_routes = calm_server::routes::router().layer(axum::middleware::from_fn(
-        calm_server::actor::actor_middleware,
-    ));
     // Dev-only `POST /dev/reset` sub-router. Lives outside the REST
     // sub-router so it (a) doesn't pick up the actor middleware (the
     // reset is conceptually a fresh boot, not an audited write), and
@@ -257,10 +254,11 @@ async fn run_serve(
     // to appear). Mount `auth::router` here with `dev_autologin = true`
     // so every request is auto-promoted to owner and whoami returns 200
     // without a session cookie — replay is dev/test-only, exactly the
-    // surface dev_autologin is meant for. The `require_session`
-    // middleware is intentionally NOT attached: the legacy combined
-    // `routes::router()` was always reachable without a session and the
-    // a11y suite relies on that no-auth surface for direct REST drives.
+    // surface dev_autologin is meant for. Attach `require_session` to
+    // the REST subtree so handlers that extract `Principal` behave as
+    // they do in production. Because dev_autologin always resolves an
+    // owner principal, the middleware remains non-blocking and every
+    // replay REST drive continues to work without a session cookie.
     let replay_auth_config = AuthConfig {
         username: None,
         password: None,
@@ -268,6 +266,14 @@ async fn run_serve(
         display_name: DEFAULT_DISPLAY_NAME.to_string(),
     };
     let replay_auth_state = AuthState::new(replay_auth_config);
+    let rest_routes = calm_server::routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            replay_auth_state.clone(),
+            calm_server::auth::require_session,
+        ));
     let auth_router = calm_server::auth::router().with_state(replay_auth_state);
     let app = axum::Router::new()
         .merge(rest_routes)

@@ -22,7 +22,7 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use calm_server::actor::{actor_middleware, require_loopback_connect_info};
-use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
+use calm_server::auth::{self, AuthConfig, AuthState, Principal, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
@@ -775,6 +775,35 @@ async fn dev_autologin_lets_every_request_through() {
             Request::builder()
                 .method("GET")
                 .uri("/api/coves")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn dev_autologin_injects_principal_without_cookie() {
+    async fn principal_required(_principal: Principal) -> StatusCode {
+        StatusCode::OK
+    }
+
+    let auth_state = dev_auth_state();
+    let app = axum::Router::new()
+        .route(
+            "/principal-required",
+            axum::routing::get(principal_required),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            auth::require_session,
+        ));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/principal-required")
                 .body(Body::empty())
                 .unwrap(),
         )
