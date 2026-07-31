@@ -1,6 +1,6 @@
 //! Extraction of typed `neige://` links from report markdown.
 
-use pulldown_cmark::{Event, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 const WAVE_LINK_PREFIX: &str = "neige://wave/";
 
@@ -17,22 +17,24 @@ struct PendingLink {
     label: String,
 }
 
-/// Return valid report links in document order.
-pub fn extract_links(markdown: &str) -> Vec<ReportLinkRef> {
-    let mut links = Vec::new();
-    visit_links(markdown, |link| {
-        links.push(link);
-        true
-    });
-    links
-}
-
 /// Visit valid report links in document order, stopping parsing when the
 /// visitor returns `false`. Returns whether the entire markdown was scanned.
-pub fn visit_links(markdown: &str, mut visitor: impl FnMut(ReportLinkRef) -> bool) -> bool {
+pub fn visit_links(markdown: &str, visitor: impl FnMut(ReportLinkRef) -> bool) -> bool {
+    let opts = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+    visit_links_with_options(markdown, opts, visitor)
+}
+
+fn visit_links_with_options(
+    markdown: &str,
+    opts: Options,
+    mut visitor: impl FnMut(ReportLinkRef) -> bool,
+) -> bool {
     let mut pending = None;
 
-    for event in Parser::new(markdown) {
+    for event in Parser::new_ext(markdown, opts) {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) => {
                 pending =
@@ -96,20 +98,38 @@ fn is_block_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn collect_links(markdown: &str) -> Vec<ReportLinkRef> {
+        let mut links = Vec::new();
+        assert!(visit_links(markdown, |link| {
+            links.push(link);
+            true
+        }));
+        links
+    }
+
+    fn collect_links_with_options(markdown: &str, opts: Options) -> Vec<ReportLinkRef> {
+        let mut links = Vec::new();
+        assert!(visit_links_with_options(markdown, opts, |link| {
+            links.push(link);
+            true
+        }));
+        links
+    }
+
     #[test]
     fn fenced_code_block_is_not_a_link() {
         let markdown = "```markdown\n[x](neige://wave/w1)\n```\n";
-        assert!(extract_links(markdown).is_empty());
+        assert!(collect_links(markdown).is_empty());
     }
 
     #[test]
     fn inline_code_span_is_not_a_link() {
-        assert!(extract_links("`[x](neige://wave/w1)`").is_empty());
+        assert!(collect_links("`[x](neige://wave/w1)`").is_empty());
     }
 
     #[test]
     fn reference_style_link_is_extracted() {
-        let links = extract_links("[x][ref]\n\n[ref]: neige://wave/w1#b_1f3a\n");
+        let links = collect_links("[x][ref]\n\n[ref]: neige://wave/w1#b_1f3a\n");
         assert_eq!(
             links,
             [ReportLinkRef {
@@ -122,7 +142,7 @@ mod tests {
 
     #[test]
     fn autolink_is_extracted() {
-        let links = extract_links("<neige://wave/w1>");
+        let links = collect_links("<neige://wave/w1>");
         assert_eq!(
             links,
             [ReportLinkRef {
@@ -135,21 +155,21 @@ mod tests {
 
     #[test]
     fn wave_id_is_the_exact_path_segment() {
-        let links = extract_links("[x](neige://wave/abc-def)");
+        let links = collect_links("[x](neige://wave/abc-def)");
         assert_eq!(links[0].dst_wave_id, "abc-def");
         assert_ne!(links[0].dst_wave_id, "abc");
     }
 
     #[test]
     fn markdown_without_neige_links_is_empty() {
-        assert!(extract_links("[web](https://example.com) and [local](/wave/w1)").is_empty());
+        assert!(collect_links("[web](https://example.com) and [local](/wave/w1)").is_empty());
     }
 
     #[test]
     fn invalid_fragment_degrades_to_whole_report_link() {
         for fragment in ["b_1F3a", "b_123", "b_12345", "section", "b_1f3a#tail"] {
             let markdown = format!("[x](neige://wave/w1#{fragment})");
-            let links = extract_links(&markdown);
+            let links = collect_links(&markdown);
             assert_eq!(links[0].dst_block_id, None, "{fragment}");
         }
     }
@@ -161,13 +181,13 @@ mod tests {
             "[slash](neige://wave/a/b)",
             "[other](neige://card/w1)",
         ] {
-            assert!(extract_links(markdown).is_empty(), "{markdown}");
+            assert!(collect_links(markdown).is_empty(), "{markdown}");
         }
     }
 
     #[test]
     fn links_preserve_document_order_and_text_labels() {
-        let links = extract_links(
+        let links = collect_links(
             "[first *emphasis*](neige://wave/w1) then [second `code`](neige://wave/w2)",
         );
         assert_eq!(
@@ -191,5 +211,85 @@ mod tests {
         );
         assert!(!completed);
         assert_eq!(visited, ["w1"]);
+    }
+
+    #[test]
+    fn gfm_options_change_only_footnote_definition_link_extraction() {
+        struct Case {
+            name: &'static str,
+            markdown: &'static str,
+            default_label: Option<&'static str>,
+            gfm_label: Option<&'static str>,
+        }
+
+        let cases = [
+            Case {
+                name: "table cell",
+                markdown: "| link |\n| --- |\n| [x](neige://wave/w1) |",
+                default_label: Some("x"),
+                gfm_label: Some("x"),
+            },
+            Case {
+                name: "footnote definition",
+                markdown: "[^a]: [n](neige://wave/w1)",
+                default_label: None,
+                gfm_label: Some("n"),
+            },
+            Case {
+                name: "strikethrough",
+                markdown: "~~[x](neige://wave/w1)~~",
+                default_label: Some("x"),
+                gfm_label: Some("x"),
+            },
+            Case {
+                name: "task list item",
+                markdown: "- [ ] [x](neige://wave/w1)",
+                default_label: Some("x"),
+                gfm_label: Some("x"),
+            },
+            Case {
+                name: "angle autolink",
+                markdown: "<neige://wave/w1>",
+                default_label: Some("neige://wave/w1"),
+                gfm_label: Some("neige://wave/w1"),
+            },
+            Case {
+                name: "bare URI",
+                markdown: "neige://wave/w1",
+                default_label: None,
+                gfm_label: None,
+            },
+        ];
+        let gfm_options = Options::ENABLE_TABLES
+            | Options::ENABLE_FOOTNOTES
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_TASKLISTS;
+
+        for case in cases {
+            let default_links = collect_links_with_options(case.markdown, Options::empty());
+            let gfm_links = collect_links_with_options(case.markdown, gfm_options);
+            let expected_links = |label: Option<&str>| {
+                label
+                    .map(|label| ReportLinkRef {
+                        dst_wave_id: "w1".into(),
+                        dst_block_id: None,
+                        label: label.into(),
+                    })
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                default_links,
+                expected_links(case.default_label),
+                "{} with default options",
+                case.name
+            );
+            assert_eq!(
+                gfm_links,
+                expected_links(case.gfm_label),
+                "{} with GFM options",
+                case.name
+            );
+        }
     }
 }
