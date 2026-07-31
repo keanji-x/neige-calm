@@ -1696,8 +1696,7 @@ select:-webkit-autofill {
   min-height: 0;
 }
 
-/* Report page shell (#975). The zero-width third track is reserved for the
-   conversation drawer added by the next slice. */
+/* Report page shell (#975). */
 .report-page {
   position: relative;
   flex: 1 1 auto;
@@ -1712,12 +1711,24 @@ select:-webkit-autofill {
 .report-page--rail-collapsed {
   grid-template-columns: 44px minmax(0, 1fr) 0;
 }
+.report-page--conversation-open {
+  grid-template-columns: 250px minmax(0, 1fr) 396px;
+}
+.report-page--rail-collapsed.report-page--conversation-open {
+  grid-template-columns: 44px minmax(0, 1fr) 396px;
+}
 .report-center {
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.report-document-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  outline-offset: -2px;
 }
 /* One left edge runs the whole page (#960 PR3): the document container is
    748px; prose (and the doc head) narrow to 616px flush-left inside it,
@@ -2689,19 +2700,90 @@ select:-webkit-autofill {
   overflow: visible;
   padding: var(--space-1) var(--space-0);
 }
-/* Conversation-as-document (#654). The report column toggles between the
-   report document and a conversation document; both share the 640px column
-   and its typographic rhythm. The chrome is three flex rows inside
-   .report-center: tabs head, scrollable document, pinned input line. */
+/* Conversation drawer (#654/#975). It stays mounted at width zero so drafts
+   and in-flight cross-card guards survive close/open cycles. */
+.report-conversation-drawer {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.report-conversation-drawer-panel {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid transparent;
+  background: var(--paper);
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    border-color var(--motion-quick),
+    visibility 0s linear var(--motion-medium);
+}
+.report-conversation-drawer--open .report-conversation-drawer-panel {
+  border-left-color: var(--hairline);
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+.report-conversation-toggle {
+  position: absolute;
+  z-index: var(--z-raised);
+  top: 50%;
+  left: -29px;
+  width: 29px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  padding: var(--space-0);
+  border: 1px solid var(--hairline);
+  border-right: none;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  background: var(--paper);
+  color: var(--text-3);
+  transform: translateY(-50%);
+  transition:
+    background var(--motion-quick),
+    color var(--motion-quick);
+  pointer-events: auto;
+}
+.report-conversation-toggle svg {
+  transform: rotate(180deg);
+  transition: transform var(--motion-medium) ease;
+}
+.report-conversation-drawer--open .report-conversation-toggle svg {
+  transform: rotate(0deg);
+}
+.report-conversation-toggle:hover:not(:disabled) {
+  background: var(--overlay-hover);
+  color: var(--text);
+}
+.report-conversation-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.report-conversation-toggle:disabled {
+  color: var(--text-4);
+  cursor: not-allowed;
+}
+.report-convo {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .report-convo-head {
   flex: 0 0 auto;
 }
 .report-convo-head-inner,
 .report-convo-inputbar-inner {
   width: 100%;
-  max-width: 640px;
   margin: var(--space-0) auto;
-  padding: var(--space-0) calc(var(--space-12) + var(--space-4));
+  padding: var(--space-0) var(--space-7);
 }
 .report-convo-head-inner {
   display: flex;
@@ -2711,36 +2793,14 @@ select:-webkit-autofill {
   padding-top: var(--space-7);
   border-bottom: 1px solid var(--hairline);
 }
-.report-convo-tabs {
-  display: inline-flex;
-  gap: var(--space-9);
-  /* stylelint-disable-next-line declaration-property-value-disallowed-list -- active tab underline sits on the head hairline */
-  margin-bottom: -1px;
-}
-.report-convo-tab {
-  padding: var(--space-2) var(--space-0) var(--space-3);
-  border-bottom: 1px solid transparent;
-  color: var(--text-3);
-  font-size: var(--text-sm);
-  letter-spacing: var(--tracking-wide);
-  transition:
-    color var(--motion-quick),
-    border-color var(--motion-quick);
-}
-.report-convo-tab:hover:not(:disabled) {
-  color: var(--text-2);
-}
-.report-convo-tab[aria-pressed="true"],
-.report-convo-tab[aria-pressed="true"]:hover {
+.report-convo-head-inner h2 {
+  min-width: 0;
+  margin: var(--space-0);
   color: var(--text);
-  border-bottom-color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-normal);
 }
-.report-convo-tab:disabled {
-  color: var(--text-4);
-  cursor: default;
-  pointer-events: none;
-}
-.report-convo-tab:focus-visible,
 .report-convo-send:focus-visible,
 .report-convo-reset:focus-visible,
 .report-convo-stop:focus-visible,
@@ -2844,12 +2904,11 @@ select:-webkit-autofill {
 }
 .report-convo-doc {
   width: 100%;
-  max-width: 640px;
   margin: var(--space-0) auto;
   padding:
-    var(--space-10)
-    calc(var(--space-12) + var(--space-4))
-    var(--space-12);
+    var(--space-8)
+    var(--space-7)
+    var(--space-10);
 }
 .report-convo-doc > * {
   margin-top: var(--space-9);
@@ -3147,31 +3206,57 @@ select:-webkit-autofill {
   .report-page--rail-collapsed {
     grid-template-columns: minmax(0, 1fr);
   }
+  .report-page--conversation-open,
+  .report-page--rail-collapsed.report-page--conversation-open {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .report-center {
     /* Block flow on narrow: the page (not the column) is the scroll
        container, so the flex-row split would fight grid row sizing. */
     display: block;
     overflow: visible;
   }
+  .report-document-scroll {
+    overflow: visible;
+  }
   .report-doc {
     padding: var(--space-10) var(--space-8) var(--space-12);
   }
-  .report-convo-head-inner,
-  .report-convo-inputbar-inner {
-    padding-left: var(--space-8);
-    padding-right: var(--space-8);
-  }
-  .report-convo-doc {
-    padding: var(--space-9) var(--space-8) var(--space-10);
-  }
-  .report-convo-scroll {
-    overflow: visible;
-  }
-  .report-convo-inputbar {
-    position: sticky;
-    bottom: var(--space-0);
+  .report-conversation-drawer {
+    position: absolute;
     z-index: var(--z-raised);
-    background: var(--bg);
+    right: var(--space-0);
+    bottom: var(--space-0);
+    left: var(--space-0);
+    max-height: 58vh;
+  }
+  .report-conversation-drawer-panel {
+    max-height: 58vh;
+    overflow: auto;
+    border-top: 1px solid transparent;
+    border-left: none;
+    box-shadow: var(--shadow);
+    height: 58vh;
+  }
+  .report-conversation-drawer--open .report-conversation-drawer-panel {
+    border-top-color: var(--hairline);
+  }
+  .report-conversation-toggle {
+    top: -29px;
+    left: auto;
+    right: var(--space-5);
+    width: 52px;
+    height: 29px;
+    border-right: 1px solid var(--hairline);
+    border-bottom: none;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    transform: none;
+  }
+  .report-conversation-toggle svg {
+    transform: rotate(-90deg);
+  }
+  .report-conversation-drawer--open .report-conversation-toggle svg {
+    transform: rotate(90deg);
   }
   .report-rail {
     max-height: 30vh;

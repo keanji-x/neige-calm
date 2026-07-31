@@ -106,6 +106,8 @@ const REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY =
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
   'calm:report-rail:backlinks:collapsed';
 const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
+const REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY =
+  'calm:report-conversation:collapsed';
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
@@ -277,8 +279,8 @@ describe('WaveReportPage', () => {
     );
   });
 
-  it('renders the wave title and markdown body for one report card', () => {
-    render(
+  it('renders the report in its own focusable scroll root', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
         cards={[reportSlot('The **answer** is ready.')]}
@@ -289,6 +291,13 @@ describe('WaveReportPage', () => {
       screen.getByRole('heading', { level: 1, name: 'Spec wave' }),
     ).toBeInTheDocument();
     expect(screen.getByText('answer').tagName).toBe('STRONG');
+    const scrollRoot = screen.getByLabelText('Report document');
+    expect(scrollRoot).toHaveClass('report-document-scroll');
+    expect(scrollRoot).toHaveAttribute('tabindex', '0');
+    expect(scrollRoot.parentElement).toHaveClass('report-center');
+    expect(container.querySelector('.report-doc')?.parentElement).toBe(
+      scrollRoot,
+    );
   });
 
   it('renders derived prose blocks when present', () => {
@@ -781,7 +790,8 @@ describe('WaveReportPage', () => {
     expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
     const page = container.querySelector('.report-page');
     expect(page?.firstElementChild).toBe(rail);
-    expect(page?.lastElementChild).toHaveClass('report-center');
+    expect(page?.children[1]).toHaveClass('report-center');
+    expect(page?.lastElementChild).toHaveClass('report-conversation-drawer');
   });
 
   it('derives referenced documents in first-seen order and marks missing waves', () => {
@@ -1755,24 +1765,24 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('fallback').tagName).toBe('STRONG');
   });
 
-  it('renders the conversation tab and input line when a spec card exists', () => {
-    render(
+  it('renders the conversation drawer closed by default with the report beside it', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
         cards={[specSlot(), reportSlot('Report with chat')]}
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Conversation' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
+    expect(screen.getByRole('button', { name: 'Open conversation drawer' })).toBeEnabled();
+    expect(container.querySelector('.report-page')).not.toHaveClass(
+      'report-page--conversation-open',
     );
+    expect(screen.getByText('Report with chat')).toBeInTheDocument();
     expect(screen.getByLabelText('Ask the Spec Agent')).toBeInTheDocument();
   });
 
-  it('switches the column to the conversation document from the tab', () => {
-    render(
+  it('opens the drawer without unmounting the report document', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
         cards={[specSlot(), reportSlot('Report with chat')]}
@@ -1781,19 +1791,18 @@ describe('WaveReportPage', () => {
 
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation drawer' }),
+    );
 
-    expect(
-      screen.getByLabelText('Conversation'),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Report with chat')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Report' }));
-
+    expect(container.querySelector('.report-page')).toHaveClass(
+      'report-page--conversation-open',
+    );
+    expect(screen.getByLabelText('Conversation')).toBeInTheDocument();
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
   });
 
-  it('disables the conversation tab and hides the input when no spec card exists', () => {
+  it('marks the drawer unavailable and omits the composer without a spec card', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -1801,44 +1810,62 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Conversation' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Conversation unavailable' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText('Spec Agent is unavailable for this wave.'),
+    ).toBeInTheDocument();
     expect(
       screen.queryByLabelText('Ask the Spec Agent'),
     ).not.toBeInTheDocument();
   });
 
-  it('stays on the report view when the spec card disappears and reappears', () => {
-    const wave = makeWave();
-    const { rerender } = render(
+  it('keeps the draft alive when the drawer closes and reopens', () => {
+    render(
       <WaveReportPage
-        wave={wave}
+        wave={makeWave()}
         cards={[specSlot(), reportSlot('Report with chat')]}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
-    expect(screen.getByLabelText('Conversation')).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation drawer' }),
+    );
+    const draft = screen.getByLabelText('Ask the Spec Agent');
+    fireEvent.change(draft, { target: { value: 'Persistent draft' } });
 
-    // Spec card disappears: the column falls back to the report document.
-    rerender(
-      <WaveReportPage wave={wave} cards={[reportSlot('Report with chat')]} />,
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close conversation drawer' }),
     );
-    expect(screen.getByText('Report with chat')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Ask the Spec Agent')).toBe(draft);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation drawer' }),
+    );
+    expect(screen.getByLabelText('Ask the Spec Agent')).toHaveValue(
+      'Persistent draft',
+    );
+  });
 
-    // Reappearance must not snap back to the stale conversation view.
-    rerender(
-      <WaveReportPage
-        wave={wave}
-        cards={[specSlot(), reportSlot('Report with chat')]}
-      />,
+  it('persists the drawer state across remounts', () => {
+    const props = {
+      wave: makeWave(),
+      cards: [specSlot(), reportSlot('Report with chat')],
+    };
+    const first = render(<WaveReportPage {...props} />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation drawer' }),
     );
-    expect(screen.getByText('Report with chat')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(
+      window.localStorage.getItem(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY),
+    ).toBe('false');
+
+    first.unmount();
+    render(<WaveReportPage {...props} />);
+    expect(
+      screen.getByRole('button', { name: 'Close conversation drawer' }),
+    ).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('renders backlinks grouped by source wave with source block anchors', () => {

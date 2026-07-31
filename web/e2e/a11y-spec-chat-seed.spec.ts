@@ -62,8 +62,9 @@ test.describe('spec chat seed path (#676 pin)', () => {
 
     // The liveness UI lives in conversation mode (the header chip + stop
     // affordances render only there).
-    await page.getByRole('button', { name: 'Conversation', exact: true }).click();
-    await expect(page.getByLabel('Conversation', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open conversation drawer' }).click();
+    await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
+      .toHaveClass(/report-conversation-drawer--open/);
 
     // #676 pin — the Stop chip in the conversation header.
     await expect(
@@ -94,8 +95,9 @@ test.describe('spec chat seed path (#676 pin)', () => {
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec seed test' }),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Conversation', exact: true }).click();
-    await expect(page.getByLabel('Conversation', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open conversation drawer' }).click();
+    await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
+      .toHaveClass(/report-conversation-drawer--open/);
 
     // The chip seeds Idle from the same read…
     const chip = page.locator('.report-convo-state');

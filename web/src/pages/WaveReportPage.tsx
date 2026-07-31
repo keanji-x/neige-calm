@@ -25,7 +25,7 @@ import {
   reportUrlTransform,
 } from './report-blocks';
 import { useWaveFsViewer } from '../wave-fs-viewers';
-import { SpecConversation, type ReportView } from './SpecConversation';
+import { SpecConversation } from './SpecConversation';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { deriveOutline, type ReportOutlineItem } from './report-outline';
 import { deriveInterimReportOutlinks } from './report-outlinks-interim';
@@ -49,6 +49,8 @@ const REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY =
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
   'calm:report-rail:backlinks:collapsed';
 const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
+const REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY =
+  'calm:report-conversation:collapsed';
 
 type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
 type ReportCardSlot = CardSlot & { card: WaveReportCardData };
@@ -94,6 +96,18 @@ function readRailSectionCollapsed(key: string): boolean {
     return window.localStorage.getItem(key) === 'true';
   } catch {
     return false;
+  }
+}
+
+function readConversationCollapsed(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const stored = window.localStorage.getItem(
+      REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY,
+    );
+    return stored == null ? true : stored === 'true';
+  } catch {
+    return true;
   }
 }
 
@@ -601,11 +615,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
-  const [view, setView] = useState<ReportView>('report');
   const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
-  const [lastSpecCardId, setLastSpecCardId] = useState<string | null>(
-    specCardId,
-  );
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
@@ -617,6 +627,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   );
   const [filesCollapsed, setFilesCollapsed] = useState(() =>
     readRailSectionCollapsed(REPORT_FILES_COLLAPSED_STORAGE_KEY),
+  );
+  const [conversationCollapsed, setConversationCollapsed] = useState(() =>
+    readConversationCollapsed(),
   );
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const backlinksQ = useWaveBacklinksQuery(wave.id);
@@ -634,15 +647,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   if (lastWaveId !== wave.id) {
     setLastWaveId(wave.id);
     setSelectedFilePath('report.md');
-    setView('report');
-  }
-
-  // When the spec card disappears, drop the stale conversation view so a
-  // later card reappearance does not snap back to conversation (and steal
-  // focus into its input).
-  if (lastSpecCardId !== specCardId) {
-    setLastSpecCardId(specCardId);
-    if (specCardId == null) setView('report');
   }
 
   const toggleReportRailCollapsed = () => {
@@ -655,6 +659,14 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const toggleHiddenFiles = () => {
     setShowHiddenFiles((current) => !current);
   };
+  const toggleConversationCollapsed = () => {
+    setConversationCollapsed((current) => {
+      const next = !current;
+      writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, next);
+      return next;
+    });
+  };
+  const conversationOpen = !conversationCollapsed && specCardId != null;
 
   const railCollapseButton = (
     <button
@@ -674,7 +686,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   return (
     <div
       className={
-        'report-page' + (reportRailCollapsed ? ' report-page--rail-collapsed' : '')
+        'report-page' +
+        (reportRailCollapsed ? ' report-page--rail-collapsed' : '') +
+        (conversationOpen ? ' report-page--conversation-open' : '')
       }
     >
       <aside
@@ -773,8 +787,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
                   selectedPath={selectedFilePath}
                   onSelectedPathChange={(path) => {
                     setSelectedFilePath(path ?? 'report.md');
-                    // Selecting a file always shows the document view.
-                    setView('report');
                   }}
                   ariaLabel="Wave files"
                   showHidden={showHiddenFiles}
@@ -788,10 +800,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         )}
       </aside>
       <section className="report-center" aria-label="Report">
-        <SpecConversation
-          specCardId={specCardId}
-          view={specCardId == null ? 'report' : view}
-          onViewChange={setView}
+        <div
+          className="report-document-scroll"
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable report document must be keyboard-focusable.
+          tabIndex={0}
+          aria-label="Report document"
         >
           <article className="report-doc">
             {reportSlots.length > 1 && (
@@ -815,8 +828,50 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
               <ReportEmptyState />
             )}
           </article>
-        </SpecConversation>
+        </div>
       </section>
+      <aside
+        className={
+          'report-conversation-drawer' +
+          (conversationOpen ? ' report-conversation-drawer--open' : '')
+        }
+        aria-label="Conversation drawer"
+      >
+        <button
+          type="button"
+          className="report-conversation-toggle"
+          aria-controls="report-conversation-panel"
+          aria-expanded={conversationOpen}
+          aria-label={
+            specCardId == null
+              ? 'Conversation unavailable'
+              : conversationOpen
+                ? 'Close conversation drawer'
+                : 'Open conversation drawer'
+          }
+          title={
+            specCardId == null
+              ? 'Spec Agent unavailable'
+              : conversationOpen
+                ? 'Close conversation'
+                : 'Open conversation'
+          }
+          disabled={specCardId == null}
+          onClick={toggleConversationCollapsed}
+        >
+          <ChevronIcon />
+        </button>
+        <div
+          id="report-conversation-panel"
+          className="report-conversation-drawer-panel"
+          aria-hidden={!conversationOpen}
+        >
+          <SpecConversation
+            specCardId={specCardId}
+            drawerOpen={conversationOpen}
+          />
+        </div>
+      </aside>
     </div>
   );
 }

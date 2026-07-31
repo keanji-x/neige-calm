@@ -16,12 +16,7 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useState } from '../shared/state';
-import {
-  SpecConversation,
-  resolveScrollTarget,
-  type ReportView,
-} from './SpecConversation';
+import { SpecConversation } from './SpecConversation';
 
 const PAGE_LIMIT = 300;
 
@@ -446,26 +441,22 @@ async function emitHarnessItemAdded(
 
 function Harness({
   specCardId = 'card_spec_1',
-  initialView = 'conversation',
+  drawerOpen = true,
 }: {
   specCardId?: string | null;
-  initialView?: ReportView;
+  drawerOpen?: boolean;
 }) {
-  const [view, setView] = useState<ReportView>(initialView);
   return (
     <SpecConversation
       specCardId={specCardId}
-      view={view}
-      onViewChange={setView}
-    >
-      <article data-testid="report-body">Report body</article>
-    </SpecConversation>
+      drawerOpen={drawerOpen}
+    />
   );
 }
 
 /** Render and flush the `GET /spec/run` phase seed fetch. */
 async function renderHarness(
-  props: { specCardId?: string | null; initialView?: ReportView } = {},
+  props: { specCardId?: string | null; drawerOpen?: boolean } = {},
 ) {
   const view = render(<Harness {...props} />);
   await act(async () => {});
@@ -514,44 +505,24 @@ describe('SpecConversation', () => {
     mocks.streamListeners.clear();
   });
 
-  it('switches between report and conversation documents via tabs', async () => {
-    const user = userEvent.setup();
-    await renderHarness({ initialView: 'report' });
+  it('renders the conversation transcript without report/conversation tabs', async () => {
+    await renderHarness();
 
-    expect(screen.getByTestId('report-body')).toBeInTheDocument();
-    expect(
-      screen.queryByLabelText('Conversation'),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Conversation' }));
-
-    expect(
-      screen.getByLabelText('Conversation'),
-    ).toBeInTheDocument();
-    expect(screen.queryByTestId('report-body')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Conversation' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Report' }));
-    expect(screen.getByTestId('report-body')).toBeInTheDocument();
+    expect(screen.getByLabelText('Conversation')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Conversation' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Report' })).not.toBeInTheDocument();
   });
 
-  it('shows the status chip and Reset only in conversation mode', async () => {
-    const user = userEvent.setup();
-    await renderHarness({ initialView: 'report' });
+  it('shows the status chip and Reset only while the drawer is open', async () => {
+    const { rerender } = await renderHarness({ drawerOpen: false });
 
     expect(screen.queryByText('Idle')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Reset spec session' }),
     ).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Conversation' }));
+    rerender(<Harness drawerOpen />);
+    await act(async () => {});
 
     // The chip shows the seeded harness phase — the status overlay never
     // publishes for spec cards (#668 fix).
@@ -582,11 +553,10 @@ describe('SpecConversation', () => {
     expect(chip).toHaveClass('report-convo-state');
   });
 
-  it('focuses the input when entering conversation mode', async () => {
-    const user = userEvent.setup();
-    await renderHarness({ initialView: 'report' });
+  it('focuses the input when the drawer opens', async () => {
+    const { rerender } = await renderHarness({ drawerOpen: false });
 
-    await user.click(screen.getByRole('button', { name: 'Conversation' }));
+    rerender(<Harness drawerOpen />);
 
     await waitFor(() => {
       expect(draftBox()).toHaveFocus();
@@ -600,35 +570,16 @@ describe('SpecConversation', () => {
     );
   });
 
-  it('keeps the draft when toggling between report and conversation', async () => {
+  it('keeps the draft when the persistently mounted drawer closes and reopens', async () => {
     const user = userEvent.setup();
-    await renderHarness({ initialView: 'report' });
+    const { rerender } = await renderHarness();
 
     await user.type(draftBox(), 'Persistent draft');
-    await user.click(screen.getByRole('button', { name: 'Conversation' }));
+    rerender(<Harness drawerOpen={false} />);
     expect(draftBox()).toHaveValue('Persistent draft');
 
-    await user.click(screen.getByRole('button', { name: 'Report' }));
+    rerender(<Harness drawerOpen />);
     expect(draftBox()).toHaveValue('Persistent draft');
-  });
-
-  it('sends from report mode and auto-switches to conversation', async () => {
-    const user = userEvent.setup();
-    await renderHarness({ initialView: 'report' });
-
-    await user.type(draftBox(), 'From the report');
-    await user.keyboard('{Enter}');
-
-    await waitFor(() => {
-      expect(mocks.sendSpecInput).toHaveBeenCalledWith(
-        'card_spec_1',
-        'From the report',
-      );
-    });
-    expect(
-      screen.getByLabelText('Conversation'),
-    ).toBeInTheDocument();
-    expect(draftBox()).toHaveValue('');
   });
 
   it('submits textarea input with Enter and clears the draft', async () => {
@@ -773,22 +724,12 @@ describe('SpecConversation', () => {
     expect(draftBox()).toHaveValue('hello B');
   });
 
-  it('disables the Conversation tab and hides the input when no spec card exists', async () => {
-    await renderHarness({ specCardId: null, initialView: 'report' });
+  it('renders an unavailable empty state and no composer without a spec card', async () => {
+    await renderHarness({ specCardId: null });
 
-    expect(screen.getByRole('button', { name: 'Conversation' })).toBeDisabled();
+    expect(screen.getByText('Spec Agent is unavailable for this wave.')).toBeInTheDocument();
     expect(
       screen.queryByLabelText('Ask the Spec Agent'),
-    ).not.toBeInTheDocument();
-    expect(screen.getByTestId('report-body')).toBeInTheDocument();
-  });
-
-  it('falls back to the report document when view is conversation without a spec card', async () => {
-    await renderHarness({ specCardId: null, initialView: 'conversation' });
-
-    expect(screen.getByTestId('report-body')).toBeInTheDocument();
-    expect(
-      screen.queryByLabelText('Conversation'),
     ).not.toBeInTheDocument();
   });
 
@@ -1213,32 +1154,29 @@ describe('SpecConversation', () => {
     });
   });
 
-  it('stops on Esc when no widget has focus (body target)', async () => {
+  it('does not stop on Esc when focus is on the document body', async () => {
     await renderHarness();
     await startTurn();
 
     fireEvent.keyDown(document.body, { key: 'Escape' });
 
-    await waitFor(() => {
-      expect(mocks.interruptSpecCard).toHaveBeenCalledTimes(1);
-    });
+    expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
   });
 
-  it('does not stop on Esc from outside the conversation region', async () => {
+  it('does not stop on Esc from the report document', async () => {
     render(
       <>
-        <button type="button" data-testid="sibling-widget">
-          Sibling widget
-        </button>
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- mirrors the focusable report scroll root. */}
+        <article tabIndex={0} aria-label="Report document" />
         <Harness />
       </>,
     );
     await act(async () => {});
     await startTurn();
 
-    const sibling = screen.getByTestId('sibling-widget');
-    sibling.focus();
-    fireEvent.keyDown(sibling, { key: 'Escape' });
+    const report = screen.getByLabelText('Report document');
+    report.focus();
+    fireEvent.keyDown(report, { key: 'Escape' });
 
     expect(mocks.interruptSpecCard).not.toHaveBeenCalled();
   });
@@ -1683,179 +1621,4 @@ describe('SpecConversation', () => {
     expect(await screen.findByText('Recovered')).toBeInTheDocument();
   });
 
-  it('restores the report reading position after a round-trip through the conversation', async () => {
-    const user = userEvent.setup();
-    await renderHarness({ initialView: 'report' });
-
-    // Make the column its own scroll container (wide layout).
-    const column = screen.getByLabelText('Report document');
-    column.style.overflowY = 'auto';
-    let columnScrollTop = 0;
-    Object.defineProperty(column, 'scrollTop', {
-      configurable: true,
-      get: () => columnScrollTop,
-      set: (value: number) => {
-        columnScrollTop = value;
-      },
-    });
-    Object.defineProperty(column, 'scrollHeight', {
-      configurable: true,
-      value: 3000,
-    });
-    Object.defineProperty(column, 'clientHeight', {
-      configurable: true,
-      value: 600,
-    });
-
-    // Read partway down the report.
-    columnScrollTop = 123;
-    fireEvent.scroll(column);
-
-    await user.click(screen.getByRole('button', { name: 'Conversation' }));
-    await waitFor(() => {
-      expect(column.scrollTop).toBe(3000);
-    });
-
-    await user.click(screen.getByRole('button', { name: 'Report' }));
-    await waitFor(() => {
-      expect(column.scrollTop).toBe(123);
-    });
-  });
-
-  it('follows new messages via the window scroll fallback when the column cannot scroll', async () => {
-    mocks.listHarnessItems.mockResolvedValueOnce([
-      harnessAgentRow(1, 'Initial'),
-    ]);
-
-    // jsdom computes `overflow: visible` on the column (like the ≤980px
-    // layout), so the document scrolling element is the fallback target.
-    const scrollingElement = (document.scrollingElement ??
-      document.documentElement) as HTMLElement;
-    let pageScrollTop = 0;
-    Object.defineProperty(scrollingElement, 'scrollTop', {
-      configurable: true,
-      get: () => pageScrollTop,
-      set: (value: number) => {
-        pageScrollTop = value;
-      },
-    });
-    Object.defineProperty(scrollingElement, 'scrollHeight', {
-      configurable: true,
-      value: 2400,
-    });
-    Object.defineProperty(scrollingElement, 'clientHeight', {
-      configurable: true,
-      value: 800,
-    });
-
-    try {
-      await renderHarness();
-
-      expect(await screen.findByText('Initial')).toBeInTheDocument();
-      await waitFor(() => {
-        expect(scrollingElement.scrollTop).toBe(2400);
-      });
-      // Let the 30ms enter-conversation scroll timer fully elapse so it
-      // cannot re-snap to the bottom after the simulated user scroll.
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      });
-
-      // The reader scrolls the window away from the bottom; the column never
-      // fires its own scroll events, so stick-state must come from here.
-      pageScrollTop = 100;
-      fireEvent.scroll(window);
-
-      mocks.listHarnessItems.mockResolvedValueOnce([
-        harnessAgentRow(2, 'Later'),
-      ]);
-      await emitHarnessItemAdded({
-        item_db_id: 2,
-        item_uuid: 'msg_2',
-        item_type: 'agentMessage',
-      });
-      expect(await screen.findByText('Later')).toBeInTheDocument();
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      });
-      expect(scrollingElement.scrollTop).toBe(100);
-
-      // Back at the bottom, the next message re-sticks via window scroll.
-      pageScrollTop = 1600;
-      fireEvent.scroll(window);
-
-      mocks.listHarnessItems.mockResolvedValueOnce([
-        harnessAgentRow(3, 'Newest'),
-      ]);
-      await emitHarnessItemAdded({
-        item_db_id: 3,
-        item_uuid: 'msg_3',
-        item_type: 'agentMessage',
-      });
-      expect(await screen.findByText('Newest')).toBeInTheDocument();
-      await waitFor(() => {
-        expect(scrollingElement.scrollTop).toBe(2400);
-      });
-    } finally {
-      Reflect.deleteProperty(scrollingElement, 'scrollTop');
-      Reflect.deleteProperty(scrollingElement, 'scrollHeight');
-      Reflect.deleteProperty(scrollingElement, 'clientHeight');
-    }
-  });
-});
-
-describe('resolveScrollTarget', () => {
-  function stubMetrics(
-    node: HTMLElement,
-    { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
-  ) {
-    Object.defineProperty(node, 'scrollHeight', {
-      configurable: true,
-      value: scrollHeight,
-    });
-    Object.defineProperty(node, 'clientHeight', {
-      configurable: true,
-      value: clientHeight,
-    });
-  }
-
-  it('returns the column itself when it is its own scroll container', () => {
-    const column = document.createElement('div');
-    column.style.overflowY = 'auto';
-    stubMetrics(column, { scrollHeight: 1000, clientHeight: 400 });
-    document.body.appendChild(column);
-
-    expect(resolveScrollTarget(column)).toBe(column);
-
-    column.remove();
-  });
-
-  it('falls back to the nearest scrollable ancestor when the column overflow is visible', () => {
-    const page = document.createElement('div');
-    page.style.overflowY = 'auto';
-    stubMetrics(page, { scrollHeight: 2000, clientHeight: 600 });
-    const column = document.createElement('div');
-    stubMetrics(column, { scrollHeight: 600, clientHeight: 600 });
-    page.appendChild(column);
-    document.body.appendChild(page);
-
-    expect(resolveScrollTarget(column)).toBe(page);
-
-    page.remove();
-  });
-
-  it('falls back to the document scrolling element when nothing else scrolls', () => {
-    const column = document.createElement('div');
-    document.body.appendChild(column);
-
-    expect(resolveScrollTarget(column)).toBe(
-      document.scrollingElement ?? document.documentElement,
-    );
-
-    column.remove();
-  });
-
-  it('returns null for a missing column', () => {
-    expect(resolveScrollTarget(null)).toBeNull();
-  });
 });

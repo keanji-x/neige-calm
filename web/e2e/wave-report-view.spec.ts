@@ -99,15 +99,17 @@ test('wave report view renders real report data and report rail controls', async
   ).toBeVisible();
   await expect(page.getByRole('region', { name: 'Backlinks' })).toBeVisible();
 
-  const conversationTab = page.getByRole('button', { name: 'Conversation' });
-  await expect(conversationTab).toBeEnabled();
+  const conversationToggle = page.getByRole('button', {
+    name: 'Open conversation drawer',
+  });
+  await expect(conversationToggle).toBeEnabled();
+
+  // Sending is available only after opening the adjacent drawer.
+  await conversationToggle.click();
+  await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
+    .toHaveClass(/report-conversation-drawer--open/);
 
   const followUp = page.getByRole('textbox', { name: /Ask the Spec Agent/ });
   await followUp.fill('Can you summarize the key risk?');
-  await expect(followUp).toHaveValue('Can you summarize the key risk?');
-
-  // Switching to the conversation document preserves the draft.
-  await conversationTab.click();
-  await expect(page.getByLabel('Conversation', { exact: true })).toBeVisible();
   await expect(followUp).toHaveValue('Can you summarize the key risk?');
 });
