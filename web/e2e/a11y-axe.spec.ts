@@ -224,7 +224,15 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
       headers: { 'content-type': 'application/json' },
     },
   );
-  expect(reportResponse.ok()).toBe(true);
+  if (!reportResponse.ok()) {
+    const reportBody = await reportResponse.text().catch(() => '<unreadable body>');
+    const sourceUrl = `/api/waves/${source.id}`;
+    const sourceResponse = await page.request.get(sourceUrl);
+    const sourceBody = await sourceResponse.text().catch(() => '<unreadable body>');
+    throw new Error(
+      `createAxeBacklinkFixture: POST /api/waves/${source.id}/report → ${reportResponse.status()} ${reportResponse.statusText()}: ${reportBody}; GET ${sourceUrl} → ${sourceResponse.status()} ${sourceResponse.statusText()}: ${sourceBody}`,
+    );
+  }
   await page.goto(`/calm/wave/${wave.id}`);
   await expect(page).toHaveURL(/\/calm\/wave\/[^/]+(\?|$)/);
   return { coveId, waveId: wave.id };
