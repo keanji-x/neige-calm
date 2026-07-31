@@ -214,7 +214,19 @@ mod tests {
     }
 
     #[test]
-    fn gfm_options_change_only_footnote_definition_link_extraction() {
+    fn public_options_extract_footnote_definition_link() {
+        assert_eq!(
+            collect_links("[^a]: [n](neige://wave/w1)"),
+            [ReportLinkRef {
+                dst_wave_id: "w1".into(),
+                dst_block_id: None,
+                label: "n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn gfm_options_add_footnote_definition_links() {
         struct Case {
             name: &'static str,
             markdown: &'static str,
@@ -237,9 +249,15 @@ mod tests {
             },
             Case {
                 name: "strikethrough",
-                markdown: "~~[x](neige://wave/w1)~~",
+                markdown: "[a ~~b~~ c](neige://wave/w1)",
+                default_label: Some("a ~~b~~ c"),
+                gfm_label: Some("a b c"),
+            },
+            Case {
+                name: "footnote-like reference link",
+                markdown: "[x][^r]\n\n[^r]: neige://wave/w1\n",
                 default_label: Some("x"),
-                gfm_label: Some("x"),
+                gfm_label: None,
             },
             Case {
                 name: "task list item",
