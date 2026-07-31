@@ -11,14 +11,29 @@ pub struct ReportLinkRef {
     pub label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScannedLink {
+    pub dst_wave_id: String,
+    pub dst_block_id: Option<String>,
+    pub label: String,
+    pub label_start: usize,
+    pub label_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkScan {
+    pub plain: String,
+    pub links: Vec<ScannedLink>,
+}
+
 struct PendingLink {
     dst_wave_id: String,
     dst_block_id: Option<String>,
-    label: String,
+    label_start: usize,
 }
 
-/// Visit valid report links in document order, stopping parsing when the
-/// visitor returns `false`. Returns whether the entire markdown was scanned.
+/// Visit valid report links in document order, stopping visitation when the
+/// visitor returns `false`. Returns whether every scanned link was visited.
 pub fn visit_links(markdown: &str, visitor: impl FnMut(ReportLinkRef) -> bool) -> bool {
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
@@ -32,44 +47,92 @@ fn visit_links_with_options(
     opts: Options,
     mut visitor: impl FnMut(ReportLinkRef) -> bool,
 ) -> bool {
-    let mut pending = None;
-
-    for event in Parser::new_ext(markdown, opts) {
-        match event {
-            Event::Start(Tag::Link { dest_url, .. }) => {
-                pending =
-                    parse_destination(&dest_url).map(|(dst_wave_id, dst_block_id)| PendingLink {
-                        dst_wave_id,
-                        dst_block_id,
-                        label: String::new(),
-                    });
-            }
-            Event::End(TagEnd::Link) => {
-                if let Some(link) = pending.take()
-                    && !visitor(ReportLinkRef {
-                        dst_wave_id: link.dst_wave_id,
-                        dst_block_id: link.dst_block_id,
-                        label: link.label,
-                    })
-                {
-                    return false;
-                }
-            }
-            Event::Text(text) | Event::Code(text) => {
-                if let Some(link) = &mut pending {
-                    link.label.push_str(&text);
-                }
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                if let Some(link) = &mut pending {
-                    link.label.push('\n');
-                }
-            }
-            _ => {}
+    for link in scan_links_with_options(markdown, opts).links {
+        if !visitor(ReportLinkRef {
+            dst_wave_id: link.dst_wave_id,
+            dst_block_id: link.dst_block_id,
+            label: link.label,
+        }) {
+            return false;
         }
     }
 
     true
+}
+
+pub fn scan_links(markdown: &str) -> LinkScan {
+    let opts = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+    scan_links_with_options(markdown, opts)
+}
+
+fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
+    let mut plain = String::new();
+    let mut links = Vec::new();
+    let mut pending = None;
+    let mut link_depth = 0usize;
+    let mut image_depth = 0usize;
+
+    for event in Parser::new_ext(markdown, opts) {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                link_depth += 1;
+                pending =
+                    parse_destination(&dest_url).map(|(dst_wave_id, dst_block_id)| PendingLink {
+                        dst_wave_id,
+                        dst_block_id,
+                        label_start: plain.len(),
+                    });
+            }
+            Event::End(TagEnd::Link) => {
+                if let Some(link) = pending.take() {
+                    let label_end = plain.len();
+                    let label = plain
+                        .get(link.label_start..label_end)
+                        .expect("link label offsets are character boundaries")
+                        .to_string();
+                    links.push(ScannedLink {
+                        dst_wave_id: link.dst_wave_id,
+                        dst_block_id: link.dst_block_id,
+                        label,
+                        label_start: link.label_start,
+                        label_end,
+                    });
+                }
+                link_depth = link_depth.saturating_sub(1);
+            }
+            Event::Start(Tag::Image { .. }) => image_depth += 1,
+            Event::End(TagEnd::Image) => image_depth = image_depth.saturating_sub(1),
+            Event::Text(text) | Event::Code(text) if image_depth == 0 || link_depth > 0 => {
+                plain.push_str(&text);
+            }
+            Event::SoftBreak | Event::HardBreak if image_depth == 0 || link_depth > 0 => {
+                plain.push('\n');
+            }
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Item
+                | TagEnd::CodeBlock
+                | TagEnd::TableCell
+                | TagEnd::TableRow
+                | TagEnd::Table
+                | TagEnd::FootnoteDefinition,
+            )
+            | Event::End(TagEnd::Heading(_))
+            | Event::End(TagEnd::BlockQuote(_))
+            | Event::End(TagEnd::List(_)) => plain.push('\n'),
+            Event::Rule
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::TaskListMarker(_)
+            | Event::FootnoteReference(_) => {}
+            _ => {}
+        }
+    }
+
+    LinkScan { plain, links }
 }
 
 fn parse_destination(destination: &str) -> Option<(String, Option<String>)> {
@@ -197,6 +260,81 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("w1", "first emphasis"), ("w2", "second code")]
         );
+    }
+
+    #[test]
+    fn scan_accumulates_all_visible_text_and_byte_spans() {
+        let scan =
+            scan_links("前文 [web](https://example.com) and [目标](neige://wave/w1#b_1f3a) 后文");
+
+        assert_eq!(scan.plain, "前文 web and 目标 后文\n");
+        assert_eq!(scan.links.len(), 1);
+        let link = &scan.links[0];
+        assert_eq!(link.dst_wave_id, "w1");
+        assert_eq!(link.dst_block_id.as_deref(), Some("b_1f3a"));
+        assert_eq!(link.label, "目标");
+        assert_eq!(
+            scan.plain.get(link.label_start..link.label_end),
+            Some("目标")
+        );
+    }
+
+    #[test]
+    fn scan_keeps_block_boundaries_separate() {
+        let scan = scan_links("first paragraph\n\n[second](neige://wave/w1)\n\nthird");
+
+        assert_eq!(scan.plain, "first paragraph\nsecond\nthird\n");
+        assert_eq!(scan.links[0].label, "second");
+    }
+
+    #[test]
+    fn standalone_image_alt_is_not_plain_text() {
+        let scan = scan_links("before ![hidden](image.png) after");
+
+        assert_eq!(scan.plain, "before  after\n");
+        assert!(scan.links.is_empty());
+    }
+
+    #[test]
+    fn image_alt_inside_any_link_is_plain_text() {
+        let scan = scan_links("[![visible](image.png)](https://example.com)");
+
+        assert_eq!(scan.plain, "visible\n");
+        assert!(scan.links.is_empty());
+    }
+
+    #[test]
+    fn nested_image_alt_stays_suppressed_until_outer_image_ends() {
+        let scan = scan_links("![outer ![inner](inner.png) tail](outer.png) after");
+
+        assert_eq!(scan.plain, " after\n");
+    }
+
+    #[test]
+    fn code_inside_standalone_image_alt_is_not_plain_text() {
+        let scan = scan_links("before ![`hidden`](image.png) after");
+
+        assert_eq!(scan.plain, "before  after\n");
+    }
+
+    #[test]
+    fn image_alt_inside_neige_link_is_label_and_plain_text() {
+        let scan = scan_links("[![visible](image.png)](neige://wave/w1)");
+
+        assert_eq!(scan.plain, "visible\n");
+        assert_eq!(scan.links[0].label, "visible");
+        assert_eq!(scan.links[0].label_start, 0);
+        assert_eq!(scan.links[0].label_end, "visible".len());
+    }
+
+    #[test]
+    fn empty_image_alt_inside_neige_link_is_a_valid_empty_label() {
+        let scan = scan_links("[![](image.png)](neige://wave/w1)");
+
+        assert_eq!(scan.plain, "\n");
+        assert_eq!(scan.links[0].label, "");
+        assert_eq!(scan.links[0].label_start, 0);
+        assert_eq!(scan.links[0].label_end, 0);
     }
 
     #[test]
