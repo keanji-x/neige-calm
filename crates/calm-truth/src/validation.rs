@@ -1359,6 +1359,22 @@ mod tests {
     }
 
     #[test]
+    fn wave_report_rejects_declared_legacy_schema_versions() {
+        for version in [1, 2] {
+            let err = validate_builtin_card(
+                "wave-report",
+                &json!({ "schemaVersion": version, "summary": "", "body": "" }),
+            )
+            .unwrap_err();
+            let Some(msg) = bad_request_message(&err) else {
+                panic!("expected BadRequest");
+            };
+            assert!(msg.contains(&version.to_string()), "msg = {msg}");
+            assert!(msg.contains('3'), "msg = {msg}");
+        }
+    }
+
+    #[test]
     fn wave_report_tolerates_unknown_fields() {
         // Forward-compat: extra fields are passed through (serde
         // ignores by default). A v2 that adds e.g. `lastWriter` lands
