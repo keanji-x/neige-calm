@@ -60,16 +60,16 @@
 ║  持久化契约      Tier-A payload (wave-report / codex / claude / terminal / spec)
 ║  内容寻址存储    wave_vcs (commit 链 / diff / GC)
 ║  app 宿主        进程监管 · MCP stdio · ui:// 资源
-╚══▲══════════════════════════════════│════════════════════
-   │ ①                                │ ②
-   │ neige.* ×10                      │ tools/call
-   │ 受 manifest permissions 门禁      │ resources/read
-   │                                   ▼
-┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄ 边 界 膜 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+╚══▲═════════════════════════════════│═════════════════════
+   │ ①                               │ ②
+   │ neige.* ×10                     │ tools/call
+   │ 受 manifest permissions 门禁     │ resources/read
+   │                                  ▼
+┄┄┄┼┄┄┄┄┄┄┄┄┄┄┄┄┄ 边 界 膜 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
    │   ✗ 改内核拥有的卡           ✗ 写 wave_vcs / wave FS
    │   ✗ 定义可执行 gate          ✗ 绕过 role_gate
-   │                                   │
-┌──┴───────────────────────────────────┴─ app 平面 (plugin) ─
+   │                                  │
+┌──┴──────────────────────────────────┴─ app 平面 (plugin) ─
 │  exposes_tools · workflow descriptor · ui://<plugin>/<view>
 │  overlay (kind 自定义) · 私有 kv (配额) · event.subscribe
 └─────────────────────────────────────────────────────────
@@ -113,7 +113,9 @@ flowchart TD
   T2 -->|否| T3{"做错会烧盘<br/>或破坏一致性？"}
   T3 -->|是| K
   T3 -->|否| A["app"]
-  K --> KX["跨边界要写内核的东西？<br/>→ 由唯一逻辑作者 spec agent 代写"]
+  K --> KX{"要写报告正文？"}
+  KX -->|是| S["由唯一逻辑作者 spec agent 代写"]
+  KX -->|其余| O["见 §3.2 / D3"]
 ```
 
 用一个真实场景（个股投研 workflow）跑一遍：
@@ -254,11 +256,16 @@ kv 写。`kv.get/list` 与 `event.subscribe` 无持久写。
 | 定义**可执行**的 gate | `manifest.rs` `WorkflowDescriptor::gates` 明注 "Advisory, prompt-only … NEVER executed as a shell command" | 真 gate 由 spec 从目标仓库工具链经 `calm.plan.upsert` 写；否则 manifest 成了远程执行面 |
 | 绕过 `role_gate` / 审计（对 overlay/card 写而言） | `CallbackCtx.repo` 收窄为 `RouteRepo`（raw 同步域写类型不可达）+ 写事务内 `enforce_role` | 写路径唯一（判据 1）。kv 裸写是记录在案的例外（§2.1） |
 
-一条**防御纵深观察**（非行为变化，留给 #489）：硬闸 `enforce_role` 对
+一条**防御纵深观察**（非行为变化，留给 #489）[^proposal-residue]：硬闸 `enforce_role` 对
 `ActorId::Plugin` 在 `WaveUpdated` / dispatch 类事件上是放行的
 （`role_gate.rs` 注释明言 unrestricted）——今天安全，因为 §2.1 的回调
 词表根本没有能发这些事件的方法，纵深依赖"词表封闭"这一事实。#489 落
 capability gate 时应把这层收紧为 deny，使两层独立成立。
+
+[^proposal-residue]: 撤回 ④ 后仍有事件面残留：`Event::ProposalSubmitted` /
+    `Event::ProposalResolved` 保留为只读变体；`EditAuthor::Plugin` 与
+    `author_plugin_id` 永不移除；manifest 的 `permissions.proposals` 仍解析但
+    忽略；`role_gate` 的两条 proposal 条款作为防御纵深保留。
 
 ### 3.3 两个值得单独拎出来的表达限制
 
@@ -314,8 +321,9 @@ card、terminal card、overlay、`ui://` 界面、dispatcher/worker 路径以及
 **这是策略，不是机制（如实记）**：今天报告 CRDT 的写者包括 spec MCP 与
 REST 人工编辑；spec 身份按会话区分，双开即两个活的 spec 写者。整文档写路径
 `Replace` / `WriteMarkdown` 也没有 `if_rev`，spec 与人的并发编辑实际是
-last-writer-wins。因此单写者是产品策略与设计纪律，并非代码强制的不变量；
-机制化并发控制应另行设计，不能假称本文已经保证。
+last-writer-wins（整文档写路径补 `if_rev` 已开 #979）。因此单写者是产品策略
+与设计纪律，并非代码强制的不变量；机制化并发控制应另行设计，不能假称本文
+已经保证。
 
 ## 5. 附录：曾经考虑过的 ④ proposal 方案（已撤回）
 
@@ -323,9 +331,8 @@ last-writer-wins。因此单写者是产品策略与设计纪律，并非代码�
 受限信任层及真实消费者时取用，**不是当前能力或实施计划**。方案撤回的原因是：
 它仍让 app 成为报告的第三个写者，复杂度集中在多写者的丢更新、撤销安全、
 id/顺序版本、seen 归因与租约问题；同时没有真实消费者，违反“先有真实消费者”
-原则。现行结论以 §3.2、§3.3(b) 与 §4 为准。
-
-### 5.0 历史方案摘要（原 D2：report-only，wire 形状可扩展）
+原则。原 D2 裁决是 report-only、wire 形状可扩展；现行结论以 §3.2、
+§3.3(b) 与 §4 为准。
 
 ### 5.1 复用什么
 
@@ -471,7 +478,8 @@ Tier-A 事件流程（goldens min/full、zod、event-version 说明）。
   accept 的 in-tx pending 重查同构，withdraw 与 accept 并发时先提交
   者胜、后者 409）。
 
-顺带这是 §3.2 纵深观察的第一次兑现：新事件从第一天起两层门禁独立成立。
+按当时的历史方案表述，这会是 §3.2 纵深观察的第一次兑现：新事件从第一天起
+两层门禁独立成立；现行方案并未兑现该收紧，仍留给 #489。
 
 ### 5.5 权限与生命周期检查点
 
@@ -558,7 +566,7 @@ spec 的工作产品，plugin 改了它 spec 必须知道。**现状 dispatcher 
 |---|---|---|---|
 | D1 | `aspect.rs` 去留 | **删除** | 空壳占词，无消费者；见 §1.3 |
 | D2 | proposal 做多通用 | **已被 D5 supersede**（原裁决：report-only，wire 可扩展） | 原 wire 留在 §5，仅作历史参考 |
-| D3 | wave FS 可写 `data/` 落地后要不要 `neige.wave.put` | **部分被 D5 supersede；仍不给直写** | 不开第二条写 `wave_vcs` 的路；原裁决中“未来表达为 proposal subject kind”的出口由 D5 撤回，app 用 kv、③、overlay 或 `ui://` |
+| D3 | wave FS 可写 `data/` 落地后要不要 `neige.wave.put` | **部分被 D5 supersede；仍不给直写** | 不开第二条写 `wave_vcs` 的路：配额与 GC 归属要重想，且 app 想存东西已有 kv；原裁决中“未来表达为 proposal subject kind”的出口由 D5 撤回，app 也可用③、overlay 或 `ui://`。若未来真出现该需求，届时按 §1.1 判据重新裁决内核写入口 |
 | D4 | app 自带 timer 要不要内核兜底 | **接受静默丢失** | 只有一个消费者，按判据 2 不构成内核原语；plugin 熔断后到期任务丢失的可见性问题留给 #489 的 plugin 健康面 |
 | D5 | 报告写者模型 | **单一逻辑作者 + 人可覆写；撤回 ④** | spec agent 对报告整体负责；app 经 ③、overlay、`ui://` 贡献。**本项 supersede D2，并 supersede D3 中“未来以 proposal subject kind 写入”的结论**；D3 的“不开放 `neige.wave.put` 直写”仍成立。历史 wire 仅留 §5 附录供 #489 参考 |
 
