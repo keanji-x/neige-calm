@@ -226,7 +226,15 @@ mod tests {
     }
 
     #[test]
-    fn gfm_options_add_footnote_definition_links() {
+    fn public_options_strip_strikethrough_from_link_label() {
+        assert_eq!(
+            collect_links("[a ~~b~~ c](neige://wave/w1)")[0].label,
+            "a b c"
+        );
+    }
+
+    #[test]
+    fn gfm_options_three_way_delta() {
         struct Case {
             name: &'static str,
             markdown: &'static str,
@@ -234,6 +242,7 @@ mod tests {
             gfm_label: Option<&'static str>,
         }
 
+        // Tables and task lists have no observable extraction delta here; these cases document behavior until plain-text semantics land in a later PR.
         let cases = [
             Case {
                 name: "table cell",
