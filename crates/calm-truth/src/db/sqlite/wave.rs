@@ -204,6 +204,12 @@ pub async fn wave_delete_tx(
     // #644 — `tasks.wave_id` has no FK to `waves` (events-outlive-rows
     // convention, design §2), so plan rows must be deleted explicitly
     // alongside the other no-FK wave-owned tables above.
+    sqlx::query(
+        "DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE wave_id = ?1)",
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
     sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
         .bind(id)
         .execute(&mut **tx)

@@ -225,7 +225,7 @@ scheduler / gate 的现状事实源）、`docs/architecture/955-kernel-app-bound
 | 6 | `mcp_server/tools/wave_report.rs:534` —— 整文档 `Replace` 无 `if_rev` | ⚠️ **已过时** | 在本 worktree HEAD 仍成立（`tools/wave_report.rs:534`）。但 #979 已在兄弟 worktree `.claude/worktrees/979-if-rev` 落地（commit `be430816`），形状见 §0.3 |
 | 7 | `routes/waves.rs` 全文无 `if_rev` | ⚠️ **已过时** | HEAD 成立（`grep if_rev crates/calm-server/src/routes/waves.rs` 零命中）；#979 已给 `UpdateWaveReportBody` 加 `if_rev` |
 | 8 | `scheduler/mod.rs:76,80,320`、`compute_ready` 在 `:164` | 半对 | `compute_ready` **正是 `scheduler/mod.rs:164`** ✅；`DEFAULT_WAVE_TASK_BUDGET: i64 = 1` 在 **`:80`** ✅（`:76` 是它的文档注释首行）；`:320` 是注释行，dispatcher 全局信号量字段是 `scheduler/mod.rs:318`，其容量由 dispatcher 决定：`DEFAULT_PERMITS = 8`（`dispatcher/mod.rs:55`），构造于 `dispatcher/mod.rs:666` |
-| 9 | `role_gate.rs:118,123,305` kernel-only 门禁 | ✅ 成立（路径需精确） | 全部在 **`crates/calm-truth/src/role_gate.rs`**：错误变体 `:118`（`NotKernelForTaskDispatched`）/ `:123`（`NotKernelForTaskGateResult`）；条款 2.6 在 `:291-327`（`:301` 起判定），条款 2.7 在 `:331-360`。**`crates/calm-server/src/role_gate.rs` 是一行 `pub use calm_truth::role_gate::*;` 的再导出**（全文件 1 行），不含任何条款——本文凡引 `role_gate.rs` 一律指 calm-truth 那个 |
+| 9 | `role_gate.rs` 的既有 kernel-only 门禁 | ⚠️ 名称比实际语义更窄 | 全部在 **`crates/calm-truth/src/role_gate.rs`**；**仓库既有所谓 kernel-only 的实际语义是“非 AI、非 Plugin”，`User` 也被允许**，因此不能把名称当成严格内核权限证明。`TaskDispatched` / `TaskGateResult` 保持该既有约定；本片新增的 `TaskContextFrozen` / `TaskContextAdvanced` 因伪造冻结集或判决会直接击穿安全机制，作为例外采用严格 `Kernel | KernelDispatcher`，明确拒绝 `User`。**`crates/calm-server/src/role_gate.rs` 是一行再导出**，本文凡引 `role_gate.rs` 一律指 calm-truth 那个 |
 | 10 | `calm-types/src/report_links.rs` —— `neige://` 块级引用，代码块内会被忽略 | ✅ 成立（**可见性需修**） | `parse_destination` `report_links.rs:138-150`；`is_block_id` `:152-159`（**恰好 `b_` + 4 位小写十六进制**）；代码块/行内代码忽略由 pulldown-cmark 事件过滤保证（测试 `:183-192`）。**两者今天都是私有 `fn`，只有 `scan_links`（`:63`）是 `pub`** —— §3.2 规则 5 与 §5.1 要直接调用它们，切片 1 必须把这两个函数提升为 `pub`（NEW，两行） |
 | 11 | 「wave_vcs GC 默认每 wave 只留 50 提交」 | ✅ 成立 | `DEFAULT_WAVE_HISTORY_PRUNE_KEEP: usize = 50`，`crates/calm-truth/src/wave_vcs/gc.rs:17`；6 小时一轮 `:15`；默认**启用**（env 未设走默认值，`:129-145`；仅 `NEIGE_WAVE_PRUNE_INTERVAL_SECS=0` 关闭；CLI 同默认 `neige-cli/src/main.rs:1027`）。**精确化：50 是下限不是上限**——活跃会话的 diff 端点被额外保护，删除阈值取全部受保护提交的最早 `created_at`（`gc.rs:24-28,71-93`） |
 | 12 | 「`doc_heads` 单向不可回溯」 | ❌ **指向了不存在的东西** | 没有 `doc_heads` 表。`base_doc_heads` 是已 DROP 的 `proposals` 表的列（`migrations/0065_proposals.sql:15`，被 `0066_drop_proposals.sql` 删除）；`ReportDoc::doc_heads()`（`wave_report_doc.rs:151`）是撤回 ④ 通道后的只读残留。**§10 的限定结论仍成立，但理由要换**：报告的历史态只存在于 `wave_vcs` 提交链（keep=50 修剪）里，automerge 文档本身以**单份当前态 BLOB** 存在 `cards.body_crdt`，无历史保留 → 任意时点的 plan 无法重建 |
@@ -3499,11 +3499,11 @@ r1 为"切片 3 先于切片 6"所作的辩护只覆盖了**递归**，没覆盖
 **护栏先于后果**。而且它把 r1 那个 ~1500 行的巨片（§13.12 自承超出惯例）
 拆成了两个各自可评审的形状。
 
-- `Event::TaskContextFrozen`（NEW，Tier-A 全流程）+ role_gate kernel-only 条款；
+- `Event::TaskContextFrozen`（NEW，Tier-A 全流程）+ role_gate **严格 Kernel** 条款；
   在 claim 事务内与 `TaskDispatched` 同批发射。**legacy 行发射空冻结集**
   （`refs: []`，§11.2 不变量 3 的"空 ≠ 缺失"）——这让不变量 3 从第一天起就被
   真实流量执行，而不是等切片 3b 才第一次通电。
-- **`Event::TaskContextAdvanced`（NEW，Tier-A 全流程）+ role_gate kernel-only
+- **`Event::TaskContextAdvanced`（NEW，Tier-A 全流程）+ role_gate 严格 Kernel
   条款**（与 `TaskGateResult` 同构，`crates/calm-truth/src/role_gate.rs:331-360`）
   ——**r5 从切片 4 前移进本片**：本片的核心验收（不变量 4b/13）要求"判定被记录"，
   没有这个事件就交付不了。本片里它的 `verdict` 恒为 `"material"`

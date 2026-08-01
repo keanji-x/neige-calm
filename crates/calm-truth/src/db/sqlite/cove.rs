@@ -159,6 +159,12 @@ pub async fn cove_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Resul
             .execute(&mut **tx)
             .await?;
         // #644 — `tasks` has no FK to `waves`; mirror `wave_delete_tx`.
+        sqlx::query(
+            "DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE wave_id = ?1)",
+        )
+        .bind(&wave_id)
+        .execute(&mut **tx)
+        .await?;
         sqlx::query("DELETE FROM tasks WHERE wave_id = ?1")
             .bind(&wave_id)
             .execute(&mut **tx)

@@ -50,7 +50,7 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
-    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
+    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_legacy_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
     wave_lifecycle_and_budget_tx,
@@ -638,7 +638,7 @@ impl Scheduler {
                             return Err(race_lost_err());
                         }
                         let now = now_ms();
-                        let rows = task_claim_pending_tx(tx, &task_id, now).await?;
+                        let rows = task_claim_legacy_pending_tx(tx, &task_id, now).await?;
                         if rows == 0 {
                             return Err(race_lost_err());
                         }

@@ -118,12 +118,12 @@ pub enum RoleViolation {
     NotKernelForTaskDispatched { actor: String },
 
     #[error(
-        "task.context_frozen is a kernel-only scheduler record; no card-derived actor may emit it (actor={actor})"
+        "task.context_frozen is a strict kernel scheduler record; User and card-derived actors may not emit it (actor={actor})"
     )]
     NotKernelForTaskContextFrozen { actor: String },
 
     #[error(
-        "task.context_advanced is a kernel-only context verdict; no card-derived actor may emit it (actor={actor})"
+        "task.context_advanced is a strict kernel context verdict; User and card-derived actors may not emit it (actor={actor})"
     )]
     NotKernelForTaskContextAdvanced { actor: String },
 
@@ -337,11 +337,17 @@ pub fn enforce_role(
     }
 
     // Issue #985 PR3a-i. Context freeze and advancement records are facts
-    // produced by the scheduler kernel. They use the same narrow authority
-    // gate as task.dispatched/task.gate_result.
+    // produced by the scheduler kernel. Unlike the older "kernel-only"
+    // gates, these records are strict: a plain User cannot forge either the
+    // frozen set or its stale verdict.
     if matches!(event, Event::TaskContextFrozen { .. }) {
         match actor {
-            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::User => {
+                return Err(RoleViolation::NotKernelForTaskContextFrozen {
+                    actor: "User".into(),
+                });
+            }
             ActorId::Plugin(name) => {
                 return Err(RoleViolation::NotKernelForTaskContextFrozen {
                     actor: format!("Plugin({name})"),
@@ -369,7 +375,12 @@ pub fn enforce_role(
 
     if matches!(event, Event::TaskContextAdvanced { .. }) {
         match actor {
-            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::User => {
+                return Err(RoleViolation::NotKernelForTaskContextAdvanced {
+                    actor: "User".into(),
+                });
+            }
             ActorId::Plugin(name) => {
                 return Err(RoleViolation::NotKernelForTaskContextAdvanced {
                     actor: format!("Plugin({name})"),
@@ -1671,6 +1682,12 @@ mod tests {
             err,
             RoleViolation::NotKernelForTaskContextFrozen { .. }
         ));
+        let err = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc)
+            .expect_err("User must not forge task.context_frozen");
+        assert!(matches!(
+            err,
+            RoleViolation::NotKernelForTaskContextFrozen { .. }
+        ));
     }
 
     #[test]
@@ -1689,6 +1706,12 @@ mod tests {
             &wcc,
         )
         .expect_err("plugin must not forge task.context_advanced");
+        assert!(matches!(
+            err,
+            RoleViolation::NotKernelForTaskContextAdvanced { .. }
+        ));
+        let err = enforce_role(&ActorId::User, &event, &wave_scope("w", "c"), &cache, &wcc)
+            .expect_err("User must not forge task.context_advanced");
         assert!(matches!(
             err,
             RoleViolation::NotKernelForTaskContextAdvanced { .. }

@@ -79,7 +79,7 @@ async fn mark_running_stamps_running_liveness_deadline() {
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
     task_insert_tx(&mut tx, &row).await.expect("insert task");
-    let rows = task_claim_pending_tx(&mut tx, &id, 1000)
+    let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
         .await
         .expect("claim pending");
     assert_eq!(rows, 1);

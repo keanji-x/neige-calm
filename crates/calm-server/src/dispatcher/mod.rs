@@ -45,6 +45,7 @@ use crate::scheduler::{DEFAULT_RECONCILE_SECS, Scheduler, TerminalTaskHook};
 use crate::session_projection_repo::WorkerSessionKind;
 use crate::shared_codex_appserver::SharedCodexAppServer;
 use crate::state::{CodexClient, DaemonClient, WriteContext};
+use crate::task_context::TaskContextMonitor;
 use crate::terminal_renderer::TerminalRendererRegistry;
 use sha2::{Digest, Sha256};
 
@@ -384,6 +385,7 @@ pub struct Dispatcher {
     /// subscription loop, design §5). Exposed via
     /// [`Dispatcher::scheduler`] for the boot sweep and tests.
     scheduler: Arc<Scheduler>,
+    context_monitor: Arc<TaskContextMonitor>,
     /// §5.1 liveness backstop — slow periodic reconcile sweep
     /// (`NEIGE_SCHEDULER_RECONCILE_SECS`, default 300). Held so a future
     /// shutdown can `abort()` it; runs for the process lifetime today,
@@ -468,6 +470,10 @@ impl Dispatcher {
     /// the boot sweep (`lib.rs::scheduler_sweep_on_boot`) and tests.
     pub fn scheduler(&self) -> Arc<Scheduler> {
         Arc::clone(&self.scheduler)
+    }
+
+    pub fn context_monitor(&self) -> Arc<TaskContextMonitor> {
+        Arc::clone(&self.context_monitor)
     }
 
     /// Spawn the dispatcher background task.
@@ -676,6 +682,11 @@ impl Dispatcher {
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
         );
+        let context_monitor = Arc::new(TaskContextMonitor::new(
+            repo.clone(),
+            events.clone(),
+            write.clone(),
+        ));
         // #741 §1.3 — take the durable-liveness feeder's notification
         // subscription BEFORE `shared_codex_appserver` is moved into the
         // provider registry below, and clone the repo before it is moved into
@@ -706,6 +717,7 @@ impl Dispatcher {
             write,
             harness,
             scheduler: Arc::clone(&scheduler),
+            context_monitor: Arc::clone(&context_monitor),
             // #293 PR3b — a DEDICATED push watermark cache. Intentionally
             // a SEPARATE instance from anything else: keyed by the spec
             // `CardId`;
@@ -731,6 +743,8 @@ impl Dispatcher {
             // satisfiable).
             "task.gate_result".into(),
             "wave.report_edited".into(),
+            "wave.deleted".into(),
+            "cove.deleted".into(),
             "workspace.leased".into(),
             "workspace.released".into(),
             "forge.scan.completed".into(),
@@ -800,8 +814,12 @@ impl Dispatcher {
                         // review F2): a lag during boot no-ops here and
                         // the boot sweep itself covers the missed events.
                         let scheduler = Arc::clone(&inner_for_task.scheduler);
+                        let context_monitor = Arc::clone(&inner_for_task.context_monitor);
                         tokio::spawn(async move {
                             scheduler.sweep_all().await;
+                            if let Err(error) = context_monitor.sweep().await {
+                                tracing::warn!(%error, "task context sweep after lag failed");
+                            }
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -813,6 +831,7 @@ impl Dispatcher {
         // as boot. Correctness never depends on it (every arm is
         // guarded); it restores liveness after a lost envelope.
         let tick_scheduler = Arc::clone(&scheduler);
+        let tick_context_monitor = Arc::clone(&context_monitor);
         let reconcile_handle = tokio::spawn(async move {
             let period = std::time::Duration::from_secs(Scheduler::reconcile_secs_from_env(
                 DEFAULT_RECONCILE_SECS,
@@ -828,6 +847,9 @@ impl Dispatcher {
             loop {
                 interval.tick().await;
                 tick_scheduler.sweep_all().await;
+                if let Err(error) = tick_context_monitor.sweep().await {
+                    tracing::warn!(%error, "periodic task context sweep failed");
+                }
             }
         });
         let reaper_handle = if reaper_disabled_from_env() {
@@ -875,6 +897,7 @@ impl Dispatcher {
             inner,
             operation_runtime,
             scheduler,
+            context_monitor,
             reconcile_handle,
             reaper_handle,
             liveness_feeder_handle,
@@ -892,6 +915,7 @@ struct Inner {
     /// (`plan.updated`, `wave.lifecycle_changed`, `wave.updated`, and
     /// the task report kinds after their push handling).
     scheduler: Arc<Scheduler>,
+    context_monitor: Arc<TaskContextMonitor>,
     /// #293 PR3b — DEDICATED push watermark cache keyed by the spec
     /// `CardId`. A push fires only when `envelope_id > cursor`, then bumps;
     /// this makes pushes idempotent under at-least-once broadcast delivery
@@ -985,6 +1009,15 @@ impl Inner {
             Event::WaveReportEdited {
                 author, wave_id, ..
             } => {
+                // #985 PR3a-ii: mechanical invalidation is independent of
+                // author and runs before the self-push suppression below.
+                if let Err(error) = self
+                    .context_monitor
+                    .detect_wave_edit(wave_id.as_str())
+                    .await
+                {
+                    tracing::warn!(%error, %wave_id, "task context edit detection failed");
+                }
                 // Only user/plugin edits warrant a push (#955 §5.7).
                 // The spec authored Spec/Kernel edits itself;
                 // re-notifying it would loop.
@@ -996,6 +1029,13 @@ impl Inner {
                         ?author,
                         "dispatcher push: ignoring spec/kernel-authored wave.report_edited"
                     );
+                }
+            }
+            Event::WaveDeleted { .. } | Event::CoveDeleted { .. } => {
+                // Payloads intentionally stay unchanged. The tasks-based
+                // sweep discovers vanished waves/coves fail-closed.
+                if let Err(error) = self.context_monitor.sweep().await {
+                    tracing::warn!(%error, "task context deletion sweep failed");
                 }
             }
             Event::WorkspaceLeased { wave_id, .. } | Event::WorkspaceReleased { wave_id, .. } => {
@@ -1051,8 +1091,6 @@ impl Inner {
                 }
             }
             Event::CoveUpdated(_)
-            | Event::CoveDeleted { .. }
-            | Event::WaveDeleted { .. }
             | Event::CardAdded(_)
             | Event::CardUpdated(_)
             | Event::CardDeleted { .. }

@@ -78,6 +78,8 @@ async fn main() -> anyhow::Result<()> {
     // recovery (design §8 boot order; asserted in `boot_order_tests`).
     calm_server::scheduler_sweep_on_boot(&state).await;
 
+    calm_server::task_context_sweep_on_boot(&state).await?;
+
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as
     // line-delimited JSON in the replay-fixture per-event shape. The

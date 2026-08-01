@@ -817,7 +817,7 @@ pub enum Event {
     /// Issue #985 PR3a-i — the kernel froze the task's resolved report-block
     /// context in the same transaction as `task.dispatched`. Legacy tasks
     /// carry an empty `refs` array: empty is an explicit freeze, not missing
-    /// context. Kernel-only.
+    /// context. Strict Kernel / KernelDispatcher only (plain User is denied).
     #[serde(rename = "task.context_frozen")]
     TaskContextFrozen {
         task_id: String,
@@ -826,7 +826,8 @@ pub enum Event {
 
     /// Issue #985 PR3a-i — the kernel recorded that a frozen task context
     /// advanced. This slice only emits the fail-closed `material` verdict;
-    /// later slices may add a second-level adjudicator. Kernel-only.
+    /// later slices may add a second-level adjudicator. Strict Kernel /
+    /// KernelDispatcher only (plain User is denied).
     #[serde(rename = "task.context_advanced")]
     TaskContextAdvanced { task_id: String, verdict: String },
 

@@ -357,6 +357,7 @@ pub async fn reset_from_fixture(
         "DELETE FROM overlays",
         "DELETE FROM terminals",
         "DELETE FROM cards",
+        "DELETE FROM task_ref_index",
         // `tasks` (migration 0041, issue #644) deliberately has no FK to
         // `waves`, so deleting `waves` will NOT cascade here — the wipe
         // must name it explicitly or task rows leak across resets.

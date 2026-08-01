@@ -223,18 +223,52 @@ pub async fn task_claim_pending_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     now: i64,
+    context: &[calm_types::event::TaskContextRef],
+    closure_truncated: bool,
 ) -> Result<u64> {
+    let context_json = serde_json::to_string(context)
+        .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
     let res = sqlx::query(
         r#"UPDATE tasks
            SET status = 'dispatched',
-               updated_at_ms = ?1
-           WHERE id = ?2 AND status = 'pending'"#,
+               claim_context_json = ?1,
+               context_closure_truncated = ?2,
+               updated_at_ms = ?3
+           WHERE id = ?4 AND status = 'pending'"#,
     )
+    .bind(&context_json)
+    .bind(i64::from(closure_truncated))
     .bind(now)
     .bind(id)
     .execute(&mut **tx)
     .await?;
+    if res.rows_affected() != 0 {
+        sqlx::query("DELETE FROM task_ref_index WHERE task_id = ?1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await?;
+        for reference in context {
+            sqlx::query(
+                "INSERT INTO task_ref_index (task_id, dst_wave_id, block_id) VALUES (?1, ?2, ?3)",
+            )
+            .bind(id)
+            .bind(reference.wave_id.as_str())
+            .bind(&reference.block_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
     Ok(res.rows_affected())
+}
+
+/// Compatibility claim for pre-projection plan rows. Its explicit empty
+/// closure still uses the same atomic freeze/index primitive.
+pub async fn task_claim_legacy_pending_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    now: i64,
+) -> Result<u64> {
+    task_claim_pending_tx(tx, id, now, &[], false).await
 }
 
 /// Issue #644 PR-B — the scheduler's post-spawn running stamp (design

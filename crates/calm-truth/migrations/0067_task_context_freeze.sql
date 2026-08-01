@@ -2,6 +2,8 @@
 ALTER TABLE tasks ADD COLUMN claim_context_json TEXT NULL
   CHECK (claim_context_json IS NULL OR json_valid(claim_context_json));
 ALTER TABLE tasks ADD COLUMN context_stale_at_ms INTEGER NULL;
+ALTER TABLE tasks ADD COLUMN context_closure_truncated INTEGER NOT NULL DEFAULT 0
+  CHECK (context_closure_truncated IN (0, 1));
 
 -- Existing in-flight work predates context freezing.  Its context is known
 -- to be the legacy empty set, not missing; preserve that distinction across
@@ -18,6 +20,16 @@ CREATE TABLE task_ref_index (
 );
 CREATE INDEX task_ref_index_destination_idx
   ON task_ref_index(dst_wave_id, block_id);
+
+-- Every task producer converges through status writes. Centralizing cleanup
+-- here covers worker/gate/cancel/replay paths without relying on each caller
+-- to remember a second statement.
+CREATE TRIGGER task_ref_index_cleanup_terminal
+AFTER UPDATE OF status ON tasks
+WHEN NEW.status IN ('done', 'failed', 'canceled')
+BEGIN
+  DELETE FROM task_ref_index WHERE task_id = NEW.id;
+END;
 
 -- Defensive wire-version restamp: no released build should have written
 -- these kinds before SYNC_EVENT_VERSION 13, but preserve replay safety if a

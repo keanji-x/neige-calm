@@ -222,6 +222,12 @@ pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
     state.dispatcher.scheduler().sweep_boot().await;
 }
 
+/// #985 PR3a-ii correctness sweep. The stronger operation-start ordering
+/// fence is intentionally delivered by the following slice.
+pub async fn task_context_sweep_on_boot(state: &state::AppState) -> crate::error::Result<()> {
+    state.dispatcher.context_monitor().sweep().await
+}
+
 #[derive(Clone, Copy, Debug)]
 enum HookReplayProvider {
     Codex,
@@ -560,6 +566,7 @@ pub mod shared_codex_home;
 pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
+pub mod task_context;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;
