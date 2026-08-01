@@ -2641,8 +2641,7 @@ select:-webkit-autofill {
   padding: var(--space-0) var(--space-6) var(--space-6);
 }
 .report-outline-list,
-.report-outline-list ul,
-.report-outlinks-list {
+.report-outline-list ul {
   margin: var(--space-0);
   padding: var(--space-0);
   list-style: none;
@@ -2650,8 +2649,7 @@ select:-webkit-autofill {
 .report-outline-list > li + li {
   margin-top: var(--space-3);
 }
-.report-outline-list a,
-.report-outlinks-list a {
+.report-outline-list a {
   display: flex;
   gap: var(--space-3);
   min-width: 0;
@@ -2661,8 +2659,7 @@ select:-webkit-autofill {
   text-decoration: none;
   overflow-wrap: anywhere;
 }
-.report-outline-list a:hover,
-.report-outlinks-list a:hover {
+.report-outline-list a:hover {
   color: var(--text);
 }
 .report-outline-number {
@@ -2676,24 +2673,12 @@ select:-webkit-autofill {
   margin-top: var(--space-2);
   padding-left: var(--space-8);
 }
-.report-outline-list ul li + li,
-.report-outlinks-list li + li {
+.report-outline-list ul li + li {
   margin-top: var(--space-2);
 }
 .report-outline-list ul a {
   color: var(--text-3);
   font-size: var(--text-xs);
-}
-.report-outlinks-list {
-  display: grid;
-  gap: var(--space-2);
-}
-.report-outlink--dead {
-  color: var(--text-4);
-  font-size: var(--text-sm);
-  line-height: var(--leading-snug);
-  text-decoration: line-through;
-  overflow-wrap: anywhere;
 }
 .report-rail-files {
   flex: 1 1 auto;

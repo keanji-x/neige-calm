@@ -94,9 +94,6 @@ test('wave report view renders real report data and report rail controls', async
   await expect(page.getByText('Report smoke body with')).toBeVisible();
   await expect(page.getByRole('tree', { name: /Wave files/i })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Outline' })).toBeVisible();
-  await expect(
-    page.getByRole('region', { name: 'Referenced documents' }),
-  ).toBeVisible();
   await expect(page.getByRole('region', { name: 'Backlinks' })).toBeVisible();
 
   const conversationToggle = page.getByRole('button', {

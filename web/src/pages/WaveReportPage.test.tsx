@@ -12,7 +12,6 @@ import {
   useWaveBacklinksQuery,
   useWaveFileContent,
   useWaveFileList,
-  useWavesByCoveQuery,
 } from '../api/queries';
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
@@ -23,7 +22,6 @@ vi.mock('../api/queries', () => ({
   useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
-  useWavesByCoveQuery: vi.fn(),
 }));
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
@@ -98,11 +96,8 @@ const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
-const mockUseWavesByCoveQuery = vi.mocked(useWavesByCoveQuery);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
-const REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY =
-  'calm:report-rail:outlinks:collapsed';
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
   'calm:report-rail:backlinks:collapsed';
 const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
@@ -217,9 +212,6 @@ describe('WaveReportPage', () => {
     mockUseOverlaysByKindQuery.mockReturnValue({
       data: [],
     } as unknown as ReturnType<typeof useOverlaysByKindQuery>);
-    mockUseWavesByCoveQuery.mockReturnValue({
-      data: [],
-    } as unknown as ReturnType<typeof useWavesByCoveQuery>);
     const files: WaveFsEntry[] = [
       { name: 'report.md', kind: 'file' },
       { name: 'wave.json', kind: 'file' },
@@ -800,28 +792,20 @@ describe('WaveReportPage', () => {
     };
     const { unmount } = render(<WaveReportPage {...props} />);
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Collapse Referenced documents' }),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Backlinks' }));
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Files' }));
 
     expect(
-      window.localStorage.getItem(REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY),
-    ).toBe('true');
-    expect(
       window.localStorage.getItem(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
-    ).toBeNull();
+    ).toBe('true');
     expect(
       window.localStorage.getItem(REPORT_FILES_COLLAPSED_STORAGE_KEY),
     ).toBe('true');
 
     unmount();
     render(<WaveReportPage {...props} />);
-    expect(
-      screen.getByRole('button', { name: 'Expand Referenced documents' }),
-    ).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByRole('button', { name: 'Collapse Backlinks' }))
-      .toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Expand Backlinks' }))
+      .toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('button', { name: 'Expand Files' }))
       .toHaveAttribute('aria-expanded', 'false');
   });
@@ -842,7 +826,7 @@ describe('WaveReportPage', () => {
       .toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('renders the four rail sections in order with Event line removed', () => {
+  it('renders the three rail sections in order with Event line removed', () => {
     const { container } = render(
       <WaveReportPage
         wave={makeWave()}
@@ -855,51 +839,12 @@ describe('WaveReportPage', () => {
       Array.from(rail.querySelectorAll(':scope > section')).map((section) =>
         section.getAttribute('aria-label'),
       ),
-    ).toEqual(['Outline', 'Referenced documents', 'Backlinks', 'Files']);
+    ).toEqual(['Outline', 'Backlinks', 'Files']);
     expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
     const page = container.querySelector('.report-page');
     expect(page?.firstElementChild).toBe(rail);
     expect(page?.children[1]).toHaveClass('report-center');
     expect(page?.lastElementChild).toHaveClass('report-conversation-drawer');
-  });
-
-  it('derives referenced documents in first-seen order and marks missing waves', () => {
-    mockUseWavesByCoveQuery.mockReturnValue({
-      data: [{ id: 'wave_known', title: 'Known wave' }],
-    } as unknown as ReturnType<typeof useWavesByCoveQuery>);
-
-    render(
-      <WaveReportPage
-        wave={makeWave()}
-        cards={[
-          reportSlot('stale', {
-            blocks: [
-              {
-                id: 'b_links',
-                kind: 'prose',
-                rev: 1,
-                payload: {
-                  markdown:
-                    '[Known](neige://wave/wave_known#b_cafe) then ' +
-                    '[Missing](neige://wave/wave_missing) and ' +
-                    '[Known again](neige://wave/wave_known#b_f00d)',
-                },
-              },
-            ],
-          }),
-        ]}
-      />,
-    );
-
-    const outlinks = screen.getByRole('region', {
-      name: 'Referenced documents',
-    });
-    expect(within(outlinks).getByRole('link', { name: 'Known wave' }))
-      .toHaveAttribute('href', '/wave/wave_known#b_cafe');
-    expect(within(outlinks).getByText('wave_missing'))
-      .toHaveClass('report-outlink--dead');
-    expect(within(outlinks).getAllByRole('listitem')).toHaveLength(2);
-    expect(within(outlinks).queryByText(/blocks/i)).toBeNull();
   });
 
   it('defaults the main column to report.md content', () => {

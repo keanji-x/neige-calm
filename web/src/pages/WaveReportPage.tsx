@@ -6,7 +6,6 @@ import { CalmApiError } from '../api/calm';
 import {
   useWaveBacklinksQuery,
   useWaveFileContent,
-  useWavesByCoveQuery,
 } from '../api/queries';
 import type { WaveBacklink, WaveBacklinksResponse } from '../api/calm';
 import { useTheme } from '../app/theme';
@@ -28,7 +27,6 @@ import { useWaveFsViewer } from '../wave-fs-viewers';
 import { SpecConversation } from './SpecConversation';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { deriveOutline, type ReportOutlineItem } from './report-outline';
-import { deriveInterimReportOutlinks } from './report-outlinks-interim';
 
 function decodeHash(value: string): string {
   try {
@@ -44,8 +42,6 @@ export interface WaveReportPageProps {
 }
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
-const REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY =
-  'calm:report-rail:outlinks:collapsed';
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
   'calm:report-rail:backlinks:collapsed';
 const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
@@ -423,45 +419,6 @@ function OutlinePanel({
   );
 }
 
-// TODO(#975): when `/links` lands, delete report-outlinks-interim.ts and this
-// panel, then remove useWavesByCoveQuery plus its title lookup/dead-link marker.
-function InterimOutlinksPanel({
-  outlinks,
-  waves,
-}: {
-  outlinks: ReturnType<typeof deriveInterimReportOutlinks>;
-  waves: Array<{ id: string; title: string }> | undefined;
-}) {
-  if (outlinks.length === 0) {
-    return <div className="report-rail-placeholder">No referenced documents.</div>;
-  }
-
-  return (
-    <ul className="report-outlinks-list">
-      {outlinks.map((outlink) => {
-        const target = waves?.find((candidate) => candidate.id === outlink.waveId);
-        return (
-          <li key={outlink.waveId}>
-            {target ? (
-              <Link
-                to="/wave/$waveId"
-                params={{ waveId: outlink.waveId }}
-                hash={outlink.blockId}
-              >
-                {waveDisplayTitle(target.title)}
-              </Link>
-            ) : (
-              <span className="report-outlink--dead" title="Referenced wave not found">
-                {outlink.waveId}
-              </span>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
 function BacklinkQuote({ backlink }: { backlink: WaveBacklink }) {
   const quote = backlink.quote;
   if (!quote) return <>{backlink.label}</>;
@@ -628,9 +585,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
-  const [outlinksCollapsed, setOutlinksCollapsed] = useState(() =>
-    readRailSectionCollapsed(REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY),
-  );
   const [backlinksCollapsed, setBacklinksCollapsed] = useState(() =>
     readRailSectionCollapsed(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
   );
@@ -642,13 +596,8 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   );
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const backlinksQ = useWaveBacklinksQuery(wave.id);
-  const wavesByCoveQ = useWavesByCoveQuery(wave.coveId);
   const outline = useMemo(
     () => deriveOutline(reportCard?.blocks),
-    [reportCard?.blocks],
-  );
-  const outlinks = useMemo(
-    () => deriveInterimReportOutlinks(reportCard?.blocks),
     [reportCard?.blocks],
   );
 
@@ -731,23 +680,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         </section>
         {!reportRailCollapsed && (
           <>
-            <RailSection
-              title="Referenced documents"
-              count={outlinks.length}
-              collapsed={outlinksCollapsed}
-              onCollapsedChange={(collapsed) => {
-                setOutlinksCollapsed(collapsed);
-                writeCollapsedState(
-                  REPORT_OUTLINKS_COLLAPSED_STORAGE_KEY,
-                  collapsed,
-                );
-              }}
-            >
-              <InterimOutlinksPanel
-                outlinks={outlinks}
-                waves={wavesByCoveQ.data}
-              />
-            </RailSection>
             <RailSection
               title="Backlinks"
               count={backlinksQ.data?.backlinks.length ?? 0}
