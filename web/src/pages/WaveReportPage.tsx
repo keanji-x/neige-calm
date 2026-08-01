@@ -33,6 +33,8 @@ import {
 } from './report-blocks';
 import { useWaveFsViewer } from '../wave-fs-viewers';
 import { SpecConversation } from './SpecConversation';
+import { useSpecChatHistory } from './useSpecChatHistory';
+import { useSpecCurrentRun } from './useSpecCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { deriveOutline, type ReportOutlineItem } from './report-outline';
 
@@ -161,6 +163,63 @@ function ReportEmptyState() {
     <div className="report-empty" role="status">
       Report not ready. The spec agent has not produced a report yet.
     </div>
+  );
+}
+
+function ReportActivityPanel({
+  specCardId,
+  entries,
+  working,
+  hidden,
+  onSelect,
+}: {
+  specCardId: string | null;
+  entries: ReturnType<typeof useSpecChatHistory>['entries'];
+  working: boolean;
+  hidden: boolean;
+  onSelect(entryId: number): void;
+}) {
+  const userEntries = useMemo(
+    () => entries.filter((entry) => entry.kind === 'user').reverse(),
+    [entries],
+  );
+
+  return (
+    <aside
+      className={'report-activity-stack' + (hidden ? ' hide' : '')}
+      aria-label="Recent conversation activity"
+      aria-hidden={hidden}
+    >
+      <div className="report-activity-panel">
+        {userEntries.length > 0 ? (
+          <div className="report-activity-rows">
+            {userEntries.map((entry, index) => (
+              <button
+                key={`${entry.queued ? 'queued' : 'item'}:${entry.id}`}
+                type="button"
+                className="report-activity-card"
+                title={entry.text}
+                tabIndex={hidden ? -1 : undefined}
+                onClick={() => onSelect(entry.id)}
+              >
+                <span className="tx">{entry.text}</span>
+                {working && index === 0 && (
+                  <span className="st busy" aria-label="Spec Agent is working">
+                    ···
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="report-activity-empty">
+            {specCardId == null
+              ? 'This wave has no Spec Agent.'
+              : 'Open the conversation drawer to start a conversation.'}
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -599,6 +658,8 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const hasReportCard = reportSlots.length > 0;
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
+  const run = useSpecCurrentRun(specCardId ?? undefined);
+  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
   const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
@@ -613,6 +674,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [conversationCollapsed, setConversationCollapsed] = useState(() =>
     readConversationCollapsed(),
   );
+  const [conversationTargetEntryId, setConversationTargetEntryId] = useState<
+    number | null
+  >(null);
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
   const railCollapseButtonRef = useRef<HTMLButtonElement>(null);
   const railOpenButtonRef = useRef<HTMLButtonElement>(null);
@@ -654,6 +718,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     });
   };
   const conversationOpen = !conversationCollapsed;
+  const openConversationAt = (entryId: number) => {
+    setConversationTargetEntryId(entryId);
+    setConversationCollapsed(false);
+    writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, false);
+  };
 
   const railCollapseButton = (
     <button
@@ -782,6 +851,13 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           tabIndex={0}
           aria-label="Report document"
         >
+          <ReportActivityPanel
+            specCardId={specCardId}
+            entries={chatHistory.entries}
+            working={run.working}
+            hidden={conversationOpen}
+            onSelect={openConversationAt}
+          />
           <article className="report-doc">
             {reportSlots.length > 1 && (
               <DuplicateReportBanner count={reportSlots.length} />
@@ -836,6 +912,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           <SpecConversation
             specCardId={specCardId}
             drawerOpen={conversationOpen}
+            run={run}
+            chatHistory={chatHistory}
+            targetEntryId={conversationTargetEntryId}
             onClose={toggleConversationCollapsed}
           />
         </div>

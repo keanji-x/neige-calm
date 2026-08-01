@@ -75,6 +75,31 @@ async function writeReport(page: Page, waveId: string, body: string): Promise<vo
   await expectOk(res, 'POST /api/waves/:id/report');
 }
 
+function harnessUserRow(id: number, text: string) {
+  return {
+    id,
+    runtime_id: 'runtime',
+    card_id: 'card_spec',
+    wave_id: 'wave',
+    thread_id: 'thread',
+    turn_id: 'turn',
+    item_uuid: `msg_${id}`,
+    item_type: 'userMessage',
+    method: 'item/completed',
+    params: JSON.stringify({
+      completedAtMs: 1780977421000 + id,
+      item: {
+        content: [{ text: `User says:\n${text}`, type: 'text' }],
+        id: `msg_${id}`,
+        type: 'userMessage',
+      },
+      threadId: 'thread',
+      turnId: 'turn',
+    }),
+    created_at_ms: 1780977420000 + id,
+  };
+}
+
 test('wave report view renders real report data and report rail controls', async ({
   page,
 }) => {
@@ -109,6 +134,83 @@ test('wave report view renders real report data and report rail controls', async
   const followUp = page.getByRole('textbox', { name: /Ask the Spec Agent/ });
   await followUp.fill('Can you summarize the key risk?');
   await expect(followUp).toHaveValue('Can you summarize the key risk?');
+});
+
+test('report activity panel floats, scrolls internally, and disables with the drawer', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1700, height: 900 });
+  await login(page);
+
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(page, wave.id, 'Activity panel geometry report.');
+  await page.route('**/api/cards/*/harness/items*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(
+        Array.from({ length: 5 }, (_, index) =>
+          harnessUserRow(index + 1, `Instruction ${index + 1}`),
+        ),
+      ),
+    });
+  });
+
+  await page.goto(`/calm/wave/${wave.id}`);
+  const stack = page.getByRole('complementary', {
+    name: 'Recent conversation activity',
+  });
+  const panel = stack.locator('.report-activity-panel');
+  const rows = stack.locator('.report-activity-rows');
+  const document = page.locator('.report-doc');
+  await expect(stack.getByRole('button')).toHaveCount(5);
+
+  const floatingGeometry = await page
+    .locator('.report-document-scroll')
+    .evaluate((scrollRoot) => {
+      const stackNode = scrollRoot.querySelector('.report-activity-stack');
+      const documentNode = scrollRoot.querySelector('.report-doc');
+      if (!(stackNode instanceof HTMLElement) || !(documentNode instanceof HTMLElement)) {
+        throw new Error('Activity stack or report document not found');
+      }
+      return {
+        stackHeight: stackNode.getBoundingClientRect().height,
+        documentTop: documentNode.getBoundingClientRect().top,
+      };
+    });
+  // Deleting height:0 makes the panel's normal-flow box push this document
+  // down and makes stackHeight non-zero.
+  expect(floatingGeometry.stackHeight).toBe(0);
+  await stack.getByRole('button').first().click({ trial: true });
+  expect((await document.boundingBox())?.y).toBeCloseTo(
+    floatingGeometry.documentTop,
+    0,
+  );
+
+  const beforeScroll = await rows.evaluate((node) => ({
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+    panelHeight: node.parentElement?.getBoundingClientRect().height,
+  }));
+  expect(beforeScroll.clientHeight).toBe(140);
+  expect(beforeScroll.scrollHeight).toBeGreaterThan(beforeScroll.clientHeight);
+  await rows.evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  expect((await panel.boundingBox())?.height).toBeCloseTo(
+    beforeScroll.panelHeight ?? 0,
+    0,
+  );
+
+  await stack.getByRole('button', { name: 'Instruction 5' }).click();
+  await expect(stack).toHaveClass(/hide/);
+  await expect(stack).toHaveCSS('opacity', '0');
+  await expect(panel).toHaveCSS('pointer-events', 'none');
+  await expect(stack.getByRole('button').first()).toHaveAttribute(
+    'tabindex',
+    '-1',
+  );
 });
 
 test('narrow conversation drawer stays docked to the viewport', async ({
@@ -391,7 +493,8 @@ test('report heading rules preserve heading geometry', async ({ page }) => {
   // Mechanism and geometry contract: making ::after a block, or otherwise
   // moving it onto its own line, makes this short heading taller than one line.
   expect(shortMetrics.height).toBeCloseTo(shortMetrics.lineHeight, 0);
-  // Reintroducing the former element-wide background rule fails directly.
+  // This specifically forbids the former background-image implementation of
+  // the full-column rule; the geometry assertions above cover its layout.
   expect(shortMetrics.backgroundImage).toBe('none');
   // The generated rule deliberately overflows inline: horizontal clipping is
   // load-bearing, while the visible block axis leaves focus decoration free.
@@ -436,15 +539,16 @@ test('collapsed report rail opener stays inside the report shell', async ({
     const shellRect = shell.getBoundingClientRect();
     const buttonRect = button.getBoundingClientRect();
     return {
-      offsetParentClass: (button.offsetParent as HTMLElement | null)?.className,
+      hasShellOffsetParent: button.offsetParent === shell,
       left: buttonRect.left - shellRect.left,
       top: buttonRect.top - shellRect.top,
       right: shellRect.right - buttonRect.right,
       bottom: shellRect.bottom - buttonRect.bottom,
     };
   });
-  expect(geometry.offsetParentClass).toContain('report-page');
+  expect(geometry.hasShellOffsetParent).toBe(true);
   expect(geometry.left).toBeGreaterThanOrEqual(-1);
+  expect(geometry.left).toBeLessThanOrEqual(1);
   expect(geometry.top).toBeGreaterThanOrEqual(-1);
   expect(geometry.right).toBeGreaterThanOrEqual(-1);
   expect(geometry.bottom).toBeGreaterThanOrEqual(-1);

@@ -326,6 +326,8 @@
      and retire this alias once the new shape has settled. */
   --r: var(--radius-xl);
   --shadow: 0 1px 2px rgba(20,30,55,.04), 0 12px 36px rgba(20,30,55,.06);
+  --veil: 62%;
+  --float: 0 1px 1.5px rgba(18,26,48,.05), 0 5px 14px rgba(18,26,48,.07), 0 18px 44px rgba(18,26,48,.09);
 }
 
 [data-theme="dark"] {
@@ -376,6 +378,8 @@
   --overlay-search:        oklch(78% 0.13 90 / 0.25);
   --overlay-search-strong: oklch(76% 0.14 85 / 0.40);
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 12px 36px rgba(0,0,0,.4);
+  --veil: 80%;
+  --float: 0 2px 5px rgba(0,0,0,.42), 0 12px 30px rgba(0,0,0,.46), 0 30px 70px rgba(0,0,0,.4);
 }
 /* stylelint-enable color-no-hex, declaration-property-value-disallowed-list */
 
@@ -1734,6 +1738,117 @@ select:-webkit-autofill {
   min-height: 0;
   overflow-y: auto;
   outline-offset: -2px;
+  container-type: inline-size;
+}
+.report-activity-stack {
+  position: sticky;
+  top: 22px;
+  z-index: var(--z-sticky);
+  width: 258px;
+  height: 0;
+  margin: calc(var(--space-5) + var(--space-6)) calc(var(--space-5) + var(--space-6)) var(--space-0) auto;
+  pointer-events: none;
+  transition: opacity var(--motion-quick), transform var(--motion-quick);
+}
+.report-activity-stack.hide {
+  opacity: 0;
+  transform: translateX(12px);
+  pointer-events: none;
+}
+.report-activity-panel {
+  overflow: hidden;
+  border-radius: calc(var(--radius-xl) + var(--space-1) + var(--space-px));
+  background: color-mix(in oklab, var(--paper) var(--veil), transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  backdrop-filter: blur(22px) saturate(170%);
+  box-shadow: var(--float);
+  pointer-events: auto;
+  animation: report-activity-drop .26s cubic-bezier(.2,.8,.3,1);
+}
+.report-activity-stack.hide .report-activity-panel {
+  pointer-events: none;
+}
+@keyframes report-activity-drop {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+.report-activity-rows {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: var(--space-3);
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+.report-activity-rows::-webkit-scrollbar { width: 6px; }
+.report-activity-rows::-webkit-scrollbar-thumb {
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--text) 14%, transparent);
+}
+.report-activity-card {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-5) var(--space-4);
+  border-radius: var(--radius-lg);
+  transition: background var(--motion-quick);
+}
+.report-activity-card + .report-activity-card {
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--text) 5%, transparent);
+}
+.report-activity-card:hover {
+  background: color-mix(in oklab, var(--text) 5%, transparent);
+  box-shadow: none;
+}
+.report-activity-card:hover + .report-activity-card { box-shadow: none; }
+.report-activity-card .tx {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: var(--text-sm);
+  line-height: var(--leading-base);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.report-activity-card .st {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--space-3);
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.report-activity-card .st.busy {
+  letter-spacing: .12em;
+  animation: report-activity-breathe 1.3s ease-in-out infinite;
+}
+@keyframes report-activity-breathe {
+  0%, 100% { opacity: .3; }
+  50% { opacity: .85; }
+}
+.report-activity-empty {
+  padding: var(--space-6) var(--space-8);
+  color: var(--text-4);
+  font-size: 11.5px;
+  line-height: var(--leading-loose);
+}
+@container (min-width: 1140px) {
+  .report-doc {
+    margin-right: calc(258px + 2 * var(--space-11));
+    margin-left: auto;
+  }
+}
+@container (max-width: 1139.9px) {
+  .report-activity-stack {
+    position: static;
+    width: 258px;
+    height: auto;
+    margin: var(--space-8) calc(var(--space-12) + var(--space-6)) var(--space-0) auto;
+  }
 }
 /* One left edge runs the whole page (#960 PR3): the document container is
    748px; prose (and the doc head) narrow to 616px flush-left inside it,

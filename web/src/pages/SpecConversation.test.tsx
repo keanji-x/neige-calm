@@ -17,6 +17,8 @@ import {
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecConversation } from './SpecConversation';
+import { useSpecChatHistory } from './useSpecChatHistory';
+import { useSpecCurrentRun } from './useSpecCurrentRun';
 
 const PAGE_LIMIT = 300;
 
@@ -446,10 +448,14 @@ function Harness({
   specCardId?: string | null;
   drawerOpen?: boolean;
 }) {
+  const run = useSpecCurrentRun(specCardId ?? undefined);
+  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
   return (
     <SpecConversation
       specCardId={specCardId}
       drawerOpen={drawerOpen}
+      run={run}
+      chatHistory={chatHistory}
     />
   );
 }

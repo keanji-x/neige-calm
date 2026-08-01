@@ -16,6 +16,8 @@ import {
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
+import { useSpecChatHistory } from './useSpecChatHistory';
+import { useSpecCurrentRun } from './useSpecCurrentRun';
 
 vi.mock('../api/queries', () => ({
   useOverlaysByKindQuery: vi.fn(),
@@ -23,6 +25,15 @@ vi.mock('../api/queries', () => ({
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
 }));
+
+vi.mock('./useSpecChatHistory', () => ({
+  useSpecChatHistory: vi.fn(),
+}));
+
+vi.mock('./useSpecCurrentRun', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./useSpecCurrentRun')>();
+  return { ...actual, useSpecCurrentRun: vi.fn() };
+});
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>();
@@ -96,6 +107,8 @@ const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
+const mockUseSpecChatHistory = vi.mocked(useSpecChatHistory);
+const mockUseSpecCurrentRun = vi.mocked(useSpecCurrentRun);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
@@ -205,6 +218,33 @@ afterEach(() => {
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [],
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+    mockUseSpecCurrentRun.mockReturnValue({
+      cardId: 'card_spec_1',
+      rawState: 'Idle',
+      fsm: 'Idle',
+      phase: 'idle',
+      working: false,
+      stopping: false,
+      latestTool: { toolLabel: null, toolStatus: null },
+      resetPending: false,
+      resetError: null,
+      reset: vi.fn(async () => {}),
+      submit: vi.fn(async () => {}),
+      submitPending: false,
+      submitError: null,
+      submitDormant: false,
+      stop: vi.fn(async () => false),
+      stopPending: false,
+      stopError: null,
+    });
     mockUseWaveBacklinksQuery.mockReturnValue({
       data: { backlinks: [], truncated: false, skipped_sources: 0 },
       error: null,
@@ -290,6 +330,103 @@ describe('WaveReportPage', () => {
     expect(container.querySelector('.report-doc')?.parentElement).toBe(
       scrollRoot,
     );
+  });
+
+  it('shows only user turns newest-first and opens the drawer at a selected turn', async () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [
+        { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
+        { id: 2, atMs: 2, kind: 'agent', text: 'Agent reply' },
+        { id: 3, atMs: 3, kind: 'system', text: 'System note' },
+        { id: 4, atMs: 4, kind: 'user', text: 'New instruction' },
+      ],
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    expect(
+      within(panel).getAllByRole('button').map((row) => row.textContent),
+    ).toEqual(['New instruction', 'Old instruction']);
+    expect(within(panel).queryByText('Agent reply')).not.toBeInTheDocument();
+    expect(within(panel).queryByText('System note')).not.toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Old instruction' }));
+    expect(screen.getByLabelText('Conversation drawer')).toHaveClass(
+      'report-conversation-drawer--open',
+    );
+    expect(panel).toHaveClass('hide');
+    expect(panel).toHaveAttribute('aria-hidden', 'true');
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    });
+  });
+
+  it('distinguishes both activity empty states', () => {
+    const { rerender } = render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report')]} />,
+    );
+    expect(screen.getByText('This wave has no Spec Agent.')).toBeInTheDocument();
+
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+    expect(
+      screen.getByText('Open the conversation drawer to start a conversation.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('This wave has no Spec Agent.'))
+      .not.toBeInTheDocument();
+  });
+
+  it('puts the working indicator on only the newest user turn', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [
+        { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
+        { id: 2, atMs: 2, kind: 'user', text: 'New instruction' },
+      ],
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+    mockUseSpecCurrentRun.mockReturnValue({
+      ...mockUseSpecCurrentRun(undefined),
+      working: true,
+      fsm: 'Working',
+      phase: 'turn_running',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    const rows = within(panel).getAllByRole('button');
+    expect(within(rows[0]).getByLabelText('Spec Agent is working'))
+      .toHaveClass('busy');
+    expect(within(rows[1]).queryByLabelText('Spec Agent is working'))
+      .not.toBeInTheDocument();
   });
 
   it('renders derived prose blocks when present', () => {

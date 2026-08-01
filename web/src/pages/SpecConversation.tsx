@@ -6,10 +6,10 @@ import { useState } from '../shared/state';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import {
   humanizeToken,
-  useSpecCurrentRun,
+  type SpecRunSnapshot,
 } from './useSpecCurrentRun';
 import {
-  useSpecChatHistory,
+  type SpecChatHistorySnapshot,
   type VisibleChatEntry,
 } from './useSpecChatHistory';
 
@@ -18,6 +18,10 @@ export interface SpecConversationProps {
   specCardId: string | null;
   /** Whether the persistently-mounted drawer is currently open. */
   drawerOpen: boolean;
+  run: SpecRunSnapshot;
+  chatHistory: SpecChatHistorySnapshot;
+  /** Entry selected from the report activity panel. */
+  targetEntryId?: number | null;
   /** Close control supplied by the report shell. */
   onClose?: () => void;
 }
@@ -322,10 +326,11 @@ function ConvoEntry({
 export function SpecConversation({
   specCardId,
   drawerOpen,
+  run,
+  chatHistory,
+  targetEntryId,
   onClose,
 }: SpecConversationProps) {
-  const run = useSpecCurrentRun(specCardId ?? undefined);
-  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
   const [draft, setDraft] = useState('');
   const [resetOpen, setResetOpen] = useState(false);
   const [resetAttempted, setResetAttempted] = useState(false);
@@ -357,6 +362,17 @@ export function SpecConversation({
     }, 30);
     return () => window.clearTimeout(id);
   }, [drawerOpen, specCardId]);
+
+  useEffect(() => {
+    if (!drawerOpen || targetEntryId == null) return;
+    stickToBottomRef.current = false;
+    const id = window.setTimeout(() => {
+      scrollRef.current
+        ?.querySelector<HTMLElement>(`[data-chat-entry-id="${targetEntryId}"]`)
+        ?.scrollIntoView({ block: 'center' });
+    }, 40);
+    return () => window.clearTimeout(id);
+  }, [drawerOpen, targetEntryId]);
 
   useEffect(() => {
     setExpandedEntries(new Set());
@@ -573,12 +589,16 @@ export function SpecConversation({
             )}
 
             {chatHistory.entries.map((entry) => (
-              <ConvoEntry
+              <div
                 key={`${entry.queued ? 'queued' : 'item'}:${entry.id}`}
-                entry={entry}
-                expanded={expandedEntries.has(entry.id)}
-                onToggleExpanded={toggleExpandedEntry}
-              />
+                data-chat-entry-id={entry.id}
+              >
+                <ConvoEntry
+                  entry={entry}
+                  expanded={expandedEntries.has(entry.id)}
+                  onToggleExpanded={toggleExpandedEntry}
+                />
+              </div>
             ))}
 
             {isWorking && <ConvoTypingIndicator />}
