@@ -235,8 +235,11 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
 }
 
 fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {
-    if !matches!(map.get("declared_by").and_then(Value::as_str), Some("spec")) {
-        errors.push("declared_by: required; slice 1 only accepts \"spec\"".into());
+    if !matches!(
+        map.get("declared_by").and_then(Value::as_str),
+        Some("spec" | "user")
+    ) {
+        errors.push("declared_by: required; must be one of \"spec\" | \"user\"".into());
     }
 }
 

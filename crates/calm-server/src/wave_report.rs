@@ -59,6 +59,7 @@ use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
+use crate::wave_report_task_guard::{guard_task_declarations, normalize_report_op};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
@@ -147,6 +148,7 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
 pub(crate) fn apply_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
+    author: EditAuthor,
 ) -> Result<Option<BlockOpOutcome>, CalmError> {
     fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
         // A malformed doc/rev is Internal (corruption), never folded
@@ -179,7 +181,11 @@ pub(crate) fn apply_report_op(
                 .0),
         }
     };
-    match op {
+    let op = normalize_report_op(doc, op.clone(), author)?;
+    let before = doc.blocks_snapshot().map_err(|e| {
+        CalmError::Internal(format!("wave_report: snapshot before task guard: {e}"))
+    })?;
+    let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
         ReportDocOp::Replace {
             summary,
             body,
@@ -275,7 +281,13 @@ pub(crate) fn apply_report_op(
             doc.delete_block(id).map_err(internal)?;
             Ok(None)
         }
-    }
+    };
+    let outcome = outcome?;
+    let after = doc
+        .blocks_snapshot()
+        .map_err(|e| CalmError::Internal(format!("wave_report: snapshot after task guard: {e}")))?;
+    guard_task_declarations(&before, &after, author)?;
+    Ok(outcome)
 }
 
 /// Apply one successful persist operation and advance the document-wide
@@ -285,8 +297,9 @@ pub(crate) fn apply_report_op(
 fn apply_persisted_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
+    author: EditAuthor,
 ) -> Result<(Option<BlockOpOutcome>, u64), CalmError> {
-    let outcome = apply_report_op(doc, op)?;
+    let outcome = apply_report_op(doc, op, author)?;
     let doc_rev = doc.increment_doc_rev().map_err(|e| {
         CalmError::Internal(format!("wave_report: increment document revision: {e}"))
     })?;
@@ -580,7 +593,7 @@ pub(crate) async fn persist_report_with_shadow(
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the
                 //    tx (nothing written, no events emitted).
-                let (outcome, doc_rev) = apply_persisted_report_op(&mut doc, &op)?;
+                let (outcome, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache. Since #960 PR2 the
                 //    CRDT block map is the source of truth: `body` is
@@ -717,6 +730,7 @@ mod tests {
                 body: "# A\n\nalpha edited\n".into(),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         assert!(outcome.is_none());
@@ -735,6 +749,7 @@ mod tests {
                 body: "# B\n\nbeta\n".into(),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "racing summary");
@@ -745,6 +760,7 @@ mod tests {
                 body: "# C\n\ngamma\n".into(),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "explicit");
@@ -754,7 +770,7 @@ mod tests {
     fn every_report_doc_op_advances_document_revision() {
         fn assert_advances(mut doc: ReportDoc, op: ReportDocOp) {
             let before = doc.doc_rev().unwrap();
-            apply_persisted_report_op(&mut doc, &op).unwrap();
+            apply_persisted_report_op(&mut doc, &op, EditAuthor::Spec).unwrap();
             assert_eq!(doc.doc_rev().unwrap(), before + 1, "op: {op:?}");
         }
 
@@ -838,6 +854,7 @@ mod tests {
                 if_rev: Some(1),
                 position: None,
             },
+            EditAuthor::Spec,
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
@@ -857,6 +874,7 @@ mod tests {
                 body: String::new(),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
