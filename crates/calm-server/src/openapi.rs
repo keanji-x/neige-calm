@@ -38,6 +38,10 @@ use crate::routes::terminal_cards::NewTerminalCardBody;
 use crate::routes::threads::ThreadCardResolution;
 use crate::routes::today::TodayLaunchpad;
 use crate::routes::version::VersionInfo;
+use crate::routes::wave_report_blocks::{
+    CreateReportBlockBody, DeleteReportBlockBody, MoveReportBlockBody, ReportBlockWriteResponse,
+    UpdateReportBlockBody,
+};
 use crate::routes::waves::{
     UpdateWaveReportBody, WaveBacklink, WaveBacklinksResponse, WaveFsCatQuery, WaveFsLsQuery,
     WavesWindowQuery,
@@ -78,6 +82,10 @@ use utoipa::OpenApi;
         crate::routes::waves::get_wave_backlinks,
         // Issue #247 PR3 — user-facing wave-report edit endpoint
         crate::routes::waves::update_wave_report,
+        crate::routes::wave_report_blocks::create_block,
+        crate::routes::wave_report_blocks::update_block,
+        crate::routes::wave_report_blocks::delete_block,
+        crate::routes::wave_report_blocks::move_block,
         crate::routes::waves::list_wave_files,
         crate::routes::waves::cat_wave_file,
         crate::routes::today::ensure_today_launchpad,
@@ -166,6 +174,11 @@ use utoipa::OpenApi;
         WaveFsHookEvent,
         // Issue #247 PR3 — request body for `POST /api/waves/:id/report`
         UpdateWaveReportBody,
+        CreateReportBlockBody,
+        UpdateReportBlockBody,
+        DeleteReportBlockBody,
+        MoveReportBlockBody,
+        ReportBlockWriteResponse,
         WaveDetail,
         Card,
         CardRuntimeView,

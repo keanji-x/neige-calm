@@ -77,6 +77,7 @@ pub(crate) fn normalize_report_op(
         kind: KIND_TASK.into(),
         content: render_fence(KIND_TASK, &payload),
         if_rev: Some(*if_rev),
+        if_doc_rev: None,
         position: None,
     })
 }
@@ -359,6 +360,7 @@ mod tests {
                 kind: KIND_TASK.into(),
                 content: changed_fence.clone(),
                 if_rev: Some(task.rev),
+                if_doc_rev: None,
                 position: None,
             },
             ReportDocOp::DeleteBlock {

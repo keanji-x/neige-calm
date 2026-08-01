@@ -18,7 +18,8 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
              Kinds: `prose` (markdown), `chart.candles` (inline candle \
              chart), `table` (comparison table), `app` (embedded \
              same-origin mini-app), `task` (validated task declaration; \
-             projection lands in a later slice)."
+             projection lands in a later slice). Creating or moving blocks \
+             requires `if_doc_rev`; read `docRev` from `calm.report.read`."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -51,7 +52,8 @@ pub(super) fn kinds_table() -> Value {
                      top-level `markdown` argument. Blocks are split at \
                      H1/H2 headings, so a prose block conventionally starts \
                      with one. Prose markdown may NOT embed ```neige-block \
-                     fences — data goes in its own block."
+                     fences — data goes in its own block. Creating requires \
+                     `if_doc_rev`; read `docRev` from `calm.report.read`."
             },
             {
                 "kind": "chart.candles",
@@ -226,13 +228,13 @@ pub(super) fn kinds_table() -> Value {
                         "context": { "$ref": "#/$defs/contextValue", "description": "Arbitrary JSON; every nested string is limited to 2048 characters." },
                         "refs": { "type": "array", "items": { "type": "string", "maxLength": report_blocks::MAX_STRING_CHARS, "pattern": "^neige://wave/[^/#]+#b_[0-9a-f]{4}$" } },
                         "ready": { "type": "boolean" },
-                        "declared_by": { "type": "string", "enum": ["spec"] },
+                        "declared_by": { "type": "string", "enum": ["spec", "user"] },
                         "released_by_user": { "type": "boolean", "default": false },
                         "spawn": { "type": "string", "enum": ["in-wave", "sub-wave"], "default": "in-wave" },
                         "tombstone": { "type": ["object", "null"], "additionalProperties": false, "properties": { "reason": { "type": ["string", "null"], "maxLength": report_blocks::MAX_STRING_CHARS } } },
                         "tombstoned_by": { "type": "string", "enum": ["spec", "user"] }
                     },
-                    "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}. Slice 1 only accepts declared_by=spec."
+                    "description": "Non-tombstones use the required fields above. Tombstones are the closed shape {key,tombstone,declared_by,tombstoned_by}."
                 },
                 "usage": "Task declaration block. Set `ready: true` to opt into projection once task projection ships in slice 3b; this slice validates and stores declarations but does not project or schedule them. Every string nested anywhere in `context` is limited to 2048 characters."
             }
@@ -245,7 +247,8 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_UPSERT.into(),
         description: "Spec-only: create or replace ONE report block. \
              Without `id`: creates a new block (appended at the end, \
-             or inserted at `position`). With `id`: replaces that \
+             or inserted at `position`) and REQUIRES `if_doc_rev`; read \
+             `docRev` from `calm.report.read`. With `id`: replaces that \
              block's content and REQUIRES `if_rev` (the rev you read); \
              a mismatch returns error -32001 (rev conflict) and writes \
              nothing — re-read and retry. Kinds (see \
@@ -266,6 +269,7 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
                 "markdown": { "type": "string", "description": "Prose content (kind=prose only)." },
                 "payload": { "type": "object", "description": "Kind-specific payload: required for data kinds; for prose, `{ markdown }` is accepted as an alternative to the top-level `markdown`." },
                 "if_rev": { "type": "integer", "minimum": 0, "description": "Required when `id` is given: the block rev you last read." },
+                "if_doc_rev": { "type": "integer", "minimum": 0, "description": "Required when creating: read docRev from calm.report.read." },
                 "position": { "type": "integer", "minimum": 0, "description": "Insertion index for a NEW block (default: append)." }
             }
         }),
@@ -279,18 +283,18 @@ pub(super) fn move_descriptor() -> ToolDescriptor {
         name: TOOL_REPORT_BLOCKS_MOVE.into(),
         description: "Spec-only: move a report block to `to_index` (its \
              final 0-based index in document order). Content and rev \
-             are untouched — ordering is not content. Optional \
-             `if_rev` guards against concurrent edits of the same \
-             block (mismatch → error -32001, nothing written). Returns \
+             are untouched — ordering is not content. `if_doc_rev` is \
+             REQUIRED because ordering is document-wide; read `docRev` \
+             from `calm.report.read` (mismatch → error -32001). Returns \
              `{ id, rev, updated_at, docRev }`."
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["id", "to_index"],
+            "required": ["id", "to_index", "if_doc_rev"],
             "properties": {
                 "id": { "type": "string" },
                 "to_index": { "type": "integer", "minimum": 0 },
-                "if_rev": { "type": "integer", "minimum": 0, "description": "The revision of this specific report block; not the document-wide docRev." }
+                "if_doc_rev": { "type": "integer", "minimum": 0, "description": "Required document revision; read docRev from calm.report.read." }
             }
         }),
         annotations: Some(role_gated_write_annotations()),

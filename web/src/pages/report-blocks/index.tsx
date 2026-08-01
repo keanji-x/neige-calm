@@ -16,10 +16,12 @@ import {
   chartCandlesPayloadSchema,
   proseBlockPayloadSchema,
   tableBlockPayloadSchema,
+  taskBlockPayloadSchema,
   type ReportBlock,
 } from '../../cards/builtins/wave-report';
 import { ReportTableBlock } from './table';
 import { ReportAppBlock } from './app';
+import { ReportTaskBlock } from './task';
 
 // lightweight-charts (~45KB gz) only loads when a report actually carries a
 // candle chart — same pattern as the lazily loaded CodeMirror pane.
@@ -114,6 +116,15 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
       return (
         <div id={block.id} className="report-block report-block--breakout">
           <ReportAppBlock payload={parsed.data} />
+        </div>
+      );
+    }
+    case 'task': {
+      const parsed = taskBlockPayloadSchema.safeParse(block.payload);
+      if (!parsed.success) return <UnsupportedBlock block={block} />;
+      return (
+        <div id={block.id} className="report-block report-block--breakout">
+          <ReportTaskBlock payload={parsed.data} />
         </div>
       );
     }

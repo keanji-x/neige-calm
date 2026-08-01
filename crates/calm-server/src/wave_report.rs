@@ -106,7 +106,8 @@ pub enum ReportDocOp {
         if_doc_rev: u64,
     },
     /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
-    /// default append); `id: Some` replaces and requires `if_rev`.
+    /// default append) and requires `if_doc_rev`; `id: Some` replaces
+    /// and requires `if_rev`.
     /// `content` is the block's flat text: markdown for `prose`, the
     /// canonical `neige-block` fence (already rendered + validated by
     /// the tool layer) for data kinds (#960 PR3).
@@ -115,13 +116,15 @@ pub enum ReportDocOp {
         kind: String,
         content: String,
         if_rev: Option<u32>,
+        if_doc_rev: Option<u64>,
         position: Option<usize>,
     },
-    /// `calm.report.blocks.move`: reorder only, rev untouched.
+    /// `calm.report.blocks.move`: reorder only, rev untouched; requires
+    /// the document-wide `if_doc_rev` because it mutates block order.
     MoveBlock {
         id: String,
         to_index: usize,
-        if_rev: Option<u32>,
+        if_doc_rev: u64,
     },
     /// `calm.report.blocks.delete`: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
@@ -220,6 +223,7 @@ pub(crate) fn apply_report_op(
             kind,
             content,
             if_rev,
+            if_doc_rev,
             position,
         } => match id {
             Some(id) => {
@@ -235,6 +239,10 @@ pub(crate) fn apply_report_op(
                 Ok(Some(BlockOpOutcome { id, rev }))
             }
             None => {
+                let expected = if_doc_rev.ok_or_else(|| {
+                    CalmError::BadRequest("if_doc_rev is required when creating a block".into())
+                })?;
+                check_doc_rev(doc, expected)?;
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len
@@ -255,15 +263,13 @@ pub(crate) fn apply_report_op(
         ReportDocOp::MoveBlock {
             id,
             to_index,
-            if_rev,
+            if_doc_rev,
         } => {
+            check_doc_rev(doc, *if_doc_rev)?;
             let current = doc
                 .block_rev(id)
                 .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
                 .ok_or_else(|| block_not_found(id))?;
-            if let Some(expected) = if_rev {
-                check_rev(doc, id, *expected)?;
-            }
             let len = doc.block_index().map_err(internal)?.len();
             if *to_index >= len {
                 return Err(CalmError::BadRequest(format!(
@@ -805,6 +811,7 @@ mod tests {
                 kind: "prose".into(),
                 content: "# A\n\nchanged\n".into(),
                 if_rev: Some(first.2),
+                if_doc_rev: None,
                 position: None,
             },
         );
@@ -813,7 +820,7 @@ mod tests {
             ReportDocOp::MoveBlock {
                 id: first.0.clone(),
                 to_index: 1,
-                if_rev: Some(first.2),
+                if_doc_rev: 0,
             },
         );
         assert_advances(
@@ -852,6 +859,7 @@ mod tests {
                 kind: "prose".into(),
                 content: "x\n".into(),
                 if_rev: Some(1),
+                if_doc_rev: None,
                 position: None,
             },
             EditAuthor::Spec,

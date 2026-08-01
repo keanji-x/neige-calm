@@ -192,6 +192,125 @@ async fn login(app: &axum::Router) -> String {
     first.to_string()
 }
 
+async fn json_request(
+    app: &axum::Router,
+    method: &str,
+    uri: String,
+    cookie: &str,
+    body: Value,
+) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn human_block_rest_task_lifecycle_and_revision_domains() {
+    let boot = boot().await;
+    let wave_id = boot.wave_id.clone();
+    let repo = boot.repo.clone();
+    let app = app(boot.state, boot.auth_state);
+    let cookie = login(&app).await;
+    let base = format!("/api/waves/{wave_id}/report/blocks");
+    let task = json!({
+        "key": "review",
+        "kind": "codex",
+        "goal": "Review [source](neige://wave/w_target#b_1234)",
+        "acceptance": "All checks pass",
+        "ready": false,
+        "declared_by": "user"
+    });
+
+    let created = json_request(
+        &app,
+        "POST",
+        base.clone(),
+        &cookie,
+        json!({"kind":"task", "payload":task, "ifDocRev":0}),
+    )
+    .await;
+    assert_eq!(created.status(), StatusCode::OK);
+    let created: Value =
+        serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let block_id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["rev"], 1);
+    assert_eq!(created["docRev"], 1);
+
+    let stale_create = json_request(
+        &app,
+        "POST",
+        base.clone(),
+        &cookie,
+        json!({"kind":"prose", "markdown":"stale", "ifDocRev":0}),
+    )
+    .await;
+    assert_eq!(stale_create.status(), StatusCode::CONFLICT);
+
+    let updated_task = json!({
+        "key": "review", "kind": "codex", "goal": "Review carefully",
+        "acceptance": "All checks pass", "ready": false, "declared_by": "user"
+    });
+    let updated = json_request(
+        &app,
+        "PATCH",
+        format!("{base}/{block_id}"),
+        &cookie,
+        json!({"kind":"task", "payload":updated_task, "ifBlockRev":1}),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated: Value =
+        serde_json::from_slice(&updated.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(updated["rev"], 2);
+
+    let stale_update = json_request(
+        &app,
+        "PATCH",
+        format!("{base}/{block_id}"),
+        &cookie,
+        json!({"kind":"task", "payload":updated_task, "ifBlockRev":1}),
+    )
+    .await;
+    assert_eq!(stale_update.status(), StatusCode::CONFLICT);
+
+    let deleted = json_request(
+        &app,
+        "DELETE",
+        format!("{base}/{block_id}"),
+        &cookie,
+        json!({"ifBlockRev":2}),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let card = repo
+        .cards_by_wave(wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    let payload: WaveReportPayload = serde_json::from_value(card.payload).unwrap();
+    let tombstone = payload
+        .blocks
+        .unwrap()
+        .into_iter()
+        .find(|block| block.id == block_id)
+        .unwrap();
+    assert_eq!(tombstone.payload["key"], "review");
+    assert_eq!(tombstone.payload["declared_by"], "user");
+    assert_eq!(tombstone.payload["tombstoned_by"], "user");
+    assert!(tombstone.payload["tombstone"].is_object());
+}
+
 #[tokio::test]
 async fn stale_human_write_conflicts_after_spec_write_instead_of_winning() {
     let boot = boot().await;

@@ -1246,13 +1246,7 @@ pub(crate) async fn update_wave_report(
     // that reaches `persist_report` here is exactly `"user"`. Every
     // other validated header value (`ai:codex`, `ai:claude`,
     // `ai:gpt5`, future `ai:*`) is 403.
-    if actor.as_str() != "user" {
-        return Err(CalmError::Forbidden(format!(
-            "wave-report edit: only `X-Calm-Actor: user` is allowed via REST; \
-             got `{}`. MCP write paths use `calm.report.*` tools.",
-            actor.as_str()
-        )));
-    }
+    super::wave_report_blocks::require_rest_user_actor(&actor)?;
 
     // Resolve the wave + report card + current payload. 404 on missing
     // wave; 500 (Internal) on missing report card (invariant; PR1

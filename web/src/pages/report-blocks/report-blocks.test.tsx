@@ -686,4 +686,25 @@ describe('degraded blocks', () => {
       'unsupported block kind chart.candles',
     );
   });
+
+  it('renders task declaration fields without projected status or diagnostics', () => {
+    render(
+      <ReportBlockView block={{
+        id: 'b_1234', kind: 'task', rev: 1,
+        payload: {
+          key: 'review', kind: 'codex',
+          goal: 'Read [source](neige://wave/w2#b_abcd)',
+          acceptance: 'All checks pass', depends_on: ['draft'],
+          ready: true, declared_by: 'user',
+        },
+      } as ReportBlock} />,
+    );
+    expect(screen.getByRole('region', { name: 'Task review' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'source' })).toHaveAttribute(
+      'href', '/wave/w2#b_abcd',
+    );
+    expect(screen.getByText('All checks pass')).toBeInTheDocument();
+    expect(screen.getByText('Depends on: draft')).toBeInTheDocument();
+    expect(screen.queryByText(/status|diagnostic/i)).not.toBeInTheDocument();
+  });
 });
