@@ -697,7 +697,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         >
           <h2 className="report-rail-head report-rail-head--static">
             <span className="report-rail-heading">Outline</span>
-            <span className="report-rail-count">{outline.length}</span>
+            <span className="report-rail-count" aria-hidden="true">
+              {outline.length}
+            </span>
           </h2>
           <div className="report-rail-section-body">
             <OutlinePanel

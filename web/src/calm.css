@@ -1698,6 +1698,8 @@ select:-webkit-autofill {
 
 /* Report page shell (#975). */
 .report-page {
+  --report-rail-open-height: 30px;
+
   position: relative;
   flex: 1 1 auto;
   min-height: 480px;
@@ -1718,6 +1720,9 @@ select:-webkit-autofill {
   grid-template-columns: 0 minmax(0, 1fr) 396px;
 }
 .report-center {
+  /* Keep the wide-screen opener anchored to .report-page. The e2e geometry
+     contract catches a future positioned containing block here. */
+  position: static;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -1927,7 +1932,7 @@ select:-webkit-autofill {
 .report-prose :is(h1, h2) {
   counter-increment: report-h2;
   display: block;
-  overflow: hidden;
+  overflow-x: clip;
   margin: var(--space-2) var(--space-0) var(--space-9);
   color: var(--text);
   font-family: var(--font-serif);
@@ -2881,7 +2886,7 @@ button.report-rail-head:hover {
   top: var(--space-6);
   left: var(--space-0);
   width: 24px;
-  height: 30px;
+  height: var(--report-rail-open-height);
   display: grid;
   place-items: center;
   border: 1px solid var(--hairline);
@@ -3454,7 +3459,9 @@ button.report-rail-head:hover {
     overflow: visible;
   }
   .report-doc {
-    padding: var(--space-10) var(--space-8) var(--space-12);
+    padding:
+      var(--space-10) var(--space-8) var(--space-12)
+      calc(var(--report-rail-open-height) + var(--space-4));
   }
   .report-conversation-drawer {
     position: fixed;
@@ -3508,7 +3515,7 @@ button.report-rail-head:hover {
     position: sticky;
     z-index: var(--z-raised);
     top: var(--space-6);
-    margin-bottom: calc((var(--space-10) + var(--space-3)) * -1);
+    margin-bottom: calc(var(--report-rail-open-height) * -1);
   }
   .report-convo,
   .report-convo-head,

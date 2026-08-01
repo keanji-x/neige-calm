@@ -352,7 +352,7 @@ test('report heading rules preserve heading geometry', async ({ page }) => {
     page,
     wave.id,
     [
-      '## Short heading',
+      '## [Short heading](https://example.com/spec)',
       '',
       '##',
       '',
@@ -367,32 +367,85 @@ test('report heading rules preserve heading geometry', async ({ page }) => {
   const headings = page.locator('.report-body .report-prose h2');
   await expect(headings).toHaveCount(4);
   const boxes = await headings.evaluateAll((elements) =>
-    elements.map((element) => {
-      const rect = element.getBoundingClientRect();
-      return { y: rect.y, height: rect.height };
-    }),
+    elements.map((element) => ({
+      height: element.getBoundingClientRect().height,
+    })),
   );
+  // The empty second heading only has generated inline content. Returning its
+  // counter to a float would leave that heading at 0px high.
   for (const box of boxes) {
     expect(box.height).toBeGreaterThan(0);
   }
-  for (let index = 0; index < boxes.length - 1; index += 1) {
-    expect(boxes[index].y + boxes[index].height)
-      .toBeLessThanOrEqual(boxes[index + 1].y + 1);
-  }
 
-  const trailingRules = await headings.evaluateAll((elements) =>
-    elements.map((element) => {
-      const style = getComputedStyle(element, '::after');
-      return {
-        width: Number.parseFloat(style.width),
-        marginInlineEnd: Number.parseFloat(style.marginInlineEnd),
-      };
-    }),
-  );
-  // This locks the zero-advance trailing-rule mechanism: it prevents an
-  // element-wide line, but intentionally does not assert its exact pixels.
-  for (const rule of trailingRules) {
-    expect(rule.marginInlineEnd).toBeLessThan(0);
-    expect(Math.abs(rule.marginInlineEnd)).toBeCloseTo(rule.width, 1);
-  }
+  const shortHeading = headings.first();
+  const shortMetrics = await shortHeading.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      height: element.getBoundingClientRect().height,
+      lineHeight: Number.parseFloat(style.lineHeight),
+      backgroundImage: style.backgroundImage,
+      overflowX: style.overflowX,
+      overflowY: style.overflowY,
+    };
+  });
+  // Mechanism and geometry contract: making ::after a block, or otherwise
+  // moving it onto its own line, makes this short heading taller than one line.
+  expect(shortMetrics.height).toBeCloseTo(shortMetrics.lineHeight, 0);
+  // Reintroducing the former element-wide background rule fails directly.
+  expect(shortMetrics.backgroundImage).toBe('none');
+  // The generated rule deliberately overflows inline: horizontal clipping is
+  // load-bearing, while the visible block axis leaves focus decoration free.
+  expect(shortMetrics.overflowX).toBe('clip');
+  expect(shortMetrics.overflowY).toBe('visible');
+  const headingLink = shortHeading.getByRole('link');
+  await headingLink.focus();
+  await expect(headingLink).toBeFocused();
+
+  // A heading's own scrollWidth can include clipped ink. The observable crop
+  // contract is that it must not enlarge the document scroll surface; deleting
+  // overflow-x: clip makes the 100%-wide generated rule fail this assertion.
+  const documentOverflow = await page
+    .locator('.report-document-scroll')
+    .evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+    }));
+  expect(documentOverflow.scrollWidth)
+    .toBeLessThanOrEqual(documentOverflow.clientWidth + 1);
+});
+
+test('collapsed report rail opener stays inside the report shell', async ({
+  page,
+}) => {
+  await login(page);
+
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(page, wave.id, 'Report body');
+  await page.goto(`/calm/wave/${wave.id}`);
+  await page.getByRole('button', { name: 'Collapse report rail' }).click();
+
+  const opener = page.getByRole('button', { name: 'Expand report rail' });
+  await expect(opener).toBeVisible();
+  const geometry = await opener.evaluate((button) => {
+    const shell = button.closest('.report-page');
+    if (!(shell instanceof HTMLElement)) {
+      throw new Error('Report shell not found');
+    }
+    const shellRect = shell.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    return {
+      offsetParentClass: (button.offsetParent as HTMLElement | null)?.className,
+      left: buttonRect.left - shellRect.left,
+      top: buttonRect.top - shellRect.top,
+      right: shellRect.right - buttonRect.right,
+      bottom: shellRect.bottom - buttonRect.bottom,
+    };
+  });
+  expect(geometry.offsetParentClass).toContain('report-page');
+  expect(geometry.left).toBeGreaterThanOrEqual(-1);
+  expect(geometry.top).toBeGreaterThanOrEqual(-1);
+  expect(geometry.right).toBeGreaterThanOrEqual(-1);
+  expect(geometry.bottom).toBeGreaterThanOrEqual(-1);
 });
