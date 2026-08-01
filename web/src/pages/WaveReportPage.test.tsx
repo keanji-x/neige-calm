@@ -370,6 +370,26 @@ describe('WaveReportPage', () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(2);
   });
 
+  it('preserves heading text and spaces around inline markdown', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot(
+          '## Latency `p99` **regression** via [R8](https://example.com/r8)',
+        )]}
+      />,
+    );
+
+    const heading = screen.getByRole('heading', {
+      level: 2,
+      name: 'Latency p99 regression via R8',
+    });
+    expect(heading.textContent).toBe('Latency p99 regression via R8');
+    expect(within(heading).getByText('p99').tagName).toBe('CODE');
+    expect(within(heading).getByText('regression').tagName).toBe('STRONG');
+    expect(within(heading).getByRole('link', { name: 'R8' })).toBeInTheDocument();
+  });
+
   it('scrolls a multi-H2 outline link to its matching heading', async () => {
     Object.defineProperty(Element.prototype, 'scrollIntoView', {
       configurable: true,
@@ -677,6 +697,11 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
 
     const showAll = screen.getByRole('button', { name: 'Show all' });
+    const fileTree = screen.getByRole('tree', { name: 'Wave files' });
+    expect(
+      showAll.compareDocumentPosition(fileTree) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(showAll).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(showAll);
@@ -720,7 +745,7 @@ describe('WaveReportPage', () => {
     const expandToggle = screen.getByRole('button', {
       name: 'Expand report rail',
     });
-    expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
+    expect(expandToggle).toHaveAttribute('aria-controls', 'report-context-rail');
     expect(rail).toHaveClass('report-rail--collapsed');
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
     expect(window.localStorage.getItem(REPORT_RAIL_COLLAPSED_STORAGE_KEY))
@@ -755,14 +780,14 @@ describe('WaveReportPage', () => {
     const expandToggle = screen.getByRole('button', {
       name: 'Expand report rail',
     });
-    expect(expandToggle).not.toBe(toggle);
+    expect(document.activeElement).toBe(expandToggle);
 
     fireEvent.click(expandToggle);
 
     const collapseToggle = screen.getByRole('button', {
       name: 'Collapse report rail',
     });
-    expect(collapseToggle).not.toBe(expandToggle);
+    expect(document.activeElement).toBe(collapseToggle);
   });
 
   it('persists the collapsed Files rail across remounts', () => {
@@ -777,7 +802,7 @@ describe('WaveReportPage', () => {
     render(<WaveReportPage {...props} />);
 
     expect(screen.getByRole('button', { name: 'Expand report rail' }))
-      .toHaveAttribute('aria-expanded', 'false');
+      .toHaveAttribute('aria-controls', 'report-context-rail');
     expect(screen.getByLabelText('Report context'))
       .toHaveClass('report-rail--collapsed');
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
@@ -792,6 +817,13 @@ describe('WaveReportPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Backlinks' }));
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Files' }));
+
+    expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
+    expect(mockUseWaveFileList).toHaveBeenCalledWith(
+      'wave_1',
+      '',
+      { enabled: false },
+    );
 
     expect(
       window.localStorage.getItem(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
@@ -821,7 +853,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByLabelText('Report context'))
       .toHaveClass('report-rail--collapsed');
     expect(screen.getByRole('button', { name: 'Expand report rail' }))
-      .toHaveAttribute('aria-expanded', 'false');
+      .toHaveAttribute('aria-controls', 'report-context-rail');
   });
 
   it('renders the three rail sections in order with Event line removed', () => {
@@ -1964,15 +1996,15 @@ describe('WaveReportPage', () => {
     ).toBeInTheDocument();
     expect(within(panel).getByText(/cites block b_here/)).toBeInTheDocument();
     const quotedLink = within(panel).getByRole('link', {
-      name: '…context before First mention context after…',
+      name: 'Alpha …context before First mention context after…',
     });
     expect(quotedLink).toHaveAttribute('href', '/wave/wave_a#b_a1');
     expect(within(quotedLink).getByText('First mention').tagName).toBe('B');
     const emptyLabelLink = within(panel).getByRole('link', {
-      name: 'Empty label context remains readable',
+      name: 'Alpha Empty label context remains readable',
     });
     expect(emptyLabelLink.querySelector('b')).toBeNull();
-    expect(within(panel).getByRole('link', { name: 'Another source' })).toHaveAttribute(
+    expect(within(panel).getByRole('link', { name: 'Beta Another source' })).toHaveAttribute(
       'href',
       '/wave/wave_b#b_b1',
     );
@@ -2019,7 +2051,8 @@ describe('WaveReportPage', () => {
     render(
       <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
     );
-    expect(screen.getByRole('link', { name: 'Legacy target' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Alpha Legacy target' }))
+      .toBeVisible();
     expect(screen.queryByText(/cites block b_here/)).toBeNull();
   });
 
