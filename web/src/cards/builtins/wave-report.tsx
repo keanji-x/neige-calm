@@ -127,10 +127,10 @@ const taskGateStepSchema = z.strictObject({
   cmd: z.string(),
 });
 
-export const taskBlockPayloadSchema = z.strictObject({
+const liveTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
-  kind: z.enum(['codex', 'claude', 'terminal']).optional(),
-  goal: z.string().optional(),
+  kind: z.enum(['codex', 'claude', 'terminal']),
+  goal: z.string(),
   acceptance: z.string().optional(),
   gate: z.strictObject({
     cwd: z.string().optional(),
@@ -143,13 +143,24 @@ export const taskBlockPayloadSchema = z.strictObject({
   cwd: z.string().optional(),
   context: z.unknown().optional(),
   refs: z.array(z.string()).optional(),
-  ready: z.boolean().optional(),
+  ready: z.boolean(),
   declared_by: z.enum(['spec', 'user']),
   released_by_user: z.boolean().optional(),
   spawn: z.enum(['in-wave', 'sub-wave']).optional(),
-  tombstone: z.strictObject({ reason: z.string().nullable().optional() }).optional(),
-  tombstoned_by: z.enum(['spec', 'user']).optional(),
+  tombstone: z.null().optional(),
 });
+
+const tombstoneTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  tombstone: z.strictObject({ reason: z.string().nullable().optional() }),
+  declared_by: z.enum(['spec', 'user']),
+  tombstoned_by: z.enum(['spec', 'user']),
+});
+
+export const taskBlockPayloadSchema = z.union([
+  liveTaskBlockPayloadSchema,
+  tombstoneTaskBlockPayloadSchema,
+]);
 
 export type ProseBlockPayload = z.infer<typeof proseBlockPayloadSchema>;
 export type ChartCandlesPayload = z.infer<typeof chartCandlesPayloadSchema>;

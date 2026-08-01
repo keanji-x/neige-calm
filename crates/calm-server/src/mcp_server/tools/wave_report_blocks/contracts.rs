@@ -374,7 +374,7 @@ mod task_kind_contract_tests {
         assert_eq!(task["schema"]["additionalProperties"], false);
         assert_eq!(
             task["schema"]["properties"]["declared_by"]["enum"],
-            json!(["spec"])
+            json!(["spec", "user"])
         );
         let properties = &task["schema"]["properties"];
         assert_eq!(properties["acceptance"]["minLength"], 1);

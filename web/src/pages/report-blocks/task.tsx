@@ -9,6 +9,7 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
       <section className="rb-task" aria-label={`Withdrawn task ${payload.key}`}>
         <strong>{payload.key}</strong>
         <p>Withdrawn{payload.tombstone.reason ? `: ${payload.tombstone.reason}` : ''}</p>
+        <p className="rb-task-meta">Declared by {payload.declared_by}; withdrawn by {payload.tombstoned_by}</p>
       </section>
     );
   }
@@ -16,14 +17,13 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
     <section className="rb-task" aria-label={`Task ${payload.key}`}>
       <header>
         <strong>{payload.key}</strong>
-        {payload.kind && <span>{payload.kind}</span>}
+        <span>{payload.kind}</span>
       </header>
-      {payload.goal && (
-        <div className="calm-prose rb-task-goal">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={reportUrlTransform}
-            components={{ a: ReportLink }}>{payload.goal}</ReactMarkdown>
-        </div>
-      )}
+      <p className="rb-task-meta">Declared by {payload.declared_by} · {payload.ready ? 'Ready' : 'Not ready'}</p>
+      <div className="calm-prose rb-task-goal">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={reportUrlTransform}
+          components={{ a: ReportLink }}>{payload.goal}</ReactMarkdown>
+      </div>
       {payload.acceptance && (
         <div className="rb-task-acceptance">
           <span>Acceptance</span>

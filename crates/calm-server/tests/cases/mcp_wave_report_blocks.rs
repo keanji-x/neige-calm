@@ -186,7 +186,23 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     assert!(create.message.contains("calm.report.read"));
     assert!(create.message.contains("docRev"));
 
-    let index = index_of(&read(&boot, json!({})).await);
+    let current = read(&boot, json!({})).await;
+    let created = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "kind": "prose",
+            "markdown": "# Retried caller\n",
+            "if_doc_rev": current["docRev"]
+        }),
+    )
+    .await
+    .expect("caller can self-heal by reading docRev and retrying");
+    assert_eq!(created["docRev"], current["docRev"].as_u64().unwrap() + 1);
+
+    let current = read(&boot, json!({})).await;
+    let index = index_of(&current);
     let moved = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
@@ -199,6 +215,16 @@ async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
     assert!(moved.message.contains("if_doc_rev"));
     assert!(moved.message.contains("calm.report.read"));
     assert!(moved.message.contains("docRev"));
+
+    let moved = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({"id": index[0].0, "to_index": 0, "if_doc_rev": current["docRev"]}),
+    )
+    .await
+    .expect("caller can self-heal move by reading docRev and retrying");
+    assert_eq!(moved["docRev"], current["docRev"].as_u64().unwrap() + 1);
 }
 
 // ---------------------------------------------------------------------------

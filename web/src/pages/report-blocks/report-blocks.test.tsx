@@ -3,7 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
 import { ReportAppBlock } from './app';
-import type { ReportBlock } from '../../cards/builtins/wave-report';
+import {
+  taskBlockPayloadSchema,
+  type ReportBlock,
+} from '../../cards/builtins/wave-report';
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>();
@@ -705,6 +708,21 @@ describe('degraded blocks', () => {
     );
     expect(screen.getByText('All checks pass')).toBeInTheDocument();
     expect(screen.getByText('Depends on: draft')).toBeInTheDocument();
+    expect(screen.getByText('Declared by user · Ready')).toBeInTheDocument();
     expect(screen.queryByText(/status|diagnostic/i)).not.toBeInTheDocument();
+  });
+
+  it('keeps the task payload contract split between live declarations and tombstones', () => {
+    expect(taskBlockPayloadSchema.safeParse({
+      key: 'missing-goal', kind: 'codex', ready: true, declared_by: 'spec',
+    }).success).toBe(false);
+    expect(taskBlockPayloadSchema.safeParse({
+      key: 'mixed', kind: 'codex', goal: 'g', ready: true,
+      declared_by: 'spec', tombstone: {}, tombstoned_by: 'user',
+    }).success).toBe(false);
+    expect(taskBlockPayloadSchema.safeParse({
+      key: 'withdrawn', tombstone: { reason: null },
+      declared_by: 'spec', tombstoned_by: 'user',
+    }).success).toBe(true);
   });
 });

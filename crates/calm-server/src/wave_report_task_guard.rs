@@ -122,6 +122,19 @@ pub(crate) fn guard_task_declarations(
                 new.id
             )));
         }
+        if string_field(old, "key") != string_field(new, "key") {
+            return Err(bad(format!("task block {} key is immutable", new.id)));
+        }
+        if !is_tombstone(old) && is_tombstone(new) {
+            let expected = author_name(author)
+                .ok_or_else(|| bad(format!("{author:?} may not tombstone task blocks")))?;
+            if string_field(new, "tombstoned_by") != Some(expected) {
+                return Err(bad(format!(
+                    "task block {} must attribute tombstoned_by to {expected}",
+                    new.id
+                )));
+            }
+        }
         if is_tombstone(old) {
             if !is_tombstone(new) {
                 return Err(bad(format!(
@@ -373,5 +386,66 @@ mod tests {
             let error = apply_report_op(&mut attempt, &operation, EditAuthor::Spec).unwrap_err();
             assert!(matches!(error, CalmError::BadRequest(_)));
         }
+    }
+
+    #[test]
+    fn live_task_transition_cannot_forge_tombstone_author_or_change_key() {
+        for (author, forged_by) in [(EditAuthor::Spec, "user"), (EditAuthor::User, "spec")] {
+            let (mut doc, task, _) = doc_with_task("spec");
+            let payload = json!({
+                "key": "build",
+                "tombstone": { "reason": null },
+                "declared_by": "spec",
+                "tombstoned_by": forged_by
+            });
+            let error = apply_report_op(
+                &mut doc,
+                &ReportDocOp::UpsertBlock {
+                    id: Some(task.id),
+                    kind: KIND_TASK.into(),
+                    content: render_fence(KIND_TASK, &payload),
+                    if_rev: Some(task.rev),
+                    if_doc_rev: None,
+                    position: None,
+                },
+                author,
+            )
+            .unwrap_err();
+            assert!(matches!(error, CalmError::BadRequest(_)));
+        }
+
+        let (mut doc, task, _) = doc_with_task("spec");
+        let mut renamed = live("spec");
+        renamed["key"] = json!("renamed");
+        let error = apply_report_op(
+            &mut doc,
+            &ReportDocOp::UpsertBlock {
+                id: Some(task.id),
+                kind: KIND_TASK.into(),
+                content: render_fence(KIND_TASK, &renamed),
+                if_rev: Some(task.rev),
+                if_doc_rev: None,
+                position: None,
+            },
+            EditAuthor::Spec,
+        )
+        .unwrap_err();
+        assert!(matches!(error, CalmError::BadRequest(_)));
+    }
+
+    #[test]
+    fn user_whole_document_write_cannot_delete_live_task() {
+        let (mut doc, _, _) = doc_with_task("spec");
+        let error = apply_report_op(
+            &mut doc,
+            &ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: "# replacement\n".into(),
+                if_doc_rev: 0,
+            },
+            EditAuthor::User,
+        )
+        .unwrap_err();
+        assert!(matches!(error, CalmError::BadRequest(_)));
     }
 }
