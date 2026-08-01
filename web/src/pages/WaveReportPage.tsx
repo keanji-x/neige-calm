@@ -318,23 +318,19 @@ function RailSection({
 }) {
   return (
     <section className="report-rail-section" aria-label={title}>
-      <header className="report-rail-head">
-        <h2>{title}</h2>
+      <button
+        type="button"
+        className="report-rail-head"
+        aria-expanded={!collapsed}
+        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
+        onClick={() => onCollapsedChange(!collapsed)}
+      >
+        <ChevronIcon />
+        <span className="report-rail-heading">{title}</span>
         {count != null && <span className="report-rail-count">{count}</span>}
-        <div className="report-rail-actions">
-          {actions}
-          <button
-            type="button"
-            className="report-section-toggle"
-            aria-expanded={!collapsed}
-            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
-            onClick={() => onCollapsedChange(!collapsed)}
-          >
-            <ChevronIcon />
-          </button>
-        </div>
-      </header>
-      {!collapsed && <div className="report-rail-section-body">{children}</div>}
+      </button>
+      <div className="report-rail-section-body">{children}</div>
+      {actions && <div className="report-rail-actions">{actions}</div>}
     </section>
   );
 }
@@ -488,7 +484,6 @@ function BacklinksPanel({
       )}
       {groups.map(([waveId, group]) => (
         <div className="report-backlinks-group" key={waveId}>
-          <h3>{group.title}</h3>
           <ul>
             {group.entries.map((entry, index) => (
               <li
@@ -499,7 +494,12 @@ function BacklinksPanel({
                   params={{ waveId }}
                   hash={entry.src_block_id}
                 >
-                  <BacklinkQuote backlink={entry} />
+                  <span className="report-backlinks-title" aria-hidden="true">
+                    {group.title}
+                  </span>
+                  <span className="report-backlinks-quote">
+                    <BacklinkQuote backlink={entry} />
+                  </span>
                 </Link>
                 {hasRenderedBlocks && entry.dst_block_id && (
                   <span className="report-backlinks-target">
@@ -624,7 +624,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
       return next;
     });
   };
-  const conversationOpen = !conversationCollapsed && specCardId != null;
+  const conversationOpen = !conversationCollapsed;
 
   const railCollapseButton = (
     <button
@@ -653,93 +653,93 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         className={
           'report-rail' + (reportRailCollapsed ? ' report-rail--collapsed' : '')
         }
+        hidden={reportRailCollapsed}
         aria-label="Report context"
       >
+        <div className="report-rail-top">
+          <span>Document</span>
+          {railCollapseButton}
+        </div>
         <section
           className="report-rail-section report-rail-section--outline"
           aria-label="Outline"
         >
-          <header className="report-rail-head report-rail-head--top">
-            {!reportRailCollapsed && (
-              <>
-                <h2>Outline</h2>
-                <span className="report-rail-count">{outline.length}</span>
-              </>
-            )}
-            <div className="report-rail-actions">{railCollapseButton}</div>
+          <header className="report-rail-head report-rail-head--static">
+            <span className="report-rail-heading">Outline</span>
+            <span className="report-rail-count">{outline.length}</span>
           </header>
-          {!reportRailCollapsed && (
-            <div className="report-rail-section-body">
-              <OutlinePanel
-                outline={outline}
-                unavailable={reportCard?.unsupportedVersion != null}
-                bodyOnly={hasReportCard && reportCard?.blocks == null}
-              />
-            </div>
-          )}
+          <div className="report-rail-section-body">
+            <OutlinePanel
+              outline={outline}
+              unavailable={reportCard?.unsupportedVersion != null}
+              bodyOnly={hasReportCard && reportCard?.blocks == null}
+            />
+          </div>
         </section>
-        {!reportRailCollapsed && (
-          <>
-            <RailSection
-              title="Backlinks"
-              count={backlinksQ.data?.backlinks.length ?? 0}
-              collapsed={backlinksCollapsed}
-              onCollapsedChange={(collapsed) => {
-                setBacklinksCollapsed(collapsed);
-                writeCollapsedState(
-                  REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY,
-                  collapsed,
-                );
-              }}
+        <RailSection
+          title="Backlinks"
+          count={backlinksQ.data?.backlinks.length ?? 0}
+          collapsed={backlinksCollapsed}
+          onCollapsedChange={(collapsed) => {
+            setBacklinksCollapsed(collapsed);
+            writeCollapsedState(
+              REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY,
+              collapsed,
+            );
+          }}
+        >
+          <BacklinksPanel
+            waveId={wave.id}
+            hasRenderedBlocks={reportCard?.blocks != null}
+            page={backlinksQ.data}
+            error={backlinksQ.error}
+          />
+        </RailSection>
+        <RailSection
+          title="Files"
+          collapsed={filesCollapsed}
+          onCollapsedChange={(collapsed) => {
+            setFilesCollapsed(collapsed);
+            writeCollapsedState(REPORT_FILES_COLLAPSED_STORAGE_KEY, collapsed);
+          }}
+          actions={
+            <button
+              type="button"
+              className="report-rail-toggle report-rail-toggle--show-all"
+              aria-pressed={showHiddenFiles}
+              onClick={toggleHiddenFiles}
             >
-              <BacklinksPanel
-                waveId={wave.id}
-                hasRenderedBlocks={reportCard?.blocks != null}
-                page={backlinksQ.data}
-                error={backlinksQ.error}
-              />
-            </RailSection>
-            <RailSection
-              title="Files"
-              collapsed={filesCollapsed}
-              onCollapsedChange={(collapsed) => {
-                setFilesCollapsed(collapsed);
-                writeCollapsedState(
-                  REPORT_FILES_COLLAPSED_STORAGE_KEY,
-                  collapsed,
-                );
+              Show all
+            </button>
+          }
+        >
+          <div className="report-rail-files">
+            <WaveFileTree
+              waveId={wave.id}
+              selectedPath={selectedFilePath}
+              onSelectedPathChange={(path) => {
+                setSelectedFilePath(path ?? 'report.md');
               }}
-              actions={
-                !filesCollapsed && (
-                  <button
-                    type="button"
-                    className="report-rail-toggle report-rail-toggle--show-all"
-                    aria-pressed={showHiddenFiles}
-                    onClick={toggleHiddenFiles}
-                  >
-                    Show all
-                  </button>
-                )
+              ariaLabel="Wave files"
+              showHidden={showHiddenFiles}
+              fallback={
+                <div className="report-rail-placeholder">No files yet.</div>
               }
-            >
-              <div className="report-rail-files">
-                <WaveFileTree
-                  waveId={wave.id}
-                  selectedPath={selectedFilePath}
-                  onSelectedPathChange={(path) => {
-                    setSelectedFilePath(path ?? 'report.md');
-                  }}
-                  ariaLabel="Wave files"
-                  showHidden={showHiddenFiles}
-                  fallback={
-                    <div className="report-rail-placeholder">No files yet.</div>
-                  }
-                />
-              </div>
-            </RailSection>
-          </>
-        )}
+            />
+          </div>
+        </RailSection>
       </aside>
+      <button
+        type="button"
+        className="report-rail-open"
+        hidden={!reportRailCollapsed}
+        onClick={toggleReportRailCollapsed}
+        aria-label="Expand report rail"
+        aria-expanded={false}
+        title="Expand report rail"
+      >
+        <ChevronIcon />
+      </button>
       <section className="report-center" aria-label="Report">
         <div
           className="report-document-scroll"
@@ -784,20 +784,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           aria-controls="report-conversation-panel"
           aria-expanded={conversationOpen}
           aria-label={
-            specCardId == null
-              ? 'Conversation unavailable'
-              : conversationOpen
-                ? 'Close conversation drawer'
-                : 'Open conversation drawer'
+            conversationOpen
+              ? 'Close conversation drawer'
+              : 'Open conversation drawer'
           }
-          title={
-            specCardId == null
-              ? 'Spec Agent unavailable'
-              : conversationOpen
-                ? 'Close conversation'
-                : 'Open conversation'
-          }
-          disabled={specCardId == null}
+          title={conversationOpen ? 'Close conversation' : 'Open conversation'}
           onClick={toggleConversationCollapsed}
         >
           <ChevronIcon />
@@ -810,6 +801,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           <SpecConversation
             specCardId={specCardId}
             drawerOpen={conversationOpen}
+            onClose={toggleConversationCollapsed}
           />
         </div>
       </aside>

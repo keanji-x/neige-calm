@@ -18,6 +18,8 @@ export interface SpecConversationProps {
   specCardId: string | null;
   /** Whether the persistently-mounted drawer is currently open. */
   drawerOpen: boolean;
+  /** Close control supplied by the report shell. */
+  onClose?: () => void;
 }
 
 const MARKDOWN_PLUGINS = [remarkGfm];
@@ -320,6 +322,7 @@ function ConvoEntry({
 export function SpecConversation({
   specCardId,
   drawerOpen,
+  onClose,
 }: SpecConversationProps) {
   const run = useSpecCurrentRun(specCardId ?? undefined);
   const chatHistory = useSpecChatHistory(specCardId ?? undefined);
@@ -482,6 +485,9 @@ export function SpecConversation({
       <header className="report-convo-head">
         <div className="report-convo-head-inner">
           <h2>Conversation</h2>
+          {specCardId != null && (
+            <span className="report-convo-block-id">{specCardId}</span>
+          )}
           {drawerOpen && specCardId != null && (
             <span className="report-convo-status" aria-label="Spec agent status">
               {/* #668 fix — the chip reflects the harness phase when one is
@@ -521,6 +527,17 @@ export function SpecConversation({
                 Reset
               </button>
             </span>
+          )}
+          <span className="report-convo-scope">Whole document</span>
+          {onClose && (
+            <button
+              type="button"
+              className="report-convo-close"
+              aria-label="Close conversation"
+              onClick={onClose}
+            >
+              ×
+            </button>
           )}
         </div>
       </header>

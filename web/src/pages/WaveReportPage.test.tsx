@@ -736,7 +736,7 @@ describe('WaveReportPage', () => {
       .toBe('false');
   });
 
-  it('keeps keyboard focus on the chevron while toggling the Files rail', () => {
+  it('switches between the rail-top toggle and edge opener', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -755,16 +755,14 @@ describe('WaveReportPage', () => {
     const expandToggle = screen.getByRole('button', {
       name: 'Expand report rail',
     });
-    expect(expandToggle).toBe(toggle);
-    expect(document.activeElement).toBe(expandToggle);
+    expect(expandToggle).not.toBe(toggle);
 
     fireEvent.click(expandToggle);
 
     const collapseToggle = screen.getByRole('button', {
       name: 'Collapse report rail',
     });
-    expect(collapseToggle).toBe(toggle);
-    expect(document.activeElement).toBe(collapseToggle);
+    expect(collapseToggle).not.toBe(expandToggle);
   });
 
   it('persists the collapsed Files rail across remounts', () => {
@@ -843,7 +841,8 @@ describe('WaveReportPage', () => {
     expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
     const page = container.querySelector('.report-page');
     expect(page?.firstElementChild).toBe(rail);
-    expect(page?.children[1]).toHaveClass('report-center');
+    expect(page?.children[1]).toHaveClass('report-rail-open');
+    expect(page?.children[2]).toHaveClass('report-center');
     expect(page?.lastElementChild).toHaveClass('report-conversation-drawer');
   });
 
@@ -1816,7 +1815,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
   });
 
-  it('marks the drawer unavailable and omits the composer without a spec card', () => {
+  it('opens the empty drawer and omits the composer without a spec card', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -1824,9 +1823,11 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(
-      screen.getByRole('button', { name: 'Conversation unavailable' }),
-    ).toBeDisabled();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation drawer' }),
+    );
+    expect(screen.getByRole('button', { name: 'Close conversation drawer' }))
+      .toHaveAttribute('aria-expanded', 'true');
     expect(
       screen.getByText('Spec Agent is unavailable for this wave.'),
     ).toBeInTheDocument();
@@ -1951,7 +1952,7 @@ describe('WaveReportPage', () => {
     );
 
     const panel = screen.getByRole('region', { name: 'Backlinks' });
-    expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
+    expect(within(panel).getAllByText('Alpha')).toHaveLength(2);
     expect(within(panel).getByText('Beta')).toBeInTheDocument();
     expect(
       within(panel).getByText('Some backlinks are not shown.'),
