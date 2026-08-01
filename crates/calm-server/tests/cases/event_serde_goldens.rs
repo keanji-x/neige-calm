@@ -31,7 +31,9 @@ use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
-use calm_types::event::{ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject};
+use calm_types::event::{
+    ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject, TaskContextRef,
+};
 use calm_types::proposal::{ProposalAnchor, ProposalDecision, ProposalOp};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -722,6 +724,47 @@ golden_test!(
 );
 
 golden_test!(
+    task_context_frozen_full,
+    "task_context_frozen.full.json",
+    Event::TaskContextFrozen {
+        task_id: "wave-01:build-step".into(),
+        refs: vec![TaskContextRef {
+            wave_id: WaveId::from("wave-01"),
+            block_id: "block-01".into(),
+            rev: 7,
+            hash: "sha256:context".into(),
+        }],
+    }
+);
+
+golden_test!(
+    task_context_frozen_min,
+    "task_context_frozen.min.json",
+    Event::TaskContextFrozen {
+        task_id: "wave-01:legacy".into(),
+        refs: vec![],
+    }
+);
+
+golden_test!(
+    task_context_advanced_full,
+    "task_context_advanced.full.json",
+    Event::TaskContextAdvanced {
+        task_id: "wave-01:build-step".into(),
+        verdict: "material".into(),
+    }
+);
+
+golden_test!(
+    task_context_advanced_min,
+    "task_context_advanced.min.json",
+    Event::TaskContextAdvanced {
+        task_id: "wave-01:legacy".into(),
+        verdict: "material".into(),
+    }
+);
+
+golden_test!(
     workspace_leased,
     "workspace_leased.json",
     Event::WorkspaceLeased {
@@ -1044,7 +1087,7 @@ fn alias_kinds_survive_from_kind_and_payload() {
 /// Every `Event` variant's kind tag, in declaration order. Adding a variant
 /// to the enum without adding a golden (and a tag here) fails the coverage
 /// test below.
-const ALL_KIND_TAGS: [&str; 48] = [
+const ALL_KIND_TAGS: [&str; 50] = [
     "cove.updated",
     "cove.deleted",
     "wave.updated",
@@ -1075,6 +1118,8 @@ const ALL_KIND_TAGS: [&str; 48] = [
     "task.failed",
     "plan.updated",
     "task.dispatched",
+    "task.context_frozen",
+    "task.context_advanced",
     "workspace.leased",
     "workspace.released",
     "forge.pr.merged",
@@ -1127,7 +1172,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 70,
+        files, 74,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {
@@ -1178,6 +1223,8 @@ fn kind_tag_list_matches_enum() {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::TaskContextFrozen { .. } => "task.context_frozen",
+            Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
@@ -1204,7 +1251,7 @@ fn kind_tag_list_matches_enum() {
     assert_eq!(tag_of(&sample), sample.kind_tag());
     assert_eq!(
         ALL_KIND_TAGS.len(),
-        48,
+        50,
         "ALL_KIND_TAGS length drifted from the Event enum"
     );
 }

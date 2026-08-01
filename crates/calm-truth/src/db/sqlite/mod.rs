@@ -395,6 +395,8 @@ impl Repo for SqlxRepo {
 mod tests;
 
 #[cfg(test)]
+mod task_context_migration_tests;
+#[cfg(test)]
 mod task_liveness_deadline_tests;
 
 #[cfg(test)]

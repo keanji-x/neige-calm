@@ -589,6 +589,27 @@ export const taskDispatchedSchema = z.object({
   }),
 });
 
+export const taskContextFrozenSchema = z.object({
+  ev: z.literal('task.context_frozen'),
+  data: z.object({
+    task_id: z.string(),
+    refs: z.array(z.object({
+      wave_id: z.string(),
+      block_id: z.string(),
+      rev: z.number(),
+      hash: z.string(),
+    })),
+  }),
+});
+
+export const taskContextAdvancedSchema = z.object({
+  ev: z.literal('task.context_advanced'),
+  data: z.object({
+    task_id: z.string(),
+    verdict: z.string(),
+  }),
+});
+
 /**
  * `Event::WorkspaceLeased` — issue #760 slice 1: the kernel created an
  * isolated workspace directory for a Codex worker card.
@@ -933,6 +954,8 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   taskFailedSchema,
   planUpdatedSchema,
   taskDispatchedSchema,
+  taskContextFrozenSchema,
+  taskContextAdvancedSchema,
   workspaceLeasedSchema,
   workspaceReleasedSchema,
   forgePrMergedSchema,
@@ -997,6 +1020,8 @@ export type TaskCompletedEvent = z.infer<typeof taskCompletedSchema>;
 export type TaskFailedEvent = z.infer<typeof taskFailedSchema>;
 export type PlanUpdatedEvent = z.infer<typeof planUpdatedSchema>;
 export type TaskDispatchedEvent = z.infer<typeof taskDispatchedSchema>;
+export type TaskContextFrozenEvent = z.infer<typeof taskContextFrozenSchema>;
+export type TaskContextAdvancedEvent = z.infer<typeof taskContextAdvancedSchema>;
 export type WorkspaceLeasedEvent = z.infer<typeof workspaceLeasedSchema>;
 export type WorkspaceReleasedEvent = z.infer<typeof workspaceReleasedSchema>;
 export type ForgePrMergedEvent = z.infer<typeof forgePrMergedSchema>;

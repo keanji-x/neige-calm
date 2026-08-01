@@ -3030,22 +3030,48 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
         wave: fx.wave_id.clone(),
         cove: fx.cove_id.clone(),
     };
-    fx.repo
-        .log_pure_event(
-            ActorId::KernelDispatcher,
-            wave_scope,
-            None,
-            &fx.events,
-            &fx.cache,
-            &fx.wave_cove_cache,
-            Event::TaskDispatched {
-                idempotency_key: task_id.clone(),
-                kind: "codex".into(),
-                agent_message: Some(format!("[codex-forge-e2e] seed task {key}")),
-            },
-        )
-        .await
-        .expect("log seeded task.dispatched");
+    let dispatch_message = format!("[codex-forge-e2e] seed task {key}");
+    calm_server::db::write_with_actor_events_typed::<(), _>(
+        fx.repo.as_ref(),
+        None,
+        &fx.events,
+        &fx.write,
+        {
+            let task_id = task_id.clone();
+            let dispatch_message = dispatch_message.clone();
+            move |_tx| {
+                let task_id = task_id.clone();
+                let wave_scope = wave_scope.clone();
+                let dispatch_message = dispatch_message.clone();
+                Box::pin(async move {
+                    Ok((
+                        (),
+                        vec![
+                            (
+                                ActorId::KernelDispatcher,
+                                wave_scope.clone(),
+                                Event::TaskDispatched {
+                                    idempotency_key: task_id.clone(),
+                                    kind: "codex".into(),
+                                    agent_message: Some(dispatch_message),
+                                },
+                            ),
+                            (
+                                ActorId::KernelDispatcher,
+                                wave_scope,
+                                Event::TaskContextFrozen {
+                                    task_id,
+                                    refs: vec![],
+                                },
+                            ),
+                        ],
+                    ))
+                })
+            }
+        },
+    )
+    .await
+    .expect("log seeded dispatch + context freeze batch");
 
     // The seeded fixture shortcut does not mint a real worker session, so
     // author the completion as KernelDispatcher (gate-unrestricted per

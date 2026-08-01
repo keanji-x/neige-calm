@@ -118,6 +118,16 @@ pub enum RoleViolation {
     NotKernelForTaskDispatched { actor: String },
 
     #[error(
+        "task.context_frozen is a kernel-only scheduler record; no card-derived actor may emit it (actor={actor})"
+    )]
+    NotKernelForTaskContextFrozen { actor: String },
+
+    #[error(
+        "task.context_advanced is a kernel-only context verdict; no card-derived actor may emit it (actor={actor})"
+    )]
+    NotKernelForTaskContextAdvanced { actor: String },
+
+    #[error(
         "task.gate_result is a kernel-only gate-runner record; no card-derived actor may emit it (actor={actor})"
     )]
     NotKernelForTaskGateResult { actor: String },
@@ -313,6 +323,65 @@ pub fn enforce_role(
             }
             ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
                 return Err(RoleViolation::NotKernelForTaskDispatched {
+                    actor: ai_worker_actor_label(actor, card_id),
+                });
+            }
+            ActorId::AiSpecSession(session)
+            | ActorId::AiCodexSession(session)
+            | ActorId::AiClaudeSession(session) => {
+                return Err(RoleViolation::SessionActorUnresolved {
+                    session: session.clone(),
+                });
+            }
+        }
+    }
+
+    // Issue #985 PR3a-i. Context freeze and advancement records are facts
+    // produced by the scheduler kernel. They use the same narrow authority
+    // gate as task.dispatched/task.gate_result.
+    if matches!(event, Event::TaskContextFrozen { .. }) {
+        match actor {
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Plugin(name) => {
+                return Err(RoleViolation::NotKernelForTaskContextFrozen {
+                    actor: format!("Plugin({name})"),
+                });
+            }
+            ActorId::AiSpec(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextFrozen {
+                    actor: format!("AiSpec({card_id})"),
+                });
+            }
+            ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextFrozen {
+                    actor: ai_worker_actor_label(actor, card_id),
+                });
+            }
+            ActorId::AiSpecSession(session)
+            | ActorId::AiCodexSession(session)
+            | ActorId::AiClaudeSession(session) => {
+                return Err(RoleViolation::SessionActorUnresolved {
+                    session: session.clone(),
+                });
+            }
+        }
+    }
+
+    if matches!(event, Event::TaskContextAdvanced { .. }) {
+        match actor {
+            ActorId::User | ActorId::Kernel | ActorId::KernelDispatcher => {}
+            ActorId::Plugin(name) => {
+                return Err(RoleViolation::NotKernelForTaskContextAdvanced {
+                    actor: format!("Plugin({name})"),
+                });
+            }
+            ActorId::AiSpec(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextAdvanced {
+                    actor: format!("AiSpec({card_id})"),
+                });
+            }
+            ActorId::AiCodex(card_id) | ActorId::AiClaude(card_id) => {
+                return Err(RoleViolation::NotKernelForTaskContextAdvanced {
                     actor: ai_worker_actor_label(actor, card_id),
                 });
             }
@@ -1578,6 +1647,52 @@ mod tests {
             let res = enforce_role(&actor, &event, &wave_scope("w", "c"), &cache, &wcc);
             assert!(res.is_ok(), "{actor:?} emitting task.gate_result: {res:?}");
         }
+    }
+
+    #[test]
+    fn task_context_frozen_is_kernel_only_985_pr3a() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let worker = CardId::from("worker-1");
+        cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
+        let event = Event::TaskContextFrozen {
+            task_id: "w:legacy".into(),
+            refs: Vec::new(),
+        };
+        let err = enforce_role(
+            &ActorId::AiCodex(worker),
+            &event,
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("worker must not forge task.context_frozen");
+        assert!(matches!(
+            err,
+            RoleViolation::NotKernelForTaskContextFrozen { .. }
+        ));
+    }
+
+    #[test]
+    fn task_context_advanced_is_kernel_only_985_pr3a() {
+        let cache = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let event = Event::TaskContextAdvanced {
+            task_id: "w:legacy".into(),
+            verdict: "material".into(),
+        };
+        let err = enforce_role(
+            &ActorId::Plugin("forger".into()),
+            &event,
+            &wave_scope("w", "c"),
+            &cache,
+            &wcc,
+        )
+        .expect_err("plugin must not forge task.context_advanced");
+        assert!(matches!(
+            err,
+            RoleViolation::NotKernelForTaskContextAdvanced { .. }
+        ));
     }
 
     #[test]

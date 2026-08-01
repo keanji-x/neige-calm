@@ -435,7 +435,9 @@ pub(super) fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDel
         // (`wave_fs_view::runs_for_wave`); a gate verdict changes no
         // tracked bytes today. Re-add a run-key dirty arm here when the
         // runs projection starts consuming `task.gate_result`.
-        Event::TaskGateResult { .. } => {}
+        Event::TaskGateResult { .. }
+        | Event::TaskContextFrozen { .. }
+        | Event::TaskContextAdvanced { .. } => {}
         // Issue #760 slice 1: workspace leases are operational history.
         // They are persisted and replayable, but they do not change the
         // wave filesystem projection in this slice.

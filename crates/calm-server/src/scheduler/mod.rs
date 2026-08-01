@@ -686,18 +686,28 @@ impl Scheduler {
                         if in_flight > budget {
                             return Err(race_lost_err());
                         }
-                        let mut events = vec![(
-                            ActorId::KernelDispatcher,
-                            scope.clone(),
-                            Event::TaskDispatched {
-                                idempotency_key: task_id.clone(),
-                                kind: task_kind_str(frozen.kind).to_string(),
-                                agent_message: Some(format!(
-                                    "[scheduler] dispatching task {}",
-                                    frozen.key
-                                )),
-                            },
-                        )];
+                        let mut events = vec![
+                            (
+                                ActorId::KernelDispatcher,
+                                scope.clone(),
+                                Event::TaskDispatched {
+                                    idempotency_key: task_id.clone(),
+                                    kind: task_kind_str(frozen.kind).to_string(),
+                                    agent_message: Some(format!(
+                                        "[scheduler] dispatching task {}",
+                                        frozen.key
+                                    )),
+                                },
+                            ),
+                            (
+                                ActorId::KernelDispatcher,
+                                scope.clone(),
+                                Event::TaskContextFrozen {
+                                    task_id: task_id.clone(),
+                                    refs: Vec::new(),
+                                },
+                            ),
+                        ];
                         // Same pre-spawn ordering rationale as the legacy
                         // dispatch path: promote before the worker exists so
                         // a fast report's Working → Reviewing promotion can

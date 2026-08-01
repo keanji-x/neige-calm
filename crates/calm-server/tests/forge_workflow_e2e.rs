@@ -2289,15 +2289,25 @@ async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
             Box::pin(async move {
                 Ok((
                     (),
-                    vec![(
-                        ActorId::KernelDispatcher,
-                        scope,
-                        Event::TaskDispatched {
-                            idempotency_key,
-                            kind: "codex".to_string(),
-                            agent_message: Some(agent_message),
-                        },
-                    )],
+                    vec![
+                        (
+                            ActorId::KernelDispatcher,
+                            scope.clone(),
+                            Event::TaskDispatched {
+                                idempotency_key: idempotency_key.clone(),
+                                kind: "codex".to_string(),
+                                agent_message: Some(agent_message),
+                            },
+                        ),
+                        (
+                            ActorId::KernelDispatcher,
+                            scope,
+                            Event::TaskContextFrozen {
+                                task_id: idempotency_key,
+                                refs: vec![],
+                            },
+                        ),
+                    ],
                 ))
             })
         },

@@ -1,0 +1,15 @@
+{
+  "description": "task.context_frozen full shape pins a resolved frozen reference payload.",
+  "wire": {
+    "ev": "task.context_frozen",
+    "data": {
+      "task_id": "wave-01:build-step",
+      "refs": [{
+        "wave_id": "wave-01",
+        "block_id": "block-01",
+        "rev": 7,
+        "hash": "sha256:context"
+      }]
+    }
+  }
+}

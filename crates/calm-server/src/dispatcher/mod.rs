@@ -136,6 +136,8 @@ pub(crate) fn event_warrants_spec_push_with_role(
         | Event::TerminalWorkerRequested { .. }
         | Event::PlanUpdated { .. }
         | Event::TaskDispatched { .. }
+        | Event::TaskContextFrozen { .. }
+        | Event::TaskContextAdvanced { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgeIssueRead { .. }
         | Event::ProposalSubmitted { .. }
@@ -1070,6 +1072,8 @@ impl Inner {
             | Event::CodexWorkerRequested { .. }
             | Event::TerminalWorkerRequested { .. }
             | Event::TaskDispatched { .. }
+            | Event::TaskContextFrozen { .. }
+            | Event::TaskContextAdvanced { .. }
             | Event::ForgePrDiffRead { .. }
             | Event::ForgeIssueRead { .. }
             // Issue #955 — proposal lifecycle events reach the spec
@@ -1448,6 +1452,8 @@ pub(crate) fn harness_observation_from_event(
         | Event::TerminalWorkerRequested { .. }
         | Event::PlanUpdated { .. }
         | Event::TaskDispatched { .. }
+        | Event::TaskContextFrozen { .. }
+        | Event::TaskContextAdvanced { .. }
         | Event::ForgePrDiffRead { .. }
         | Event::ForgeIssueRead { .. }
         | Event::ProposalSubmitted { .. }

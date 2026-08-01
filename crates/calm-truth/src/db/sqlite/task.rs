@@ -19,7 +19,7 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, wave_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, created_at_ms, updated_at_ms, finished_at_ms";
+     running_deadline_ms, context_stale_at_ms, created_at_ms, updated_at_ms, finished_at_ms";
 
 /// In-tx read of a wave's full plan, in scheduler order
 /// (`priority DESC, created_at_ms ASC, key ASC` — design §5.2). Used by

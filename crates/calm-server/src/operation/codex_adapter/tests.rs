@@ -130,6 +130,7 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

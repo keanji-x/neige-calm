@@ -153,7 +153,9 @@ pub const API_VERSION: &str = "1";
 ///   parseable, so `SYNC_EVENT_VERSION` stays 12.
 /// * `15` — issue #979 adds required `ifDocRev` to whole-document report
 ///   writes and exposes `docRev` on report payloads.
-pub const WEB_COMPAT_VERSION: u32 = 15;
+/// * `16` — issue #985 PR3a-i adds task-context frozen/advanced events and
+///   bumps `SYNC_EVENT_VERSION` 12 → 13 so older zod unions refresh safely.
+pub const WEB_COMPAT_VERSION: u32 = 16;
 
 /// Kernel compatibility values sourced from live constants. Kept in
 /// `calm-server` for PR 1 because the manifest type lives in `neige-app`,

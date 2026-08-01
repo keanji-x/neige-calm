@@ -364,6 +364,7 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -2227,6 +2228,48 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
         "payload must reflect the claimed (frozen) row, not the pre-claim snapshot"
     );
     assert_eq!(task_row(&boot, "revise").await.status, TaskStatus::Running);
+}
+
+#[tokio::test]
+async fn every_dispatch_persists_same_batch_legacy_empty_context_freeze() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "legacy-freeze", TaskKind::Terminal, &[]),
+    )
+    .await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let rows: Vec<(i64, String, Value)> = sqlx::query_as(
+        "SELECT id, kind, json(payload) FROM events \
+         WHERE kind IN ('task.dispatched', 'task.context_frozen') ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read dispatch batch events");
+    assert_eq!(rows.len(), 2, "one dispatch must have exactly one freeze");
+    assert_eq!(rows[0].1, "task.dispatched");
+    assert_eq!(rows[1].1, "task.context_frozen");
+    assert_eq!(rows[1].0, rows[0].0 + 1, "batch events stay adjacent");
+    assert_eq!(
+        rows[1].2["task_id"],
+        json!(format!("{}:legacy-freeze", boot.wave_id))
+    );
+    assert_eq!(
+        rows[1].2["refs"],
+        json!([]),
+        "legacy freeze is explicit empty set"
+    );
 }
 
 // ---------------------------------------------------------------------------
