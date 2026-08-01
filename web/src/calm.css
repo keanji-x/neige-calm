@@ -1927,6 +1927,7 @@ select:-webkit-autofill {
 .report-prose :is(h1, h2) {
   counter-increment: report-h2;
   display: block;
+  overflow: hidden;
   margin: var(--space-2) var(--space-0) var(--space-9);
   color: var(--text);
   font-family: var(--font-serif);
@@ -1934,20 +1935,28 @@ select:-webkit-autofill {
   font-weight: var(--weight-medium);
   line-height: var(--leading-snug);
   letter-spacing: -.005em;
-  background-image: linear-gradient(var(--hairline), var(--hairline));
-  background-position: left calc(100% - 7px);
-  background-repeat: no-repeat;
-  background-size: 100% 1px;
 }
 .report-prose :is(h1, h2)::before {
   content: counter(report-h2, decimal-leading-zero);
-  float: left;
-  margin: .8em var(--space-7) 0 0;
+  display: inline-block;
+  margin-inline-end: var(--space-7);
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 11.5px;
   font-weight: var(--weight-regular);
   letter-spacing: .02em;
+  vertical-align: baseline;
+}
+.report-prose :is(h1, h2)::after {
+  content: "";
+  display: inline-block;
+  width: 100%;
+  height: 1px;
+  margin-inline-start: var(--space-7);
+  /* stylelint-disable-next-line declaration-property-value-disallowed-list -- zero-advance trailing-rule contract */
+  margin-inline-end: -100%;
+  background: var(--hairline);
+  vertical-align: middle;
 }
 .report-prose h3 {
   font-size: 19px;
@@ -2703,6 +2712,7 @@ select:-webkit-autofill {
 .report-rail-head {
   width: 100%;
   min-height: 0;
+  margin: var(--space-0);
   padding: var(--space-8) var(--space-7) var(--space-7);
   gap: var(--space-4);
   color: var(--text-4);
@@ -3495,9 +3505,10 @@ button.report-rail-head:hover {
     border-bottom: 1px solid var(--hairline);
   }
   .report-rail-open {
-    position: fixed;
-    z-index: var(--z-overlay);
+    position: sticky;
+    z-index: var(--z-raised);
     top: var(--space-6);
+    margin-bottom: calc((var(--space-10) + var(--space-3)) * -1);
   }
   .report-convo,
   .report-convo-head,

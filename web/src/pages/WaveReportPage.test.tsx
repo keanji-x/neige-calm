@@ -815,8 +815,8 @@ describe('WaveReportPage', () => {
     };
     const { unmount } = render(<WaveReportPage {...props} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse Backlinks' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse Files' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Backlinks' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
 
     expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
     expect(mockUseWaveFileList).toHaveBeenCalledWith(
@@ -834,9 +834,9 @@ describe('WaveReportPage', () => {
 
     unmount();
     render(<WaveReportPage {...props} />);
-    expect(screen.getByRole('button', { name: 'Expand Backlinks' }))
+    expect(screen.getByRole('button', { name: 'Backlinks' }))
       .toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByRole('button', { name: 'Expand Files' }))
+    expect(screen.getByRole('button', { name: 'Files' }))
       .toHaveAttribute('aria-expanded', 'false');
   });
 
@@ -873,8 +873,8 @@ describe('WaveReportPage', () => {
     expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
     const page = container.querySelector('.report-page');
     expect(page?.firstElementChild).toBe(rail);
-    expect(page?.children[1]).toHaveClass('report-rail-open');
-    expect(page?.children[2]).toHaveClass('report-center');
+    expect(page?.children[1]).toHaveClass('report-center');
+    expect(page?.children[1]?.firstElementChild).toHaveClass('report-rail-open');
     expect(page?.lastElementChild).toHaveClass('report-conversation-drawer');
   });
 

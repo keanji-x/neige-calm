@@ -341,3 +341,58 @@ test('pure H1 report counters match the outline sequence', async ({ page }) => {
     .allTextContents();
   expect(renderedBodyCounters).toEqual(outlineCounters);
 });
+
+test('report heading rules preserve heading geometry', async ({ page }) => {
+  await login(page);
+
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(
+    page,
+    wave.id,
+    [
+      '## Short heading',
+      '',
+      '##',
+      '',
+      '## Heading with `inline code`',
+      '',
+      '## A deliberately long heading that must wrap onto another line in the report prose column so the trailing rule follows its final line',
+    ].join('\n'),
+  );
+
+  await page.goto(`/calm/wave/${wave.id}`);
+
+  const headings = page.locator('.report-body .report-prose h2');
+  await expect(headings).toHaveCount(4);
+  const boxes = await headings.evaluateAll((elements) =>
+    elements.map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { y: rect.y, height: rect.height };
+    }),
+  );
+  for (const box of boxes) {
+    expect(box.height).toBeGreaterThan(0);
+  }
+  for (let index = 0; index < boxes.length - 1; index += 1) {
+    expect(boxes[index].y + boxes[index].height)
+      .toBeLessThanOrEqual(boxes[index + 1].y + 1);
+  }
+
+  const trailingRules = await headings.evaluateAll((elements) =>
+    elements.map((element) => {
+      const style = getComputedStyle(element, '::after');
+      return {
+        width: Number.parseFloat(style.width),
+        marginInlineEnd: Number.parseFloat(style.marginInlineEnd),
+      };
+    }),
+  );
+  // This locks the zero-advance trailing-rule mechanism: it prevents an
+  // element-wide line, but intentionally does not assert its exact pixels.
+  for (const rule of trailingRules) {
+    expect(rule.marginInlineEnd).toBeLessThan(0);
+    expect(Math.abs(rule.marginInlineEnd)).toBeCloseTo(rule.width, 1);
+  }
+});

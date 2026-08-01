@@ -336,7 +336,7 @@ function RailSection({
             type="button"
             className="report-rail-head"
             aria-expanded={!collapsed}
-            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
+            aria-label={title}
             onClick={() => onCollapsedChange(!collapsed)}
           >
             <ChevronIcon />
@@ -761,19 +761,19 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </div>
         </RailSection>
       </aside>
-      <button
-        type="button"
-        ref={railOpenButtonRef}
-        className="report-rail-open"
-        hidden={!reportRailCollapsed}
-        onClick={toggleReportRailCollapsed}
-        aria-label="Expand report rail"
-        aria-controls="report-context-rail"
-        title="Expand report rail"
-      >
-        <ChevronIcon />
-      </button>
       <section className="report-center" aria-label="Report">
+        <button
+          type="button"
+          ref={railOpenButtonRef}
+          className="report-rail-open"
+          hidden={!reportRailCollapsed}
+          onClick={toggleReportRailCollapsed}
+          aria-label="Expand report rail"
+          aria-controls="report-context-rail"
+          title="Expand report rail"
+        >
+          <ChevronIcon />
+        </button>
         <div
           className="report-document-scroll"
           // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable report document must be keyboard-focusable.
