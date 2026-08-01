@@ -171,6 +171,12 @@ async fn blocks_upsert(
     let position = optional_index(obj, "position", tool)?;
     let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?;
     if id.is_some() {
+        if if_doc_rev.is_some() {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `if_doc_rev` is not valid when `id` is given; updates with `id` must use \
+                 `if_rev` (the block-level rev)"
+            )));
+        }
         if if_rev.is_none() {
             return Err(RpcError::invalid_params(format!(
                 "{tool}: `if_rev` is required when `id` is given (read the \

@@ -581,6 +581,31 @@ async fn upsert_replace_without_if_rev_is_invalid_params() {
 }
 
 #[tokio::test]
+async fn upsert_replace_rejects_if_doc_rev_instead_of_ignoring_it() {
+    let boot = boot().await;
+    let index = index_of(&read(&boot, json!({})).await);
+    let (id, rev) = index[0].clone();
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "id": id,
+            "kind": "prose",
+            "markdown": "x\n",
+            "if_rev": rev,
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("replace must reject the create-only document revision anchor");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("if_doc_rev"), "msg = {err:?}");
+    assert!(err.message.contains("if_rev"), "msg = {err:?}");
+    assert!(err.message.contains("block-level rev"), "msg = {err:?}");
+}
+
+#[tokio::test]
 async fn upsert_rev_conflict_returns_32001_and_writes_nothing() {
     let boot = boot().await;
     let index = index_of(&read(&boot, json!({})).await);

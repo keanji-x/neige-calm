@@ -167,6 +167,8 @@ pub(crate) fn guard_task_declarations(
         }
         let user_owned = string_field(old, "declared_by") == Some("user")
             || string_field(old, "tombstoned_by") == Some("user");
+        // Moving is deliberately allowed: order is not block content, and MoveBlock does not
+        // increment a block's revision.
         if author != EditAuthor::User && user_owned && next != Some(old) {
             return Err(bad(format!(
                 "non-user author may not modify or delete user-controlled task block {}",
@@ -180,6 +182,12 @@ pub(crate) fn guard_task_declarations(
                     && is_tombstone(block)
                     && string_field(block, "key") == key
                     && string_field(block, "tombstoned_by") == Some("user")
+                    && !before_by_id.get(&block.id).is_some_and(|before_block| {
+                        is_task(before_block)
+                            && is_tombstone(before_block)
+                            && string_field(before_block, "key") == key
+                            && string_field(before_block, "tombstoned_by") == Some("user")
+                    })
             });
             if !has_tombstone {
                 return Err(bad(format!(
@@ -341,6 +349,19 @@ mod tests {
         assert!(
             guard_task_declarations(std::slice::from_ref(&spec), &[], EditAuthor::User).is_err()
         );
+        let older_same_key_tombstone = block(
+            "b_older_tombstone",
+            json!({"key":"build","tombstone":{},"declared_by":"spec","tombstoned_by":"user"}),
+        );
+        assert!(
+            guard_task_declarations(
+                &[spec.clone(), older_same_key_tombstone.clone()],
+                &[older_same_key_tombstone],
+                EditAuthor::User
+            )
+            .is_err(),
+            "an unrelated pre-existing same-key tombstone must not authorize deletion"
+        );
         // 5: only a user may introduce or alter released_by_user.
         let mut released = spec.clone();
         released.payload["released_by_user"] = json!(true);
@@ -386,6 +407,29 @@ mod tests {
             let error = apply_report_op(&mut attempt, &operation, EditAuthor::Spec).unwrap_err();
             assert!(matches!(error, CalmError::BadRequest(_)));
         }
+    }
+
+    #[test]
+    fn non_user_may_move_user_controlled_task_without_changing_its_revision() {
+        let task_fence = render_fence(KIND_TASK, &live("user"));
+        let body = format!("{task_fence}# trailing prose\n");
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &body));
+        let before = doc.blocks_snapshot().unwrap();
+        let task = before.iter().find(|block| is_task(block)).unwrap().clone();
+
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::MoveBlock {
+                id: task.id.clone(),
+                to_index: 1,
+                if_doc_rev: 0,
+            },
+            EditAuthor::Spec,
+        )
+        .expect("order is not task content, so a non-user move is allowed");
+
+        let after = doc.blocks_snapshot().unwrap();
+        assert_eq!(after[1], task);
     }
 
     #[test]
