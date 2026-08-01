@@ -13,6 +13,8 @@ export interface WaveFileTreeProps {
   showCounts?: boolean;
   /** Whether to show dot-prefixed entries. Defaults to false. */
   showHidden?: boolean;
+  /** Whether file queries may run. The tree remains mounted when disabled. */
+  enabled?: boolean;
   /** Optional fallback UI when the root query is loading or empty. */
   fallback?: ReactNode;
 }
@@ -24,6 +26,7 @@ export function WaveFileTree({
   ariaLabel = 'Wave files',
   showCounts = false,
   showHidden = false,
+  enabled = true,
   fallback,
 }: WaveFileTreeProps) {
   return (
@@ -35,6 +38,7 @@ export function WaveFileTree({
       ariaLabel={ariaLabel}
       showCounts={showCounts}
       showHidden={showHidden}
+      enabled={enabled}
       fallback={fallback}
     />
   );
@@ -47,15 +51,16 @@ function WaveFileTreeState({
   ariaLabel,
   showCounts,
   showHidden,
+  enabled = true,
   fallback,
 }: Required<Pick<WaveFileTreeProps, 'ariaLabel' | 'showCounts' | 'showHidden'>> &
   Omit<WaveFileTreeProps, 'ariaLabel' | 'showCounts' | 'showHidden'>) {
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [focusedPath, setFocusedPath] = useState<string | null>(null);
   const treeRef = useRef<HTMLUListElement>(null);
-  const rootQ = useWaveFileList(waveId, '');
+  const rootQ = useWaveFileList(waveId, '', { enabled });
   const cardIndexQ = useWaveFileContent(waveId, 'cards/index.json', {
-    enabled: expandedDirs.has('cards'),
+    enabled: enabled && expandedDirs.has('cards'),
   });
   const cardKinds = useMemo(
     () => parseCardKinds(cardIndexQ.data?.content),
@@ -176,6 +181,7 @@ function WaveFileTreeState({
         cardKinds={cardKinds}
         showCounts={showCounts}
         showHidden={showHidden}
+        enabled={enabled}
         rootFallback={fallback}
         onToggleDir={toggleDir}
         onSelectFile={onSelectedPathChange}
@@ -201,6 +207,7 @@ interface DirectoryBodyProps {
   cardKinds: Map<string, string>;
   showCounts: boolean;
   showHidden: boolean;
+  enabled: boolean;
   rootFallback?: ReactNode;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
@@ -223,6 +230,7 @@ function DirectoryBody({
   cardKinds,
   showCounts,
   showHidden,
+  enabled,
   rootFallback,
   onToggleDir,
   onSelectFile,
@@ -270,6 +278,7 @@ function DirectoryBody({
             cardKinds={cardKinds}
             showCounts={showCounts}
             showHidden={showHidden}
+            enabled={enabled}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
             onFocusItem={onFocusItem}
@@ -294,6 +303,7 @@ interface TreeEntryProps {
   cardKinds: Map<string, string>;
   showCounts: boolean;
   showHidden: boolean;
+  enabled: boolean;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
   onFocusItem: (path: string) => void;
@@ -313,6 +323,7 @@ function TreeEntry({
   cardKinds,
   showCounts,
   showHidden,
+  enabled,
   onToggleDir,
   onSelectFile,
   onFocusItem,
@@ -321,7 +332,7 @@ function TreeEntry({
   const isDir = isDirectory(entry);
   const expanded = isDir && expandedDirs.has(path);
   const label = entryLabel(entry, parentPath, cardKinds);
-  const childQ = useWaveFileList(waveId, path, { enabled: expanded });
+  const childQ = useWaveFileList(waveId, path, { enabled: enabled && expanded });
   const tabPath = focusedPath ?? defaultFocusedPath;
   const meta = showCounts ? entryMeta(entry, isDir) : null;
 
@@ -384,6 +395,7 @@ function TreeEntry({
             cardKinds={cardKinds}
             showCounts={showCounts}
             showHidden={showHidden}
+            enabled={enabled}
             onToggleDir={onToggleDir}
             onSelectFile={onSelectFile}
             onFocusItem={onFocusItem}

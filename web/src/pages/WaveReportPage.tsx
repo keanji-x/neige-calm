@@ -1,4 +1,12 @@
-import { lazy, Suspense, useEffect, useMemo, type ReactNode } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -317,20 +325,30 @@ function RailSection({
   children: ReactNode;
 }) {
   return (
-    <section className="report-rail-section" aria-label={title}>
-      <button
-        type="button"
-        className="report-rail-head"
-        aria-expanded={!collapsed}
-        aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
-        onClick={() => onCollapsedChange(!collapsed)}
-      >
-        <ChevronIcon />
-        <span className="report-rail-heading">{title}</span>
-        {count != null && <span className="report-rail-count">{count}</span>}
-      </button>
+    <section
+      className="report-rail-section"
+      aria-label={title}
+      data-collapsed={collapsed}
+    >
+      <div className="report-rail-section-head">
+        <h2>
+          <button
+            type="button"
+            className="report-rail-head"
+            aria-expanded={!collapsed}
+            aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${title}`}
+            onClick={() => onCollapsedChange(!collapsed)}
+          >
+            <ChevronIcon />
+            <span className="report-rail-heading">{title}</span>
+            {count != null && <span className="report-rail-count">{count}</span>}
+          </button>
+        </h2>
+        {!collapsed && actions && (
+          <div className="report-rail-actions">{actions}</div>
+        )}
+      </div>
       <div className="report-rail-section-body">{children}</div>
-      {actions && <div className="report-rail-actions">{actions}</div>}
     </section>
   );
 }
@@ -494,9 +512,10 @@ function BacklinksPanel({
                   params={{ waveId }}
                   hash={entry.src_block_id}
                 >
-                  <span className="report-backlinks-title" aria-hidden="true">
+                  <span className="report-backlinks-title">
                     {group.title}
                   </span>
+                  {' '}
                   <span className="report-backlinks-quote">
                     <BacklinkQuote backlink={entry} />
                   </span>
@@ -595,6 +614,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     readConversationCollapsed(),
   );
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
+  const railCollapseButtonRef = useRef<HTMLButtonElement>(null);
+  const railOpenButtonRef = useRef<HTMLButtonElement>(null);
+  const railFocusTransferPending = useRef(false);
   const backlinksQ = useWaveBacklinksQuery(wave.id);
   const outline = useMemo(
     () => deriveOutline(reportCard?.blocks),
@@ -608,12 +630,19 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   }
 
   const toggleReportRailCollapsed = () => {
+    railFocusTransferPending.current = true;
     setReportRailCollapsed((current) => {
       const next = !current;
       writeCollapsedState(REPORT_RAIL_COLLAPSED_STORAGE_KEY, next);
       return next;
     });
   };
+  useLayoutEffect(() => {
+    if (!railFocusTransferPending.current) return;
+    railFocusTransferPending.current = false;
+    if (reportRailCollapsed) railOpenButtonRef.current?.focus();
+    else railCollapseButtonRef.current?.focus();
+  }, [reportRailCollapsed]);
   const toggleHiddenFiles = () => {
     setShowHiddenFiles((current) => !current);
   };
@@ -629,6 +658,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const railCollapseButton = (
     <button
       type="button"
+      ref={railCollapseButtonRef}
       className="report-rail-toggle"
       onClick={toggleReportRailCollapsed}
       aria-expanded={!reportRailCollapsed}
@@ -650,6 +680,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
       }
     >
       <aside
+        id="report-context-rail"
         className={
           'report-rail' + (reportRailCollapsed ? ' report-rail--collapsed' : '')
         }
@@ -664,10 +695,10 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           className="report-rail-section report-rail-section--outline"
           aria-label="Outline"
         >
-          <header className="report-rail-head report-rail-head--static">
+          <h2 className="report-rail-head report-rail-head--static">
             <span className="report-rail-heading">Outline</span>
             <span className="report-rail-count">{outline.length}</span>
-          </header>
+          </h2>
           <div className="report-rail-section-body">
             <OutlinePanel
               outline={outline}
@@ -721,6 +752,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
                 setSelectedFilePath(path ?? 'report.md');
               }}
               ariaLabel="Wave files"
+              enabled={!filesCollapsed}
               showHidden={showHiddenFiles}
               fallback={
                 <div className="report-rail-placeholder">No files yet.</div>
@@ -731,11 +763,12 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
       </aside>
       <button
         type="button"
+        ref={railOpenButtonRef}
         className="report-rail-open"
         hidden={!reportRailCollapsed}
         onClick={toggleReportRailCollapsed}
         aria-label="Expand report rail"
-        aria-expanded={false}
+        aria-controls="report-context-rail"
         title="Expand report rail"
       >
         <ChevronIcon />

@@ -485,9 +485,6 @@ export function SpecConversation({
       <header className="report-convo-head">
         <div className="report-convo-head-inner">
           <h2>Conversation</h2>
-          {specCardId != null && (
-            <span className="report-convo-block-id">{specCardId}</span>
-          )}
           {drawerOpen && specCardId != null && (
             <span className="report-convo-status" aria-label="Spec agent status">
               {/* #668 fix — the chip reflects the harness phase when one is
@@ -528,7 +525,6 @@ export function SpecConversation({
               </button>
             </span>
           )}
-          <span className="report-convo-scope">Whole document</span>
           {onClose && (
             <button
               type="button"
