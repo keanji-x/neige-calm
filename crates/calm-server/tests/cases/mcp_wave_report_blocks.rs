@@ -116,7 +116,7 @@ async fn block_write_invalidates_previously_read_whole_document_revision() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({"kind": "prose", "payload": {"markdown": "# Added\n"}}),
+        json!({"kind": "prose", "payload": {"markdown": "# Added\n"}, "if_doc_rev": 0}),
     )
     .await
     .unwrap();
@@ -143,7 +143,7 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({"kind": "prose", "markdown": "# Added\n"}),
+        json!({"kind": "prose", "markdown": "# Added\n", "if_doc_rev": 0}),
     )
     .await
     .unwrap();
@@ -168,6 +168,63 @@ async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
         read(&boot, json!({})).await["body"],
         "# accidental overwrite\n"
     );
+}
+
+#[tokio::test]
+async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
+    let boot = boot().await;
+    let create = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "markdown": "# Old caller\n"}),
+    )
+    .await
+    .expect_err("old create shape must be rejected during contract migration");
+    assert_eq!(create.code, RpcError::INVALID_PARAMS);
+    assert!(create.message.contains("if_doc_rev"));
+    assert!(create.message.contains("calm.report.read"));
+    assert!(create.message.contains("docRev"));
+
+    let current = read(&boot, json!({})).await;
+    let created = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "kind": "prose",
+            "markdown": "# Retried caller\n",
+            "if_doc_rev": current["docRev"]
+        }),
+    )
+    .await
+    .expect("caller can self-heal by reading docRev and retrying");
+    assert_eq!(created["docRev"], current["docRev"].as_u64().unwrap() + 1);
+
+    let current = read(&boot, json!({})).await;
+    let index = index_of(&current);
+    let moved = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({"id": index[0].0, "to_index": 0}),
+    )
+    .await
+    .expect_err("old move shape must be rejected during contract migration");
+    assert_eq!(moved.code, RpcError::INVALID_PARAMS);
+    assert!(moved.message.contains("if_doc_rev"));
+    assert!(moved.message.contains("calm.report.read"));
+    assert!(moved.message.contains("docRev"));
+
+    let moved = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({"id": index[0].0, "to_index": 0, "if_doc_rev": current["docRev"]}),
+    )
+    .await
+    .expect("caller can self-heal move by reading docRev and retrying");
+    assert_eq!(moved["docRev"], current["docRev"].as_u64().unwrap() + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +321,7 @@ async fn kinds_returns_all_five_schemas() {
     );
     assert_eq!(
         task.pointer("/schema/properties/declared_by/enum"),
-        Some(&json!(["spec"]))
+        Some(&json!(["spec", "user"]))
     );
 
     // #960 PR3 review round 1: advertised limits mirror the Rust
@@ -399,7 +456,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# 新块\n\ncontent\n" }),
+        json!({ "kind": "prose", "markdown": "# 新块\n\ncontent\n", "if_doc_rev": 0 }),
     )
     .await
     .expect("upsert create succeeds");
@@ -453,7 +510,7 @@ async fn upsert_new_block_at_position_inserts() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# 首块\n\nfirst\n", "position": 0 }),
+        json!({ "kind": "prose", "markdown": "# 首块\n\nfirst\n", "position": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("insert at 0 succeeds");
@@ -472,7 +529,7 @@ async fn upsert_new_block_at_position_inserts() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "x\n", "position": 99 }),
+        json!({ "kind": "prose", "markdown": "x\n", "position": 99, "if_doc_rev": 2 }),
     )
     .await
     .expect_err("position out of range");
@@ -521,6 +578,31 @@ async fn upsert_replace_without_if_rev_is_invalid_params() {
     .expect_err("replace without if_rev must be rejected");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("if_rev"), "msg = {err:?}");
+}
+
+#[tokio::test]
+async fn upsert_replace_rejects_if_doc_rev_instead_of_ignoring_it() {
+    let boot = boot().await;
+    let index = index_of(&read(&boot, json!({})).await);
+    let (id, rev) = index[0].clone();
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "id": id,
+            "kind": "prose",
+            "markdown": "x\n",
+            "if_rev": rev,
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("replace must reject the create-only document revision anchor");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("if_doc_rev"), "msg = {err:?}");
+    assert!(err.message.contains("if_rev"), "msg = {err:?}");
+    assert!(err.message.contains("block-level rev"), "msg = {err:?}");
 }
 
 #[tokio::test]
@@ -696,7 +778,7 @@ async fn move_reorders_without_touching_rev() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0, "if_rev": ids[1].1 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("move succeeds");
@@ -714,7 +796,7 @@ async fn move_reorders_without_touching_rev() {
 }
 
 #[tokio::test]
-async fn move_rev_conflict_returns_32001_and_moves_nothing() {
+async fn move_doc_rev_conflict_returns_32001_and_moves_nothing() {
     let boot = boot().await;
     let ids = seed_two_blocks(&boot).await;
     let before = current_payload(&boot).await;
@@ -724,12 +806,15 @@ async fn move_rev_conflict_returns_32001_and_moves_nothing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0, "if_rev": ids[1].1 + 7 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 8 }),
     )
     .await
     .expect_err("stale if_rev must conflict");
     assert_eq!(err.code, RPC_REV_CONFLICT);
-    assert!(err.message.contains("rev conflict"), "msg = {err:?}");
+    assert!(
+        err.message.contains("document revision conflict"),
+        "msg = {err:?}"
+    );
     assert_eq!(current_payload(&boot).await, before);
     let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(no_event.is_err(), "conflict emitted event: {no_event:?}");
@@ -739,7 +824,7 @@ async fn move_rev_conflict_returns_32001_and_moves_nothing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": "b_nope", "to_index": 0 }),
+        json!({ "id": "b_nope", "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect_err("unknown id");
@@ -748,7 +833,7 @@ async fn move_rev_conflict_returns_32001_and_moves_nothing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[0].0, "to_index": 5 }),
+        json!({ "id": ids[0].0, "to_index": 5, "if_doc_rev": 1 }),
     )
     .await
     .expect_err("index out of range");
@@ -1047,7 +1132,7 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("move succeeds");
@@ -1099,7 +1184,7 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("move succeeds");
@@ -1158,11 +1243,14 @@ const CHART_PAYLOAD_V1: &str = r#"{
 
 /// Upsert one chart block after the seed prose; returns `(id, rev)`.
 async fn upsert_chart(boot: &Boot, payload: Value) -> (String, u64) {
+    let if_doc_rev = read(boot, json!({})).await["docRev"]
+        .as_u64()
+        .expect("read returns docRev");
     let out = call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(boot),
-        json!({ "kind": "chart.candles", "payload": payload }),
+        json!({ "kind": "chart.candles", "payload": payload, "if_doc_rev": if_doc_rev }),
     )
     .await
     .expect("chart upsert succeeds");

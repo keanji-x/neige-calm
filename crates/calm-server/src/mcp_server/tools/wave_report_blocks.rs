@@ -9,8 +9,8 @@
 //! | Tool | Shape | Notes |
 //! |---|---|---|
 //! | `calm.report.blocks.kinds`  | `{}` | Self-describing kind vocabulary (static). |
-//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, position? }` | Create (`id` absent) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
-//! | `calm.report.blocks.move`   | `{ id, to_index, if_rev? }` | Reorder; rev untouched. |
+//! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
+//! | `calm.report.blocks.move`   | `{ id, to_index, if_doc_rev }` | Reorder; rev untouched. |
 //! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. |
 //! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev }` | Escape hatch: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
 //!
@@ -169,7 +169,14 @@ async fn blocks_upsert(
     };
     let if_rev = optional_u32(obj, "if_rev", tool)?;
     let position = optional_index(obj, "position", tool)?;
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?;
     if id.is_some() {
+        if if_doc_rev.is_some() {
+            return Err(RpcError::invalid_params(format!(
+                "{tool}: `if_doc_rev` is not valid when `id` is given; updates with `id` must use \
+                 `if_rev` (the block-level rev)"
+            )));
+        }
         if if_rev.is_none() {
             return Err(RpcError::invalid_params(format!(
                 "{tool}: `if_rev` is required when `id` is given (read the \
@@ -187,6 +194,11 @@ async fn blocks_upsert(
             "{tool}: `if_rev` without `id` is meaningless — omit it when \
              creating a new block"
         )));
+    } else if if_doc_rev.is_none() {
+        return Err(RpcError::invalid_params(format!(
+            "{tool}: `if_doc_rev` is now required when creating a block; read `docRev` from \
+             `calm.report.read`, then retry with that value"
+        )));
     }
 
     let outcome = commit_block_op(
@@ -198,6 +210,7 @@ async fn blocks_upsert(
             kind,
             content,
             if_rev,
+            if_doc_rev,
             position,
         },
     )
@@ -226,7 +239,12 @@ async fn blocks_move(
     let id = required_string(obj, "id", tool)?;
     let to_index = optional_index(obj, "to_index", tool)?
         .ok_or_else(|| RpcError::invalid_params(format!("{tool}: missing `to_index` (integer)")))?;
-    let if_rev = optional_u32(obj, "if_rev", tool)?;
+    let if_doc_rev = optional_u64(obj, "if_doc_rev", tool)?.ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "{tool}: `if_doc_rev` is now required; read `docRev` from \
+             `calm.report.read`, then retry with that value"
+        ))
+    })?;
 
     let (card, block) = commit_block_op(
         &ctx,
@@ -235,7 +253,7 @@ async fn blocks_move(
         ReportDocOp::MoveBlock {
             id,
             to_index,
-            if_rev,
+            if_doc_rev,
         },
     )
     .await?;

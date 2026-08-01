@@ -574,6 +574,7 @@ pub mod wave_report;
 pub mod wave_report_doc;
 mod wave_report_guard;
 pub mod wave_report_read;
+mod wave_report_task_guard;
 pub mod wave_vcs;
 pub mod ws;
 

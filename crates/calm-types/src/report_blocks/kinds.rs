@@ -52,6 +52,27 @@ pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
 }
 
+/// Markdown-bearing payload fields the kernel declares safe to scan for
+/// report links. Structured blocks are opt-in: scanning their canonical
+/// JSON fence would corrupt Markdown syntax through JSON escaping.
+pub fn scannable_text_fields<'a>(kind: &str, payload: &'a Value) -> Vec<&'a str> {
+    let Some(payload) = payload.as_object() else {
+        return Vec::new();
+    };
+    match kind {
+        KIND_PROSE => payload
+            .get("markdown")
+            .and_then(Value::as_str)
+            .into_iter()
+            .collect(),
+        KIND_TASK => ["goal", "acceptance"]
+            .into_iter()
+            .filter_map(|field| payload.get(field).and_then(Value::as_str))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Validate a non-prose payload against its kind's schema. `Err` is a
 /// `"; "`-joined list of field-level violations (paths like
 /// `candles[3]`), suitable for a `-32602` message verbatim. Unknown
@@ -235,8 +256,11 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
 }
 
 fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {
-    if !matches!(map.get("declared_by").and_then(Value::as_str), Some("spec")) {
-        errors.push("declared_by: required; slice 1 only accepts \"spec\"".into());
+    if !matches!(
+        map.get("declared_by").and_then(Value::as_str),
+        Some("spec" | "user")
+    ) {
+        errors.push("declared_by: required; must be one of \"spec\" | \"user\"".into());
     }
 }
 

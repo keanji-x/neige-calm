@@ -173,43 +173,42 @@ async fn backlinks_for_wave_with_byte_cap(
         if card.id != target_card_id {
             readable_non_target_sources += 1;
         }
-        for block in snapshot
-            .blocks
-            .iter()
-            .filter(|block| block.kind == calm_types::report_blocks::KIND_PROSE)
-        {
-            let markdown = calm_types::report_blocks::flat_text(block);
-            let scan = calm_types::report_links::scan_links(&markdown);
-            for link in scan.links {
-                if link.dst_wave_id != wave_id {
-                    continue;
-                }
-                let quote = quote_for_link(&scan.plain, &link);
-                let backlink = Backlink {
-                    src_wave_id: card.wave_id.as_str().to_string(),
-                    src_wave_title: source_title.clone(),
-                    src_block_id: block.id.clone(),
-                    dst_block_id: link
-                        .dst_block_id
-                        .filter(|id| target_block_ids.contains(id.as_str())),
-                    label: link.label.clone(),
-                    quote,
-                    updated_at: snapshot.updated_at,
-                };
-                if backlinks.len() == MAX_BACKLINK_ENTRIES {
-                    truncated = true;
-                    break 'cards;
-                }
-                backlinks.push(backlink);
-                let bounded_envelope = BacklinkPage {
-                    backlinks: backlinks.clone(),
-                    truncated: true,
-                    skipped_sources: max_skipped_sources,
-                };
-                if !page_fits_wire_caps(&bounded_envelope, max_bytes) {
-                    backlinks.pop();
-                    truncated = true;
-                    break 'cards;
+        for block in &snapshot.blocks {
+            for markdown in
+                calm_types::report_blocks::scannable_text_fields(&block.kind, &block.payload)
+            {
+                let scan = calm_types::report_links::scan_links(markdown);
+                for link in scan.links {
+                    if link.dst_wave_id != wave_id {
+                        continue;
+                    }
+                    let quote = quote_for_link(&scan.plain, &link);
+                    let backlink = Backlink {
+                        src_wave_id: card.wave_id.as_str().to_string(),
+                        src_wave_title: source_title.clone(),
+                        src_block_id: block.id.clone(),
+                        dst_block_id: link
+                            .dst_block_id
+                            .filter(|id| target_block_ids.contains(id.as_str())),
+                        label: link.label.clone(),
+                        quote,
+                        updated_at: snapshot.updated_at,
+                    };
+                    if backlinks.len() == MAX_BACKLINK_ENTRIES {
+                        truncated = true;
+                        break 'cards;
+                    }
+                    backlinks.push(backlink);
+                    let bounded_envelope = BacklinkPage {
+                        backlinks: backlinks.clone(),
+                        truncated: true,
+                        skipped_sources: max_skipped_sources,
+                    };
+                    if !page_fits_wire_caps(&bounded_envelope, max_bytes) {
+                        backlinks.pop();
+                        truncated = true;
+                        break 'cards;
+                    }
                 }
             }
         }
@@ -266,6 +265,15 @@ mod tests {
     }
 
     async fn report(repo: &SqlxRepo, wave_id: &str, payload: serde_json::Value) {
+        report_as(repo, wave_id, payload, EditAuthor::Kernel).await;
+    }
+
+    async fn report_as(
+        repo: &SqlxRepo,
+        wave_id: &str,
+        payload: serde_json::Value,
+        author: EditAuthor,
+    ) {
         let initial = WaveReportPayload::initial();
         let card = repo
             .card_create(crate::model::NewCard {
@@ -284,7 +292,7 @@ mod tests {
             &EventBus::new(),
             &WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
             ActorId::Kernel,
-            EditAuthor::Kernel,
+            author,
             wave,
             card,
             initial,
@@ -437,6 +445,45 @@ mod tests {
                 head_elided: false,
                 tail_elided: false,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn task_backlinks_scan_declared_text_fields_not_canonical_json() {
+        let repo = fresh_repo().await;
+        let cove = cove(&repo, "one").await;
+        let target = wave(&repo, cove.id.as_str(), "Target").await;
+        let source = wave(&repo, cove.id.as_str(), "Source").await;
+        report(&repo, target.id.as_str(), target_payload()).await;
+        let target_card = repo
+            .cards_by_wave(target.id.as_str())
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|card| card.kind == "wave-report")
+            .unwrap();
+        let target_block_id = load_report_read_snapshot(&repo, target_card.id.as_str())
+            .await
+            .unwrap()
+            .blocks[0]
+            .id
+            .clone();
+        let task = json!({
+            "key": "linked", "kind": "codex",
+            "goal": format!("Read [target](neige://wave/{}#{target_block_id})", target.id),
+            "acceptance": "Done", "ready": false, "declared_by": "spec"
+        });
+        let fence = calm_types::report_blocks::render_data_block("task", &task).unwrap();
+        report_as(&repo, source.id.as_str(), v1(fence), EditAuthor::Spec).await;
+
+        let found = backlinks_for_wave(&repo as &dyn RouteRepo, target.id.as_str())
+            .await
+            .unwrap();
+        assert_eq!(found.backlinks.len(), 1);
+        assert_eq!(found.backlinks[0].label, "target");
+        assert_eq!(
+            found.backlinks[0].dst_block_id.as_deref(),
+            Some(target_block_id.as_str())
         );
     }
 

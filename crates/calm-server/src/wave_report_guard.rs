@@ -70,7 +70,8 @@ pub(crate) fn guard_non_prose_stomp(doc: &ReportDoc, body: &str) -> Result<(), C
             return Err(CalmError::BadRequest(format!(
                 "this write would modify or delete non-prose block {} (kind {}) — the prose \
                  write/edit path may not touch data blocks; use calm.report.blocks.upsert / \
-                 .delete with if_rev, or calm.report.write_markdown for a whole-document \
+                 .delete with if_rev (task deletion must use the block-level DELETE path), or \
+                 calm.report.write_markdown for a whole-document \
                  rewrite, and keep unrelated ```neige-block fences byte-identical",
                 old.id, old.kind
             )));
@@ -82,6 +83,7 @@ pub(crate) fn guard_non_prose_stomp(doc: &ReportDoc, body: &str) -> Result<(), C
 #[cfg(test)]
 mod tests {
     use crate::error::CalmError;
+    use crate::event::EditAuthor;
     use crate::wave_report::{ReportDocOp, WaveReportPayload, apply_report_op};
     use crate::wave_report_doc::ReportDoc;
     use serde_json::json;
@@ -121,6 +123,7 @@ mod tests {
                     body: body.clone(),
                     if_doc_rev: 0,
                 },
+                EditAuthor::Spec,
             )
             .unwrap_err();
             assert!(
@@ -146,6 +149,7 @@ mod tests {
                 body: format!("# A\n\nalpha rewritten\n{fence_text}# B\n\nnew section\n"),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         let blocks = doc.blocks_snapshot().unwrap();
@@ -173,7 +177,7 @@ mod tests {
                 if_doc_rev: 0,
             },
         ] {
-            let err = apply_report_op(&mut doc, &op).unwrap_err();
+            let err = apply_report_op(&mut doc, &op, EditAuthor::Spec).unwrap_err();
             assert!(
                 matches!(&err, CalmError::BadRequest(m) if m.contains("neige-block")),
                 "{err:?}"
@@ -189,6 +193,7 @@ mod tests {
                 body: bad_schema.into(),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap_err();
         assert!(
@@ -205,6 +210,7 @@ mod tests {
                 body: unknown.into(),
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap_err();
         assert!(
@@ -227,6 +233,7 @@ mod tests {
                 body,
                 if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         let blocks = doc.blocks_snapshot().unwrap();

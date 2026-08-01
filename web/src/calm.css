@@ -2001,6 +2001,42 @@ select:-webkit-autofill {
   font-size: var(--text-xs);
 }
 
+/* ── task: editorial declaration with visible provenance ── */
+.rb-task {
+  padding-block: var(--space-6);
+  border-block: 1px solid var(--hairline-strong);
+  color: var(--text-2);
+}
+.rb-task header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-5);
+}
+.rb-task header strong,
+.rb-task > strong {
+  color: var(--text);
+  font-size: var(--text-base);
+}
+.rb-task header span,
+.rb-task-meta,
+.rb-task-acceptance > span {
+  color: var(--text-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.rb-task-meta {
+  margin-block: var(--space-2) var(--space-5);
+}
+.rb-task-goal > :first-child,
+.rb-task-acceptance .calm-prose > :first-child {
+  margin-top: var(--space-0);
+}
+.rb-task-acceptance {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--hairline);
+}
+
 /* ── chart.candles: no card frame — hairlines + breakout do the work ── */
 .rb-fig {
   margin: var(--space-0);

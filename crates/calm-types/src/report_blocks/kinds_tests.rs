@@ -279,14 +279,13 @@ fn task_priority_rejects_integer_outside_i64_range() {
 }
 
 #[test]
-fn task_declared_by_user_is_rejected_in_slice_one() {
+fn task_declared_by_accepts_spec_and_user() {
     let mut payload = valid_task();
     payload["declared_by"] = json!("user");
-    assert!(
-        validate_payload(KIND_TASK, &payload)
-            .unwrap_err()
-            .contains("only accepts \"spec\"")
-    );
+    assert_eq!(validate_payload(KIND_TASK, &payload), Ok(()));
+
+    payload["declared_by"] = json!("kernel");
+    assert!(validate_payload(KIND_TASK, &payload).is_err());
 }
 
 #[test]
