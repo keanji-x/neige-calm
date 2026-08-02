@@ -1,0 +1,1959 @@
+# meta:
+#   slice: app-dataflow (web/src/app/** + web/src/api/events.ts + web/src/api/onUnauthorized.ts)
+#   files covered:
+#     - web/src/app/providers.tsx            (+ providers.test.tsx)
+#     - web/src/app/eventBridge.tsx          (+ eventBridge.test.tsx)
+#     - web/src/app/invalidationPolicies.ts
+#     - web/src/app/SessionProvider.tsx      (+ SessionProvider.test.tsx)
+#     - web/src/app/theme.tsx                (+ theme.test.tsx)
+#     - web/src/app/router.tsx
+#     - web/src/app/navigation.ts
+#     - web/src/app/shell.tsx
+#     - web/src/app/useConnectionState.ts    (+ useConnectionState.test.tsx)
+#     - web/src/app/cache-bust-db-instance-id.test.tsx
+#     - web/src/api/events.ts
+#     - web/src/api/onUnauthorized.ts
+#   total entries: 104
+#   by kind: invariant 76 | capability 21 | gate 7
+#   id prefix: APP
+
+# ===========================================================================
+# 1. Provider stack ordering  (family: app-provider-stack)
+# ===========================================================================
+
+- id: INV-APP-001
+  kind: invariant
+  family: app-provider-stack
+  statement: >
+    EventBridge 必须挂载在 ServerCompatGate 的**内部**（而不是与 children 平级），
+    兼容判定落定前不得存在任何 EventBridge 实例。
+  why: >
+    Bridge 一挂载就在 useEffect 里开 /api/events WebSocket 并把每一帧灌进 Query
+    cache；在 compat 检查跑完之前开 socket，等于让一个不兼容的前端去解析它读不懂的
+    kernel 帧。issue #198 concern 1 明写此约束。
+  source: web/src/app/providers.tsx:110-122,231-236
+  authoritative_test: web/src/app/providers.test.tsx:374,396
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-002
+  kind: invariant
+  family: app-provider-stack
+  statement: >
+    /api/version 仍在飞行中（q.data === undefined）时，children 必须照常渲染，
+    但 EventBridge 必须保持未挂载。
+  why: >
+    冷启动窗口里要让路由树从持久化 cache 立刻上色（不能被 version 查询阻塞），
+    同时又绝不能在 compat 裁决落地前尝试 WS 连接。两个诉求同时成立的唯一形状就是
+    "children 渲染 + bridge 不挂"。
+  source: web/src/app/providers.tsx:218-236
+  authoritative_test: web/src/app/providers.test.tsx:423
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-003
+  kind: invariant
+  family: app-provider-stack
+  statement: >
+    ThemeProvider 必须位于 AppProviders 之内、RouterProvider（children）之外，
+    即整个路由树之上只有唯一一个 theme provider。
+  why: >
+    路由内渲染的 plugin iframe 卡片会调 useTheme()；只有当 provider 高于整棵路由树，
+    一次主题翻转才能被所有路由同时观测到。issue #22。
+  source: web/src/app/providers.tsx:103-122
+  authoritative_test: NONE
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-004
+  kind: invariant
+  family: app-provider-stack
+  statement: >
+    QueryClient 必须是模块作用域的单例，persistOptions 也必须在模块作用域构建一次。
+  why: >
+    QueryClient 要在重渲染间保持稳定并能被 router loader 直接 import 使用
+    （router.tsx 的 loader 直接 `import { queryClient }`）；persistOptions 若每次
+    AppProviders 重渲染都重建，会反复重开 IndexedDB 连接。
+  source: web/src/app/providers.tsx:84-97
+  authoritative_test: NONE
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: architecture
+  test_tier: none
+  migration: pending
+
+- id: INV-APP-005
+  kind: invariant
+  family: app-provider-stack
+  statement: >
+    QueryRestoreGate 在 `useIsRestoring()` 为真时必须渲染 `null`，不得渲染 children。
+  why: >
+    IndexedDB 快照回填期间渲染 children 会先画一遍空 cache 再被 hydrate 覆盖，
+    产生可见闪烁；gate 的存在就是把第一帧推迟到 hydration 结束。
+  source: web/src/app/providers.tsx:128-131
+  authoritative_test: NONE
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ===========================================================================
+# 2. 版本兼容闸门  (family: app-compat-gate)
+# ===========================================================================
+
+- id: CAP-APP-006
+  kind: capability
+  family: app-compat-gate
+  statement: >
+    当服务端 `minWebCompatVersion > WEB_COMPAT_VERSION` 时，必须用
+    RefreshRequiredOverlay 硬盖住整棵树，同时显示两侧版本号并提供 "Refresh now" 按钮。
+  why: >
+    issue #45 / docs/upgrade-stability.md Tier B：前后端 skew 时用户必须被明确阻断，
+    并且运维式的 "compat v3 vs v1" 对照要一眼可见。
+  source: web/src/app/providers.tsx:205-207,291-306
+  authoritative_test: web/src/app/providers.test.tsx:132,184
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-APP-007
+  kind: invariant
+  family: app-compat-gate
+  statement: >
+    兼容检查只在挂载时跑一次 —— 不得设置 refetchInterval 轮询；
+    且 `staleTime: 0` + `gcTime: 0`，新挂载绝不复用缓存的 version 结果。
+  why: >
+    这个查询的全部意义是"本次挂载的快照"；缓存值对新挂载没有意义，轮询也不在设计内
+    （单次 mount 检查，见 providers.tsx 头部注释）。
+  source: web/src/app/providers.tsx:158-170
+  authoritative_test: NONE
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-008
+  kind: invariant
+  family: app-compat-gate
+  statement: >
+    /api/version 查询本身失败（网络抖动、服务端宕机）时，必须渲染 children 而**不**阻断整个 app；
+    dbInstanceId 检查在该情况下同样 no-op。
+  why: >
+    宁可让各查询自己的错误横幅暴露连通性问题，也不要因为一次瞬时 /api/version 失败
+    把整个应用锁死；缺数据意味着没有可比对的东西，比对必须跳过。
+  source: web/src/app/providers.tsx:150-155,177-179
+  authoritative_test: NONE
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-009
+  kind: invariant
+  family: app-compat-gate
+  statement: >
+    RefreshRequiredOverlay 只有一条出路 —— reload；Esc 与遮罩点击必须走与
+    "Refresh now" 完全相同的 handler。
+  why: >
+    这是硬阻断态，没有"取消"语义；把 onClose 也指向 refresh 才不会出现"关掉弹窗后
+    继续用不兼容前端"的漏口。同时复用共享 Dialog 以继承 focus trap / inert / focus restore。
+  source: web/src/app/providers.tsx:291-304
+  authoritative_test: web/src/app/providers.test.tsx:151
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ===========================================================================
+# 3. dbInstanceId 缓存爆破  (family: app-cache-bust)
+# ===========================================================================
+
+- id: CAP-APP-010
+  kind: capability
+  family: app-cache-bust
+  statement: >
+    当服务端上报的 `dbInstanceId` 与 localStorage 中上次记录的值不同时，必须清空
+    React Query 内存 cache、删除 IndexedDB(IDB_DB_NAME)、移除 WS cursor，写入新 id，
+    然后 `window.location.reload()`。
+  why: >
+    dbInstanceId 是服务端每次进程启动新铸的 UUID v4（不落库）。值变了说明底层 sqlite
+    被重建（`make dev RESET_DB=1`、迁移分支切换），持久化的 cache 与 cursor 里全是
+    已不存在的行 id。
+  source: web/src/app/providers.tsx:177-203
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:141
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-011
+  kind: invariant
+  family: app-cache-bust
+  statement: >
+    缓存爆破必须**静默**执行 —— 不得弹确认框、不得询问用户。
+  why: >
+    没有任何客户端自有状态会丢（一切都在服务端），确认框是纯摩擦。代码注释明写
+    "silently, because there's no client-owned state to lose"。
+  source: web/src/app/providers.tsx:145-149
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:141
+  owner_slice: app/providers
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-012
+  kind: invariant
+  family: app-cache-bust
+  statement: >
+    dbInstanceId 相同时，必须保留 Query cache、WS cursor（`calm:sync:cursor`）和 IDB blob —— 三者一个都不能动。
+  why: >
+    对称防"爆破过度"回归：匹配路径上误删 cursor 会丢掉自启动以来的全部事件，
+    误删 cache/IDB 会白掉首屏。
+  source: web/src/app/providers.tsx:181,198-202
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:267
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-013
+  kind: invariant
+  family: app-cache-bust
+  statement: >
+    首次访问（localStorage 无历史 id）必须只写入当前 id 并继续渲染，不得触发任何清理或 reload。
+  why: >
+    没有 previous 值就没有"变化"可言；把首访当成爆破会让每个新用户第一次打开就白屏刷新一次。
+  source: web/src/app/providers.tsx:198-202
+  authoritative_test: web/src/app/providers.test.tsx:264
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-014
+  kind: invariant
+  family: app-cache-bust
+  statement: >
+    `busted === true`（reload 已发起）期间必须渲染 `null`，不得渲染 children。
+  why: >
+    浏览器马上就要导航走；此刻渲染 children 会闪一帧"cache 已清空"的空态。
+  source: web/src/app/providers.tsx:172-175,208-212
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:263
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-015
+  kind: invariant
+  family: app-cache-bust
+  statement: >
+    localStorage / indexedDB 的每一次访问都必须包裹 try/catch，不可用时优雅 no-op，
+    绝不能让 providers 树崩溃。
+  why: >
+    private mode / 禁用存储的浏览器 / SSR / 未装 jsdom polyfill 的测试都会让这三个
+    全局 API 抛错或缺席。降级后最坏结果只是缓存爆破功能不生效（等同于本 PR 之前的行为），
+    严格优于整个应用崩掉。
+  source: web/src/app/providers.tsx:239-283
+  authoritative_test: NONE
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-016
+  kind: invariant
+  family: app-cache-bust
+  statement: >
+    爆破路径删除的 IndexedDB 库名必须**就是** persister 实际写入的 `IDB_DB_NAME`，
+    不得是硬编码猜测的名字。
+  why: >
+    issue #199：用 vi.fn() 桩掉 deleteDatabase 只能证明"调了"，不能证明库名对得上。
+    名字漂移会让 blob 静默存活，旧行 id 继续上色。
+  source: web/src/app/providers.tsx:192,277-283
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:248
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 4. 持久化 key 契约  (family: app-storage-keys)
+# ===========================================================================
+
+- id: INV-APP-017
+  kind: invariant
+  family: app-storage-keys
+  statement: >
+    WS 同步游标的 localStorage key 字面量 `calm:sync:cursor` 在三处硬编码
+    （api/events.ts、providers.tsx、SessionProvider.tsx），三者的值必须始终一致。
+  why: >
+    代码注释明写"duplicate it here (rather than import) so the cache-bust path
+    doesn't pull the WS module into the providers' import graph … The value MUST
+    stay in sync with events.ts"。三处任意一处漂移 = 清理路径删不掉真正的 cursor，
+    登出/爆破后仍会用旧游标去 replay。
+    【新架构备注】这是应当被消除的重复：新架构应把 key 收敛到单一常量模块，
+    让 import graph 约束通过分层而非复制来满足。
+  source: web/src/api/events.ts:152; web/src/app/providers.tsx:73-82; web/src/app/SessionProvider.tsx:62-65
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:251
+  owner_slice: core/keys/storage
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-018
+  kind: invariant
+  family: app-storage-keys
+  statement: >
+    dbInstanceId 的 localStorage key 固定为 `calm:db_instance_id`；主题的 key 固定为
+    `calm.theme`；两者都必须导出/稳定，不得随重构改名。
+  why: >
+    key 改名等价于一次全量用户的静默状态丢失（主题回落 system、dbInstance 比对退化成首访）。
+    theme key 注释指明沿用 `calm.*` 命名约定。
+  source: web/src/app/providers.tsx:71; web/src/app/theme.tsx:66-68
+  authoritative_test: web/src/app/theme.test.tsx:112,143
+  owner_slice: core/keys/storage
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 5. EventBridge 生命周期  (family: app-event-bridge)
+# ===========================================================================
+
+- id: INV-APP-019
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    EventBridge 的 effect 必须严格按 `setSyncEventVersion(v)` → `subscribe(['*'])` →
+    `start()` 顺序调用，三者顺序 load-bearing。
+  why: >
+    setSyncEventVersion 必须先于 subscribe，服务端推来的第一帧（通常是 replay 窗口）
+    才已经被 eventVersion 天花板守住（#198 concern 2）；start 必须最后，
+    才保证 gate 装好之前 socket 根本没开（#215）。
+  source: web/src/app/eventBridge.tsx:172-189
+  authoritative_test: web/src/app/eventBridge.test.tsx:165
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: skipped
+  skip_reason: >
+    新架构用 typestate 取代：`UnconfiguredEventStream.configure({syncEventVersion, topics})`
+    返回 `ConfiguredEventStream`，只有后者有 `start()`；subscribe 折进 configure。
+    三段顺序在类型层不可倒置，不再需要运行期约定。见 _fe-architecture.md §4.7.1。
+    ⚠️ INV-APP-020/021 不随之消失（typestate 管不了「只有一处调 start」与「configure 本身不得连接」）。
+
+- id: INV-APP-020
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    EventBridge 必须是共享事件流单例唯一的 `start()` 调用方；其他消费者
+    （useConnectionState、codex hook listener）只注册 handler，不得触发连接。
+  why: >
+    issue #198 followup / PR #215：以前 `sharedEventStream()` 会自动 start，
+    ServerCompatGate 提前渲染的 children 一调它就在 compat 裁决前开了 socket。
+    改成惰性单例后，"不兼容前端永不打开 /api/events" 才从"实践上成立"变成"构造上成立"。
+    【新架构】typestate **不覆盖此条**：同一 Unconfigured 实例可被多次 configure，
+    也可能产生多个持有 start() 的 handle。仍需 ownership 约束 + architecture test。
+  source: web/src/app/eventBridge.tsx:180-189; web/src/api/events.ts:604-634
+  authoritative_test: web/src/app/eventBridge.test.tsx:165
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-021
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    `sharedEventStream()` 在显式 `start()` 之前必须完全惰性 —— 构造单例不得自动连接。
+  why: >
+    同上（#215）。注释明写"we DO NOT auto-call start() here"，并给出测试逃生口：
+    需要已连接流的测试自行 `new EventStream(url)` 再 `start()`。
+    【新架构】`configure()` 本身**不得**建立连接，构造/获取共享实例也不得连接。
+    这是接口的副作用约束，必须写进 §6 冻结面，typestate 不表达副作用。
+  source: web/src/api/events.ts:606-634
+  authoritative_test: web/src/app/useConnectionState.test.tsx:87
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-022
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    EventBridge 的 effect 卸载时必须解绑全部三个监听（事件、_replay_complete、
+    _snapshot_required），且 effect 依赖恰为 `[queryClient, syncEventVersion]`。
+  why: >
+    三个 off 缺一就在热重载 / StrictMode 双挂载下累积重复监听，同一帧被 dispatch 多次。
+  source: web/src/app/eventBridge.tsx:228-233
+  authoritative_test: NONE
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-023
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    `EventBridgeProps.syncEventVersion` 必须是必填（required），不得是 optional。
+  why: >
+    Bridge 只在 ServerCompatGate 内挂载，构造上 version 查询已 resolve，调用方一定知道该值；
+    做成可选会给"忘了传"留下一个静默不设 gate 的口子。
+  source: web/src/app/eventBridge.tsx:150-167
+  authoritative_test: web/src/app/providers.test.tsx:396
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-024
+  kind: capability
+  family: app-event-bridge
+  statement: >
+    收到 `_replay_complete` 控制帧时必须执行一次**无 queryKey 的全量** `invalidateQueries()`。
+  why: >
+    重连的历史窗口播完后，断线期间漂移的乐观状态需要一次防御性收敛；
+    逐事件 dispatcher 会漏掉（例如某个 card overlay 所属 wave detail 当下没加载）的边界情况由它兜底。
+    TanStack 会批处理实际 refetch，所以代价很低。
+  source: web/src/app/eventBridge.tsx:206-217
+  authoritative_test: web/src/app/eventBridge.test.tsx:491
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-025
+  kind: capability
+  family: app-event-bridge
+  statement: >
+    收到 `_snapshot_required` 控制帧时必须执行 `queryClient.clear()`。
+  why: >
+    该帧表示服务端已无法按当前 cursor 服务（超出保留期）。清空持久化 cache 让下次挂载
+    冷启动、从 REST 重新拉取。EventStream 在该监听跑之前已抹掉 lastEventId。
+  source: web/src/app/eventBridge.tsx:219-226
+  authoritative_test: web/src/app/eventBridge.test.tsx:513
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-026
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    dispatch 遇到没有对应策略的 `ev` 必须静默返回，不得抛错。
+  why: >
+    zod 校验虽然挡在前面，但仍要求 dispatcher 对"漏进来的未知变体"是 fail-soft 的 ——
+    一个未知帧不能炸掉整条事件流。
+  source: web/src/app/eventBridge.tsx:238-240
+  authoritative_test: web/src/app/eventBridge.test.tsx:754
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-027
+  kind: invariant
+  family: app-event-bridge
+  statement: >
+    card 事件必须**立即**失效，不得再引入 debounce 窗口或多步创建期间的事件抑制。
+  why: >
+    #13 把"POST card → POST terminal → PATCH payload"三步塌缩成单个原子端点，
+    只发一条携带最终 payload 的 `card.added`；旧的 debounce + suppression 脚手架
+    是为掩盖 `payload=null` 中间态而存在的，现已删除。重新加回去就是复辟半成品闪烁。
+  source: web/src/app/eventBridge.tsx:20-27; web/src/app/invalidationPolicies.ts:115-117,151-159
+  authoritative_test: web/src/app/eventBridge.test.tsx:357
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 6. 失效策略表  (family: app-invalidation-policy)
+# ===========================================================================
+
+- id: GATE-APP-028
+  kind: gate
+  family: app-invalidation-policy
+  statement: >
+    `definePolicies<T extends { [K in EventKind]: InvalidationPolicy<K> }>` 必须保持
+    类型级穷尽：每一个 wire 事件 kind 都必须有显式策略条目，新增事件漏配必须**编译失败**。
+  why: >
+    这是全仓最强的"新增事件"闸门。EventKind 由 `WireEvent['ev']` 推导（最终源自 Rust
+    Event 枚举经 ts-rs 生成），映射类型让 tsc 在缺项时报
+    "Property 'X' is missing in type ... but required in type ..."。丢掉这层
+    = 新事件静默无人失效缓存，UI 静默变陈旧。
+  source: web/src/app/invalidationPolicies.ts:21-25,119
+  authoritative_test: web/src/app/eventBridge.test.tsx:643-647
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-APP-029
+  kind: gate
+  family: app-invalidation-policy
+  statement: >
+    不需要失效的事件必须写成 `noop('<原因>')`，原因字符串必填，不得用留空对象或省略条目绕过穷尽检查。
+  why: >
+    noop 携带的 reason 是"我们确认过它不需要失效"的书面证据；空对象会让"想过"与
+    "忘了"在代码里无法区分，穷尽闸门就退化成走过场。
+  source: web/src/app/invalidationPolicies.ts:27-29,176-206,231-295
+  authoritative_test: web/src/app/eventBridge.test.tsx:681,704
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-030
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    `cove.updated` 必须把事件 payload **同步 write-through** 写进 `['coves']` cache，
+    并且必须保留列表中其他未受影响的行。
+  why: >
+    生产 sidebar 陈旧 bug 的回归锁（issue #288）：仅 invalidate 依赖一次 refetch 往返，
+    实测有时 refetch 成功但 Sidebar 不刷新。write-through 让观察者
+    （Sidebar 的 useCovesQuery）在下一次渲染就看到新名字，不依赖 HTTP。
+    朴素的 `setQueryData([updated])` 会静默丢掉其他 cove，所以"保留其他行"必须一起锁。
+  source: web/src/app/invalidationPolicies.ts:120-133
+  authoritative_test: web/src/app/eventBridge.test.tsx:220
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-031
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    `cove.updated` 命中一个 cache 中不存在的 cove 时必须是 no-op —— **不得凭事件造出 phantom cove**。
+  why: >
+    issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 cove，事件 payload 不是
+    完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
+    refetch 把真相拉回来。
+  source: web/src/app/invalidationPolicies.ts:123-130
+  authoritative_test: web/src/app/eventBridge.test.tsx:285
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-032
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    `wave.updated` / `wave.lifecycle_changed` 必须失效四个面：所属 cove 的 wave 列表、
+    该 wave 的 detail、该 wave 的 wave-files、以及全局 `['waves-range']`。
+  why: >
+    wave 的四个可见投影分别由这四个 key 驱动（侧栏列表 / 详情页 / 报告文件树 / 日历区间视图），
+    少一个就出现某一处静默陈旧。
+  source: web/src/app/invalidationPolicies.ts:108-113,137-150
+  authoritative_test: web/src/app/eventBridge.test.tsx:318
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-APP-033
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    `wave.deleted` 必须失效 cove 的 wave 列表 + wave overlay 快照 + `['waves-range']`，
+    并且必须 **removeQueries** 掉该 wave 的 detail（而不是仅 invalidate）。
+  why: >
+    已删除的 wave detail 再 refetch 只会拿到 404；直接从 cache 移除才不会让陈旧详情
+    继续作为 placeholder 上色。
+  source: web/src/app/invalidationPolicies.ts:140-147; web/src/app/eventBridge.tsx:252-253
+  authoritative_test: NONE
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-034
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    card overlay（`overlay.set` / `overlay.deleted` 且 entity_kind === 'card'）必须通过
+    扫描已加载的 `['wave', *]` cache 反查拥有该 card 的 wave；查不到时必须静默跳过，
+    不得报错也不得广播失效。
+  why: >
+    kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
+    没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
+    refetch 捡起来即可 —— 这是被明确判定为无害的降级。
+  source: web/src/app/eventBridge.tsx:29-36,256-269; web/src/app/invalidationPolicies.ts:45-52
+  authoritative_test: NONE
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-035
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    `waveFilesDerivedEventKeys` 的降级链必须是：优先用 payload 的 `wave_id` →
+    否则用 `card_id` 反查所属 wave → 都没有则失效**全部** `['wave-files']` 前缀。
+  why: >
+    runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 wave 文件派生；反查失败时宁可
+    宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
+  source: web/src/app/invalidationPolicies.ts:67-96
+  authoritative_test: web/src/app/eventBridge.test.tsx:619,728
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-036
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    `runtime.started` / `runtime.status_changed` / `runtime.superseded` 必须同时失效
+    所属 wave detail、`['overlays','card']` 与该 wave 的 wave-files。
+  why: >
+    runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
+  source: web/src/app/invalidationPolicies.ts:59-65,98-106,160-173
+  authoritative_test: web/src/app/eventBridge.test.tsx:390,418,445
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-037
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    `wave.report_edited` 必须同时失效该 wave 的 wave-files 与全局 `['wave-backlinks']`。
+  why: >
+    策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
+    所以反链只能整片失效，不能按 wave 收窄。
+  source: web/src/app/invalidationPolicies.ts:186-190
+  authoritative_test: web/src/app/eventBridge.test.tsx:648
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-038
+  kind: capability
+  family: app-invalidation-policy
+  statement: >
+    `terminal.deleted` 必须失效 wave-files 投影。
+  why: >
+    `cards/<id>/runtime.json` 投影里含终端 runtime 状态；回收一个 terminal 会让该投影过期。
+  source: web/src/app/invalidationPolicies.ts:199-203
+  authoritative_test: NONE
+  owner_slice: app/events-glue/invalidation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-039
+  kind: invariant
+  family: app-invalidation-policy
+  statement: >
+    dispatch 的执行顺序必须是：先 `apply`（write-through）→ 再收集 keys + requiresContext
+    并逐个 invalidate → 最后执行 remove。
+  why: >
+    write-through 必须在 invalidate 之前落地，否则 refetch 与直写竞态；remove 必须在
+    invalidate 之后，否则刚移除的 key 又被重新拉起。
+  source: web/src/app/eventBridge.tsx:238-254
+  authoritative_test: web/src/app/eventBridge.test.tsx:220
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 7. 事件流协议  (family: app-event-stream)
+# ===========================================================================
+
+- id: INV-APP-040
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `eventVersion` 高于服务端声明的 `syncEventVersion` 的帧必须被记录并丢弃，
+    且**绝不推进 replay cursor**。
+  why: >
+    issue #198 concern 2：这是来自未来协议的帧，当前前端没被编译成能懂它。不推进 cursor
+    才能让日后兼容的前端用同一 cursor 重连时**再次收到**这一帧。
+  source: web/src/api/events.ts:443-468
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-041
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    与"未来协议帧"相反：对**格式错误（zod 解析失败）但版本在范围内**的帧，
+    必须**先**推进 cursor 再解析，即坏帧照样推进游标。
+  why: >
+    这类帧是"对我们而言形状不对"，不是来自未来。若不推进，单个坏帧会把 cursor 永久钉住，
+    每次重连都重播同一段。两条规则的差异是刻意设计，注释里专门做了对比说明。
+  source: web/src/api/events.ts:470-481
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-042
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `_replay_complete` 帧的 `_id` 若**小于**当前持有的 cursor，必须按"服务端日志已回退"
+    处理：清 cursor、触发 snapshotRequired 监听、并主动 bounce socket。
+  why: >
+    issue #290：该 `_id` 是服务端 `MAX(events.id)` 的真实 tip。它比本地 cursor 小说明
+    日志被重置（dev `/dev/reset` 会清 sqlite_sequence，事件从 id=1 重新开始），
+    本地 cursor 指向的行已经不存在了。
+  source: web/src/api/events.ts:377-424
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-043
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    服务端重置检测只在**新 socket 的** `_replay_complete` 上生效；WS 保持打开期间发生的
+    重置刻意不检测（无就地信号）。
+  why: >
+    注释明写这是已知 limitation：不 bounce 就没有 `_replay_complete`。测试若调
+    `resetReplayServer()` 而不刷新页面 / 不断开 WS，会看到陈旧状态直到 socket 轮换。
+    这是"故意不做"，重写时容易被误当成 bug 去"补全"。
+  source: web/src/api/events.ts:386-393
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-044
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `connected` 状态必须由 `_replay_complete` 控制帧驱动，**不得**由 WS `'open'` 事件驱动。
+  why: >
+    open 只代表握手成功；从 open 到 replay 播完这段时间服务端还在补历史事件，此时报
+    "you're live" 是骗用户。注释与 ConnectionState 文档都把这条列为权威信号。
+  source: web/src/api/events.ts:139-146,320-328,425-431
+  authoritative_test: web/src/app/useConnectionState.test.tsx:99
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-045
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    socket 断开进入 backoff 重试时必须立即把状态置回 `connecting`；
+    只有显式 `close()` 才置 `disconnected`。
+  why: >
+    重试期间保持 connected 会让 UI 指示器显示"已连接"而实际已陈旧；把
+    "首连中"和"重连中"折叠成同一个用户可见状态是刻意的（UX 上二者无差别）。
+  source: web/src/api/events.ts:132-147,299-304,339-359
+  authoritative_test: web/src/app/useConnectionState.test.tsx:99,130
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-APP-046
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    指数退避从 500ms 起、每次翻倍、上限 8000ms；`open` 成功后必须把 backoff 重置回 500ms。
+  why: >
+    不重置会让一次长断线后的后续抖动都以 8s 起步，恢复变慢。
+  source: web/src/api/events.ts:182-183,320-322,356-357
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-047
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    WS 升级从未完成（close 事件之前没有 open）时必须探测 `/api/auth/whoami`；
+    live socket 被服务端断开则**不**探测，只继续退避重连。
+  why: >
+    issue #189：axum 中间件把未认证的 upgrade 变成普通 HTTP 401，浏览器表现为
+    "close 而无先前 open"。只有这一种形态才可能是 401 cookie 失效，需要走 unauthorized 流程；
+    活连接掉线是网络问题，探测只会制造噪声。
+  source: web/src/api/events.ts:313-359
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-048
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    whoami 探测必须有模块级 in-flight 闩锁，防止多个 EventStream 同时重连时探测风暴。
+  why: >
+    issue #189 注释明写：多个实例同时重连会堆叠冗余探测。
+  source: web/src/api/events.ts:551-579
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-049
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    每次 `publishSub` 都必须发送 `since` 字段；冷启动客户端发 `since: 0`（服务端语义 =
+    从事件日志开头），而不是省略该字段。
+  why: >
+    fixture 在 WS 连接前 seed 的事件必须也能到达 trace ring buffer；省略 since 会让
+    这些事件永远看不到。
+  source: web/src/api/events.ts:536-548
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-050
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    cursor 写 localStorage 必须经 `scheduleIdle` 批处理（requestIdleCallback，jsdom/Safari
+    降级为 setTimeout(0)），忙流下不得每帧同步写。
+  why: >
+    每帧一次 localStorage 写在高频事件流下是显著同步开销；`cursorFlushQueued` 闩锁保证
+    同时最多排队一次 flush。
+  source: web/src/api/events.ts:160-170,498-534
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-051
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `advanceCursor` 必须容忍缺失 / 非数字 / `<= 0` 的 `_id` 并跳过；`0` 是保留的
+    "无持久化行"哨兵，永不由自增产生。
+  why: >
+    合成 / 测试总线发射不携带真实 cursor 位置；把它们当真会把 cursor 拉到错误位置。
+  source: web/src/api/events.ts:99-110,498-509
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-052
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `EventMeta` 必须作为监听回调的**第二个参数**独立传递，不得把 `_id` / `eventVersion`
+    塞进 `WireEvent` 类型。
+  why: >
+    `WireEvent` 由 Rust `Event` 枚举经 ts-rs 生成，是封闭的 payload schema，不含
+    envelope 级路由字段。塞进去要么分叉生成类型、要么引入 wrapper；分离参数让不关心的
+    调用方（今天大多数）可以直接忽略。注释里把这个决策记为 Option α over Option β。
+  source: web/src/api/events.ts:99-126
+  authoritative_test: web/src/app/eventBridge.test.tsx:39,73
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-053
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    legacy 判别符 shim 必须在 zod 解析**之前**把 `codex.job_requested` /
+    `terminal.job_requested` 重映射为 `*.worker_requested`。
+  why: >
+    issue #581：v3 前端可以挂在 v2 后端上（isCompatible 只查 frontend >= minWebCompatVersion）。
+    没有这层重映射，帧会通过 eventVersion gate、推进 cursor，然后被 zod 当未知帧静默丢弃，
+    丢掉本该触发的 wave-files 失效。注释注明：下一次 compat 版本跳跃时删除。
+  source: web/src/api/events.ts:73-97,476
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-054
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    每一帧都必须过 `wireEventSchema`（zod）运行时校验；校验失败只记 warn 并丢弃该帧，
+    事件流本身必须继续。
+  why: >
+    防御新 kernel 版本带来的 schema 漂移，同时把 JSON.parse / dispatch 路径保持为
+    监听方唯一已有的失败模式。
+  source: web/src/api/events.ts:5-11,476-481
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-055
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    topic 订阅集合是粘性的：`subscribe()` 设置的集合必须被记住并在每次重连的 open 后
+    重新发布给服务端。
+  why: >
+    重连后不重发订阅 = 静默变成收不到任何事件的僵尸连接。
+  source: web/src/api/events.ts:3-5,207-222,320-328
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-056
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `onConnectionState(fn)` 必须在订阅时**同步**发射一次当前状态。
+  why: >
+    `useSyncExternalStore` 消费者要求首帧就拿到非 undefined 快照，否则第一次渲染会读到空值。
+  source: web/src/api/events.ts:244-252; web/src/app/useConnectionState.ts:33-41
+  authoritative_test: web/src/app/useConnectionState.test.tsx:87
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-057
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    `setSyncEventVersion` 必须幂等，且必须拒绝非有限值与负数（静默忽略）；
+    传 `null` 表示清空 gate。
+  why: >
+    Bridge 每次挂载都会调一次同值；脏值若被接受会让 gate 变成随机丢帧器。
+  source: web/src/api/events.ts:272-291
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-058
+  kind: capability
+  family: app-event-stream
+  statement: >
+    `useConnectionState()` 必须通过 `useSyncExternalStore` 订阅，并在 SSR 快照下返回
+    `'disconnected'`；卸载后流的后续状态变化不得再通知已卸载的树。
+  why: >
+    useSyncExternalStore 是 React 18+ 订阅外部可观察量的规范原语，天然处理并发模式撕裂；
+    第三个参数是 SSR 前向兼容要求，`'disconnected'` 匹配"浏览器之外什么都没发生"的语义。
+  source: web/src/app/useConnectionState.ts:30-42
+  authoritative_test: web/src/app/useConnectionState.test.tsx:149
+  owner_slice: systems/events-transport/connection-state
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 8. 会话 / 认证  (family: app-session-auth)
+# ===========================================================================
+
+- id: INV-APP-059
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    React Query 的默认 retry 策略 `retryUnless401` 必须对 401 **完全不重试**，
+    其他失败（500 / 网络错误）只重试一次。
+  why: >
+    issue #189：401 表示会话 cookie 已消失（过期、服务端重启、兄弟标签页登出）。
+    重试只会拖慢 SessionProvider 的 onUnauthorized 清理 → LoginPage 跳转
+    （`api/calm.ts` 的 request() 已经发过信号了），期间还堆一个注定失败的第二请求。
+  source: web/src/app/providers.tsx:50-64,89
+  authoritative_test: web/src/app/providers.test.tsx:241
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-060
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    `retryUnless401` 必须被导出，供需要自定义 staleTime 等选项的调用点组合复用同一策略。
+  why: >
+    每个 per-query override 若各自重写 retry，就会绕开 401 不重试的约束，401 处理退化成
+    "默认路径才对"。
+  source: web/src/app/providers.tsx:58-64
+  authoritative_test: web/src/app/providers.test.tsx:241
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-061
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    whoami 返回 401 时必须渲染 `<LoginPage />`，且 **router / children 绝不挂载**。
+  why: >
+    这是 issue #189 的 load-bearing 不变式：route loader 不得与 auth gate 竞态。
+    一个已登出的标签页落在 `/coves/c-1` 上，绝不能把 401 印到首帧。
+  source: web/src/app/SessionProvider.tsx:1-20,174-176
+  authoritative_test: web/src/app/SessionProvider.test.tsx:93
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-062
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    会话状态是四态（unknown / authed / unauthed / error）；`unknown`（首帧 whoami 在飞）
+    必须渲染 `null`，不得闪 LoginPage 也不得闪 dashboard。
+  why: >
+    在知道答案之前渲染任一分支都会造成可见错误闪烁；探测很便宜（单次 fetch），
+    用户通常只经历 ~50ms。
+  source: web/src/app/SessionProvider.tsx:67-76,146-151
+  authoritative_test: web/src/app/SessionProvider.test.tsx:55
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-APP-063
+  kind: capability
+  family: app-session-auth
+  statement: >
+    非 401 的传输错误（网络断、服务端崩）必须渲染 "Cannot reach server." 恢复卡片
+    （含错误消息 + Retry 按钮），**不得**跳转 LoginPage。
+  why: >
+    用户很可能网络恢复后依然是登录态；把瞬时故障当登出会白白毁掉会话感知。
+    刷新是推荐的恢复路径。
+  source: web/src/app/SessionProvider.tsx:11-14,152-173
+  authoritative_test: web/src/app/SessionProvider.test.tsx:155
+  owner_slice: features/auth/session
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-064
+  kind: capability
+  family: app-session-auth
+  statement: >
+    收到全局 unauthorized 信号时必须依次：清空 QueryClient、移除 `calm:sync:cursor`、
+    删除 IndexedDB(IDB_DB_NAME)，然后把会话态翻回 `unauthed`（LoginPage）。
+  why: >
+    上一会话的 `since` 游标若留着，下一个用户立刻登录就会把旧事件重播进新会话；
+    游标本来就是单用户的，丢弃才正确。IDB 同理 —— 死行 id 不得上色。
+  source: web/src/app/SessionProvider.tsx:112-144
+  authoritative_test: web/src/app/SessionProvider.test.tsx:111
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-065
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    unauthorized 清理的每一步都必须独立 try/catch，任一步抛错不得阻断后续步骤或崩溃组件。
+  why: >
+    localStorage / indexedDB 在 private mode 下会抛；清理是尽力而为的，
+    半途崩掉会把用户卡在一个既没清干净又没回登录页的中间态。
+  source: web/src/app/SessionProvider.tsx:120-142
+  authoritative_test: NONE
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-066
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    `fireUnauthorized()` 必须把监听派发包在 `queueMicrotask` 里，且单个监听抛错必须被捕获
+    并继续派发其余监听。
+  why: >
+    让抛 401 的 fetch 先干净地展开栈，否则调用方的 `.catch()` 会与 `queryClient.clear()` 竞态。
+    监听容错则保证一个坏监听不能吞掉 SessionProvider 这个正主。
+  source: web/src/api/onUnauthorized.ts:40-60
+  authoritative_test: web/src/app/SessionProvider.test.tsx:139
+  owner_slice: core/api/unauthorized
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-067
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    onUnauthorized 必须保持为一个不依赖 React / QueryClient / SessionProvider 的叶子模块。
+  why: >
+    保持 import graph 无环：`calm.ts` 只调 `fireUnauthorized()`，不需要认识 React。
+    这个单一接缝也是"新增清理步骤"和"测试中打桩"的唯一扩展点。
+  source: web/src/api/onUnauthorized.ts:12-22
+  authoritative_test: NONE
+  owner_slice: core/api/unauthorized
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: architecture
+  test_tier: none
+  migration: pending
+
+- id: INV-APP-068
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    `useSession()` 在 authed 分支之外被调用必须**抛错**，不得返回 null。
+  why: >
+    authed 分支是唯一挂载 children 的分支，因此消费者可以依赖非空值；返回 null 会把
+    "provider 装错位置"变成运行期静默降级。`SessionContext` 的直接导出仅为测试接缝。
+  source: web/src/app/SessionProvider.tsx:38-60
+  authoritative_test: NONE
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-069
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    whoami 初始探测必须带 cancelled 标志，组件在探测 resolve 前卸载则不得 setState。
+  why: >
+    dev 下 StrictMode 双挂载否则会打印 "set state on unmounted"。
+  source: web/src/app/SessionProvider.tsx:86-110
+  authoritative_test: NONE
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 9. 主题  (family: app-theme)
+# ===========================================================================
+
+- id: INV-APP-070
+  kind: invariant
+  family: app-theme
+  statement: >
+    **只有 ThemeProvider** 可以写 `document.documentElement.dataset.theme`，
+    写入必须发生在单一的、以 `resolved` 为依赖的 useEffect 里。
+  why: >
+    issue #22 验收条 4 的中心不变式：应用里任何其他需要知道主题的地方都必须调 `useTheme()`，
+    不得直接读 `dataset.theme` 或 `prefers-color-scheme`。多处写入会让主题真值分叉。
+  source: web/src/app/theme.tsx:11-17,157-162
+  authoritative_test: web/src/app/theme.test.tsx:93,127
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-071
+  kind: invariant
+  family: app-theme
+  statement: >
+    上一条的**刻意例外**：`router.tsx` 的 `onAddCard` / `onCreateCardWithBody` 与
+    `hooks/useTodayTerminal.ts` 的卡片创建路径，必须在点击时直接读
+    `document.documentElement.dataset.theme`，**禁止**改用 `useTheme()`。
+  why: >
+    issue #177：在这些组件里订阅 ThemeContext 会让每次主题翻转都重渲染 wave 子树，
+    触发 TanStack Router `<Match>` 的 Suspense 边界，remount 活着的 XtermView 并抹掉它的
+    `pendingThemeRef`。ThemeProvider 同步把 `resolved` 镜像到 `<html data-theme>`，
+    所以这个读取始终是当前值。**这条例外与主规则同等重要** —— 重写时最容易被"统一成
+    useTheme()"顺手抹掉，从而复活 #177。
+  source: web/src/app/router.tsx:369-397; web/src/hooks/useTodayTerminal.ts:126-133
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts
+  owner_slice: app/theme
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-APP-072
+  kind: invariant
+  family: app-theme
+  statement: >
+    持久化的 mode 必须在惰性 `useState` 初始化器里**同步**读出，使首帧就带正确的
+    `data-theme`。
+  why: >
+    异步读会在用户上次选 dark 时于 reload 后产生 light→dark 闪烁。
+  source: web/src/app/theme.tsx:20-25,76-88,114-120
+  authoritative_test: web/src/app/theme.test.tsx:110
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-073
+  kind: invariant
+  family: app-theme
+  statement: >
+    localStorage(`calm.theme`) 的读与写都必须 try/catch；读到非法值必须回落 `'system'`。
+  why: >
+    跨域 iframe / private mode 下 localStorage 会抛。写失败时状态更新仍然生效，
+    只是不跨 reload 存活 —— 这是刻意的降级取舍。
+  source: web/src/app/theme.tsx:70-88,164-173
+  authoritative_test: NONE
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-074
+  kind: capability
+  family: app-theme
+  statement: >
+    `mode === 'system'` 时必须订阅 `matchMedia('(prefers-color-scheme: dark)')` 的 change
+    并跟随 OS；切成显式 'light'/'dark' 时必须拆掉该订阅，OS 变化不得再影响 `resolved`。
+  why: >
+    用户显式选择就是显式退出 OS 跟踪；留着监听会有陈旧 `setSystemPref` 在用户已经
+    opt-out 后仍然触发。
+  source: web/src/app/theme.tsx:27-33,126-150
+  authoritative_test: web/src/app/theme.test.tsx:146,170
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-075
+  kind: invariant
+  family: app-theme
+  statement: >
+    进入 system 监听 effect 时必须立刻 snap 一次 `mql.matches`，不能只等 change 事件。
+  why: >
+    mount 与 effect 执行之间 OS 偏好可能已变（罕见但真实），只等事件会错过这一跳。
+  source: web/src/app/theme.tsx:137-139
+  authoritative_test: web/src/app/theme.test.tsx:146
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-076
+  kind: capability
+  family: app-theme
+  statement: >
+    仅当 URL 带 `?testMounts=1` 时才挂 `window.__calmSetTheme`；卸载时必须只在
+    引用仍是自己时才 delete。
+  why: >
+    issue #177 的 Playwright 仪器：e2e 需要在**不导航**的前提下翻主题 ——
+    导航会卸载被观测的 wave 页 XtermView，整个观测就失效了。生产用户不应看到该全局。
+  source: web/src/app/theme.tsx:180-195
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-APP-077
+  kind: invariant
+  family: app-theme
+  statement: >
+    `window` / `matchMedia` / `document` 缺席时 provider 仍必须能渲染，默认落到
+    'system' → 'light'。
+  why: >
+    Vitest/jsdom 角落场景与未来可能的 SSR pass 都要求 provider 不能因为全局缺席而崩。
+  source: web/src/app/theme.tsx:35-40,79,92-103,160
+  authoritative_test: NONE
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-078
+  kind: invariant
+  family: app-theme
+  statement: >
+    `useTheme()` 在 ThemeProvider 之外调用必须抛出**指名 ThemeProvider 与
+    app/providers.tsx 的**描述性错误。
+  why: >
+    静默返回默认值会让"provider 装错位置"变成难查的视觉 bug；错误文案里带修复位置
+    是刻意的可诊断性设计。
+  source: web/src/app/theme.tsx:208-217
+  authoritative_test: web/src/app/theme.test.tsx:194
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 10. Trace ring buffer  (family: app-trace-buffer)
+# ===========================================================================
+
+- id: GATE-APP-079
+  kind: gate
+  family: app-trace-buffer
+  statement: >
+    trace ring buffer 必须**双重**门控：`import.meta.env.DEV` 的短路必须内联写在
+    EventBridge effect 的调用点（而不仅在 `isTraceEnabled()` 内部），加上 URL 的
+    `?trace=1`。
+  why: >
+    只有内联短路才能让 Vite/terser 把整个右侧（含 `ensureTraceBuffer` / `pushTraceEvent`
+    的调用）折成死代码，生产 bundle 才真的不含 buffer 代码。注释明确要求：
+    重构成单函数调用前必须用 `grep __neigeEvents__ web/dist/assets/*.js` 复验。
+  source: web/src/app/eventBridge.tsx:56-65,105-116,191-198
+  authoritative_test: web/src/app/eventBridge.test.tsx:816
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-080
+  kind: capability
+  family: app-trace-buffer
+  statement: >
+    带 `?trace=1` 的 dev 构建下，每一帧必须镜像进 `window.__neigeEvents__`
+    （字段：id / eventVersion / ev / data / ts），环大小上限 200，超出丢最旧。
+  why: >
+    Playwright 靠它断言"产生这个 UI 状态的事件序列"。200 远大于任何单个场景的发射量，
+    又足够有界，避免被遗忘的 dev 标签页把内存撑大。
+  source: web/src/app/eventBridge.tsx:66-80,135-148
+  authoritative_test: web/src/app/eventBridge.test.tsx:836,867
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-081
+  kind: invariant
+  family: app-trace-buffer
+  statement: >
+    `__neigeClearEvents__` 必须**原地**清空数组（`buf.length = 0`），不得换新引用；
+    `ensureTraceBuffer` 必须幂等复用已有 buffer。
+  why: >
+    Playwright helper 跨 `page.evaluate` 调用持有同一个数组引用；换引用会让它继续读旧数组。
+    幂等则保证热重载后先前快照仍可读。
+  source: web/src/app/eventBridge.tsx:118-133
+  authoritative_test: web/src/app/eventBridge.test.tsx:899
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-082
+  kind: invariant
+  family: app-trace-buffer
+  statement: >
+    trace 开关在模块加载时判定一次，导航后不重新评估 —— 契约是"在初始页面加载时带 ?trace=1"。
+  why: >
+    与 Playwright 打开应用的方式一致；动态重估会让 buffer 在会话中途出现/消失，
+    断言语义不稳定。
+  source: web/src/app/eventBridge.tsx:105-116
+  authoritative_test: NONE
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 11. 路由与卡片创建耦合  (family: app-router)
+#   注：这些创建逻辑今天住在 router.tsx；新架构会把它搬走，但**行为契约不能丢**。
+# ===========================================================================
+
+- id: INV-APP-083
+  kind: invariant
+  family: app-router
+  statement: >
+    cove / wave 路由的 loader 必须**非阻塞**地 prime 缓存（`void ... .catch(() => {})`），
+    不得 await，路由必须立即 commit。
+  why: >
+    选择反馈（URL commit + 侧栏高亮）要即时；页面组件自己负责短暂的页内 loading 态。
+    `.catch` 是为了让 404/5xx/离线不变成 unhandled rejection —— 错误仍记录在 query 上
+    供组件呈现。
+  source: web/src/app/router.tsx:16-23,101-134
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-084
+  kind: invariant
+  family: app-router
+  statement: >
+    index 路由只 prefetch coves 列表；cove → waves 的扇出必须保持惰性（页面内 `useQueries`）。
+  why: >
+    在 loader 里扇出会让一个慢 cove 阻塞整个日历。
+  source: web/src/app/router.tsx:90-99,184-189
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-085
+  kind: invariant
+  family: app-router
+  statement: >
+    WaveComponent 必须把"detail 缺失"与"detail 存在但 `detail.wave.id !== waveId`"
+    都当作"本 wave 加载中"渲染 `null`；只有 settled miss（无 data 且非 loading/fetching）
+    才渲染 MissingShell。
+  why: >
+    非阻塞 loader 先 commit URL，`detailQ.data` 可能是上一个 wave 的 keepPreviousData
+    占位；不做 id 比对就会在新 wave 的 URL 下画出上一个 wave。
+  source: web/src/app/router.tsx:318-331
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-086
+  kind: capability
+  family: app-router
+  statement: >
+    cove 列表仍在加载时，CoveComponent / WaveComponent 必须渲染 `null` 而不是
+    MissingShell；只有 settled 的"找不到"才显示 MissingShell。
+  why: >
+    硬刷新 `/cove/:id` 可能在缓存 prime 前落到这里；不判 isLoading 就会闪一次
+    "That Cove isn't here anymore."。
+  source: web/src/app/router.tsx:239-246,332-336; web/src/app/shell.tsx:17-36
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-APP-087
+  kind: gate
+  family: app-router
+  statement: >
+    `assertRouterCreateAllowed` 必须对 `create.mode === 'catalog'` 抛
+    `CatalogCreateNotImplemented`、对 `'kernel-minted-only'` 抛
+    `KernelMintedOnlyCreateNotAllowed`；这两类 kind 绝不允许从路由创建路径落地。
+  why: >
+    catalog 模式尚未实现、kernel-minted-only 的卡片只能由 kernel 铸造。
+    fail-closed 抛错（而不是静默 return）才能让误接入在开发期立刻暴露。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:457-482,512-513,532
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-088
+  kind: invariant
+  family: app-router
+  statement: >
+    创建契约类错误（CatalogCreateNotImplemented / KernelMintedOnlyCreateNotAllowed /
+    MissingCreateStrategy / GenericCreateRequiresExactClaim / EntryMissingMetadata /
+    DuplicateExactClaim / DuplicatePrefixClaim）必须原样重抛给调用方，
+    不得被降级成 `console.warn` 吞掉。
+  why: >
+    这些是编程错误/注册表配置错误，必须冒泡到 UI 与测试；只有真正的运行期创建失败
+    才走 warn + rethrow 的路径。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:488-499,537-541
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-APP-089
+  kind: gate
+  family: app-router
+  statement: >
+    `create.mode === 'generic'` 必须要求该 entry 的 claim 是 `mode: 'exact'`，
+    否则抛 `GenericCreateRequiresExactClaim`。
+  why: >
+    generic 创建要把 `entry.claim.kind` 直接写成卡片 kind；前缀式 claim 没有唯一 kind 可用。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:516-526
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-090
+  kind: invariant
+  family: app-router
+  statement: >
+    `addCardWithValues` 必须先用 `entry.addPanel.createSchema` 校验 SchemaForm 值再提交；
+    校验失败必须 warn 并**重抛**（不得静默吞掉后照样发请求）。
+  why: >
+    表单值是不可信输入；静默放行会把畸形 payload 送进 kernel。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:426-455
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-091
+  kind: invariant
+  family: app-router
+  statement: >
+    没有注册 entry 的 kind，`addCardWithValues` 必须回落到 `addCardOfKind`；
+    `addCardOfKind` 找不到 entry 时必须静默返回。
+  why: >
+    zero-config 与 schema-backed 两类 entry 共用同一条创建路径；
+    `plugin:*` / `ui://*` 走 plugin host 自己的创建路径，不由 AddPanel 菜单驱动 ——
+    这是刻意不覆盖的范围。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:426-443,544-563
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-092
+  kind: invariant
+  family: app-router
+  statement: >
+    卡片创建必须把点击时读到的 theme 转成 `DARK_THEME_RGB` / `LIGHT_THEME_RGB` 传给
+    atomic create；terminal 卡片的 `theme` 在 wire 上是必填。
+  why: >
+    #177：kernel 在同一事务里把 `term.theme_fg/_bg` 写进 terminal 行，之后该行的每次
+    spawn 都据此下发 `--terminal-fg/-bg` daemon argv，daemon 才能正确回应 codex 的
+    OSC 10/11 探询。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:514,544-563; web/src/hooks/useTodayTerminal.ts:126-135
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-093
+  kind: invariant
+  family: app-router
+  statement: >
+    `createFromEntry` 成功后必须显式 `invalidateQueries(waveDetail(waveId))`，
+    不得只依赖 WS 事件回灌。
+  why: >
+    创建是用户发起的同步动作，等 WS 往返会让新卡片出现有可感知延迟；
+    显式失效 + 事件失效叠加由 TanStack 合并。 【亦涉及: systems/cards/create】
+  source: web/src/app/router.tsx:535-536
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-094
+  kind: invariant
+  family: app-router
+  statement: >
+    Today / CalmApp 路径必须双层过滤掉 `kind === 'system'` 的 cove
+    （服务端已默认隐藏，前端仍需再挡一层）。
+  why: >
+    issue #175 的 belt-and-suspenders：系统 cove 不能进 Today 的日历/时钟扇出。
+  source: web/src/app/router.tsx:175-179
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-095
+  kind: invariant
+  family: app-router
+  statement: >
+    `useGo()` 必须住在 navigation.ts 而非 router.tsx。
+  why: >
+    router.tsx 把 CalmApp 作为 rootRoute component 引入，CalmApp 若反向 import router.tsx
+    就成环。这个文件切分是为打破循环依赖而存在的，不是随意的整理。
+  source: web/src/app/navigation.ts:1-8
+  authoritative_test: NONE
+  owner_slice: app/router/navigation
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: architecture
+  test_tier: none
+  migration: pending
+
+- id: INV-APP-096
+  kind: invariant
+  family: app-router
+  statement: >
+    router 的 `basepath` 必须是 `/calm`，与 Vite 的 `base: '/calm/'` 对齐；
+    路由定义与 useRouterState 的 pathname 仍按去掉前缀的相对路径工作。
+  why: >
+    前缀只影响浏览器 URL 与生成的 `<a href>`；把前缀写进路由定义会双重前缀化。
+  source: web/src/app/router.tsx:153-162
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-097
+  kind: capability
+  family: app-router
+  statement: >
+    四条路由页面组件（Today / Cove / Wave / Settings）必须按需 lazy 加载，
+    由 CalmApp 的单一 `<Suspense>` 兜底；loader 与 JS 下载并行。
+  why: >
+    入口 chunk 只带 shell + 路由接线；loader 并行跑，懒 chunk resolve 时数据已 prime，
+    避免瀑布。
+  source: web/src/app/router.tsx:62-82
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-098
+  kind: capability
+  family: app-router
+  statement: >
+    卡片槽位适配失败时必须降级成 `kind: 'unknown'` 槽位（保留 id / kernelKind / sort /
+    deletable），不得丢弃该卡片。
+  why: >
+    未知 kind 的卡片仍要占位并显示"这里有东西但我不认识"，静默丢弃会让 wave 看起来少东西。
+  source: web/src/app/router.tsx:339-362
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-APP-099
+  kind: invariant
+  family: app-router
+  statement: >
+    `deletable` 未定义时必须按"用户可删"处理（`card.deletable !== false`），
+    与 DB DEFAULT 1 对齐。
+  why: >
+    issue #229 PR A：OpenAPI 保证新 wire payload 一定带该字段，但历史事件日志重放可能缺省；
+    默认取 false 会让老数据的卡片全部变成不可删。
+  source: web/src/app/router.tsx:340-347
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-100
+  kind: capability
+  family: app-router
+  statement: >
+    Today 页必须用工作区级 wave overlay 快照（`['overlays','wave']`）喂给 adaptWave，
+    使侧栏的 "waiting on you" / "running" 指示对**每个** wave 都准确，而不只是已打开的那个。
+  why: >
+    只用 wave detail 的 overlay 会让未打开的 wave 状态永远为空；
+    eventBridge 在 overlay.set/.deleted 以及 wave/cove 删除时失效该快照
+    （kernel 可能不级联单个事件）。
+  source: web/src/app/router.tsx:191-212
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-101
+  kind: capability
+  family: app-router
+  statement: >
+    cove 重命名 / cove 删除 / wave 删除 / wave 重命名 / wave pin 的失败必须
+    `console.warn` 后吞掉（不冒泡崩页面）；cove 删除成功后必须跳 Today，
+    wave 删除成功后必须跳所属 cove。
+  why: >
+    这些是用户发起的可容错操作，失败时页面必须保持可用；成功后当前 URL 指向的实体
+    已不存在，必须导航走，否则会落到 MissingShell。
+  source: web/src/app/router.tsx:264-291,398-421
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-APP-102
+  kind: capability
+  family: app-router
+  statement: >
+    MissingShell 必须显示 "That {label} isn't here anymore." 加一个 "Back to Today" 按钮。
+  why: >
+    路由参数解析不到实体时唯一的用户出路；不给返回入口用户就卡在死 URL 上。
+  source: web/src/app/shell.tsx:17-36
+  authoritative_test: NONE
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 12. 测试逃生口  (family: app-test-seams)
+# ===========================================================================
+
+- id: GATE-APP-103
+  kind: gate
+  family: app-test-seams
+  statement: >
+    下划线前缀的测试逃生口（`_resetProbeForTest` / `_resetSharedStreamForTest` /
+    `_resetUnauthorizedListenersForTest`）必须保留下划线前缀标记为非公开面，
+    生产代码不得调用。
+  why: >
+    这些函数会关闭共享 socket / 清空全局监听；在生产路径被调用等于静默切断事件流与
+    401 处理。前缀是唯一的书面约束。 【亦涉及: core/api/unauthorized】
+  source: web/src/api/events.ts:581-583,636-644; web/src/api/onUnauthorized.ts:62-70
+  authoritative_test: NONE
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-APP-104
+  kind: gate
+  family: app-test-seams
+  statement: >
+    `SessionContext` 的直接导出仅为测试接缝；生产代码必须走 `<SessionProvider>` /
+    `useSession()`，不得直接用 `SessionContext.Provider`。
+  why: >
+    直接挂 Provider 会绕过 whoami 探测与 401 监听，等于关掉整个认证闸门。
+    注释明写这是 test-only seam。
+  source: web/src/app/SessionProvider.tsx:38-47
+  authoritative_test: NONE
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+- id: INV-APP-105
+  kind: invariant
+  family: event-stream
+  statement: >
+    【已裁决删除】旧 EventStream 允许未调用 setSyncEventVersion 就 start()，
+    并接受服务端任意 eventVersion。
+  why: >
+    本条在 7 个提取 agent 的产出中**遗漏**，由架构 review r2/r3 从 events.test.ts:303 补出。
+    它与新的 configure() typestate 直接冲突：新 API 下「跳过配置就 start」不可表达。
+    补录的目的是让这次行为变更是显式迁移决策，而不是实现 agent 撞上的意外冲突。
+  source: web/src/api/events.ts:278
+  authoritative_test: web/src/api/events.test.ts:303
+  owner_slice: systems/events-transport/stream
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: skipped
+  skip_reason: >
+    由 configure() 原子化取代（_fe-architecture.md §4.7.1）。新 API 不提供绕过配置的路径；
+    测试逃生口改走 EventStream.forTest(url).configure({...}).start()，
+    保留「不经 bridge 也能连」的能力，但不保留「跳过配置」的能力。

@@ -1,0 +1,1495 @@
+# meta:
+#   slice: gates-types —— 机器闸门（token 形状契约 / 自定义 lint 规则 / stylelint / 类型级闸门）
+#   覆盖文件:
+#     - web/src/calm-tokens.test.ts                        (1193 行，token 形状契约总闸)
+#     - web/src/calm.css                                   (仅作为被闸门约束的对象引用)
+#     - web/src/font-stack.ts                              (MONO_STACK ↔ --font-mono 漂移)
+#     - web/eslint.config.js                               (flat config + card-head no-restricted-syntax 闸门 + 历史包袱)
+#     - web/eslint-rules/index.cjs
+#     - web/eslint-rules/no-raw-primitive-role.cjs         (+ .test.ts + __fixtures__/raw-primitive-role.tsx)
+#     - web/eslint-rules/no-react-state-hook-members.cjs   (+ __fixtures__/react-state-hook-members.tsx)
+#     - web/eslint-rules/no-persistent-in-usestate.cjs     (+ .test.ts + __fixtures__/violating.tsx)
+#     - web/.stylelintrc.cjs
+#     - web/src/shared/state.ts + state.test-d.ts          (Persistent<T> 条件返回类型 = 硬闸门)
+#     - web/src/hooks/useOverlayState.ts + .test-d.ts + .test.tsx
+#     - web/src/api/schemas.ts + schemas.test.ts           (zod ↔ ts-rs 一致性)
+#     - web/src/app/eventBridge.test.tsx                   (仅未映射事件不抛的那条)
+#     - .cargo/config.toml                                 (TS_RS_LARGE_INT / TS_RS_EXPORT_DIR)
+#   条目总数: 76
+#   其中「已知缺口 / 历史包袱」条目: 20  (why 字段以【已知缺口】或【历史包袱】开头)
+#   另有 intentional_omission: true 共 26 条（含上述 20 条 + 6 条纯"故意不做"型契约）
+#   kind 分布: gate 70 / invariant 6
+#
+#   阅读提示：token 清单在 calm-tokens.test.ts 里是**手写钉死的数组**，这是刻意设计
+#   （见 GATE-TOKENS-001）。新架构若改成数据驱动自动发现，等于主动拆掉这个闸门。
+
+# ===========================================================================
+# 一、token 形状契约（calm-tokens.test.ts）—— 六类 token，各自形状不同
+# ===========================================================================
+
+- id: GATE-TOKENS-001
+  kind: gate
+  family: tokens-inventory
+  statement: >
+    calm.css 的 token 清单必须以手写常量数组的形式钉死在 calm-tokens.test.ts 里；
+    新增 / 重命名 / 删除任何 token 必须在同一个 commit 里改这些数组
+  why: >
+    文件头注释明确写了：数据驱动检测（"找出所有 --surface-* 再推断哪些是 alias"）
+    被**刻意否决**。整份 spec 的目的就是让"我们现在有哪些 token"变成一个可 review
+    的 diff——加 token 的人和 reviewer 同时看到两半。#142 slice 2。
+  source: web/src/calm-tokens.test.ts:35-60
+  authoritative_test: web/src/calm-tokens.test.ts:47-267
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-002
+  kind: gate
+  family: tokens-positional
+  statement: >
+    POSITIONAL_TOKENS（--bg/--paper/--hairline/--hairline-strong/--text{,-2,-3,-4}/
+    --accent{,-soft}/--warn{,-soft}）必须同时声明在 `:root` 和 `[data-theme="dark"]`
+  why: >
+    positional token 是颜色词汇的底座，随主题切换。少了 dark 一侧不会报错，只会在
+    暗色模式下静默继承亮色值。#137。
+  source: web/src/calm-tokens.test.ts:45-60
+  authoritative_test: web/src/calm-tokens.test.ts:363-375
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-003
+  kind: gate
+  family: tokens-surface
+  statement: >
+    CONCRETE_SURFACE_TOKENS（--surface-rail/-card/-chip/-toggle-overlay/-panel-head）
+    在 `:root` 和 dark 两侧都必须是 `oklch(...)` 字面量，不得写成 var() 别名
+  why: >
+    具体 surface 与 alias surface 同处 `--surface-*` 命名空间，唯一区分就是值的形状。
+    "在 dark 里把它 alias 成 var()" 是最典型的复制粘贴回归，形状断言是唯一能抓住它的东西。
+  source: web/src/calm-tokens.test.ts:62-70
+  authoritative_test: web/src/calm-tokens.test.ts:381-398
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-004
+  kind: gate
+  family: tokens-surface
+  statement: >
+    PROSE_SURFACE_TOKENS（--surface-terminal / --surface-code）与具体 surface 同契约：
+    两侧都是 oklch 字面量
+  why: >
+    形状契约与 CONCRETE_SURFACE_TOKENS 相同，但**单列一个数组**，为的是让 #137 slice 3c
+    的迁移在测试清单里自成一块、可独立审计。
+  source: web/src/calm-tokens.test.ts:72-79
+  authoritative_test: web/src/calm-tokens.test.ts:404-421
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-005
+  kind: gate
+  family: tokens-surface
+  statement: >
+    OVERLAY_TOKENS（--overlay-hover-faint/-hover/-hover-strong/--overlay-active）
+    两侧都必须是 oklch 字面量；亮侧用黑色低 alpha、暗侧用白色低 alpha
+  why: >
+    #137 slice 3a 用这 4 级词汇替换了散落在 hover/selected 选择器里的约 42 条内联
+    `oklch(0% 0 0 / 0.0X)` / `oklch(100% 0 0 / 0.0X)`。测试**故意不**用正则断言"亮暗互反"
+    （会过拟合），只守结构形状——这已足够抓住"在 dark 里 alias 成 var()"这类回归。
+  source: web/src/calm-tokens.test.ts:81-94
+  authoritative_test: web/src/calm-tokens.test.ts:435-452
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-006
+  kind: gate
+  family: tokens-alias
+  statement: >
+    ALIAS_TOKENS（--surface-paper/-bg/-hover-overlay、--text-label/-meta/-decorative）
+    必须在 `:root` 里声明为**裸** `var(--positional)` 引用，不带 fallback
+  why: >
+    语义别名的价值就是"不硬编码值"。VAR_REF 正则刻意不接受 `var(--x, fallback)` 形式——
+    注释说 calm.css 里别名一律是裸形式，出现 fallback 就该有人来看一眼。#137。
+  source: web/src/calm-tokens.test.ts:96-107,318-322
+  authoritative_test: web/src/calm-tokens.test.ts:335-345
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-007
+  kind: gate
+  family: tokens-alias
+  statement: >
+    ALIAS_TOKENS 一律**不得**在 `[data-theme="dark"]` 里被重新声明
+  why: >
+    别名指向的 positional token 本身已经随主题切换；在 dark 里覆盖别名等于把它重新钉死到
+    另一个（多半是过期的）目标上，直接抵消掉 cascade。注释判定这几乎总是复制粘贴 bug，
+    要求"大声报错"。
+  source: web/src/calm-tokens.test.ts:454-460
+  authoritative_test: web/src/calm-tokens.test.ts:462-471
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-008
+  kind: gate
+  family: tokens-scalar
+  statement: >
+    TYPE_SCALE_TOKENS（--text-xs…--text-display）必须在 `:root` 里是具体 `Npx` 字面量，
+    且**不得**有 dark 覆盖
+  why: >
+    类型标尺属于设计系统的**形状词汇**（和 --r 一类），不是颜色词汇。#150 slice 1 把 20+
+    条原始 font-size 字面量收敛成这套标尺，迁移是刻意有损的（取整策略写在 issue 正文）。
+  source: web/src/calm-tokens.test.ts:109-127,481
+  authoritative_test: web/src/calm-tokens.test.ts:483-501
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-009
+  kind: gate
+  family: tokens-scalar
+  statement: >
+    RADIUS_TOKENS（--radius-xs/sm/md/lg/xl/pill）必须是 `:root` 里的 `Npx` 字面量且无 dark
+    覆盖；back-compat 别名 `--r: var(--radius-xl)` 刻意**不**列入该数组
+  why: >
+    #165 slice 2 把 9 个原始 radius 值（2/3/4/5/6/7/8/10/999px 以及 --r 上原有的 14px）
+    收敛成 6 个 token，3/5/7px 就近对齐——有损迁移。--r 保留为别名是为了让消费方本 slice
+    内不用大改；它是 alias 不是 scale 成员，所以形状断言不适用于它。
+  source: web/src/calm-tokens.test.ts:156-171 ; web/src/calm.css:327
+  authoritative_test: web/src/calm-tokens.test.ts:512-530
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-010
+  kind: gate
+  family: tokens-scalar
+  statement: >
+    LEADING_TOKENS（--leading-none/tight/snug/base/loose）必须是**无单位**数字，无 dark 覆盖
+  why: >
+    行高必须无单位，才能在任意继承 font-size 的调用点上按比例合成；写成 px 会把行高钉死。
+    #165 slice 3，从约 10 个不同比值收敛而来（有损）。
+  source: web/src/calm-tokens.test.ts:129-141,548
+  authoritative_test: web/src/calm-tokens.test.ts:551-569
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-011
+  kind: gate
+  family: tokens-scalar
+  statement: >
+    TRACKING_TOKENS（--tracking-tighter…widest）的值只能是 `0` 或 `±0.0Nem`，无 dark 覆盖；
+    `--tracking-normal` 必须是显式 `0` 而不是 CSS 关键字 `normal`
+  why: >
+    em 单位让字距随字号缩放。`--tracking-normal` 刻意写 `0` 而非 `normal`，是为了让 linter
+    能够禁掉裸 `normal` 关键字——关键字和数值 0 在 lint 层不可区分就守不住。#165 slice 3。
+  source: web/src/calm-tokens.test.ts:143-154,549
+  authoritative_test: web/src/calm-tokens.test.ts:571-589
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-012
+  kind: gate
+  family: tokens-scalar
+  statement: >
+    SPACING_TOKENS（--space-0 / --space-px / --space-1…--space-12，共 14 级）必须是 `Npx`
+    字面量或裸 `0`，无 dark 覆盖
+  why: >
+    #165 slice 1 把约 228 条 padding/margin/gap 原始字面量收敛成这套 4px 栅格词汇；小端
+    （--space-px/1/2）刻意保持对数分布，覆盖 hairline 和紧凑簇需要的 1/2/4px。负值字面量
+    （margin: -1px 的"隧道微调"）按设计**留在词汇之外**，靠 stylelint-disable 标记单点豁免。
+  source: web/src/calm-tokens.test.ts:173-195,605
+  authoritative_test: web/src/calm-tokens.test.ts:607-625
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-013
+  kind: gate
+  family: tokens-scalar
+  statement: >
+    MOTION_TOKENS（--motion-instant/quick/snappy/medium/slow/pulse）必须是**秒制** `Ns`
+    字面量，禁止 `ms` 拼法，无 dark 覆盖
+  why: >
+    单位被刻意归一到 `s`，就是为了让合并前那种 `240ms` 与 `0.24s` 并排出现的拼法漂移无法
+    回流——注释原话："if `ms` re-appears here that drift is back"。#165 slice 5，有损迁移。
+  source: web/src/calm-tokens.test.ts:250-267,637
+  authoritative_test: web/src/calm-tokens.test.ts:639-657
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-014
+  kind: gate
+  family: tokens-status
+  statement: >
+    STATUS_COLOR_TOKENS（--success / --error）在 `:root` 是 oklch 字面量，在
+    `[data-theme="dark"]` 必须精确匹配 `oklch(74% 0.14 145)` 或 `oklch(74% 0.14 25)`
+  why: >
+    合并前 dark 侧存在 72/74/78 三个亮度值散落各处。#137 slice 3b 把整族标准化到 L=74%、
+    chroma 0.14、hue 145(success)/25(error)。正则把这个**设计决策**钉死，让两个月后
+    "我就把绿色调一点点"必须回来改测试并在 PR 里附上设计讨论链接。
+  source: web/src/calm-tokens.test.ts:197-204,659-669
+  authoritative_test: web/src/calm-tokens.test.ts:682-692
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-015
+  kind: gate
+  family: tokens-font
+  statement: >
+    FONT_ALIAS_TOKENS（--font-display / --font-numeric / --font-code）的值必须是
+    `var(--font-sans)` / `var(--font-serif)` / `var(--font-mono)` 三选一，绝不能是硬编码字体栈
+  why: >
+    这条比通用 VAR_REF 更严：别名只能指向那三个 positional font token，不能指向别的别名。
+    positional token 是"具体字体家族"的唯一真源，链式别名会让真源变模糊。#150 slice 2。
+  source: web/src/calm-tokens.test.ts:206-217,710-712
+  authoritative_test: web/src/calm-tokens.test.ts:716-723
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-016
+  kind: gate
+  family: tokens-font
+  statement: >
+    FONT_ALIAS_TOKENS 不得在 `[data-theme="dark"]` 里重新声明
+  why: >
+    字体栈不随主题变化，dark 覆盖只会腐烂成过期值并抵消 cascade。#150 slice 2。
+  source: web/src/calm-tokens.test.ts:706-708
+  authoritative_test: web/src/calm-tokens.test.ts:725-731
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-017
+  kind: gate
+  family: tokens-misc
+  statement: >
+    SEMANTIC_MISC_TOKENS（--overlay-scrim / --cal-event-waiting-bg / --error-text /
+    --warn-border）必须在 `:root` 和 dark 两侧都有声明
+  why: >
+    与 POSITIONAL_TOKENS 同样的亮暗对等契约，但**单列**因为形状断言不同：--overlay-scrim
+    是 rgba()，其余是 oklch。#137 slice 3d。
+  source: web/src/calm-tokens.test.ts:219-230
+  authoritative_test: web/src/calm-tokens.test.ts:752-796
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-018
+  kind: gate
+  family: tokens-misc
+  statement: >
+    `--overlay-scrim` 在两个块里都必须是 `rgba(...)` 字面量 —— 这是"具体 token 只用 oklch"
+    规则的唯一一处故意例外
+  why: >
+    密集模态遮罩带有语义意图（"压暗并略微降温背景"），用带 alpha 的纯 oklch 表达很别扭。
+    声明位于 #149 引入的块级 stylelint-disable 内，所以不会触发 rgba 禁令；消费方一律通过
+    var() 读取，因此组件选择器仍然干净。#137 slice 3d。
+  source: web/src/calm-tokens.test.ts:734-750 ; web/src/calm.css:158-159,368
+  authoritative_test: web/src/calm-tokens.test.ts:764-777
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-019
+  kind: gate
+  family: tokens-zindex
+  statement: >
+    Z_INDEX_TOKENS（--z-base/raised/sticky/overlay/modal/toast）必须是 `:root` 里的裸整数
+    字面量（不许 var() 链、不许 calc()），且无 dark 覆盖
+  why: >
+    z-index 是结构而非视觉，dark 覆盖没有意义。裸整数要求是为了让第 020 条的"严格递增"
+    断言能直接 Number() 比较——一旦允许 var()/calc()，顺序不变式就无法机器验证。#165 slice 4。
+  source: web/src/calm-tokens.test.ts:232-248,812
+  authoritative_test: web/src/calm-tokens.test.ts:814-831
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-020
+  kind: invariant
+  family: tokens-zindex
+  statement: >
+    六个 z-index token 的数值必须按声明顺序严格递增：
+    --z-base < --z-raised < --z-sticky < --z-overlay < --z-modal < --z-toast
+  why: >
+    token 建立的是**语义分层顺序**而非具体数值保值。把"顺序是语义的"变成契约，未来
+    "我把 --z-sticky 提到 50" 就不能在无人察觉的情况下倒置层级。#165 slice 4。
+  source: web/src/calm-tokens.test.ts:798-810
+  authoritative_test: web/src/calm-tokens.test.ts:833-847
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-021
+  kind: gate
+  family: tokens-font
+  statement: >
+    `font-stack.ts` 的 `MONO_STACK` 常量必须与 calm.css `:root` 里的 `--font-mono`
+    **逐字节相同**（trim 后严格相等，不做任何模糊归一化）
+  why: >
+    xterm.js 读不到 CSS 自定义属性（容器进 DOM 之前就要字体串），fallback 卡片也用内联样式，
+    所以 JS 侧必须有一份钉死的常量。两边不一致会让终端和 UI 其余部分静默落到不同的系统等宽
+    字体上——review 里永远发现不了。断言刻意是严格字符串比较：`"SF Mono"` 带不带引号对浏览器
+    字体解析器是真有区别的。#150 slice 3。
+  source: web/src/font-stack.ts:1-20 ; web/src/calm.css:12
+  authoritative_test: web/src/calm-tokens.test.ts:1160-1166
+  owner_slice: styles/tokens
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 二、软漂移检测器 —— 全部只 console.warn，断言恒为 true（成建制的已知缺口）
+# ===========================================================================
+
+- id: GATE-TOKENS-030
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    token 定义块之外出现的裸 `font-size: Npx` 只被 console.warn 记录，测试**不会失败**
+  why: >
+    【已知缺口】注释写明"今天以警告呈现；若 CI 噪音里出现漂移可以后续提升为硬失败"。
+    掩码算法把 :root / dark 块换成等行数空行，保证 warn 里的行号仍对得上原文件。#150 slice 1。
+  source: web/src/calm-tokens.test.ts:850-876
+  authoritative_test: web/src/calm-tokens.test.ts:878-901
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-031
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    组件选择器里残留的裸 `line-height: N` 只被 warn 记录；硬闸门在 stylelint 侧
+  why: >
+    【已知缺口】测试层是"给人看行号"的可读报告，真正拦截靠 .stylelintrc.cjs 的
+    declaration-property-value-disallowed-list。#165 slice 3。
+  source: web/src/calm-tokens.test.ts:903-907
+  authoritative_test: web/src/calm-tokens.test.ts:908-928
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-032
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    组件选择器里残留的裸 `letter-spacing: ±N(em|rem|px)` 只被 warn 记录；
+    `normal` 关键字在这个检测器里被刻意放过
+  why: >
+    【已知缺口】迁移只给"继承字距重置"那一处留了 `normal`，其余走 --tracking-normal；
+    数值禁令由 stylelint 直接执行，这里不重复。#165 slice 3。
+  source: web/src/calm-tokens.test.ts:930-939
+  authoritative_test: web/src/calm-tokens.test.ts:931-952
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-033
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    组件选择器里残留的 `border-*-radius: Npx` 只被 warn 记录；`50%` 形式刻意不匹配
+  why: >
+    【已知缺口】硬闸门在 stylelint，测试是"第二个 reviewer"——在 lint 跑之前就能在
+    npm test 输出里看到带行号的漂移清单。百分比形式已全部迁到 --radius-pill，再匹配
+    只会增加噪音。#165 slice 2。
+  source: web/src/calm-tokens.test.ts:955-968
+  authoritative_test: web/src/calm-tokens.test.ts:970-1007
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-034
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    padding/margin/gap 的裸 px 字面量只被 warn 记录，且会跳过上一行带
+    `stylelint-disable-next-line declaration-property-value-disallowed-list` 标记的行
+  why: >
+    【已知缺口】负值隧道微调点（.sr-only / .today-clock-colon / .cal-agenda）是有据可查的
+    刻意豁免，检测器不该重复报它们。#165 slice 1。
+  source: web/src/calm-tokens.test.ts:1009-1022
+  authoritative_test: web/src/calm-tokens.test.ts:1024-1072
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-035
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    `transition:` 简写里的裸时长只被 warn 记录；`transition-duration:` 和 `animation:`
+    刻意**不**匹配
+  why: >
+    【已知缺口】transition 简写的 stylelint 正则很难写对（多属性逗号、s/ms 混用、可选缓动
+    关键字），所以留在软层靠 PR review。`transition-duration: 0.01ms !important` 是
+    prefers-reduced-motion 的无障碍手法，不是漂移；animation 用具名 keyframes、时序特异
+    （steps(2, start) 之类），抗拒统一标尺，由 #165 的迁移表逐条人工处理。
+  source: web/src/calm-tokens.test.ts:1074-1091
+  authoritative_test: web/src/calm-tokens.test.ts:1093-1133
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-TOKENS-036
+  kind: gate
+  family: tokens-drift-soft
+  statement: >
+    `:root` 里声明但全文无任何 `var(--name)` 消费者的 token 只被 warn 记录；
+    `--r`、`--shadow` 以及所有 `--font-*` 被排除在孤儿扫描之外
+  why: >
+    【已知缺口】注释："等 #142 的 token 变动稳定、我们信任这份清单之后再提升为硬失败"。
+    被排除的几个要么是按名字被 JS 直接消费，要么是非颜色形状原语，正则扫描覆盖不到，
+    扫了只会产生噪音。消费者正则用 `(?![a-z0-9-])` 定界，避免 `--text` 误匹配 `--text-2`。
+  source: web/src/calm-tokens.test.ts:1135-1141
+  authoritative_test: web/src/calm-tokens.test.ts:1168-1193
+  owner_slice: styles/tokens
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 三、stylelint（web/.stylelintrc.cjs）
+# ===========================================================================
+
+- id: GATE-CSS-001
+  kind: gate
+  family: stylelint-color
+  statement: >
+    CSS 里任何位置出现 `#hex` 颜色字面量都要报错（`color-no-hex: true`，含 box-shadow
+    等非颜色属性）
+  why: >
+    #142 slice 1：唯一能合法写颜色字面量的地方是文件顶部的 token 定义块，其余一律读
+    --surface-* / --text-* / --accent / --warn。
+  source: web/.stylelintrc.cjs:73-76
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-002
+  kind: gate
+  family: stylelint-color
+  statement: >
+    color / background{,-color} / border-*-color / outline-color 上，值**以**
+    `oklch(` `rgb(` `rgba(` `hsl(` `hsla(` 开头的一律报错；嵌在 `linear-gradient(…)`
+    内部的同类字面量刻意放行
+  why: >
+    【已知缺口】正则锚在首个函数名上，所以 `linear-gradient(..., oklch(...))` 能通过——
+    :root 里定义 token 的渐变确实需要这个形状。代价是组件选择器里的渐变可以合法夹带
+    原始颜色，闸门看不见。`background` 简写被刻意纳入：calm.css 里它几乎总当
+    background-color 用。currentColor/transparent/inherit/unset/var()/具名色都隐式通过。
+  source: web/.stylelintrc.cjs:29-47,78-102
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-003
+  kind: gate
+  family: stylelint-color
+  statement: >
+    calm.css 顶部的 token 定义区（`:root` + 第一个 `[data-theme="dark"]`）必须由一对
+    `stylelint-disable` / `stylelint-enable` 注释包住，才允许在其中写颜色字面量
+  why: >
+    这是"颜色字面量只许出现在 token 定义处"这条规则的**执行机制**本身。块级 disable/enable
+    对（而不是逐行 disable）是刻意选择：它把豁免范围变成一个可见的、有边界的区域。
+    组件层残留的未迁移字面量则各自带 stylelint-disable-next-line，作为技术债标记。
+  source: web/.stylelintrc.cjs:11-19 ; web/src/calm.css:8,384
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-004
+  kind: gate
+  family: stylelint-scale
+  statement: >
+    组件选择器里的 `z-index` 不得是裸整数（含负数）；必须走 `var(--z-*)`
+  why: >
+    正则 `^-?\d+$` 让 var()/auto/inherit/unset 隐式通过。:root 的 `--z-*: 0|2|4|…`
+    声明已在顶部块级 disable 之内，无需新增例外。#165 slice 4。
+  source: web/.stylelintrc.cjs:104-111
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-005
+  kind: gate
+  family: stylelint-scale
+  statement: >
+    `line-height` 不得是裸数字、`letter-spacing` 不得是裸 `±N(em|rem|px)`；
+    `inherit` 被刻意豁免
+  why: >
+    stylelint 在 parse 期看到的是原始 `var(...)` 字符串，正则不匹配它，所以 token 引用天然
+    通过。`inherit` 是 cascade 指令而非字面值，故意留着。#165 slice 3。
+  source: web/.stylelintrc.cjs:112-119
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-006
+  kind: gate
+  family: stylelint-scale
+  statement: >
+    `border-radius` 及四个角长写法不得以数字开头；`border-radius` 另加中段 `\s\d+px`
+    嗅探以抓住简写第二个角上的漏网字面量
+  why: >
+    单靠 `^\d+` 只检查第一个值，`border-radius: var(--radius-md) 4px` 会溜过去。
+    组件必须读 var(--radius-*) 或 back-compat 的 var(--r)（它自身指向 --radius-xl）。#165 slice 2。
+  source: web/.stylelintrc.cjs:121-133
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-007
+  kind: gate
+  family: stylelint-spacing
+  statement: >
+    padding / margin / gap 及其全部长写法不得使用裸数字间距字面量；简写属性
+    (padding / margin / gap) 额外带中段 `Npx` 嗅探
+  why: >
+    简写的值是空格分隔的，`^\d` 只看第一个 token——没有中段嗅探，
+    `padding: var(--space-0) 6px` 就会通过。token 引用 / auto / inherit / calc() /
+    clamp() 全部隐式通过。#165 slice 1。
+  source: web/.stylelintrc.cjs:49-68,134-158
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-008
+  kind: gate
+  family: stylelint-spacing
+  statement: >
+    margin 系列长写法用 `^-?\d+` 形式，负数字面量同样被拦截，必须逐点写显式
+    stylelint-disable-next-line 才能通过
+  why: >
+    历史上用负 px 做"隧道微调"的 margin 站点（审计出 3 处：.sr-only / .today-clock-colon /
+    .cal-agenda，外加 .codex-card-head 的 38px 离群值，它跟踪绝对定位 X 按钮的几何、
+    不属于节奏栅格）。`^-?\d` 形式的意义是：**新增**负值必须显式声明豁免，不能静默通过。
+  source: web/.stylelintrc.cjs:54-67,86-92
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-009
+  kind: gate
+  family: stylelint-scope
+  statement: >
+    stylelint 的 lint 目标只有 `src/**/*.css`（今天实际只有 calm.css）；内联 style 属性、
+    JS 里的样式字符串不在闸门覆盖范围内
+  why: >
+    【已知缺口】配置头部明确写了"Scope today"。而 font-stack.ts 的注释又说明 fallback 卡片
+    确实在用内联样式——也就是说存在闸门看不到的样式写入路径。另：svg 的 fill/stroke、
+    caret-color 等属性也未加入 disallowed-list（注释列为"未来扩展"）。
+  source: web/.stylelintrc.cjs:11-28 ; web/src/font-stack.ts:1-5
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-CSS-010
+  kind: gate
+  family: stylelint-debt
+  statement: >
+    stylelint-config-recommended 中的 `no-descending-specificity`、
+    `property-no-deprecated`、`declaration-property-value-keyword-no-deprecated`
+    三条被整体关成 null
+  why: >
+    【历史包袱】各有其因：(1) dark 主题覆盖天然跟在低特异性组件选择器之后，是刻意的 cascade
+    排序，等 #137 把 dark 覆盖 token 化完再开；(2) .sr-only 的 `clip: rect(...)` 是 AT 仍然
+    认识的标准隐藏配方，迁 clip-path 是独立的 a11y 清理；(3) .term-line/.diff-line 用
+    `word-break: break-word` 折行，现代替代 `overflow-wrap: anywhere` 的回退行为不同。
+    新仓应逐条重新评估而不是照抄这三个 null。
+  source: web/.stylelintrc.cjs:160-183
+  authoritative_test: NONE
+  owner_slice: none/lint/stylelint
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 四、Persistent<T> —— 两层闸门（类型层是硬的，lint 层是可读的）
+# ===========================================================================
+
+- id: GATE-STATE-001
+  kind: gate
+  family: persistent-brand
+  statement: >
+    `@/shared/state` 的 useState / useReducer 在状态类型 extends `Persistent<unknown>`
+    时，返回类型必须塌成 `never` —— 这是硬闸门，调用点直接 type-check 失败
+  why: >
+    这是三层防线里唯一**真正**拦得住的一层（另两层是 no-restricted-imports 和 eslint 规则）。
+    Persistent<T> 标记的值必须经 useOverlayState 存到服务端；误落进 useState 会造成静默回归：
+    值只活在组件内存里，remount/reload 就丢，把加 brand 的意义整个抹掉。
+    典型报错形态是解构元组时的 "Property '0' does not exist on type 'never'"。
+    文件头原话："Future readers: do not collapse this file."
+  source: web/src/shared/state.ts:1-31,73-107
+  authoritative_test: web/src/shared/state.test-d.ts:29-40
+  owner_slice: core/state/persistent
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: build
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-002
+  kind: invariant
+  family: persistent-brand
+  statement: >
+    条件类型必须写成单元素元组形式 `[T] extends [Persistent<unknown>]`，禁止裸
+    `T extends Persistent<unknown>`
+  why: >
+    裸写法会在联合类型上**分发**：`useState<boolean | null>(null)` 会对每个成员各求一次
+    条件，得到三个不同 Dispatch 的交集，setter 调用直接坏掉。元组包裹强制整体求值一次。
+  source: web/src/shared/state.ts:66-78,99-107
+  authoritative_test: web/src/shared/state.test-d.ts:22-27
+  owner_slice: core/state/persistent
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: build
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-003
+  kind: invariant
+  family: persistent-brand
+  statement: >
+    `Persistent<T>` 是纯编译期虚构（unique symbol 幻影属性），运行时与 T 结构完全相同；
+    shadow 的 useState/useReducer 运行时必须是对 React 原函数的裸转发，零开销
+  why: >
+    brand 在运行时不存在，任何试图在运行时检查 brand 的代码都是错的。转发实现刻意
+    `as unknown as` 而非 `as any`，避免未收窄的函数体把弱类型往外扩散。
+  source: web/src/shared/state.ts:41-51,79-84,108-118
+  authoritative_test: web/src/shared/state.test-d.ts:16-20
+  owner_slice: core/state/persistent
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: build
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-004
+  kind: gate
+  family: persistent-lint
+  statement: >
+    `no-restricted-imports` 禁止从 'react' 具名导入 useState / useReducer；
+    唯一豁免文件是 `src/shared/state.ts`
+  why: >
+    没有这条禁令，开发者只要绕过 shared/state 直接 import 就能完全跳过类型层闸门。
+    豁免范围之所以只能是 state.ts 这一个文件，是因为它必须能 import 原件才能 re-export。
+  source: web/eslint.config.js:39-53,186-193
+  authoritative_test: NONE
+  owner_slice: core/state/persistent
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-005
+  kind: gate
+  family: persistent-lint
+  statement: >
+    `neige-calm/no-react-state-hook-members` 必须堵住命名空间导入和默认导入的旁路：
+    `React.useState(...)` / `ReactDefault.useReducer(...)`
+  why: >
+    no-restricted-imports 只看具名导入，看不见通过 namespace / default import 发出的成员
+    调用。规则先收集 'react' 的 default / namespace specifier 本地名，再匹配这些名字上的
+    useState/useReducer 成员调用。
+  source: web/eslint-rules/no-react-state-hook-members.cjs:1-73
+  authoritative_test: web/eslint-rules/no-persistent-in-usestate.test.ts:83-125
+  owner_slice: none/lint/custom-rules
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-006
+  kind: gate
+  family: persistent-lint
+  statement: >
+    `no-react-state-hook-members` **不**处理 computed member 形式，
+    `React['useState'](...)` 可以完全绕过该规则
+  why: >
+    【已知缺口】CallExpression 访问器里显式 `callee.computed` 为真就 return。新架构需要
+    决定是补上（computed + 字面量 key 是可静态判定的）还是继续接受这个旁路。
+  source: web/eslint-rules/no-react-state-hook-members.cjs:48-57
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-007
+  kind: gate
+  family: persistent-lint
+  statement: >
+    `neige-calm/no-persistent-in-usestate` 是 Persistent 防线的**人类可读层**，
+    与 shared/state.ts 的条件返回类型是两层、缺一不可
+  why: >
+    规则头注释原话：条件类型是"打断 type-check 的硬闸门"，这条规则是"指向正确替代 hook
+    （useOverlayState）的可读层"。只搬 lint 不搬类型 = 闸门实际失效（lint 有多条降级路径，
+    见后三条）；只搬类型不搬 lint = 开发者只看到 never 报错、不知道该换什么。
+    稳定 messageId 是 `usePersistentInLocalState`，供 IDE quick-fix / codemod 钉住。
+  source: web/eslint-rules/no-persistent-in-usestate.cjs:1-42,61-65
+  authoritative_test: web/eslint-rules/no-persistent-in-usestate.test.ts:29-80
+  owner_slice: none/lint/custom-rules
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-008
+  kind: gate
+  family: persistent-lint
+  statement: >
+    没有 `parserOptions.project` 时，`no-persistent-in-usestate` 降级为纯文本匹配：
+    只认写在泛型实参里的 `Persistent<`，别名形式（`type Layout = Persistent<...>`;
+    `useState(initial: Layout)`）静默漏报
+  why: >
+    【已知缺口】fixture 文件把这个缺口写成了注释："Violation #2 …… 只有 type-checker 分支
+    能抓住；project: false 时文本 fallback 看 `Layout` 什么也看不到，所以这条是文档 /
+    回归诱饵，而不是被断言的违例"。
+  source: web/eslint-rules/no-persistent-in-usestate.cjs:67-83,111-124 ;
+    web/eslint-rules/__fixtures__/violating.tsx:30-36
+  authoritative_test: web/eslint-rules/no-persistent-in-usestate.test.ts:36-55
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-009
+  kind: gate
+  family: persistent-lint
+  statement: >
+    type-checker 调用抛异常时，`no-persistent-in-usestate` 静默 catch 并跳过该节点，
+    不报错也不告警
+  why: >
+    【已知缺口】注释原话："Type-checker glitches are non-fatal —— 规则降级为仅泛型检测。
+    宽松地 lint 好过崩溃。" 后果是：类型服务出问题时闸门整片静默失效，没有任何信号。
+    这是典型的 fail-open 设计，新架构应重新评估。
+  source: web/eslint-rules/no-persistent-in-usestate.cjs:138-152
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-010
+  kind: gate
+  family: persistent-lint
+  statement: >
+    brand 检测靠正则 `\bPersistent\s*<` 匹配**类型名文本**，不是结构比对；
+    作用域内任何叫 Persistent 的无关类型都会误报
+  why: >
+    【已知缺口】brand 是 unique symbol 幻影属性，结构比对需要拿到实际声明的 symbol，
+    成本高。注释判定："误报需要开发者另外声明一个叫 Persistent 的无关类型，那本身就是味道。"
+    正则用 `\b` + `\s*<` 定界，避免匹配到 NonPersistent / IsPersistent。
+  source: web/eslint-rules/no-persistent-in-usestate.cjs:36-42,85-90
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-STATE-011
+  kind: gate
+  family: persistent-lint
+  statement: >
+    `tests/**` 用 `project: false` 解析，因此该目录下 `no-persistent-in-usestate`
+    只有文本分支生效
+  why: >
+    【已知缺口】`tests/setup.ts` 不在 app tsconfig 的 include 里，type-aware parse 会失败，
+    所以这个 override 块刻意关掉 project。配置注释承认了这一点："自定义规则在没有 checker
+    时会优雅降级"。等于测试目录的类型层检测是缺失的。
+  source: web/eslint.config.js:194-218
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 五、useOverlayState —— brand 的产出端，与 useState 形状对称
+# ===========================================================================
+
+- id: GATE-OVERLAY-001
+  kind: gate
+  family: overlay-state
+  statement: >
+    `useOverlayState` 返回元组的第一项类型必须是 `Persistent<T>` 而不是裸 T
+  why: >
+    这是 brand 端到端接通的那一环：产出端打 brand、shared/state.ts 消费端塌成 never，
+    两头合起来才关上"顺手把它塞进本地 state"的口子。运行时是恒等转换，brand 是类型幻影。
+  source: web/src/hooks/useOverlayState.ts:80-85,204-210
+  authoritative_test: web/src/hooks/useOverlayState.test-d.ts:28-47
+  owner_slice: core/state/overlay-state
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: build
+  test_tier: static
+  migration: pending
+
+- id: GATE-OVERLAY-002
+  kind: gate
+  family: overlay-state
+  statement: >
+    `useOverlayState` 的返回形状必须与 `useState` 元组同构：`[value, setter]`，
+    setter 接受值或 `(prev) => next`；**故意不**返回 loading 布尔
+  why: >
+    调用点要与 useState 可互换，采用成本是一行替换。pending 期用 `default` 值顶上——
+    注释原话："调用点看起来就是 useState，没有例外；代价是 query resolve 前多渲染一次
+    default，Scope F 的 IndexedDB 回填在热重载时消除这一次。"这是刻意的能力取舍，
+    新写的人只会看到"没有 loading 态"而误以为是漏做。
+  source: web/src/hooks/useOverlayState.ts:35-45,80-85
+  authoritative_test: web/src/hooks/useOverlayState.test-d.ts:35-38
+  owner_slice: core/state/overlay-state
+  intentional_omission: true
+  runtime_layer: core
+  verification_owner: build
+  test_tier: static
+  migration: pending
+
+- id: GATE-OVERLAY-003
+  kind: invariant
+  family: overlay-state
+  statement: >
+    setter 必须在**同步**路径里完成乐观写入（cancelQueries + setQueryData），
+    不能依赖 React Query 的 onMutate
+  why: >
+    onMutate 跑在 `await cancelQueries` 之后，晚一个 microtask，达不到"调用 setLayout(x)
+    后立刻重渲染就能看到 x"的 useState 平价。cancelQueries 先发是为了让迟到的 GET 响应
+    不能踩掉乐观写入；两者的竞态顺序都不会产生错值（setQueryData 按时序取胜，
+    cancelQueries 只丢在途请求、不丢数据）。
+  source: web/src/hooks/useOverlayState.ts:174-201
+  authoritative_test: web/src/hooks/useOverlayState.test.tsx:147
+  owner_slice: core/state/overlay-state
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-OVERLAY-004
+  kind: gate
+  family: overlay-state
+  statement: >
+    overlay 的 queryKey 形状必须固定为
+    `['overlay', plugin_id, entity_kind, entity_id, kind]`（五元组，'overlay' 打头）
+  why: >
+    `persistConfig.isPersistableQueryKey` 靠 "'overlay' 前缀 + key.length >= 2" 匹配，
+    形状一变，overlay 状态就不再进 IndexedDB、重载后不再存活（Scope F）。
+    eventBridge 的 overlay.set / overlay.deleted 失效也按这个键族走。
+  source: web/src/hooks/useOverlayState.ts:213-231
+  authoritative_test: web/src/hooks/useOverlayState.test.tsx:310
+  owner_slice: core/state/overlay-state
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-OVERLAY-005
+  kind: invariant
+  family: overlay-state
+  statement: >
+    POST 失败时必须把 query 数据回滚到调用 mutate 之前同步捕获的 previous 快照
+  why: >
+    乐观值是在 setter 里同步写下去的，失败不回滚 UI 就会一直显示一次从未落地的写入。
+    快照通过 mutation variables 传递而不是闭包 ref，注释理由："能白拿 RQ 的
+    onError/onSuccess 接线，且每次调用的回滚在结构上局部于调用点。"
+    错误目前只 console.error，无 toast —— 后续 Scope 才接通知 UI。
+  source: web/src/hooks/useOverlayState.ts:131-163
+  authoritative_test: web/src/hooks/useOverlayState.test.tsx:207
+  owner_slice: core/state/overlay-state
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ===========================================================================
+# 六、no-raw-primitive-role（原语层边界）
+# ===========================================================================
+
+- id: GATE-ROLE-001
+  kind: gate
+  family: lint-role
+  statement: >
+    `web/src/ui/` 之外的 JSX 禁止出现 `role="dialog"` / `role="menu"` /
+    `role="menuitem"` 字符串字面量；`role={"dialog"}` 花括号包裹形式同样拦截
+  why: >
+    应用代码必须组合 Neige 原语（<Dialog>/<Menu>/<ConfirmDialog>），它们持有 role、
+    焦点陷阱、Escape、焦点还原等契约；手搓 role 会把这些契约丢掉。规则是
+    web/src/ui/README.md 在 #60 slice 1 里承诺的（"应用代码不用裸 role= 查询原语"）。
+    花括号形式必须拦，否则是一个平凡旁路。规则**不可自动修复**：正确修法是换成原语组件，
+    props/children/焦点接线全都不同，不是安全的机械变换。
+  source: web/eslint-rules/no-raw-primitive-role.cjs:1-60,104-146
+  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:62-100
+  owner_slice: none/lint/custom-rules
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-ROLE-002
+  kind: gate
+  family: lint-role
+  statement: >
+    动态形式 `role={expr}` 一律**不**检查 —— 这是刻意留下的缺口
+  why: >
+    【已知缺口】注释原话："linter 无法在没有类型信息的情况下证明它的值，动态值上的误报
+    比偶尔漏一个更糟。" fixture 里 `OkDynamicRole({ kind }: { kind: 'dialog' | 'region' })`
+    被显式标注为"允许"。新架构要决定：是接入 type-checker 把字面量联合类型也判掉，
+    还是继续接受这个洞。
+  source: web/eslint-rules/no-raw-primitive-role.cjs:25-31,115-136 ;
+    web/eslint-rules/__fixtures__/raw-primitive-role.tsx:45-49
+  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:80-91
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-ROLE-003
+  kind: gate
+  family: lint-role
+  statement: >
+    豁免判定是**硬编码路径子串** `/web/src/ui/`（先把 `\` 归一成 `/` 以兼容 Windows）；
+    目录一旦改名或迁移，整条规则会对全仓静默失效
+  why: >
+    【已知缺口】原语层自身当然要实现这些 role，所以必须豁免；但实现方式是字符串包含判断，
+    没有任何"路径必须存在"的校验。命中豁免时返回空 visitor 直接短路整个文件（比逐节点判断
+    便宜）——也就是说失效是彻底的、无声的。测试用 lintText + 伪造 filePath 双向验证了
+    这个路径判别（内/外各一条）。
+  source: web/eslint-rules/no-raw-primitive-role.cjs:37-42,62-69,86-102
+  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:102-184
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-ROLE-004
+  kind: gate
+  family: lint-role
+  statement: >
+    三个 messageId 必须保持稳定且逐 role 分离：`noRawDialogRole` / `noRawMenuRole` /
+    `noRawMenuitemRole`
+  why: >
+    注释说明目的是让调用点能在 snapshot 测试或未来 codemod 里钉住确切违例，
+    而不是去 scrape 人类可读文案。测试断言的是排序后的 id 数组，不是消息文本。
+  source: web/eslint-rules/no-raw-primitive-role.cjs:16-23,44-60
+  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:93-99
+  owner_slice: none/lint/custom-rules
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 七、card-head 类名守卫（no-restricted-syntax，写在 eslint.config.js 里，无独立规则文件）
+# ===========================================================================
+
+- id: GATE-CARDHEAD-001
+  kind: gate
+  family: lint-cardhead
+  statement: >
+    JSX className 里禁止出现 CardHead 自有基类名 `card-head` / `card-head-decor` /
+    `-title` / `-status` / `-icon`，覆盖三种形态：字符串字面量、
+    `className={"..."}`、模板串的任一片段（TemplateElement）
+  why: >
+    PR #178 引入 <CardHead> 作为持有这些类名的类型化插槽组件，PR #213 完成视觉统一
+    （大写标题、字母头像、圆点状态、observer pill）并让插槽契约变成承重结构。
+    组件外的自造用法会让漂移回流。issue #221 把契约锁进 lint。
+    `card-head-decor` 是 PR #178 时代的遗留插槽，类名今天已死，但仍留在 alternation 里
+    作为安全臂。注意：**这条闸门没有任何测试**，规则本体是配置里的三条 AST selector 正则。
+  source: web/eslint.config.js:55-76,100-119,176-184
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-CARDHEAD-002
+  kind: gate
+  family: lint-cardhead
+  statement: >
+    以下类名**刻意不**在禁令范围内：`card-head-observing-pill`、`card-head-icon--letter`、
+    `card-head-icon--c{0..7}`、`card-drag-handle`、`codex-card-head`
+  why: >
+    各有正当理由：observing-pill 由 Terminal/Codex 直接渲染在 status 插槽内，不是 CardHead
+    自有基类；`--letter` / `--c{n}` 是 CardHead 的 LetterAvatar 逻辑内部生成的 BEM 修饰符
+    （外部本不该写，但 lint 用边界锚定正则天然跳过，不尝试强制）；`card-drag-handle` 是 RGL
+    拖拽把手类，调用方通过 <CardHead> 的 className prop 合法传入；`codex-card-head` 前面是
+    `-` 不是词边界，是 Codex 自己的修饰类，同样经 className prop 合法传入。
+    这份清单是"边界锚定正则 `(^|\s)…($|\s)`"这个实现选择的直接产物——换实现就会连带改变
+    豁免集合。
+  source: web/eslint.config.js:77-93,104-117
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-CARDHEAD-003
+  kind: gate
+  family: lint-cardhead
+  statement: >
+    只有 `src/cards/CardHead.tsx` 和 `src/cards/LetterAvatar.tsx` 两个文件被
+    `no-restricted-syntax: 'off'` 豁免
+  why: >
+    字母头像的标记（card-head-icon + --letter + --c{n}）从 CardHead 挪进了 LetterAvatar，
+    好让 AddPanel 菜单复用同一个字形；类名的所有权跟着一起挪。issue #221。
+    注意这个 override 关的是整条 no-restricted-syntax 规则，不只是 card-head 那三条 selector。
+  source: web/eslint.config.js:219-230
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-CARDHEAD-004
+  kind: gate
+  family: lint-cardhead
+  statement: >
+    守卫只看 className 上的字面量与模板片段；通过变量、classnames()/clsx() 等函数拼接
+    出来的 card-head 类名不会被拦截
+  why: >
+    【已知缺口】【推测】配置注释只枚举了它覆盖的三种 JSX 形态，没有讨论间接构造。
+    AST selector 天生只能看字面量，所以 `const c = 'card-head'; <div className={c}/>`
+    可以通过。新架构要决定是补类型/数据流层检测还是接受。
+  source: web/eslint.config.js:66-70,100-118
+  authoritative_test: NONE
+  owner_slice: none/lint/custom-rules
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 八、eslint flat config 全局姿态（含历史包袱）
+# ===========================================================================
+
+- id: GATE-LINT-001
+  kind: gate
+  family: lint-config-debt
+  statement: >
+    `linterOptions.reportUnusedDisableDirectives` 被设为 `'off'`
+  why: >
+    【历史包袱】注释理由：仓里存量有若干内联 disable 指向仍是 'off' 的规则
+    （no-console、某些上下文的 no-restricted-imports），报告未用 disable 会让当时那个
+    react-hooks 范围的 PR 膨胀。后果是**过期的 eslint-disable 注释可以无限期存活**，
+    没人会知道某条 disable 早已不需要。新仓应反过来收紧（打开它）。
+  source: web/eslint.config.js:146-155
+  authoritative_test: NONE
+  owner_slice: none/lint/eslint-config
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-LINT-002
+  kind: gate
+  family: lint-config-debt
+  statement: >
+    `@typescript-eslint/no-explicit-any` 与 `no-console` 被定义为 `'off'` 的 shim，
+    并非真正启用的规则
+  why: >
+    【历史包袱】仓里存量的 `eslint-disable-next-line <rule>` 注释引用了当时没引入的插件规则名；
+    定义成 'off' 是为了避免 "rule definition not found" 报错，而不是采纳这些规则。
+    注释承诺"未来的 lint-pass PR 用真实配置替换这些 shim"。新仓应直接启用真规则。
+  source: web/eslint.config.js:131-145
+  authoritative_test: NONE
+  owner_slice: none/lint/eslint-config
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-LINT-003
+  kind: gate
+  family: lint-config
+  statement: >
+    `react-hooks/rules-of-hooks` 和 `react-hooks/exhaustive-deps` 都必须是 `error`；
+    但**刻意不**引入插件的 `recommended-latest` 配置
+  why: >
+    两条经典 hooks 正确性检查开 error 让 CI 对漂移设闸。不拉 recommended-latest 是因为
+    它会连带打开 React-compiler 规则包——注释明确说"那是另一个 scope"。
+    新写的人只会看到"没开 recommended"，看不到这是刻意的边界。
+  source: web/eslint.config.js:17-21,34-37,176-184,199-218
+  authoritative_test: NONE
+  owner_slice: none/lint/eslint-config
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-LINT-004
+  kind: gate
+  family: lint-config
+  statement: >
+    `eslint-plugin-jsx-a11y` 的 recommended 规则集在 `src/**/*.{ts,tsx}` 上启用，
+    作为 a11y 的基线
+  why: >
+    issue #56 slice 1（AI 可测的 a11y 契约）。注释："未来的 slice 可能加更严格的规则；
+    现在 recommended 是基线。"注意 tests/** 的 override 块**没有**挂 jsx-a11y。
+  source: web/eslint.config.js:156-161,179
+  authoritative_test: NONE
+  owner_slice: none/lint/eslint-config
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-LINT-005
+  kind: gate
+  family: lint-config
+  statement: >
+    `src/**/*.{ts,tsx}` 必须用 type-aware parser 解析
+    （`parserOptions.project: './tsconfig.app.json'` + `tsconfigRootDir`）
+  why: >
+    这是 no-persistent-in-usestate 类型分支能工作的**前提条件**；一旦这里被改成
+    `project: false`（例如为了加速 lint），该规则会静默降级成纯文本匹配，
+    整条 Persistent 的 lint 层就形同虚设（见 GATE-STATE-008）。
+  source: web/eslint.config.js:156-175
+  authoritative_test: NONE
+  owner_slice: none/lint/eslint-config
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-LINT-006
+  kind: gate
+  family: lint-config
+  statement: >
+    `dist/**`、`node_modules/**`、`src/api/generated*.ts`、`src/api/openapi.json`、
+    `eslint-rules/__fixtures__/**` 必须在 lint ignores 中
+  why: >
+    generated*.ts 由 ts-rs 生成，lint 它没有意义且会阻塞代码生成。
+    `__fixtures__/**` 是**故意违规**的文件（存在的目的就是让规则测试有东西可抓），
+    放进主 lint pass 会污染结果——各 fixture 文件头都写明了这一点。
+  source: web/eslint.config.js:122-130 ;
+    web/eslint-rules/__fixtures__/violating.tsx:1-8
+  authoritative_test: NONE
+  owner_slice: none/lint/eslint-config
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+# ===========================================================================
+# 九、类型契约：zod ↔ ts-rs ↔ OpenAPI 三方一致
+# ===========================================================================
+
+- id: GATE-WIRE-001
+  kind: gate
+  family: wire-types
+  statement: >
+    `z.infer<typeof wireEventSchema>` 必须**双向等于** ts-rs 生成的 `Event` 联合类型
+    （`toEqualTypeOf`，不是单向可赋值）
+  why: >
+    生成器是唯一真源，schemas.ts 的 zod 只为 WS 边界做运行时校验。Rust 侧改动跑在 zod 前面
+    （或反过来）时，`tsc -b` 会正好在这一行炸掉。整个联合的等价断言是大保证；
+    逐 entity 断言（GATE-WIRE-002）只是为了让回归更容易定位。D7 / issue #5。
+  source: web/src/api/schemas.test.ts:199-211
+  authoritative_test: web/src/api/schemas.test.ts:212-214
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-002
+  kind: gate
+  family: wire-types
+  statement: >
+    coveSchema / waveSchema / cardSchema / overlaySchema 各自的 infer 类型必须等于
+    生成的 Cove / Wave / Card / Overlay
+  why: >
+    逐 entity 钉住让回归容易定位——`Card.payload` 的漂移会先在这里亮，而不是在整个
+    wireEventSchema 上给一坨天书报错。
+  source: web/src/api/schemas.test.ts:216-219
+  authoritative_test: web/src/api/schemas.test.ts:220-224
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-003
+  kind: gate
+  family: wire-types
+  statement: >
+    workspace cargo config 必须设 `TS_RS_LARGE_INT = "number"` —— Rust 的
+    i64/u64/i128/u128 映射到 TS `number` 而非 ts-rs 默认的 `bigint`
+  why: >
+    三方必须一致：(a) 现有 OpenAPI / generated.ts 已经把 Rust i64（created_at、updated_at、
+    archived_at）表示成 number；(b) schemas.ts 的运行时 zod 用 `z.number()`；
+    (c) 时间戳远小于 Number.MAX_SAFE_INTEGER。注释指明：如果未来某个 i64 字段超出这个假设，
+    schemas.test.ts 的一致性测试会抓到，届时改回 bigint 并同步 zod 侧。
+  source: .cargo/config.toml:19-26
+  authoritative_test: web/src/api/schemas.test.ts:212-224
+  owner_slice: none/build/ts-rs
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-004
+  kind: gate
+  family: wire-types
+  statement: >
+    `TS_RS_EXPORT_DIR` 必须是 `{ value = ".", relative = true, force = true }`
+  why: >
+    默认 `./bindings` 会逼得每个 `#[ts(export_to = ...)]` 写成
+    `"../bindings/../../web/..."` 这种鬼样子。`relative = true` 让它相对 config.toml 所在
+    目录（= workspace root）解析，与 cargo 的 cwd 无关——这很关键，因为
+    `npm run gen:api` 是从 `web/` 目录用 `--manifest-path ../Cargo.toml` 调 cargo 的。
+  source: .cargo/config.toml:1-18
+  authoritative_test: NONE
+  owner_slice: none/build/ts-rs
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: build
+  test_tier: static
+  migration: pending
+
+- id: GATE-WIRE-005
+  kind: gate
+  family: wire-runtime
+  statement: >
+    未知的 `ev` 字符串必须被 `wireEventSchema.safeParse` 拒绝（success === false）
+  why: >
+    判别式联合的兜底行为：schema 不能退化成宽松形状，否则新变体和坏 payload 就无从区分。
+    测试刻意只断言 issues 非空、不断言具体 issue code（不同 zod 版本会变）。
+  source: web/src/api/schemas.ts:1-13
+  authoritative_test: web/src/api/schemas.test.ts:91-102
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-006
+  kind: invariant
+  family: wire-runtime
+  statement: >
+    parse 失败时调用方必须 log + skip dispatch，**绝不抛**；带未映射 `ev` 的事件
+    进到 dispatch 也不得抛异常
+  why: >
+    服务端新增一个事件变体不应该让 UI 崩掉。运行时校验的职责是抓**意外**的 payload 形状
+    （schema 漂移、灰度发布、坏代理），不是逐字段执法。eventBridge 测试专门守住
+    "有值带着未映射的 ev 溜进来时 dispatch 不炸"。
+  source: web/src/api/schemas.ts:5-9 ; web/src/app/eventBridge.test.tsx:15-18
+  authoritative_test: web/src/app/eventBridge.test.tsx:754-771
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-007
+  kind: gate
+  family: wire-compat
+  statement: >
+    后加的 wire 字段必须在 zod 侧带 `.default(...)`，与 Rust 侧的 `#[serde(default)]`
+    对齐，使旧 event-log / replay fixture 无需迁移即可解析
+  why: >
+    已知的成对默认值：cove.kind → 'user'（#175）、wave.lifecycle → 'draft'（#145，与
+    migration 0012 的 DB DEFAULT 一致）、wave.cwd → ''（#250 PR2）、
+    wave.workflow_id / purpose / terminal_at → null、wave.workflow_input → null（#891）、
+    pinned_at → null。理由一致："不要为了加一个字段就逼所有录制会话重写 fixture"。
+    每条默认值都有配对的测试断言旧 payload 解析后拿到那个默认值。
+  source: web/src/api/schemas.ts:19-118
+  authoritative_test: web/src/api/schemas.test.ts:45-64,146-149,697-713
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-008
+  kind: gate
+  family: wire-compat
+  statement: >
+    每个 wire 变体都要成对测试：一条 happy-path `parse`，一条缺必填字段的
+    `safeParse` 必须失败
+  why: >
+    注释把这条写成了显式的测试约定（#136 PR4："两条一组，每个新变体一个 happy parse
+    加一个缺字段 safeParse"）。缺了 reject 那一半，schema 退化成宽松形状时没人会发现。
+    覆盖面包括 dispatcher/task 生命周期、proposal 通道（#955）、wave.report_edited（#247，
+    含 author 判别式的四个取值 + #955 的 plugin 臂 author_plugin_id）、
+    harness transcript 事件、plugin.tool.registered / workflow.registered / forge.issue.read。
+  source: web/src/api/schemas.test.ts:277-283,528-533
+  authoritative_test: web/src/api/schemas.test.ts:284-526,534-650,763-853
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
