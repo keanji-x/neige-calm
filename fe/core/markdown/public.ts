@@ -408,7 +408,6 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
     const indentation = /^( *)/.exec(line)?.[1].length ?? 0;
     const content = line.slice(indentation);
     const listMarker = /^(?:[-+*]|\d+[.)])\s/.test(content);
-    if (indentation >= 4 && !listMarker) continue;
     const quoteDepth = (content.match(/^(?:>\s*)+/)?.[0].match(/>/g) ?? []).length;
     const listDepth = listMarker ? Math.floor(indentation / 2) + 1 : 0;
     if (quoteDepth + listDepth > MAX_MARKDOWN_NESTING_DEPTH) {

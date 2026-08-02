@@ -240,7 +240,7 @@ describe('core/markdown behavior', () => {
   ] as const);
 
   it.each(BYPASS_PREFIXES)('fails closed for bypass prefix: %s', (_name, prefix) => {
-    const adversarial = Array.from({ length: 250 }, (_, depth) => `${'  '.repeat(depth)}- x`).join('\n');
+    const adversarial = `    ${'>'.repeat(65)} x`;
     const started = Date.now();
     const result = parse(prefix + adversarial);
     expect(Date.now() - started).toBeLessThan(1_000);
