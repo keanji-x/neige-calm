@@ -229,6 +229,8 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
     assert_eq!(keys(&boot).await, ["waited"]);
 
     let (withdraw_rev, doc_rev_after) = user_upsert(&boot, &id, rev, task("waited")).await;
+    let keys_1 = keys(&boot).await;
+    let keys_after_delay = keys(&boot).await;
     let after_withdraw = read(&boot).await;
     let policy: Option<String> =
         sqlx::query_scalar("SELECT automation_policy FROM waves WHERE id=?1")
@@ -249,14 +251,14 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
         .unwrap()
         .into_iter()
         .find(|task| task.key == "waited");
-    let current_keys = keys(&boot).await;
     eprintln!(
-        "declare-and-wait withdrawal diagnostics: policy={policy:?}; persisted_payload={persisted_payload}; row={row:#?}; taskDiagnostics={:#?}; withdraw_rev={withdraw_rev}; docRev_before={:?}; docRev_after={:?}",
+        "declare-and-wait withdrawal diagnostics: keys_1={keys_1:?}; keys_after_delay={keys_after_delay:?}; policy={policy:?}; persisted_payload={persisted_payload}; row={row:#?}; taskDiagnostics={:#?}; withdraw_rev={withdraw_rev}; docRev_before={:?}; docRev_after={:?}",
         after_withdraw["taskDiagnostics"], doc_rev_before, doc_rev_after,
     );
     assert!(
-        current_keys.is_empty(),
-        "expected no rows, got {current_keys:?}; policy={policy:?}; row={row:?}"
+        keys_1.is_empty(),
+        "expected no rows, got keys_1={keys_1:?}; keys_after_delay={keys_after_delay:?}; policy={policy:?}; persisted_payload={persisted_payload}; row={row:?}; taskDiagnostics={:?}; withdraw_rev={withdraw_rev}; docRev_before={doc_rev_before:?}; docRev_after={doc_rev_after:?}",
+        after_withdraw["taskDiagnostics"],
     );
 
     let mut forbidden = task("forbidden");
