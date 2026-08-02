@@ -1,0 +1,19 @@
+# 前端架构
+
+## 分层概览
+
+运行时依赖单向流动：`app → features → systems → ui → core`。层级可以向下跨层，但不得向上导入；feature 域之间不得互相导入。`styles` 是有明确 owner 的非运行时层。
+
+## 放置规则
+
+跨平台、平台无关逻辑放在 `core`；浏览器组装与行为放在 `web/src` 下的 `app`、`features`、`systems` 和 `ui`。`web/src` 根目录只能有 `main.tsx`。不得新增 `shared` 目录或 barrel 文件。
+
+`index.*` 文件不得包含任何 import/export 依赖。这是有意采用的严格入口规则，不仅禁止 re-export barrel；需要显式入口时使用有语义的文件名（如 `public.ts`）。
+
+## 变更申请
+
+冻结接口与全局样式契约在实现期间只读。接口不足时应暂停并向 owner 层提交变更申请，由 orchestrator 决策并广播；agent 不得分叉或静默放宽契约。
+
+## 验证
+
+每道架构门禁都需要正反 fixture。检查应静态且明确；不得弱化规则，新增 allowlist 必须限定到窄路径并记录理由。
