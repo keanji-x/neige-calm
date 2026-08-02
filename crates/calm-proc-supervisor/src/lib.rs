@@ -22,10 +22,24 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 const DAEMON_READY_SIGNAL: &[u8] = b"ready\n";
 const DAEMON_READY_MAX_BYTES: usize = 64;
 
+/// #996: 一个 pty 进程退出后，其 `ByteRing`（默认 1 MiB/终端）与 pty master fd
+/// 还要保留这么久，给"退出后立刻重连并看最后一屏"留窗口。窗口过后 entry 被
+/// 降级为墓碑：大头内存与 fd 释放，`ProcExit` 保留，晚到的 attach 依旧拿得到
+/// sticky exit（配 `Gap` 告知 replay 已不可用）。
+const PTY_RECLAIM_GRACE: Duration = Duration::from_secs(60);
+
+/// #996: 墓碑本身很小（pid + 退出码 + 游标），但不能无界增长。超过这个数量后
+/// 按 FIFO 丢弃最老的墓碑，此后对它们的 attach 退化为 `UnknownProc`。
+const MAX_PTY_TOMBSTONES: usize = 128;
+
 #[derive(Clone)]
 pub struct ProcRegistry {
     inner: Arc<StdMutex<HashMap<String, Arc<ProcEntry>>>>,
+    /// #996: 已降级为墓碑的 proc_id，FIFO 顺序，用于给墓碑总量封顶。
+    tombstones: Arc<StdMutex<VecDeque<String>>>,
     reap_children: bool,
+    pty_reclaim_grace: Duration,
+    max_tombstones: usize,
 }
 
 struct ProcEntry {
@@ -44,8 +58,10 @@ enum ProcRuntime {
         child: Arc<Mutex<Child>>,
     },
     Pty {
-        master: Arc<StdMutex<Box<dyn MasterPty + Send>>>,
-        writer: Arc<StdMutex<Box<dyn io::Write + Send>>>,
+        // #996: `Option` 是墓碑化的开关 —— 回收时置 None 即关闭 pty master fd
+        // 与 writer fd，entry 本身留在 registry 里继续提供 sticky exit。
+        master: Arc<StdMutex<Option<Box<dyn MasterPty + Send>>>>,
+        writer: Arc<StdMutex<Option<Box<dyn io::Write + Send>>>>,
     },
 }
 
@@ -133,9 +149,60 @@ impl ByteRing {
         (self.cursor_head, self.cursor_tail)
     }
 
+    /// #996: 释放全部缓冲字节并把容量降到 0，游标窗口塌缩为 `[tail, tail]`。
+    /// 之后 `slice_from` 对任何早于 tail 的游标返回 `Gap`，attach 端因此知道
+    /// replay 已不可用，而不是误以为终端没输出过。
+    fn reclaim(&mut self) {
+        self.chunks.clear();
+        self.chunks.shrink_to_fit();
+        self.capacity = 0;
+        self.cursor_head = self.cursor_tail;
+    }
+
     fn buffered_len(&self) -> usize {
         self.chunks.iter().map(|(_, chunk)| chunk.len()).sum()
     }
+}
+
+/// #996: 只给测试断言用的 entry 快照。
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct EntryDebugStats {
+    pub buffered_bytes: usize,
+    pub pty_master_open: bool,
+    pub exited: bool,
+}
+
+impl ProcEntry {
+    /// #996: 墓碑 = pty entry 的 master 已被释放。
+    fn is_tombstoned(&self) -> bool {
+        match &self.runtime {
+            ProcRuntime::Pipe { .. } => false,
+            ProcRuntime::Pty { master, .. } => master
+                .lock()
+                .map(|master| master.is_none())
+                .unwrap_or(false),
+        }
+    }
+}
+
+/// #996: 把一个已退出的 pty entry 降级为墓碑 —— 释放 `ByteRing` 与 pty
+/// master/writer fd，保留 `ProcExit` 让晚到的 attach 仍能得知进程如何结束。
+/// 幂等：重复调用无副作用。
+fn reclaim_pty_entry(registry: &ProcRegistry, proc_id: &str, entry: &ProcEntry) {
+    if let ProcRuntime::Pty { master, writer } = &entry.runtime {
+        if let Ok(mut writer) = writer.lock() {
+            *writer = None;
+        }
+        if let Ok(mut master) = master.lock() {
+            *master = None;
+        }
+    }
+    if let Ok(mut ring) = entry.byte_ring.lock() {
+        ring.reclaim();
+        entry.cursor_head.store(ring.window().0, Ordering::SeqCst);
+    }
+    registry.record_tombstone(proc_id);
 }
 
 #[derive(Debug)]
@@ -148,14 +215,92 @@ impl ProcRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(StdMutex::new(HashMap::new())),
+            tombstones: Arc::new(StdMutex::new(VecDeque::new())),
             reap_children: true,
+            pty_reclaim_grace: PTY_RECLAIM_GRACE,
+            max_tombstones: MAX_PTY_TOMBSTONES,
         }
     }
 
     fn without_reaper() -> Self {
         Self {
-            inner: Arc::new(StdMutex::new(HashMap::new())),
             reap_children: false,
+            ..Self::new()
+        }
+    }
+
+    /// #996: 测试用 —— 缩短退出到回收之间的宽限期。
+    #[doc(hidden)]
+    pub fn with_pty_reclaim_grace(mut self, grace: Duration) -> Self {
+        self.pty_reclaim_grace = grace;
+        self
+    }
+
+    /// #996: 测试用 —— 缩小墓碑上限，便于验证 registry 有界。
+    #[doc(hidden)]
+    pub fn with_max_tombstones(mut self, max: usize) -> Self {
+        self.max_tombstones = max;
+        self
+    }
+
+    /// #996: registry 当前持有的 entry 数（含墓碑）。
+    #[doc(hidden)]
+    pub fn debug_entry_count(&self) -> usize {
+        self.inner.lock().map(|entries| entries.len()).unwrap_or(0)
+    }
+
+    /// #996: 供测试断言"ring 已释放 / pty fd 已关闭 / 退出状态仍在"。
+    #[doc(hidden)]
+    pub fn debug_entry_stats(&self, proc_id: &str) -> Option<EntryDebugStats> {
+        let entry = self.inner.lock().ok()?.get(proc_id).cloned()?;
+        Some(EntryDebugStats {
+            buffered_bytes: entry
+                .byte_ring
+                .lock()
+                .map(|ring| ring.buffered_len())
+                .unwrap_or(0),
+            pty_master_open: matches!(&entry.runtime, ProcRuntime::Pty { master, .. }
+                if master.lock().map(|m| m.is_some()).unwrap_or(false)),
+            exited: entry
+                .exit
+                .lock()
+                .map(|exit| exit.is_some())
+                .unwrap_or(false),
+        })
+    }
+
+    /// #996: 登记一个墓碑，并对墓碑总量封顶（FIFO 淘汰）。只有仍是墓碑的
+    /// entry 才会被真正移除 —— 同名 proc_id 被重新拉起时新 entry 必须留下。
+    fn record_tombstone(&self, proc_id: &str) {
+        let evicted: Vec<String> = {
+            let Ok(mut tombstones) = self.tombstones.lock() else {
+                return;
+            };
+            if tombstones.iter().any(|id| id == proc_id) {
+                return;
+            }
+            tombstones.push_back(proc_id.to_string());
+            let mut evicted = Vec::new();
+            while tombstones.len() > self.max_tombstones {
+                if let Some(id) = tombstones.pop_front() {
+                    evicted.push(id);
+                }
+            }
+            evicted
+        };
+        if evicted.is_empty() {
+            return;
+        }
+        if let Ok(mut entries) = self.inner.lock() {
+            for id in evicted {
+                let still_tombstone = entries
+                    .get(&id)
+                    .map(|entry| entry.is_tombstoned())
+                    .unwrap_or(false);
+                if still_tombstone {
+                    entries.remove(&id);
+                }
+            }
         }
     }
 
@@ -546,6 +691,10 @@ async fn handle_write_stdin(
         let mut writer = writer
             .lock()
             .map_err(|_| io::Error::other("pty writer mutex poisoned"))?;
+        // #996: 墓碑（已退出且已回收）没有可写的 pty。
+        let writer = writer
+            .as_mut()
+            .ok_or_else(|| io::Error::other("pty has exited and been reclaimed"))?;
         writer.write_all(&bytes)?;
         writer.flush()
     })
@@ -591,15 +740,31 @@ async fn handle_resize_pty(
         .await?;
         return Ok(());
     };
-    let res = master
-        .lock()
-        .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?
-        .resize(PtPtySize {
-            cols: request.cols,
-            rows: request.rows,
-            pixel_width: request.pixel_w,
-            pixel_height: request.pixel_h,
-        });
+    // #996: 墓碑（已退出并回收）没有 master fd 可 resize。
+    let res = {
+        let mut master = master
+            .lock()
+            .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?;
+        master.as_mut().map(|master| {
+            master.resize(PtPtySize {
+                cols: request.cols,
+                rows: request.rows,
+                pixel_width: request.pixel_w,
+                pixel_height: request.pixel_h,
+            })
+        })
+    };
+    let Some(res) = res else {
+        write_frame(
+            stream,
+            &ControlReply::Error {
+                kind: ControlErrorKind::WrongState,
+                message: format!("proc {} has exited and been reclaimed", request.proc_id),
+            },
+        )
+        .await?;
+        return Ok(());
+    };
     match res {
         Ok(()) => write_frame(stream, &ControlReply::ResizeOk).await?,
         Err(e) => {
@@ -662,8 +827,10 @@ fn current_process_group(entry: &ProcEntry) -> anyhow::Result<i32> {
             let master = master
                 .lock()
                 .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?;
+            // #996: 墓碑已释放 master fd，退回记录的 pid。
             Ok(master
-                .process_group_leader()
+                .as_ref()
+                .and_then(|master| master.process_group_leader())
                 .unwrap_or(entry.pid as libc::pid_t))
         }
     }
@@ -692,11 +859,19 @@ async fn handle_cleanup(
         .await?;
         return Ok(());
     }
-    registry
-        .inner
-        .lock()
-        .map(|mut entries| entries.remove(&request.proc_id))
-        .ok();
+    // #996: pty entry 不整个移除 —— 移除会让之后的 attach 拿到 `UnknownProc`，
+    // 客户端就无从得知进程如何结束（reader 仍在 drain 时尤其致命）。改为立即
+    // 墓碑化：ring 与 pty fd 当场释放，`ProcExit` 保留。pipe entry 没有 sticky
+    // exit 语义，仍然直接移除。
+    if matches!(entry.runtime, ProcRuntime::Pty { .. }) {
+        reclaim_pty_entry(&registry, &request.proc_id, &entry);
+    } else {
+        registry
+            .inner
+            .lock()
+            .map(|mut entries| entries.remove(&request.proc_id))
+            .ok();
+    }
     write_frame(stream, &ControlReply::CleanupOk).await?;
     Ok(())
 }
@@ -894,8 +1069,8 @@ async fn try_spawn_pty(
     drop(pair.slave);
 
     let pid = child.process_id().unwrap_or_default();
-    let master = Arc::new(StdMutex::new(pair.master));
-    let writer = Arc::new(StdMutex::new(writer));
+    let master = Arc::new(StdMutex::new(Some(pair.master)));
+    let writer = Arc::new(StdMutex::new(Some(writer)));
     let (broadcast_tx, _) = broadcast::channel(2048);
     let replay_bytes = if request.replay_bytes == 0 {
         1024 * 1024
@@ -924,7 +1099,7 @@ async fn try_spawn_pty(
         })?
         .insert(request.proc_id.clone(), entry.clone());
     spawn_pty_reader_task(request.proc_id.clone(), entry.clone(), reader);
-    spawn_pty_waiter(request.proc_id.clone(), entry, child);
+    spawn_pty_waiter(request.proc_id.clone(), entry, child, registry.clone());
 
     Ok(Spawned {
         proc_id: request.proc_id,
@@ -978,6 +1153,7 @@ fn spawn_pty_waiter(
     proc_id: String,
     entry: Arc<ProcEntry>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    registry: ProcRegistry,
 ) {
     // OS thread, NOT `tokio::task::spawn_blocking`: a long-lived PTY child
     // (shell / codex / claude) keeps `child.wait()` blocked for the
@@ -1018,6 +1194,15 @@ fn spawn_pty_waiter(
             "pty child exited"
         );
         let _ = entry.broadcast_tx.send(DataFrame::Exited(exit));
+
+        // #996: 退出后按宽限期回收。宽限期内 replay 完好（刚断开的客户端可以
+        // 重连看最后一屏）；到期后降级为墓碑 —— ring 与 pty fd 释放，
+        // `ProcExit` 保留，晚到的 attach 仍拿得到 sticky exit。
+        // 这里睡在 waiter 线程上：它本来就要退出了，且不受 tokio blocking pool
+        // 跟踪（见上方注释），不会阻塞 runtime drop。
+        std::thread::sleep(registry.pty_reclaim_grace);
+        reclaim_pty_entry(&registry, &proc_id, &entry);
+        tracing::debug!(proc_id = %proc_id, "pty entry reclaimed to tombstone");
     });
 }
 
@@ -1084,6 +1269,10 @@ async fn existing_live_pid(registry: &ProcRegistry, proc_id: &str) -> Option<u32
             }
         },
         ProcRuntime::Pty { .. } => {
+            // #996: 与 Pipe 分支不同，这里**故意不**移除已退出的 entry ——
+            // 移除会连 sticky exit 一起丢掉。资源由退出后的宽限期回收路径
+            // （`reclaim_pty_entry`）释放；同名 proc_id 被重新拉起时
+            // `try_spawn_pty` 的 insert 会直接覆盖这条墓碑。
             if entry
                 .exit
                 .lock()
@@ -1361,9 +1550,25 @@ pub mod test_support {
 
     impl InProcessProcSupervisor {
         pub async fn start() -> anyhow::Result<Self> {
+            Self::start_with_registry(ProcRegistry::without_reaper()).await
+        }
+
+        /// #996: 让测试可以缩短退出→回收的宽限期、缩小墓碑上限。
+        pub async fn start_with(
+            pty_reclaim_grace: Duration,
+            max_tombstones: usize,
+        ) -> anyhow::Result<Self> {
+            Self::start_with_registry(
+                ProcRegistry::without_reaper()
+                    .with_pty_reclaim_grace(pty_reclaim_grace)
+                    .with_max_tombstones(max_tombstones),
+            )
+            .await
+        }
+
+        async fn start_with_registry(registry: ProcRegistry) -> anyhow::Result<Self> {
             let temp = tempfile::tempdir()?;
             let sock = temp.path().join("proc-supervisor.sock");
-            let registry = ProcRegistry::without_reaper();
             let serve_registry = registry.clone();
             let (shutdown_tx, shutdown_rx) = oneshot::channel();
             // Bind the listener synchronously here so the socket is
@@ -1387,6 +1592,11 @@ pub mod test_support {
 
         pub fn sock(&self) -> &Path {
             &self.sock
+        }
+
+        /// #996: 暴露 registry 供泄漏断言（entry 数 / ring 字节 / pty fd）。
+        pub fn registry(&self) -> &ProcRegistry {
+            &self.registry
         }
     }
 
