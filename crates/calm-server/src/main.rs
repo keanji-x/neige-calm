@@ -70,7 +70,12 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    calm_server::task_context_sweep_on_boot(&state).await?;
+    if let Err(e) = calm_server::task_context_sweep_on_boot(&state).await {
+        tracing::warn!(
+            error = %e,
+            "task context boot sweep failed; recovery gates remain closed"
+        );
+    }
 
     calm_server::recover_operations_on_boot(&state).await?;
 

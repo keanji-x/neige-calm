@@ -338,7 +338,6 @@ impl TaskContextMonitor {
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok());
             let material = match refs {
                 None => true,
-                Some(_) if row.closure_truncated => true,
                 Some(refs) if verified.saturating_add(refs.len()) > MAX_SWEEP_NODES => {
                     capped = true;
                     true
@@ -378,10 +377,10 @@ impl TaskContextMonitor {
             // Wave/cove deletion removes its tasks in the same transaction. A
             // missing wave is therefore safe only because the task row is
             // already gone; keep this coupling loud if either delete path changes.
-            let pool = self
-                .repo
-                .sqlite_pool()
-                .expect("task context monitor requires sqlite");
+            let Some(pool) = self.repo.sqlite_pool() else {
+                tracing::warn!(%task_id, %wave_id, "task context monitor requires sqlite");
+                return Ok(());
+            };
             let task_exists: bool =
                 sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)")
                     .bind(&task_id)

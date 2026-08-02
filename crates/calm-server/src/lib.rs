@@ -719,6 +719,11 @@ mod boot_order_tests {
             .expect("main boot calls scheduler_sweep_on_boot");
         assert!(context_sweep < recover);
         assert!(recover < scheduler_sweep);
+        assert!(
+            main_rs
+                .contains("if let Err(e) = calm_server::task_context_sweep_on_boot(&state).await"),
+            "context sweep failure must leave its gate closed without aborting main"
+        );
     }
 
     #[test]

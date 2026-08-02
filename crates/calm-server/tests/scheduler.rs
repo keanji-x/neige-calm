@@ -22,6 +22,7 @@
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
 //!     `sweep_resubmits_dispatched_task_with_missing_operation`.
 
+use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -34,7 +35,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, task_insert_tx,
 };
 use calm_server::error::Result as CalmResult;
-use calm_server::event::EventBus;
+use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
@@ -50,18 +51,20 @@ use calm_server::operation::codex_adapter::CodexWorkerAdapter;
 use calm_server::operation::task_verify_adapter::{TaskVerifyAdapter, TaskVerifyOperationPayload};
 use calm_server::operation::terminal_adapter::TerminalWorkerAdapter;
 use calm_server::operation::{
-    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
-    OperationKey, OperationOutcome, OperationRepo, OperationRuntime, PhaseTag, ProviderAdapter,
-    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput,
+    AppServerInteractOutcome, CompensationStateVersioned, NON_TASK_BOUND_ADAPTER_KINDS, Operation,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
+    PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo,
+    TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput,
 };
 use calm_server::plugin_host::mcp::RpcError;
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::state::{CodexClient, DaemonClient, WriteContext};
+use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -205,6 +208,26 @@ async fn boot() -> Boot {
 
 async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, thread_id: &str) {
     seed_runtime_session_in_pool(repo.pool(), card_id, session_id, thread_id).await;
+}
+
+fn app_state_for_context_events(boot: &Boot) -> AppState {
+    AppState::from_parts(
+        boot.repo.clone(),
+        boot.events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            boot.repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-context-events"),
+            Vec::new(),
+            EventBus::new(),
+            boot.write.clone(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(boot.card_role_cache.clone()),
+        Some(boot.wave_cove_cache.clone()),
+    )
 }
 
 async fn seed_runtime_session_in_pool(
@@ -2258,14 +2281,46 @@ async fn every_registered_task_adapter_refuses_material_context() {
         ),
     ));
 
-    let registered = cases
+    let fenced = cases
         .iter()
         .map(|(adapter, _)| adapter.kind())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        registered,
+        fenced,
         TASK_BOUND_ADAPTER_KINDS.into_iter().collect(),
-        "task adapter registry changed; add its real adapter and payload to this invariant"
+        "task-bound classification changed; add a stale payload proof"
+    );
+
+    // The left side comes from the adapters actually built by AppState's
+    // production `build_operation_adapters`, not from this test's cases.
+    let state = AppState::from_parts(
+        boot.repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            boot.repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-context-registry"),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        None,
+    );
+    let registered = state
+        .operation_runtime
+        .registered_adapter_kinds()
+        .collect::<std::collections::BTreeSet<_>>();
+    let classified = TASK_BOUND_ADAPTER_KINDS
+        .into_iter()
+        .chain(NON_TASK_BOUND_ADAPTER_KINDS)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        registered, classified,
+        "every production adapter must be classified as task-bound or explicitly non-task-bound"
     );
     let pool = boot.repo.sqlite_pool().unwrap();
     for (adapter, op) in cases {
@@ -2296,6 +2351,14 @@ async fn every_registered_task_adapter_refuses_material_context() {
     assert!(
         matches!(missing, calm_server::error::CalmError::Conflict(ref message) if message.contains("does not exist"))
     );
+    tx.rollback().await.unwrap();
+
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::operation::refuse_if_context_stale(&mut tx, None)
+        .await
+        .expect("an operation without a task binding is outside the task-context fence");
     tx.rollback().await.unwrap();
 }
 
@@ -2428,7 +2491,7 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
 }
 
 #[tokio::test]
-async fn context_boot_seam_blocks_operation_recovery_and_dispatched_redrive() {
+async fn context_boot_seam_blocks_dispatched_redrive_until_gate_opens() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Terminal, &[]);
@@ -2751,6 +2814,97 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
             .await
             .unwrap();
     assert!(stale.is_some());
+}
+
+#[tokio::test]
+async fn context_sweep_verifies_available_refs_when_closure_was_truncated() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "truncated-still-matches").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET context_closure_truncated = 1 WHERE id = ?1")
+        .bind(format!("{}:truncated-still-matches", boot.wave_id))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    monitor.sweep().await.unwrap();
+
+    assert!(
+        event_rows(&boot, "task.context_advanced").await.is_empty(),
+        "budget exhaustion alone must not invalidate a matching frozen prefix"
+    );
+}
+
+async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {
+    let boot = boot().await;
+    let _monitor = seed_frozen_context_fixture(&boot, key).await;
+    let state = app_state_for_context_events(&boot);
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let task_id = format!("{}:{key}", boot.wave_id);
+    let missing_ref = json!([{
+        "wave_id": deleted_wave_id,
+        "block_id": "b_deleted",
+        "rev": 1,
+        "hash": "deleted"
+    }]);
+    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+        .bind(missing_ref.to_string())
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM task_ref_index WHERE task_id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_deleted')",
+    )
+    .bind(&task_id)
+    .bind(deleted_wave_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    boot.events.emit(ActorId::Kernel, event);
+    for _ in 0..100 {
+        if !event_rows(&boot, "task.context_advanced").await.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        event_rows(&boot, "task.context_advanced").await.len(),
+        1,
+        "dispatcher deletion arm must run the context sweep"
+    );
+    drop(state);
+}
+
+#[tokio::test]
+async fn wave_deleted_event_runs_context_sweep_end_to_end() {
+    assert_deletion_event_runs_context_sweep(
+        Event::WaveDeleted {
+            id: WaveId::from("deleted-destination"),
+            cove_id: CoveId::from("deleted-destination-cove"),
+        },
+        "deleted-destination",
+        "wave-deleted-event",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cove_deleted_event_runs_context_sweep_end_to_end() {
+    assert_deletion_event_runs_context_sweep(
+        Event::CoveDeleted {
+            id: CoveId::from("deleted-destination-cove"),
+        },
+        "deleted-wave-under-cove",
+        "cove-deleted-event",
+    )
+    .await;
 }
 
 #[tokio::test]

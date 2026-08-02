@@ -1011,13 +1011,16 @@ impl Inner {
             } => {
                 // #985 PR3a-ii: mechanical invalidation is independent of
                 // author and runs before the self-push suppression below.
-                if let Err(error) = self
-                    .context_monitor
-                    .detect_wave_edit(wave_id.as_str())
-                    .await
-                {
-                    tracing::warn!(%error, %wave_id, "task context edit detection failed");
-                }
+                let context_monitor = Arc::clone(&self.context_monitor);
+                let detection_wave_id = wave_id.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = context_monitor
+                        .detect_wave_edit(detection_wave_id.as_str())
+                        .await
+                    {
+                        tracing::warn!(%error, wave_id = %detection_wave_id, "task context edit detection failed");
+                    }
+                });
                 // Only user/plugin edits warrant a push (#955 §5.7).
                 // The spec authored Spec/Kernel edits itself;
                 // re-notifying it would loop.

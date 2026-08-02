@@ -60,11 +60,25 @@ pub const TASK_BOUND_ADAPTER_KINDS: [&str; 4] = [
     "task-verify",
 ];
 
+/// Registered adapters whose payloads are not tied to a scheduler task row.
+/// Kept explicit so the registry coverage test fails when a new production
+/// adapter has not been classified on either side of the context fence.
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
+    "terminal-create",
+    "codex-create",
+    "claude-create",
+    "claude-restart",
+    "spec-harness-start",
+    "spec-harness-interrupt",
+    "spec-harness-shutdown",
+    "forge-action",
+];
+
 #[doc(hidden)]
 pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> Result<()> {
-    let task_id = task_id.ok_or_else(|| {
-        CalmError::Conflict("context-stale: task-bound operation has no task id".into())
-    })?;
+    let Some(task_id) = task_id else {
+        return Ok(());
+    };
     let stale_at: Option<Option<i64>> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
             .bind(task_id)
