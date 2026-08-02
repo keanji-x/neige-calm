@@ -3,8 +3,10 @@
 > **本文状态**：设计定稿。经 8 轮评审（r1–r8g，双通道：codex + 独立 subagent）收敛后
 > **全文重写**——正文只陈述最终裁决，推翻史与评审处置记录移入附录 A / B。
 >
-> **行号基线**：`a6de2260`（切片 3b 合入后的 main）。切片 1/2/3a/3b 已合入；
+> **代码基线**：`a6de2260`（切片 3b 合入后的 main）。切片 1/2/3a/3b 已合入；
 > 本文的施工目标是**切片 3b′ 及其后**。
+> 本文**刻意不带 `file:line` 锚点**（八轮修订已证明行号会随实现漂移、且漂移
+> 不可见）；引用一律用**符号名**（函数 / 列 / 常量 / 类型），施工时按名检索。
 >
 > **伴生文档**：`644-plan-then-schedule.md`（`tasks` / scheduler / gate 的现状事实源）、
 > `955-kernel-app-boundary.md`（能力边界判据、单写者原则）、
@@ -1324,7 +1326,7 @@ OpenAPI 重生成无 diff / web build + vitest。
 
 | # | 交付项 |
 |---|---|
-| 1 | **冻结根接线 + claim 栅栏**：按 `(wave_id, key)` 定位根块 → `resolve_closure` → 传进 `task_claim_pending_tx`。**`doc_revs` 只进 `TaskContextFrozen` 事件，不落任何 `tasks` 列，严禁写进 `claim_context_json`**（该列是纯数组、解析失败即判 material，`0067` 已在生产 backfill `'[]'`）。**每个 wave 的 `doc_rev` 先于该 wave 首个块读取**；wave / 报告卡缺失即视为不一致；**栅栏判据只来自本轮内存中的 map**（§5.2「三件事必须写死」）。定位失败分瞬时 / 确定性两类。**拆 `ResolveError` 变体**，`.ok()?` 改显式冒泡，**禁止按错误字符串推断** |
+| 1 | **冻结根接线 + claim 栅栏**：按 `(wave_id, key)` 定位根块 → `resolve_closure` → 传进 `task_claim_pending_tx`。**栅栏的正面表述：claim 事务内、状态翻转之前，复核 (a) 根块 `(block_id, content_hash)` 与 (b) 闭包涉及的每个不同 `wave_id` 的报告 `doc_rev`；任一不一致 ⇒ 回滚 claim、race-lost 重来。** `doc_rev` 已镜像进 `cards.payload`，同事务普通 `SELECT` 可读，**不需要加载 automerge 文档**。**`doc_revs` 只进 `TaskContextFrozen` 事件，不落任何 `tasks` 列，严禁写进 `claim_context_json`**（该列是纯数组、解析失败即判 material，`0067` 已在生产 backfill `'[]'`）。**每个 wave 的 `doc_rev` 先于该 wave 首个块读取**；wave / 报告卡缺失即视为不一致；**栅栏判据只来自本轮内存中的 map**（§5.2「三件事必须写死」）。定位失败分瞬时 / 确定性两类。**拆 `ResolveError` 变体**，`.ok()?` 改显式冒泡，**禁止按错误字符串推断** |
 | 2 | **相等式去 `rev`**：只比 `(wave_id, block_id, content_hash)`，**恒比哈希、不得以 rev 短路** |
 | 3 | **根块哈希收窄到 9 字段**；深度 ≥ 1 不收窄。**先把 `TASK_FIELDS` 从函数内局部常量提升为模块级 `pub(crate)`**，再配集合相等元测试（否则测试只能复制一份「期望全集」，是一条自证自明的空洞断言）。写死 canonical 投影函数 + 冻结集加**显式 root 标记** |
 | 4 | **撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` / `effective_wait` 作回传通道 |
@@ -1422,7 +1424,11 @@ OpenAPI 重生成无 diff / web build + vitest。
 | 8 | **反向索引换掉了编译期可见性** | 用 FK + trigger 而非显式 DELETE 原语 ⇒ 第十条生产者路径可以无声出现（§5.8）。sweep 末尾兜底使正确性不依赖它 |
 | 9 | **`prepare_tx` 提交之后、spawn 之前的窗口** | **与 #4 不是同一个洞**（#4 是「claim 提交 → 判决落库」）。op 越过 `TxCommitted` 之后，恢复漏斗不再经过强制点 ⇒ 一条已被判 material 但恰好越过 `prepare_tx` 的 op，其 spawn 仍会发生。**不修的理由**：修法要求让 `prepare_tx` 与 spawn 落进同一次不可分割的推进，那是 operation 驱动层的改造，成本远超收益；窗口极窄且只影响单次 spawn，后续 gate 仍被拒 |
 | 10 | **一次误报被变成不可逆终结** | sweep 判错 ⇒ 行落 `failed` ⇒ 人必须换 `key` 重开。**若切片 4 上线后误报率仍高，这条应重新评估**（例如改成可由人一键重开的形态）。这是误报定价的唯一出口 |
-| 11 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
+| 11 | **一次触发的重解析开销无常数上界** | 上界 = 冻结了该 wave 的 in-flight 任务数 × `MAX_REF_NODES` ≤ (Σ per-wave `task_budget`) × 64。**由 `MAX_RERESOLVE_FANOUT` 封顶**（超出即 fail-closed 判 material，不引入漏报）；封顶之外的代价靠可观测量监控 |
+| 12 | **sweep 停摆** | 两条真实路径：(i) DB 出错「warn + 跳过本轮」会**静默降级**保证；(ii) reconcile tick 是 `tokio::spawn` 里的裸 `loop`，**一次 panic 静默终结该进程余生的所有 sweep**。健康信号（§5.5）只让它**可见**，不让它**不发生** —— 告警阈值 `3 ×` reconcile 周期 |
+| 13 | **升级日 legacy 在飞行不计入 `occupied`** | 人看到的「本 wave 未结任务」口径会**暂时大于 ceiling**，随这些行终结收敛。且 `unknown_deps` 按规则 3‴ **必须把 legacy 在飞 key 视为已知**（否则存量依赖全变未知依赖），但**不得在 `occupied` 查询里无条件混入 legacy 行**（那会让准入不幂等）—— 两条方向相反，容易被实现成同一个 JOIN |
+| 14 | **引用锚仍是 block id ⇒ 误中止潮** | 一次大幅整文档重写可能让 `refs[]` 批量失效 ⇒ 闭包解析不到 ⇒ fail-closed 判 material ⇒ **一批在飞任务同时终结**。缓解是「引用已失效，请重新链接」诊断 + marker 通道；**未量化**，上线后需观测 |
+| 15 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
 
 ### 12.2 产品侧待裁（不改机制，需人拍板）
 
