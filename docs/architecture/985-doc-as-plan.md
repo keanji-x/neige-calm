@@ -16,7 +16,20 @@ scheduler / gate 的现状事实源）、`docs/architecture/955-kernel-app-bound
 > `dispatcher/mod.rs`、`event.rs`、`role_gate.rs` 重度漂移；引用的**内容**经
 > r8 抽查（37 组约 150 处）确认在基线上逐字准确，漂移的是行号本身。
 
-> **r8e 修订状态（NEW，最新）：第五轮双通道 —— 载体的选型、迁移与出口，已折叠。**
+> **r8f 修订状态（NEW，最新）：第六轮 —— 首次零 BLOCKER，三个机制边界收紧后定稿。**
+> 通道 A 判「无确认的 BLOCKER」，剩余三条机制项已在本轮收紧（§14.9）：
+> **① 栅栏的生命周期状态机** —— 写死五步，使"这一行历史上没有基线"
+> （`claim_doc_revs_json IS NULL`）与"本轮该读的报告读不到"不再落进同一个
+> `Option::None` 分支；**禁止为执行本次栅栏去读该列**；
+> **② 四列全部不进 `TASK_COLUMNS`** —— r8e 让 `decl_*` 进 `Task` 的理由不成立
+> （投影根本不通过 `Task` 读冻结声明，它有自己的 `FrozenDeclarationRow`），
+> 进去只会白白扩大 model/序列化/OpenAPI/TS 连带面；
+> **③ `kernel_events` 必须被消费是契约** —— 丢弃不报错，会静默产生
+> "判决落库、事件缺失"，而事件才是真源；配四条验收。
+> 另同步：不变量 3d 补策略条件、3a 更名为"空冻结集行"、§5.1 删去
+> "不依赖 wave 策略"这句不成立的措辞、切片 3b′ 单列 `0069_` migration 交付项。
+
+> **r8e 修订状态：第五轮双通道 —— 载体的选型、迁移与出口，已折叠。**
 > 第五轮比第四轮又下沉一层：**载体补了，但没说它住在哪一列、存量怎么 backfill、
 > 事件怎么出函数**（逐条见 §14.8）。
 > **① `doc_revs` 不得塞进 `claim_context_json`** —— 该列今天是纯数组、解析失败即判
@@ -1610,9 +1623,15 @@ material ⇒ 不可逆 `failed` 且同 key 不可重开**。用 ㉒ 拒绝 `prio
 翻转本身就表达了"这个 wave 不再需要逐条放行"。
 **`ready` 的撤回不带任何条件**——它在两种策略下都对可调度谓词有贡献。
 
-这样两位**对称**、不依赖"claim 时 `ready` 必为 true"这个易碎的推理、
-不依赖 wave 策略，且**天然可重放**：rebuild 与增量都不动非 pending 行的声明列，
+这样两位的**前值载体对称**、不依赖"claim 时 `ready` 必为 true"这个易碎的推理，
+且**天然可重放**：rebuild 与增量都不动非 pending 行的声明列，
 两边读到同一个前值 ⇒ §11.1 的 rebuild ≡ 增量在两支上都成立。
+
+**一处措辞更正（r8f）**：r8e 曾在这里写"不依赖 wave 策略"——
+**对 `released_by_user` 那一支不成立**，它按上面的裁决**确实依赖当下的
+`effective_policy`**。rebuild ≡ 增量仍然成立，但**理由不是"不依赖策略"**，
+而是**两条路径从同一事务状态读到同一个当下的策略值**。
+`ready` 那一支则完全不依赖策略，两种策略下都判。
 
 **(2) 落点：只在写路径，绝不在读路径。**
 `evaluate_schedulability_tx` 的 doc 注释逐字写着它 "used by writes, rebuilds
@@ -1648,6 +1667,18 @@ Kernel-only 闸拒 ⇒ **回滚整个人的报告写事务**；或在 `_tx` 原�
    这是一颗运行期地雷，可达性偏窄（多数情况下报告写路径已抢先判 stale、
    `rows_affected == 0` 不再发事件）但确定存在；
 4. **显式禁止在任何 `_tx` 原语内直接 `event_append_in_tx`。**
+5. **（r8f）出口必须被消费，这是契约不是建议**：
+   > **任何会提交 `project_tasks_tx` / `tasks_rebuild_tx` 行变更的生产调用者，
+   > 必须把返回的 `kernel_events` 并入同一次 eventized write；不得丢弃。**
+
+   丢弃不会报错，会静默产生**"判决落库、事件缺失"** —— 而 §5.3 明说事件是
+   冻结/判决的真源、`tasks` 列只是它的投影，缺事件即 rebuild 重建不出。
+   （重复 rebuild **不会**重复发事件：`mark_context_material_tx` 的
+   `AND context_stale_at_ms IS NULL` 条件 UPDATE 是单赢家，第二次
+   `rows_affected == 0` 即不追加事件。）**四条验收**：同一 pre-state 下增量与
+   rebuild 得到同一 stale 终态且**各自恰好一次**事件；已 stale 后重复 rebuild
+   **零**事件；事务回滚不留行变更也不留事件；报告写与 wave policy PATCH
+   **两条生产入口都覆盖 mixed actor**。
 
 **(3) 幂等守卫与归因：复用同一个单赢家原语。**
 今天 `mark_material`（`task_context.rs:374-441`）用
@@ -1828,6 +1859,25 @@ wave-report 文档自己的**计数器（`wave_report_doc.rs:121-145`），
    `refs_match` 正在反序列化的那个结构。
    **配一条 E2E**：claim 后编辑同 wave 的**无关块**（`doc_rev` 必变）
    ⇒ sweep **不**判 material。
+5. **栅栏的生命周期状态机（NEW，r8f）**——必须写死，否则
+   "`claim_doc_revs_json IS NULL` 不可视为不一致"（§9 第 6 项）与
+   "缺失即不一致"（上面第 3 条）会被实现成**同一个 `Option::None` 分支**。
+   两句话说的是不同对象：前者是**这一行历史上没有基线**，
+   后者是**本轮比较时按冻结 map 去查当前报告、查不到**。裁决：
+
+   1. 本次 claim 的栅栏输入是**本轮闭包展开得到的、内存中的非可选
+      `BTreeMap<WaveId, u64>`**；
+   2. 事务内**按该 map** 查询各 wave 当前报告并比较；
+      报告 / 镜像值缺失或不可读 ⇒ **race-lost**；
+   3. 比较成功后，**在同一条 `pending → dispatched` 的 UPDATE 里**写入
+      序列化后的 map；
+   4. **禁止为了执行本次栅栏去读 `tasks.claim_doc_revs_json`**——
+      它是审计与诊断载体，不是判据来源；
+   5. `claim_doc_revs_json IS NULL` **只允许出现在 migration 之前已被 claim
+      的行**上；任何现存 `pending` 行被新 claim 时必须被覆盖为非 NULL。
+
+   于是"没记录过基线"与"本轮该读的报告读不到"由**生命周期位置**区分，
+   而不是靠同一个 nullable 值去猜。
 
 已复核的三个非窗口：同一 wave 在闭包出现多次 → 按 wave 去重即可；
 报告卡删除重建导致 `doc_rev` 归零 → 归零只会小于冻结值、仍是 mismatch，保守；
@@ -3662,9 +3712,22 @@ plan 表降为投影后，一次 `tasks_rebuild_tx` 会把它们全部抹掉。�
 
    另需一并裁决（否则是本项目"加列不同步显式 SELECT ⇒ 运行期失败"的老坑）：
    **这四列是否进 `TASK_COLUMNS`（`task.rs:19-24`）与 `Task` 的 `FromRow`**。
-   裁决：`decl_ready` / `decl_released_by_user` **进**（投影要读它们）；
-   `context_verify_failures` / `claim_doc_revs_json` **不进**
-   （只被定向 SQL 读写），**并在 migration 旁注明这是刻意的**。
+
+   **裁决（r8f 更正 r8e）：四列全部不进 `TASK_COLUMNS` / 公共 `Task`。**
+   r8e 以"投影要读它们"为由让 `decl_*` 进 `Task`，**理由不成立**——
+   投影根本不通过 `Task` 读冻结声明，它有自己的定向 SELECT
+   （`task_projection.rs:232` 的 `FrozenDeclarationRow`），撤回循环也是另一条
+   `SELECT id,key,status`（`:366`）。`TASK_COLUMNS` 服务的是**通用 `Task` 查询**
+   （`task.rs:16`、`read.rs:250`），把这两列塞进去会白白扩大 model /
+   序列化 / OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
+
+   | 列 | 读者 |
+   |---|---|
+   | `decl_ready` / `decl_released_by_user` | 加进 `FrozenDeclarationRow` 的定向 SELECT（`task_projection.rs:232`）|
+   | `context_verify_failures` | 只由 sweep 的定向 SQL 读写 |
+   | `claim_doc_revs_json` | 只由 claim 的定向 SQL 写入、诊断按需读取 |
+
+   **在 migration 旁注明"四列刻意不进 `TASK_COLUMNS`"**，避免下一个人"顺手补齐"。
 
 7. **不做的事**：不在服务器启动时批量重写报告；不删任何 legacy 行；
    不改 `crates/calm-truth/migrations/0041_tasks.sql`（已发布的 migration
@@ -3887,10 +3950,15 @@ wire 连带面"对 r5 不成立**：切片 3a 从此带**两个** NEW 事件的�
    改 `goal`/`kind`/`gate` 等纳入字段 → 判 `material`；
    改 `priority`/`declared_by`/`spawn` 等排除字段 → **不判**；
    `released_by_user: false → true`（`auto-declare` 下的无语义写）→ **不判**；
+   `released_by_user: true → false` → **仅当投影当下的 `effective_policy ==
+   declare-and-wait` 时判**（`auto-declare` 下该位无语义，照判即误杀，
+   见 §5.1 的策略条件）；
    `ready: true → false` / `released_by_user: true → false` → **判**
    （经撤回规则，不经哈希）。
 
-3a. **（NEW，r8d）legacy 行的空冻结集是刻意的、且必须可区分**：
+3a. **（NEW，r8d；r8f 更名）空冻结集行是刻意的、且必须可区分**
+   （`origin='legacy'` 只是其中一例——收编后 origin 已翻成 `'block'` 的行、
+   以及 3b′ 通电前经 `task_claim_legacy_pending_tx` claim 的**全部**行同属此类）：
    `origin='legacy'` 行的 `claim_context_json` 是 `"[]"`（**不是** NULL），
    `refs_match` 对它零次迭代即通过 ⇒ **按构造永不 material**。
    断言 (A) 的例外 (d) 就是它。E2E 必须断言"空 ≠ 缺失"：
@@ -4677,6 +4745,15 @@ migration + 三态枚举 + 单赢家原语提取 + 事件回传管线改造 + �
    改 `priority` 会让人看到这句话，而 gate **不会**被拒，**诊断在说谎**。
    本片显式对齐两个字段集（或让那半句只在冻结判据命中时才附加），
    并加一条断言"诊断承诺的拒绝行为与 `context_stale_at_ms` 一致"。
+7′. **（NEW，r8f）migration `0069_`：§9 第 6 项的四列逐项落实。**
+   `decl_ready` / `decl_released_by_user` / `context_verify_failures` /
+   `claim_doc_revs_json`，连**类型、backfill SQL、reader 分工、
+   "四列刻意不进 `TASK_COLUMNS`" 的旁注**一起写在同一个 migration 文件里。
+   验收直接引用 §9 第 6 项那张表，并加一条**升级路径专测**
+   （构造"加列之前就在飞"的行 → 跑 migration → 断言 `decl_ready=1`、
+   `decl_released_by_user=0`、`claim_doc_revs_json IS NULL`
+   → **且首次 sweep 不得判它 material**）。
+   本条单列，是因为实现者往往只按切片清单施工，不会回头读 §9。
 8. ~~承重章节同步~~ —— **已在 r8b/r8c 的文档提交里完成，不再是实现交付项**
    （§4.2 规则 2(ii) 限定、§5.3.2 表末新增行 + 汇总格 + §0.2 转述、§10 两行、
    §5.3.1 首句、3c 依赖措辞、§13.17/13.25/13.26、§11.2 新增不变量 3c/3d/4d
@@ -5552,6 +5629,26 @@ BLOCKER + 6 个 MAJOR**，全部接受。两个 BLOCKER 都是**裁决本身**�
 | **3b′ 的防复发条款瞄错了靶** | 通道 B | 初稿瞄准 `ContextCheckedSpawnAdapter`——该 fixture 确实存在过（`b8e7d545` 引入、`7500259d` 删除），但**那个问题当时就修好了**。真正的残留是 **6 处测试用 raw SQL 直接种 `claim_context_json`**，于是"生产 claim → 冻结"从未被走过 | 验收改为**禁止 SQL 预置该列 + 必须经生产 claim 路径**，另加 8 个表驱动用例 |
 | **㉒ 与生产里第二套判据不一致，诊断会说谎** | 通道 B | `task_projection.rs:266-274` 的 in-flight 比较集含 `priority`/`declared_by`，命中后追加的 `withdrawal_diagnostic` 逐字承诺"any gate operation that has not started will be rejected"——㉒ 之后改 `priority` 会看到这句话而 gate 不会被拒 | 3b′ 新增交付项 7：两套判据对齐 + 断言诊断与 `context_stale_at_ms` 一致 |
 | **`spawn` 的排除只能是版本化的** | 通道 A | "切片 6 之前无消费者"论证不了稳定协议中的永久排除 | §13.26 + 切片 6 前置 |
+
+### 14.9 r8f：第六轮 —— 首次零 BLOCKER（NEW）
+
+通道 A 逐条复核后判 **「无确认的 BLOCKER」**，这是八轮以来第一次。
+剩余三条机制项都很窄，且通道 A 明说「若这三点收紧，余下同步措辞可直接随该轮
+合并，不必再单独开措辞轮」。三条均已折叠：
+
+| 发现 | 性质 | 处置 |
+|---|---|---|
+| **`claim_doc_revs_json IS NULL` 与「缺失即不一致」可能被实现成同一个分支** | MAJOR，理论上不冲突但文档没把区分点写成实现约束 | 写死五步生命周期状态机：栅栏输入是本轮内存中的非可选 map、按它查当前报告、缺失即 race-lost、成功后在同一条 UPDATE 写入、**禁止为执行栅栏去读该列**、NULL 只允许出现在 migration 前已 claim 的行 |
+| **`decl_*` 进 `TASK_COLUMNS` 的裁决与真实读者不一致** | MAJOR | r8e 的理由（"投影要读"）不成立——投影用的是自己的 `FrozenDeclarationRow` 定向 SELECT（`task_projection.rs:232`），撤回循环是另一条 `SELECT id,key,status`（`:366`）；`TASK_COLUMNS` 服务的是通用 `Task` 查询。**改为四列全不进**，各自配定向 reader |
+| **`kernel_events` 有出口但"谁必须消费"不是契约** | PLAUSIBLE，但后果确定 | 丢弃不报错 ⇒ 静默"判决落库、事件缺失" ⇒ rebuild 重建不出。改成硬契约 + 四条验收（增量与 rebuild 各恰好一次、已 stale 后重复 rebuild 零事件、回滚不留痕、两条生产入口都覆盖 mixed actor）。**顺带确认**：重复 rebuild 不会重复发事件，因为条件 UPDATE 是单赢家 |
+
+**同轮一并同步的措辞**：不变量 3d 的 `released_by_user: true→false` 补上策略条件
+（此前与 §5.1 的新裁决形成两套规范）；不变量 3a 从"legacy 行的空冻结集"更名为
+"空冻结集行"（legacy 只是其中一例）；§5.1 删去"不依赖 wave 策略"这句——
+`released_by_user` 那一支**确实依赖**当下的 `effective_policy`，
+rebuild ≡ 增量成立的**真实理由**是两条路径读到同一个当下策略值；
+切片 3b′ 单列 `0069_` migration 交付项并引用 §9 第 6 项（实现者往往只按切片
+清单施工，不会回头读 §9）。
 
 ### 14.8 r8e：第五轮双通道 —— 载体的选型、迁移与出口（NEW）
 
