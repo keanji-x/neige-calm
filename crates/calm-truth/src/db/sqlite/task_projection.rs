@@ -92,6 +92,15 @@ pub struct TaskProjectionOutcome {
     pub diagnostics: Vec<BlockVerdict>,
 }
 
+fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
+    Diagnostic::new(
+        "key",
+        format!(
+            "task `{key}` is in flight ({status}) and cannot be withdrawn immediately; its declaration context is now stale, so any gate operation that has not started will be rejected"
+        ),
+    )
+}
+
 async fn wave_projection_policy_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &str,
@@ -274,11 +283,32 @@ pub async fn evaluate_schedulability_tx(
             ));
             verdict.schedulable = false;
         }
-        if !verdict.schedulable {
-            verdict.diagnostics.push(Diagnostic::new(
-                "key",
-                "task is already executing and cannot be withdrawn immediately; its result will still pass through the gate and be reported as usual",
-            ));
+        if !verdict.schedulable && matches!(status.as_str(), "dispatched" | "running" | "verifying")
+        {
+            verdict
+                .diagnostics
+                .push(withdrawal_diagnostic(&declaration.key, status));
+        }
+    }
+
+    // A deleted block has no declaration to drive the loop above. Surface its
+    // still-live projection row as a synthetic verdict so both read APIs retain
+    // the §6.5 withdrawal diagnostic without changing their response shape.
+    let declared_keys: BTreeSet<&str> = declarations.iter().map(|d| d.key.as_str()).collect();
+    let orphaned_inflight: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key,status FROM tasks WHERE wave_id=?1 AND origin='block' AND status IN ('dispatched','running','verifying')",
+    )
+    .bind(wave_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (key, status) in orphaned_inflight {
+        if !declared_keys.contains(key.as_str()) {
+            verdicts.push(BlockVerdict {
+                block_id: String::new(),
+                diagnostics: vec![withdrawal_diagnostic(&key, &status)],
+                key,
+                schedulable: false,
+            });
         }
     }
 
@@ -348,11 +378,10 @@ pub async fn project_tasks_tx(
     let mut changed = BTreeSet::new();
     for (id, key, status) in &existing {
         if !schedulable_by_key.get(key).is_some_and(|value| *value) {
-            if status != "pending" {
-                let diagnostic = Diagnostic::new(
-                    "key",
-                    "task is already executing and cannot be withdrawn immediately; its result will still pass through the gate and be reported as usual",
-                );
+            if matches!(status.as_str(), "dispatched" | "running" | "verifying") {
+                let diagnostic = withdrawal_diagnostic(key, status);
+                // Declaration-backed rows already received this diagnostic from
+                // evaluate_schedulability_tx; this branch only covers deleted blocks.
                 if !verdict_index_by_key.contains_key(key) {
                     verdicts.push(BlockVerdict {
                         block_id: String::new(),
@@ -364,6 +393,9 @@ pub async fn project_tasks_tx(
             } else if task_delete_pending_tx(tx, id).await? != 0 {
                 changed.insert(key.clone());
             }
+            // SQLite serializes writers, and this function already owns the write
+            // transaction, so a pending row cannot be claimed between SELECT and
+            // the guarded DELETE; a zero-row DELETE needs no race diagnostic here.
         }
     }
     let now = now_ms();

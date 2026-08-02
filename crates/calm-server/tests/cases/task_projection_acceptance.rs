@@ -225,6 +225,12 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
 
     let mut released = task("waited");
     released["released_by_user"] = json!(true);
+    let (rev, _) = user_upsert(&boot, &id, rev, released.clone()).await;
+    assert_eq!(keys(&boot).await, ["waited"]);
+
+    let (rev, _) = user_upsert(&boot, &id, rev, task("waited")).await;
+    assert!(keys(&boot).await.is_empty());
+
     let (rev, doc_rev_before) = user_upsert(&boot, &id, rev, released).await;
     assert_eq!(keys(&boot).await, ["waited"]);
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE wave_id=?1 AND key='waited'")
@@ -255,12 +261,12 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
         assert!(diagnostic_contains(
             snapshot,
             "waited",
-            "already executing and cannot be withdrawn immediately"
+            "`waited` is in flight (dispatched) and cannot be withdrawn immediately"
         ));
         assert!(diagnostic_contains(
             snapshot,
             "waited",
-            "pass through the gate and be reported as usual"
+            "gate operation that has not started will be rejected"
         ));
     }
 
@@ -279,6 +285,53 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
     );
     assert!(err.message.contains("released_by_user"));
+}
+
+#[tokio::test]
+async fn terminal_task_does_not_receive_in_flight_withdrawal_diagnostic() {
+    let boot = new_boot().await;
+    let _ = upsert(&boot, None, task("finished")).await;
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='finished'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+        assert!(diagnostic_contains(
+            snapshot,
+            "finished",
+            "task key has already completed"
+        ));
+        assert!(!diagnostic_contains(snapshot, "finished", "in flight"));
+    }
+}
+
+#[tokio::test]
+async fn deleting_in_flight_task_block_keeps_withdrawal_diagnostic_readable() {
+    let boot = new_boot().await;
+    let (id, rev) = upsert(&boot, None, task("deleted-running")).await;
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='deleted-running'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_DELETE,
+        spec_identity(&boot),
+        json!({"id":id, "if_rev":rev}),
+    )
+    .await
+    .unwrap();
+
+    for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+        assert!(diagnostic_contains(
+            snapshot,
+            "deleted-running",
+            "`deleted-running` is in flight (running)"
+        ));
+    }
 }
 
 #[tokio::test]
