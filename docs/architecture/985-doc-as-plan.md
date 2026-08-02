@@ -150,7 +150,7 @@ CRDT 的投影，已被 DROP 的 `proposals` 表也是事件的投影。
   "goal": "…",                 // 必填非空
   "acceptance": "…",           // 可选非空
   "gate": { "cwd": "…", "timeout_secs": 1800, "steps": [{"name":"…","cmd":"…"}] },
-  "no_gate_reason": "…",       // 与 gate 二选一（§3.2 规则 6 / §6 的 require_task_gates）
+  "no_gate_reason": "…",       // 与 gate 二选一（见下方 require_task_gates 说明）
   "depends_on": ["setup"],     // 可选，同 wave 内的 key
   "priority": 0,               // 可选整数
   "cwd": "/abs/path",          // 可选绝对路径
@@ -308,7 +308,7 @@ gate_result / worker_card_id）贴在块上。这是**读时**行为，不产生
 **不做异步 reconcile**：那会引入一整类「文档改了但 plan 没跟上时调度器读到旧值」
 的 bug，同事务直接消灭。
 
-### 4.2 投影函数的五条规则
+### 4.2 投影函数的六条规则
 
 `project_tasks_tx(tx, wave_id, blocks) -> TaskProjectionOutcome`。
 
@@ -437,6 +437,8 @@ wave 的 spec，项目里每一处跨 wave 的读时派生都是刻意 cove 内�
 `MAX_REF_NODES = 64`。任一预算耗尽 ⇒ 该任务标记 `closure_truncated`，此后它闭包内
 **任何** wave 的**任何**编辑一律按 `material` 处理，并产出诊断。
 **预算耗尽不阻止派发**，只把该任务降级到最保守的失效判定。
+**可证伪**：若 `closure_truncated` 的比例高到让第 2 级裁决成为主要成本项，
+说明预算太小、或「引用而非复述」这条指导本身有问题。
 
 > **`closure_truncated` 的 fail-closed 必须同时落在事件路径与 sweep 上。**
 > 只落事件路径会让**正确性载体比延迟优化更宽松**（严格程度倒挂），
@@ -496,7 +498,7 @@ wave 的 spec，项目里每一处跨 wave 的读时派生都是刻意 cove 内�
 **为什么收窄**（端到端因果链，不等实测）：整块哈希 ⇒ 改 `priority` 命中 ⇒
 切片 4 之前**全判 material** ⇒ 写 `context_stale_at_ms` ⇒
 `refuse_if_context_stale` 拒绝该任务上一切尚未越过 `prepare_tx` 的 operation
-（**gate 也在内**）⇒ 行落 `failed` ⇒ 规则 2b 已派发过的 key 不复活 ⇒
+（**gate 也在内**）⇒ 行落 `failed` ⇒ §4.2 规则 2「已派发过的 key 不复活」⇒
 **必须换 `key` 重开**。即：**「我把一个正在跑的任务的优先级从 0 改成 1，
 它就永久失败了，而且不能用原来的名字重开」** —— 每一环局部论证都对，
 端到端是使用者不可能预测的。
@@ -568,6 +570,8 @@ kind 头，这条依赖必须写出来）。
 **可行性事实**：`doc_rev` **已镜像进 `cards.payload` JSON**（在同一个写事务里
 与 payload 一起提交），所以能在 claim 同事务里用**普通 `SELECT`** 读到，
 **不需要加载 automerge 文档**；且**镜像值与 CRDT 真值无不同步窗口**。
+另两个已复核的非窗口：**同一 wave 在闭包出现多次 ⇒ 按 wave 去重即可**；
+**报告卡删除重建导致 `doc_rev` 归零 ⇒ 归零只会小于冻结值、仍是 mismatch**（保守方向）。
 
 **三件事必须写死**：
 
@@ -650,7 +654,10 @@ kind 头，这条依赖必须写出来）。
 | 级 | 机制 |
 |---|---|
 | **第 1 级** | 机械检测：逐元组重解析 + 比对 `content_hash`。**不允许漏报**（精确形式见 §5.7）|
-| **第 2 级** | LLM 裁决（切片 4）：把「`b_1f3a` 从 X 变成了 Y」**递给任务所在 wave 的 spec**（不是被编辑 wave 的——这也是闭包不得跨 cove 的原因），返回值只有 `{ verdict: "material" \| "immaterial", rationale }`。**缺席 / 解析失败 / 超时一律按 `material`**。**扇出上限**：第 1 级 `MAX_RERESOLVE_FANOUT = 64`（按 `dst_wave_id` 的重解析扇出，超出**不做重解析、直接 `material`**）、第 2 级 `MAX_ADJUDICATION_FANOUT = 16`（超出剩余任务直接 `material`）——与闭包预算耗尽同一条 fail-closed 纪律，因而不引入漏报 |
+| **第 2 级** | LLM 裁决（切片 4）：把「`b_1f3a` 从 X 变成了 Y」**递给任务所在 wave 的 spec**（不是被编辑 wave 的——这也是闭包不得跨 cove 的原因），返回值只有 `{ verdict: "material" \| "immaterial", rationale }`。**缺席 / 解析失败 / 超时一律按 `material`**。**路由的通道**：dispatcher 的 `WaveReportEdited` 分支必须从「单 wave observe」
+改成**按 `task_ref_index` 扇出 observe** —— 一次编辑可能命中多个 wave 的任务，
+每个都要推给**它自己**的 harness。这是反向索引存在的两个理由之一。
+**扇出上限**：第 1 级 `MAX_RERESOLVE_FANOUT = 64`（按 `dst_wave_id` 的重解析扇出，超出**不做重解析、直接 `material`**）、第 2 级 `MAX_ADJUDICATION_FANOUT = 16`（超出剩余任务直接 `material`）——与闭包预算耗尽同一条 fail-closed 纪律，因而不引入漏报 |
 | **第 3 级** | 人只在**实质变更**处出现（诊断 + UI）。**判 material 后不自动重做** |
 
 **分工总纲**：**agent 永远不是「发现」变化的那一环，只是「判断」重不重要的那一环。**
@@ -1624,6 +1631,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | `MAX_RERESOLVE_FANOUT` | 64 | 第 1 级：一次编辑触发的重解析扇出 | 超出即直接 `material` |
 | `MAX_ADJUDICATION_FANOUT` | 16 | 第 2 级：裁决扇出 | 剩余任务直接 `material` |
 | `MAX_STRING_CHARS` | 2048 | 单个字符串字段上限 | 校验拒绝 |
+| `MAX_CANONICAL_BYTES` | 256 KiB | 单块 canonical bytes 上限 | 校验拒绝 |
 | `MAX_SWEEP_NODES` | 4096 | 单轮 sweep 的重解析预算 | 本轮剩余未验证的一律 `material` |
 | `DEFAULT_WAVE_TASK_BUDGET` | 1（既有）| per-wave 并发 | —— |
 | `DEFAULT_SPEC_TASK_CEILING` | 32 | 单 wave 未结存量 | 超限不落行 + 诊断 |
@@ -1660,14 +1668,15 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 3c | **栅栏关闭解析→claim 的 TOCTOU**：注入报告写（**同 wave 与跨 wave 各一**）⇒ claim 必须 race-lost、行仍 `pending`、无 `TaskContextFrozen`、无 `task_ref_index` 行、**无任何 worker / gate 首次启动** |
 | 3d | **根块哈希只在纳入集敏感**：`goal`/`kind`/`gate` ⇒ 判；`priority`/`declared_by`/`spawn` ⇒ 不判；`released_by_user: false→true` ⇒ 不判；`ready: true→false` ⇒ 判（两种策略）；`released_by_user: true→false` ⇒ **仅 `declare-and-wait` 下判** |
 | 4 | 改动落在冻结集内 ⇒ **在此后第一次完成的 sweep 结束时**必有 `TaskContextAdvanced`，**且属于 task 所在的 wave**。E2E **显式跑一次 sweep 再断言**，不等事件到达 |
-| 4b | 事件正常 / 事件被丢弃**两个变体必须给出同一结论** |
+| 13a | 事件正常 / 事件被丢弃**两个变体必须给出同一结论**（这是不变量 13 的一部分，**不是 4b** —— 4b 见 D.4）|
 | 4d | **瞬时失败不产生持久判决**：不写 `context_stale_at_ms`、仍 in-flight、`context_verify_failures` +1；连续 3 轮才升级；中间任一轮成功即清零 |
 | 5 | **判决落库后禁止起活**：`context_stale_at_ms` 非空 ⇒ 该任务上任何 operation 的 `prepare_tx` 拒绝；**从不打断已启动的** |
 | 5b | **boot 顺序**：上下文 sweep 排在 operation 恢复**之前**（源码序断言）|
 | 6 | 墓碑不进 `known_task_keys` / `gate_rule_violations` / `declaration_graph`，但**进 `dup_keys`**；墓碑 + 同 key 重声明 ⇒ 产出墓碑否决诊断而非 `duplicate key` |
 | 7b | 仍被声明的**在飞行**永远算进 `occupied`（§4.2 规则 3）|
-| 8 | §3.7 七条规则 × 四条写路径的**全部否定测试**；其中「人删一个 `declared_by:"spec"` 的 task 块 ⇒ 200 且产出规范形态的墓碑」必须专列 |
-| 9 | **`key` 复活端到端**：删任务 → 墓碑 → 删墓碑 → 重提落新行（只对从未派发过的行成立，§3.7 规则 2b）|
+| 8 | §3.7 七条规则 × **四条写路径**（`Replace` / `WriteMarkdown` / `UpsertBlock` / `DeleteBlock`）的**全部否定测试**；其中「人删一个 `declared_by:"spec"` 的 task 块 ⇒ 200 且产出规范形态的墓碑」必须专列 |
+| 8(f) | **第二条写路径的守卫**：非 `ActorId::User` 的 `PATCH` 写 `automation_policy` / `spec_task_ceiling` ⇒ **403，且两列不变、不发任何事件**（§6.6 的 user-only 闸 —— 「两个强制点，没有第三条」的另一个强制点，规则有验收也必须有）|
+| 9 | **`key` 复活端到端**：删任务 → 墓碑 → 删墓碑 → 重提落新行（只对从未派发过的行成立，§4.2 规则 2）|
 | 11 | **rebuild ≡ 增量差分**（§10.1），含三列与 stale 终态，并产生**同一组** `kernel_events`（各恰好一次）|
 | 12 | **终结 / 不存在的 task 不得拥有 `task_ref_index` 行**（含「一轮 sweep 之后」）|
 | 13 | spec 编辑被引用块必被检出 / wave 删除 / cove 删除三条触发路径 |
@@ -1725,7 +1734,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 5 的三构造 | (a) worker 未开始 → 重启 → 不得 spawn；(b) **gate 未开始**（`gate_attempt = 0` + material）→ 重启 → **不得有任何 gate shell 命令被执行**；(c) **已开始的不受影响**（验证没有过度收紧）|
 | 5b seam | boot 顺序**两半缺一不可**：(a) 源码序断言 + (b) **seam 测试**（真实跑一次 boot，断言上下文 sweep 的副作用先于 operation 恢复可见）|
 | 6b | **换 key 也绕不过去**的三条出口分支：换 key 被挡 / 删墓碑恢复 `auto-declare` / **显式 PATCH 策略恢复且墓碑保留** |
-| 7 | **稳态并发上界**：任一时刻 in-flight 数 ≤ per-wave `task_budget`（与 dispatcher 全局信号量的合取）|
+| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**，那条论断已被明确驳回。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**（投影只落 `pending` 行，派发是 scheduler 的独立动作）；树内 `declared_by='spec'` 的非终结行 ≤ `tree_task_budget`（切片 6）|
 | 10 | **`refs[]` 的 cove 边界**：越界引用 ⇒ 该块不可调度 + 诊断，且**该引用不得出现在任何 `TaskContextFrozen.refs` 里** |
 | 11 生成器 | rebuild ≡ 增量的属性测试，其生成器**必须能生成「制造诊断的编辑」**：重复 key / 环 / 跨 cove / 撤回放行位 |
 | 13 | 删除必须能被检出：(a) wave 删除 (b) cove 删除 —— **各要「事件正常投递」与「事件被丢弃」两个变体，且必须给出同一结论**；(c) `EditAuthor::Spec` 编辑被引用块必须被第 1 级检出 |
