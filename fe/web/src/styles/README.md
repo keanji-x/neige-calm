@@ -2,7 +2,7 @@
 
 ## 用途
 
-`tokens.css` 冻结跨模块使用的颜色、排版、间距、动效和堆叠层级词汇，`public.ts` 给 TypeScript 消费方提供封闭的 token 名类型，`font-stack.ts` 给无法读取 CSS 自定义属性的终端代码提供等宽字体栈。它们只定义接口，不包含业务选择器或组件样式，因为阶段 1 先稳定跨模块边界。
+`tokens.css` 冻结跨模块使用的颜色、排版、间距、动效和堆叠层级词汇，`public.ts` 给 TypeScript 消费方提供封闭的 token 名类型，`font-stack.ts` 给无法读取 CSS 自定义属性的终端代码提供等宽字体栈。它们只定义接口，不包含业务选择器或组件样式，因为阶段 1 先稳定跨模块边界；`tokens.css` 的入口接线属于 P8。
 
 ## 契约
 
@@ -12,6 +12,6 @@ token 清单由契约测试独立手写，新增、删除或改名必须显式�
 
 ## 故意不做
 
-不定义 radius token 或 `--r` 兼容 alias，因为 GATE-TOKENS-009 标为 intentional omission；公开类型明确不含 radius，类型契约会阻止它无意进入冻结面。不把 `--overlay-scrim` 的 rgba 形状提升为契约，因为 GATE-TOKENS-018 刻意保留该例外未冻结；这里只锁它的主题对称性，类型闸门同时禁止引入 scrim shape 公开契约。也不迁移 GATE-TOKENS-030..036 的恒真 `console.warn` 漂移扫描器，因为它们不能形成失败闸门，公开入口明确不暴露 scanner 类型。
+GATE-TOKENS-009 的故意缺口仅是 `--r` 不进入 radius 形状数组；本阶段不引入该兼容 alias，六个 radius token 本身仍由 CSS 形状与公开类型契约冻结。GATE-TOKENS-018 的故意例外是 `--overlay-scrim` 保持 rgba，而非放弃冻结；测试同时锁定 light/dark 两侧的 rgba 形状，并继续把它排除在通用 oklch 循环之外。也不迁移 GATE-TOKENS-030..036 的恒真 `console.warn` 漂移扫描器，因为它们不能形成失败闸门，公开入口明确不暴露 scanner 类型。
 
 不声明全局 layer 顺序、全局类 manifest、unlayered 例外 manifest 或 `data-*` 约定，因为它们属于阶段 1 P8；也不增加组件级 `.module.css`、业务样式、组件 CSS、Astryx 接入或 token 消费迁移，因为这些都超出接口冻结范围。

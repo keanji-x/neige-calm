@@ -50,6 +50,9 @@ const TRACKING = [
   '--tracking-tighter', '--tracking-tight', '--tracking-normal', '--tracking-wide',
   '--tracking-wider', '--tracking-widest',
 ] as const;
+const RADIUS = [
+  '--radius-xs', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-pill',
+] as const;
 const SPACING = [
   '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4', '--space-5',
   '--space-6', '--space-7', '--space-8', '--space-9', '--space-10', '--space-11', '--space-12',
@@ -66,7 +69,7 @@ const Z_INDEX = [
 ] as const;
 const INVENTORY = [
   ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS, ...ALIASES,
-  ...TYPE_SCALE, ...LEADING, ...TRACKING, ...SPACING, ...MOTION, ...STATUS, ...FONT_ALIASES,
+  ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...STATUS, ...FONT_ALIASES,
   ...MISC, ...Z_INDEX,
 ] as const;
 
@@ -83,13 +86,26 @@ describe('styles/tokens themed color contracts', () => {
     expect(dark.has(name)).toBe(true);
   });
 
-  it.each([...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS])(
-    '%s is a concrete oklch literal in both themes',
-    (name) => {
+  describe('concrete surfaces', () => {
+    it.each(CONCRETE_SURFACES)('%s is a concrete oklch literal in both themes', (name) => {
       expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
       expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
-    },
-  );
+    });
+  });
+
+  describe('prose surfaces', () => {
+    it.each(PROSE_SURFACES)('%s is a concrete oklch literal in both themes', (name) => {
+      expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
+      expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
+    });
+  });
+
+  describe('overlays', () => {
+    it.each(OVERLAYS)('%s is a concrete oklch literal in both themes', (name) => {
+      expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
+      expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
+    });
+  });
 
   it.each(ALIASES)('%s is a bare single-mode alias', (name) => {
     expect(root.get(name)).toMatch(/^var\(--[a-z0-9-]+\)$/);
@@ -99,6 +115,11 @@ describe('styles/tokens themed color contracts', () => {
   it.each(MISC)('%s has light/dark parity', (name) => {
     expect(root.has(name)).toBe(true);
     expect(dark.has(name)).toBe(true);
+  });
+
+  it('keeps the scrim as the intentional rgba exception in both themes', () => {
+    expect(root.get('--overlay-scrim')).toMatch(/^rgba\(.+\)$/);
+    expect(dark.get('--overlay-scrim')).toMatch(/^rgba\(.+\)$/);
   });
 
   it.each(['--cal-event-waiting-bg', '--error-text', '--warn-border'] as const)(
@@ -143,6 +164,11 @@ describe('styles/tokens single-mode scalar contracts', () => {
     expect(dark.has('--tracking-normal')).toBe(false);
   });
 
+  it.each(RADIUS.filter((name) => root.has(name)))('%s is px and has no dark override', (name) => {
+    expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?px$/);
+    expect(dark.has(name)).toBe(false);
+  });
+
   it.each(SPACING)('%s is zero or px and has no dark override', (name) => {
     expect(root.get(name)).toMatch(/^(?:0|\d+(?:\.\d+)?px)$/);
     expect(dark.has(name)).toBe(false);
@@ -172,7 +198,7 @@ describe('styles/tokens font and stacking contracts', () => {
 
   it('keeps all six z-index tiers strictly increasing', () => {
     const values = Z_INDEX.map((name) => Number(root.get(name)));
-    if (values.some(Number.isNaN)) return;
+    expect(values.every(Number.isFinite)).toBe(true);
     expect(values.every((value, index) => index === 0 || values[index - 1] < value)).toBe(true);
   });
 });

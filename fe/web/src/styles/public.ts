@@ -35,11 +35,16 @@ export type SpacingToken =
   | '--space-5' | '--space-6' | '--space-7' | '--space-8' | '--space-9' | '--space-10'
   | '--space-11' | '--space-12';
 
+export type RadiusToken =
+  | '--radius-xs' | '--radius-sm' | '--radius-md'
+  | '--radius-lg' | '--radius-xl' | '--radius-pill';
+
 export type MotionToken =
   | '--motion-instant' | '--motion-quick' | '--motion-snappy'
   | '--motion-medium' | '--motion-slow' | '--motion-pulse';
 
-export type ScalarToken = TypeScaleToken | LeadingToken | TrackingToken | SpacingToken | MotionToken;
+export type ScalarToken =
+  | TypeScaleToken | LeadingToken | TrackingToken | RadiusToken | SpacingToken | MotionToken;
 
 export type FontToken =
   | '--font-sans' | '--font-serif' | '--font-mono'

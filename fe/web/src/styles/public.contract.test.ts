@@ -1,6 +1,5 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
-// @ts-expect-error -- radius tokens are intentionally omitted in phase 1 P3.
 import type { RadiusToken } from './public.js';
 // @ts-expect-error -- the scrim's rgba exception is deliberately not a frozen public shape.
 import type { ScrimShapeContract } from './public.js';
@@ -20,7 +19,29 @@ import type { TransitionDriftScanner } from './public.js';
 import type { OrphanTokenScanner } from './public.js';
 import type { ColorToken, ScalarToken, StyleToken, ZIndexToken } from './public.js';
 
+const TOKEN_INVENTORY = [
+  '--bg', '--paper', '--hairline', '--hairline-strong', '--text', '--text-2', '--text-3',
+  '--text-4', '--accent', '--accent-soft', '--warn', '--warn-soft', '--surface-rail',
+  '--surface-card', '--surface-chip', '--surface-toggle-overlay', '--surface-panel-head',
+  '--surface-terminal', '--surface-code', '--surface-paper', '--surface-bg',
+  '--surface-hover-overlay', '--overlay-hover-faint', '--overlay-hover',
+  '--overlay-hover-strong', '--overlay-active', '--text-label', '--text-meta',
+  '--text-decorative', '--success', '--error', '--overlay-scrim', '--cal-event-waiting-bg',
+  '--error-text', '--warn-border', '--text-xs', '--text-sm', '--text-base', '--text-md',
+  '--text-lg', '--text-xl', '--text-display-sm', '--text-display', '--leading-none',
+  '--leading-tight', '--leading-snug', '--leading-base', '--leading-loose', '--tracking-tighter',
+  '--tracking-tight', '--tracking-normal', '--tracking-wide', '--tracking-wider',
+  '--tracking-widest', '--radius-xs', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl',
+  '--radius-pill', '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4',
+  '--space-5', '--space-6', '--space-7', '--space-8', '--space-9', '--space-10', '--space-11',
+  '--space-12', '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium',
+  '--motion-slow', '--motion-pulse', '--font-sans', '--font-serif', '--font-mono',
+  '--font-display', '--font-numeric', '--font-code', '--z-base', '--z-raised', '--z-sticky',
+  '--z-overlay', '--z-modal', '--z-toast',
+] as const;
+
 describe('styles/tokens public type contract', () => {
+  void TOKEN_INVENTORY;
   void (null as unknown as RadiusToken);
   void (null as unknown as ScrimShapeContract);
   void (null as unknown as FontSizeDriftScanner);
@@ -32,8 +53,10 @@ describe('styles/tokens public type contract', () => {
   void (null as unknown as OrphanTokenScanner);
 
   it('exposes closed token-name families', () => {
+    expectTypeOf<StyleToken>().toEqualTypeOf<(typeof TOKEN_INVENTORY)[number]>();
     expectTypeOf<'--bg'>().toMatchTypeOf<ColorToken>();
     expectTypeOf<'--motion-pulse'>().toMatchTypeOf<ScalarToken>();
+    expectTypeOf<'--radius-pill'>().toMatchTypeOf<RadiusToken>();
     expectTypeOf<'--z-toast'>().toMatchTypeOf<ZIndexToken>();
     expectTypeOf<ColorToken>().toMatchTypeOf<StyleToken>();
     expectTypeOf<ScalarToken>().toMatchTypeOf<StyleToken>();
@@ -41,11 +64,8 @@ describe('styles/tokens public type contract', () => {
   });
 
   it('rejects names outside the frozen public surface', () => {
-    // @ts-expect-error -- radius is a documented intentional omission.
-    const radius: StyleToken = '--radius-sm';
     // @ts-expect-error -- arbitrary custom properties are not frozen tokens.
     const unknown: StyleToken = '--new-token';
-    void radius;
     void unknown;
   });
 });
