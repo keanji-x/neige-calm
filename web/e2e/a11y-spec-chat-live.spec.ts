@@ -39,8 +39,7 @@ test.describe('spec chat live phase updates', () => {
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec live test' }),
     ).toBeVisible();
-    await page.getByLabel('Recent conversation activity')
-      .getByRole('button').first().click();
+    await page.getByRole('button', { name: 'Open conversation' }).click();
     await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
       .toHaveClass(/report-conversation-drawer--open/);
 

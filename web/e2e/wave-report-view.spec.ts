@@ -557,28 +557,73 @@ test('collapsed report rail opener stays inside the report shell', async ({
   await page.goto(`/calm/wave/${wave.id}`);
   await page.getByRole('button', { name: 'Collapse report rail' }).click();
 
-  const contentGeometry = await page.locator('.report-center').evaluate(
+  const center = page.locator('.report-center');
+  await expect(center).toHaveCSS('grid-column-start', '2');
+  await expect.poll(async () => center.evaluate((element) => {
+    const shell = element.closest('.report-page');
+    if (!(shell instanceof HTMLElement)) throw new Error('Report shell not found');
+    return shell.getBoundingClientRect().width -
+      element.getBoundingClientRect().width;
+  })).toBeLessThanOrEqual(2);
+
+  const contentGeometry = await center.evaluate(
     (center) => {
+      const shell = center.closest('.report-page');
       const scrollRoot = center.querySelector('.report-document-scroll');
       const document = center.querySelector('.report-doc');
-      if (!(scrollRoot instanceof HTMLElement) ||
+      if (!(shell instanceof HTMLElement) ||
+          !(scrollRoot instanceof HTMLElement) ||
           !(document instanceof HTMLElement)) {
         throw new Error('Report content hierarchy not found');
       }
       return {
+        shellWidth: shell.getBoundingClientRect().width,
         centerWidth: center.getBoundingClientRect().width,
         scrollWidth: scrollRoot.getBoundingClientRect().width,
         documentWidth: document.getBoundingClientRect().width,
-        documentVisible: getComputedStyle(document).visibility === 'visible',
+        documentIsReadable:
+          document.getBoundingClientRect().width >= 747 &&
+          document.getBoundingClientRect().height >= 100 &&
+          document.innerText.includes('Report body') &&
+          document.offsetParent !== null,
       };
     },
   );
-  // At 1600×900, removing the rail grid item must leave the explicitly placed
-  // center column and its document visible and measurably wide.
-  expect(contentGeometry.centerWidth).toBeGreaterThan(0);
-  expect(contentGeometry.scrollWidth).toBeGreaterThan(0);
-  expect(contentGeometry.documentWidth).toBeGreaterThan(0);
-  expect(contentGeometry.documentVisible).toBe(true);
+  expect(contentGeometry.centerWidth)
+    .toBeGreaterThanOrEqual(contentGeometry.shellWidth - 2);
+  expect(contentGeometry.scrollWidth)
+    .toBeGreaterThanOrEqual(contentGeometry.shellWidth - 2);
+  expect(contentGeometry.documentWidth).toBeCloseTo(748, 0);
+  expect(contentGeometry.documentIsReadable).toBe(true);
+
+  await page.getByRole('button', { name: 'Open conversation' }).click();
+  const drawer = page.locator('.report-conversation-drawer');
+  await expect(drawer).toHaveCSS('grid-column-start', '3');
+  await expect.poll(async () => drawer.evaluate((element) =>
+    element.getBoundingClientRect().width)).toBeGreaterThanOrEqual(395);
+  const openGeometry = await page.locator('.report-page').evaluate((shell) => {
+    const center = shell.querySelector('.report-center');
+    const scroll = shell.querySelector('.report-document-scroll');
+    const drawer = shell.querySelector('.report-conversation-drawer');
+    if (!(center instanceof HTMLElement) || !(scroll instanceof HTMLElement) ||
+        !(drawer instanceof HTMLElement)) {
+      throw new Error('Open report layout not found');
+    }
+    return {
+      shellWidth: shell.getBoundingClientRect().width,
+      centerWidth: center.getBoundingClientRect().width,
+      scrollWidth: scroll.getBoundingClientRect().width,
+      drawerWidth: drawer.getBoundingClientRect().width,
+    };
+  });
+  expect(openGeometry.drawerWidth).toBeGreaterThanOrEqual(395);
+  expect(openGeometry.drawerWidth).toBeLessThanOrEqual(397);
+  expect(openGeometry.centerWidth)
+    .toBeGreaterThanOrEqual(openGeometry.shellWidth - 398);
+  expect(openGeometry.centerWidth)
+    .toBeLessThanOrEqual(openGeometry.shellWidth - 394);
+  expect(openGeometry.scrollWidth)
+    .toBeGreaterThanOrEqual(openGeometry.shellWidth - 398);
 
   const opener = page.getByRole('button', { name: 'Expand report rail' });
   await expect(opener).toBeVisible();
@@ -603,4 +648,28 @@ test('collapsed report rail opener stays inside the report shell', async ({
   expect(geometry.top).toBeGreaterThanOrEqual(-1);
   expect(geometry.right).toBeGreaterThanOrEqual(-1);
   expect(geometry.bottom).toBeGreaterThanOrEqual(-1);
+});
+
+test('narrow expanded report rail keeps its close control clear of Outline', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  const ts = Date.now();
+  const cove = await createCove(page, ts);
+  const wave = await createWave(page, cove.id, ts);
+  await writeReport(page, wave.id, 'Narrow rail report');
+  await page.goto(`/calm/wave/${wave.id}`);
+
+  await page.getByRole('button', { name: 'Expand report rail' }).click();
+  const close = page.getByRole('button', { name: 'Collapse report rail' });
+  const outlineHead = page.getByRole('button', { name: 'Outline' });
+  await expect(close).toBeVisible();
+  const closeBox = await close.boundingBox();
+  const outlineBox = await outlineHead.boundingBox();
+  expect(closeBox).not.toBeNull();
+  expect(outlineBox).not.toBeNull();
+  expect(outlineBox!.y - (closeBox!.y + closeBox!.height))
+    .toBeGreaterThanOrEqual(0);
+  expect(390 - (closeBox!.x + closeBox!.width)).toBeGreaterThanOrEqual(10);
 });

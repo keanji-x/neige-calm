@@ -3628,6 +3628,8 @@ button.report-rail-head:hover {
     border-top-color: var(--hairline);
   }
   .report-rail {
+    padding-top:
+      calc(var(--space-6) + var(--report-rail-open-height));
     max-height: 30vh;
     border-right: none;
     border-bottom: 1px solid var(--hairline);
@@ -3639,8 +3641,13 @@ button.report-rail-head:hover {
     margin-bottom: calc(var(--report-rail-open-height) * -1);
   }
   .report-rail-close {
-    right: var(--space-0);
+    right: var(--space-6);
     left: auto;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+  }
+  .report-rail-close svg {
+    transform: rotate(-90deg);
   }
   .report-convo,
   .report-convo-head,

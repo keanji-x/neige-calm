@@ -385,6 +385,55 @@ describe('WaveReportPage', () => {
     expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(2);
   });
 
+  it('does not repeat target scrolling when reopened without a target', async () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [
+        { id: 1, atMs: 1, kind: 'user', text: 'Pinned instruction' },
+      ],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Pinned instruction' }));
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open conversation' }));
+    await new Promise((resolve) => window.setTimeout(resolve, 60));
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
   it('does not claim the conversation is empty before initial history loads', () => {
     mockUseSpecChatHistory.mockReturnValue({
       entries: [],
@@ -952,7 +1001,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
   });
 
-  it('collapses and expands the Files rail from the rail toggle', () => {
+  it('collapses and expands the report rail from its edge controls', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -965,7 +1014,6 @@ describe('WaveReportPage', () => {
       name: 'Collapse report rail',
     });
 
-    expect(collapseToggle).toHaveAttribute('aria-expanded', 'true');
     expect(rail).not.toHaveClass('report-rail--collapsed');
     expect(screen.getByRole('tree', { name: 'Wave files' })).toBeInTheDocument();
 
@@ -975,6 +1023,7 @@ describe('WaveReportPage', () => {
       name: 'Expand report rail',
     });
     expect(expandToggle).toHaveAttribute('aria-controls', 'report-context-rail');
+    expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
     expect(rail).toHaveClass('report-rail--collapsed');
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
     expect(window.localStorage.getItem(REPORT_RAIL_COLLAPSED_STORAGE_KEY))
@@ -2096,6 +2145,30 @@ describe('WaveReportPage', () => {
       .not.toBeInTheDocument();
     expect(screen.getByText('This wave has no Spec Agent.'))
       .toBeInTheDocument();
+  });
+
+  it('shows the unavailable empty drawer without a composer when persisted open', () => {
+    window.localStorage.setItem(
+      REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY,
+      'false',
+    );
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report without spec')]}
+      />,
+    );
+
+    expect(screen.getByLabelText('Conversation drawer')).toHaveClass(
+      'report-conversation-drawer--open',
+    );
+    expect(screen.getByText('Spec Agent is unavailable for this wave.'))
+      .toBeInTheDocument();
+    expect(screen.queryByLabelText('Ask the Spec Agent'))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open conversation' }))
+      .not.toBeInTheDocument();
   });
 
   it('keeps the draft alive when the drawer closes and reopens', () => {

@@ -897,6 +897,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           className="report-rail-open"
           hidden={!reportRailCollapsed}
           onClick={toggleReportRailCollapsed}
+          aria-expanded="false"
           aria-label="Expand report rail"
           aria-controls="report-context-rail"
           title="Expand report rail"
