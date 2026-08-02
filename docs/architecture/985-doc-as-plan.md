@@ -24,6 +24,10 @@
 | §4–§5 | **投影与失效怎么办** —— 同事务投影、rebuild、引用闭包、三级阶梯、判决强制点 |
 | §6–§9 | **人机不对称、模板、预算、迁移** |
 | §10–§12 | **怎么验、怎么切、还剩什么风险** |
+| 附录 A | 裁决记录（每条含「什么能推翻它」）|
+| 附录 B | 评审处置历史（含驳回反证与方法论）|
+| **附录 C** | **载体与常数总表** —— 施工时逐行核对，新增机制必须登记 |
+| **附录 D** | **不变量与切片验收清单** —— 少一行就是少一件事 |
 
 **一条贯穿全文的格式纪律**（八轮评审最贵的教训）：**每引入一条机制，必须填满
 「载体 / 谁写 / rebuild 怎么重放 / migration 怎么 backfill」四格。** 四格有一格
@@ -253,11 +257,12 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 
 | # | 规则 |
 |---|---|
-| 1 | `declared_by` 必须等于本次编辑的 `EditAuthor`（spec 写 `"spec"`，人写 `"user"`）|
+| 1 | 新出现的 `task` 块，其 `declared_by`（墓碑块则是 `tombstoned_by`）**必须**等于本次编辑的 `EditAuthor`；**其它任何 author（`Kernel` / `Plugin`）新建 `task` 块一律拒绝（fail closed）**——两者今天没有生产发射点，但 guard 不能在其中之一回归时行为未定义 |
 | 2 | 既有块上 `declared_by` **永久冻结**，任何作者不得改变 |
-| 3 | `declared_by == "user"` 或 `tombstoned_by == "user"` 的块，非 User 作者**只能移动，不能改内容、不能删** |
+| 2b | **已派发过的 `key` 不复活**（§4.2 规则 2）；人删掉墓碑后该 key 可**干净重建**，但只对从未派发过的行成立 |
+| 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由 |
 | 4 | User 删除一个活的 task 块 ⇒ 改写为**原位墓碑**（`tombstoned_by: "user"`）|
-| 4′ | live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author（**fail-closed 兜底**：不得被一个早已存在的同 key 用户墓碑满足）|
+| 4′ | live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author。**这是主条款，不是兜底**：没有它，spec 能伪造人的否决（终局、不可撤回，且规则 3 之后对 spec 永久锁死），人也能自废 §6.1 的防线。**且不得被一个早已存在的同 key 用户墓碑满足**——否则 fail-closed 兜底在它真正要生效的那天不成立 |
 | 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变** |
 | 6 | 既有块上 `key` 不可就地改写（§3.3）|
 
@@ -580,7 +585,7 @@ kind 头，这条依赖必须写出来）。
 | 级 | 机制 |
 |---|---|
 | **第 1 级** | 机械检测：逐元组重解析 + 比对 `content_hash`。**不允许漏报**（精确形式见 §5.6）|
-| **第 2 级** | LLM 裁决（切片 4）：把「`b_1f3a` 从 X 变成了 Y」递给 spec，返回 `{verdict, rationale}`。**缺席 / 解析失败 / 超时一律按 `material`** |
+| **第 2 级** | LLM 裁决（切片 4）：把「`b_1f3a` 从 X 变成了 Y」**递给任务所在 wave 的 spec**（不是被编辑 wave 的——这也是闭包不得跨 cove 的原因），返回值只有 `{ verdict: "material" \| "immaterial", rationale }`。**缺席 / 解析失败 / 超时一律按 `material`**。**扇出上限 `MAX_RERESOLVE_FANOUT = 64`**，超出即直接 `material` |
 | **第 3 级** | 人只在**实质变更**处出现（诊断 + UI） |
 
 **两个 NEW 事件**（均严格 `Kernel | KernelDispatcher`，`User` 也拒）：
@@ -654,6 +659,12 @@ commit-then-emit 广播）。
 **枚举源是 `tasks` 的 in-flight 行且 `context_stale_at_ms IS NULL`，不是索引** ——
 前者对「索引被提前清掉」不敏感，而 wave 删除正好是那种情况。
 `MAX_SWEEP_NODES = 4096` 硬顶，用满即把本轮剩余判 `material`。
+
+**必须有一个正向健康信号**：其余可观测量（检测次数 / 命中数 / 触顶次数 /
+`closure_truncated` 比例）全是**计数器**，sweep 整体不跑时它们**一起静止**，
+看起来和「一切正常」一样。因此上报
+**`context_sweep_last_success_age_seconds`（正向 gauge：距上一次成功 sweep 多久）**
+与 `context_sweep_consecutive_failures`，**在成功与失败两条路径上都导出**。
 
 **顺序规则**：**凡是会起活的路径，上下文 sweep 都必须排在它前面** ——
 boot 的 operation 恢复 / `sweep_boot` 如此，`Lagged` 分支的 `sweep_all` 如此，
@@ -860,6 +871,36 @@ spec 写 `ready: true` 而校验不过 ⇒ 写时当场拒（`-32602`）。
 **`auto-declare` 下 `released_by_user` 没有语义**（投影忽略它），
 所以默认路径零成本；这也是 §5.3 的撤回规则必须带策略条件的原因。
 
+#### `effective_policy`：生效策略的形式化定义
+
+```
+effective_policy(wave) =
+    waves.automation_policy      若该列非 NULL（人显式设过）
+    'declare-and-wait'           否则，若文档里存在 tombstoned_by == "user" 的墓碑块
+    'auto-declare'               否则
+```
+
+**载体（四格）**：
+
+| 载体 | 谁写 | rebuild 怎么重放 | migration |
+|---|---|---|---|
+| `waves.automation_policy TEXT NULL`（NULL = 内核默认，**三态**）| **只有 `EditAuthor::User` 经 `WavePatch` 的定向单列写面**；spec 写入一律 403 | `effective_policy` 是**纯派生**：列 + 当前文档里有无用户墓碑，两个输入 rebuild 时都在 | 新列，`NULL` 即默认，无需 backfill |
+
+**`TEXT NULL` 的三态是必需的**，不是风格：它与 `spec_task_ceiling INTEGER NULL`
+及 `WavePatch` 的 double-option（`Some(None)` = 清回默认）**本来就是同一形状**。
+人清除否决有**两条语义不同的路**，都需要：
+
+1. **删掉那块墓碑**（= §6.1 的「撤回否决」）⇒ 派生条件消失，回到 `auto-declare`；
+2. **显式 PATCH `automation_policy = 'auto-declare'`** ⇒ **显式设置压过派生值**，
+   于是人可以「保留否决记录，但恢复自动化」。
+
+**这一档的诊断必须成对**：「本 wave 有一条未清除的人工否决（`key`: X），
+spec 声明的任务需要逐条放行；清除办法见下」——**没有这条诊断就是静默降级**。
+
+**不做「有界时间窗」**：时间窗一到循环即恢复，**吸收态没了**；
+且窗口需要一个时间戳 ⇒ 不是当前文档的函数 ⇒ rebuild 重建不出
+（与 §8 驳回累计配额同一条理由）。
+
 ---
 
 ## 7. 模板
@@ -944,6 +985,12 @@ pending 行，以并发 1 串行地永远排下去。
 见 §4.2 规则 3 —— `occupied` **只数 `dispatched/running/verifying`**，
 `pending` 一概不数；准入按块序 + `key` 升序在剩余容量内。
 
+**所有上界常数都是猜的**：`spec_task_ceiling = 32`、`tree_task_budget = 32`、
+`MAX_WAVE_TREE_DEPTH = 3`、`MAX_REF_DEPTH = 3`、`MAX_REF_NODES = 64`、
+`MAX_RERESOLVE_FANOUT = 64`、`MAX_SWEEP_NODES = 4096`、瞬时失败升级阈值 3。
+**校准装置是切片 4 的可观测量**（§5.5 的健康信号 + `closure_truncated` 比例 +
+声明速率），上线后按数据调，不要把它们当成论证出来的值。
+
 **它约束的是任一时刻的未结存量，不是生命周期总量。** 它挡住「一次性声明 500 条
 排到天荒地老」，挡不住「每完成一条就再声明一条」。
 **刻意不引入累计配额** —— 单调计数器不是当前文档的函数、rebuild 重建不出，
@@ -968,6 +1015,10 @@ plan 表降为投影后，一次 `tasks_rebuild_tx` 会把它们全部抹掉。
 3. **同 key 收编**：文档开始声明一个与既有 legacy 行同 key 的任务时，
    把该行的 `origin` 翻成 `'block'`（非 pending 行也翻），不新建行。
 4. **物化工具（可选、人触发）**：admin CLI 把某个 wave 的 `tasks` 行写成 `task` 块。
+   **它与 fork 一样需要规则 1 的豁免**（写入的 `declared_by` 来自存量行的归因，
+   而不是本次编辑的 author）。**豁免点必须是封闭集**：全仓只有 **fork 与物化工具
+   两处**，配一条**枚举测试**断言不存在第三处——否则 §3.7「所有写路径唯一收口」
+   是一条空洞的普遍否定。
    **对每一行写 `ready: true`** —— 语义是「这条声明现在由文档承载，与它此前的状态
    一致」，不是「现在决定要做它」。（**与 fork 的 `ready:false` 方向相反，这是对的**：
    fork 面对的是模板，物化面对的是**已经在排队的活行**；若写 `false`，
@@ -1046,6 +1097,9 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
 （初稿援引的先例 `proposals_rebuild_tx` 已随 #978 删除。）
 
 ### 10.2 不变量骨架（E2E 用）
+
+> **完整清单见附录 D.1**（13 条）。此处只摘出最承重的几条；
+> 施工与验收**以附录 D 为准**。
 
 **顺序不变量**：
 
@@ -1153,13 +1207,14 @@ OpenAPI 重生成无 diff / web build + vitest。
 | 4 | **撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` / `effective_wait` 作回传通道 |
 | 5 | **单赢家原语 + 事件管线**：提取 `mark_context_material_tx`，三条路径共用，归因 `ActorId::Kernel`；`TaskProjectionOutcome` 增 `kernel_events`；`tasks_rebuild_tx` 透传；**wave PATCH 从 `write_with_events_typed` 迁到 `write_with_actor_events_typed`**（不迁则 403）；禁止 `_tx` 内 `event_append_in_tx` |
 | 6 | **`closure_truncated` 进 sweep**：与事件路径同形；改掉钉住反向行为的那条测试断言 |
-| 7 | **瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级 |
+| 7 | **瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级。**必须与交付项 1 用同一套 `ResolveError` 变体** —— 只修 claim 侧会让文档里同时存在两条互斥处置，那正是被判为 root-cause 的病灶 |
 | 8 | **tick 顺序 + boot 门**：周期 tick 的上下文 sweep 排在 `sweep_all` **之前**并补源码序断言；**任何一次成功 sweep 即原子开门，仅在翻转时补跑 `sweep_all`** |
 | 9 | **事件补齐 + 向后兼容**：`TaskContextFrozen` 补 `truncated` / `doc_revs` / root 标记；`TaskContextAdvanced` 补 `changed_refs` / `wave_id` / `task_key` / `rationale`。新字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程 |
 | 10 | **migration `0069_`**：§9.2 的三列，连类型、backfill SQL、reader 分工、「三列刻意不进 `TASK_COLUMNS`」的旁注一起写在同一个文件里 |
 | 11 | **诊断对齐**：生产里已有第二份 in-flight 比较集，其 `withdrawal_diagnostic` 逐字承诺「any gate operation that has not started will be rejected」——收窄之后改 `priority` 会看到这句话而 gate 不会被拒，**诊断在说谎**。显式对齐两个字段集，并断言诊断承诺与 `context_stale_at_ms` 一致 |
 
-**验收**：§10.3 全部。
+**验收**：§10.3 + **附录 D.2 的 3b′ 三条补充项**（㉒ 元测试的常量引用、
+㉓ 两条路同结论、㉕ 开门后当轮完成 `resume_dispatched`）。
 
 ### 切片 3c — 前端：状态回显 + 诊断渲染（~350 行）
 
@@ -1167,7 +1222,10 @@ OpenAPI 重生成无 diff / web build + vitest。
 3b 是「行会被守卫式删除」的第一片，而诊断渲染在 3c，中间的窗口里系统第一次做决定
 却完全沉默。
 
-交付：`task` 块的状态回显（§3.8）；`taskDiagnostics` 渲染。
+交付：`task` 块的状态回显（§3.8）；`taskDiagnostics` 渲染；
+**`released_by_user` 的人用放行开关**（人可写、spec 不可写，§3.7 规则 5）——
+**缺它则 `declare-and-wait` 这一档在 UI 上无法放行**，而 §6.1 的墓碑会让被否决过
+的 wave 自动派生到这一档，两条出口全堵。
 **每一类诊断都要有「人话 + 下一步动作」**，`Diagnostic` 结构定死为
 `{ code, message_args, related_block_ids, related_wave_id?, action? }` ——
 重复 `key` / 环 / 被 ceiling 挤出 / 引用失效四类的原因都**不在当前块上**，
@@ -1190,6 +1248,14 @@ OpenAPI 重生成无 diff / web build + vitest。
 
 调用者已穷举：**只有 MCP spec agent** —— 无 REST 端点、无 web 调用者、
 无 plugin 写口、无 admin CLI。
+
+**manifest 过渡约束**：`plan_template` / `gates` / `spec_instructions` 三个字段
+**保留可解析但标注为过渡**——它们是 **Tier-A 字段，不可删**。照清单施工时
+不得顺手删掉它们。
+
+**fork 的引用重写必须有硬测试，且要写清理由**：内部引用指向新 wave id、
+**外部引用逐字节未变** —— **错了是静默的**（指回模板原文的链接看起来仍然合法），
+所以必须专测。
 
 **这一片之后新 legacy 行才真正停增**（§5.7 例外 (d) 的边界）。
 
@@ -1231,7 +1297,9 @@ OpenAPI 重生成无 diff / web build + vitest。
 | 6 | **`spec_task_ceiling` 只约束未结存量** | 「每完成一条就再声明一条」不被它挡住。刻意不引入累计配额（§8）；证伪装置是声明速率可观测量 |
 | 7 | **`decl_released_by_user` 的存量行豁免** | 升级时已在飞的任务不享有该位的撤回检测（§9.2）。有界、只影响一次升级窗口 |
 | 8 | **反向索引换掉了编译期可见性** | 用 FK + trigger 而非显式 DELETE 原语 ⇒ 第十条生产者路径可以无声出现（§5.8）。sweep 末尾兜底使正确性不依赖它 |
-| 9 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
+| 9 | **`prepare_tx` 提交之后、spawn 之前的窗口** | **与 #4 不是同一个洞**（#4 是「claim 提交 → 判决落库」）。op 越过 `TxCommitted` 之后，恢复漏斗不再经过强制点 ⇒ 一条已被判 material 但恰好越过 `prepare_tx` 的 op，其 spawn 仍会发生。**不修的理由**：修法要求让 `prepare_tx` 与 spawn 落进同一次不可分割的推进，那是 operation 驱动层的改造，成本远超收益；窗口极窄且只影响单次 spawn，后续 gate 仍被拒 |
+| 10 | **一次误报被变成不可逆终结** | sweep 判错 ⇒ 行落 `failed` ⇒ 人必须换 `key` 重开。**若切片 4 上线后误报率仍高，这条应重新评估**（例如改成可由人一键重开的形态）。这是误报定价的唯一出口 |
+| 11 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
 
 ### 12.2 产品侧待裁（不改机制，需人拍板）
 
@@ -1322,7 +1390,7 @@ r8 系列的形状很清晰，值得记下来作为方法论：
 | **r8c** | **3 BLOCKER**：栅栏只覆盖单个文档（跨 wave 子节点漏在外面）；`released_by_user` 纳入哈希在默认策略下是新误杀；「瞬时 vs 确定性」在现有 `ResolveError` 上不可判定。另：同一病灶在 sweep 侧已上线（root cause 级）|
 | **r8d** | **载体补全轮**：撤回规则的边沿没有前值载体（rebuild 判不出「曾经是 true」，且照字面实现会**杀光该 wave 所有 `auto-declare` 在飞任务**）；落点未指定（`evaluate_schedulability_tx` **读路径也在用**，写在那里会让一次 GET 产生持久判决）；栅栏的 `doc_rev` 缺载体/时序；「连续 N 轮」用错了计数器（全局、每轮成功即清零 ⇒ 永不达成）；断言 (A) 漏了第四个例外 |
 | **r8e** | **载体选型轮**：`doc_revs` 塞进 `claim_context_json` 会造成跨升级必然 Stuck-ops（**与 r5 ⑱ 是同一个洞，被重新打开了一遍**）；判决事件出 `project_tasks_tx` 没有载体且 wave PATCH 那条边运行时必然 403；例外 (d) 的判据划错范围；三列 migration backfill 完全没写 |
-| **r8f** | **首次零 BLOCKER**。三个机制边界收紧：栅栏生命周期状态机、四列不进 `TASK_COLUMNS`、`kernel_events` 消费契约 |
+| **r8f** | **首次零 BLOCKER**。三个机制边界收紧：栅栏生命周期状态机、三列不进 `TASK_COLUMNS`、`kernel_events` 消费契约 |
 | **r8g** | **收口轮**：全文级扫描后诊断 —— **机制章节之间已无残留矛盾，矛盾全部出现在 §12 切片清单与前面章节之间**。最刺眼的一条：切片 3b′ 交付项逐字要求把 `doc_revs` 写进 `claim_context_json`，而那正是 r8e 判为 BLOCKER 的做法 ⇒ **照清单施工必然复现已定价的事故**。三条裁决：撤回 `claim_doc_revs_json` 列、`kernel_events` 量词、`BlockVerdict` 回传通道 |
 
 ### B.3 驳回记录（附反证）
@@ -1376,3 +1444,143 @@ backfill**」四格。这四个问题只要有一个空着，就是下一轮的 
 - **#644** —— `tasks` / scheduler / gate 现状；`task_budget` 写口不对称属它的面
 - **#653** —— parked 原语的真实能力边界（§3.3 的「不走补偿路径」依据）
 - **#410** —— 共享 codex daemon（§3.5 成本计算的依据）
+
+---
+
+## 附录 C：载体与常数总表
+
+**这张表是压缩的下界。** 正文的四格纪律要求每条机制填满
+「载体 / 谁写 / rebuild 怎么重放 / migration 怎么 backfill」；本表把全部载体
+集中一处，便于施工时逐行核对。**新增机制必须在此登记一行。**
+
+### C.1 `tasks` 表的新列
+
+| 列 | 类型 | 谁写 | 谁读 | rebuild | backfill | 片 |
+|---|---|---|---|---|---|---|
+| `declared_by` | `TEXT NOT NULL DEFAULT 'spec'` | 投影（块 payload 的副本）| 投影、预算 | 从文档重建 | 存量全标 `spec` | 3b |
+| `origin` | `TEXT NOT NULL DEFAULT 'legacy'` | 投影 / 收编 | 投影只管 `'block'` | 从文档重建 | 存量全 `legacy` | 3b |
+| `claim_context_json` | `TEXT NULL`（**纯 JSON 数组**）| claim 事务 | `detect_wave_edit` / `sweep_inner`（**解析失败即判 material**）| `TaskContextFrozen` 的投影 | **`'[]'`**（`NULL` = 缺失 ≠ 空）| 3a |
+| `context_stale_at_ms` | `INTEGER NULL` | `mark_context_material_tx`（**单赢家**）| `refuse_if_context_stale` | `TaskContextAdvanced` 的投影 | 不需要（`NULL` = 从未判 material）| 3a |
+| `context_closure_truncated` | `INTEGER NOT NULL DEFAULT 0` | claim 事务 | `detect_wave_edit` **与 `sweep_inner`（两处必须同形）** | `TaskContextFrozen.truncated` 的投影 | `0` | 3a |
+| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | 投影，**非 `pending` 行不再更新** | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′ |
+| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | 同上 | 同上 | 同上 | **保持 `0`，显式例外** | 3b′ |
+| `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′ |
+
+**三列（`decl_*` / `context_verify_failures`）刻意不进 `TASK_COLUMNS` / 公共 `Task`**
+——`TASK_COLUMNS` 服务通用 `Task` 查询，塞进去会扩大 model / 序列化 / OpenAPI /
+TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻意的。**
+
+### C.2 `waves` 表的新列
+
+| 列 | 类型 | 谁写 | rebuild | 片 |
+|---|---|---|---|---|
+| `spec_task_ceiling` | `INTEGER NULL`（默认常数 32）| **只有 `EditAuthor::User` 经 `WavePatch`**；spec 403 | 列本身即真源 | 3b |
+| `automation_policy` | `TEXT NULL`（**三态**：NULL = 内核默认）| 同上 | `effective_policy` 是列 + 文档墓碑的**纯派生** | 3b |
+| `parent_wave_id` / `tree_task_budget` | `TEXT NULL` / `INTEGER NULL`（默认 32）| 内核（wave 创建）| —— | 6 |
+
+### C.3 不落列的载体
+
+| 载体 | 住哪 | 为什么不落列 |
+|---|---|---|
+| `doc_revs`（栅栏基线）| **只进 `TaskContextFrozen` 事件 payload** | 栅栏判据来自本轮内存中的 map，且硬裁永不进 sweep/detect ⇒ 落列即一列纯写不读的持久状态，连带一条结构性不可达的「NULL 不可解释成不一致」规则 |
+| `withdrawal` / `effective_wait` | **`BlockVerdict` 的字段**（进程内回传）| 判点与读点分离，需要通道而非持久状态 |
+| `kernel_events` | **`TaskProjectionOutcome` 的字段** | 事件必须由外层 eventized write 统一过闸 |
+
+### C.4 常数总表（**全部是猜的，校准装置见 §8**）
+
+| 常数 | 值 | 用途 | 耗尽行为 |
+|---|---|---|---|
+| `MAX_REF_DEPTH` | 3 | 闭包传递展开深度 | 标 `closure_truncated` ⇒ 此后一律 `material` |
+| `MAX_REF_NODES` | 64 | 闭包节点数 | 同上 |
+| `MAX_RERESOLVE_FANOUT` | 64 | 一次编辑触发的重解析扇出 | 超出即直接 `material` |
+| `MAX_SWEEP_NODES` | 4096 | 单轮 sweep 的重解析预算 | 本轮剩余未验证的一律 `material` |
+| `DEFAULT_WAVE_TASK_BUDGET` | 1（既有）| per-wave 并发 | —— |
+| `DEFAULT_SPEC_TASK_CEILING` | 32 | 单 wave 未结存量 | 超限不落行 + 诊断 |
+| `tree_task_budget` | 32 | 树内未结存量（切片 6）| 子 wave 创建被拒 |
+| `MAX_WAVE_TREE_DEPTH` | 3 | 递归深度（切片 6）| 同上 |
+| 瞬时失败升级阈值 | 3 轮 | per-row `context_verify_failures` | 升级为 `material` + 告警 |
+| `NEIGE_SCHEDULER_RECONCILE_SECS` | 300（既有）| sweep 节奏 | **不新增环境旋钮** |
+
+### C.5 健康信号
+
+| 信号 | 类型 | 为什么必须有 |
+|---|---|---|
+| `context_sweep_last_success_age_seconds` | **正向 gauge** | 其余全是计数器 —— sweep 整体不跑时它们**一起静止**，看起来和「一切正常」一样 |
+| `context_sweep_consecutive_failures` | 计数器 | 与上者**在成功与失败两条路径上都导出** |
+| 检测次数 / 送裁决次数 / `material` 次数 / `closure_truncated` 比例 | 计数器 | 「编辑稀疏」是个假设，让它可被数据推翻 |
+| 栅栏 race-lost 频率 | 计数器 | 若高到影响吞吐，说明报告写与 claim 争用超预期 |
+| 每 wave 的 spec 声明速率 | 计数器 | §8 未结存量上限的证伪装置 |
+
+---
+
+## 附录 D：不变量与切片验收清单
+
+**这张清单是压缩的下界。** 少一行就是少一件事。
+
+### D.1 事件与顺序不变量
+
+| # | 不变量 |
+|---|---|
+| 1 | `CardUpdated` → `WaveReportEdited` → `PlanUpdated`，同一事务、同一 wave scope |
+| 2 | `PlanUpdated{key}` **严格早于**该 key 的第一个 `TaskDispatched` |
+| 3 | 每个 `TaskDispatched` **同批**必有一条 `TaskContextFrozen`（同 wave、同 `idempotency_key`）|
+| 3a | **空冻结集行可区分**：`'[]'` ⇒ 不判 material；`NULL` ⇒ fail-closed 判 material。判据是「冻结集为空」**不是** `origin='legacy'` |
+| 3b | **task 块自身在冻结集内**且带**显式 root 标记**；改 in-flight 的 `goal` ⇒ 必有 `TaskContextAdvanced`（**限定：纳入字段集内的编辑**）|
+| 3c | **栅栏关闭解析→claim 的 TOCTOU**：注入报告写（**同 wave 与跨 wave 各一**）⇒ claim 必须 race-lost、行仍 `pending`、无 `TaskContextFrozen`、无 `task_ref_index` 行、**无任何 worker / gate 首次启动** |
+| 3d | **根块哈希只在纳入集敏感**：`goal`/`kind`/`gate` ⇒ 判；`priority`/`declared_by`/`spawn` ⇒ 不判；`released_by_user: false→true` ⇒ 不判；`ready: true→false` ⇒ 判（两种策略）；`released_by_user: true→false` ⇒ **仅 `declare-and-wait` 下判** |
+| 4 | 改动落在冻结集内 ⇒ **在此后第一次完成的 sweep 结束时**必有 `TaskContextAdvanced`，**且属于 task 所在的 wave**。E2E **显式跑一次 sweep 再断言**，不等事件到达 |
+| 4b | 事件正常 / 事件被丢弃**两个变体必须给出同一结论** |
+| 4d | **瞬时失败不产生持久判决**：不写 `context_stale_at_ms`、仍 in-flight、`context_verify_failures` +1；连续 3 轮才升级；中间任一轮成功即清零 |
+| 5 | **判决落库后禁止起活**：`context_stale_at_ms` 非空 ⇒ 该任务上任何 operation 的 `prepare_tx` 拒绝；**从不打断已启动的** |
+| 5b | **boot 顺序**：上下文 sweep 排在 operation 恢复**之前**（源码序断言）|
+| 6 | 墓碑不进 `known_task_keys` / `gate_rule_violations` / `declaration_graph`，但**进 `dup_keys`**；墓碑 + 同 key 重声明 ⇒ 产出墓碑否决诊断而非 `duplicate key` |
+| 7b | 仍被声明的**在飞行**永远算进 `occupied`（§4.2 规则 3）|
+| 8 | §3.7 七条规则 × 四条写路径的**全部否定测试**；其中「人删一个 `declared_by:"spec"` 的 task 块 ⇒ 200 且产出规范形态的墓碑」必须专列 |
+| 9 | **`key` 复活端到端**：删任务 → 墓碑 → 删墓碑 → 重提落新行（只对从未派发过的行成立，§3.7 规则 2b）|
+| 11 | **rebuild ≡ 增量差分**（§10.1），含三列与 stale 终态，并产生**同一组** `kernel_events`（各恰好一次）|
+| 12 | **终结 / 不存在的 task 不得拥有 `task_ref_index` 行**（含「一轮 sweep 之后」）|
+| 13 | spec 编辑被引用块必被检出 / wave 删除 / cove 删除三条触发路径 |
+
+### D.2 各切片的验收清单
+
+**切片 3b′**（见 §10.3，此处补齐三条无落点的）：
+
+- **㉒ 元测试**：纳入集 ∪ 排除集 == `TASK_FIELDS`，且**引用同一个常量而非复制品**
+  （`TASK_FIELDS` 必须先提升为模块级 `pub(crate)`）；
+- **㉓ 回归**：`closure_truncated = true` 的任务，**事件路径与 sweep 两条路给出同一结论**；
+- **㉕ 回归**：boot sweep 失败后，**一次周期 tick 成功即开门并当轮完成
+  `resume_dispatched`**（注意：boot 路径上的补跑必然 no-op，不得把那一格写成断言，
+  但**必须断言这一格**）。
+
+**切片 3c**：三类文案（人工否决 / context-stale (a) / context-stale (b)）+
+其余每一类诊断的「人话 + 下一步动作」+ `Diagnostic` 带 `related_block_ids` +
+**`released_by_user` 放行开关可用**（`declare-and-wait` 的唯一 UI 出口）。
+
+**切片 4**：裁决工具 fail-closed（缺席 / 畸形 / 超时 ⇒ `material`）；
+冻结点推进后同一处变更不再反复触发；判 `material` **不推进**冻结点。
+
+**切片 5**：fork 的引用重写**硬测试**（内部引用指向新 wave id、
+**外部引用逐字节未变** —— 错了是静默的）；fork 强制 `ready:false` +
+`declared_by:"spec"`；fork 自跑 `validate_payload` 与 guard；
+**规则 1 豁免点的枚举测试**（全仓只有 fork 与物化工具两处）；
+`calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。
+
+**切片 6**：树预算与深度上限的拒绝路径；**`spawn` 移入哈希纳入集的前置重裁**。
+
+**切片 7**：物化工具对每行写 `ready: true`（**不是 `false`** ——
+写 `false` 会当场删掉活的 pending 行）。
+
+### D.3 每一片的自洽性自查（重切的验收标准）
+
+| 片 | 合入后系统处于什么状态 | 有没有半截机制 |
+|---|---|---|
+| 1 | 词汇与校验就位，**零行为变化** | 无（`project_task_declarations` 零生产调用者是**刻意**的）|
+| 2 | 归因与写口收口就位，**仍不投影** | 无 |
+| 3a | 冻结/检测/判决的**载体与强制点**就位，调度决策逐位不变 | **有意的半截**：输入端未接线，由 3b′ 补 —— 这一点必须在 3a 的 PR 描述里如实写明 |
+| 3b | **声明开始有后果**，存量上限与策略列到位 | **有**：§5 对 `origin='block'` 行恒空 ⇒ 3b′ 是部署硬门 |
+| 3b′ | 冻结通电，§5 第一次被真实流量执行 | 无 |
+| 3c | 人能看见状态与诊断、能放行 | 无 |
+| 4 | 误报下降，冻结点可推进 | 无 |
+| 5 | 模板可 fork，agent 只剩一个写口 | 无（新 legacy 行从此停增）|
+| 6 | 子 wave 可用且被树预算约束 | 无 |
+| 7 | 存量可见，cove 可聚合 | 无 |
