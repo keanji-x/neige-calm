@@ -22,7 +22,10 @@
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
 //!     `sweep_resubmits_dispatched_task_with_missing_operation`.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
@@ -251,6 +254,7 @@ fn build_scheduler_with_semaphore(
     // funnel; these tests model the post-boot steady state so backstop
     // sweeps run for real (round-3 review F2).
     scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
     (runtime, scheduler)
 }
 
@@ -269,6 +273,7 @@ fn build_scheduler_with_timeouts(
     // funnel; these tests model the post-boot steady state so backstop
     // sweeps run for real (round-3 review F2).
     scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
     (runtime, scheduler)
 }
 
@@ -402,6 +407,16 @@ async fn task_row(boot: &Boot, key: &str) -> Task {
         .await
         .expect("task_get")
         .expect("task row exists")
+}
+
+async fn mark_context_stale(boot: &Boot, task_id: &str) {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query("UPDATE tasks SET context_stale_at_ms = ?1 WHERE id = ?2")
+        .bind(now_ms())
+        .bind(task_id)
+        .execute(&pool)
+        .await
+        .expect("mark task context stale");
 }
 
 async fn seed_codex_worker_card_with_terminal(
@@ -680,6 +695,74 @@ fn unexpected(name: &str) -> calm_server::error::CalmError {
 struct CardSpawnAdapter {
     kind: &'static str,
     card_id: String,
+}
+
+/// Worker fixture with the production task-context admission check.
+struct ContextCheckedSpawnAdapter {
+    kind: &'static str,
+    card_id: String,
+    spawned: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ProviderAdapter for ContextCheckedSpawnAdapter {
+    fn kind(&self) -> &'static str {
+        self.kind
+    }
+    fn phases(&self) -> &'static [PhaseTag] {
+        STUB_PHASES
+    }
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        _input: &Value,
+        op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        calm_server::operation::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
+        Ok(TxOutput::new(
+            "card",
+            Some(self.card_id.clone()),
+            json!({ "id": self.card_id }),
+        ))
+    }
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        self.spawned.fetch_add(1, Ordering::SeqCst);
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
+    }
+    async fn plan_compensation(
+        &self,
+        _from_phase: PhaseTag,
+        _reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Err(unexpected("plan_compensation"))
+    }
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(unexpected("compensate_step"))
+    }
 }
 
 #[async_trait]
@@ -2096,6 +2179,247 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
     // Idempotency: another sweep dedupes on (kind, idempotency_key).
     scheduler.sweep_all().await;
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+}
+
+#[tokio::test]
+async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget_pin() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stale-orphan", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    mark_context_stale(&boot, &task_id).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(ContextCheckedSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+            spawned: spawned.clone(),
+        })],
+    );
+
+    scheduler.sweep_all().await;
+
+    assert_eq!(spawned.load(Ordering::SeqCst), 0, "no worker was started");
+    let row = task_row(&boot, "stale-orphan").await;
+    assert_eq!(row.status, TaskStatus::Failed, "budget is no longer pinned");
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .unwrap()
+        .expect("terminal worker op");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(
+        op.last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("context-stale")
+    );
+}
+
+#[tokio::test]
+async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stale-pending", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    let (_, payload) = build_worker_payload(&task).unwrap();
+    seed_task(&boot, task).await;
+    mark_context_stale(&boot, &task_id).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(ContextCheckedSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+            spawned: spawned.clone(),
+        })],
+    );
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    repo.insert_operation(
+        "codex-worker",
+        OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(task_id.clone()),
+            payload_hash: stable_payload_hash(&payload).unwrap(),
+        },
+        payload,
+    )
+    .await
+    .unwrap();
+
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        0,
+        "Pending is not already started"
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(
+        op.last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("context-stale")
+    );
+
+    scheduler.sweep_all().await;
+    assert_eq!(
+        task_row(&boot, "stale-pending").await.status,
+        TaskStatus::Failed
+    );
+}
+
+#[tokio::test]
+async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stale-started", TaskKind::Codex, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    let (_, payload) = build_worker_payload(&task).unwrap();
+    seed_task(&boot, task).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(ContextCheckedSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+            spawned: spawned.clone(),
+        })],
+    );
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    let op_id = repo
+        .insert_operation(
+            "codex-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task_id.clone()),
+                payload_hash: stable_payload_hash(&payload).unwrap(),
+            },
+            payload,
+        )
+        .await
+        .unwrap();
+    let output = TxOutput::new(
+        "card",
+        Some(boot.worker_card_id.as_str().to_string()),
+        json!({ "id": boot.worker_card_id.as_str() }),
+    );
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
+         target_json = ?2 WHERE id = ?3",
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    mark_context_stale(&boot, &task_id).await;
+
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        1,
+        "started work resumes normally"
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(!matches!(op.phase.tag(), PhaseTag::Failed));
+
+    scheduler.sweep_all().await;
+    assert_eq!(
+        task_row(&boot, "stale-started").await.status,
+        TaskStatus::Running
+    );
+    call_tool(
+        &boot,
+        TOOL_TASK_COMPLETE,
+        worker_identity(&boot),
+        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
+    )
+    .await
+    .expect("recovered worker report");
+    assert_eq!(
+        task_row(&boot, "stale-started").await.status,
+        TaskStatus::Done
+    );
+}
+
+#[tokio::test]
+async fn context_boot_seam_blocks_operation_recovery_and_dispatched_redrive() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Codex, &[]);
+    pending.status = TaskStatus::Dispatched;
+    let pending_id = pending.id.clone();
+    let (_, pending_payload) = build_worker_payload(&pending).unwrap();
+    seed_task(&boot, pending).await;
+    let mut missing = plan_task(&boot.wave_id, "boot-missing-op", TaskKind::Codex, &[]);
+    missing.status = TaskStatus::Dispatched;
+    seed_task(&boot, missing).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![Arc::new(ContextCheckedSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+            spawned: spawned.clone(),
+        })],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    repo.insert_operation(
+        "codex-worker",
+        OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(pending_id.clone()),
+            payload_hash: stable_payload_hash(&pending_payload).unwrap(),
+        },
+        pending_payload,
+    )
+    .await
+    .unwrap();
+
+    scheduler.sweep_boot().await;
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+    let pending_op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &pending_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending_op.phase.tag(), PhaseTag::Pending);
+
+    scheduler.mark_context_sweep_boot_complete();
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    scheduler.sweep_boot().await;
+    assert_eq!(spawned.load(Ordering::SeqCst), 2);
+    assert_eq!(operation_count(&boot, "codex-worker").await, 2);
+    assert_eq!(
+        task_row(&boot, "boot-pending-op").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(
+        task_row(&boot, "boot-missing-op").await.status,
+        TaskStatus::Running
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3831,7 +4155,9 @@ async fn backstop_sweep_noops_until_boot_sweep_completes() {
         "gated backstop sweep must not move rows"
     );
 
-    // The boot funnel's sweep reconciles and opens the gate.
+    // The earlier context boot sweep opens its independent admission
+    // gate before the scheduler boot funnel reconciles dispatched rows.
+    scheduler.mark_context_sweep_boot_complete();
     scheduler.sweep_boot().await;
     assert!(scheduler.boot_sweep_completed());
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
@@ -4331,6 +4657,51 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
         op.phase.tag()
     );
     assert_eq!(operation_count(&boot, "task-verify").await, 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn stale_gate_before_first_attempt_fails_without_running_shell() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("context-stale");
+    let marker = dir.join("must-not-exist");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [{ "name": "forbidden", "cmd": format!("touch '{}'", marker.display()) }]
+    })
+    .to_string();
+    let task = gate_task(&boot, "stale-gate", &gate);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    mark_context_stale(&boot, &task_id).await;
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+
+    scheduler.sweep_all().await;
+    let row = wait_for_terminal_row(&boot, "stale-gate", 30).await;
+
+    assert!(!marker.exists(), "gate shell command must not execute");
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.gate_attempt, 0);
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert!(
+        verdict["log_tail"]
+            .as_str()
+            .unwrap()
+            .contains("context-stale")
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
     std::fs::remove_dir_all(&dir).ok();
 }
 

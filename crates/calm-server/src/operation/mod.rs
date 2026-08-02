@@ -51,6 +51,24 @@ pub type TimestampMs = i64;
 pub type Tx<'tx> = Transaction<'tx, Sqlite>;
 const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
+#[doc(hidden)]
+pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> Result<()> {
+    let task_id = task_id.ok_or_else(|| {
+        CalmError::Conflict("context-stale: task-bound operation has no task id".into())
+    })?;
+    let stale_at: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
+            .bind(task_id)
+            .fetch_one(&mut **tx)
+            .await?;
+    if stale_at.is_some() {
+        return Err(CalmError::Conflict(
+            "context-stale: frozen closure no longer matches the document".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum ParkedClaimMode {
     SteadyState,

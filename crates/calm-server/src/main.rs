@@ -70,6 +70,8 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    calm_server::task_context_sweep_on_boot(&state).await?;
+
     calm_server::recover_operations_on_boot(&state).await?;
 
     calm_server::reaper_on_boot();
@@ -77,8 +79,6 @@ async fn main() -> anyhow::Result<()> {
     // Issue #644 PR-B — scheduler boot sweep. Must follow operation
     // recovery (design §8 boot order; asserted in `boot_order_tests`).
     calm_server::scheduler_sweep_on_boot(&state).await;
-
-    calm_server::task_context_sweep_on_boot(&state).await?;
 
     // Optional session-recording — when `RECORD_SESSION=<path>` is set,
     // every event broadcast on the bus is appended to that file as

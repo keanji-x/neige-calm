@@ -220,8 +220,9 @@ impl ProviderAdapter for TerminalAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
+        super::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
         let cwd = payload.request.cwd.clone();

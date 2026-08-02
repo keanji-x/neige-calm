@@ -307,8 +307,9 @@ impl ProviderAdapter for CodexAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        _op: &Operation,
+        op: &Operation,
     ) -> Result<TxOutput> {
+        super::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
         let payload: CodexCreateOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);

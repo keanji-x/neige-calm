@@ -222,10 +222,16 @@ pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
     state.dispatcher.scheduler().sweep_boot().await;
 }
 
-/// #985 PR3a-ii correctness sweep. The stronger operation-start ordering
-/// fence is intentionally delivered by the following slice.
+/// #985 PR3a correctness sweep. Boot runs this before operation recovery
+/// so a context verdict caused by downtime edits is durable before any
+/// pending operation can cross its `prepare_tx` admission point.
 pub async fn task_context_sweep_on_boot(state: &state::AppState) -> crate::error::Result<()> {
-    state.dispatcher.context_monitor().sweep().await
+    state.dispatcher.context_monitor().sweep().await?;
+    state
+        .dispatcher
+        .scheduler()
+        .mark_context_sweep_boot_complete();
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -693,6 +699,22 @@ mod boot_order_tests {
             .find("scheduler_sweep_on_boot(&state).await")
             .expect("main boot calls scheduler_sweep_on_boot");
         assert!(recover < sweep);
+    }
+
+    #[test]
+    fn boot_order_context_sweep_before_operation_recovery() {
+        let main_rs = include_str!("main.rs");
+        let context_sweep = main_rs
+            .find("task_context_sweep_on_boot(&state).await")
+            .expect("main boot calls task_context_sweep_on_boot");
+        let recover = main_rs
+            .find("recover_operations_on_boot(&state).await")
+            .expect("main boot calls recover_operations_on_boot");
+        let scheduler_sweep = main_rs
+            .find("scheduler_sweep_on_boot(&state).await")
+            .expect("main boot calls scheduler_sweep_on_boot");
+        assert!(context_sweep < recover);
+        assert!(recover < scheduler_sweep);
     }
 
     #[test]

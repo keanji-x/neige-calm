@@ -541,6 +541,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         Arc::new(Semaphore::new(1)),
     );
     scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
 
     scheduler.sweep_all().await;
 

@@ -339,6 +339,9 @@ pub struct Scheduler {
     /// [`Scheduler::sweep_all`], which no-ops until
     /// [`Scheduler::sweep_boot`] completes and opens this gate.
     boot_sweep_done: AtomicBool,
+    /// #985 PR3a — dispatched recovery must not start until the boot
+    /// context sweep has persisted every material verdict.
+    context_sweep_boot_done: AtomicBool,
 }
 
 impl Scheduler {
@@ -398,6 +401,7 @@ impl Scheduler {
             wave_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
             boot_sweep_done: AtomicBool::new(false),
+            context_sweep_boot_done: AtomicBool::new(false),
         })
     }
 
@@ -1044,6 +1048,16 @@ impl Scheduler {
         self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
 
+    /// Open the context-sweep boot gate after its synchronous boot pass.
+    pub fn mark_context_sweep_boot_complete(&self) {
+        self.context_sweep_boot_done.store(true, Ordering::SeqCst);
+    }
+
+    /// TEST seam for assertions around the context-sweep boot fence.
+    pub fn context_sweep_boot_completed(&self) -> bool {
+        self.context_sweep_boot_done.load(Ordering::SeqCst)
+    }
+
     /// Shared sweep body: runs the reconcile arms inline and returns
     /// the set of waves holding `pending` rows for the caller to
     /// dispatch (blocking in [`Scheduler::sweep_all`], fire-and-forget
@@ -1405,6 +1419,13 @@ impl Scheduler {
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()`
     /// + guarded reconcile writes.
     async fn resume_dispatched(self: &Arc<Self>, task: Task) {
+        if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
+            tracing::debug!(
+                task_id = %task.id,
+                "scheduler sweep: dispatched task left untouched until context boot sweep completes"
+            );
+            return;
+        }
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             return;
         };
