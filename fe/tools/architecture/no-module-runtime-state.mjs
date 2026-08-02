@@ -16,8 +16,9 @@
  * `Intl.NumberFormat` and `TextEncoder` are possible narrow immutable-
  * constructor candidates, but remain rejected until fixtures justify them.
  * Closing the other shapes needs type/data-flow analysis.
- * Type-only declarations, functions, Zod schemas, React's immutable component
- * wrappers/context handles, and deeply verifiable frozen static data pass.
+ * Type-only declarations, functions, Zod schema construction chains, React's
+ * immutable component wrappers/context handles, and deeply verifiable frozen
+ * static data pass.
  * TypeScript enums are currently intentionally not rejected; their emitted
  * mutable object is a known gap pending a dedicated declaration visitor.
  */
@@ -25,7 +26,8 @@
 // Empty by design today: Date and boxed primitives are mutable objects too.
 const immutableConstructors = new Set();
 const reactPureFactories = new Set(['memo', 'forwardRef', 'lazy', 'createElement', 'createContext']);
-const freezableObjectFactories = new Set(['keys', 'values', 'entries', 'fromEntries']);
+const schemaValueMethods = new Set(['parse', 'safeParse', 'parseAsync', 'safeParseAsync']);
+const freezableObjectFactories = new Set(['keys']);
 
 /** @param {any} node */
 function unwrap(node) {
@@ -77,6 +79,7 @@ function isSchemaCall(node, schemaBindings) {
   const callee = unwrap(node.callee);
   if (callee.type === 'Identifier') return schemaBindings.has(callee.name);
   if (callee.type !== 'MemberExpression') return false;
+  if (schemaValueMethods.has(memberName(callee))) return false;
   const object = unwrap(callee.object);
   return (object.type === 'Identifier' && schemaBindings.has(object.name)) || isSchemaCall(object, schemaBindings);
 }

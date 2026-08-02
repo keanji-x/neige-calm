@@ -57,6 +57,7 @@ describe('architecture/no-module-runtime-state', () => {
     ['top-level-mutable-argument.ts', 'new Map'],
     ['top-level-object-assign.ts', 'cache: new Map'],
     ['destructured-array.ts', 'Module runtime state'],
+    ['schema-value.ts', 'z.object({}).parse(x)'],
   ] as const;
   for (const [fixture, entity] of rejected) {
     it(`rejects ${fixture}`, async () => {
@@ -97,6 +98,14 @@ describe('architecture/no-module-runtime-state', () => {
     const messages = await lintFixture('no-module-runtime-state', 'freeze-array-object.ts');
     expect(messages).toHaveLength(1);
     expect(messages.at(0)?.message).toContain('freeze nested objects/arrays too');
+  });
+  it('rejects frozen Object factories whose results can contain mutable values', async () => {
+    const messages = await lintFixture('no-module-runtime-state', 'frozen-object-values.ts');
+    expect(messages).toHaveLength(2);
+    expect(messages.map(({ message }) => message)).toEqual(expect.arrayContaining([
+      expect.stringContaining('Object.freeze(Object.entries(x))'),
+      expect.stringContaining("Object.freeze(Object.fromEntries([['a', []]]))"),
+    ]));
   });
   it('allows router factories only under a file-scoped rule option', async () => {
     expect(await lintFixture('no-module-runtime-state', 'router-factory.ts', { allowRouterFactories: ['createRouter'] })).toHaveLength(0);
