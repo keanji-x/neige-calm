@@ -91,10 +91,13 @@
  *   `SYNC_EVENT_VERSION` stays 12.
  * * `15` — issue #979 adds required `ifDocRev` to whole-document report
  *   writes and exposes `docRev` on report payloads.
+ * * `16` — issue #985 adds task-context freeze/advance events, with backend
+ *   `SYNC_EVENT_VERSION` bumped 12 → 13 in lockstep. Older frontends'
+ *   event unions do not recognize the new discriminators.
  *
  * See `docs/upgrade-stability.md` (Tier B — cross-process negotiation).
  */
-export const WEB_COMPAT_VERSION = 15;
+export const WEB_COMPAT_VERSION = 16;
 
 /**
  * Shape of the JSON document returned by `GET /api/version`. Kept here
