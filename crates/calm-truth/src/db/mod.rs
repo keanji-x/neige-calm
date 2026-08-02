@@ -379,6 +379,13 @@ pub trait RepoRead: Send + Sync + 'static {
     /// wave-report persist path; the bytes are opaque to every caller
     /// except `calm-server::wave_report_doc`.
     async fn card_get_with_body_crdt(&self, id: &str) -> Result<Option<(Card, Option<Vec<u8>>)>>;
+    /// Read-time task diagnostics, evaluated in one read transaction with the
+    /// same DB-aware predicate as report projection.
+    async fn task_diagnostics(
+        &self,
+        wave_id: &str,
+        blocks: &[calm_types::wave_report::ReportBlock],
+    ) -> Result<Vec<crate::db::sqlite::BlockVerdict>>;
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>>;
     async fn harness_item_list_by_card(
         &self,

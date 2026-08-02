@@ -418,6 +418,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         .transpose()
         .map_err(|error| format!("task {}: invalid normalized gate_json: {error}", task.key))?;
     Ok(TaskDeclaration {
+        block_index: 0,
         block_id: String::new(),
         key: task.key.clone(),
         kind: match task.kind {
@@ -431,6 +432,13 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         gate,
         no_gate_reason: task.has_no_gate_reason.then(String::new),
         depends_on: task.depends_on.clone(),
+        context: serde_json::json!({}),
+        cwd: task.cwd.clone(),
+        priority: task.priority,
+        refs: Vec::new(),
+        declared_by: "spec".into(),
+        released_by_user: false,
+        tombstoned_by_user: false,
         ready: true,
         tombstone: false,
     })

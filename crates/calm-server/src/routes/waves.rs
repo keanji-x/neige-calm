@@ -63,12 +63,13 @@ use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::validate_transition;
 use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
+use crate::wave_report_read::load_report_read_snapshot;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -86,7 +87,10 @@ pub fn router() -> Router<AppState> {
         // session cookie). The MCP `calm.report.{write,edit}` path is
         // unchanged; both paths funnel through `wave_report::persist_report`
         // so the dual-event invariant + CRDT write stays one boundary.
-        .route("/api/waves/{id}/report", post(update_wave_report))
+        .route(
+            "/api/waves/{id}/report",
+            get(get_wave_report).post(update_wave_report),
+        )
         .route("/api/waves/{id}/backlinks", get(get_wave_backlinks))
         .route("/api/waves/{id}/files/ls", get(list_wave_files))
         .route("/api/waves/{id}/files/cat", get(cat_wave_file))
@@ -1193,6 +1197,49 @@ pub struct UpdateWaveReportBody {
     /// splitting at H1 (`^# `) headings; the kernel does not interpret
     /// the structure.
     pub body: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveReportReadResponse {
+    pub schema_version: u32,
+    pub doc_rev: u64,
+    pub summary: String,
+    pub body: String,
+    pub blocks: Vec<calm_types::wave_report::ReportBlock>,
+    pub task_diagnostics: Vec<crate::db::sqlite::BlockVerdict>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/waves/{id}/report",
+    tag = "waves",
+    params(("id" = String, Path, description = "Wave id")),
+    responses(
+        (status = 200, description = "Current report with derived task diagnostics", body = WaveReportReadResponse),
+        (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 404, description = "Wave not found", body = ErrorBody)
+    ),
+)]
+pub(crate) async fn get_wave_report(
+    State(s): State<RouteState>,
+    _principal: Principal,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    let (_, report_card, _) = resolve_report_for_wave(s.repo.as_ref(), &id).await?;
+    let snapshot = load_report_read_snapshot(s.repo.as_ref(), report_card.id.as_str()).await?;
+    Ok((
+        StatusCode::OK,
+        Json(WaveReportReadResponse {
+            schema_version: snapshot.schema_version,
+            doc_rev: snapshot.doc_rev,
+            summary: snapshot.summary,
+            body: snapshot.body,
+            blocks: snapshot.blocks,
+            task_diagnostics: snapshot.task_diagnostics,
+        }),
+    )
+        .into_response())
 }
 
 /// `POST /api/waves/:id/report` — user-driven wave-report edit. The

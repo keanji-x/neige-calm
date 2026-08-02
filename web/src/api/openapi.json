@@ -3142,6 +3142,55 @@
       }
     },
     "/api/waves/{id}/report": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "get_wave_report",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current report with derived task diagnostics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveReportReadResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "waves"
@@ -4052,6 +4101,32 @@
           }
         }
       },
+      "BlockVerdict": {
+        "type": "object",
+        "required": [
+          "blockId",
+          "key",
+          "diagnostics",
+          "schedulable"
+        ],
+        "properties": {
+          "blockId": {
+            "type": "string"
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            }
+          },
+          "key": {
+            "type": "string"
+          },
+          "schedulable": {
+            "type": "boolean"
+          }
+        }
+      },
       "Card": {
         "type": "object",
         "required": [
@@ -4438,6 +4513,21 @@
           }
         },
         "additionalProperties": false
+      },
+      "Diagnostic": {
+        "type": "object",
+        "required": [
+          "path",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
       },
       "DirEntry": {
         "type": "object",
@@ -6621,6 +6711,47 @@
           "summary": {
             "type": "string",
             "description": "One-line summary used by sidebars / wave-list previews. Empty\nstring is valid (means \"spec agent has not produced a summary\nyet\"); the field stays a required `String` per the\n[[required-over-option]] rule."
+          }
+        }
+      },
+      "WaveReportReadResponse": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "docRev",
+          "summary",
+          "body",
+          "blocks",
+          "taskDiagnostics"
+        ],
+        "properties": {
+          "blocks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReportBlock"
+            }
+          },
+          "body": {
+            "type": "string"
+          },
+          "docRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "summary": {
+            "type": "string"
+          },
+          "taskDiagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BlockVerdict"
+            }
           }
         }
       },

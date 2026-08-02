@@ -48,7 +48,7 @@
 //! seeds the canonical "agent hasn't run yet" defaults.
 
 use crate::db::RouteRepo;
-use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
+use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx, project_tasks_tx};
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
@@ -620,6 +620,12 @@ pub(crate) async fn persist_report_with_shadow(
                         "wave_report: snapshot CRDT blocks for card {id}: {e}"
                     ))
                 })?);
+                let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
+                let (declarations, block_diagnostics) =
+                    calm_types::report_blocks::tasks::project_task_declarations(blocks);
+                let task_projection =
+                    project_tasks_tx(tx, wave_id.as_str(), &declarations, &block_diagnostics)
+                        .await?;
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -640,7 +646,7 @@ pub(crate) async fn persist_report_with_shadow(
                 //    order before PR2 added the structured event).
                 let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
                 let report_edited = Event::WaveReportEdited {
-                    wave_id,
+                    wave_id: wave_id.clone(),
                     card_id: report_card_id,
                     author,
                     // Kept on the event wire for historical compatibility;
@@ -658,7 +664,18 @@ pub(crate) async fn persist_report_with_shadow(
                     scope.clone(),
                     Event::CardUpdated(updated.clone()),
                 ));
-                events.push((actor, scope, report_edited));
+                events.push((actor.clone(), scope, report_edited));
+                if !task_projection.changed_keys.is_empty() {
+                    events.push((
+                        actor.clone(),
+                        wave_scope,
+                        Event::PlanUpdated {
+                            wave_id,
+                            changed_keys: task_projection.changed_keys,
+                            agent_message: None,
+                        },
+                    ));
+                }
                 Ok(((updated, outcome), events))
             })
         },

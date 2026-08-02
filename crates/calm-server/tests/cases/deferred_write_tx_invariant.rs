@@ -61,9 +61,12 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
 /// A deferred transaction that performs no writes never competes for the
 /// shared-cache writer slot, so it cannot be a hold-and-wait party.
 const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[
-    // `wave_detail`: one consistent snapshot across wave/cards/overlays
-    // SELECTs; commits without writing.
-    ("calm-truth/src/db/sqlite/read.rs", "fn wave_detail("),
+    // Centralized deferred transaction used only by RepoRead snapshots;
+    // callers issue SELECTs and commit without writing.
+    (
+        "calm-truth/src/db/sqlite/read_transaction.rs",
+        "fn begin_read_tx(",
+    ),
 ];
 
 /// How far above a matched begin the allowlist needle may sit. The fn
