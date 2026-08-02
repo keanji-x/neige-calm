@@ -48,13 +48,6 @@ export type OverlayPersistResult =
  * End-side assembly implements optimistic ordering. updateSynchronously must cancel an in-flight
  * read before replacing cached data and return the per-call snapshot used by persist/rollback.
  */
-export interface OverlayStatePort<T> {
-  read(key: OverlayKey): Promise<Persistent<T> | undefined>;
-  updateSynchronously(key: OverlayKey, update: StateUpdate<T>): OverlayMutation<T>;
-  persist(key: OverlayKey, mutation: OverlayMutation<T>): Promise<OverlayPersistResult>;
-  rollback(key: OverlayKey, mutation: OverlayMutation<T>): void;
-}
-
 export function createOverlayKey<
   PluginId extends string,
   EntityKind extends string,
@@ -95,16 +88,17 @@ export type StorageRemoveResult =
   | Readonly<{ status: 'failed'; error: StorageWriteFailure }>;
 
 /**
- * Async storage boundary: adapters own platform access and map exceptions into explicit results.
- * Missing data is a normal initial lifecycle state; failures never masquerade as missing data.
+ * End-side assembly implements optimistic ordering. updateSynchronously must cancel an in-flight
+ * read before replacing cached data and return the per-call snapshot used by persist/rollback.
  */
-export interface StateStoragePort {
-  read<T>(key: string, codec: Codec<T>): Promise<StorageReadResult<T>>;
-  write<T>(key: string, value: T, codec: Codec<T>): Promise<StorageWriteResult>;
-  remove(key: string): Promise<StorageRemoveResult>;
+export interface OverlayStatePort<T> {
+  read(key: OverlayKey): Promise<StorageReadResult<Persistent<T>>>;
+  updateSynchronously(key: OverlayKey, update: StateUpdate<T>): OverlayMutation<T>;
+  persist(key: OverlayKey, mutation: OverlayMutation<T>): Promise<OverlayPersistResult>;
+  rollback(key: OverlayKey, mutation: OverlayMutation<T>): void;
 }
 
 /** Apply the phantom brand without changing identity or runtime representation. */
-export function asPersistent<T>(value: T): Persistent<T> {
+export function unsafeAsPersistent<T>(value: T): Persistent<T> {
   return value as Persistent<T>;
 }

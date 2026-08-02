@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { asPersistent, createOverlayKey } from './types.js';
+import { createOverlayKey, unsafeAsPersistent } from './types.js';
 
 describe('Persistent runtime representation', () => {
   it('is the original value with no runtime wrapper', () => {
     const value = { count: 1 };
 
-    expect(asPersistent(value)).toBe(value);
-    expect(Object.keys(asPersistent(value))).toEqual(['count']);
+    expect(unsafeAsPersistent(value)).toBe(value);
+    expect(Object.keys(unsafeAsPersistent(value))).toEqual(['count']);
   });
 });
 

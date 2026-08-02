@@ -4,7 +4,7 @@ import type { Persistent } from '../../../../core/state/types.ts';
 import { useReducer, useState } from './public.ts';
 
 describe('ui/state guarded React hooks', () => {
-  it('preserves ordinary and non-distributive union state signatures', () => {
+  it('[type-only] preserves ordinary and non-distributive union state signatures', () => {
     const compileOnly = false as boolean;
     if (compileOnly) {
       const [, setValue] = useState<boolean | null>(null);
@@ -16,7 +16,7 @@ describe('ui/state guarded React hooks', () => {
     }
   });
 
-  it('collapses Persistent state hook results to never', () => {
+  it('[type-only] collapses Persistent state hook results to never', () => {
     const compileOnly = false as boolean;
     if (compileOnly) {
       const persistent = null as unknown as Persistent<{ count: number }>;

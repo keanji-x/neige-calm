@@ -1,5 +1,9 @@
 import { describe, expectTypeOf, it } from 'vitest';
 
+// @ts-expect-error -- the duplicate unbranded storage port must stay removed.
+import type { StateStoragePort } from './types.js';
+// @ts-expect-error -- callers must acknowledge the unsafe Persistent escape hatch by name.
+import type { asPersistent } from './types.js';
 import type {
   Codec,
   OverlayKey,
@@ -7,19 +11,18 @@ import type {
   OverlayState,
   OverlayStatePort,
   Persistent,
-  StateStoragePort,
   StorageReadResult,
   StorageWriteResult,
 } from './types.js';
 
 describe('core/state public type contract', () => {
+  void (null as unknown as StateStoragePort);
+  void (null as unknown as typeof asPersistent);
+
   it('keeps the brand phantom and exposes codec and storage error channels', () => {
     expectTypeOf<Persistent<{ count: number }>>().toMatchTypeOf<{ count: number }>();
     expectTypeOf<Codec<number>>().toHaveProperty('encode');
     expectTypeOf<Codec<number>>().toHaveProperty('decode');
-    expectTypeOf<StateStoragePort>().toHaveProperty('read');
-    expectTypeOf<StateStoragePort>().toHaveProperty('write');
-    expectTypeOf<StateStoragePort>().toHaveProperty('remove');
     expectTypeOf<StorageReadResult<number>['status']>().toEqualTypeOf<
       'missing' | 'ready' | 'failed'
     >();
@@ -43,6 +46,9 @@ describe('core/state public type contract', () => {
     >();
     expectTypeOf<OverlayMutation<number>>().toHaveProperty('previous');
     expectTypeOf<OverlayMutation<number>>().toHaveProperty('next');
+    expectTypeOf<OverlayStatePort<number>['read']>().returns.resolves.toEqualTypeOf<
+      StorageReadResult<Persistent<number>>
+    >();
     expectTypeOf<OverlayStatePort<number>['updateSynchronously']>().returns
       .toEqualTypeOf<OverlayMutation<number>>();
     expectTypeOf<OverlayStatePort<number>>().toHaveProperty('persist');
