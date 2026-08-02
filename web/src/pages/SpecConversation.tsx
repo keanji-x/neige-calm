@@ -1,35 +1,30 @@
-// SpecConversation (#654) — document-mode spec conversation.
-//
-// The report column toggles between the report document (children) and a
-// conversation document rendered from the spec card's chat history. Both
-// share the same column width and typographic rhythm; a single minimal
-// input line lives at the bottom of the column in both modes, so the
-// draft (and focus) survives the mode switch. Sending from report mode
-// auto-switches to conversation mode.
-import { useEffect, useRef, type ReactNode } from 'react';
+// SpecConversation (#654/#975) — the report page's conversation drawer.
+import { useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useState } from '../shared/state';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import {
   humanizeToken,
-  useSpecCurrentRun,
+  type SpecRunSnapshot,
 } from './useSpecCurrentRun';
 import {
-  useSpecChatHistory,
+  type SpecChatHistorySnapshot,
   type VisibleChatEntry,
 } from './useSpecChatHistory';
-
-export type ReportView = 'report' | 'conversation';
 
 export interface SpecConversationProps {
   /** Spec card id; null/undefined when wave has no spec card. */
   specCardId: string | null;
-  /** Which document the column shows. */
-  view: ReportView;
-  onViewChange(view: ReportView): void;
-  /** The report document, shown when `view === 'report'`. */
-  children: ReactNode;
+  /** Whether the persistently-mounted drawer is currently open. */
+  drawerOpen: boolean;
+  run: SpecRunSnapshot;
+  chatHistory: SpecChatHistorySnapshot;
+  /** Entry selected from the report activity panel. */
+  targetEntryId?: number | null;
+  onTargetConsumed?(): void;
+  /** Close control supplied by the report shell. */
+  onClose?: () => void;
 }
 
 const MARKDOWN_PLUGINS = [remarkGfm];
@@ -45,45 +40,9 @@ function entryClock(atMs: number): string {
   return `${hh}:${mm}`;
 }
 
-function isScrollContainer(node: HTMLElement): boolean {
-  const overflowY = node.ownerDocument.defaultView?.getComputedStyle(node)
-    .overflowY;
-  if (overflowY !== 'auto' && overflowY !== 'scroll') return false;
-  return node.scrollHeight > node.clientHeight;
-}
-
-/**
- * Resolve the element whose `scrollTop` actually moves the document column.
- *
- * In the wide layout `.report-convo-scroll` is its own scroll container. In
- * the narrow (≤980px) layout the CSS sets `overflow: visible` on the column
- * so an ancestor — ultimately the page — scrolls instead; writing `scrollTop`
- * on the column there is a no-op and its `scroll` events never fire. Fall
- * back to the nearest scrollable ancestor, then to the document scrolling
- * element (window scroll).
- */
-export function resolveScrollTarget(
-  column: HTMLElement | null,
-): HTMLElement | null {
-  if (!column) return null;
-  if (isScrollContainer(column)) return column;
-  for (
-    let ancestor = column.parentElement;
-    ancestor;
-    ancestor = ancestor.parentElement
-  ) {
-    if (isScrollContainer(ancestor)) return ancestor;
-  }
-  return (
-    (column.ownerDocument.scrollingElement as HTMLElement | null) ??
-    column.ownerDocument.documentElement
-  );
-}
-
 function scrollToBottom(column: HTMLDivElement | null): void {
-  const target = resolveScrollTarget(column);
-  if (!target) return;
-  target.scrollTop = target.scrollHeight;
+  if (!column) return;
+  column.scrollTop = column.scrollHeight;
 }
 
 function ConvoTypingIndicator() {
@@ -367,12 +326,13 @@ function ConvoEntry({
 
 export function SpecConversation({
   specCardId,
-  view,
-  onViewChange,
-  children,
+  drawerOpen,
+  run,
+  chatHistory,
+  targetEntryId,
+  onTargetConsumed,
+  onClose,
 }: SpecConversationProps) {
-  const run = useSpecCurrentRun(specCardId ?? undefined);
-  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
   const [draft, setDraft] = useState('');
   const [resetOpen, setResetOpen] = useState(false);
   const [resetAttempted, setResetAttempted] = useState(false);
@@ -380,71 +340,62 @@ export function SpecConversation({
     () => new Set(),
   );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const drawerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputbarRef = useRef<HTMLElement>(null);
   const stickToBottomRef = useRef(true);
-  // Per-view reading position (#654 finding 4): the report and conversation
-  // documents share one scroll container, and the conversation forces the
-  // scroll to the bottom. Remember each view's offset on every scroll so a
-  // mode toggle can put the report back where the reader left it.
-  const savedScrollTopRef = useRef({ report: 0, conversation: 0 });
   const latestSpecCardIdRef = useRef<string | null>(specCardId);
   latestSpecCardIdRef.current = specCardId;
 
-  // Guard: the conversation document needs a spec card.
-  const inConversation = view === 'conversation' && specCardId != null;
-
   const onAnyScroll = () => {
-    const target = resolveScrollTarget(scrollRef.current);
+    if (!drawerOpen) return;
+    const target = scrollRef.current;
     if (!target) return;
-    savedScrollTopRef.current[inConversation ? 'conversation' : 'report'] =
-      target.scrollTop;
-    if (!inConversation) return;
     const distanceFromBottom =
       target.scrollHeight - target.scrollTop - target.clientHeight;
     stickToBottomRef.current = distanceFromBottom <= 40;
   };
-  const onAnyScrollRef = useRef(onAnyScroll);
-  onAnyScrollRef.current = onAnyScroll;
-
-  // Narrow layout (#654 finding 1): when an ancestor / the window is the
-  // scroll container, the column's own `onScroll` never fires. A capture
-  // listener on window observes every scroll, whichever element it lands on.
-  useEffect(() => {
-    const handler = () => {
-      onAnyScrollRef.current();
-    };
-    window.addEventListener('scroll', handler, true);
-    return () => window.removeEventListener('scroll', handler, true);
-  }, []);
 
   useEffect(() => {
-    if (!inConversation) {
-      // Back to the report: restore the saved reading position (#654
-      // finding 4). The conversation re-sticks to the bottom instead.
-      const target = resolveScrollTarget(scrollRef.current);
-      if (target) target.scrollTop = savedScrollTopRef.current.report;
-      return;
-    }
+    if (!drawerOpen || specCardId == null) return;
     stickToBottomRef.current = true;
     const id = window.setTimeout(() => {
       scrollToBottom(scrollRef.current);
+      // Also moves focus off an activity-row button once its panel becomes
+      // aria-hidden; activity-panel selection relies on this handoff.
       textareaRef.current?.focus();
     }, 30);
     return () => window.clearTimeout(id);
-  }, [inConversation]);
+  }, [drawerOpen, specCardId]);
+
+  useEffect(() => {
+    if (!drawerOpen || targetEntryId == null) return;
+    stickToBottomRef.current = false;
+    const id = window.setTimeout(() => {
+      const target = scrollRef.current?.querySelector<HTMLElement>(
+        `[data-chat-entry-id="${targetEntryId}"]`,
+      );
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+      } else {
+        stickToBottomRef.current = true;
+        scrollToBottom(scrollRef.current);
+      }
+      onTargetConsumed?.();
+    }, 40);
+    return () => window.clearTimeout(id);
+  }, [drawerOpen, onTargetConsumed, targetEntryId]);
 
   useEffect(() => {
     setExpandedEntries(new Set());
   }, [specCardId]);
 
   useEffect(() => {
-    if (!inConversation || !stickToBottomRef.current) return;
+    if (!drawerOpen || !stickToBottomRef.current) return;
     const id = window.setTimeout(() => {
       scrollToBottom(scrollRef.current);
     }, 0);
     return () => window.clearTimeout(id);
-  }, [chatHistory.entries.length, inConversation, run.fsm]);
+  }, [chatHistory.entries.length, drawerOpen, run.fsm]);
 
   // Auto-grow the single-line textarea with the draft.
   useEffect(() => {
@@ -458,10 +409,6 @@ export function SpecConversation({
     const text = draft.trim();
     if (!text || run.submitPending || run.resetPending) return;
     const cardIdAtSubmit = specCardId;
-    if (view !== 'conversation') {
-      // Sending from report mode lands the user in the conversation.
-      onViewChange('conversation');
-    }
     try {
       await run.submit(text);
       // If the component has been reused for another card, the draft now
@@ -471,8 +418,7 @@ export function SpecConversation({
       setDraft('');
       // Follow your own send (#654): even if the reader had scrolled up,
       // a successful send should land them on their new message (and the
-      // reply that follows). Re-stick and scroll via the resolved target so
-      // the ≤980px window-scroll fallback works too.
+      // reply that follows). Re-stick and scroll the drawer's own root.
       stickToBottomRef.current = true;
       window.setTimeout(() => {
         scrollToBottom(scrollRef.current);
@@ -509,33 +455,29 @@ export function SpecConversation({
   const stopVisible = run.working || run.stopping;
   const stopDisabled = run.stopPending || run.stopping;
 
-  // Esc stops the running turn (#668). A document-level listener (instead
-  // of per-element onKeyDown) covers focus anywhere in the conversation
-  // region — the scroll area and the inputbar — plus document.body (a
-  // keyboard user with no focused widget). Esc from a sibling widget
-  // (report rail, menus) is left alone, as is an Esc a closer listener
-  // already consumed (defaultPrevented). Gated on conversation mode + a
+  // Esc stops the running turn (#668). A document-level listener covers
+  // focus anywhere inside the drawer. Esc from the report document, rail,
+  // menus, or document.body is left alone, as is an Esc a closer listener
+  // already consumed (defaultPrevented). Gated on an open drawer + a
   // live turn (`run.working`; an in-flight interrupt leaves Esc inert),
   // skipped while the reset ConfirmDialog is open (its own Esc-to-cancel
   // wins) and during IME composition; preventDefault only when handled.
   useEffect(() => {
-    if (!inConversation || !isWorking || resetOpen) return;
+    if (!drawerOpen || !isWorking || resetOpen) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (e.defaultPrevented) return;
       if (e.isComposing || e.keyCode === 229) return;
       const target = e.target;
       const inConversationRegion =
-        target instanceof Node &&
-        (scrollRef.current?.contains(target) === true ||
-          inputbarRef.current?.contains(target) === true);
-      if (!inConversationRegion && target !== document.body) return;
+        target instanceof Node && drawerRef.current?.contains(target) === true;
+      if (!inConversationRegion) return;
       e.preventDefault();
       void onStopRef.current();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [inConversation, isWorking, resetOpen]);
+  }, [drawerOpen, isWorking, resetOpen]);
 
   const onConfirmReset = async () => {
     const cardIdAtReset = specCardId;
@@ -566,33 +508,11 @@ export function SpecConversation({
     chatHistory.entries.length === 0 && !isWorking && !chatHistory.hasEarlier;
 
   return (
-    <>
+    <div ref={drawerRef} className="report-convo">
       <header className="report-convo-head">
         <div className="report-convo-head-inner">
-          {/* Honest toggle buttons, not an ARIA tabs widget: the full tabs
-              contract (roving tabindex, arrow keys, aria-controls) is not
-              implemented, so plain buttons with aria-pressed are truthful. */}
-          <div className="report-convo-tabs">
-            <button
-              type="button"
-              aria-pressed={!inConversation}
-              className="report-convo-tab"
-              onClick={() => onViewChange('report')}
-            >
-              Report
-            </button>
-            <button
-              type="button"
-              aria-pressed={inConversation}
-              className="report-convo-tab"
-              disabled={specCardId == null}
-              title={specCardId == null ? 'Spec agent unavailable' : undefined}
-              onClick={() => onViewChange('conversation')}
-            >
-              Conversation
-            </button>
-          </div>
-          {inConversation && (
+          <h2>Conversation</h2>
+          {drawerOpen && specCardId != null && (
             <span className="report-convo-status" aria-label="Spec agent status">
               {/* #668 fix — the chip reflects the harness phase when one is
                   known; the overlay-derived rawState (which never publishes
@@ -632,6 +552,16 @@ export function SpecConversation({
               </button>
             </span>
           )}
+          {onClose && (
+            <button
+              type="button"
+              className="report-convo-close"
+              aria-label="Close conversation"
+              onClick={onClose}
+            >
+              ×
+            </button>
+          )}
         </div>
       </header>
 
@@ -639,12 +569,15 @@ export function SpecConversation({
         ref={scrollRef}
         // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable document column must be keyboard-focusable.
         tabIndex={0}
-        aria-label={inConversation ? 'Conversation' : 'Report document'}
+        aria-label={drawerOpen ? 'Conversation' : 'Conversation closed'}
         className="report-convo-scroll"
         onScroll={onAnyScroll}
       >
-        {!inConversation && children}
-        {inConversation && (
+        {specCardId == null ? (
+          <p className="report-convo-empty">
+            Spec Agent is unavailable for this wave.
+          </p>
+        ) : (
           <div className="report-convo-doc">
             {chatHistory.hasEarlier && (
               <button
@@ -667,12 +600,16 @@ export function SpecConversation({
             )}
 
             {chatHistory.entries.map((entry) => (
-              <ConvoEntry
+              <div
                 key={`${entry.queued ? 'queued' : 'item'}:${entry.id}`}
-                entry={entry}
-                expanded={expandedEntries.has(entry.id)}
-                onToggleExpanded={toggleExpandedEntry}
-              />
+                data-chat-entry-id={entry.id}
+              >
+                <ConvoEntry
+                  entry={entry}
+                  expanded={expandedEntries.has(entry.id)}
+                  onToggleExpanded={toggleExpandedEntry}
+                />
+              </div>
             ))}
 
             {isWorking && <ConvoTypingIndicator />}
@@ -681,7 +618,7 @@ export function SpecConversation({
       </div>
 
       {specCardId != null && (
-        <footer ref={inputbarRef} className="report-convo-inputbar">
+        <footer className="report-convo-inputbar">
           <div className="report-convo-inputbar-inner">
             {(run.submitError ?? run.stopError) != null && (
               <p
@@ -726,11 +663,8 @@ export function SpecConversation({
               </span>
               {/* While a turn is Working the send-glyph position becomes a
                   stop affordance (#668) — even with a non-empty draft, ■
-                  wins (Enter still queues the draft; queueing while running
-                  is supported). Conversation mode only: in report mode the
-                  running turn isn't visible, so the input keeps its plain
-                  send affordance. */}
-              {inConversation && stopVisible ? (
+                  wins (Enter still queues the draft). */}
+              {drawerOpen && stopVisible ? (
                 <button
                   type="button"
                   className="report-convo-send"
@@ -791,6 +725,6 @@ export function SpecConversation({
           setResetAttempted(false);
         }}
       />
-    </>
+    </div>
   );
 }

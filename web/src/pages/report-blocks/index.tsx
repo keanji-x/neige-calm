@@ -7,8 +7,9 @@
 // independently). Unknown kinds and malformed payloads degrade to a small
 // mono placeholder so one bad block never takes down the page.
 
-import { lazy, Suspense } from 'react';
+import { lazy, memo, Suspense } from 'react';
 import { Link } from '@tanstack/react-router';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -21,6 +22,8 @@ import {
 } from '../../cards/builtins/wave-report';
 import { ReportTableBlock } from './table';
 import { ReportAppBlock } from './app';
+import { BLOCK_ID_PATTERN } from '../report-link-ids';
+import { reportHeadingId } from '../report-outline';
 import { ReportTaskBlock } from './task';
 
 // lightweight-charts (~45KB gz) only loads when a report actually carries a
@@ -29,7 +32,28 @@ const LazyCandlesBlock = lazy(() =>
   import('./candles').then((m) => ({ default: m.ReportCandlesBlock })),
 );
 
-const BLOCK_ID_PATTERN = /^b_[0-9a-f]{4}$/;
+type PositionedMarkdownNode = {
+  type?: unknown;
+  depth?: unknown;
+  position?: { start?: { offset?: unknown } };
+  children?: unknown;
+};
+
+function collectSectionOffsets(node: unknown): number[] {
+  if (typeof node !== 'object' || node === null) return [];
+  const candidate = node as PositionedMarkdownNode;
+  const offset = candidate.position?.start?.offset;
+  const ownOffset =
+    candidate.type === 'heading' &&
+    (candidate.depth === 1 || candidate.depth === 2) &&
+    typeof offset === 'number'
+      ? [offset]
+      : [];
+  const childOffsets = Array.isArray(candidate.children)
+    ? candidate.children.flatMap(collectSectionOffsets)
+    : [];
+  return [...ownOffset, ...childOffsets];
+}
 
 function UnsupportedBlock({ block }: { block: ReportBlock }) {
   return (
@@ -67,17 +91,43 @@ export function ReportLink({
   );
 }
 
-export function ReportBlockView({ block }: { block: ReportBlock }) {
+export const ReportBlockView = memo(function ReportBlockView({
+  block,
+}: {
+  block: ReportBlock;
+}) {
   switch (block.kind) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
       if (!parsed.success) return <UnsupportedBlock block={block} />;
+      const sectionOffsets = collectSectionOffsets(
+        fromMarkdown(parsed.data.markdown),
+      );
+      const sectionId = (offset: number | undefined) => {
+        const sectionIndex =
+          typeof offset === 'number' ? sectionOffsets.indexOf(offset) : -1;
+        return sectionIndex >= 0
+          ? reportHeadingId(block.id, sectionIndex)
+          : undefined;
+      };
       return (
         <div id={block.id} className="report-block report-prose calm-prose">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             urlTransform={reportUrlTransform}
-            components={{ a: ReportLink }}
+            components={{
+              a: ReportLink,
+              h1: ({ children, node }) => (
+                <h1 id={sectionId(node?.position?.start.offset)}>{children}</h1>
+              ),
+              h2: ({ children, node }) => {
+                return (
+                  <h2 id={sectionId(node?.position?.start.offset)}>
+                    {children}
+                  </h2>
+                );
+              },
+            }}
           >
             {parsed.data.markdown}
           </ReactMarkdown>
@@ -131,4 +181,4 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
     default:
       return <UnsupportedBlock block={block} />;
   }
-}
+});

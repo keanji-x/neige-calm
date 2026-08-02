@@ -1,9 +1,22 @@
-import { lazy, Suspense, useEffect, useMemo } from 'react';
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  memo,
+  useMemo,
+  useRef,
+  type ReactNode,
+  useCallback,
+} from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
-import { useWaveBacklinksQuery, useWaveFileContent } from '../api/queries';
+import {
+  useWaveBacklinksQuery,
+  useWaveFileContent,
+} from '../api/queries';
 import type { WaveBacklink, WaveBacklinksResponse } from '../api/calm';
 import { useTheme } from '../app/theme';
 import type { Wave, WaveCardSlot } from '../types';
@@ -21,10 +34,11 @@ import {
   reportUrlTransform,
 } from './report-blocks';
 import { useWaveFsViewer } from '../wave-fs-viewers';
-import { EventLinePanel } from './EventLinePanel';
-import { SpecConversation, type ReportView } from './SpecConversation';
+import { SpecConversation } from './SpecConversation';
+import { useSpecChatHistory } from './useSpecChatHistory';
+import { useSpecCurrentRun } from './useSpecCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
-import { useAnyRuntimeLive, useEventLineEntries } from './useEventLineEntries';
+import { deriveOutline, type ReportOutlineItem } from './report-outline';
 
 function decodeHash(value: string): string {
   try {
@@ -40,6 +54,13 @@ export interface WaveReportPageProps {
 }
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
+const REPORT_OUTLINE_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:outline:collapsed';
+const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:backlinks:collapsed';
+const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
+const REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY =
+  'calm:report-conversation:collapsed';
 
 type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
 type ReportCardSlot = CardSlot & { card: WaveReportCardData };
@@ -69,22 +90,53 @@ function selectSpecCard(cards: WaveCardSlot[]): string | null {
 function readReportRailCollapsed(): boolean {
   if (typeof window === 'undefined') return false;
   try {
-    return window.localStorage.getItem(REPORT_RAIL_COLLAPSED_STORAGE_KEY) === 'true';
+    const stored = window.localStorage.getItem(
+      REPORT_RAIL_COLLAPSED_STORAGE_KEY,
+    );
+    if (stored != null) return stored === 'true';
+  } catch {
+    // Fall through to the responsive default when storage is unavailable.
+  }
+  return window.matchMedia?.('(max-width: 980px)').matches ?? false;
+}
+
+function readRailSectionCollapsed(key: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(key) === 'true';
   } catch {
     return false;
   }
 }
 
-function writeReportRailCollapsed(collapsed: boolean): void {
+function readConversationCollapsed(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const stored = window.localStorage.getItem(
+      REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY,
+    );
+    return stored == null ? true : stored === 'true';
+  } catch {
+    return true;
+  }
+}
+
+function writeCollapsedState(key: string, collapsed: boolean): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(
-      REPORT_RAIL_COLLAPSED_STORAGE_KEY,
-      collapsed ? 'true' : 'false',
-    );
+    window.localStorage.setItem(key, collapsed ? 'true' : 'false');
   } catch {
     // localStorage may throw in private browsing or under quota pressure.
   }
+}
+
+function revealReportBlock(blockId: string): void {
+  const target = document.getElementById(blockId);
+  const block = target?.closest('.report-block');
+  if (!target || !block) return;
+  target.scrollIntoView();
+  block.classList.remove('report-block--highlight');
+  requestAnimationFrame(() => block.classList.add('report-block--highlight'));
 }
 
 function ReportByline({ report }: { report?: WaveReportCardData }) {
@@ -114,6 +166,101 @@ function ReportEmptyState() {
   return (
     <div className="report-empty" role="status">
       Report not ready. The spec agent has not produced a report yet.
+    </div>
+  );
+}
+
+function ReportActivityPanel({
+  specCardId,
+  entries,
+  initialLoading,
+  hasEarlier,
+  working,
+  hidden,
+  onSelect,
+  onOpen,
+}: {
+  specCardId: string | null;
+  entries: ReturnType<typeof useSpecChatHistory>['entries'];
+  initialLoading: boolean;
+  hasEarlier: boolean;
+  working: boolean;
+  hidden: boolean;
+  onSelect(entryId: number): void;
+  onOpen(): void;
+}) {
+  const allUserEntries = useMemo(
+    () => entries.filter((entry) => entry.kind === 'user').reverse(),
+    [entries],
+  );
+  const userEntries = allUserEntries.slice(0, 12);
+  const omittedCount = allUserEntries.length - userEntries.length;
+
+  return (
+    <div
+      role="group"
+      className={'report-activity-stack' + (hidden ? ' hide' : '')}
+      aria-label="Recent conversation activity"
+      aria-hidden={hidden}
+    >
+      <div
+        className={
+          'report-activity-panel' +
+          (!initialLoading && userEntries.length === 0 && specCardId != null
+            ? ' report-activity-panel--compact'
+            : '')
+        }
+      >
+        {initialLoading ? (
+          <div className="report-activity-empty" role="status">
+            Loading conversation activity…
+          </div>
+        ) : userEntries.length > 0 ? (
+          <div className="report-activity-rows">
+            {userEntries.map((entry, index) => (
+              <button
+                key={`${entry.queued ? 'queued' : 'item'}:${entry.id}`}
+                type="button"
+                className="report-activity-card"
+                title={entry.text}
+                tabIndex={hidden ? -1 : undefined}
+                onClick={() => onSelect(entry.id)}
+              >
+                <span className="tx">{entry.text}</span>
+                {working && index === 0 && (
+                  <span className="st busy" aria-label="Spec Agent is working">
+                    ···
+                  </span>
+                )}
+              </button>
+            ))}
+            {omittedCount > 0 && (
+              <div className="report-activity-earlier">
+                {hasEarlier
+                  ? `At least ${omittedCount} earlier ${omittedCount === 1 ? 'turn' : 'turns'}`
+                  : `${omittedCount} earlier ${omittedCount === 1 ? 'turn' : 'turns'}`}
+              </div>
+            )}
+          </div>
+        ) : specCardId != null ? (
+          <button
+            type="button"
+            className="report-activity-chat"
+            aria-label="Open conversation"
+            title="Open conversation"
+            tabIndex={hidden ? -1 : undefined}
+            onClick={onOpen}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.75h14v10.5H9l-4 3v-13.5Z" />
+            </svg>
+          </button>
+        ) : (
+          <div className="report-activity-empty">
+            This wave has no Spec Agent.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -223,6 +370,24 @@ function ReportContent({
   );
 }
 
+const MemoizedMarkdownBody = memo(function MemoizedMarkdownBody({
+  body,
+}: {
+  body: string;
+}) {
+  return (
+    <div className="report-block report-prose calm-prose">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={reportUrlTransform}
+        components={{ a: ReportLink }}
+      >
+        {body}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
 export function ReportMarkdown({
   body,
   blocks,
@@ -238,11 +403,7 @@ export function ReportMarkdown({
   useEffect(() => {
     const blockId = decodeHash(hash);
     if (!blockId) return;
-    const block = document.getElementById(blockId);
-    if (!block?.classList.contains('report-block')) return;
-    block.scrollIntoView();
-    block.classList.remove('report-block--highlight');
-    requestAnimationFrame(() => block.classList.add('report-block--highlight'));
+    revealReportBlock(blockId);
   }, [hash, renderedBlockIds]);
 
   if (blocks) {
@@ -254,16 +415,144 @@ export function ReportMarkdown({
       </>
     );
   }
+  return <MemoizedMarkdownBody body={body} />;
+}
+
+function RailSection({
+  title,
+  count,
+  collapsed,
+  onCollapsedChange,
+  actions,
+  children,
+}: {
+  title: string;
+  count?: number;
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <div className="report-block report-prose calm-prose">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={reportUrlTransform}
-        components={{ a: ReportLink }}
-      >
-        {body}
-      </ReactMarkdown>
-    </div>
+    <section
+      className="report-rail-section"
+      aria-label={title}
+      data-collapsed={collapsed}
+    >
+      <div className="report-rail-section-head">
+        <h2>
+          <button
+            type="button"
+            className="report-rail-head"
+            aria-expanded={!collapsed}
+            aria-label={title}
+            onClick={() => onCollapsedChange(!collapsed)}
+          >
+            <ChevronIcon />
+            <span className="report-rail-heading">{title}</span>
+            {count != null && <span className="report-rail-count">{count}</span>}
+          </button>
+        </h2>
+        {!collapsed && actions && (
+          <div className="report-rail-actions">{actions}</div>
+        )}
+      </div>
+      <div className="report-rail-section-body">{children}</div>
+    </section>
+  );
+}
+
+function OutlinePanel({
+  outline,
+  unavailable,
+  bodyOnly,
+}: {
+  outline: ReportOutlineItem[];
+  unavailable: boolean;
+  bodyOnly: boolean;
+}) {
+  if (unavailable) {
+    return (
+      <div className="report-rail-placeholder">
+        Outline unavailable for this report version.
+      </div>
+    );
+  }
+  if (bodyOnly) {
+    return (
+      <div className="report-rail-placeholder">
+        Outline navigation requires structured report blocks.
+      </div>
+    );
+  }
+  if (outline.length === 0) {
+    return <div className="report-rail-placeholder">No sections yet.</div>;
+  }
+
+  const outlineLink = (
+    blockId: string,
+    children: ReactNode,
+    ariaLabel?: string,
+  ) => (
+    <a
+      href={`#${encodeURIComponent(blockId)}`}
+      aria-label={ariaLabel}
+      onClick={(event) => {
+        event.preventDefault();
+        // Deliberately bypass TanStack Router: this local scroll marker does
+        // not need to trigger route state or the deep-link arrival effect.
+        window.history.replaceState(null, '', `#${encodeURIComponent(blockId)}`);
+        revealReportBlock(blockId);
+      }}
+    >
+      {children}
+    </a>
+  );
+
+  return (
+    <ol className="report-outline-list">
+      {outline.map((item) => (
+        <li key={item.blockId}>
+          {outlineLink(
+            item.blockId,
+            <>
+              {item.number !== null && (
+                <span className="report-outline-number">
+                  {String(item.number).padStart(2, '0')}
+                </span>
+              )}
+              <span>{item.label}</span>
+            </>,
+            item.number === null
+              ? item.label
+              : `${String(item.number).padStart(2, '0')} ${item.label}`,
+          )}
+          {item.children.length > 0 && (
+            <ul>
+              {item.children.map((child) => (
+                <li key={child.blockId}>
+                  {outlineLink(child.blockId, child.label)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function BacklinkQuote({ backlink }: { backlink: WaveBacklink }) {
+  const quote = backlink.quote;
+  if (!quote) return <>{backlink.label}</>;
+  return (
+    <>
+      {quote.head_elided && '…'}
+      {quote.before}
+      {quote.label !== '' && <b>{quote.label}</b>}
+      {quote.after}
+      {quote.tail_elided && '…'}
+    </>
   );
 }
 
@@ -300,16 +589,8 @@ function BacklinksPanel({
     return [...grouped.entries()];
   }, [page?.backlinks, currentWaveId]);
 
-  if (
-    groups.length === 0 &&
-    !error &&
-    !page?.truncated &&
-    !page?.skipped_sources
-  )
-    return null;
   return (
-    <section className="report-backlinks" aria-labelledby="report-backlinks-title">
-      <h2 id="report-backlinks-title">Backlinks</h2>
+    <div className="report-backlinks">
       {error && (
         <div role="alert" className="report-error">
           Could not load backlinks: {formatApiError(error)}
@@ -324,9 +605,12 @@ function BacklinksPanel({
           {page.skipped_sources === 1 ? '' : 's'} could not be loaded.
         </p>
       )}
+      {groups.length === 0 && !error && !page?.truncated &&
+        !page?.skipped_sources && (
+        <div className="report-rail-placeholder">No backlinks yet.</div>
+      )}
       {groups.map(([waveId, group]) => (
         <div className="report-backlinks-group" key={waveId}>
-          <h3>{group.title}</h3>
           <ul>
             {group.entries.map((entry, index) => (
               <li
@@ -337,7 +621,13 @@ function BacklinksPanel({
                   params={{ waveId }}
                   hash={entry.src_block_id}
                 >
-                  {entry.label}
+                  <span className="report-backlinks-title">
+                    {group.title}
+                  </span>
+                  {' '}
+                  <span className="report-backlinks-quote">
+                    <BacklinkQuote backlink={entry} />
+                  </span>
                 </Link>
                 {hasRenderedBlocks && entry.dst_block_id && (
                   <span className="report-backlinks-target">
@@ -350,7 +640,7 @@ function BacklinksPanel({
           </ul>
         </div>
       ))}
-    </section>
+    </div>
   );
 }
 
@@ -418,73 +708,219 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const hasReportCard = reportSlots.length > 0;
   const reportCard = reportSlots[0]?.card;
   const specCardId = useMemo(() => selectSpecCard(cards), [cards]);
+  const run = useSpecCurrentRun(specCardId ?? undefined);
+  const chatHistory = useSpecChatHistory(specCardId ?? undefined);
   const [selectedFilePath, setSelectedFilePath] = useState<string>('report.md');
-  const [view, setView] = useState<ReportView>('report');
   const [lastWaveId, setLastWaveId] = useState<string>(wave.id);
-  const [lastSpecCardId, setLastSpecCardId] = useState<string | null>(
-    specCardId,
-  );
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
+  const [outlineCollapsed, setOutlineCollapsed] = useState(() =>
+    readRailSectionCollapsed(REPORT_OUTLINE_COLLAPSED_STORAGE_KEY),
+  );
+  const [backlinksCollapsed, setBacklinksCollapsed] = useState(() =>
+    readRailSectionCollapsed(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
+  );
+  const [filesCollapsed, setFilesCollapsed] = useState(() =>
+    readRailSectionCollapsed(REPORT_FILES_COLLAPSED_STORAGE_KEY),
+  );
+  const [conversationCollapsed, setConversationCollapsed] = useState(() =>
+    readConversationCollapsed(),
+  );
+  const [conversationTargetEntryId, setConversationTargetEntryId] = useState<
+    number | null
+  >(null);
   const [showHiddenFiles, setShowHiddenFiles] = useState(false);
-  const eventEntries = useEventLineEntries(wave.id, cards);
-  const live = useAnyRuntimeLive(wave.id, cards);
+  const railCollapseButtonRef = useRef<HTMLButtonElement>(null);
+  const railOpenButtonRef = useRef<HTMLButtonElement>(null);
+  const railFocusTransferPending = useRef(false);
   const backlinksQ = useWaveBacklinksQuery(wave.id);
+  const outline = useMemo(
+    () => deriveOutline(reportCard?.blocks),
+    [reportCard?.blocks],
+  );
 
   // Sync reset during render so a new wave never renders with the old file path.
   if (lastWaveId !== wave.id) {
     setLastWaveId(wave.id);
     setSelectedFilePath('report.md');
-    setView('report');
-  }
-
-  // When the spec card disappears, drop the stale conversation view so a
-  // later card reappearance does not snap back to conversation (and steal
-  // focus into its input).
-  if (lastSpecCardId !== specCardId) {
-    setLastSpecCardId(specCardId);
-    if (specCardId == null) setView('report');
   }
 
   const toggleReportRailCollapsed = () => {
+    railFocusTransferPending.current = true;
     setReportRailCollapsed((current) => {
       const next = !current;
-      writeReportRailCollapsed(next);
+      writeCollapsedState(REPORT_RAIL_COLLAPSED_STORAGE_KEY, next);
       return next;
     });
   };
+  useLayoutEffect(() => {
+    if (!railFocusTransferPending.current) return;
+    railFocusTransferPending.current = false;
+    if (reportRailCollapsed) railOpenButtonRef.current?.focus();
+    else railCollapseButtonRef.current?.focus();
+  }, [reportRailCollapsed]);
   const toggleHiddenFiles = () => {
     setShowHiddenFiles((current) => !current);
   };
+  const toggleConversationCollapsed = () => {
+    setConversationTargetEntryId(null);
+    setConversationCollapsed((current) => {
+      const next = !current;
+      writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, next);
+      return next;
+    });
+  };
+  const conversationOpen = !conversationCollapsed;
+  const openConversationAt = (entryId: number) => {
+    setConversationTargetEntryId(entryId);
+    setConversationCollapsed(false);
+    writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, false);
+  };
+  const openConversation = () => {
+    setConversationTargetEntryId(null);
+    setConversationCollapsed(false);
+    writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, false);
+  };
+  const consumeConversationTarget = useCallback(() => {
+    setConversationTargetEntryId(null);
+  }, []);
 
-  const railCollapseButton = (
-    <button
-      type="button"
-      className="report-rail-toggle"
-      onClick={toggleReportRailCollapsed}
-      aria-expanded={!reportRailCollapsed}
-      aria-label={
-        reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'
-      }
-      title={reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'}
-    >
-      <ChevronIcon />
-    </button>
-  );
+  useEffect(() => {
+    setConversationTargetEntryId(null);
+  }, [specCardId]);
 
   return (
     <div
       className={
-        'report-page' + (reportRailCollapsed ? ' report-page--rail-collapsed' : '')
+        'report-page' +
+        (reportRailCollapsed ? ' report-page--rail-collapsed' : '') +
+        (conversationOpen ? ' report-page--conversation-open' : '')
       }
     >
-      <section className="report-center" aria-label="Report">
-        <SpecConversation
-          specCardId={specCardId}
-          view={specCardId == null ? 'report' : view}
-          onViewChange={setView}
+      <aside
+        id="report-context-rail"
+        className={
+          'report-rail' + (reportRailCollapsed ? ' report-rail--collapsed' : '')
+        }
+        hidden={reportRailCollapsed}
+        aria-label="Report context"
+      >
+        <RailSection
+          title="Outline"
+          count={outline.length}
+          collapsed={outlineCollapsed}
+          onCollapsedChange={(collapsed) => {
+            setOutlineCollapsed(collapsed);
+            writeCollapsedState(
+              REPORT_OUTLINE_COLLAPSED_STORAGE_KEY,
+              collapsed,
+            );
+          }}
         >
+          <OutlinePanel
+            outline={outline}
+            unavailable={reportCard?.unsupportedVersion != null}
+            bodyOnly={hasReportCard && reportCard?.blocks == null}
+          />
+        </RailSection>
+        <RailSection
+          title="Backlinks"
+          count={backlinksQ.data?.backlinks.length ?? 0}
+          collapsed={backlinksCollapsed}
+          onCollapsedChange={(collapsed) => {
+            setBacklinksCollapsed(collapsed);
+            writeCollapsedState(
+              REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY,
+              collapsed,
+            );
+          }}
+        >
+          <BacklinksPanel
+            waveId={wave.id}
+            hasRenderedBlocks={reportCard?.blocks != null}
+            page={backlinksQ.data}
+            error={backlinksQ.error}
+          />
+        </RailSection>
+        <RailSection
+          title="Files"
+          collapsed={filesCollapsed}
+          onCollapsedChange={(collapsed) => {
+            setFilesCollapsed(collapsed);
+            writeCollapsedState(REPORT_FILES_COLLAPSED_STORAGE_KEY, collapsed);
+          }}
+          actions={
+            <button
+              type="button"
+              className="report-rail-toggle report-rail-toggle--show-all"
+              aria-pressed={showHiddenFiles}
+              onClick={toggleHiddenFiles}
+            >
+              Show all
+            </button>
+          }
+        >
+          <div className="report-rail-files">
+            <WaveFileTree
+              waveId={wave.id}
+              selectedPath={selectedFilePath}
+              onSelectedPathChange={(path) => {
+                setSelectedFilePath(path ?? 'report.md');
+              }}
+              ariaLabel="Wave files"
+              enabled={!filesCollapsed}
+              showHidden={showHiddenFiles}
+              fallback={
+                <div className="report-rail-placeholder">No files yet.</div>
+              }
+            />
+          </div>
+        </RailSection>
+      </aside>
+      <button
+        type="button"
+        ref={railCollapseButtonRef}
+        className="report-rail-close"
+        hidden={reportRailCollapsed}
+        onClick={toggleReportRailCollapsed}
+        aria-expanded="true"
+        aria-label="Collapse report rail"
+        aria-controls="report-context-rail"
+        title="Collapse report rail"
+      >
+        <ChevronIcon />
+      </button>
+      <section className="report-center" aria-label="Report">
+        <button
+          type="button"
+          ref={railOpenButtonRef}
+          className="report-rail-open"
+          hidden={!reportRailCollapsed}
+          onClick={toggleReportRailCollapsed}
+          aria-expanded="false"
+          aria-label="Expand report rail"
+          aria-controls="report-context-rail"
+          title="Expand report rail"
+        >
+          <ChevronIcon />
+        </button>
+        <div
+          className="report-document-scroll"
+          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- scrollable report document must be keyboard-focusable.
+          tabIndex={0}
+          aria-label="Report document"
+        >
+          <ReportActivityPanel
+            specCardId={specCardId}
+            entries={chatHistory.entries}
+            initialLoading={chatHistory.initialLoading}
+            hasEarlier={chatHistory.hasEarlier}
+            working={run.working}
+            hidden={conversationOpen}
+            onSelect={openConversationAt}
+            onOpen={openConversation}
+          />
           <article className="report-doc">
             {reportSlots.length > 1 && (
               <DuplicateReportBanner count={reportSlots.length} />
@@ -495,73 +931,42 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             reportCard?.unsupportedVersion != null ? (
               <UnsupportedReportVersionState />
             ) : hasReportCard || selectedFilePath !== 'report.md' ? (
-              <ReportContent
-                waveId={wave.id}
-                path={selectedFilePath}
-                reportCardBody={reportCard?.body}
-                reportCardBlocks={reportCard?.blocks}
-              />
+              <div className="report-body">
+                <ReportContent
+                  waveId={wave.id}
+                  path={selectedFilePath}
+                  reportCardBody={reportCard?.body}
+                  reportCardBlocks={reportCard?.blocks}
+                />
+              </div>
             ) : (
               <ReportEmptyState />
             )}
-            {selectedFilePath === 'report.md' && (
-              <BacklinksPanel
-                waveId={wave.id}
-                hasRenderedBlocks={reportCard?.blocks != null}
-                page={backlinksQ.data}
-                error={backlinksQ.error}
-              />
-            )}
           </article>
-        </SpecConversation>
+        </div>
       </section>
       <aside
         className={
-          'report-rail' + (reportRailCollapsed ? ' report-rail--collapsed' : '')
+          'report-conversation-drawer' +
+          (conversationOpen ? ' report-conversation-drawer--open' : '')
         }
-        aria-label="Report context"
+        aria-label="Conversation drawer"
       >
-        <header className="report-rail-head report-rail-head--top">
-          {!reportRailCollapsed && <span>Files</span>}
-          <div className="report-rail-actions">
-            {!reportRailCollapsed && (
-              <button
-                type="button"
-                className="report-rail-toggle report-rail-toggle--show-all"
-                aria-pressed={showHiddenFiles}
-                onClick={toggleHiddenFiles}
-              >
-                Show all
-              </button>
-            )}
-            {railCollapseButton}
-          </div>
-        </header>
-        {!reportRailCollapsed && (
-          <>
-            <section className="report-rail-section" aria-label="Files">
-              <div className="report-rail-files">
-                <WaveFileTree
-                  waveId={wave.id}
-                  selectedPath={selectedFilePath}
-                  onSelectedPathChange={(path) => {
-                    setSelectedFilePath(path ?? 'report.md');
-                    // Selecting a file always shows the document view.
-                    setView('report');
-                  }}
-                  ariaLabel="Wave files"
-                  showHidden={showHiddenFiles}
-                  fallback={
-                    <div className="report-rail-placeholder">No files yet.</div>
-                  }
-                />
-              </div>
-            </section>
-            <section className="report-rail-section" aria-label="Event line">
-              <EventLinePanel entries={eventEntries} live={live} />
-            </section>
-          </>
-        )}
+        <div
+          id="report-conversation-panel"
+          className="report-conversation-drawer-panel"
+          aria-hidden={!conversationOpen}
+        >
+          <SpecConversation
+            specCardId={specCardId}
+            drawerOpen={conversationOpen}
+            run={run}
+            chatHistory={chatHistory}
+            targetEntryId={conversationTargetEntryId}
+            onTargetConsumed={consumeConversationTarget}
+            onClose={toggleConversationCollapsed}
+          />
+        </div>
       </aside>
     </div>
   );

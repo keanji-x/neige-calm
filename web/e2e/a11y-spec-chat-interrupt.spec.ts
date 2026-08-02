@@ -42,8 +42,9 @@ test.describe('spec chat interrupt UI', () => {
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec interrupt test' }),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Conversation', exact: true }).click();
-    await expect(page.getByLabel('Conversation', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
+      .toHaveClass(/report-conversation-drawer--open/);
     await expect(page.locator('.report-convo-state')).toHaveText('Turn Running');
   }
 

@@ -29,15 +29,11 @@ vi.mock('../../api/queries', () => ({
     error: null,
     isLoading: false,
   })),
+  useWavesByCoveQuery: vi.fn(() => ({ data: [] })),
 }));
 
 vi.mock('../../cards/useCardOverlay', () => ({
   useCardOverlay: vi.fn(() => null),
-}));
-
-vi.mock('../useEventLineEntries', () => ({
-  useAnyRuntimeLive: vi.fn(() => false),
-  useEventLineEntries: vi.fn(() => []),
 }));
 
 describe('report links with the real router', () => {

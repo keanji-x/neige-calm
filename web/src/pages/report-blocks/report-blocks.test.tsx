@@ -1,5 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
 import { ReportAppBlock } from './app';
@@ -133,6 +134,29 @@ function candleSeriesRecords() {
 
 beforeEach(() => {
   lw.reset();
+});
+
+describe('prose block', () => {
+  it('stamps deterministic ids onto H1 and H2 in document order', () => {
+    render(
+      <StrictMode>
+        <ReportBlockView
+          block={{
+            id: 'b_multi',
+            kind: 'prose',
+            rev: 1,
+            payload: { markdown: '# First\n\nBody\n\n## Second\n\n# Third' },
+          }}
+        />
+      </StrictMode>,
+    );
+
+    expect(screen.getAllByRole('heading').map((heading) => heading.id)).toEqual([
+      'b_multi-h1',
+      'b_multi-h2',
+      'b_multi-h3',
+    ]);
+  });
 });
 
 describe('chart.candles block', () => {

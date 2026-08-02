@@ -38,8 +38,9 @@ test.describe('spec chat input path', () => {
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec input test' }),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Conversation', exact: true }).click();
-    await expect(page.getByLabel('Conversation', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open conversation' }).click();
+    await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
+      .toHaveClass(/report-conversation-drawer--open/);
 
     const chip = page.locator('.report-convo-state');
     await expect(chip).toHaveText('Idle');
@@ -78,7 +79,12 @@ test.describe('spec chat input path', () => {
     // The FE-local echo entry lands in the transcript (queued until the
     // harness would emit the real item — which the paused dev harness
     // never does).
-    await expect(page.getByText('Summarize the open risks')).toBeVisible();
+    const conversationDrawer = page.getByRole('complementary', {
+      name: 'Conversation drawer',
+    });
+    await expect(
+      conversationDrawer.getByText('Summarize the open risks'),
+    ).toBeVisible();
     await expect(page.getByText(SPEC_CHAT_COPY.queuedEcho)).toBeVisible();
     // No error surface.
     await expect(page.getByRole('alert')).toHaveCount(0);

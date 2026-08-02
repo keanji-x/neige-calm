@@ -16,6 +16,8 @@ import {
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
+import { useSpecChatHistory } from './useSpecChatHistory';
+import { useSpecCurrentRun } from './useSpecCurrentRun';
 
 vi.mock('../api/queries', () => ({
   useOverlaysByKindQuery: vi.fn(),
@@ -23,6 +25,15 @@ vi.mock('../api/queries', () => ({
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
 }));
+
+vi.mock('./useSpecChatHistory', () => ({
+  useSpecChatHistory: vi.fn(),
+}));
+
+vi.mock('./useSpecCurrentRun', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./useSpecCurrentRun')>();
+  return { ...actual, useSpecCurrentRun: vi.fn() };
+});
 
 vi.mock('@tanstack/react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@tanstack/react-router')>();
@@ -96,8 +107,17 @@ const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
 const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
+const mockUseSpecChatHistory = vi.mocked(useSpecChatHistory);
+const mockUseSpecCurrentRun = vi.mocked(useSpecCurrentRun);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
+const REPORT_OUTLINE_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:outline:collapsed';
+const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:backlinks:collapsed';
+const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
+const REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY =
+  'calm:report-conversation:collapsed';
 
 function makeWave(overrides: Partial<Wave> = {}): Wave {
   return {
@@ -193,6 +213,7 @@ function mockWaveFileLists(lists: Record<string, WaveFsEntry[]>) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   delete (Element.prototype as Partial<Element>).scrollIntoView;
   window.localStorage.clear();
   window.history.replaceState(null, '', window.location.pathname);
@@ -200,6 +221,34 @@ afterEach(() => {
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+    mockUseSpecCurrentRun.mockReturnValue({
+      cardId: 'card_spec_1',
+      rawState: 'Idle',
+      fsm: 'Idle',
+      phase: 'idle',
+      working: false,
+      stopping: false,
+      latestTool: { toolLabel: null, toolStatus: null },
+      resetPending: false,
+      resetError: null,
+      reset: vi.fn(async () => {}),
+      submit: vi.fn(async () => {}),
+      submitPending: false,
+      submitError: null,
+      submitDormant: false,
+      stop: vi.fn(async () => false),
+      stopPending: false,
+      stopError: null,
+    });
     mockUseWaveBacklinksQuery.mockReturnValue({
       data: { backlinks: [], truncated: false, skipped_sources: 0 },
       error: null,
@@ -266,8 +315,8 @@ describe('WaveReportPage', () => {
     );
   });
 
-  it('renders the wave title and markdown body for one report card', () => {
-    render(
+  it('renders the report in its own focusable scroll root', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
         cards={[reportSlot('The **answer** is ready.')]}
@@ -278,6 +327,248 @@ describe('WaveReportPage', () => {
       screen.getByRole('heading', { level: 1, name: 'Spec wave' }),
     ).toBeInTheDocument();
     expect(screen.getByText('answer').tagName).toBe('STRONG');
+    const scrollRoot = screen.getByLabelText('Report document');
+    expect(scrollRoot).toHaveClass('report-document-scroll');
+    expect(scrollRoot).toHaveAttribute('tabindex', '0');
+    expect(scrollRoot.parentElement).toHaveClass('report-center');
+    expect(container.querySelector('.report-doc')?.parentElement).toBe(
+      scrollRoot,
+    );
+  });
+
+  it('shows only user turns newest-first and opens the drawer at a selected turn', async () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [
+        { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
+        { id: 2, atMs: 2, kind: 'agent', text: 'Agent reply' },
+        { id: 3, atMs: 3, kind: 'system', text: 'System note' },
+        { id: 4, atMs: 4, kind: 'user', text: 'New instruction' },
+      ],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    expect(
+      within(panel).getAllByRole('button').map((row) => row.textContent),
+    ).toEqual(['New instruction', 'Old instruction']);
+    expect(within(panel).queryByText('Agent reply')).not.toBeInTheDocument();
+    expect(within(panel).queryByText('System note')).not.toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Old instruction' }));
+    expect(screen.getByLabelText('Conversation drawer')).toHaveClass(
+      'report-conversation-drawer--open',
+    );
+    expect(panel).toHaveClass('hide');
+    expect(panel).toHaveAttribute('aria-hidden', 'true');
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New instruction' }));
+    await new Promise((resolve) => window.setTimeout(resolve, 60));
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not repeat target scrolling when reopened without a target', async () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [
+        { id: 1, atMs: 1, kind: 'user', text: 'Pinned instruction' },
+      ],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    const { rerender } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Pinned instruction' }));
+    await waitFor(() => {
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open conversation' }));
+    await new Promise((resolve) => window.setTimeout(resolve, 60));
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim the conversation is empty before initial history loads', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [],
+      initialLoading: true,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    expect(screen.getByText('Loading conversation activity…'))
+      .toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open conversation' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('caps activity focus stops and discloses omitted earlier turns', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: Array.from({ length: 15 }, (_, index) => ({
+        id: index + 1,
+        atMs: index + 1,
+        kind: 'user' as const,
+        text: `Instruction ${index + 1}`,
+      })),
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    expect(within(panel).getAllByRole('button')).toHaveLength(12);
+    expect(within(panel).getByText('3 earlier turns')).toBeInTheDocument();
+    expect(within(panel).queryByText('Instruction 3')).not.toBeInTheDocument();
+  });
+
+  it('does not claim an exact omitted count while earlier pages remain', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: Array.from({ length: 15 }, (_, index) => ({
+        id: index + 1,
+        atMs: index + 1,
+        kind: 'user' as const,
+        text: `Instruction ${index + 1}`,
+      })),
+      initialLoading: false,
+      hasEarlier: true,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    expect(within(panel).getAllByRole('button')).toHaveLength(12);
+    expect(within(panel).getByText('At least 3 earlier turns'))
+      .toBeInTheDocument();
+    expect(within(panel).queryByText('3 earlier turns')).not.toBeInTheDocument();
+  });
+
+  it('distinguishes both activity empty states', () => {
+    const { rerender } = render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Report')]} />,
+    );
+    expect(screen.getByText('This wave has no Spec Agent.')).toBeInTheDocument();
+
+    rerender(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Open conversation' }))
+      .toBeInTheDocument();
+    expect(screen.queryByText('This wave has no Spec Agent.'))
+      .not.toBeInTheDocument();
+  });
+
+  it('puts the working indicator on only the newest user turn', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [
+        { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
+        { id: 2, atMs: 2, kind: 'user', text: 'New instruction' },
+      ],
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+    mockUseSpecCurrentRun.mockReturnValue({
+      ...mockUseSpecCurrentRun(undefined),
+      working: true,
+      fsm: 'Working',
+      phase: 'turn_running',
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    const rows = within(panel).getAllByRole('button');
+    expect(within(rows[0]).getByLabelText('Spec Agent is working'))
+      .toHaveClass('busy');
+    expect(within(rows[1]).queryByLabelText('Spec Agent is working'))
+      .not.toBeInTheDocument();
   });
 
   it('renders derived prose blocks when present', () => {
@@ -304,6 +595,158 @@ describe('WaveReportPage', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('body').tagName).toBe('STRONG');
     expect(screen.queryByText('stale body')).not.toBeInTheDocument();
+  });
+
+  it('numbers a three-prose-block report as 01/02/03 in one body scope', () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_1',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## First' },
+              },
+              {
+                id: 'b_2',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## Second' },
+              },
+              {
+                id: 'b_3',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## Third' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(within(outline).getByRole('link', { name: '01 First' }))
+      .toBeInTheDocument();
+    expect(within(outline).getByRole('link', { name: '02 Second' }))
+      .toBeInTheDocument();
+    expect(within(outline).getByRole('link', { name: '03 Third' }))
+      .toBeInTheDocument();
+    const reportBody = container.querySelector('.report-body');
+    expect(reportBody?.querySelectorAll(':scope > .report-prose')).toHaveLength(3);
+
+    const first = within(outline).getByRole('link', { name: '01 First' });
+    fireEvent.click(first);
+    fireEvent.click(first);
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves heading text and spaces around inline markdown', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot(
+          '## Latency `p99` **regression** via [R8](https://example.com/r8)',
+        )]}
+      />,
+    );
+
+    const heading = screen.getByRole('heading', {
+      level: 2,
+      name: 'Latency p99 regression via R8',
+    });
+    expect(heading.textContent).toBe('Latency p99 regression via R8');
+    expect(within(heading).getByText('p99').tagName).toBe('CODE');
+    expect(within(heading).getByText('regression').tagName).toBe('STRONG');
+    expect(within(heading).getByRole('link', { name: 'R8' })).toBeInTheDocument();
+  });
+
+  it('scrolls a multi-H2 outline link to its matching heading', async () => {
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: () => {},
+    });
+    const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [{
+              id: 'b_multi',
+              kind: 'prose',
+              rev: 1,
+              payload: { markdown: '## First\n\nFirst body\n\n## Second' },
+            }],
+          }),
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: '02 Second' }));
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView.mock.contexts[0]).toBe(
+      document.getElementById('b_multi-h2'),
+    );
+    await waitFor(() => {
+      expect(document.getElementById('b_multi'))
+        .toHaveClass('report-block--highlight');
+    });
+  });
+
+  it('shows a leading chart as an unnumbered top-level outline entry', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[
+          reportSlot('stale body', {
+            blocks: [
+              {
+                id: 'b_chart',
+                kind: 'chart.candles',
+                rev: 1,
+                payload: { symbol: '0700.HK', candles: [] },
+              },
+              {
+                id: 'b_section',
+                kind: 'prose',
+                rev: 1,
+                payload: { markdown: '## Market' },
+              },
+            ],
+          }),
+        ]}
+      />,
+    );
+
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(within(outline).getByRole('link', { name: '0700.HK' }))
+      .toHaveAttribute('href', '#b_chart');
+    expect(within(outline).getByRole('link', { name: '01 Market' }))
+      .toHaveAttribute('href', '#b_section-h1');
+  });
+
+  it('explains the body-only outline downgrade without inert links', () => {
+    render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('## Flat heading')]} />,
+    );
+
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(
+      within(outline).getByText(
+        'Outline navigation requires structured report blocks.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(outline).queryByRole('link')).toBeNull();
   });
 
   it('renders mixed blocks (prose + chart + table + prose) in order', async () => {
@@ -355,7 +798,10 @@ describe('WaveReportPage', () => {
     );
 
     // Chart mounts through React.lazy — wait for its figure to appear.
-    expect(await screen.findByText('0700.HK')).toBeInTheDocument();
+    const reportBody = container.querySelector('.report-body');
+    expect(reportBody).not.toBeNull();
+    expect(await within(reportBody as HTMLElement).findByText('0700.HK'))
+      .toBeInTheDocument();
     expect(screen.getByText('Opening paragraph')).toBeInTheDocument();
     expect(screen.getByText('Closing paragraph')).toBeInTheDocument();
     expect(screen.getByRole('table')).toBeInTheDocument();
@@ -408,6 +854,11 @@ describe('WaveReportPage', () => {
     );
 
     expect(screen.getByRole('alert')).toHaveTextContent('版本不支持，请刷新');
+    const outline = screen.getByRole('region', { name: 'Outline' });
+    expect(
+      within(outline).getByText('Outline unavailable for this report version.'),
+    ).toBeInTheDocument();
+    expect(within(outline).queryByRole('link')).toBeNull();
   });
 
   it('shows the duplicate banner and renders the lowest-sort report', () => {
@@ -525,6 +976,11 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
 
     const showAll = screen.getByRole('button', { name: 'Show all' });
+    const fileTree = screen.getByRole('tree', { name: 'Wave files' });
+    expect(
+      showAll.compareDocumentPosition(fileTree) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
     expect(showAll).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(showAll);
@@ -546,7 +1002,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByRole('treeitem', { name: /events\.json/ })).toBeTruthy();
   });
 
-  it('collapses and expands the Files rail from the rail toggle', () => {
+  it('collapses and expands the report rail from its edge controls', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -559,7 +1015,6 @@ describe('WaveReportPage', () => {
       name: 'Collapse report rail',
     });
 
-    expect(collapseToggle).toHaveAttribute('aria-expanded', 'true');
     expect(rail).not.toHaveClass('report-rail--collapsed');
     expect(screen.getByRole('tree', { name: 'Wave files' })).toBeInTheDocument();
 
@@ -568,6 +1023,7 @@ describe('WaveReportPage', () => {
     const expandToggle = screen.getByRole('button', {
       name: 'Expand report rail',
     });
+    expect(expandToggle).toHaveAttribute('aria-controls', 'report-context-rail');
     expect(expandToggle).toHaveAttribute('aria-expanded', 'false');
     expect(rail).toHaveClass('report-rail--collapsed');
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
@@ -584,7 +1040,7 @@ describe('WaveReportPage', () => {
       .toBe('false');
   });
 
-  it('keeps keyboard focus on the chevron while toggling the Files rail', () => {
+  it('switches focus between the mirrored rail edge controls', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -603,7 +1059,6 @@ describe('WaveReportPage', () => {
     const expandToggle = screen.getByRole('button', {
       name: 'Expand report rail',
     });
-    expect(expandToggle).toBe(toggle);
     expect(document.activeElement).toBe(expandToggle);
 
     fireEvent.click(expandToggle);
@@ -611,7 +1066,6 @@ describe('WaveReportPage', () => {
     const collapseToggle = screen.getByRole('button', {
       name: 'Collapse report rail',
     });
-    expect(collapseToggle).toBe(toggle);
     expect(document.activeElement).toBe(collapseToggle);
   });
 
@@ -627,26 +1081,87 @@ describe('WaveReportPage', () => {
     render(<WaveReportPage {...props} />);
 
     expect(screen.getByRole('button', { name: 'Expand report rail' }))
-      .toHaveAttribute('aria-expanded', 'false');
+      .toHaveAttribute('aria-controls', 'report-context-rail');
     expect(screen.getByLabelText('Report context'))
       .toHaveClass('report-rail--collapsed');
     expect(screen.queryByRole('tree', { name: 'Wave files' })).toBeNull();
   });
 
-  it('renders a real Event line panel instead of the PR-E placeholder', () => {
+  it('persists each collapsible rail section independently', () => {
+    const props = {
+      wave: makeWave(),
+      cards: [reportSlot('Rail body')],
+    };
+    const { unmount } = render(<WaveReportPage {...props} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Outline' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Backlinks' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Files' }));
+
+    expect(screen.queryByRole('button', { name: 'Show all' })).toBeNull();
+    expect(mockUseWaveFileList).toHaveBeenCalledWith(
+      'wave_1',
+      '',
+      { enabled: false },
+    );
+
+    expect(
+      window.localStorage.getItem(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
+    ).toBe('true');
+    expect(
+      window.localStorage.getItem(REPORT_OUTLINE_COLLAPSED_STORAGE_KEY),
+    ).toBe('true');
+    expect(
+      window.localStorage.getItem(REPORT_FILES_COLLAPSED_STORAGE_KEY),
+    ).toBe('true');
+
+    unmount();
+    render(<WaveReportPage {...props} />);
+    expect(screen.getByRole('button', { name: 'Outline' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Backlinks' }))
+      .toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Files' }))
+      .toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('defaults the report rail to collapsed at the narrow-screen breakpoint', () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn(() => ({ matches: true })) as unknown as typeof window.matchMedia,
+    );
+
     render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot('Narrow body')]} />,
+    );
+
+    expect(screen.getByLabelText('Report context'))
+      .toHaveClass('report-rail--collapsed');
+    expect(screen.getByRole('button', { name: 'Expand report rail' }))
+      .toHaveAttribute('aria-controls', 'report-context-rail');
+  });
+
+  it('renders the three rail sections in order with Event line removed', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
-        cards={[reportSlot('Event rail body')]}
+        cards={[reportSlot('Rail body')]}
       />,
     );
 
-    const eventLine = screen.getByRole('region', { name: 'Event line' });
-    expect(within(eventLine).getByText('Event line')).toBeInTheDocument();
-    expect(within(eventLine).getByText('Nothing yet.')).toBeInTheDocument();
+    const rail = screen.getByLabelText('Report context');
     expect(
-      screen.queryByText('Activity timeline appears here. (Wired in PR-E.)'),
-    ).not.toBeInTheDocument();
+      Array.from(rail.querySelectorAll(':scope > section')).map((section) =>
+        section.getAttribute('aria-label'),
+      ),
+    ).toEqual(['Outline', 'Backlinks', 'Files']);
+    expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
+    const page = container.querySelector('.report-page');
+    expect(page?.firstElementChild).toBe(rail);
+    expect(page?.children[1]).toHaveClass('report-rail-close');
+    expect(page?.children[2]).toHaveClass('report-center');
+    expect(page?.children[2]?.firstElementChild).toHaveClass('report-rail-open');
+    expect(page?.lastElementChild).toHaveClass('report-conversation-drawer');
   });
 
   it('defaults the main column to report.md content', () => {
@@ -1581,24 +2096,25 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('fallback').tagName).toBe('STRONG');
   });
 
-  it('renders the conversation tab and input line when a spec card exists', () => {
-    render(
+  it('renders the conversation drawer closed by default with the report beside it', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
         cards={[specSlot(), reportSlot('Report with chat')]}
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Conversation' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
+    expect(screen.getByRole('button', { name: 'Open conversation' }))
+      .toBeEnabled();
+    expect(container.querySelector('.report-page')).not.toHaveClass(
+      'report-page--conversation-open',
     );
+    expect(screen.getByText('Report with chat')).toBeInTheDocument();
     expect(screen.getByLabelText('Ask the Spec Agent')).toBeInTheDocument();
   });
 
-  it('switches the column to the conversation document from the tab', () => {
-    render(
+  it('opens the drawer without unmounting the report document', () => {
+    const { container } = render(
       <WaveReportPage
         wave={makeWave()}
         cards={[specSlot(), reportSlot('Report with chat')]}
@@ -1607,19 +2123,18 @@ describe('WaveReportPage', () => {
 
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' }),
+    );
 
-    expect(
-      screen.getByLabelText('Conversation'),
-    ).toBeInTheDocument();
-    expect(screen.queryByText('Report with chat')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Report' }));
-
+    expect(container.querySelector('.report-page')).toHaveClass(
+      'report-page--conversation-open',
+    );
+    expect(screen.getByLabelText('Conversation')).toBeInTheDocument();
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
   });
 
-  it('disables the conversation tab and hides the input when no spec card exists', () => {
+  it('does not offer a meaningless drawer entry without a spec card', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -1627,44 +2142,81 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Conversation' })).toBeDisabled();
-    expect(
-      screen.queryByLabelText('Ask the Spec Agent'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open conversation' }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText('This wave has no Spec Agent.'))
+      .toBeInTheDocument();
   });
 
-  it('stays on the report view when the spec card disappears and reappears', () => {
-    const wave = makeWave();
-    const { rerender } = render(
+  it('shows the unavailable empty drawer without a composer when persisted open', () => {
+    window.localStorage.setItem(
+      REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY,
+      'false',
+    );
+
+    render(
       <WaveReportPage
-        wave={wave}
+        wave={makeWave()}
+        cards={[reportSlot('Report without spec')]}
+      />,
+    );
+
+    expect(screen.getByLabelText('Conversation drawer')).toHaveClass(
+      'report-conversation-drawer--open',
+    );
+    expect(screen.getByText('Spec Agent is unavailable for this wave.'))
+      .toBeInTheDocument();
+    expect(screen.queryByLabelText('Ask the Spec Agent'))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open conversation' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('keeps the draft alive when the drawer closes and reopens', () => {
+    render(
+      <WaveReportPage
+        wave={makeWave()}
         cards={[specSlot(), reportSlot('Report with chat')]}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Conversation' }));
-    expect(screen.getByLabelText('Conversation')).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' }),
+    );
+    const draft = screen.getByLabelText('Ask the Spec Agent');
+    fireEvent.change(draft, { target: { value: 'Persistent draft' } });
 
-    // Spec card disappears: the column falls back to the report document.
-    rerender(
-      <WaveReportPage wave={wave} cards={[reportSlot('Report with chat')]} />,
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Close conversation' }),
     );
-    expect(screen.getByText('Report with chat')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Ask the Spec Agent')).toBe(draft);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' }),
+    );
+    expect(screen.getByLabelText('Ask the Spec Agent')).toHaveValue(
+      'Persistent draft',
+    );
+  });
 
-    // Reappearance must not snap back to the stale conversation view.
-    rerender(
-      <WaveReportPage
-        wave={wave}
-        cards={[specSlot(), reportSlot('Report with chat')]}
-      />,
+  it('persists the drawer state across remounts', () => {
+    const props = {
+      wave: makeWave(),
+      cards: [specSlot(), reportSlot('Report with chat')],
+    };
+    const first = render(<WaveReportPage {...props} />);
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Open conversation' }),
     );
-    expect(screen.getByText('Report with chat')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Conversation')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Report' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    expect(
+      window.localStorage.getItem(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY),
+    ).toBe('false');
+
+    first.unmount();
+    render(<WaveReportPage {...props} />);
+    expect(
+      screen.getByRole('button', { name: 'Close conversation' }),
+    ).toBeEnabled();
   });
 
   it('renders backlinks grouped by source wave with source block anchors', () => {
@@ -1676,18 +2228,39 @@ describe('WaveReportPage', () => {
           src_block_id: 'b_a1',
           dst_block_id: 'b_here',
           label: 'First mention',
+          quote: {
+            before: 'context before ',
+            label: 'First mention',
+            after: ' context after',
+            head_elided: true,
+            tail_elided: true,
+          },
           updated_at: 1,
         }, {
           src_wave_id: 'wave_a',
           src_wave_title: 'Alpha',
           src_block_id: 'b_a2',
-          label: 'Second mention',
+          label: '',
+          quote: {
+            before: 'Empty label context',
+            label: '',
+            after: ' remains readable',
+            head_elided: false,
+            tail_elided: false,
+          },
           updated_at: 2,
         }, {
           src_wave_id: 'wave_b',
           src_wave_title: 'Beta',
           src_block_id: 'b_b1',
           label: 'Another source',
+          quote: {
+            before: '',
+            label: 'Another source',
+            after: '',
+            head_elided: false,
+            tail_elided: false,
+          },
           updated_at: 3,
         }],
         truncated: true,
@@ -1715,7 +2288,7 @@ describe('WaveReportPage', () => {
     );
 
     const panel = screen.getByRole('region', { name: 'Backlinks' });
-    expect(within(panel).getAllByText('Alpha')).toHaveLength(1);
+    expect(within(panel).getAllByText('Alpha')).toHaveLength(2);
     expect(within(panel).getByText('Beta')).toBeInTheDocument();
     expect(
       within(panel).getByText('Some backlinks are not shown.'),
@@ -1726,11 +2299,16 @@ describe('WaveReportPage', () => {
       ),
     ).toBeInTheDocument();
     expect(within(panel).getByText(/cites block b_here/)).toBeInTheDocument();
-    expect(within(panel).getByRole('link', { name: 'First mention' })).toHaveAttribute(
-      'href',
-      '/wave/wave_a#b_a1',
-    );
-    expect(within(panel).getByRole('link', { name: 'Another source' })).toHaveAttribute(
+    const quotedLink = within(panel).getByRole('link', {
+      name: 'Alpha …context before First mention context after…',
+    });
+    expect(quotedLink).toHaveAttribute('href', '/wave/wave_a#b_a1');
+    expect(within(quotedLink).getByText('First mention').tagName).toBe('B');
+    const emptyLabelLink = within(panel).getByRole('link', {
+      name: 'Alpha Empty label context remains readable',
+    });
+    expect(emptyLabelLink.querySelector('b')).toBeNull();
+    expect(within(panel).getByRole('link', { name: 'Beta Another source' })).toHaveAttribute(
       'href',
       '/wave/wave_b#b_b1',
     );
@@ -1777,7 +2355,8 @@ describe('WaveReportPage', () => {
     render(
       <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
     );
-    expect(screen.getByRole('link', { name: 'Legacy target' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Alpha Legacy target' }))
+      .toBeVisible();
     expect(screen.queryByText(/cites block b_here/)).toBeNull();
   });
 
@@ -1873,11 +2452,12 @@ describe('WaveReportPage', () => {
     expect(scrollIntoView).toHaveBeenCalledTimes(1);
   });
 
-  it('renders no backlinks panel when the result is empty', () => {
+  it('keeps the backlinks section visible with an empty state', () => {
     render(
       <WaveReportPage wave={makeWave()} cards={[reportSlot('Report body')]} />,
     );
-    expect(screen.queryByRole('region', { name: 'Backlinks' })).toBeNull();
+    const backlinks = screen.getByRole('region', { name: 'Backlinks' });
+    expect(within(backlinks).getByText('No backlinks yet.')).toBeInTheDocument();
   });
 
   it('renders normally when the hash names a missing block', () => {
