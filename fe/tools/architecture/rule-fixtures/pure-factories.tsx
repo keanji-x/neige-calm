@@ -1,16 +1,9 @@
 import { createElement, forwardRef, lazy, memo } from 'react';
-import { createRouter } from '@tanstack/react-router';
 declare const Comp: () => null;
 declare const fn: () => null;
-declare const X: Record<string, unknown>;
 export const Memo = memo(Comp);
 export const Forward = forwardRef(fn);
 export const Lazy = lazy(() => import('./lazy-target'));
 export const Element = createElement('div');
 export const tag = Symbol('t');
-export const keys = Object.keys(X);
-export const values = Object.values(X);
-export const entries = Object.entries(X);
-export const object = Object.fromEntries([]);
 export const raw = String.raw`value`;
-export const router = createRouter({} as never);

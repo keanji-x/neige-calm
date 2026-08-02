@@ -60,6 +60,14 @@ export default tseslint.config(
     rules: { 'architecture/no-module-runtime-state': 'error' },
   },
   {
+    files: ['web/src/app/router.{ts,tsx}'],
+    rules: { 'architecture/no-module-runtime-state': ['error', { allowRouterFactories: ['createRouter'] }] },
+  },
+  {
+    files: ['web/src/app/routes/**/*.{ts,tsx}'],
+    rules: { 'architecture/no-module-runtime-state': ['error', { allowRouterFactories: ['createFileRoute'] }] },
+  },
+  {
     files: ['web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     ignores: createContextAllowlist,
     rules: { 'architecture/no-create-context-outside-allowlist': 'error' },

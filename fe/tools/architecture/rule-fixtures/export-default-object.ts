@@ -1,1 +1,1 @@
-export default { cache: new Map() };
+export default { specificMutableCache: new Map() };

@@ -1,1 +1,2 @@
-export class Registry { static current: Map<string, string>; static { Registry.current = new Map(); } }
+declare const holder: { current: Map<string, string> };
+export class Registry { static { holder.current = new Map(); } }

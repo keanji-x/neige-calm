@@ -1,1 +1,1 @@
-export class Registry { static current = new Set(); }
+export class Registry { static current = 0; }

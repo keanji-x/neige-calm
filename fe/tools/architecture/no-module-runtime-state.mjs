@@ -8,8 +8,12 @@
  *
  * Known escapes intentionally not proved: `const x = importedMutable`, a
  * getter returning `new Map`, mutation hidden inside an allowlisted factory,
- * computed property values/spreads, and shadowing an allowlisted global such
- * as `Symbol`. Closing those shapes needs type/data-flow analysis.
+ * computed property values/spreads, tagged templates such as gql templates, mutable
+ * regex literals such as `/a/g`, a namespace alias such as `const R2 = React;
+ * R2.useState()`, and shadowing an allowlisted global such as `Symbol`.
+ * `Intl.NumberFormat` and `TextEncoder` are possible narrow immutable-
+ * constructor candidates, but remain rejected until fixtures justify them.
+ * Closing the other shapes needs type/data-flow analysis.
  * Type-only declarations, functions, Zod schemas, React's immutable component
  * wrappers/context handles, and deeply verifiable frozen static data pass.
  * TypeScript enums are currently intentionally not rejected; their emitted
@@ -19,7 +23,7 @@
 // Empty by design today: Date and boxed primitives are mutable objects too.
 const immutableConstructors = new Set();
 const reactPureFactories = new Set(['memo', 'forwardRef', 'lazy', 'createElement', 'createContext']);
-const objectPureFactories = new Set(['keys', 'values', 'entries', 'fromEntries']);
+const freezableObjectFactories = new Set(['keys', 'values', 'entries', 'fromEntries']);
 
 /** @param {any} node */
 function unwrap(node) {
@@ -58,7 +62,6 @@ function isModuleEvaluationReachable(node) {
   for (let current = node.parent; current; current = current.parent) {
     if (isTypeOnlyDeclareModule(current)) return false;
     if (['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(current.type)) return false;
-    if (current.type === 'PropertyDefinition' && !current.static) return false;
     if (current.type === 'MethodDefinition') return false;
     if (current.type === 'Program') return true;
   }
@@ -80,11 +83,15 @@ function isSchemaCall(node, schemaBindings) {
 function isStaticData(node, allowContainer = false) {
   node = unwrap(node);
   if (!node) return true;
+  if (isFunction(node)) return true;
   if (['Literal', 'TemplateLiteral', 'Identifier'].includes(node.type)) return node.type !== 'Identifier' || ['undefined', 'NaN', 'Infinity'].includes(node.name);
   if (node.type === 'UnaryExpression') return ['-', '+', '!', '~', 'void', 'typeof'].includes(node.operator) && isStaticData(node.argument);
   if (isVerifiedFreeze(node)) return true;
   if (node.type === 'ArrayExpression') return allowContainer && node.elements.every((/** @type {any} */ element) => element?.type !== 'SpreadElement' && isStaticData(element));
   if (node.type === 'ObjectExpression') return allowContainer && node.properties.every((/** @type {any} */ property) => property.type === 'Property' && property.kind === 'init' && !property.computed && isStaticData(property.value));
+  if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' &&
+    node.callee.object.type === 'Identifier' && node.callee.object.name === 'Object' &&
+    freezableObjectFactories.has(memberName(node.callee))) return true;
   return false;
 }
 
@@ -96,20 +103,28 @@ function isVerifiedFreeze(node) {
     memberName(node.callee) === 'freeze' && node.arguments.length === 1 && isStaticData(node.arguments[0], true);
 }
 
-/** @param {any} node @param {{schemaBindings:Set<string>,reactBindings:Set<string>,reactObjects:Set<string>,routerBindings:Set<string>}} bindings */
+/** @param {any} node @param {{schemaBindings:Set<string>,reactBindings:Set<string>,reactObjects:Set<string>,routerBindings:Map<string,string>}} bindings */
 function isPureFactory(node, bindings) {
   node = unwrap(node);
   if (node?.type !== 'CallExpression') return false;
   const callee = unwrap(node.callee);
   if (callee.type === 'Identifier') {
-    return bindings.reactBindings.has(callee.name) ||
-      bindings.routerBindings.has(callee.name) || callee.name === 'Symbol';
+    return bindings.reactBindings.has(callee.name) || callee.name === 'Symbol';
   }
   if (callee.type !== 'MemberExpression') return false;
   const name = memberName(callee);
   return (callee.object.type === 'Identifier' && bindings.reactObjects.has(callee.object.name) && reactPureFactories.has(name)) ||
-    (callee.object.type === 'Identifier' && callee.object.name === 'Object' && objectPureFactories.has(name)) ||
     (callee.object.type === 'Identifier' && callee.object.name === 'String' && name === 'raw');
+}
+
+/** @param {any} node @param {Map<string,string>} routerBindings @param {Set<string>} allowed */
+function isAllowedRouterFactory(node, routerBindings, allowed) {
+  node = unwrap(node);
+  if (node?.type !== 'CallExpression') return false;
+  let callee = unwrap(node.callee);
+  while (callee?.type === 'CallExpression') callee = unwrap(callee.callee);
+  const factory = callee?.type === 'Identifier' ? routerBindings.get(callee.name) : undefined;
+  return factory !== undefined && allowed.has(factory);
 }
 
 /** @param {any} node @param {any} bindings @returns {boolean} */
@@ -131,19 +146,29 @@ function isMutableValue(node, bindings) {
 /** @type {import('eslint').Rule.RuleModule} */
 export const noModuleRuntimeState = {
   meta: {
-    type: 'problem', schema: [],
+    type: 'problem',
+    schema: [{ type: 'object', properties: { allowRouterFactories: { type: 'array', items: { enum: ['createRouter', 'createFileRoute'] }, uniqueItems: true } }, additionalProperties: false }],
     messages: {
       runtimeState: 'Module runtime state is forbidden: {{source}}',
       mutableArray: "Module-level mutable array; use Object.freeze({{source}} as const)",
+      mutableObject: 'Module-level mutable object; use Object.freeze({{source}}) and freeze every nested object/array',
+      incompleteFreeze: 'Object.freeze is shallow; freeze nested objects/arrays too: {{source}}',
+      freezableCall: 'Module factory result is mutable; use Object.freeze({{source}})',
     },
   },
   create(context) {
-    const bindings = { schemaBindings: new Set(), reactBindings: new Set(), reactObjects: new Set(), routerBindings: new Set() };
+    const bindings = { schemaBindings: new Set(), reactBindings: new Set(), reactObjects: new Set(), routerBindings: new Map() };
+    const allowedRouterFactories = new Set(context.options[0]?.allowRouterFactories ?? []);
     const report = (/** @type {any} */ node) => {
       const raw = node.type === 'VariableDeclarator' ? node.init : node;
       const value = unwrap(raw?.value ?? raw);
-      const array = value?.type === 'ArrayExpression';
-      context.report({ node, messageId: array ? 'mutableArray' : 'runtimeState', data: { source: context.sourceCode.getText(array ? value : node) } });
+      const array = value?.type === 'ArrayExpression' && node.type === 'VariableDeclarator' && node.id.type === 'Identifier';
+      const object = value?.type === 'ObjectExpression';
+      const incompleteFreeze = value?.type === 'CallExpression' && value.callee.type === 'MemberExpression' &&
+        value.callee.object.type === 'Identifier' && value.callee.object.name === 'Object' && memberName(value.callee) === 'freeze';
+      const freezableCall = value?.type === 'CallExpression' && value.callee.type === 'MemberExpression' &&
+        value.callee.object.type === 'Identifier' && value.callee.object.name === 'Object' && freezableObjectFactories.has(memberName(value.callee));
+      context.report({ node, messageId: array ? 'mutableArray' : object ? 'mutableObject' : incompleteFreeze ? 'incompleteFreeze' : freezableCall ? 'freezableCall' : 'runtimeState', data: { source: context.sourceCode.getText(array || object || incompleteFreeze || freezableCall ? value : node) } });
     };
     return {
       ImportDeclaration(/** @type {any} */ node) {
@@ -154,7 +179,7 @@ export const noModuleRuntimeState = {
             if (specifier.type === 'ImportSpecifier' && reactPureFactories.has(specifier.imported.name)) bindings.reactBindings.add(specifier.local.name);
             if (specifier.type === 'ImportNamespaceSpecifier' || specifier.type === 'ImportDefaultSpecifier') bindings.reactObjects.add(specifier.local.name);
           }
-          if (source === '@tanstack/react-router' && specifier.type === 'ImportSpecifier' && specifier.imported.name === 'createRouter') bindings.routerBindings.add(specifier.local.name);
+          if (source === '@tanstack/react-router' && specifier.type === 'ImportSpecifier' && ['createRouter', 'createFileRoute'].includes(specifier.imported.name)) bindings.routerBindings.set(specifier.local.name, specifier.imported.name);
         }
       },
       VariableDeclarator(/** @type {any} */ node) {
@@ -170,16 +195,34 @@ export const noModuleRuntimeState = {
       VariableDeclaration(/** @type {any} */ node) {
         if (!isModuleEvaluationReachable(node) || node.declare) return;
         if (node.kind === 'let' || node.kind === 'var') { report(node); return; }
-        for (const declaration of node.declarations) if (isMutableValue(declaration.init, bindings)) report(declaration);
+        for (const declaration of node.declarations) {
+          if (isAllowedRouterFactory(declaration.init, bindings.routerBindings, allowedRouterFactories)) continue;
+          if (isMutableValue(declaration.init, bindings)) report(declaration);
+        }
       },
       'PropertyDefinition[static=true]'(/** @type {any} */ node) {
-        if (isModuleEvaluationReachable(node) && isMutableValue(node.value, bindings)) report(node);
+        if (isModuleEvaluationReachable(node) && (!node.readonly || isMutableValue(node.value, bindings))) report(node);
+      },
+      'AccessorProperty[static=true]'(/** @type {any} */ node) {
+        if (isModuleEvaluationReachable(node) && (!node.readonly || isMutableValue(node.value, bindings))) report(node);
       },
       AssignmentExpression(/** @type {any} */ node) {
         if (isModuleEvaluationReachable(node) && isMutableValue(node.right, bindings)) report(node);
       },
       ExportDefaultDeclaration(/** @type {any} */ node) {
         if (!['ClassDeclaration', 'FunctionDeclaration'].includes(node.declaration.type) && isMutableValue(node.declaration, bindings)) report(node.declaration);
+      },
+      ExpressionStatement(/** @type {any} */ node) {
+        if (!isModuleEvaluationReachable(node)) return;
+        const expression = unwrap(node.expression);
+        if (expression?.type !== 'CallExpression') return;
+        const objectAssign = expression.callee.type === 'MemberExpression' && expression.callee.object.type === 'Identifier' &&
+          expression.callee.object.name === 'Object' && memberName(expression.callee) === 'assign';
+        if (objectAssign) {
+          for (const argument of expression.arguments) if (argument.type !== 'SpreadElement' && isMutableValue(argument, bindings)) report(argument);
+          return;
+        }
+        for (const argument of expression.arguments) if (argument.type !== 'SpreadElement' && isMutableValue(argument, bindings)) report(argument);
       },
       StaticBlock() {
         // Descendant declarations and assignments are checked by the shared reachability predicate.

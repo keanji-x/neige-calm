@@ -6,7 +6,8 @@
  * members, destructuring, and one local alias are covered with shadow checks.
  *
  * Intentionally not followed: aliases stored in object properties, aliases
- * returned from functions, or alias chains longer than one assignment.
+ * returned from functions, alias chains longer than one assignment, or even a
+ * one-hop alias of the React namespace (`const R2 = React; R2.useState()`).
  */
 const watched = new Set(['createContext', 'useState', 'useReducer']);
 
