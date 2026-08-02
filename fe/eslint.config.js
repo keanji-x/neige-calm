@@ -5,13 +5,15 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 import { builtinModules } from 'node:module';
 import tseslint from 'typescript-eslint';
+import { architecturePlugin } from './tools/architecture/plugin.mjs';
+import { createContextAllowlist, moduleRuntimeStateAllowlist } from './tools/architecture/allowlists.mjs';
 
 const typedFiles = ['**/*.{ts,tsx}'];
 const nodeBuiltinImports = [...new Set(builtinModules.map((name) => name.replace(/^node:/, '')))]
   .flatMap((name) => [name, `node:${name}`]);
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', '**/fixtures/**'] },
+  { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', '**/fixtures/**', 'tools/architecture/rule-fixtures/**'] },
   { linterOptions: { reportUnusedDisableDirectives: 'error' } },
   { files: ['**/*.{js,mjs,cjs,jsx,ts,tsx}'], ...js.configs.recommended },
   { files: ['tools/**/*.{js,mjs,cjs,ts}', '*.{js,mjs,cjs,ts}'], languageOptions: { globals: globals.node } },
@@ -25,14 +27,14 @@ export default tseslint.config(
   })),
   {
     files: ['**/*.{js,mjs,cjs,jsx,ts,tsx}'],
-    plugins: { 'eslint-comments': eslintComments, 'react-hooks': reactHooks },
+    plugins: { architecture: architecturePlugin, 'eslint-comments': eslintComments, 'react-hooks': reactHooks },
     rules: {
       'eslint-comments/require-description': ['error', { ignore: [] }],
       'no-restricted-imports': ['error', {
         paths: [{
           name: 'react',
           importNames: ['useReducer', 'useState'],
-          message: 'Import guarded state hooks from web/src/ui/state/public.ts.',
+          message: 'Import guarded state hooks from web/src/ui/state/public.ts so the Persistent<T> guard applies.',
         }],
         patterns: [
           { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
@@ -43,8 +45,36 @@ export default tseslint.config(
     },
   },
   {
+    files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}', 'web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
+    ignores: moduleRuntimeStateAllowlist,
+    rules: { 'architecture/no-module-runtime-state': 'error' },
+  },
+  {
+    files: ['web/src/app/router.{ts,tsx}'],
+    rules: { 'architecture/no-module-runtime-state': ['error', { allowRouterFactories: ['createRouter'] }] },
+  },
+  {
+    files: ['web/src/app/routes/**/*.{ts,tsx}'],
+    rules: { 'architecture/no-module-runtime-state': ['error', { allowRouterFactories: ['createFileRoute'] }] },
+  },
+  {
+    files: ['web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
+    ignores: createContextAllowlist,
+    rules: { 'architecture/no-create-context-outside-allowlist': 'error' },
+  },
+  {
+    files: ['**/*.test.{ts,tsx}', '**/*.contract.test.{ts,tsx}'],
+    rules: {
+      // Reason: test modules are outside the application dependency graph, and mock factories intentionally return mutable test doubles.
+      'architecture/no-module-runtime-state': 'off',
+    },
+  },
+  {
     files: ['web/src/ui/state/public.ts'],
     rules: {
+      // Reason: this is the sole controlled React-state hook outlet with the Persistent<T> guard.
+      'architecture/no-create-context-outside-allowlist': ['error', { allowReactStateHooks: true }],
+      // Reason: this outlet must import the original React hooks that its guarded wrappers forward to.
       'no-restricted-imports': ['error', {
         patterns: [
           { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
