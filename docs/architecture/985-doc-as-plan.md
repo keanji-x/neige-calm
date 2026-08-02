@@ -16,7 +16,23 @@ scheduler / gate 的现状事实源）、`docs/architecture/955-kernel-app-bound
 > `dispatcher/mod.rs`、`event.rs`、`role_gate.rs` 重度漂移；引用的**内容**经
 > r8 抽查（37 组约 150 处）确认在基线上逐字准确，漂移的是行号本身。
 
-> **r8b 修订状态（NEW，最新）：r8 定案经双通道复审后的更正。**
+> **r8c 修订状态（NEW，最新）：第三轮双通道对 r8b 修复本身的复审，已折叠。**
+> 三条成立的 BLOCKER 全部是"改得不够远 / 改出新洞"（逐条见 §14.6）：
+> **① 栅栏只覆盖单个文档** —— `doc_rev` 的作用域是单个报告，跨 wave 子节点的
+> TOCTOU 原样留着；已扩为「根块 + 闭包涉及的每个不同 wave 的 `doc_rev`」；
+> **② `released_by_user` 纳入哈希在默认 `auto-declare` 下是新误杀**
+> （该字段在那里无语义，而 `false → true` 完全可达）——已把
+> `ready`/`released_by_user` **移出哈希（9 纳入 / 8 排除）**，改用方向敏感的
+> **投影层撤回规则**，哈希因此保持为块内容的纯函数；
+> **③「瞬时 vs 确定性」在现有 `ResolveError` 上不可判定**（`Missing` 一变体承载
+> 两类、反序列化失败被 `.ok()?` 吞成"块不存在"）——拆变体 + 禁止字符串推断；
+> 并把**「瞬时失败不下判决」提升为全局规则**扫到 sweep 侧（同一 root cause 的
+> 另一面，今天已上线）。另新增 §5.3.1 末尾的**「断言的最终形式」**
+> （最终检出 / 启动前检出 / 误报侧分开陈述，例外从一个列到三个），
+> §11.2 补不变量 3c/3d/4d。**驳回 1 条**（"开门会破坏 boot 门"——把两个独立的
+> `AtomicBool` 当成了一个，附反证）。
+
+> **r8b 修订状态：r8 定案经双通道复审后的更正。**
 > 复审对 r8 自身找出 **2 个 BLOCKER + 若干 MAJOR**，均已折叠（逐条见 §14.5）：
 > ㉑ 初稿保留的"rev 相同 ⇒ 跳过哈希"短路**把 r1 已判定的两个漏报入口原样放了
 > 回来**（块 id 回收 + `saturating_add`），已删除——**恒比哈希**；
@@ -134,7 +150,7 @@ scheduler / gate 的现状事实源）、`docs/architecture/955-kernel-app-bound
 > 驳回 1 条建议的*补救手段*，逐条见 §14）。** r5 有四处修订**改变了设计方向**：
 > ⑮ **第三个维度：「有人看过之后，凭什么执行那个判决」——它此前是空的**
 >   （通道 A 本轮最重要的一条，BLOCKER-adjacent）。维度 ① 是"谁能改内容"
->   （枚举 + `content_hash`，§5.3.2 已关上），② 是"谁保证有人去看"
+>   （枚举 + `content_hash`，§5.3.2 **在纳入字段集上**已关上），② 是"谁保证有人去看"
 >   （r4 的 sweep 已关上）；③ 是**执行**，而它此前**没有任何持久载体**：
 >   没有列、没有派生查询；`TaskDispatched` 只在 claim 事务里发射
 >   （`scheduler/mod.rs:692`，全仓唯一发射点）而被 claim 的行**永不回到 `pending`**
@@ -1438,15 +1454,27 @@ r1–r7 的裁决是"哈希是整个 canonical fence 的，所以改 `priority` 
 
 裁决（即 §10 为这条预留的"什么能推翻它"的兑现，**在切片 3b′ 落地，不等实测**）：
 
-> **根块（深度 0）的 `content_hash` 只对以下 **11** 个字段的 canonical 投影计算**：
+> **根块（深度 0）的 `content_hash` 只对以下 **9** 个字段的 canonical 投影计算**：
 > `kind` / `goal` / `acceptance` / `gate` / `no_gate_reason` / `depends_on` /
-> `refs` / `cwd` / `context` / `ready` / `released_by_user`。
-> **排除 6 个**：`key`（改 key = 删旧建新，§3.3 另有路径）、`priority`、
+> `refs` / `cwd` / `context`。
+> **排除 8 个**：`key`（改 key = 删旧建新，§3.3 另有路径）、`priority`、
 > `declared_by`、`spawn`、`tombstone` / `tombstoned_by`（墓碑走 §6.5 的撤回
-> 路径，那里 `content_hash` 本来就必变，见下）。
-> **11 + 6 = 17 = `TASK_FIELDS` 全集**（`kinds.rs:120-138`）——
+> 路径，那里 `content_hash` 本来就必变）、以及 **`ready` / `released_by_user`
+> ——后两者改由下面的「撤回规则」承载，不进哈希**（r8c）。
+> **9 + 8 = 17 = `TASK_FIELDS` 全集**（`kinds.rs:120-138`）——
 > **纳入集 ∪ 排除集必须恒等于 `TASK_FIELDS`**，由 3b′ 的一条集合相等元测试
-> 强制（见下）。
+> 强制。**该测试要有意义，`TASK_FIELDS` 必须先从 `validate_task` 的函数内
+> 局部常量提升为模块级 `pub(crate)`**（否则测试只能复制一份"期望全集"，
+> 变成自己证明自己的空洞断言）。
+>
+> **canonical 投影的定义（r8c 补，此前未定义）**：取块 payload 的 object，
+> 保留纳入集的键（**缺席与 `null` 视为等价、一律省略**），复用
+> `fence::canonical_json` 的规范化（排序键、定格缩进），**不含 kind 头**；
+> 深度 ≥ 1 的块走既有的整块 `flat_text`。**冻结集里必须显式标出哪一条是根**
+> ——今天 `context_ref`（`task_context.rs:447-454`）对所有块同构，靠"BFS 保证
+> `refs[0]` 是根"这个**隐式**不变量，栅栏与 `refs_match` 都依赖它却无人断言。
+> 3b′ 在 `TaskContextRef` 与 `TaskContextFrozen` 的 wire payload 上加显式
+> root 标记（事件 payload 本来就在交付项 6 里改）。
 > **深度 ≥ 1 的被引用块不做任何收窄**——它们可以是任意 kind，内核无从判断
 > 哪个字段"进 prompt"，整块哈希是那里唯一站得住的判据。
 
@@ -1473,12 +1501,36 @@ r1–r7 的裁决是"哈希是整个 canonical fence 的，所以改 `priority` 
   对 in-flight 行是假的**：投影的守卫式删除只赢 `pending`
   （`task_projection.rs:346` `DELETE … AND status='pending'`），
   对 `dispatched/running/verifying` 行**不删不改，只追加撤回诊断**
-  （`:275`、`:286`）。于是排除它们会造成一个刺眼的不一致：
+  （`:275`、`:286`）。于是不处理它们会造成一个刺眼的不一致：
   **人把在跑任务的 `ready` 改成 `false` → 什么都不发生；人删同一个块 →
   material、任务停。同一个撤回意图，两条路径行为相反。**
-  `released_by_user: true → false` 同理，是 `declare-and-wait` 下最明确的
-  撤回表达。两者纳入哈希后，可达的只有撤回方向（`false → true` 在已 claim
-  的行上不可出现），fail-closed 方向正确。
+
+**但修法不是把它们塞进哈希（r8c 更正——r8b 那样改出了一个新误杀）。**
+r8b 写"两者纳入哈希后可达的只有撤回方向（`false → true` 在已 claim 的行上
+不可出现）"，**这句话只在 `declare-and-wait` 下成立**。默认策略是
+`auto-declare`，那里 `released_by_user` **对可调度谓词毫无贡献**
+（`task_projection.rs:211-224`：它只在 `effective_wait` 为真时进入判定），
+任务通常带着缺省的 `false` 被 claim；此后人把它置 `true`——预放行、UI 勾选、
+或准备把 wave 切成 `declare-and-wait`——**而这恰恰是人唯一被允许写的那个位**
+（`wave_report_task_guard.rs:112-114`、`:163-166`）。哈希一变即 `material`，
+任务永久 `failed` 且同 `key` 不复活。**这与 ㉒ 排除 `priority` 的理由完全同构**：
+改一个被投影明确忽略的字段，却终结正在执行的任务。
+
+**裁决：撤回不走哈希，走一条方向敏感的投影层规则。**
+
+> **撤回规则（NEW，r8c）**：投影在处理**非 `pending`** 行时，若声明侧发生
+> `ready: true → false` 或 `released_by_user: true → false`（**只有撤回方向，
+> 反向一律无操作**），则**与"块被删除 / 被墓碑覆盖"走同一条路径**：
+> 同事务写 `context_stale_at_ms` + 发 `TaskContextAdvanced{material}`，
+> 而不是只追加一条诊断。
+
+这样三件事同时成立：(i) 撤回意图在两条路径（改 `ready` / 删块）上行为一致，
+兑现上面那条病因；(ii) 规则**方向敏感**，`false → true` 结构上不可能误触发，
+`auto-declare` 下的无语义写入完全无害；(iii) `withdrawal_diagnostic`
+（`task_projection.rs:250-257`）那句"any gate operation that has not started
+will be rejected"**从此是真话**——它今天是假的（见切片 3b′ 交付项 7）。
+哈希因此保持为**块内容的纯函数**，不依赖 wave 策略、不需要持久化冻结时的
+`effective_policy`（那会让哈希的解释随策略漂移，是更贵的一条路）。
 
 **可证伪**：若出现一个「改了排除清单里的 6 个字段之一、而 worker 确实应当
 停下来」的真实场景，本裁决被推翻，退回整块哈希。
@@ -1508,11 +1560,29 @@ r8 的内部通道与文档通道各自独立指出，`e4696f7a` 交付的
 2. **claim 前，用 `(wave_id, key)` 在**该 wave 当前报告的块快照里定位那个
    `kind == "task"` 且 `payload.key == key` 的**存活块**，取其 `block_id` 作为
    闭包根。**定位失败必须分两类处置（r8b 更正，通道 B MAJOR，成立）**：
-   - **瞬时失败**（`ResolveError::Storage`、报告卡读失败、任何 IO/反序列化
-     错误）→ **放弃本次 claim**（race-lost 语义：不写事件、不写 stale、
-     行留在 `pending`），下一轮 `compute_ready` 重来。**完全可逆。**
-   - **确定性失败**（块不存在 / 已成墓碑 / 同 `key` 多个存活块）→ 按
-     `material` 处理，置 `context_stale_at_ms`。
+   - **瞬时失败**（存储/IO 不可用、存储内容损坏到无法解码）→ **放弃本次
+     claim**（race-lost 语义：不写事件、不写 stale、行留在 `pending`），
+     下一轮 `compute_ready` 重来。**完全可逆。**
+   - **确定性失败**（根块不存在 / 已成墓碑 / 同 `key` 多个存活块 /
+     越 cove / 引用不合法）→ 按 `material` 处理，置 `context_stale_at_ms`。
+
+   **这条分类今天在 `ResolveError` 上不可判定，3b′ 必须先拆变体
+   （r8c 补，两个通道分别命中，成立）**：现有枚举只有
+   `Missing / CrossCove / InvalidReference / Storage`
+   （`task_context.rs:33-38`），而 **`Missing` 一个变体同时承载两类**——
+   wave 行不存在（`:205`）、**报告卡不存在**（`:214`）、`blocks` 字段缺失
+   （`:219`）、**块不存在**（`:226`）。更糟的是单块**反序列化失败被
+   `.ok()?` 静默吞掉**（`:222-225`），最终伪装成"块不存在"⇒
+   一个本该是"存储损坏"的情形会被判成确定性 `material`。
+   **裁决**：3b′ 拆成
+   `StorageUnavailable` / `MalformedStoredReport`（可重试）与
+   `RootAbsent` / `RootTombstoned` / `DuplicateLiveKey` / `CrossCove` /
+   `InvalidReference`（确定性），把 `:222-225` 的 `.ok()?` 改为显式冒泡，
+   **分类按变体匹配，禁止按错误字符串推断**（与「fail-closed 栅栏不得用
+   字符串启发式」同一条纪律）。
+   **`MalformedStoredReport` 的定价要说准**：损坏的持久数据通常不会自行恢复，
+   无限重试等于饿死该行——**计入 `consecutive_failures`，连续 N 轮
+   （建议 N = 3）后升级为 `material` 并告警**，而不是永远重试。
 
    r8 初稿一律走后者（"不阻止本次 claim 但立刻置 `context_stale_at_ms`"），
    **与 ㉕ 在同一次修订里的原则互斥**：一次瞬时的存储错误会把任务永久烧掉
@@ -1544,12 +1614,32 @@ r1–r8 沿用的论证是"窗口内的竞态只会让系统更保守，不会�
 
 裁决：
 
-> **claim 事务内、状态翻转之前，复核根块的 `(block_id, content_hash)` 与
-> 报告的 `doc_rev` 栅栏**（报告卡就在同一个 sqlite 库，与
-> `task_claim_pending_tx` 同 tx 内一条 `SELECT`）。**任一不一致 → 回滚 claim，
-> race-lost 重来**（行留在 `pending`，下一轮重新解析）。
-> 闭包的**展开**仍在事务外（那是 64 个节点的跨 wave 遍历，不能进锁）；
-> 进事务的只有**一次定向读 + 两项比较**。
+> **claim 事务内、状态翻转之前，复核**
+> **(a) 根块的 `(block_id, content_hash)`，以及**
+> **(b) 闭包中出现的每一个不同 `wave_id` 的报告 `doc_rev`**（r8c 扩展）。
+> **任一不一致 → 回滚 claim，race-lost 重来**（行留在 `pending`，下一轮
+> 重新解析）。闭包的**展开**仍在事务外（那是最多 64 个节点的跨 wave 遍历，
+> 不能进锁）；进事务的只有 **N 条定向 `SELECT` + N+1 项比较**，
+> **N = 闭包涉及的不同 wave 数**，通常 1–3，远小于 `MAX_REF_NODES`。
+
+**r8b 把栅栏收窄到"根块 + 根文档 `doc_rev`"是错的（r8c 更正，两个通道
+分别判 BLOCKER，成立）**，而且 §13.25 还把这个划分论证成"自洽"。
+问题不在"根 vs 子"，**在"单文档 vs 跨文档"**：`doc_rev` 是**每个
+wave-report 文档自己的**计数器（`wave_report_doc.rs:121-145`），
+所以同 wave 内的子节点其实被根文档的 `doc_rev` 顺带覆盖了；
+而闭包**按设计允许跨 wave**（同 cove + system cove，`task_context.rs:158-181`
+的 BFS 队列元素就是 `(wave_id, block_id, depth)`）。于是反例只需换一个节点：
+
+> task 根在 wave A、引用 wave B 的块 X → 解析出 A/root + B/X →
+> **B/X 被编辑，`WaveReportEdited` 已处理完**（此时该任务还没有索引行，
+> 事件路径结构性不可见）→ A 的根块与 A 的 `doc_rev` 都没变，栅栏放行 →
+> 旧闭包写入，worker 立刻启动 → 最早等下一轮 sweep（默认 300 秒）。
+
+这与 r8b 自己论证的漏检链条**逐字相同**，只是节点换了。
+可行性已复核：`doc_rev` 已镜像进 `cards.payload` JSON
+（`wave_report.rs:656` 的 `projected_payload.doc_rev = doc_rev`、
+`calm-types/src/wave_report.rs:58`），所以确实能在 claim 同事务里用普通
+`SELECT` 读到，不需要加载 automerge 文档。
 
 这条同时消灭了另一个误杀方向：窗口内若发生一次报告写，投影会按规则 1 更新那条
 `pending` 行（`task_projection.rs:431` 的 `ON CONFLICT … WHERE status='pending'`），
@@ -1632,6 +1722,10 @@ wave，而第 2 级裁决会把「`b_1f3a` 从 X 变成了 Y」的**块内容**�
 
 > **`content_hash` 提供的是抗碰撞检测，不是不可能性证明。** "不允许漏报"这条
 > 断言的精确形式是：**除去 SHA-256 的碰撞，任何内容变更都会被检出。**
+>
+> **（r8c 更正：这条精确形式在 ㉒ 之后仍然不够精确，全文以下面 §5.3.1 末尾的
+> 「断言的最终形式」为准——例外从一个变成三个，且"最终会发现"与"禁止启动"
+> 必须分开陈述。）**
 > 与之相对，r1 的 `(block_id, rev)` 方案漏报的是**构造性的、日常发生的**两类
 > 序列（删块后 id 回收、`saturating_add` 饱和），不是密码学残余概率。
 > 两者不在一个量级上，但断言不能写成全称。
@@ -2031,7 +2125,63 @@ refs: [{ wave_id, block_id, rev, content_hash }], truncated: bool }`
 > 见本节下文的 boot 顺序裁决与 §11.2 不变量 5b）与每个周期性 reconcile tick 上，
 > 重扫全部 in-flight 任务的冻结集，逐元组重解析；任何一个元组
 > ——因为内容变了、块没了、wave/cove 没了、越 cove、冻结集本身缺失——
-> 只要不能被验证为"与冻结值逐字节相同"，该任务一律判 `material`。**
+> 只要不能被**确定性地**验证为"与冻结值相同"（根块比**收窄投影哈希**，
+> 深度 ≥ 1 比整块哈希；**均不比 `rev`**，见 §5.1 ㉑ ㉒），
+> 该任务一律判 `material`。**
+
+**「瞬时失败不下判决」是全局规则，不只管 claim（NEW，r8c，通道 B M3，
+成立且是一处 root cause 而非局部缺陷）。** ㉔ 用"一次瞬时存储错误不得把任务
+永久烧掉"推翻了 claim 时的处置，但**完全相同的病灶今天已经在 sweep 侧上线**，
+而上面这条裁决还在正面背书它：`refs_match`（`task_context.rs:229-252`）里
+`wave_get` 出错走 `_ => return false`、`load_block` 任意 `Err`（含 `Storage`）
+走 `else { return false }` ⇒ **一次瞬时 DB 错误 ⇒ `material` ⇒ `mark_material`
+（`:340-352`）⇒ 写 `context_stale_at_ms`（`:412`）⇒ 该行必落 `failed`、
+同 `key` 不复活**。若只修 claim 侧，文档里会同时存在两条互斥的处置。
+
+裁决（与 ㉔ 的分类同一套变体，见 §5.1）：
+
+> **只有确定性的不可验证**（块确实不在、越 cove、引用不合法、冻结集缺失、
+> `closure_truncated`）**判 `material`**。**瞬时失败**（存储/IO 不可用）
+> ⇒ 本轮 sweep 对该行**不下判决**：保持 in-flight、不置 `context_stale_at_ms`、
+> 计入 `consecutive_failures`（该指标已存在，`ContextMetrics`）；
+> **连续 N 轮（建议 N = 3）仍为瞬时失败 ⇒ 升级为 `material` 并告警**。
+> "存储损坏"（`MalformedStoredReport`）走同一条升级路径——它通常不会自行
+> 恢复，无限重试等于饿死该行。
+
+**这不削弱 fail-closed**：不下判决 ≠ 放行。该行仍是 in-flight，
+`refuse_if_context_stale` 的强制点不受影响，下一轮继续重扫；
+改变的只是"把无法观测"错记成"已观测到变更"这一件事。
+
+#### 断言的最终形式（NEW，r8c —— 全文以此为准）
+
+前八轮把"不允许漏报"当成一条**全称**断言在用，而 ㉒ 刻意开了一个口、
+㉔ 暴露了"最终会发现 ≠ 禁止启动"的区分。准确表述必须把两者写进断言本身，
+而不是散落在 §13 的风险条里：
+
+> **(A) 最终检出（sweep 承载）**：对每个 in-flight 任务的冻结闭包，
+> 任何在 claim **成功之后**发生的内容变化，都会在**下一次完成的 sweep**
+> 结束时被判定为不匹配，**除以下三个例外**：
+> **(a)** 根块的 8 个排除字段（`key` / `priority` / `declared_by` / `spawn` /
+> `tombstone` / `tombstoned_by` / `ready` / `released_by_user`）——
+> **刻意不检测**，代价已在 §5.1 ㉒ 定价；其中后两个的撤回方向另由
+> §5.1 的**撤回规则**覆盖；
+> **(b)** SHA-256 碰撞（密码学残余）；
+> **(c)** 连续 N 轮瞬时存储失败之内的窗口——期间不下判决，行仍 in-flight。
+>
+> **(B) 启动前检出（栅栏 + 强制点承载，是更强的性质）**：
+> 不允许在已判 `material` 的上下文上**首次启动**任何 operation。
+> 它**不由 (A) 推出**——sweep 的"最终会发现"推不出"启动前发现"。
+> 承载它的是两件东西：claim 事务内的**根块 + 各 wave `doc_rev` 栅栏**
+> （§5.1 ㉔，关掉解析→claim 的 TOCTOU），以及四个 task 绑定适配器
+> `prepare_tx` 里的 `refuse_if_context_stale`（§5.3.3，关掉判决落库之后的
+> 一切起活路径）。
+>
+> **(C) 误报侧不属于本断言**：越 cove、超预算（`closure_truncated`）、
+> 确定性定位失败一律直接判 `material`，那是 fail-closed 的保守方向，
+> 只增加误报、不削弱 (A)(B)。
+
+**凡本文其余各处出现未限定的"不允许漏报 / 任何内容变更都会被检出"，
+一律以本条为准。**
 
 落地形态（全部复用既有形状，不新造机制）：
 
@@ -2095,14 +2245,35 @@ refs: [{ wave_id, block_id, rev, content_hash }], truncated: bool }`
   级日志。这与本条"下一次 tick 会重来"的论证正相反。裁决（**r8b 定死为单一方案，
   不再"二选一"**）：
 
-  > **每一次上下文 sweep 成功即原子开门**（`context_sweep_boot_done`，
-  > 不区分 boot 还是周期 tick），**并在开门后立即补跑一次
-  > `scheduler.sweep_all()`**。
+  > **任何一次成功的全量上下文 sweep 即原子开门**（`context_sweep_boot_done`；
+  > 三个调用点一视同仁——boot、`Lagged` 补偿臂、周期 tick），
+  > **且仅当门从关翻到开时**（`compare_exchange(false, true)` 返回 `Ok`）
+  > **补跑一次 `scheduler.sweep_all()`**。
 
   只写"成功后开门"是不够的：门开在 tick 的上下文 sweep 之后，而该 tick 的
   `sweep_all` 已经在**门还关着**的时候跑完了（本节的顺序规则要求它排在后面），
   于是 `resume_dispatched` 还要再等一个 300 秒周期才真正恢复——
   "本次先跳过、成功后只开门、再等 300 秒"仍是一次不必要的停摆。
+  **反过来，若不加"仅在翻转时"这个条件**，每个 300 秒 tick 都会跑**两遍**
+  `sweep_all`（tick 自己一遍 + 开门后补跑一遍），这是纯浪费（r8c，通道 B N1）。
+
+  **一处驳回（r8c，通道 A 判 BLOCKER，不成立，附反证）**：通道 A 主张
+  "每次 sweep 成功即开门"会让 `resume_dispatched` 在 operation 恢复完成前
+  重驱动 `dispatched` 行，破坏 boot 门原本的安全条件。**这把两个不同的门
+  当成了一个。** 代码里是两个独立的 `AtomicBool`（`scheduler/mod.rs:341`、
+  `:344`）：
+  - `boot_sweep_done`（`:341`）守 `sweep_all`（`:1006`），
+    其注释逐字写着防"re-drive dispatched rows against unrecovered operation
+    rows"——**那才是 operation 恢复的保护**，由 `:1034`/`:1048` 在 boot sweep
+    之后置位，本裁决**一个字都没动它**；
+  - `context_sweep_boot_done`（`:344`）**只**守 `resume_dispatched`
+    （`:1422`），语义是"material 判决必须先持久"。
+
+  而且 `resume_dispatched` 是从 `sweep_reconcile` ← `sweep_all` 调下来的，
+  `sweep_all` 在 `boot_sweep_done` 之前**整体 no-op** ⇒ context 门早开
+  **结构上够不到**未恢复的 operation 行。周期 tick 的上下文 sweep 与 boot 轮
+  是**同一次全量重扫**（`sweep_inner` 扫 `task_contexts_inflight_fresh` 全集），
+  所以两者的开门条件等价，不需要拆成两个标志。
   **boot 上的挂点：r5 更正了一次，r6 又前移了一格。** r4 写的是"跟在
   `sweep_boot` 之后"，而 `sweep_boot`（`scheduler/mod.rs:1015`）的**第一件事**
   就是 `sweep_reconcile()`（`:1016`），它的 `Dispatched` 分支（`:1067`）已经把
@@ -2181,7 +2352,7 @@ refs: [{ wave_id, block_id, rev, content_hash }], truncated: bool }`
 
 | 维度 | 问题 | 状态 |
 |---|---|---|
-| ① 内容 | 一个冻结的 `(wave_id, block_id, rev, content_hash)` 所指内容，**能不能**被改变 / 变得不可达 / 变义？ | **穷举完毕、全部关闭**（下表，r4 通道 A 逐条查证） |
+| ① 内容 | 一个冻结的 `(wave_id, block_id, rev, content_hash)` 所指内容，**能不能**被改变 / 变得不可达 / 变义？ | **在纳入字段集上穷举完毕并关闭**（下表，r4 通道 A 逐条查证）；**表末一行是 ㉒ 刻意开的口**，见表下的限定块 |
 | ② 观测 | 它变了之后，**凭什么保证有人去看**？ | r1–r3 从未审过；r4 的第六个洞在这里，由 §5.3.1 的 sweep 关闭 |
 | ③ 执行 | 有人看过、判了 `material` 之后，**凭什么执行那个判决**？ | r1–r4 从未审过；**r5 发现这一维此前是空的**（§0.2(h)：没有持久载体、不变量 5 空洞、崩溃恢复的重驱动不受任何约束）并给出载体 + 一个强制点；**r6 证明那个强制点不在漏斗上**（还有 operation 开机恢复与 gate 首启两条入口），把它换成**一条规则、一个漏斗**：过期判决在 operation 适配器的 `prepare_tx` 里被强制（§5.3.3）。**关闭** |
 
@@ -3418,8 +3589,29 @@ wire 连带面"对 r5 不成立**：切片 3a 从此带**两个** NEW 事件的�
    （= fail-closed 判 `material`，§5.3）是两件事，事件必须能区分。
    否则这条"硬"不变量在切片 3a 上线第一天就被 legacy 行破掉。
 3b. **task 块自身在冻结集内**（§5.1）：任何 `origin='block'` 行的
-   `TaskContextFrozen.refs` 必包含它自己的块（`wave_id == task.wave_id`）。
+   `TaskContextFrozen.refs` 必包含它自己的块（`wave_id == task.wave_id`，
+   **且带显式 root 标记**，§5.1 的 canonical 投影定义）。
    编辑一个 in-flight task 自己的 `goal` → 必有 `TaskContextAdvanced`。
+   **（r8c 限定）** 这里的"编辑"指**纳入字段集内**的编辑；`goal` 恰在集内，
+   所以本条不变——但**不可据此推广**：改 8 个排除字段之一按 ㉒ 刻意不检出，
+   其中 `ready` / `released_by_user` 的**撤回方向**由 §5.1 的撤回规则覆盖。
+
+3c. **（NEW，r8c）栅栏关闭解析→claim 的 TOCTOU**：在根块解析之后、claim
+   事务提交之前注入一次报告写（**含跨 wave 的被引用块**），则该 claim
+   **必须 race-lost**：行仍在 `pending`、**无** `TaskContextFrozen`、
+   **无** `task_ref_index` 行、**无任何 worker / gate 首次启动**。
+   这是"启动前检出"（断言最终形式的 (B)）唯一的可证伪构造。
+
+3d. **（NEW，r8c）根块哈希只在纳入字段集上敏感**：对同一个 in-flight 任务，
+   改 `goal`/`kind`/`gate` 等纳入字段 → 判 `material`；
+   改 `priority`/`declared_by`/`spawn` 等排除字段 → **不判**；
+   `released_by_user: false → true`（`auto-declare` 下的无语义写）→ **不判**；
+   `ready: true → false` / `released_by_user: true → false` → **判**
+   （经撤回规则，不经哈希）。
+
+4d. **（NEW，r8c）瞬时失败不产生持久判决**：注入一次存储错误使 sweep 无法
+   验证某行 → 该行**不得**被写 `context_stale_at_ms`、仍是 in-flight、
+   `consecutive_failures` +1；连续 N 轮后才升级为 `material`。
 4. **（r4 重述，⑬）** 改动落在某个 in-flight task 的冻结集内
    （**按 `content_hash` 判定**，§5.1）→ **在此后第一次完成的 sweep（§5.3.1）
    结束时**必有一条 `TaskContextAdvanced`（无论判 material 还是 immaterial），
@@ -4115,15 +4307,38 @@ rebuild 给出同一终态（§11.2 不变量 11 的生成器覆盖它）；
    快照里定位根块 → `resolve_closure` → 把 `refs` / `truncated` 传进
    `task_claim_pending_tx`（该函数已经收这两个参数，`task.rs:223`；今天走的
    `task_claim_legacy_pending_tx` 硬编码 `&[], false`）。
-   **claim 事务内、状态翻转前复核根块 `(block_id, content_hash)` + `doc_rev`
-   栅栏，不一致即 race-lost 回滚**（§5.1 的 TOCTOU 裁决）。
-   定位失败分两类：瞬时错误 → 放弃 claim（可逆）；确定性失败 → `material`。
+   **claim 事务内、状态翻转前复核 (a) 根块 `(block_id, content_hash)` +
+   (b) 闭包涉及的每个不同 `wave_id` 的报告 `doc_rev`，不一致即 race-lost
+   回滚**（§5.1 的 TOCTOU 裁决；`doc_rev` 已镜像进 `cards.payload`，
+   同 tx 普通 `SELECT` 可读）。
+   **拆分 `ResolveError` 变体**（retryable：`StorageUnavailable` /
+   `MalformedStoredReport`；deterministic：`RootAbsent` / `RootTombstoned` /
+   `DuplicateLiveKey` / `CrossCove` / `InvalidReference`），
+   把 `task_context.rs:222-225` 的 `.ok()?` 改为显式冒泡，
+   **分类按变体匹配、禁止按错误字符串推断**。
+   定位失败分两类：瞬时 → 放弃 claim（可逆）；确定性 → `material`。
    `origin='legacy'` 跳过定位，空集不变。
 2. **㉑ 相等式去 `rev`**：`refs_match` 只比 `(wave_id, block_id, content_hash)`，
    **恒比哈希，不得以 `rev` 相等短路**；`rev` 只用于诊断文案。
-3. **㉒ 根块哈希范围收窄**到 **11 个字段**（§5.1），深度 ≥ 1 的被引用块不收窄。
-   **配一条集合相等元测试：纳入集 ∪ 排除集 == `TASK_FIELDS`**
-   （`kinds.rs:120-138`）——新增 schema 字段而不分类 ⇒ 立刻变红。
+3. **㉒ 根块哈希范围收窄**到 **9 个字段**（§5.1），深度 ≥ 1 的被引用块不收窄。
+   **先把 `TASK_FIELDS` 从 `validate_task` 的函数内局部常量提升为模块级
+   `pub(crate)`**，再配集合相等元测试：**纳入集 ∪ 排除集 == `TASK_FIELDS`**
+   ——否则测试只能复制一份"期望全集"，是一条自己证明自己的空洞断言。
+   同时**写死 canonical 投影函数**（缺席 ≡ `null`、复用 `fence::canonical_json`、
+   不含 kind 头）并在 `TaskContextRef` / 事件 payload 上加**显式 root 标记**
+   （今天靠"BFS 保证 `refs[0]` 是根"的隐式不变量，无人断言）。
+3′. **（NEW，r8c）撤回规则**：投影处理**非 `pending`** 行时，
+   `ready: true → false` 或 `released_by_user: true → false`（**仅撤回方向**）
+   ⇒ 与"块被删/被墓碑覆盖"同路径：同事务写 `context_stale_at_ms` +
+   发 `TaskContextAdvanced{material}`，而不是只追加诊断。
+   这同时让交付项 7 的诊断文案变成真话。
+3″. **（NEW，r8c）瞬时失败不下判决扫到 sweep 侧**：`refs_match` /
+   `sweep_inner` 今天对 `wave_get` / `load_block` 的任意 `Err`（含 `Storage`）
+   一律 `return false ⇒ material ⇒ 不可逆 failed`。改为只有**确定性**不可验证
+   才判 `material`；瞬时失败本轮**不下判决**、计入 `consecutive_failures`、
+   连续 N=3 轮后升级并告警（§5.3.1）。
+   **这与交付项 1 的分类是同一套变体**——只修 claim 侧会让文档里同时存在
+   两条互斥处置。
 4. **㉓ `closure_truncated` 进 sweep**：`sweep_inner` 与 `detect_wave_edit` 同形；
    改掉 `tests/scheduler.rs` 里钉住反向行为的那条断言。
 5. **㉕ + tick 顺序**：周期 tick 的上下文 sweep 排在 `sweep_all` **之前**并补
@@ -4150,10 +4365,10 @@ rebuild 给出同一终态（§11.2 不变量 11 的生成器覆盖它）；
    改 `priority` 会让人看到这句话，而 gate **不会**被拒，**诊断在说谎**。
    本片显式对齐两个字段集（或让那半句只在冻结判据命中时才附加），
    并加一条断言"诊断承诺的拒绝行为与 `context_stale_at_ms` 一致"。
-8. **（NEW，r8b）承重章节同步**：§4.2 规则 2(ii) 的全称"必然"改为限定表述；
-   §5.3.2 穷举表新增"根块的排除字段被修改 → 刻意不检测"一行并把维度 ① 的状态
-   限定为"在纳入字段集上关闭"；§10 裁决表两行同步；§11.2 补 ㉓/㉕/tick 顺序/
-   栅栏四条不变量编号；§13 补两条新风险。
+8. ~~承重章节同步~~ —— **已在 r8b/r8c 的文档提交里完成，不再是实现交付项**
+   （§4.2 规则 2(ii) 限定、§5.3.2 表末新增行 + 汇总格 + §0.2 转述、§10 两行、
+   §5.3.1 首句、3c 依赖措辞、§13.17/13.25/13.26、§11.2 新增不变量 3c/3d/4d
+   并限定 3b、§5.3.1 末尾「断言的最终形式」）。实现期只需**遵守**它们。
 
 **验收（硬门，缺一不可）**：
 
@@ -4165,13 +4380,22 @@ rebuild 给出同一终态（§11.2 不变量 11 的生成器覆盖它）；
   claim 回滚不留索引行也不留冻结事件。**变异验证**（注释掉接线证明变红）保留，
   但承重的是"禁止 SQL 预置"这条结构性约束——见 §5.1 对 `e4696f7a` 残留缺口的
   分析（6 处测试用 raw SQL 种该列，于是生产 claim → 冻结从未被走过）。
-- **并发回归**：根解析后、claim 前注入报告编辑 → 断言**无任何 worker / gate
-  首次启动**，且该行仍在 `pending`。
+- **并发回归（不变量 3c）**：根解析后、claim 前注入报告编辑 → 断言**无任何
+  worker / gate 首次启动**，行仍在 `pending`、无 `TaskContextFrozen`、
+  无 `task_ref_index` 行。**必须同时覆盖同 wave 与跨 wave（同 cove）两个
+  被引用块**——跨 wave 那条正是 r8b 栅栏漏掉的反例。
+- **瞬时失败回归（不变量 4d）**：注入存储错误使 sweep 无法验证某行 →
+  该行**不得**被写 `context_stale_at_ms`、仍 in-flight、
+  `consecutive_failures` +1；连续 3 轮后才升级为 `material`。
+- **撤回规则回归**：in-flight 行上 `ready: true→false` ⇒ 判 material；
+  `released_by_user: false→true`（`auto-declare` 下）⇒ **不判**；
+  且 `withdrawal_diagnostic` 的文案与实际拒绝行为一致。
 - **㉑ 回归**：编辑被引用块 → 撤销回原文 → 断言**不判** `material`；
   另加 id 回收回归（删块 → 新块同 id 同 rev 不同内容 → 断言**判** `material`）。
-- **㉒ 回归**：改 in-flight 任务的 `priority` → **不判**；改 `goal` / `kind` /
-  `ready: true→false` / `released_by_user: true→false` → **判**。
-- **㉒ 元测试**：纳入集 ∪ 排除集 == `TASK_FIELDS`。
+- **㉒ 回归（不变量 3d）**：改 in-flight 任务的 `priority` / `declared_by` /
+  `spawn` → **不判**；改 `goal` / `kind` / `gate` → **判**。
+- **㉒ 元测试**：纳入集 ∪ 排除集 == `TASK_FIELDS`（且 `TASK_FIELDS`
+  已提升为 `pub(crate)`，测试引用的是**同一个**常量而不是复制品）。
 - **㉓ 回归**：`closure_truncated = true` 的任务，在**事件路径与 sweep 两条路上
   给出同一结论**（`material`）。
 - **㉕ 回归**：boot sweep 失败后，一次周期 tick 成功即可开门**并当轮完成
@@ -4416,6 +4640,10 @@ fork 后立刻 rebuild，声明一致、状态全新；`calm.plan.upsert` 不在
 17. **`content_hash` 是抗碰撞检测，不是不可能性证明**（§5.1）。"不允许漏报"这条
    断言的精确形式带一个 SHA-256 碰撞的例外。这是可接受的残余风险，但它意味着
    该断言**不能**写成全称命题，也不能作为更强推理的前提。
+   **（r8c 更正：例外不止一个。**最终形式见 §5.3.1 末尾「断言的最终形式」——
+   (a) 根块的 8 个排除字段刻意不检测、(b) SHA-256 碰撞、(c) 连续瞬时失败窗口；
+   且**"最终检出"与"启动前检出"是两条不同强度的性质**，后者由 claim 事务栅栏 +
+   `prepare_tx` 强制点承载，**不能由前者推出**。）
 18. **`spec_task_ceiling` 只约束未结存量，不约束生命周期总量**（§8(A)，
    r3 通道 B MAJOR）。"每完成一条就再声明一条"的细水长流式失控不被它挡住。
    本文**刻意不引入累计配额**——单调计数器不是当前文档的函数，rebuild
@@ -4578,11 +4806,14 @@ fork 后立刻 rebuild，声明一致、状态全新；`calm.plan.upsert` 不在
 - **栅栏漏做即漏检**：索引行在 claim 成功后才插（`task.rs:246`），事件路径只查
   已存在的索引（`task_context.rs:256`）⇒ 窗口内的编辑对事件路径**结构性不可见**，
   worker/gate 能在 sweep 之前首次启动。这是 3b′ 的并发回归要钉住的那条。
-- **栅栏做得过紧即抖动**：若把整个闭包（最多 64 个节点）都拿进事务复核，
-  就把持锁开销加回来了。裁决只复核**根块 `(block_id, content_hash)` + `doc_rev`**
-  ——一次定向读、两项比较。子节点的变化仍由 sweep 与事件路径承担，
-  它们落在窗口外时本来就会被下一轮检出（那一侧"更保守"的论证**是**成立的，
-  不成立的只有"禁止启动"这一侧）。
+- **栅栏做得过紧即抖动**：若把整个闭包（最多 64 个**节点**）都拿进事务逐块
+  比对内容，就把持锁开销加回来了。裁决的折中是**按文档而不是按节点**复核：
+  根块 `(block_id, content_hash)` + **闭包涉及的每个不同 `wave_id` 的
+  `doc_rev`**——N 条定向读、N+1 项比较，**N = 不同 wave 数**（通常 1–3）。
+  **r8b 曾把它收窄到"只复核根块 + 根文档 `doc_rev`"并在本条论证为"自洽"，
+  那是错的**（r8c 更正）：`doc_rev` 的作用域是单个文档，所以同 wave 子节点
+  被顺带覆盖了，而**跨 wave 子节点整条漏在外面**——反例与本节开头那条
+  逐字同构，只是节点从根换成了 B 库里的块。
 
 **可观测量**：栅栏触发的 race-lost 频率。若它高到影响吞吐，说明报告写与 claim
 的争用比预期严重，需要重新考虑解析点（例如把根解析下沉进 `compute_ready`）。
@@ -5006,6 +5237,40 @@ BLOCKER + 6 个 MAJOR**，全部接受。两个 BLOCKER 都是**裁决本身**�
 | **3b′ 的防复发条款瞄错了靶** | 通道 B | 初稿瞄准 `ContextCheckedSpawnAdapter`——该 fixture 确实存在过（`b8e7d545` 引入、`7500259d` 删除），但**那个问题当时就修好了**。真正的残留是 **6 处测试用 raw SQL 直接种 `claim_context_json`**，于是"生产 claim → 冻结"从未被走过 | 验收改为**禁止 SQL 预置该列 + 必须经生产 claim 路径**，另加 8 个表驱动用例 |
 | **㉒ 与生产里第二套判据不一致，诊断会说谎** | 通道 B | `task_projection.rs:266-274` 的 in-flight 比较集含 `priority`/`declared_by`，命中后追加的 `withdrawal_diagnostic` 逐字承诺"any gate operation that has not started will be rejected"——㉒ 之后改 `priority` 会看到这句话而 gate 不会被拒 | 3b′ 新增交付项 7：两套判据对齐 + 断言诊断与 `context_stale_at_ms` 一致 |
 | **`spawn` 的排除只能是版本化的** | 通道 A | "切片 6 之前无消费者"论证不了稳定协议中的永久排除 | §13.26 + 切片 6 前置 |
+
+### 14.6 r8c：第三轮双通道 —— 对 r8b 修复本身的复审（NEW）
+
+r8b 的修复又过了一轮。**两个通道各判 1 和 3 个 BLOCKER**，交集的三条全部成立，
+一条驳回。三条成立的都是"改得不够远"或"改出了新洞"，没有一条是措辞问题：
+
+| 发现 | 命中 | 性质 | 处置 |
+|---|---|---|---|
+| **栅栏只覆盖单个文档，跨 wave 子节点的 TOCTOU 原样留着** | 两通道（均判 BLOCKER）| r8b 把自己定级为 BLOCKER 的那条 TOCTOU 只关了一半，还在 §13.25 论证"这个划分自洽"。问题不是"根 vs 子"而是**"单文档 vs 跨文档"**——`doc_rev` 的作用域是单个报告文档，同 wave 子节点被顺带覆盖，跨 wave 的整条漏在外面 | 栅栏扩为「根块 + **闭包涉及的每个不同 wave 的 `doc_rev`**」；N 通常 1–3，`doc_rev` 已镜像进 `cards.payload` 可同 tx 读 |
+| **`released_by_user` 纳入哈希在默认策略下是新误杀** | 两通道 | r8b 说"可达的只有撤回方向"，**这句只在 `declare-and-wait` 下成立**。默认 `auto-declare` 下该字段对可调度谓词无贡献，任务带缺省 `false` 被 claim，此后人置 `true`（**人唯一被允许写的位**）⇒ 哈希变 ⇒ 永久 `failed`。**与排除 `priority` 的理由完全同构** | **把 `ready`/`released_by_user` 移出哈希（9 纳入 / 8 排除），改用方向敏感的投影层撤回规则**（§5.1）。哈希因此保持为块内容的纯函数，不依赖 wave 策略、不必持久化冻结时的 `effective_policy` |
+| **"瞬时 vs 确定性"在现有 `ResolveError` 上不可判定** | 两通道 | `Missing` 一个变体同时承载 wave 不存在 / 报告卡不存在 / `blocks` 缺失 / 块不存在；单块反序列化失败被 `.ok()?` **静默吞成"块不存在"** ⇒ 本该"瞬时"的情形被判成确定性 `material` | 拆变体 + 显式冒泡 + **禁止按错误字符串推断**；并给 `MalformedStoredReport` 定价（连续 N 轮后升级，不无限重试） |
+| **同一病灶在 sweep 侧已上线，而裁决还在正面背书它** | 通道 B（root cause 级）| `refs_match` 对 `wave_get`/`load_block` 的任意 `Err`（含 `Storage`）一律 `return false ⇒ material ⇒ 不可逆 failed`，§5.3.1 的裁决逐字写着"只要不能被验证…一律判 material"。只修 claim 侧会让文档同时存在两条互斥处置 | **把"瞬时不下判决"提升为全局规则**并扫到 `refs_match` / `sweep_inner`（交付项 3″）|
+| **§11.2 完全没同步**，而 r8b 的交付项 8 自己点名了它 | 通道 B | §14.5 声称"承重章节均已补"，列举里独独漏了 §11.2，diff 里那一节一行未改 | 新增不变量 3c（栅栏）/ 3d（哈希只在纳入集敏感）/ 4d（瞬时不产生持久判决），并限定 3b 的措辞 |
+| **§5.3.2 汇总格 / §0.2 转述 / §13.17 未随新增行更新** | 通道 B | 表末加了"刻意开的口"，但表**上方**的汇总格仍写"穷举完毕、全部关闭"——承重的是汇总格 | 三处已改；并在 §5.3.1 末尾新增**「断言的最终形式」**，把 (A) 最终检出 / (B) 启动前检出 / (C) 误报侧分开陈述，例外列全 |
+| **`TASK_FIELDS` 是函数内局部常量，集合相等元测试引用不到** | 通道 A | 实现者只能复制一份"期望全集" ⇒ 一条自己证明自己的空洞断言 | 交付项 3 先提升为模块级 `pub(crate)` |
+| **canonical 投影未定义、冻结集无 root 标记** | 通道 B | 缺席 vs `null` 是否等价、是否复用 `canonical_json` 都没写；而栅栏与 `refs_match` 都要知道"哪一条用收窄哈希"，今天靠"BFS 保证 `refs[0]` 是根"的**隐式**不变量 | §5.1 写死投影函数；`TaskContextRef` / 事件 payload 加显式 root 标记 |
+| **㉕ 按字面每 tick 会跑两遍 `sweep_all`；且漏了 `Lagged` 这第三个调用点** | 通道 B | —— | 改为"**仅当门从关翻到开时**补跑"；规则改述为"**任何**一次成功的全量上下文 sweep" |
+
+**驳回一条（通道 A 判 BLOCKER，不成立，附反证）**：主张"每次 sweep 成功即开门"
+会破坏 boot 门、让 `resume_dispatched` 在 operation 恢复前重驱动。
+**它把两个门当成了一个。** 代码里是两个独立的 `AtomicBool`：
+`boot_sweep_done`（`scheduler/mod.rs:341`）守 `sweep_all`（`:1006`，注释逐字写着
+防"re-drive dispatched rows against unrecovered operation rows"），
+本裁决**一个字都没动它**；`context_sweep_boot_done`（`:344`）**只**守
+`resume_dispatched`（`:1422`）。且 `resume_dispatched` 是从
+`sweep_reconcile` ← `sweep_all` 调下来的，而 `sweep_all` 在 `boot_sweep_done`
+之前**整体 no-op** ⇒ context 门早开**结构上够不到**未恢复的 operation 行。
+（通道 B 独立给出了同一反证，两边判断相反，以代码为准。）
+
+**一处确认**：`11 + 6 = 17`（r8b）与 `9 + 8 = 17`（r8c）都逐字等于
+`TASK_FIELDS`，两个通道各自独立核过，无重无漏。
+
+**收敛判断**：通道 B 判"还需要一轮，但改动量很小、不需要重开设计方向"。
+r8c 即是那一轮。
 
 **承重章节的同步**（通道 B 逐条点名，均已补）：§4.2 规则 2(ii) 的全称"必然"
 在 ㉒ 之后只在纳入字段集上成立；§5.3.2 的维度 ① 穷举表**新增一行**
