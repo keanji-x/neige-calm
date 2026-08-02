@@ -300,23 +300,53 @@ function normalizeBlocks(nodes: readonly MdNode[] | undefined, definitions: Read
   });
 }
 
+type Fence = Readonly<{ marker: string; size: number }>;
+
+function openingFence(line: string): Fence | null {
+  const match = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  if (match === null) return null;
+  const run = match[1] ?? '';
+  const info = line.slice(match[0].length);
+  if (run.startsWith('`') && info.includes('`')) return null;
+  return { marker: run[0] ?? '`', size: run.length };
+}
+
+function closesFence(line: string, openFence: Fence): boolean {
+  const match = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  const run = match?.[1] ?? '';
+  return run[0] === openFence.marker && run.length >= openFence.size
+    && /^\s*$/.test(match === null ? '' : line.slice(match[0].length));
+}
+
+type HtmlBlock = Readonly<{ ends(line: string): boolean }>;
+
+function htmlBlockStart(line: string): HtmlBlock | null {
+  const start = /^ {0,3}/.exec(line)?.[0].length ?? 0;
+  const content = line.slice(start);
+  const rawTag = /^<(script|pre|style)(?:\s|>|$)/i.exec(content)?.[1];
+  if (rawTag !== undefined) return { ends: (candidate) => new RegExp(`</${rawTag}\\s*>`, 'i').test(candidate) };
+  if (content.startsWith('<!--')) return { ends: (candidate) => candidate.includes('-->') };
+  if (content.startsWith('<?')) return { ends: (candidate) => candidate.includes('?>') };
+  if (/^<!\[CDATA\[/i.test(content)) return { ends: (candidate) => candidate.includes(']]>') };
+  if (/^<![A-Z]/.test(content)) return { ends: (candidate) => candidate.includes('>') };
+  if (/^<\/?[A-Za-z]/.test(content)) {
+    return { ends: (candidate) => /^\s*$/.test(candidate) };
+  }
+  return null;
+}
+
 function diagnosticsFor(markdown: string, root: MdNode): readonly MarkdownDiagnostic[] {
   const diagnostics: MarkdownDiagnostic[] = [];
   const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
   let openFence: Readonly<{ marker: string; size: number; line: number }> | null = null;
   for (const [index, line] of lines.entries()) {
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (openFence !== null) {
-      const run = fence?.[1] ?? '';
-      const remainder = fence === null ? '' : line.slice(fence[0].length);
-      if (run[0] === openFence.marker && run.length >= openFence.size && /^\s*$/.test(remainder)) openFence = null;
+      if (closesFence(line, openFence)) openFence = null;
       continue;
     }
-    const fenceInfo = fence === null ? '' : line.slice(fence[0].length);
-    const validOpeningFence = fence !== null && (fence[1]?.startsWith('~') === true || !fenceInfo.includes('`'));
-    if (validOpeningFence) {
-      const run = fence[1] ?? '';
-      openFence = { marker: run[0] ?? '`', size: run.length, line: index + 1 };
+    const fence = openingFence(line);
+    if (fence !== null) {
+      openFence = { ...fence, line: index + 1 };
       continue;
     }
     const atx = /^ {0,3}(#{7,})(?:\s+|$)/.exec(line);
@@ -356,19 +386,23 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
   }
   const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
   let openFence: Readonly<{ marker: string; size: number }> | null = null;
+  let htmlBlock: HtmlBlock | null = null;
   for (const [index, line] of lines.entries()) {
-    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (htmlBlock !== null) {
+      if (htmlBlock.ends(line)) htmlBlock = null;
+    } else {
+      const startedHtmlBlock = htmlBlockStart(line);
+      if (startedHtmlBlock !== null) {
+        htmlBlock = startedHtmlBlock.ends(line) ? null : startedHtmlBlock;
+      }
+    }
     if (openFence !== null) {
-      const run = fence?.[1] ?? '';
-      const remainder = fence === null ? '' : line.slice(fence[0].length);
-      if (run[0] === openFence.marker && run.length >= openFence.size && /^\s*$/.test(remainder)) openFence = null;
+      if (closesFence(line, openFence)) openFence = null;
       continue;
     }
-    const fenceInfo = fence === null ? '' : line.slice(fence[0].length);
-    const validOpeningFence = fence !== null && (fence[1]?.startsWith('~') === true || !fenceInfo.includes('`'));
-    if (validOpeningFence) {
-      const run = fence[1] ?? '';
-      openFence = { marker: run[0] ?? '`', size: run.length };
+    const fence = htmlBlock === null ? openingFence(line) : null;
+    if (fence !== null) {
+      openFence = fence;
       continue;
     }
     const indentation = /^( *)/.exec(line)?.[1].length ?? 0;
