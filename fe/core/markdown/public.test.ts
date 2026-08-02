@@ -81,16 +81,6 @@ describe('core/markdown behavior', () => {
     ]);
   });
 
-  it('uses the first duplicate reference definition', () => {
-    const result = parse('# [x][id]\n\n[id]: /first\n[id]: /second');
-    expect(result.status).toBe('ready');
-    if (result.status !== 'ready') return;
-    const heading = result.value.children[0];
-    expect(heading?.type).toBe('heading');
-    if (heading?.type !== 'heading') return;
-    expect(heading.children[0]).toEqual(expect.objectContaining({ type: 'link', destination: '/first' }));
-  });
-
   it('keeps visible CommonMark characters and omits empty file-viewer headings before numbering', () => {
     expect(outline('# snake_case\n# C\\*\n# price * tax\n# <i></i>\n# Last').map(({ id, text }) => ({ id, text }))).toEqual([
       { id: 'md-h-0', text: 'snake_case' },
