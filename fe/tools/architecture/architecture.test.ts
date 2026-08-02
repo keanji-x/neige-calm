@@ -25,7 +25,14 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
   }
   if (caseName === 'core-markdown-node-import') {
     const filePath = resolve(fixtures, caseName, kind, 'core/markdown/case.js');
-    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const eslint = new ESLint({
+      cwd: resolve(import.meta.dirname, '../..'),
+      ignore: false,
+      overrideConfig: { rules: {
+        'architecture/no-create-context-outside-allowlist': 'off',
+        'architecture/no-module-runtime-state': 'off',
+      } },
+    });
     const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../../core/markdown/case.js'),
     });
@@ -50,7 +57,14 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
   }
   if (caseName === 'core-no-platform-globals' || caseName.startsWith('core-no-platform-global-') || caseName.startsWith('core-no-node-')) {
     const filePath = resolve(fixtures, caseName, kind, 'core/case.ts');
-    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const eslint = new ESLint({
+      cwd: resolve(import.meta.dirname, '../..'),
+      ignore: false,
+      overrideConfig: { rules: {
+        'architecture/no-create-context-outside-allowlist': 'off',
+        'architecture/no-module-runtime-state': 'off',
+      } },
+    });
     const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../../core/platform-independent.ts'),
     });
