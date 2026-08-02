@@ -139,6 +139,31 @@ describe('EventStream behavior', () => {
     expect(startCount).toBe(2);
   });
 
+  it('cleans up a failed driver start before retrying', () => {
+    let startCount = 0;
+    let stopCount = 0;
+    let activeResources = 0;
+    const configured = EventStream.create('ws://test.invalid/api/events', {
+      start: () => {
+        startCount += 1;
+        activeResources += 1;
+        if (startCount === 1) throw new Error('start failed');
+      },
+      stop: () => {
+        stopCount += 1;
+        activeResources -= 1;
+      },
+    }).configure({ syncEventVersion: 2, topics: ['*'] });
+
+    expect(() => configured.start()).toThrow('start failed');
+    expect(stopCount).toBe(1);
+
+    configured.start();
+
+    expect(startCount).toBe(2);
+    expect(activeResources).toBe(1);
+  });
+
   it('broadcasts disconnected on stop while rejecting the driver stop callback', () => {
     const states: string[] = [];
     let sink: EventStreamSink | undefined;

@@ -118,6 +118,7 @@ export class EventStream implements UnconfiguredEventStream {
         } catch (error) {
           this.started = false;
           this.acceptingDelivery = false;
+          this.driver.stop();
           throw error;
         }
       },
