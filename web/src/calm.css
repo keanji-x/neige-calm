@@ -1732,6 +1732,7 @@ select:-webkit-autofill {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  grid-column: 2;
 }
 .report-document-scroll {
   flex: 1 1 auto;
@@ -2805,6 +2806,7 @@ select:-webkit-autofill {
   display: none;
 }
 .report-rail {
+  grid-column: 1;
   padding-bottom: var(--space-12);
   background: var(--bg);
   scrollbar-width: thin;
@@ -3037,6 +3039,7 @@ button.report-rail-head:hover {
 /* Conversation drawer (#654/#975). It stays mounted at width zero so drafts
    and in-flight cross-card guards survive close/open cycles. */
 .report-conversation-drawer {
+  grid-column: 3;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -3561,6 +3564,11 @@ button.report-rail-head:hover {
 
     grid-template-columns: minmax(0, 1fr);
     overflow: auto;
+  }
+  .report-rail,
+  .report-center,
+  .report-conversation-drawer {
+    grid-column: 1;
   }
   .report-page--rail-collapsed {
     grid-template-columns: minmax(0, 1fr);

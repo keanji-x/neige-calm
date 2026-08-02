@@ -554,6 +554,7 @@ test('report heading rules preserve heading geometry', async ({ page }) => {
 test('collapsed report rail opener stays inside the report shell', async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1600, height: 900 });
   await login(page);
 
   const ts = Date.now();
@@ -562,6 +563,29 @@ test('collapsed report rail opener stays inside the report shell', async ({
   await writeReport(page, wave.id, 'Report body');
   await page.goto(`/calm/wave/${wave.id}`);
   await page.getByRole('button', { name: 'Collapse report rail' }).click();
+
+  const contentGeometry = await page.locator('.report-center').evaluate(
+    (center) => {
+      const scrollRoot = center.querySelector('.report-document-scroll');
+      const document = center.querySelector('.report-doc');
+      if (!(scrollRoot instanceof HTMLElement) ||
+          !(document instanceof HTMLElement)) {
+        throw new Error('Report content hierarchy not found');
+      }
+      return {
+        centerWidth: center.getBoundingClientRect().width,
+        scrollWidth: scrollRoot.getBoundingClientRect().width,
+        documentWidth: document.getBoundingClientRect().width,
+        documentVisible: getComputedStyle(document).visibility === 'visible',
+      };
+    },
+  );
+  // At 1600×900, removing the rail grid item must leave the explicitly placed
+  // center column and its document visible and measurably wide.
+  expect(contentGeometry.centerWidth).toBeGreaterThan(0);
+  expect(contentGeometry.scrollWidth).toBeGreaterThan(0);
+  expect(contentGeometry.documentWidth).toBeGreaterThan(0);
+  expect(contentGeometry.documentVisible).toBe(true);
 
   const opener = page.getByRole('button', { name: 'Expand report rail' });
   await expect(opener).toBeVisible();
