@@ -45,16 +45,6 @@ export default tseslint.config(
     },
   },
   {
-    files: ['web/src/ui/state/public.ts'],
-    rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
-        ],
-      }],
-    },
-  },
-  {
     files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}', 'web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     ignores: moduleRuntimeStateAllowlist,
     rules: { 'architecture/no-module-runtime-state': 'error' },
@@ -71,6 +61,13 @@ export default tseslint.config(
     files: ['web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     ignores: createContextAllowlist,
     rules: { 'architecture/no-create-context-outside-allowlist': 'error' },
+  },
+  {
+    files: ['**/*.test.{ts,tsx}', '**/*.contract.test.{ts,tsx}'],
+    rules: {
+      // Reason: test modules are outside the application dependency graph, and mock factories intentionally return mutable test doubles.
+      'architecture/no-module-runtime-state': 'off',
+    },
   },
   {
     files: ['web/src/ui/state/public.ts'],

@@ -14,6 +14,26 @@ const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfig
 const cruiseOptions = config.options ?? {};
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
+  if (caseName === 'test-module-runtime-state-exemption') {
+    const fixtureDir = resolve(fixtures, caseName, kind, 'web/src');
+    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const fixtureTargets = kind === 'positive'
+      ? [['mock-test.ts.fixture', 'ui/state/public.contract.test.ts']]
+      : [['mock.ts.fixture', 'ui/state/public.ts'], ['context-test.ts.fixture', 'ui/state/public.test.ts']];
+    const results = await Promise.all(fixtureTargets.map(async ([fixtureName, targetName]) => {
+      const source = ts.sys.readFile(resolve(fixtureDir, fixtureName)) ?? '';
+      return eslint.lintText(source, { filePath: resolve(import.meta.dirname, '../../web/src', targetName) });
+    }));
+    const messages = results.flatMap(([result]) => result.messages)
+      .filter((message) => message.ruleId?.startsWith('architecture/'));
+    const ruleIds = messages.map((message) => message.ruleId);
+    if (kind === 'positive') {
+      return { status: messages.length ? 1 : 0, stdout: ruleIds.join('\n'), stderr: '' };
+    }
+    const expectedRules = ['architecture/no-module-runtime-state', 'architecture/no-create-context-outside-allowlist'];
+    const missingRules = expectedRules.filter((ruleId) => !ruleIds.includes(ruleId));
+    return { status: missingRules.length ? 0 : 1, stdout: missingRules.length ? missingRules.join('\n') : caseName, stderr: '' };
+  }
   if (caseName.startsWith('source-layout') || caseName === 'top-level-only-main') {
     const cwd = resolve(fixtures, caseName, kind);
     const error = checkTopLevel(cwd);

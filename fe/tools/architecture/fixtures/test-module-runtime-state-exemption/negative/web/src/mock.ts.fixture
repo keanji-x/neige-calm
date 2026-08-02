@@ -1,0 +1,3 @@
+vi.mock('x', () => ({ a: vi.fn() }));
+
+export const mock = vi.hoisted(() => ({ a: vi.fn() }));
