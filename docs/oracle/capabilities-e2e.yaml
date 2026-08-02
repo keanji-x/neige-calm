@@ -1,0 +1,4871 @@
+# meta:
+#   scope: web/e2e/**  (34 spec files + 4 helpers + 3 _setup files) + web/playwright.config.ts
+#   spec files read: 34 / 34 (all *.spec.ts under web/e2e/)
+#   helper/infra files read: helpers/{lifecycle,reset,spec-chat,trace}.ts,
+#                            _setup/{replay-server.setup,replay-server.shared,replay-server.teardown}.ts,
+#                            playwright.config.ts, e2e/README.md
+#   entries: 258 total — 129 capability, 118 invariant, 11 gate
+#     (the invariant share is high because e2e specs are overwhelmingly written as regression
+#      pins against named issues: #56 #133 #135 #142 #175 #177 #182 #250 #269 #288 #290 #304
+#      #305 #306 #409 #423 #510 #594 #630 #632 #657 #668 #676 #682 #690 #891)
+#   source convention: `source` cites the e2e spec/helper line range that DEFINES and
+#     verifies the behaviour (that is the artifact this agent actually read end-to-end).
+#     When a spec comment names the production module that implements it, that module is
+#     named in `why` so the new frontend knows which file owns the contract.
+#   not extracted (pure test-runner plumbing, no user-facing capability):
+#     - e2e/__snapshots__/color-anchor-baseline.md (regenerated artifact, not diffed)
+#     - e2e/fixtures/test-tui-theme.py (python PTY fixture; its CONTRACT is captured as
+#       E2E-CAP-TERMTHEME-* instead)
+#     - e2e/_scroll-probe.spec.ts test BODY: explicitly "investigation only, NOT a CI gate"
+#       (underscored + excluded from the chromium project). Its scroll-surface INVENTORY is
+#       captured as E2E-CAP-SCROLL-001/002 + E2E-INV-SCROLL-003 (authoritative_test: NONE)
+#       because the new fe must still own those surfaces even though nothing gates them today.
+#   authoritative_test: NONE appears on 7 entries — behaviours the specs DOCUMENT as
+#     deliberately ungated (wave archive UI, cove-folder management UI, the resolve
+#     longest-prefix tiebreak, the folder-overlap 409, the dormant-spec-input 409, and the
+#     scroll-probe inventory). Each is an intentional scope decision, not an oversight.
+#   ONLY-E2E signal: entries whose `why` contains "ONLY e2e" have no unit/vitest counterpart
+#     per the spec's own header comment — losing the spec loses the entire safety net.
+#     Structurally e2e-only classes (no jsdom equivalent is possible): xterm buffer contents,
+#     PTY/OSC theme protocol, wheel routing, CSS geometry/overflow, axe colour contrast,
+#     computed color-scheme, focus traps across real Tab, and WS cursor-resync.
+
+# =============================================================================
+# SECTION 1 — Test-infrastructure capabilities (the new fe needs equivalents)
+# =============================================================================
+
+- id: E2E-CAP-INFRA-001
+  kind: capability
+  family: playwright-projects
+  statement: >
+    The e2e suite must expose a `chromium` project that targets a developer-run full stack
+    (default http://localhost:4041/calm/, overridable via PLAYWRIGHT_BASE_URL / CALM_PORT)
+    and deliberately does NOT boot a webServer for it.
+  why: >
+    playwright.config.ts:9-17 — booting the full kernel + sqlite seed from Playwright is
+    slower than the human dev loop and would race an already-running `make dev`.
+  source: web/playwright.config.ts:106-118
+  authoritative_test: web/playwright.config.ts:106
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-002
+  kind: capability
+  family: playwright-projects
+  statement: >
+    The suite must expose an `a11y` project (testMatch `**/a11y-*.spec.ts`) that runs against
+    a Vite dev server fronting an in-process replay binary, with baseURL pointing at the Vite
+    port, not the replay port.
+  why: >
+    playwright.config.ts:37-45 — the SPA bundle must be served with `import.meta.env.DEV`
+    truthy or the `?trace=1` ring buffer at `window.__neigeEvents__` is tree-shaken away;
+    the bare replay binary serves REST+WS only.
+  source: web/playwright.config.ts:119-127
+  authoritative_test: web/playwright.config.ts:119
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-003
+  kind: capability
+  family: playwright-projects
+  statement: >
+    The suite must expose a `color-anchor` project bound to `color-system-anchor.spec.ts`
+    with the replay baseURL, separate from `a11y`.
+  why: >
+    e2e/README.md:134-143 — it drives a dedicated `color-anchor.html` harness page rather
+    than the SPA, so it cannot share the a11y project's spec glob.
+  source: web/playwright.config.ts:128-135
+  authoritative_test: web/playwright.config.ts:128
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-004
+  kind: capability
+  family: playwright-projects
+  statement: >
+    `replay-setup` must be a setup-only project that declares `teardown: 'replay-teardown'`,
+    and the `a11y` project must list it under `dependencies`.
+  why: >
+    playwright.config.ts:93-101 — the teardown reference is what makes Playwright run the
+    kill step even when a downstream test fails or the run is Ctrl-C'd.
+  source: web/playwright.config.ts:91-105
+  authoritative_test: web/playwright.config.ts:98
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-005
+  kind: invariant
+  family: playwright-projects
+  statement: >
+    The `chromium` project must testIgnore `**/a11y-*.spec.ts`, `**/_setup/**`,
+    `**/_scroll-probe.spec.ts` and `**/color-system-anchor.spec.ts`.
+  why: >
+    Keeps `npx playwright test --project=chromium` runnable without cargo on PATH
+    (playwright.config.ts:28-32); the probe and color-anchor specs need harnesses chromium
+    does not provide.
+  source: web/playwright.config.ts:108-113
+  authoritative_test: web/playwright.config.ts:108
+  owner_slice: none/e2e/infra
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-006
+  kind: invariant
+  family: playwright-workers
+  statement: >
+    The e2e run must use exactly one worker.
+  why: >
+    playwright.config.ts:81-82 — multiple workers would mutate the same shared MockRepo /
+    replay kernel concurrently and make cove/wave seed state unpredictable.
+  source: web/playwright.config.ts:83
+  authoritative_test: web/playwright.config.ts:83
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-007
+  kind: capability
+  family: playwright-retries
+  statement: >
+    CI must retry twice and locally must not retry; artifacts (trace/screenshot/video) are
+    captured only on failure or first retry.
+  why: >
+    playwright.config.ts:78-79 — two retries absorb flaky animation timings in CI while the
+    local loop stays fail-fast and cheap.
+  source: web/playwright.config.ts:80-90
+  authoritative_test: web/playwright.config.ts:80
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-008
+  kind: capability
+  family: replay-server
+  statement: >
+    A `replay-setup` step must spawn `cargo run --quiet --bin replay --features fixtures --
+    --serve --file <fixture> --port 4141`, poll stdout for the `listening on http://` banner,
+    and fail the run if the process exits before announcing readiness.
+  why: >
+    _setup/replay-server.setup.ts:180-183 — banner polling instead of sleeping; an early exit
+    (cargo build failure, port conflict) must die with a clear cause rather than timing out on
+    connect later.
+  source: web/e2e/_setup/replay-server.setup.ts:65-126
+  authoritative_test: web/e2e/_setup/replay-server.setup.ts:65
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-009
+  kind: invariant
+  family: replay-server
+  statement: >
+    The replay child must be spawned `detached: true` with stderr routed to a real file fd
+    (web/test-results/replay-server.log), never a pipe.
+  why: >
+    _setup/replay-server.setup.ts:50-59,110-117 — a pipe's write end dies when the Playwright
+    setup worker exits, and the grandchild's first `tracing::info!` then takes SIGPIPE
+    (root cause of the `socket hang up` flake, debug PR #191). Detached also lets teardown
+    SIGTERM the whole process group.
+  source: web/e2e/_setup/replay-server.setup.ts:100-123
+  authoritative_test: web/e2e/_setup/replay-server.setup.ts:118
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-010
+  kind: invariant
+  family: replay-server
+  statement: >
+    The replay server's PID must be handed off to teardown through an on-disk file under
+    node_modules/.cache/, not a module-level variable.
+  why: >
+    _setup/replay-server.setup.ts:22-27 — Playwright runs each project's tests in a separate
+    worker process, so in-memory state cannot survive setup → tests → teardown.
+  source: web/e2e/_setup/replay-server.shared.ts:38-47
+  authoritative_test: web/e2e/_setup/replay-server.teardown.ts:19
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-011
+  kind: invariant
+  family: replay-server
+  statement: >
+    Teardown must SIGTERM the negative PID (process group), wait a 5s grace window, then
+    SIGKILL the group; ESRCH must be swallowed.
+  why: >
+    _setup/replay-server.teardown.ts:36-41 — cargo spawns the replay binary as a child;
+    killing only the cargo PID leaves the real server orphaned holding port 4141.
+  source: web/e2e/_setup/replay-server.teardown.ts:19-53
+  authoritative_test: web/e2e/_setup/replay-server.teardown.ts:37
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-012
+  kind: invariant
+  family: replay-server
+  statement: >
+    If setup fails after spawn but before the PID handoff, it must SIGKILL the spawned
+    process group before rethrowing.
+  why: >
+    _setup/replay-server.setup.ts:107-112 — since PR #630 the replay grandchild survives
+    stdout EPIPE, so a setup failure would otherwise leave an orphan holding the port with
+    no PID file for teardown to find.
+  source: web/e2e/_setup/replay-server.setup.ts:133-136,170-178
+  authoritative_test: web/e2e/_setup/replay-server.setup.ts:170
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-013
+  kind: capability
+  family: replay-server
+  statement: >
+    The default fixture must be
+    `crates/calm-server/tests/fixtures/events/wave-grid-layout-trace.events.json`, overridable
+    via `NEIGE_FIXTURE`, and a missing fixture path must fail setup loudly.
+  why: >
+    _setup/replay-server.shared.ts:15-19 — the default stays pinned so existing tests never
+    silently re-target when new fixtures land.
+  source: web/e2e/_setup/replay-server.setup.ts:68-74
+  authoritative_test: web/e2e/_setup/replay-server.setup.ts:68
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-014
+  kind: capability
+  family: codex-probe
+  statement: >
+    Setup must probe for a usable `codex` CLI (CALM_CODEX_BIN → pinned nvm path →
+    ~/.local/bin, ~/bin → nvm dir scan → `bash -lc 'command -v codex'`) and write the
+    absolute path or the `__missing__` sentinel to a cache file that codex-dependent specs
+    read synchronously to self-skip.
+  why: >
+    _setup/replay-server.shared.ts:77-96 — the login-shell fallback honours profile-augmented
+    PATH (nvm/asdf/pnpm) even when the Playwright worker inherited a stripped env; the file
+    handoff is needed because setup runs in a different worker than the spec.
+  source: web/e2e/_setup/replay-server.shared.ts:97-139
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:77-79
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-015
+  kind: invariant
+  family: codex-probe
+  statement: >
+    Codex resolution must run AFTER the replay server is confirmed ready.
+  why: >
+    _setup/replay-server.setup.ts:152-156 (#177) — a codex-resolution hiccup must gate only
+    the spec that needs codex, never the rest of the a11y suite.
+  source: web/e2e/_setup/replay-server.setup.ts:151-167
+  authoritative_test: web/e2e/_setup/replay-server.setup.ts:157
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-016
+  kind: capability
+  family: reset-hook
+  statement: >
+    A `POST /dev/reset` hook on the replay binary must wipe every row from the in-memory repo
+    and reseed the original fixture event stream, and every a11y spec must call it in
+    `beforeEach`.
+  why: >
+    helpers/reset.ts:1-17 — a single in-memory kernel serves the whole a11y project; without a
+    between-tests reset, per-test mutations accumulate and previously-green specs flake when
+    their predicates collide with earlier state.
+  source: web/e2e/helpers/reset.ts:26-40
+  authoritative_test: web/e2e/helpers/reset.ts:31
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-017
+  kind: invariant
+  family: reset-hook
+  statement: >
+    `/dev/reset` and every other `/dev/*` hook must be mounted ONLY by the `replay --serve`
+    binary, never by production calm-server.
+  why: >
+    helpers/reset.ts:16-17 — dev-only by design doc §6.3; these endpoints bypass the actor /
+    lifecycle authorization surface.
+  source: web/e2e/helpers/reset.ts:16-17
+  authoritative_test: web/e2e/helpers/reset.ts:31
+  owner_slice: none/e2e/infra
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-018
+  kind: capability
+  family: seed-helpers
+  statement: >
+    Test helpers must be able to mint a user cove (`POST /api/coves`), a wave inside a cove
+    (`POST /api/waves` with cove_id/title/cwd/attach_folder/theme), a wave report
+    (`POST /api/waves/:id/report`), a renderer-free iframe worker card
+    (`POST /api/waves/:id/cards`), and a per-wave view-mode overlay (`POST /api/overlays`).
+  why: >
+    helpers/reset.ts:42-59,81-87,125,148-153,178-190 — post-#175 the sidebar has no seeded
+    cove, so every spec must create the coves/waves it needs; the iframe card exists so card
+    surfaces can be populated without a terminal/codex daemon.
+  source: web/e2e/helpers/reset.ts:61-219
+  authoritative_test: web/e2e/helpers/reset.ts:61
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-019
+  kind: invariant
+  family: seed-helpers
+  statement: >
+    `POST /api/waves` requires both `cwd` and `theme`; a body missing `theme` is rejected 422.
+  why: >
+    helpers/reset.ts:95-104 — #250 PR2 made cwd required; #177 made `theme` required
+    end-to-end. Every wave-creating fixture in the suite carries an inert dark sentinel.
+  source: web/e2e/helpers/reset.ts:105-114
+  authoritative_test: web/e2e/helpers/reset.ts:105
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-020
+  kind: invariant
+  family: seed-helpers
+  statement: >
+    `seedWaveViewMode` must use a RELATIVE `/api/overlays` path while every other replay
+    helper pins `http://127.0.0.1:4141`.
+  why: >
+    helpers/reset.ts:196-201 — it is the only helper also called from the chromium docker
+    project (wave-report-view.spec.ts) where port 4141 does not exist; the a11y Vite server
+    proxies /api to the replay binary via VITE_API_PROXY_TARGET.
+  source: web/e2e/helpers/reset.ts:191-219
+  authoritative_test: web/e2e/helpers/reset.ts:202
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-021
+  kind: capability
+  family: view-mode-overlay
+  statement: >
+    Per-wave view mode must be storable as an overlay row with plugin_id `kernel`,
+    entity_kind `view`, entity_id = waveId, kind `view-mode`, payload
+    `{schemaVersion: 1, mode: 'grid'|'list'|'report'}`.
+  why: >
+    helpers/reset.ts:178-190 — byte-for-byte the write the header's Cards↔Report switch makes;
+    `view-mode` is not a kernel-registered overlay kind so it passes
+    `validate_overlay_payload` as an opaque plugin-style kind.
+  source: web/e2e/helpers/reset.ts:191-219
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:757
+  owner_slice: features/wave/view-mode
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-022
+  kind: capability
+  family: event-trace
+  statement: >
+    Under a dev build with `?trace=1`, the app must install a 200-entry ring buffer at
+    `window.__neigeEvents__` (entries `{id, eventVersion, ev, data, ts}`) plus a
+    `window.__neigeClearEvents__()` that empties it IN PLACE.
+  why: >
+    helpers/trace.ts:1-12,45-48 (issue #56 slice 5) — clearing in place rather than
+    reassigning keeps any cached references in component code valid.
+  source: web/e2e/helpers/trace.ts:17-53
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-023
+  kind: capability
+  family: event-trace
+  statement: >
+    Helpers must offer `getEventTrace`, `clearEventTrace`, `assertEventKinds` (exact ordered
+    match) and `waitForEvent(kind, timeoutMs=5000)` implemented browser-side via
+    `page.waitForFunction`.
+  why: >
+    helpers/trace.ts:65-69 — browser-side polling gives sub-ms granularity, integrates with
+    the page's animation frame, and the 5s default matches Playwright's toHaveText default,
+    long enough for a fresh WS connect + initial replay window.
+  source: web/e2e/helpers/trace.ts:40-89
+  authoritative_test: web/e2e/helpers/trace.ts:70
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-024
+  kind: capability
+  family: lifecycle-hook
+  statement: >
+    `POST /dev/force-wave-lifecycle {wave_id, to}` must stamp the transition as
+    `ActorId::Kernel` (classified SpecAgent), route through the same
+    `write_with_events_typed` pipeline as production `update_wave`, and return
+    `{wave, emitted_events}`.
+  why: >
+    helpers/lifecycle.ts:1-18 (#269 P1) — the spec daemon does not run in the replay binary,
+    so spec-only edges can never happen organically; the hook changes only WHO drives the
+    edge, never whether the edge is legal.
+  source: web/e2e/helpers/lifecycle.ts:53-92
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:74
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-025
+  kind: invariant
+  family: lifecycle-hook
+  statement: >
+    User-driven lifecycle edges (kickoff, cancel, reopen) must go through plain
+    `PATCH /api/waves/:id` with NO `X-Calm-Actor` header, never through the dev force hook.
+  why: >
+    helpers/lifecycle.ts:15-18,94-99 — only then does the kernel attribute the write to
+    `ActorId::User`, matching production event-log attribution.
+  source: web/e2e/helpers/lifecycle.ts:100-117
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:87
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-026
+  kind: capability
+  family: lifecycle-hook
+  statement: >
+    Raw (non-throwing) variants of both the force hook and the PATCH helper must exist, with
+    the PATCH variant accepting an optional `X-Calm-Actor` header.
+  why: >
+    helpers/lifecycle.ts:72-81,119-128 — the rejection suite EXPECTS 4xx, so a throwing
+    helper would defeat the point; the actor header is how the Worker-rejection case is
+    reachable from e2e at all.
+  source: web/e2e/helpers/lifecycle.ts:82-92,129-144
+  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:190
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-INFRA-027
+  kind: gate
+  family: lifecycle-types
+  statement: >
+    The full `WaveLifecycle` variant set (draft|planning|dispatching|working|blocked|
+    reviewing|done|canceled|failed) must be pinned as a TS string-literal union in the e2e
+    tree, mirroring the Rust enum's lowercase serde tags.
+  why: >
+    helpers/lifecycle.ts:24-30 — compile-time typo detection in specs instead of runtime
+    404/403 confusion.
+  source: web/e2e/helpers/lifecycle.ts:31-40
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:80
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-028
+  kind: capability
+  family: spec-chat-hook
+  statement: >
+    `POST /dev/force-spec-phase {card_id, to}` must stand a paused harness up on registry
+    miss and force the FSM through the regular `persist_snapshot` path, returning
+    `{ok, card_id, runtime_id, old_phase, new_phase}`.
+  why: >
+    helpers/spec-chat.ts:1-12 (#682 PR-1) — the codex app-server is stubbed in replay so the
+    `spec-harness-start` op fails at validate; the hook is what makes `GET /spec/run`, the
+    `harness.phase.changed` WS event and the DB snapshot agree by construction.
+  source: web/e2e/helpers/spec-chat.ts:74-91
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:51
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-INFRA-029
+  kind: gate
+  family: spec-chat-hook
+  statement: >
+    The forceable harness phase set is exactly pending_thread_start | idle | issuing_turn |
+    issuing_interrupt | turn_running | turn_completed | resumed; `wedged` must be rejected 400.
+  why: >
+    helpers/spec-chat.ts:43-48 — a failed runtime row is no longer projectable by
+    `GET /spec/run`, so forcing `wedged` would produce an unrepresentable state.
+  source: web/e2e/helpers/spec-chat.ts:49-56
+  authoritative_test: web/e2e/helpers/spec-chat.ts:49
+  owner_slice: features/spec/chat
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-030
+  kind: invariant
+  family: spec-chat-hook
+  statement: >
+    Forced phases are stable EXCEPT `resumed`, which decays to `idle` after ~5s with an extra
+    `harness.phase.changed`; tests must never assert `resumed` stays put.
+  why: >
+    helpers/spec-chat.ts:14-21 — probed stub-runtime fact pinned against the live replay
+    binary (2026-06); the dev harness issues no codex RPCs so every other phase is inert.
+  source: web/e2e/helpers/spec-chat.ts:14-24
+  authoritative_test: web/e2e/helpers/spec-chat.ts:18
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-031
+  kind: invariant
+  family: spec-chat-hook
+  statement: >
+    `POST /spec/interrupt` at `turn_running` parks the harness at `issuing_interrupt` where a
+    30s watchdog wedges it; interrupt tests must act, assert, and let the next `/dev/reset`
+    clean up — never idle >30s.
+  why: >
+    helpers/spec-chat.ts:21-24 — the stub can never complete the codex `turn/interrupt` RPC.
+  source: web/e2e/helpers/spec-chat.ts:21-24
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:71
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-032
+  kind: capability
+  family: spec-chat-hook
+  statement: >
+    Helpers must resolve the auto-created spec card from wave detail by the predicate
+    `kind === 'codex' && payload.spec_harness === true`, and throw when absent.
+  why: >
+    helpers/spec-chat.ts:93-101 — the same predicate `WaveReportPage.selectSpecCard` resolves
+    against FE card slots; throwing makes a seeding regression fail at setup, not at a later
+    locator.
+  source: web/e2e/helpers/spec-chat.ts:102-128
+  authoritative_test: web/e2e/helpers/spec-chat.ts:117
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-033
+  kind: capability
+  family: spec-chat-hook
+  statement: >
+    A helper must be able to intercept `/api/events` over `page.routeWebSocket` and drop ONLY
+    server→client `harness.phase.changed` frames while proxying everything else (including
+    the client's `{sub, since}` publishes and the server's `_replay_complete`).
+  why: >
+    helpers/spec-chat.ts:156-170 — the stream subscribes with `since: 0`, so a phase forced
+    BEFORE navigation is replayed anyway; without the filter a seed-path test would stay green
+    even if the component never consumed `GET /spec/run`.
+  source: web/e2e/helpers/spec-chat.ts:172-190
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:57
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-034
+  kind: invariant
+  family: spec-chat-hook
+  statement: >
+    The WS phase-frame drop filter must be installed BEFORE `page.goto` and used only by
+    seed-path tests.
+  why: >
+    helpers/spec-chat.ts:169-170 — live / input / interrupt specs depend on real phase frames
+    and would hang forever with the filter installed.
+  source: web/e2e/helpers/spec-chat.ts:166-171
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:57
+  owner_slice: none/e2e/infra
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-INFRA-035
+  kind: gate
+  family: a11y-gate
+  statement: >
+    The CI a11y gate must run the WHOLE `a11y` project via `--project=a11y` (glob
+    `**/a11y-*.spec.ts`) plus the `color-anchor` project — never an explicit per-file list.
+  why: >
+    e2e/README.md:99-112 (#690) — the previous explicit 6-file list silently skipped 9 specs
+    the glob already owned. Whole-project running means adding an `a11y-*.spec.ts` gates it
+    automatically with no registration step.
+  source: web/e2e/README.md:84-112
+  authoritative_test: web/e2e/README.md:96
+  owner_slice: none/ci
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-036
+  kind: invariant
+  family: a11y-gate
+  statement: >
+    `a11y:axe` and `a11y:spec-chat` must NOT be chained into the `a11y` gate script.
+  why: >
+    e2e/README.md:105-110 — the whole-project `a11y:e2e` already covers them; re-listing would
+    double-run those files. They stay as standalone dev conveniences.
+  source: web/e2e/README.md:105-110
+  authoritative_test: web/e2e/README.md:96
+  owner_slice: none/ci
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-037
+  kind: capability
+  family: test-hooks
+  statement: >
+    A `?testMounts=1` URL flag must unlock production-side test hooks that are zero-cost
+    without it: `window.__xtermMounts__` (mount counter), `window.__xtermDumps__`
+    (terminalId → buffer serializer), and `window.__calmSetTheme(mode)`.
+  why: >
+    a11y-177-theme-toggle-no-remount.spec.ts:35-45 and new-terminal-osc-echo.spec.ts:37-45 —
+    xterm's canvas/webgl renderer does not mirror glyphs into navigable DOM, so the dump
+    registry is the ONLY way to read a terminal grid; `__calmSetTheme` flips theme without
+    navigating (navigation would unmount the card under test).
+  source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:33-45
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:74-95
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-038
+  kind: invariant
+  family: test-hooks
+  statement: >
+    `?testMounts=1` must be re-appended on EVERY navigation; SPA sidebar navigation drops it
+    and the hooks de-register.
+  why: >
+    wheel-wave-switch.spec.ts:126-129 — after sidebar nav the `__xtermDumps__` hook is gone,
+    so persistence assertions must fall back to reading rendered DOM text.
+  source: web/e2e/wheel-wave-switch.spec.ts:126-135
+  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:130
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-INFRA-039
+  kind: capability
+  family: auth
+  statement: >
+    Chromium-project specs must be able to log in via `POST /api/auth/login` with
+    `{username, password}` defaulting to owner/dev and overridable via PROBE_USERNAME /
+    PROBE_PASSWORD.
+  why: >
+    wave-report-view.spec.ts:27-36 — the `make dev` docker stack requires a cookie session
+    before REST writes; the replay binary uses dev-autologin instead.
+  source: web/e2e/wave-report-view.spec.ts:27-36
+  authoritative_test: web/e2e/wave-report-sidebar-files.spec.ts:27
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-040
+  kind: invariant
+  family: cleanup
+  statement: >
+    Every chromium-project spec that mints coves must track their ids and
+    `DELETE /api/coves/<id>` them in `afterEach`, tolerating 404.
+  why: >
+    wave-create.spec.ts:21-26 (#250 PR5 triage) — leftover coves accumulate and break specs
+    that assume a zero-cove baseline (notably golden-path). The delete cascades through
+    waves → cards → terminals.
+  source: web/e2e/wave-create.spec.ts:27-43
+  authoritative_test: web/e2e/wave-create.spec.ts:33
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-041
+  kind: invariant
+  family: locators
+  statement: >
+    Every locator matching an entity name must use `exact: true` (or an anchored regex),
+    because per-row `Delete cove "<name>"` / `Expand cove <name>` / `Delete wave "<title>"`
+    buttons embed the same name in their accessible names.
+  why: >
+    golden-path.spec.ts:60-63, a11y-deep-link-after-reset.spec.ts:71-74 — a loose substring
+    match resolves to 2–3 elements and trips Playwright strict mode.
+  source: web/e2e/a11y-deep-link-after-reset.spec.ts:70-77
+  authoritative_test: web/e2e/golden-path.spec.ts:64
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-INFRA-042
+  kind: invariant
+  family: locators
+  statement: >
+    In-dialog button locators must match accessible names EXACTLY, never by substring regex.
+  why: >
+    wave-create-browse-cwd.spec.ts:97-105 (#891) — `.calm-select-trigger` buttons surface in
+    Chromium's AX tree named by their cloned selected-option content, so a substring match
+    strict-mode-collides with the intended button.
+  source: web/e2e/wave-create-browse-cwd.spec.ts:97-108
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:106
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 2 — App shell / sidebar / routing
+# =============================================================================
+
+- id: E2E-CAP-SHELL-001
+  kind: capability
+  family: app-shell
+  statement: >
+    Loading `/calm/` must paint the app shell with a visible `aside.side` sidebar containing a
+    `<nav aria-label="Sidebar navigation">` whose first control is a `Today` button, and a
+    separate `<nav aria-label="Coves">`.
+  why: >
+    golden-path.spec.ts:19-29 — the two named navigation landmarks are what let role-scoped
+    queries disambiguate a sidebar `Today` button from a wave row also named "Today"
+    (docs/a11y-contract.md §2.2).
+  source: web/e2e/golden-path.spec.ts:14-49
+  authoritative_test: web/e2e/golden-path.spec.ts:14
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-002
+  kind: capability
+  family: today-bootstrap
+  statement: >
+    The Today page must auto-bootstrap a default terminal on first paint and write the
+    resolved card id to `localStorage['calm.todayCardId']`.
+  why: >
+    golden-path.spec.ts:32-42 (#175) — that key is the ONLY externally observable signal that
+    the hidden system cove + Today wave + terminal card all exist, since none of them appear
+    in the sidebar.
+  source: web/e2e/golden-path.spec.ts:36-42
+  authoritative_test: web/e2e/golden-path.spec.ts:36
+  owner_slice: features/today/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SHELL-003
+  kind: invariant
+  family: today-bootstrap
+  statement: >
+    The system cove hosting the default Today terminal must be filtered out of
+    `GET /api/coves`; a fresh workspace must render ZERO `button.cove-nav` rows in the sidebar.
+  why: >
+    golden-path.spec.ts:44-49 (#175) — leaking kernel scaffolding back into the sidebar is the
+    exact regression this assertion catches.
+  source: web/e2e/golden-path.spec.ts:44-49
+  authoritative_test: web/e2e/golden-path.spec.ts:49
+  owner_slice: app/shell/sidebar
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-004
+  kind: capability
+  family: cove-create
+  statement: >
+    The sidebar Coves header must expose a `+ New cove` icon button that reveals a name input
+    (placeholder matching /name/i); pressing Enter mints the cove and its nav row appears with
+    the cove name as its accessible name.
+  why: >
+    golden-path.spec.ts:51-66 — the canonical zero-to-one entrypoint; the trigger lives on the
+    Coves header as an icon button (no longer a `button.cove-nav` row).
+  source: web/e2e/golden-path.spec.ts:51-66
+  authoritative_test: web/e2e/golden-path.spec.ts:53
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-005
+  kind: capability
+  family: routing
+  statement: >
+    Clicking a sidebar cove row must navigate to `/calm/cove/<uuid>` with the sidebar still
+    visible alongside the cove page.
+  why: >
+    golden-path.spec.ts:66-73 — catches a broken router or a broken `/api/coves` route.
+  source: web/e2e/golden-path.spec.ts:66-73
+  authoritative_test: web/e2e/golden-path.spec.ts:70
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-006
+  kind: capability
+  family: routing
+  statement: >
+    The router must run under `basepath: '/calm'`, so the Today index route surfaces in the
+    browser URL as `/calm/` with no `/today` suffix.
+  why: >
+    a11y-wave-cove-ops.spec.ts:901-904 — the cove-delete handler navigates `go({name:'today'})`
+    and the assertion has to match `/calm/(\?|$)`.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:896-908
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:908
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-007
+  kind: capability
+  family: sidebar-expand
+  statement: >
+    Each sidebar cove row must expose an `Expand cove <name>` button that reveals an inline
+    `<div role="group" aria-label="Waves in <name>">` listing that cove's waves.
+  why: >
+    a11y-sidebar-wave-delete.spec.ts:28-30 — the inline wave list is the surface the sidebar
+    wave-delete affordance lives on.
+  source: web/e2e/a11y-sidebar-wave-delete.spec.ts:27-33
+  authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:28
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-008
+  kind: capability
+  family: sidebar-wave-delete
+  statement: >
+    Hovering a `.side-wave-row` must bring its `Delete wave "<title>"` button to
+    `opacity: 1`; clicking it opens the `Delete wave?` confirm dialog whose body reads
+    `Delete wave "<title>"?`, and confirming removes the row from the sidebar.
+  why: >
+    a11y-sidebar-wave-delete.spec.ts:15-47 — the hover-reveal affordance is otherwise
+    invisible and would silently disappear in a rewrite. ONLY e2e covers the CSS opacity
+    reveal.
+  source: web/e2e/a11y-sidebar-wave-delete.spec.ts:15-48
+  authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:15
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-009
+  kind: capability
+  family: sidebar-wave-nav
+  statement: >
+    The sidebar must render per-wave `button.side-wave` entries that navigate directly to
+    `/calm/wave/<id>`.
+  why: >
+    wheel-wave-switch.spec.ts:109-118 — the wave-switch flow (and its terminal-remount
+    contract) is driven entirely through these buttons.
+  source: web/e2e/wheel-wave-switch.spec.ts:109-118
+  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:112
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SHELL-010
+  kind: capability
+  family: user-menu
+  statement: >
+    The sidebar must expose an avatar trigger with accessible name `Open user menu`; Enter
+    opens a menu whose FIRST item is Settings, and Enter again routes to `/calm/settings`.
+  why: >
+    a11y-keyboard.spec.ts:851-858 — two Enters from the trigger is the documented keyboard
+    path to Settings; item order is load-bearing for that.
+  source: web/e2e/a11y-keyboard.spec.ts:851-858
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:851
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SHELL-011
+  kind: invariant
+  family: sidebar-overflow
+  statement: >
+    The sidebar has no `overflow: auto` (body is `overflow: hidden`), so once enough coves
+    accumulate the `+ New cove` row is pushed outside the document and cannot be scrolled to.
+  why: >
+    wave-create-auto-match.spec.ts:82-90 — a real, currently-shipped limitation that forces
+    multi-cove specs to seed via REST instead of the sidebar UI. A rewrite that "fixes" this
+    silently changes which flows are reachable.
+  source: web/e2e/wave-create-auto-match.spec.ts:82-90
+  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:91
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 3 — Wave creation (NewTaskForm + cwd→cove resolve)
+# =============================================================================
+
+- id: E2E-CAP-WAVECREATE-001
+  kind: capability
+  family: new-task-form
+  statement: >
+    The cove page must expose a `+ New wave` CTA that opens a modal `<dialog aria-label="New
+    wave">` hosting a `<form aria-label="New task">`; all wave creation entrypoints go through
+    this one configuration card.
+  why: >
+    wave-create.spec.ts:63-79 (#250 PR3) — the legacy one-line title input was removed on
+    purpose; the Dialog wrapper exists so the cwd Browse… picker can take over the modal body.
+  source: web/e2e/wave-create.spec.ts:65-79
+  authoritative_test: web/e2e/wave-create.spec.ts:45
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-002
+  kind: capability
+  family: new-task-form
+  statement: >
+    NewTaskForm must expose a `Task description` textarea, a `Working directory` input, and a
+    `Create task` submit button.
+  why: >
+    wave-create.spec.ts:81-96 — these three are the minimal field set every creation spec in
+    the suite drives.
+  source: web/e2e/wave-create.spec.ts:81-96
+  authoritative_test: web/e2e/wave-create.spec.ts:82
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-003
+  kind: capability
+  family: new-task-form
+  statement: >
+    Submitting from a fresh cove whose cwd no cove claims must POST the wave against the
+    surrounding cove with `attach_folder: true` and push the router to `/calm/wave/<id>`
+    within ~10s, with the submitted title visible on the page.
+  why: >
+    wave-create.spec.ts:83-105 — the CovePage passes `defaultCoveId={cove.id}`; the resolve
+    misses so the "existing cove + attach_folder" branch runs. This is the everyday path.
+  source: web/e2e/wave-create.spec.ts:83-105
+  authoritative_test: web/e2e/wave-create.spec.ts:96
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-004
+  kind: capability
+  family: cwd-auto-match
+  statement: >
+    Typing a cwd covered by another cove's folder claim must, after a 300ms debounce, render a
+    `data-testid="cove-auto-match"` banner naming that cove AND the matching folder path.
+  why: >
+    wave-create-auto-match.spec.ts:112-120 — anchored on the testid so the locator survives
+    copy tweaks; the visible copy starts with "Auto-matched to cove".
+  source: web/e2e/wave-create-auto-match.spec.ts:112-120
+  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:117
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WAVECREATE-005
+  kind: invariant
+  family: cwd-auto-match
+  statement: >
+    A cwd auto-match MUST override the surrounding page's `defaultCoveId` — the wave lands in
+    the cove that owns the path, not the cove whose page the user is looking at.
+  why: >
+    wave-create-auto-match.spec.ts:6-11 — "longest-prefix resolve wins over surrounding page
+    context". Without it the user silently lands waves in the wrong cove every time they type
+    a path another cove already owns.
+  source: web/e2e/wave-create-auto-match.spec.ts:122-143
+  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:142
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WAVECREATE-006
+  kind: invariant
+  family: cwd-auto-match
+  statement: >
+    When the auto-match branch fires, `attach_folder` must be FALSE — the wave-create tx must
+    NOT mint a redundant `cove_folders` row for a cwd already covered by an ancestor claim.
+  why: >
+    wave-create-auto-match.spec.ts:145-154 — a redundant descendant claim would later trip the
+    create endpoint's ancestor/descendant overlap 409 and corrupt resolve's at-most-one-row
+    invariant.
+  source: web/e2e/wave-create-auto-match.spec.ts:145-154
+  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:154
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-007
+  kind: capability
+  family: cove-picker
+  statement: >
+    When the cwd resolve MISSES, the form must show a `<radiogroup aria-label="Cove
+    selection">` offering `Existing cove` (default when defaultCoveId is set, paired with a
+    combobox listing every user cove) and `Create new cove`.
+  why: >
+    wave-create-new-cove.spec.ts:90-98 and wave-create-browse-cwd.spec.ts:146-149 — the
+    radiogroup's appearance is also the signal that the resolve debounce has settled.
+  source: web/e2e/wave-create-new-cove.spec.ts:90-104
+  authoritative_test: web/e2e/wave-create-new-cove.spec.ts:96
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-008
+  kind: capability
+  family: cove-picker
+  statement: >
+    Picking `Create new cove` must reveal a `New cove name` input, auto-seed a deterministic
+    palette colour (no colour picker), and on submit run the two-step
+    `POST /api/coves` → `POST /api/waves (attach_folder: true)` so the typed cwd lands as a
+    `cove_folders` row in the same tx.
+  why: >
+    wave-create-new-cove.spec.ts:1-16 — the two-step is opaque from the user's POV; only the
+    URL push and the resulting rows are observable.
+  source: web/e2e/wave-create-new-cove.spec.ts:99-152
+  authoritative_test: web/e2e/wave-create-new-cove.spec.ts:49
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-009
+  kind: capability
+  family: cove-picker
+  statement: >
+    A cove minted by the form's create-new-cove branch must appear in the sidebar within ~5s
+    without a reload.
+  why: >
+    wave-create-new-cove.spec.ts:120-129 — both the create-cove mutation's onSuccess
+    invalidate and the wave-create cache poke refresh the coves list.
+  source: web/e2e/wave-create-new-cove.spec.ts:120-129
+  authoritative_test: web/e2e/wave-create-new-cove.spec.ts:127
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-010
+  kind: capability
+  family: auto-match-override
+  statement: >
+    The auto-match banner must carry an enabled `Use a different cove` button that restores
+    the radio picker.
+  why: >
+    wave-create-override-auto-match.spec.ts:12-15 (#250 PR3 fix-loop "B2") — without it the
+    auto-match locks the cove in permanently and the user has no escape hatch for a path that
+    happens to fall under an existing claim.
+  source: web/e2e/wave-create-override-auto-match.spec.ts:100-111
+  authoritative_test: web/e2e/wave-create-override-auto-match.spec.ts:103
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WAVECREATE-011
+  kind: invariant
+  family: auto-match-override
+  statement: >
+    Once the override flag is latched, subsequent resolveState transitions (idle/miss/hit)
+    must NOT rewrite the user's cove choice.
+  why: >
+    wave-create-override-auto-match.spec.ts:118-127 — the user edits the cwd after overriding;
+    a re-resolve that resets the radio would silently discard their pick.
+  source: web/e2e/wave-create-override-auto-match.spec.ts:118-127
+  authoritative_test: web/e2e/wave-create-override-auto-match.spec.ts:127
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-012
+  kind: capability
+  family: conflict-error
+  statement: >
+    A 409 FolderConflict on submit must render an inline `role="alert"` naming the OWNING
+    COVE BY NAME (resolved from the local coves cache) plus the conflicting path, and must NOT
+    print the cove UUID.
+  why: >
+    wave-create-conflict.spec.ts:1-16 (#250 PR3 fix-loop "B1") — pre-fix the error read
+    "claimed by another cove" regardless of cache state; the absent-UUID assertion is what
+    proves the name lookup hit rather than the fallback.
+  source: web/e2e/wave-create-conflict.spec.ts:127-135
+  authoritative_test: web/e2e/wave-create-conflict.spec.ts:131
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WAVECREATE-013
+  kind: invariant
+  family: conflict-error
+  statement: >
+    After a 409 the router must NOT push, the form must stay mounted, and every input must
+    stay enabled and editable so the user can pivot.
+  why: >
+    wave-create-conflict.spec.ts:137-146 — a submit-locked leftover state would strand the
+    user on an unrecoverable form.
+  source: web/e2e/wave-create-conflict.spec.ts:137-146
+  authoritative_test: web/e2e/wave-create-conflict.spec.ts:140
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-014
+  kind: capability
+  family: directory-browser
+  statement: >
+    A `Browse…` (U+2026) button next to the cwd input must push a DirectoryBrowser view into
+    the SAME dialog via `useModalView()`, swapping the outer dialog's accessible name to
+    `Choose a directory`.
+  why: >
+    wave-create-browse-cwd.spec.ts:1-12,109-114 — the accessible-name swap on the outer dialog
+    IS the `useModalView()` contract; a nested second dialog would break it.
+  source: web/e2e/wave-create-browse-cwd.spec.ts:106-114
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:113
+  owner_slice: ui/directory-browser
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-015
+  kind: capability
+  family: directory-browser
+  statement: >
+    The DirectoryBrowser must open on the server-side default ($HOME) with an editable
+    `Directory path` input reflecting `<dir>/`, list entries as `role="option"` buttons named
+    by directory name, and update the path input on click.
+  why: >
+    wave-create-browse-cwd.spec.ts:116-126 — the walker is `GET /api/fs/listdir` running in
+    the kernel container; the trailing slash in the input value is part of the contract.
+  source: web/e2e/wave-create-browse-cwd.spec.ts:116-126
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:119
+  owner_slice: ui/directory-browser
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-016
+  kind: capability
+  family: directory-browser
+  statement: >
+    `Select this directory` must pop the browser view, flip the dialog title back to
+    `New wave`, and write the picked absolute path into the cwd input; the path must survive
+    all the way into the persisted `wave.cwd`.
+  why: >
+    wave-create-browse-cwd.spec.ts:128-163 — closes the loop Browse → input → POST body →
+    kernel row.
+  source: web/e2e/wave-create-browse-cwd.spec.ts:128-163
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:131
+  owner_slice: ui/directory-browser
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-017
+  kind: capability
+  family: empty-title
+  statement: >
+    The task description must be OPTIONAL: submitting with a blank description persists
+    `title: ""` and the wave detail page renders the shared `Untitled wave` fallback label.
+  why: >
+    wave-create-empty-title.spec.ts:1-7 (#409) — the fallback is display-only; the stored
+    title must stay the empty string, not be back-filled.
+  source: web/e2e/wave-create-empty-title.spec.ts:58-79
+  authoritative_test: web/e2e/wave-create-empty-title.spec.ts:29
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-018
+  kind: capability
+  family: keyboard-create
+  statement: >
+    Keyboard-only wave creation must work: Tab to `+ New wave`, Enter expands the form and
+    auto-focuses the task-description textarea, one Tab reaches the cwd input, and Enter ON
+    THE CWD INPUT submits.
+  why: >
+    a11y-keyboard.spec.ts:239-254 (#250 PR3) — Enter-to-submit is bound specifically to cwd;
+    the title textarea deliberately preserves Enter for newlines.
+  source: web/e2e/a11y-keyboard.spec.ts:255-306
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:255
+  owner_slice: features/wave/create
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WAVECREATE-019
+  kind: invariant
+  family: keyboard-create
+  statement: >
+    A successful create must emit `wave.updated` on the WS event bus.
+  why: >
+    a11y-keyboard.spec.ts:308-313 — the frontend's cache invalidation hangs off that event;
+    a create that lands in the DB but emits nothing leaves every other surface stale.
+  source: web/e2e/a11y-keyboard.spec.ts:308-313
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:311
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVECREATE-020
+  kind: capability
+  family: cove-page-nav
+  statement: >
+    On successful create, the CovePage's `onWaveCreated` handler must navigate straight to the
+    new wave's detail page.
+  why: >
+    a11y-keyboard.spec.ts:302-305 — router.tsx wires `go({name:'wave', id:...})`; without it
+    the user is stranded on the cove page wondering whether the create worked.
+  source: web/e2e/a11y-keyboard.spec.ts:302-306
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:305
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 4 — cwd → cove resolution (GET /api/coves/resolve)
+# =============================================================================
+
+- id: E2E-CAP-CWD-001
+  kind: capability
+  family: cove-resolve
+  statement: >
+    `GET /api/coves/resolve?path=<abs>` must answer 200 with
+    `{cove_id, folder_id, folder_path}` for a covered path, and JSON `null` (still 200) for a
+    path outside every claim.
+  why: >
+    a11y-cwd-resolve.spec.ts:20-22 — a miss must never be a 404 or 500; the FE's miss-branch
+    picker keys off the null body.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:103-140
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:103
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-002
+  kind: invariant
+  family: cove-resolve
+  statement: >
+    With two coves owning disjoint paths, a descendant query must resolve to its OWNING cove
+    with no cross-talk.
+  why: >
+    a11y-cwd-resolve.spec.ts:106-110 — the everyday multi-cove contract; without it users land
+    waves in whichever cove the surrounding page hinted at.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:103-140
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:126
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-003
+  kind: invariant
+  family: cove-resolve
+  statement: >
+    Sibling claims sharing a raw string prefix (`/p/alpha` and `/p/alpha-extra`) must each
+    resolve to their own claim, never to the other.
+  why: >
+    a11y-cwd-resolve.spec.ts:143-153 — `is_descendant_of` requires a `/` boundary; a naive
+    substring match would route `/p/alpha-extra/...` into `/p/alpha`.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:142-185
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:142
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-004
+  kind: invariant
+  family: cove-resolve
+  statement: >
+    A sibling-prefix path that is NOT a filesystem descendant (`/work/repository` vs a
+    `/work/repo` claim) must MISS — both at the exact level and deeper.
+  why: >
+    a11y-cwd-resolve.spec.ts:234-245 — dedicated regression guard for the `/`-boundary check;
+    the failure mode silently swallows a whole sibling project into the wrong cove.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:234-262
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:234
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-CWD-005
+  kind: capability
+  family: cove-resolve
+  statement: >
+    An exact-path query must match the claim with the equal path
+    (`is_descendant_of(p, p) == true`).
+  why: >
+    a11y-cwd-resolve.spec.ts:198-200 — the resolve handler treats exact-path as
+    descendant-of-itself, which is what makes "type the repo root" work.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:187-211
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:187
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-006
+  kind: invariant
+  family: cove-resolve
+  statement: >
+    Trailing-slash queries must normalize server-side to exactly the same answer as the
+    slashless query, for both exact and descendant probes.
+  why: >
+    a11y-cwd-resolve.spec.ts:219-222 — `normalize_path` runs on the wire path; the
+    DirectoryBrowser writes trailing-slash values into the path input, so this is a live case.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:213-232
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:213
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-007
+  kind: invariant
+  family: cove-resolve
+  statement: >
+    A `/` root claim must cover EVERY absolute path on that cove — deep descendants, shallow
+    descendants, and `/` itself.
+  why: >
+    a11y-cwd-resolve.spec.ts:278-287 — `is_descendant_of` needs an early-return root branch;
+    the naive fallback builds `"//"` and misses every real cwd query.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:278-316
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:278
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-CWD-008
+  kind: capability
+  family: cove-resolve
+  statement: >
+    An empty `?path=` and a non-absolute `?path=relative/path` must both reject with 400,
+    body `{error, code: "bad_request"}` where `error` mentions "absolute" and (for the
+    non-absolute case) echoes the offending value.
+  why: >
+    a11y-cwd-resolve.spec.ts:318-352 — the `code` discriminator is pinned so a future error
+    enum refactor must update the assertion deliberately; operators need the bad value in logs.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:318-353
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:318
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-CWD-009
+  kind: capability
+  family: cove-folders
+  statement: >
+    `POST /api/coves/:id/folders {path}` must answer 201 and claim the path for that cove.
+  why: >
+    a11y-cwd-resolve.spec.ts:57-76 — the 201 (not 200) is asserted so a server-side conflict
+    or bad path shape surfaces at the seeding call, not as a later confusing failure.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:61-76
+  authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:70
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-010
+  kind: invariant
+  family: cove-folders
+  statement: >
+    The create-folder endpoint rejects ancestor/descendant/equal overlap with 409, which is
+    what keeps the resolve handler's filter set to AT MOST ONE row per query path — so the
+    handler's `max_by_key(path.len())` longest-prefix tiebreak is dead from the HTTP surface.
+  why: >
+    a11y-cwd-resolve.spec.ts:28-36,264-272 — deliberately NOT covered by a Playwright spec;
+    the branch is only reachable by seeding overlapping rows through the raw repo, which is a
+    Rust-integration-test concern.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:264-272
+  authoritative_test: NONE
+  owner_slice: features/cove/folders
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-CWD-011
+  kind: invariant
+  family: cove-folders
+  statement: >
+    There is deliberately NO cove-folder management UI (the Settings page covers proxy config
+    only; Cove/Wave pages expose no folder management).
+  why: >
+    a11y-cwd-resolve.spec.ts:43-48 (#269 P3) — explicitly scoped out and skipped, not
+    forgotten. A rewrite that "notices the gap" is adding scope, not restoring it.
+  source: web/e2e/a11y-cwd-resolve.spec.ts:43-48
+  authoritative_test: NONE
+  owner_slice: features/cove/folders
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 5 — Keyboard-only navigation contract (#56)
+# =============================================================================
+
+- id: E2E-INV-KEYBOARD-001
+  kind: invariant
+  family: keyboard-contract
+  statement: >
+    Every product flow must be drivable using only Tab, Shift+Tab, Enter, Space, Escape, F2
+    and Arrow keys, resolvable by role/name alone.
+  why: >
+    a11y-keyboard.spec.ts:1-13 (#56) — the point is proving an AI agent (or any keyboard-only /
+    screen-reader user) can drive the app. The suite forbids `.fill()` entirely: all text goes
+    through `keyboard.type()` so input handlers fire exactly as for a real keyboard user.
+  source: web/e2e/a11y-keyboard.spec.ts:1-33
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:182
+  owner_slice: none/e2e/a11y-keyboard
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-KEYBOARD-002
+  kind: gate
+  family: keyboard-contract
+  statement: >
+    Accessible names must be resolvable from aria-label > aria-labelledby > `<label for>` >
+    title > textContent, and controls that share a role+name must be disambiguable by
+    className or aria-describedby.
+  why: >
+    a11y-keyboard.spec.ts:63-69,84-92,116-118 — e.g. two buttons named "Today" (sidebar nav and
+    WaveRow) coexist and only the WaveRow carries `wave-row`; the rename spans convey their verb
+    via aria-describedby so the name stays the bare entity title.
+  source: web/e2e/a11y-keyboard.spec.ts:70-144
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:70
+  owner_slice: none/e2e/a11y-keyboard
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-KEYBOARD-003
+  kind: capability
+  family: keyboard-nav
+  statement: >
+    Tab must reach the sidebar `button.cove-nav` row and Enter must activate it, routing to
+    `/calm/cove/<id>` where the CovePage renders an `<h1>` carrying the cove name.
+  why: >
+    a11y-keyboard.spec.ts:215-236 — asserting the heading (not just the URL) proves the route
+    actually mounted. The cove-nav name includes a wave-count badge, so predicates must match
+    on prefix.
+  source: web/e2e/a11y-keyboard.spec.ts:215-237
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-KEYBOARD-004
+  kind: capability
+  family: keyboard-nav
+  statement: >
+    The cove page must wrap its sorted wave list in a `<section aria-label="Waves">` landmark
+    whose rows are real `<button class="wave-row">` elements named by the wave title.
+  why: >
+    a11y-keyboard.spec.ts:717-722 — the landmark is what lets role-scoped queries disambiguate
+    the row from the sidebar nav button of the same name; the row being a real button (not a
+    div) is the #127 nested-interactive fix.
+  source: web/e2e/a11y-keyboard.spec.ts:330-341
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:724
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-ADDPANEL-005
+  kind: capability
+  family: add-panel
+  statement: >
+    The wave page must expose a glyph-only AddPanel trigger (a `+` that rotates to `×`) with
+    `aria-haspopup="menu"` + `aria-expanded`, accessible name `Add card` while closed and
+    `Close add menu` while open.
+  why: >
+    a11y-keyboard.spec.ts:343-349 (#594 demo) — the label flip is the only way AT users learn
+    the toggle state on a glyph-only control.
+  source: web/e2e/a11y-keyboard.spec.ts:343-357
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
+  owner_slice: app/shell/add-panel
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-ADDPANEL-006
+  kind: capability
+  family: add-panel
+  statement: >
+    Enter on the trigger opens a `<ul role="menu">` immediately; Escape closes it even when
+    focus is not inside the menu.
+  why: >
+    a11y-keyboard.spec.ts:354-357 — AddPanel installs a global keydown listener while open, so
+    Escape works from anywhere.
+  source: web/e2e/a11y-keyboard.spec.ts:349-357
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
+  owner_slice: app/shell/add-panel
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-ADDPANEL-007
+  kind: capability
+  family: add-panel
+  statement: >
+    The menu must register at least `terminal` and `codex` menuitems (in that registry order),
+    each rendering an aria-hidden letter-avatar before an uppercase label while keeping the
+    lowercase kind word as the accessible name.
+  why: >
+    a11y-keyboard.spec.ts:461-469 and new-terminal-card.spec.ts:73-80 — registered in
+    `cards/builtins/index.ts`; the avatar must stay aria-hidden or the accessible name breaks.
+  source: web/e2e/a11y-keyboard.spec.ts:461-469
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:467
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-ADDPANEL-008
+  kind: capability
+  family: add-panel
+  statement: >
+    The AddPanel menu must implement the full WAI-ARIA menu keyboard contract: initial focus on
+    the first item, ArrowDown/ArrowUp cycling WITH WRAP, Home/End jumping to first/last, and
+    single-letter typeahead jumping to the next item in cyclic order whose name starts with it.
+  why: >
+    a11y-keyboard.spec.ts:417-421 (slice 7) — full menu semantics, not just open/close.
+  source: web/e2e/a11y-keyboard.spec.ts:471-507
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
+  owner_slice: app/shell/add-panel
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ADDPANEL-009
+  kind: invariant
+  family: focus-restore
+  statement: >
+    Both Escape AND menuitem activation must close the menu and return focus to the trigger —
+    and on activation the restore must run BEFORE the onSelect handler.
+  why: >
+    a11y-keyboard.spec.ts:619-626 — `closeAndRestoreFocus` fires synchronously inside
+    `activate`, so by the time a Modal captures `previouslyFocusedRef` the trigger is already
+    active. That ordering is what makes Escape-on-modal land focus back on the AddPanel trigger.
+  source: web/e2e/a11y-keyboard.spec.ts:509-529
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:528
+  owner_slice: app/shell/add-panel
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-ADDPANEL-010
+  kind: capability
+  family: card-create
+  statement: >
+    Activating the `terminal` menuitem must create a card immediately with no modal (zero
+    config) and persist a `kind: terminal` card row on the wave.
+  why: >
+    a11y-keyboard.spec.ts:360-414 — terminal has no createSchema; the poll against
+    `GET /api/waves/:id` proves keyboard activation reached the kernel, not just the UI.
+  source: web/e2e/a11y-keyboard.spec.ts:386-414
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:360
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-ADDPANEL-011
+  kind: capability
+  family: card-create
+  statement: >
+    A newly created terminal card must appear WITHOUT a manual reload, within 10s, rendering a
+    `.term` wrapper.
+  why: >
+    new-terminal-card.spec.ts:1-10 — user-reported regression: POST → server `card.added` →
+    eventBridge invalidates `['wave', id]` → useWaveDetailQuery refetches → WaveGrid mounts.
+  source: web/e2e/new-terminal-card.spec.ts:69-93
+  authoritative_test: web/e2e/new-terminal-card.spec.ts:17
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-MODAL-012
+  kind: capability
+  family: modal
+  statement: >
+    The `codex` menuitem must open a Modal with `role="dialog"` + `aria-modal="true"`, panel
+    class `.modal-panel`, accessible name `New codex`, hosting a SchemaForm + DirectoryBrowser.
+  why: >
+    a11y-keyboard.spec.ts:584-590 — codex is the only built-in with a createSchema; the nested
+    DirectoryBrowser also carries role="dialog", so the outer must be addressable by name.
+  source: web/e2e/a11y-keyboard.spec.ts:584-593
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  owner_slice: ui/dialog/modal
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-MODAL-013
+  kind: invariant
+  family: modal
+  statement: >
+    Tab must be trapped inside `.modal-panel`; repeated Tab presses must never move
+    `document.activeElement` outside it, and focus landing on the nested DirectoryBrowser still
+    counts as inside the trap.
+  why: >
+    a11y-keyboard.spec.ts:595-617 (slice 2 focus trap) — containment is measured against the
+    outer `.modal-panel` precisely because the browser dialog lives INSIDE it.
+  source: web/e2e/a11y-keyboard.spec.ts:595-617
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  owner_slice: ui/dialog/modal
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-MODAL-014
+  kind: invariant
+  family: modal
+  statement: >
+    Escape must close the modal and restore focus to the AddPanel trigger.
+  why: >
+    a11y-keyboard.spec.ts:619-629 — chained restore through AddPanel's pre-open restore; a
+    regression drops the user's focus to `<body>`.
+  source: web/e2e/a11y-keyboard.spec.ts:627-629
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:629
+  owner_slice: ui/dialog/modal
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-RENAME-015
+  kind: capability
+  family: wave-rename
+  statement: >
+    The wave title must render as a `<span role="button">` whose accessible NAME is the bare
+    wave title and whose aria-describedby resolves to exactly `Rename wave`.
+  why: >
+    a11y-keyboard.spec.ts:656-662 (a11y-contract.md §5) — keeping the verb out of the name is
+    what lets the sibling `Delete wave "<title>"` button coexist without strict-mode collision.
+  source: web/e2e/a11y-keyboard.spec.ts:656-662
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:687
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-RENAME-016
+  kind: capability
+  family: wave-rename
+  statement: >
+    F2 (and Enter) on the wave-title span must enter rename mode, swapping to an
+    `<input aria-label="Wave title">` that auto-focuses and pre-selects the existing value.
+  why: >
+    a11y-keyboard.spec.ts:663-673 — F2 is the documented Windows-convention shortcut;
+    `startRename()` does queueMicrotask focus + `.select()` so typing replaces.
+  source: web/e2e/a11y-keyboard.spec.ts:663-675
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-RENAME-017
+  kind: capability
+  family: wave-rename
+  statement: >
+    Enter must commit the rename, collapse the input back to the display span, emit
+    `wave.updated`, and RETURN FOCUS to the display span.
+  why: >
+    a11y-keyboard.spec.ts:677-689 — losing focus after commit strands a keyboard user mid-page.
+  source: web/e2e/a11y-keyboard.spec.ts:676-689
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:689
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-LIST-018
+  kind: capability
+  family: list-view
+  statement: >
+    List view must replace the RGL grid with a semantic `<ul role="list" aria-label="Wave
+    cards">` whose `<li>` items carry a `data-card-id` and use roving tabindex.
+  why: >
+    a11y-keyboard.spec.ts:692-698 (slice 9) — the list is lazy-loaded like WaveGrid; the
+    data-card-id stamp is the only stable handle for ordering assertions.
+  source: web/e2e/a11y-keyboard.spec.ts:762-786
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:763
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-LIST-019
+  kind: capability
+  family: list-view
+  statement: >
+    Alt+ArrowUp / Alt+ArrowDown must reorder the focused list item by swapping `card.sort`
+    through the existing optimistic mutation, emitting `card.updated`.
+  why: >
+    a11y-keyboard.spec.ts:696-698,788-812 — the swap is optimistic in cache and confirmed
+    asynchronously by the server ack, so assertions must wait on both halves.
+  source: web/e2e/a11y-keyboard.spec.ts:788-812
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:793
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-LIST-020
+  kind: capability
+  family: list-view
+  statement: >
+    Home / End must move the roving selection to the first / last list item, surfaced as an
+    `is-active` class (and `aria-checked`) on the selected item.
+  why: >
+    a11y-keyboard.spec.ts:814-822 — assertions must read `is-active`, NOT `toBeFocused`: the
+    close button inside the active item can briefly capture focus after an optimistic
+    re-render, and `is-active`/`aria-checked` are what AT actually consumes.
+  source: web/e2e/a11y-keyboard.spec.ts:814-827
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:825
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-VIEWMODE-021
+  kind: capability
+  family: view-mode
+  statement: >
+    The per-wave view mode must persist across a full page reload via the `view-mode` overlay
+    row.
+  why: >
+    a11y-keyboard.spec.ts:829-833 — reloading into grid would silently discard the user's
+    per-wave layout choice.
+  source: web/e2e/a11y-keyboard.spec.ts:829-833
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:831
+  owner_slice: features/wave/view-mode
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-VIEWMODE-022
+  kind: capability
+  family: view-mode
+  statement: >
+    The wave header must expose a single view-cycle button whose accessible name states BOTH
+    the current and the next mode — `List view — switch to report view`, then
+    `Report view — switch to grid view` — cycling Grid → List → Report → Grid on Enter.
+  why: >
+    a11y-keyboard.spec.ts:692-696,834-848 — the "current — switch to next" name shape is the
+    only way a screen-reader user learns what pressing it will do.
+  source: web/e2e/a11y-keyboard.spec.ts:834-848
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:844
+  owner_slice: features/wave/view-mode
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-VIEWMODE-023
+  kind: invariant
+  family: view-mode
+  statement: >
+    A full-page Tab walk must NOT be performed on a wave containing web-page iframe cards;
+    such cards can retain focus and wedge the walk.
+  why: >
+    a11y-keyboard.spec.ts:838-841 — a real, load-bearing testing constraint that a rewrite's
+    new specs will re-discover the hard way.
+  source: web/e2e/a11y-keyboard.spec.ts:838-842
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:841
+  owner_slice: none/e2e/a11y-keyboard
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SETTINGS-024
+  kind: capability
+  family: settings
+  statement: >
+    The Settings page must be a single `<form>` exposing labelled `HTTP proxy` and
+    `HTTPS proxy` textboxes plus `Reset` and `Save` buttons, all reachable by Tab from body.
+  why: >
+    a11y-keyboard.spec.ts:851-882 — Reset and Save both start disabled (form clean, no edits);
+    the spec asserts existence + reachability, not enabled state.
+  source: web/e2e/a11y-keyboard.spec.ts:860-882
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:851
+  owner_slice: features/settings
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 6 — axe-core scans (WCAG 2.1 A + AA + best-practice)
+# =============================================================================
+
+- id: E2E-GATE-AXE-001
+  kind: gate
+  family: axe
+  statement: >
+    Every axe scan must be pinned to tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`,
+    `best-practice` — never an unpinned default rule set.
+  why: >
+    a11y-axe.spec.ts:129-131 — an unpinned set lets a future axe-core release silently surface
+    AAA-only checks and turn the suite red for reasons nobody chose.
+  source: web/e2e/a11y-axe.spec.ts:148-154
+  authoritative_test: web/e2e/a11y-axe.spec.ts:148
+  owner_slice: none/e2e/a11y-axe
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-AXE-002
+  kind: invariant
+  family: axe
+  statement: >
+    The deferred-rules list must be EMPTY; no rule may be blanket-disabled. Common pages
+    (Today, Cove, Wave, Settings) MUST come out with zero violations — the fix goes in the
+    source, never in a rule silence.
+  why: >
+    a11y-axe.spec.ts:28-32,109-124 — resolved-rule archaeology is kept in the file instead:
+    `region` (PR #122, TitleBar → `<header>`), `nested-interactive` (PR #127, WaveRow → real
+    `<button>` with sibling delete button), `color-contrast` (--text-3 light+dark and --accent
+    light bumped ≥4.5:1; .nav-label re-routed from --text-4 to --text-2).
+  source: web/e2e/a11y-axe.spec.ts:109-124
+  authoritative_test: web/e2e/a11y-axe.spec.ts:124
+  owner_slice: none/e2e/a11y-axe
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-AXE-003
+  kind: invariant
+  family: axe
+  statement: >
+    `.xterm-container` and `.xterm` subtrees must be excluded GLOBALLY from every axe scan,
+    not per-test.
+  why: >
+    a11y-axe.spec.ts:126-147 — xterm.js paints with the terminal's own ANSI palette (tied to
+    terminal-user expectations, not app design tokens); the real interactive surface is the
+    `.xterm-helper-textarea`. `aria-hidden` + `role="presentation"` (commit 20669b3) did NOT
+    stop axe's contrast walker; `.exclude()` is the documented escape hatch. Global (not
+    per-test) because every wave with a spec or worker card mounts an xterm.
+  source: web/e2e/a11y-axe.spec.ts:126-154
+  authoritative_test: web/e2e/a11y-axe.spec.ts:152
+  owner_slice: none/e2e/a11y-axe
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-AXE-004
+  kind: gate
+  family: axe-matrix
+  statement: >
+    Every scanned route/state must be scanned once per theme (light AND dark), driven by a
+    single THEMES constant.
+  why: >
+    a11y-axe.spec.ts:18-20,44-48 (#142 slice 3) — dark-only contrast regressions (#133/#135)
+    were previously found only by hand.
+  source: web/e2e/a11y-axe.spec.ts:44-107
+  authoritative_test: web/e2e/a11y-axe.spec.ts:49
+  owner_slice: none/e2e/a11y-axe
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-005
+  kind: capability
+  family: axe-matrix
+  statement: >
+    Dark theme must be applicable by writing `document.documentElement.dataset.theme = 'dark'`
+    alone, and the CSS cascade must repaint from it (body background darkening below
+    rgb(80,80,80)).
+  why: >
+    a11y-axe.spec.ts:72-83 — ThemeProvider mirrors `resolved` into that dataset attribute and
+    `[data-theme="dark"]` selectors in calm.css consume it; the effect only re-fires on React
+    state change, so a direct write is not clobbered mid-scan.
+  source: web/e2e/a11y-axe.spec.ts:84-107
+  authoritative_test: web/e2e/a11y-axe.spec.ts:84
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-006
+  kind: capability
+  family: axe-matrix
+  statement: >
+    The Today page must scan clean in both themes.
+  why: a11y-axe.spec.ts:245-255 — one of the four "common pages" that must never regress.
+  source: web/e2e/a11y-axe.spec.ts:245-255
+  authoritative_test: web/e2e/a11y-axe.spec.ts:247
+  owner_slice: features/today/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-007
+  kind: capability
+  family: axe-matrix
+  statement: >
+    The Cove page must scan clean in both themes, after its `<h1>` has painted.
+  why: >
+    a11y-axe.spec.ts:263-268 — CovePage paints its header synchronously once covesQuery
+    resolves; scanning earlier would catch a half-rendered skeleton.
+  source: web/e2e/a11y-axe.spec.ts:257-274
+  authoritative_test: web/e2e/a11y-axe.spec.ts:259
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-008
+  kind: capability
+  family: axe-matrix
+  statement: >
+    The Wave page must scan clean in both themes with the AddPanel trigger AND a populated
+    `<section aria-label="Backlinks">` containing a resolved citation link rendered.
+  why: >
+    a11y-axe.spec.ts:276-295 — WaveGrid is lazy-loaded so the scan must wait; the backlink
+    fixture (a second wave whose report cites `neige://wave/<id>`) ensures the Backlinks region
+    is scanned populated, not empty.
+  source: web/e2e/a11y-axe.spec.ts:276-295
+  authoritative_test: web/e2e/a11y-axe.spec.ts:278
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-009
+  kind: capability
+  family: axe-matrix
+  statement: >
+    The Settings page must scan clean in both themes.
+  why: a11y-axe.spec.ts:297-312 — scanned after the first input mounts so it covers real DOM.
+  source: web/e2e/a11y-axe.spec.ts:297-312
+  authoritative_test: web/e2e/a11y-axe.spec.ts:299
+  owner_slice: features/settings
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-010
+  kind: capability
+  family: axe-matrix
+  statement: >
+    The open AddPanel menu must scan clean in both themes, scanned scoped to `[role="menu"]`.
+  why: >
+    a11y-axe.spec.ts:331-334 — scoping avoids re-flagging everything the page-level scan
+    already covered; the question is specifically "is the menu itself ARIA-clean?".
+  source: web/e2e/a11y-axe.spec.ts:314-338
+  authoritative_test: web/e2e/a11y-axe.spec.ts:316
+  owner_slice: app/shell/add-panel
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-011
+  kind: capability
+  family: axe-matrix
+  statement: >
+    Wave list view must scan clean in both themes with at least one worker card present.
+  why: >
+    a11y-axe.spec.ts:365-371 — a freshly-minted wave has zero cards post-#175, and an empty
+    list `<ul>` collapses to 0 height so Playwright reports it hidden; an iframe card populates
+    it without depending on PTY startup.
+  source: web/e2e/a11y-axe.spec.ts:347-380
+  authoritative_test: web/e2e/a11y-axe.spec.ts:349
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-012
+  kind: capability
+  family: axe-matrix
+  statement: >
+    The open codex Modal must scan clean in both themes, scanned scoped to `.modal-panel`.
+  why: >
+    a11y-axe.spec.ts:416-419 — the dimmed page underneath was already scanned; the modal's
+    SchemaForm/DirectoryBrowser content is what's under test here.
+  source: web/e2e/a11y-axe.spec.ts:382-424
+  authoritative_test: web/e2e/a11y-axe.spec.ts:384
+  owner_slice: ui/dialog/modal
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-AXE-013
+  kind: invariant
+  family: axe-matrix
+  statement: >
+    Keyboard navigation to a menuitem must WALK to it (ArrowDown) before Enter — pressing
+    Enter directly on the item's locator does not activate it.
+  why: >
+    a11y-axe.spec.ts:400-404 — the roving-tabindex hook reads its internal `activeIndex` to
+    decide which item to activate, so a synthetic keypress on the wrong item is a no-op.
+  source: web/e2e/a11y-axe.spec.ts:400-407
+  authoritative_test: web/e2e/a11y-axe.spec.ts:405
+  owner_slice: app/shell/add-panel
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-AXE-014
+  kind: capability
+  family: axe-reporting
+  statement: >
+    Axe failures must be rendered as `[impact] rule-id — help\n  nodes: <selectors>`, never
+    as raw objects.
+  why: >
+    a11y-axe.spec.ts:156-158 — otherwise the CI report shows `[Object object]` and the finding
+    is unactionable.
+  source: web/e2e/a11y-axe.spec.ts:160-177
+  authoritative_test: web/e2e/a11y-axe.spec.ts:160
+  owner_slice: none/e2e/a11y-axe
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-AXE-015
+  kind: invariant
+  family: axe-bootstrap
+  statement: >
+    The axe suite's app-shell readiness anchor must be the sidebar `Today` nav button, NOT
+    `localStorage['calm.todayCardId']`.
+  why: >
+    a11y-axe.spec.ts:52-63 — in the replay harness the terminal-card POST can surface a
+    renderer-start error in CI and never set that key; the Today nav button mounts with the
+    Sidebar and works in both replay and live-daemon environments.
+  source: web/e2e/a11y-axe.spec.ts:52-70
+  authoritative_test: web/e2e/a11y-axe.spec.ts:64
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 7 — Wave + cove mutation ops (#269 P2): rename / delete / cascade
+# =============================================================================
+
+- id: E2E-CAP-DELETE-001
+  kind: capability
+  family: wave-delete
+  statement: >
+    The wave header must expose a `DeleteButton` icon button with aria-label
+    `Delete wave "<title>"` that opens a ConfirmDialog titled `Delete wave?` with a `Cancel`
+    button and a `Delete wave` confirm button.
+  why: >
+    a11y-wave-cove-ops.spec.ts:119-129 — the label carries the entity name so AT users know
+    what they are about to destroy.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:119-134
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:101
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-002
+  kind: invariant
+  family: confirm-dialog
+  statement: >
+    A destructive ConfirmDialog must default-focus CANCEL, never the confirm button.
+  why: >
+    a11y-wave-cove-ops.spec.ts:130-137 — cancel-safe default. The e2e mirror exists so a future
+    refactor that bypasses ConfirmDialog (e.g. reverting to `window.confirm`) is caught even
+    though `ConfirmDialog.contract.test.tsx` pins it at unit level.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:130-137
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:137
+  owner_slice: ui/confirm-dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-DELETE-003
+  kind: capability
+  family: wave-delete
+  statement: >
+    Confirming a wave delete must: navigate back to the owning cove page, emit `wave.deleted`
+    carrying the wave id, and make `GET /api/waves/<id>` return 404.
+  why: >
+    a11y-wave-cove-ops.spec.ts:148-159 — router.tsx wires `go({name:'cove', coveId})` on the
+    wave page's `onDeleteWave`; all three halves (UI, event, kernel) must agree.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:148-159
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:154
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-DELETE-004
+  kind: capability
+  family: confirm-dialog
+  statement: >
+    Keyboard activation of the confirm button (Tab from Cancel, then Enter) must be equivalent
+    to a click, including the disabled-while-pending guard.
+  why: a11y-wave-cove-ops.spec.ts:139-146 — the ConfirmDialog contract treats both identically.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:139-146
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:146
+  owner_slice: ui/confirm-dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-005
+  kind: invariant
+  family: confirm-dialog
+  statement: >
+    Escape on an open ConfirmDialog must route through Dialog's `onClose` to `onCancel`: the
+    dialog unmounts, NO destructive event fires within 1.5s, the row still exists (200), and
+    the router must not navigate.
+  why: >
+    a11y-wave-cove-ops.spec.ts:748-799 — a regression here silently deletes user data on a
+    keypress meant to back out.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:748-800
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:748
+  owner_slice: ui/confirm-dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-006
+  kind: invariant
+  family: confirm-dialog
+  statement: >
+    Clicking the Cancel BUTTON must dismiss without deleting — asserted as a separate test from
+    the Escape path.
+  why: >
+    a11y-wave-cove-ops.spec.ts:802-812 — split on purpose so a regression that breaks one path
+    (e.g. a stray `e.stopPropagation()` on Cancel) surfaces without the other masking it.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:802-845
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:802
+  owner_slice: ui/confirm-dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-RENAME-007
+  kind: capability
+  family: wave-rename
+  statement: >
+    Mouse click on the wave-title span must also enter rename mode (not just F2/Enter).
+  why: >
+    a11y-wave-cove-ops.spec.ts:184-190 — `onClick={startRename}` is wired whenever
+    `onRenameWave` is supplied; a11y-keyboard covers only the F2 path.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:184-190
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:162
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-RENAME-008
+  kind: invariant
+  family: wave-rename
+  statement: >
+    Escape during wave rename must cancel: no POST, displayed title unchanged, on-disk title
+    unchanged, and focus restored to the display span.
+  why: a11y-wave-cove-ops.spec.ts:192-204 — the cancel path must be write-free, not a revert.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:192-204
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:197
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-RENAME-009
+  kind: invariant
+  family: wave-rename
+  statement: >
+    Committing an empty or whitespace-only wave title must be a NO-OP: exit edit mode, restore
+    focus, never call `onRenameWave`, and emit no `wave.updated` within 1.5s.
+  why: >
+    a11y-wave-cove-ops.spec.ts:206-223 — `commitRename` short-circuits when the trimmed value is
+    empty or unchanged; without it a stray Enter blanks the wave title.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:206-223
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:221
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-RENAME-010
+  kind: invariant
+  family: wave-rename
+  statement: >
+    After the cancel and no-op paths, a normal click-edit-Enter must still POST and update.
+  why: >
+    a11y-wave-cove-ops.spec.ts:225-238 — proves the earlier short-circuits didn't wedge the
+    editing state machine.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:225-239
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:233
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-RENAME-011
+  kind: capability
+  family: cove-rename
+  statement: >
+    The cove header must render its name as a real `<button class="h-display-rename">` with
+    aria-label = the name and aria-describedby resolving to `Rename cove name`; clicking it
+    opens an `<input aria-label="Cove name">` that auto-focuses with the value pre-selected.
+  why: >
+    a11y-wave-cove-ops.spec.ts:253-265 — EditableTitle in Cove.tsx; the microtask `select()` in
+    `enter()` is why specs must `selectText()` before `fill()` for determinism.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:253-282
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:241
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-RENAME-012
+  kind: capability
+  family: cove-rename
+  statement: >
+    Blurring the cove-name input (Tab away) must commit via `onBlur={save}`, emit
+    `cove.updated`, and be reflected in `GET /api/coves`.
+  why: >
+    a11y-wave-cove-ops.spec.ts:277-303 — blur-commit is a distinct code path from Enter-commit;
+    tabbing away also proves the header's tab order isn't wedged.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:283-303
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:289
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-RENAME-013
+  kind: invariant
+  family: cove-rename
+  statement: >
+    Pressing Enter then immediately Tab during a cove rename must produce EXACTLY ONE PATCH,
+    carrying the NEW name; the kernel must hold the new name and the sidebar must show it.
+  why: >
+    a11y-wave-cove-ops.spec.ts:656-678 (#288, fixed in PR #292) — pre-fix the Enter `keyup` was
+    delivered to the just-focused display button, synthesized a click, re-entered edit mode with
+    `draft` reset to the stale `value`, and the follow-up Tab blurred that remounted input into
+    a SECOND PATCH with the OLD name. The user saw the new name flash then revert. The fix sets
+    a one-shot ref in `save()` on keyboard commit that `enter()` consumes and ignores.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:686-745
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:728
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SURFACE-014
+  kind: invariant
+  family: rename-propagation
+  statement: >
+    A cove rename must propagate to the SIDEBAR entry: the old name must disappear AND the new
+    name must appear, within 1.5s, without a reload.
+  why: >
+    a11y-wave-cove-ops.spec.ts:326-419 (#288) — both halves are asserted because new-name-only
+    would false-pass if both rows rendered side by side, and old-name-absent-only would
+    false-pass in the render gap. Seeded with three sibling coves because a single-cove sidebar
+    is a degenerate case some failure modes (memoized-by-length lists) would miss.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:396-419
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:326
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SURFACE-015
+  kind: invariant
+  family: rename-propagation
+  statement: >
+    `test.fail()` must NOT be applied to the #288 sidebar-rename test even though the bug was
+    reported against production.
+  why: >
+    a11y-wave-cove-ops.spec.ts:343-350 — the assertion currently passes in the hermetic replay
+    harness; Playwright flips an expected-failure annotation into a CI failure on unexpected
+    pass, which would break the gate the moment the harness diverges from production.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:343-350
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:326
+  owner_slice: none/e2e/infra
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SURFACE-016
+  kind: capability
+  family: rename-propagation
+  statement: >
+    The wave page must render a `<button class="wave-cove">` breadcrumb back-link displaying the
+    owning cove's name, and a cove rename must be reflected there.
+  why: a11y-wave-cove-ops.spec.ts:422-488 — the linked-surface case across a route boundary.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:484-489
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:422
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SURFACE-017
+  kind: invariant
+  family: rename-propagation
+  statement: >
+    After a cove rename, a nav-away-and-back round trip (Cove → Today → Cove) must still show
+    the new name in the sidebar.
+  why: >
+    a11y-wave-cove-ops.spec.ts:491-505 — adds the route-boundary dimension: a
+    refetch-on-cove.updated regression and a re-render-on-route-change regression show up
+    differently across this test and E2E-INV-SURFACE-014.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:491-542
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:539
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SURFACE-018
+  kind: invariant
+  family: rename-propagation
+  statement: >
+    A wave rename done on the wave detail page must be reflected in the cove page's Waves list:
+    the new title's `button.wave-row` visible AND the old title's row gone (count 0).
+  why: >
+    a11y-wave-cove-ops.spec.ts:544-606 — the old-row-absent half pins that a stale duplicate
+    cache entry cannot false-green the test.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:590-606
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:544
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SURFACE-019
+  kind: invariant
+  family: rename-propagation
+  statement: >
+    A wave rename must NOT clobber the cove name in the breadcrumb.
+  why: >
+    a11y-wave-cove-ops.spec.ts:648-653 — guards against a `wave.updated` → `['coves']`
+    invalidation that returns stale data.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:609-654
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:651
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-DELETE-020
+  kind: capability
+  family: cove-delete
+  statement: >
+    The cove header must expose `Delete cove "<name>"` opening a `Delete cove?` ConfirmDialog;
+    confirming emits `cove.deleted`, removes the row from `GET /api/coves`, and routes to Today.
+  why: a11y-wave-cove-ops.spec.ts:884-908 — full UI-driven destructive path.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:884-912
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:847
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-021
+  kind: invariant
+  family: cove-delete
+  statement: >
+    Deleting a cove must CASCADE-drop its `cove_folders` rows, so `/api/coves/resolve` returns
+    null for every previously-claimed path.
+  why: >
+    a11y-wave-cove-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
+    claims would permanently block those paths from being claimed by any future cove.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:914-919
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:847
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-022
+  kind: invariant
+  family: cove-delete
+  statement: >
+    The cascade must drop EVERY folder row, not just one — verified with three non-overlapping
+    claims probed independently.
+  why: >
+    a11y-wave-cove-ops.spec.ts:927-935 — with only two rows a `LIMIT 1`-style regression passes
+    50% of the time depending on insert order; three pushes false-green probability low enough
+    to catch it every run.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:922-1016
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:922
+  owner_slice: features/cove/folders
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-023
+  kind: invariant
+  family: cove-delete
+  statement: >
+    `DELETE /api/coves/:id` must cascade through waves → cards → terminals.
+  why: >
+    wave-create.spec.ts:24-26 — relied on by every chromium spec's cleanup hook; without the
+    cascade the suite leaks orphan waves and terminals.
+  source: web/e2e/wave-create.spec.ts:21-26
+  authoritative_test: web/e2e/wave-create.spec.ts:33
+  owner_slice: features/cove/delete
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-DELETE-024
+  kind: invariant
+  family: wave-archive
+  statement: >
+    Wave ARCHIVE is deliberately NOT surfaced in the frontend: the kernel accepts
+    `PATCH /api/waves/{id}` with `archived_at`, but no button or menu item exists.
+  why: >
+    a11y-wave-cove-ops.spec.ts:12-18 — verified by grepping `web/src/` (only schema/type
+    comments mention it). Explicitly scoped out, tracked as follow-up — a rewrite that "adds
+    the missing archive button" is adding scope.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:12-18
+  authoritative_test: NONE
+  owner_slice: features/wave/page
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WAVEROW-025
+  kind: capability
+  family: wave-row
+  statement: >
+    A WaveRow's nav-button accessible name is `<title> Wave lifecycle: <Status>` (the lifecycle
+    pill contributes aria text), and each row also carries sibling `Delete "<title>"` and
+    `Pin wave` buttons.
+  why: >
+    a11y-wave-cove-ops.spec.ts:72-86 — an `exact: true` match on the bare title finds nothing;
+    locators must anchor a regex at the title start with a trailing word boundary.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:72-92
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:80
+  owner_slice: features/wave/row
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 8 — Wave lifecycle state machine (#269 P1)
+# =============================================================================
+
+- id: E2E-CAP-LIFECYCLE-001
+  kind: capability
+  family: lifecycle-happy
+  statement: >
+    A freshly created wave must start in `draft` with `terminal_at: null`, and the full path
+    draft → planning → dispatching → working → reviewing → done must be drivable end-to-end.
+  why: >
+    a11y-wave-lifecycle.spec.ts:74-116 — browser-level counterpart to the Rust unit matrix:
+    real REST writes, real event bus, real browser trace, so the assertions prove the WIRE
+    contract, not just the in-process state machine.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:74-116
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:74
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-002
+  kind: invariant
+  family: lifecycle-actors
+  statement: >
+    `draft → planning` (kickoff) is the only edge allowed for BOTH User and SpecAgent; every
+    edge from planning through done is spec-only.
+  why: >
+    a11y-wave-lifecycle.spec.ts:82-101 and a11y-wave-lifecycle-rejections.spec.ts:171-175 — the
+    validator's edge table is `(allow_user, allow_spec)` per edge; kickoff is the one
+    both-allowed row.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:85-102
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:87
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-003
+  kind: invariant
+  family: lifecycle-events
+  statement: >
+    Every accepted lifecycle edge must emit EXACTLY TWO events — a `wave.lifecycle_changed`
+    with payload `{id, cove_id, from, to}` AND a paired `wave.updated` carrying the full row.
+  why: >
+    a11y-wave-lifecycle.spec.ts:310-318,333-342 — `emitted_events` is asserted to be 2 on every
+    forced edge; frontend cache invalidation hangs off `wave.updated` while the badge state
+    reads `wave.lifecycle_changed`. Missing either leaves the UI stale.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:290-345
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:316
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-004
+  kind: invariant
+  family: terminal-at
+  statement: >
+    `terminal_at` must be stamped on entry to a terminal state (done | canceled | failed) and
+    stay null on every non-terminal state.
+  why: >
+    a11y-wave-lifecycle.spec.ts:323-331 — the calendar window query and the UI's terminal-state
+    badges read this field.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:323-331
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:326
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-005
+  kind: invariant
+  family: terminal-at
+  statement: >
+    Reopening `done → planning` must CLEAR `terminal_at` to null — in the PATCH response, in a
+    fresh GET, and in the paired `wave.updated` payload.
+  why: >
+    a11y-wave-lifecycle.spec.ts:144-173 — a stale Done timestamp would keep the calendar window
+    query and the terminal-state badges showing a closed wave as closed.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:118-174
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:146
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-006
+  kind: invariant
+  family: lifecycle-actors
+  statement: >
+    Reopen (`done → planning`) is USER-ONLY: even the Spec Agent may not reopen a terminal wave.
+  why: a11y-wave-lifecycle.spec.ts:138-141 — a hard kernel rule in `validate_transition`.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:138-146
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:141
+  owner_slice: features/wave/lifecycle
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-007
+  kind: invariant
+  family: idempotency
+  statement: >
+    A same-state PATCH must be idempotent: return the existing row and emit NEITHER
+    `wave.lifecycle_changed` NOR `wave.updated` for that wave.
+  why: >
+    a11y-wave-lifecycle.spec.ts:176-222 — `update_wave`'s idempotency shortcut. Assertions must
+    filter by wave id because the replay bootstrap can emit a late unrelated `wave.updated` that
+    drifts into the negative window on a loaded runner.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:176-223
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:218
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-008
+  kind: invariant
+  family: idempotency
+  statement: >
+    A same-state kernel force must short-circuit with `emitted_events: 0` and leave the trace
+    ring buffer empty.
+  why: >
+    a11y-wave-lifecycle.spec.ts:225-271 — the counter makes idempotency DETERMINISTIC where the
+    production PATCH handler (which returns only the row) can only be tested with a negative
+    timing window that false-greens under WS backpressure. The trace cross-check catches a
+    wire-format bug that emits yet still reports 0.
+  source: web/e2e/a11y-wave-lifecycle.spec.ts:225-272
+  authoritative_test: web/e2e/a11y-wave-lifecycle.spec.ts:252
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-009
+  kind: invariant
+  family: lifecycle-rejections
+  statement: >
+    A User-actor PATCH for a spec-only edge (`planning → dispatching`) must return 403 with
+    body `code: "forbidden"`, and the wave's lifecycle must be UNCHANGED.
+  why: >
+    a11y-wave-lifecycle-rejections.spec.ts:14-22,97-127 — the validator runs BEFORE the write.
+    The `code` discriminator is pinned so an error-shape refactor that drops it fails loudly.
+  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:97-127
+  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:97
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-010
+  kind: invariant
+  family: lifecycle-rejections
+  statement: >
+    A structurally illegal skip (`draft → done`) must be rejected 403 even for the Kernel actor,
+    with body `{ok: false, error: "validate_transition: …", from: "draft", to: "done"}` where
+    the error text names BOTH endpoints.
+  why: >
+    a11y-wave-lifecycle-rejections.spec.ts:23-32,129-166 — this is `IllegalEdge`, not
+    `NotAuthorized`; asserting both endpoint names means a regression that silently downgrades
+    to NotAuthorized (a real semantic change) flips the test.
+  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:129-166
+  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:129
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-011
+  kind: invariant
+  family: lifecycle-rejections
+  statement: >
+    A Worker actor (`X-Calm-Actor: ai:codex`) must be rejected 403 on EVERY lifecycle edge —
+    including the universally-allowed `draft → planning` kickoff — with an error naming "Worker".
+  why: >
+    a11y-wave-lifecycle-rejections.spec.ts:33-43,168-207 — the Worker short-circuit sits at the
+    TOP of `validate_transition`, before any per-edge logic. The 403 must come from the
+    lifecycle validator, not the later role gate.
+  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:168-207
+  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:168
+  owner_slice: features/wave/lifecycle
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-LIFECYCLE-012
+  kind: invariant
+  family: actor-header
+  statement: >
+    `ai:codex` is the ONLY Worker-shaped `X-Calm-Actor` value the middleware accepts; other
+    `ai:<id>` forms are rejected as BadRequest.
+  why: >
+    a11y-wave-lifecycle-rejections.spec.ts:176-184 — `to_actor_id` maps `"ai:codex"` to
+    `ActorId::AiCodex(CardId::empty())`, which `actor_kind` classifies as Worker.
+  source: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:176-184
+  authoritative_test: web/e2e/a11y-wave-lifecycle-rejections.spec.ts:190
+  owner_slice: features/auth/actor
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 9 — WS event bus, cursor resync, deep-link (#56 slice 5, #290)
+# =============================================================================
+
+- id: E2E-CAP-TRACE-001
+  kind: capability
+  family: event-bus
+  statement: >
+    On first WS connect the client must drain the server's pre-seeded event log in order, with
+    each envelope carrying a positive `_id` and `eventVersion`, mirrored verbatim into the ring
+    buffer.
+  why: >
+    a11y-trace-smoke.spec.ts:13-21 (#56 slice 5) — tests must be able to reason about the trace
+    SHAPE, not just resulting UI state.
+  source: web/e2e/a11y-trace-smoke.spec.ts:47-74
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-TRACE-002
+  kind: gate
+  family: event-bus
+  statement: >
+    The default fixture's event sequence must be exactly
+    [cove.updated, wave.updated, card.added ×3, overlay.set ×2] and the first N trace kinds must
+    match it verbatim.
+  why: >
+    a11y-trace-smoke.spec.ts:34-45 — pinned so a fixture edit causes a noisy failure; this is the
+    anchor between the fixture and the bridge.
+  source: web/e2e/a11y-trace-smoke.spec.ts:37-73
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:71
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TRACE-003
+  kind: invariant
+  family: event-bus
+  statement: >
+    The `_replay_complete` control frame must be handled by the bridge but NOT placed in the
+    trace ring buffer.
+  why: >
+    a11y-trace-smoke.spec.ts:58-61 — it is transport control, not a domain event; leaking it
+    would corrupt every exact-sequence assertion.
+  source: web/e2e/a11y-trace-smoke.spec.ts:58-73
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:71
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SYNC-004
+  kind: capability
+  family: cursor-resync
+  statement: >
+    The WS client must persist its `lastEventId` to `localStorage['calm:sync:cursor']` and
+    subscribe with `since=<cursor>`.
+  why: a11y-deep-link-after-reset.spec.ts:3-9 (#290) — the durable value the reset detection reads.
+  source: web/e2e/a11y-deep-link-after-reset.spec.ts:3-15
+  authoritative_test: web/e2e/a11y-deep-link-after-reset.spec.ts:140
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SYNC-005
+  kind: invariant
+  family: cursor-resync
+  statement: >
+    The server must stamp `_replay_complete._id` with the LOG TIP (`MAX(events.id)`), not the
+    in-window high-water mark; and the client must treat `_id < lastEventId` as a server-reset
+    signal — clearing the cursor, firing snapshot listeners (bridge does `qc.clear()`), and
+    bouncing the socket so the next reconnect comes up cold.
+  why: >
+    a11y-deep-link-after-reset.spec.ts:3-30 (#290) — without this, a post-reset log restarting at
+    id=1 is entirely swallowed by `advanceCursor`'s no-regress guard, the cache never fills, and
+    the app hangs on "Connecting to calm-server…".
+  source: web/e2e/a11y-deep-link-after-reset.spec.ts:20-30
+  authoritative_test: web/e2e/a11y-deep-link-after-reset.spec.ts:108
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SYNC-006
+  kind: capability
+  family: deep-link
+  statement: >
+    Deep-linking straight to `/calm/cove/<id>` (no Today visit first) must render the cove name
+    within 15s AND light up the sidebar entry.
+  why: >
+    a11y-deep-link-after-reset.spec.ts:41-77 (#290) — the cross-surface half pins that a fix which
+    only repairs the page-local query but not the WS-driven sidebar cache still fails.
+  source: web/e2e/a11y-deep-link-after-reset.spec.ts:41-78
+  authoritative_test: web/e2e/a11y-deep-link-after-reset.spec.ts:41
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SYNC-007
+  kind: capability
+  family: deep-link
+  statement: >
+    Deep-linking straight to `/calm/wave/<id>` must render the wave title within 15s and a
+    populated `button.wave-cove` breadcrumb.
+  why: >
+    a11y-deep-link-after-reset.spec.ts:80-106 — `useWaveDetailQuery` shares the WS-resync race
+    surface; pre-#290 the breadcrumb rendered stale or empty.
+  source: web/e2e/a11y-deep-link-after-reset.spec.ts:80-106
+  authoritative_test: web/e2e/a11y-deep-link-after-reset.spec.ts:80
+  owner_slice: app/router
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SYNC-008
+  kind: capability
+  family: cursor-resync
+  statement: >
+    A poisoned cursor (`calm:sync:cursor = 999999`) installed before bundle load must trigger the
+    reset path and the bus must re-bootstrap: `cove.updated` lands within 15s and the sidebar
+    renders the cove.
+  why: >
+    a11y-deep-link-after-reset.spec.ts:108-136 — direct reproduction of the pre-#290 failure mode.
+    The test lands on Today rather than a deep link because the persisted React-Query/IndexedDB
+    layer can mask a route-local refetch behind a stale snapshot in the window between `qc.clear()`
+    and the WS reconnect — a separate cache-paint surface from the bus-resync contract.
+  source: web/e2e/a11y-deep-link-after-reset.spec.ts:108-167
+  authoritative_test: web/e2e/a11y-deep-link-after-reset.spec.ts:108
+  owner_slice: systems/events-transport/stream
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SYNC-009
+  kind: capability
+  family: live-updates
+  statement: >
+    A cove or wave minted by a direct REST call from outside the browser must appear in the
+    sidebar live, via the resulting `EventScope::System` `cove.updated` / `wave.updated` WS
+    frames, with no reload.
+  why: >
+    helpers/reset.ts:42-52 — every a11y spec depends on this; it is also the everyday multi-tab /
+    agent-driven-mutation contract.
+  source: web/e2e/helpers/reset.ts:42-79
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:157
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 10 — Spec chat / SpecCurrentRun (#682, pinning #676 + #657)
+# =============================================================================
+
+- id: E2E-CAP-SPECCHAT-001
+  kind: capability
+  family: spec-card
+  statement: >
+    `POST /api/waves` must auto-create a spec card: a `kind: "codex"` card whose payload carries
+    `spec_harness: true`.
+  why: >
+    helpers/spec-chat.ts:93-101 — the same marker `routes/waves.rs::spec_harness_card_payload`
+    writes and `WaveReportPage.selectSpecCard` reads; it is how every surface finds "the" spec card.
+  source: web/e2e/helpers/spec-chat.ts:102-128
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:38
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-002
+  kind: capability
+  family: conversation-drawer
+  statement: >
+    The wave report page must expose an `Open conversation` button that opens a
+    `<aside role="complementary" aria-label="Conversation drawer">` gaining the
+    `report-conversation-drawer--open` class, and a `Close conversation` button to close it.
+  why: >
+    a11y-spec-chat-seed.spec.ts:63-67 and wave-report-view.spec.ts:330-333 — the liveness UI
+    (status chip + stop affordances + typing indicator) renders ONLY in conversation mode.
+  source: web/e2e/a11y-spec-chat-seed.spec.ts:63-67
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:65
+  owner_slice: features/report/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-003
+  kind: invariant
+  family: liveness-gate
+  statement: >
+    Every stop/liveness affordance must gate on the HARNESS PHASE, seeded from
+    `GET /api/cards/{id}/spec/run` on mount — never on an overlay-derived `fsm === 'Working'`.
+  why: >
+    a11y-spec-chat-seed.spec.ts:1-15 (#676 root cause) — spec cards never publish a status overlay
+    in production, so the Stop chip / ■ / Esc shipped DEAD: they never showed even while a turn was
+    visibly running. #657's typing indicator was the same class of bug.
+  source: web/e2e/a11y-spec-chat-seed.spec.ts:41-83
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:41
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-004
+  kind: capability
+  family: seed-path
+  statement: >
+    Opening a wave MID-TURN must render, from the REST seed alone: a `Stop spec turn` button
+    (header chip), a `Stop turn` button (input line ■), a
+    `<div role="status" aria-label="Spec Agent is working">` typing indicator, and a
+    `.report-convo-state` chip reading `Turn Running` with `data-fsm="Working"`.
+  why: >
+    a11y-spec-chat-seed.spec.ts:41-83 — with WS phase frames dropped, the seed read is provably
+    the ONLY liveness source, which is exactly the "open the wave mid-turn" situation #676 broke.
+  source: web/e2e/a11y-spec-chat-seed.spec.ts:69-83
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:41
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-005
+  kind: invariant
+  family: seed-path
+  statement: >
+    Opening a wave while IDLE must render the chip as `Idle` / `data-fsm="Idle"` and NONE of the
+    working affordances must exist (count 0, not merely hidden).
+  why: >
+    a11y-spec-chat-seed.spec.ts:85-114 — the inverse pin; absence checks are anchored AFTER the
+    chip assertion so they run against a settled, seeded UI rather than a still-loading one.
+  source: web/e2e/a11y-spec-chat-seed.spec.ts:85-114
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:85
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-006
+  kind: capability
+  family: run-snapshot
+  statement: >
+    `GET /api/cards/{id}/spec/run` must answer `{card_id, runtime_id, phase}` and a dormant card
+    (no harness stood up yet) must answer `{runtime_id: null, phase: null}`.
+  why: >
+    helpers/spec-chat.ts:130-140 — the null shape is what drives the FE's overlay-derived
+    'Starting' fallback.
+  source: web/e2e/helpers/spec-chat.ts:130-154
+  authoritative_test: web/e2e/a11y-spec-chat-seed.spec.ts:53
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-007
+  kind: capability
+  family: phase-mapping
+  statement: >
+    Harness phases must map to chip text + fsm bucket as: (no harness) → `Starting`;
+    `idle` → `Idle`/Idle; `issuing_turn` → `Issuing Turn`/Working; `turn_running` →
+    `Turn Running`/Working; `turn_completed` → `Turn Completed`/Idle; `issuing_interrupt` →
+    `Issuing Interrupt`/Working.
+  why: >
+    a11y-spec-chat-live.spec.ts:46-79 and a11y-spec-chat-interrupt.spec.ts:52-56 — the Working
+    bucket is what opens the stop affordances; the exact Title Case strings are user-visible.
+  source: web/e2e/a11y-spec-chat-live.spec.ts:46-79
+  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:30
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-008
+  kind: invariant
+  family: typing-indicator
+  statement: >
+    The typing indicator's `working` gate must EXCLUDE `issuing_interrupt` — it opens at
+    issuing_turn/turn_running and closes the moment an interrupt is in flight.
+  why: >
+    a11y-spec-chat-interrupt.spec.ts:16-18,59-62 — the chip stays in the Working bucket at
+    issuing_interrupt but the agent is no longer producing, so a still-animating indicator lies.
+  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:52-69
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:60
+  owner_slice: features/spec/chat
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-009
+  kind: capability
+  family: live-path
+  statement: >
+    With the page already open, forcing phases must update the conversation UI LIVE over the
+    `harness.phase.changed` WS event — no reload, no re-seed — for the full lifecycle
+    idle → issuing_turn → turn_running → turn_completed.
+  why: >
+    a11y-spec-chat-live.spec.ts:1-11 — the counterpart to the seed path; every affordance must
+    both open and close again live.
+  source: web/e2e/a11y-spec-chat-live.spec.ts:30-79
+  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:30
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-SPECCHAT-010
+  kind: gate
+  family: wire-shape
+  statement: >
+    `harness.phase.changed` payloads must be snake_case — `card_id`, `new_phase`, `runtime_id`
+    all present as strings, and `newPhase` / `cardId` must be ABSENT.
+  why: >
+    a11y-spec-chat-live.spec.ts:81-98 — a camelCase drift leaves `ev.data.new_phase` undefined and
+    the UI frozen: the exact "tests green, feature dead" failure mode this suite exists to catch.
+  source: web/e2e/a11y-spec-chat-live.spec.ts:87-98
+  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:93
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-011
+  kind: invariant
+  family: wire-shape
+  statement: >
+    Forced phase events must arrive in order; ordering assertions must filter to the explicitly
+    forced tags so an allowed initial `pending_thread_start` emit from harness stand-up cannot
+    flake them.
+  why: a11y-spec-chat-live.spec.ts:99-106 — harness stand-up legitimately emits an extra frame.
+  source: web/e2e/a11y-spec-chat-live.spec.ts:99-106
+  authoritative_test: web/e2e/a11y-spec-chat-live.spec.ts:106
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-012
+  kind: capability
+  family: input-path
+  statement: >
+    The conversation must expose a `<textarea aria-label="Ask the Spec Agent">`; Enter sends the
+    draft via `POST /api/cards/{id}/spec/input` (200), the textarea clears and re-enables, the
+    message text lands in the transcript, and an author label `You · queued` marks the FE-local
+    echo entry.
+  why: >
+    a11y-spec-chat-input.spec.ts:1-9 — `/spec/input` is a pure MPSC enqueue; the queued echo is the
+    user's only feedback until the harness emits the real item.
+  source: web/e2e/a11y-spec-chat-input.spec.ts:48-90
+  authoritative_test: web/e2e/a11y-spec-chat-input.spec.ts:28
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-013
+  kind: invariant
+  family: input-path
+  statement: >
+    Sending input must NOT churn the harness phase: the chip stays `Idle` and zero
+    `harness.phase.changed` events are recorded.
+  why: >
+    a11y-spec-chat-input.spec.ts:92-106 — `observe(UserMessage)` is enqueue-only; a phase move on
+    send would mean the route is starting turns behind the user's back. Anchored deterministically
+    on the `harness.user_message.enqueued` event rather than a bare sleep.
+  source: web/e2e/a11y-spec-chat-input.spec.ts:92-107
+  authoritative_test: web/e2e/a11y-spec-chat-input.spec.ts:106
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-014
+  kind: capability
+  family: input-path
+  statement: >
+    `POST /spec/input` on a DORMANT spec card must answer a typed `spec_harness_dormant` 409.
+  why: >
+    a11y-spec-chat-input.spec.ts:33-35 — a live (idle) harness must exist first; the dormant path
+    is unit-tested and deliberately not re-covered in e2e.
+  source: web/e2e/a11y-spec-chat-input.spec.ts:33-35
+  authoritative_test: NONE
+  owner_slice: features/spec/chat
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-015
+  kind: invariant
+  family: input-path
+  statement: >
+    Sending input must produce NO `role="alert"` surface on the happy path.
+  why: a11y-spec-chat-input.spec.ts:89-90 — a spurious error banner on a 200 destroys trust.
+  source: web/e2e/a11y-spec-chat-input.spec.ts:89-90
+  authoritative_test: web/e2e/a11y-spec-chat-input.spec.ts:90
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-016
+  kind: capability
+  family: interrupt
+  statement: >
+    A running turn must offer THREE equivalent interrupt paths, each firing
+    `POST /api/cards/{id}/spec/interrupt` and receiving 200 `{stopped: true}`: the header
+    `Stop spec turn` chip, the input-line `Stop turn` ■ button, and Escape.
+  why: >
+    a11y-spec-chat-interrupt.spec.ts:1-6 (#682/#676) — three separate tests so a regression in one
+    path cannot be masked by the others.
+  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:71-152
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:71
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-017
+  kind: capability
+  family: interrupt
+  statement: >
+    Entering conversation mode must AUTO-FOCUS the input, so a keyboard user can press Escape to
+    interrupt without a single Tab; Escape is handled by a document-level listener for any focus
+    inside the conversation region.
+  why: a11y-spec-chat-interrupt.spec.ts:130-137 — keyboard parity with the two click affordances.
+  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:125-152
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:137
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SPECCHAT-018
+  kind: invariant
+  family: interrupt
+  statement: >
+    While an interrupt is in flight both stop affordances must stay VISIBLE but DISABLED — never
+    removed.
+  why: >
+    a11y-spec-chat-interrupt.spec.ts:56-58 — prevents a double interrupt while keeping the control
+    in place so the layout doesn't jump under the user's cursor.
+  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:52-69
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:57
+  owner_slice: features/spec/chat
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SPECCHAT-019
+  kind: capability
+  family: interrupt
+  statement: >
+    After a successful interrupt the FE must append a local `.report-convo-system` note reading
+    `Turn stopped`, and must show no `role="alert"`.
+  why: >
+    a11y-spec-chat-interrupt.spec.ts:18-21 (#668) — interrupted turns never emit `item/completed`,
+    so this FE-local row is the user's ONLY "it stopped" feedback.
+  source: web/e2e/a11y-spec-chat-interrupt.spec.ts:63-68
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:64
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-SPECCHAT-020
+  kind: gate
+  family: copy-constants
+  statement: >
+    User-visible spec-chat copy pinned by e2e (`Turn stopped`, `You · queued`) must live in ONE
+    shared constant, not be duplicated across assertions.
+  why: >
+    helpers/spec-chat.ts:30-41 — so a copy change breaks exactly one constant instead of
+    assertions scattered across the input + interrupt specs.
+  source: web/e2e/helpers/spec-chat.ts:36-41
+  authoritative_test: web/e2e/a11y-spec-chat-interrupt.spec.ts:65
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 11 — Wave report page (document, rails, outline, activity, drawer)
+# =============================================================================
+
+- id: E2E-CAP-REPORT-001
+  kind: capability
+  family: report-page
+  statement: >
+    A wave with a report must render WaveReportPage: an `<h1>` carrying the wave title (H1
+    renders ONLY inside WaveReportPage), the markdown body, a `<tree aria-label="Wave files">`,
+    a `<region aria-label="Outline">` and a `<region aria-label="Backlinks">`.
+  why: >
+    wave-report-view.spec.ts:114-122 and wave-report-sidebar-files.spec.ts:91-99 — the H1 is the
+    canonical "am I on the report surface?" probe used across the suite.
+  source: web/e2e/wave-report-view.spec.ts:114-122
+  authoritative_test: web/e2e/wave-report-view.spec.ts:103
+  owner_slice: features/report/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-002
+  kind: capability
+  family: report-write
+  statement: >
+    `POST /api/waves/:id/report {summary, body, ifDocRev}` must persist a report; `ifDocRev: 0`
+    is the initial-write revision.
+  why: >
+    helpers/reset.ts:125-146 and wave-report-view.spec.ts:70-76 — the optimistic-concurrency
+    field is required on the write path, not optional.
+  source: web/e2e/wave-report-view.spec.ts:70-76
+  authoritative_test: web/e2e/wave-report-view.spec.ts:71
+  owner_slice: features/report/write
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-003
+  kind: capability
+  family: report-files
+  statement: >
+    The Files rail must render a `<region aria-label="Files">` containing a
+    `<tree aria-label="Wave files">` whose `report.md` `treeitem` is clickable and becomes
+    `aria-selected="true"`.
+  why: >
+    wave-report-sidebar-files.spec.ts:96-105 — the wave-fs tree is the user's entry point into
+    report and worktree artifacts.
+  source: web/e2e/wave-report-sidebar-files.spec.ts:96-106
+  authoritative_test: web/e2e/wave-report-sidebar-files.spec.ts:78
+  owner_slice: features/report/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-004
+  kind: invariant
+  family: report-files
+  statement: >
+    Selecting `report.md` in the Files tree must NOT open a `.wave-report-files-viewer` panel
+    (count must be 0) — the main document already IS the report.
+  why: >
+    wave-report-sidebar-files.spec.ts:106 — an intentional carve-out; a rewrite that "adds the
+    missing viewer" would double-render the report.
+  source: web/e2e/wave-report-sidebar-files.spec.ts:104-106
+  authoritative_test: web/e2e/wave-report-sidebar-files.spec.ts:106
+  owner_slice: features/report/page
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-005
+  kind: capability
+  family: backlinks
+  statement: >
+    A report body containing `[Label](neige://wave/<id>)` must surface as a `role="link"` named
+    `Label` inside the target wave's `<region aria-label="Backlinks">`.
+  why: >
+    a11y-axe.spec.ts:212-223,286-289 — the reverse-citation index; the link must be a real link
+    role so keyboard/AT users can traverse it.
+  source: web/e2e/a11y-axe.spec.ts:212-223
+  authoritative_test: web/e2e/a11y-axe.spec.ts:287
+  owner_slice: features/report/backlinks
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-006
+  kind: capability
+  family: outline
+  statement: >
+    Report headings must carry generated two-digit counters (`01`, `02`, `03`) exposed as
+    StaticText inside the heading's accessibility subtree, and the outline list's
+    `.report-outline-number` values must match the rendered body counters EXACTLY and in order.
+  why: >
+    wave-report-view.spec.ts:336-397 — asserted through the CDP full AX tree, not the DOM, so the
+    contract is what assistive tech actually perceives; drift between body and outline numbering
+    makes the outline unusable as a navigation aid.
+  source: web/e2e/wave-report-view.spec.ts:366-397
+  authoritative_test: web/e2e/wave-report-view.spec.ts:336
+  owner_slice: features/report/outline
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-007
+  kind: invariant
+  family: outline
+  statement: >
+    Counter/outline agreement must hold for a pure-H1 report as well as an H2-sectioned one.
+  why: >
+    wave-report-view.spec.ts:399-456 — reports authored with `#` top-level sections are a real
+    shape; a numbering scheme keyed only to H2 silently produces an empty outline for them.
+  source: web/e2e/wave-report-view.spec.ts:399-456
+  authoritative_test: web/e2e/wave-report-view.spec.ts:399
+  owner_slice: features/report/outline
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-008
+  kind: invariant
+  family: heading-rule
+  statement: >
+    The trailing full-column heading rule must be an INLINE `::after`, never a block element and
+    never a `background-image`; a short heading must stay exactly one line-height tall, and an
+    EMPTY heading (`##` with no text) must still have height > 0.
+  why: >
+    wave-report-view.spec.ts:458-513 — making `::after` a block (or moving it to its own line)
+    makes short headings taller than one line; returning the counter to a float leaves an empty
+    heading at 0px. `backgroundImage === 'none'` specifically forbids the former implementation.
+  source: web/e2e/wave-report-view.spec.ts:480-509
+  authoritative_test: web/e2e/wave-report-view.spec.ts:458
+  owner_slice: styles/report-typography
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-009
+  kind: invariant
+  family: heading-rule
+  statement: >
+    Report headings must be `overflow-x: clip` and `overflow-y: visible`, and the generated rule
+    must never enlarge `.report-document-scroll`'s scrollWidth beyond clientWidth (+1px).
+  why: >
+    wave-report-view.spec.ts:510-528 — horizontal clipping is load-bearing for the 100%-wide rule;
+    keeping the block axis visible leaves focus decoration (e.g. a focused heading link) unclipped.
+  source: web/e2e/wave-report-view.spec.ts:510-528
+  authoritative_test: web/e2e/wave-report-view.spec.ts:527
+  owner_slice: styles/report-typography
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-010
+  kind: capability
+  family: heading-rule
+  statement: >
+    A link inside a report heading must remain focusable.
+  why: wave-report-view.spec.ts:514-516 — the clip must not swallow interactive children.
+  source: web/e2e/wave-report-view.spec.ts:514-516
+  authoritative_test: web/e2e/wave-report-view.spec.ts:516
+  owner_slice: styles/report-typography
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-011
+  kind: capability
+  family: activity-panel
+  statement: >
+    The report must render a `.report-activity-stack` of `.report-activity-card` buttons, one per
+    harness user-message item fetched from `/api/cards/*/harness/items`.
+  why: >
+    wave-report-view.spec.ts:149-166 — the instruction history rail; each row is a real button so
+    it is keyboard-reachable and dismissible.
+  source: web/e2e/wave-report-view.spec.ts:149-166
+  authoritative_test: web/e2e/wave-report-view.spec.ts:139
+  owner_slice: features/report/activity
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-012
+  kind: invariant
+  family: activity-panel
+  statement: >
+    At a wide container (1200px) the activity stack must be `position: sticky` with height 0 —
+    a pure overlay that never occupies document flow; at a narrow container (900px) it must be
+    `position: static` with real height, finishing ABOVE where the document begins.
+  why: >
+    wave-report-view.spec.ts:168-223 — the two-mode geometry is what keeps the reading column
+    centred at wide widths while still being readable at narrow ones. A single-mode rewrite either
+    shifts the document sideways or overlaps it.
+  source: web/e2e/wave-report-view.spec.ts:168-223
+  authoritative_test: web/e2e/wave-report-view.spec.ts:184
+  owner_slice: features/report/activity
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-013
+  kind: invariant
+  family: activity-panel
+  statement: >
+    `.report-activity-rows` must scroll INTERNALLY at a fixed 140px clientHeight rather than
+    growing the page.
+  why: >
+    wave-report-view.spec.ts:224-234 — an unbounded activity list would push the report body off
+    screen as instruction history accumulates.
+  source: web/e2e/wave-report-view.spec.ts:224-234
+  authoritative_test: web/e2e/wave-report-view.spec.ts:228
+  owner_slice: features/report/activity
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-014
+  kind: capability
+  family: activity-panel
+  statement: >
+    Clicking an activity card must hide the stack: class `hide`, `opacity: 0`,
+    `pointer-events: none` on the panel, `tabindex="-1"` on the cards, and the document must
+    collapse back to exactly the position it occupies with no stack at all.
+  why: >
+    wave-report-view.spec.ts:236-247 — all four properties together are what makes the hidden
+    panel fully inert to mouse AND keyboard while animating out.
+  source: web/e2e/wave-report-view.spec.ts:236-247
+  authoritative_test: web/e2e/wave-report-view.spec.ts:237
+  owner_slice: features/report/activity
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-015
+  kind: capability
+  family: report-rail
+  statement: >
+    The report rail must be collapsible via `Collapse report rail` and re-openable via
+    `Expand report rail`; collapsed, `.report-center` takes `grid-column-start: 2` and fills the
+    shell width (within 2px).
+  why: >
+    wave-report-view.spec.ts:531-551 — the grid-column contract is how the layout reflows without
+    a JS measure pass.
+  source: web/e2e/wave-report-view.spec.ts:531-551
+  authoritative_test: web/e2e/wave-report-view.spec.ts:531
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-016
+  kind: invariant
+  family: report-rail
+  statement: >
+    With the rail collapsed at 1600px viewport, the report document must stay readable: width
+    ≈748px (≥747), height ≥100, containing the body text, and with a non-null `offsetParent`.
+  why: >
+    wave-report-view.spec.ts:553-581 — pins that "collapse the rail" widens the shell without
+    stretching the measure of the reading column past readability.
+  source: web/e2e/wave-report-view.spec.ts:553-581
+  authoritative_test: web/e2e/wave-report-view.spec.ts:580
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-017
+  kind: invariant
+  family: conversation-drawer
+  statement: >
+    On a wide viewport the open conversation drawer occupies `grid-column-start: 3` at
+    395–397px wide, and `.report-center` must shrink by exactly that amount — the drawer must
+    never overlay the document.
+  why: >
+    wave-report-view.spec.ts:583-610 — a docked (not overlaid) drawer is what lets the user read
+    the report and the conversation at once.
+  source: web/e2e/wave-report-view.spec.ts:583-610
+  authoritative_test: web/e2e/wave-report-view.spec.ts:585
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-018
+  kind: invariant
+  family: report-rail
+  statement: >
+    The collapsed-rail `Expand report rail` opener must stay INSIDE the report shell: its
+    `offsetParent` must be `.report-page` and all four edge offsets must be ≥ -1px.
+  why: >
+    wave-report-view.spec.ts:612-634 — an opener positioned against the viewport escapes the shell
+    on scroll and becomes unclickable.
+  source: web/e2e/wave-report-view.spec.ts:612-634
+  authoritative_test: web/e2e/wave-report-view.spec.ts:629
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-019
+  kind: invariant
+  family: conversation-drawer
+  statement: >
+    On a narrow viewport (390×844) the drawer panel is height 0 when closed, opens to ≈58% of
+    viewport height, and its BOTTOM edge must stay pinned to the viewport bottom (delta ≈0) even
+    after the report is scrolled to its end.
+  why: >
+    wave-report-view.spec.ts:250-333 — "docked to the viewport" is the mobile contract; a drawer
+    that scrolls away with the document is unreachable exactly when the user needs it.
+  source: web/e2e/wave-report-view.spec.ts:276-328
+  authoritative_test: web/e2e/wave-report-view.spec.ts:250
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-020
+  kind: invariant
+  family: conversation-drawer
+  statement: >
+    With the narrow drawer open and the report scrolled to its maximum, the last paragraph's
+    bottom must sit at or above the drawer panel's top — content must never be trapped underneath.
+  why: >
+    wave-report-view.spec.ts:317-323 — the scroll container must reserve space for the drawer, not
+    just paint over it.
+  source: web/e2e/wave-report-view.spec.ts:292-323
+  authoritative_test: web/e2e/wave-report-view.spec.ts:317
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-021
+  kind: invariant
+  family: report-rail
+  statement: >
+    On a 390px viewport the expanded rail's `Collapse report rail` control must sit fully above
+    the `Outline` section head (no vertical overlap) and keep ≥10px clearance from the right edge.
+  why: >
+    wave-report-view.spec.ts:637-658 — at narrow widths a floated close button otherwise lands on
+    top of the Outline header and steals its taps.
+  source: web/e2e/wave-report-view.spec.ts:637-658
+  authoritative_test: web/e2e/wave-report-view.spec.ts:637
+  owner_slice: features/report/layout
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-REPORT-022
+  kind: invariant
+  family: conversation-drawer
+  statement: >
+    The follow-up input must be reachable ONLY after the drawer is opened — the
+    `Open conversation` entry button is enabled on load, but sending requires the drawer.
+  why: >
+    wave-report-view.spec.ts:124-136 — deliberate two-step so a stray keystroke on the report can
+    never dispatch a turn.
+  source: web/e2e/wave-report-view.spec.ts:124-136
+  authoritative_test: web/e2e/wave-report-view.spec.ts:129
+  owner_slice: features/report/layout
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-REPORT-023
+  kind: capability
+  family: harness-items
+  statement: >
+    `GET /api/cards/*/harness/items` must return rows shaped
+    `{id, runtime_id, card_id, wave_id, thread_id, turn_id, item_uuid, item_type, method,
+    params (JSON string), created_at_ms}` with `method: "item/completed"` and a
+    `params.item.content[].text` payload.
+  why: >
+    wave-report-view.spec.ts:78-101 — the exact row shape the activity panel decodes; the spec
+    route-fulfills it, so this IS the pinned contract.
+  source: web/e2e/wave-report-view.spec.ts:78-101
+  authoritative_test: web/e2e/wave-report-view.spec.ts:149
+  owner_slice: features/report/activity
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 12 — Terminal cards: lifecycle, exit badges, geometry
+# =============================================================================
+
+- id: E2E-CAP-TERMINAL-001
+  kind: capability
+  family: terminal-card
+  statement: >
+    `POST /api/waves/:id/terminal-cards {program, cwd, env, theme}` must mint a terminal card and
+    return a payload carrying `terminal_id`; the kernel wraps `program` in `/bin/sh -c`
+    server-side.
+  why: >
+    terminal-clean-exit.spec.ts:57-84 — `routes/terminal.rs::spawn_daemon_with_parts` does the
+    shell wrap, so callers pass a shell snippet, not an argv.
+  source: web/e2e/terminal-clean-exit.spec.ts:65-85
+  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:22
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-002
+  kind: capability
+  family: terminal-card
+  statement: >
+    A terminal card must render as `.term` (with `.term.live` while attached), containing a
+    `.card-head` sibling of `.term-body`, and an `.xterm-view` root stamped with
+    `data-terminal-id`.
+  why: >
+    terminal-clean-exit.spec.ts:109-120 — the head/body sibling relationship is load-bearing: the
+    exit badge lives in `.card-head`, NOT inside the XtermView's parent.
+  source: web/e2e/terminal-clean-exit.spec.ts:104-121
+  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:107
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-003
+  kind: capability
+  family: exit-badge
+  statement: >
+    A terminal worker whose child exits cleanly must surface a small
+    `.card-head-exit-badge` reading `exit 0` with class `card-head-exit-badge-success` — and the
+    terminal buffer (`.xterm-container`) must STAY VISIBLE.
+  why: >
+    terminal-clean-exit.spec.ts:1-16 (#306) — PR #304 fixed the WS close code but kept a full-card
+    "process exited + Restart" overlay; #306 collapsed that overlay so scrollback stays readable.
+  source: web/e2e/terminal-clean-exit.spec.ts:122-132
+  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:22
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMINAL-004
+  kind: invariant
+  family: exit-badge
+  statement: >
+    After a clean child exit there must be NO `.xterm-status-closed` overlay, NO `Restart`
+    button, NO `Reconnect` button, and no "disconnected" text on that card.
+  why: >
+    terminal-clean-exit.spec.ts:134-145 — these are the pre-#306 surfaces; a rewrite that
+    reintroduces a restart overlay regresses the issue.
+  source: web/e2e/terminal-clean-exit.spec.ts:134-145
+  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:137
+  owner_slice: systems/terminal/card
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMINAL-005
+  kind: invariant
+  family: exit-badge
+  statement: >
+    When the child exits BEFORE the browser's WS attach round-trip (daemon socket already
+    unlinked), the server must still accept the upgrade and close with 1000 + a `child-exited`
+    reason — never a bare code-1006.
+  why: >
+    terminal-clean-exit.spec.ts:5-13 (#304) — pre-fix the `resolve_live_sock` 500 path meant the
+    WS never reached 101, and the browser rendered a generic "disconnected — 1006" overlay for a
+    perfectly successful run.
+  source: web/e2e/terminal-clean-exit.spec.ts:87-101
+  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:125
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-006
+  kind: capability
+  family: exit-badge
+  statement: >
+    The exit badge must also cover signal and non-zero exits (`exit 137`, `signal`), not only
+    `exit 0`.
+  why: terminal-clean-exit.spec.ts:12-15 (#306) — the badge carries the full exit disposition.
+  source: web/e2e/terminal-clean-exit.spec.ts:10-15
+  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:126
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMINAL-007
+  kind: invariant
+  family: xterm-remount
+  statement: >
+    An app-level theme toggle must NOT remount any visible XtermView — the `__xtermMounts__`
+    counter must be conserved across the toggle while `<html data-theme>` does flip.
+  why: >
+    a11y-177-theme-toggle-no-remount.spec.ts:12-31 (#177) — the user's DevTools capture showed a
+    new XtermView instance id on every toggle, destroying scrollback. jsdom unit tests could not
+    reproduce it (RGL + ResizeObserver, real Suspense/lazy resolve timing, real query persister,
+    real wave-detail fetch); real Chromium is the last lever before instrumenting prod.
+  source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:140-188
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:91
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMINAL-008
+  kind: invariant
+  family: xterm-remount
+  statement: >
+    Baseline mount counts must be snapshotted only after a ~500ms settle past React strict-mode's
+    double-invoke.
+  why: >
+    a11y-177-theme-toggle-no-remount.spec.ts:140-142 — otherwise the baseline is captured mid
+    double-mount and the conservation assertion is meaningless.
+  source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:140-151
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:142
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-009
+  kind: capability
+  family: spec-card-pty
+  statement: >
+    The wave-create path must mint a spec card synchronously, and (when codex is available) that
+    card mounts an XtermView.
+  why: >
+    a11y-177-theme-toggle-no-remount.spec.ts:44-47 (#136 PR6 / #182) — no `+ Add → terminal` step
+    is needed to get a live PTY on a fresh wave.
+  source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:124-138
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:127
+  owner_slice: features/spec/chat
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMINAL-010
+  kind: invariant
+  family: spec-card-pty
+  statement: >
+    Post-#510 PR-del the spec card is a CHAT PANEL with no XtermView; a fresh wave therefore has
+    ZERO registered xterm dump hooks until a terminal card is added.
+  why: >
+    new-terminal-osc-echo.spec.ts:174-178 and tui-theme-protocol.spec.ts:117-119 — an explicit
+    architectural change; specs count "+1 dump hook" relative to a likely-zero baseline.
+  source: web/e2e/new-terminal-osc-echo.spec.ts:174-178
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:119
+  owner_slice: features/spec/chat
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMINAL-011
+  kind: invariant
+  family: resize-commit
+  statement: >
+    A collapsed (8px-tall) xterm mount must NOT emit any `ResizeCommit` frame; no frame may ever
+    carry `rows < 4`. Once the collapse is lifted, a real commit with cols ≥8 and rows ≥4 must
+    follow.
+  why: >
+    issue-423-tiny-mount.spec.ts:13-68 (#423) — committing a tiny geometry to the PTY reflows the
+    child's output permanently; the suppression must be a guard, not a debounce that eventually
+    fires the bad value.
+  source: web/e2e/issue-423-tiny-mount.spec.ts:13-69
+  authoritative_test: web/e2e/issue-423-tiny-mount.spec.ts:13
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-012
+  kind: capability
+  family: terminal-protocol
+  statement: >
+    The terminal WS protocol must be version 4 with the frame vocabulary: client
+    `ClientHello {client_id, terminal_id, desired_size{cols,rows}}`, `"OwnerClaim"`,
+    `ResizeCommit {cols, rows, epoch}`; server `ServerHello {protocol_version, terminal_id,
+    session_id, client_role, owner_client_id, pty_size, pty_seq_head, pty_seq_tail, render_rev,
+    snapshot{render_rev, pty_seq, cols, rows, encoding, data, scrollback}, history_gap,
+    is_child_ready}`, `OwnerChanged {owner_client_id}`, `ResizeApplied {epoch, cols, rows,
+    pty_seq, render_rev}`.
+  why: >
+    issue-423-tiny-mount.spec.ts:120-238 — the fake WS reimplements the protocol verbatim; this is
+    the most complete wire description of the terminal channel in the e2e tree.
+  source: web/e2e/issue-423-tiny-mount.spec.ts:150-238
+  authoritative_test: web/e2e/issue-423-tiny-mount.spec.ts:13
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-013
+  kind: capability
+  family: card-kinds
+  statement: >
+    `POST /api/waves/:id/cards` must accept a `claude` card kind with payload
+    `{schemaVersion: 1, terminal_id, cwd}`, rendering a `.codex-card-pty` surface.
+  why: >
+    issue-423-tiny-mount.spec.ts:354-372 — an explicit card kind alongside terminal/codex/iframe
+    that a rewrite must not silently drop.
+  source: web/e2e/issue-423-tiny-mount.spec.ts:354-372
+  authoritative_test: web/e2e/issue-423-tiny-mount.spec.ts:26
+  owner_slice: systems/cards/kinds
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMINAL-014
+  kind: capability
+  family: card-kinds
+  statement: >
+    `POST /api/waves/:id/cards` must accept an `iframe` card kind with payload `{url}` and an
+    optional `sort`, rendering as an ordinary worker card via the iframe adapter.
+  why: >
+    helpers/reset.ts:148-153 — the renderer-free card used everywhere a populated card surface is
+    needed without a terminal/codex daemon.
+  source: web/e2e/helpers/reset.ts:154-176
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:739
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 13 — Terminal theme protocol (OSC 10/11, DECSET 1004)
+# =============================================================================
+
+- id: E2E-CAP-TERMTHEME-001
+  kind: capability
+  family: osc-theme
+  statement: >
+    A terminal must be spawned with the host theme (`--terminal-fg/--terminal-bg`) so a TUI child
+    probing OSC 10/11 at boot reads the app's CURRENT theme, not a hard-coded default.
+  why: >
+    tui-theme-protocol.spec.ts:122-170 — the fixture prints `THEME_FG=#rrggbb` / `THEME_BG=` from
+    its OSC probe; boot values must equal LIGHT_THEME_RGB when the app is in light mode.
+  source: web/e2e/tui-theme-protocol.spec.ts:122-170
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:167
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMTHEME-002
+  kind: capability
+  family: osc-theme
+  statement: >
+    A mid-session app theme toggle must propagate to a running TUI child, which re-probes and
+    prints fresh THEME_FG/THEME_BG values, in under 2 seconds.
+  why: >
+    tui-theme-protocol.spec.ts:172-194 — the round-trip budget is asserted (soft) so a regression
+    that makes theme changes take seconds is visible.
+  source: web/e2e/tui-theme-protocol.spec.ts:172-194
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:184
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-003
+  kind: invariant
+  family: osc-theme
+  statement: >
+    After a wave-switch remount the terminal must RECLAIM Owner following the WS close, and the
+    daemon's persisted `set_default_colors` must survive the reconnect — so a theme changed while
+    the user was away is reflected on return.
+  why: >
+    tui-theme-protocol.spec.ts:196-268 (Anchor D / Bug B, fixed by e8d85122) — two invariants:
+    `useTheme()` is read at mount in cards/builtins/terminal.tsx, and RenderPlane is
+    registry-scoped (terminal_renderer/mod.rs:206).
+  source: web/e2e/tui-theme-protocol.spec.ts:196-268
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:261
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-004
+  kind: invariant
+  family: xterm-unmount
+  statement: >
+    Navigating away from a wave must genuinely tear down that wave's XtermView React fiber — its
+    `__xtermDumps__` entry must disappear, not merely be hidden; returning must re-register a
+    fresh dump fn under the SAME terminalId.
+  why: >
+    tui-theme-protocol.spec.ts:228-256 — the disappearing/reappearing entry is the only proof the
+    fiber really unmounted rather than being display:none'd.
+  source: web/e2e/tui-theme-protocol.spec.ts:221-256
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:233
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-005
+  kind: invariant
+  family: osc-echo
+  statement: >
+    A New-terminal card must NEVER echo theme bytes into the grid as literal caret text — the
+    rendered buffer must not contain `]10;rgb:` or `]11;rgb:`.
+  why: >
+    new-terminal-osc-echo.spec.ts:1-26 — the reported bug: the first visible line read
+    `^[]10;rgb:2a2a/2f2f/3a3a^[\^[]11;rgb:...^[[I`. Root cause: XtermView's theme effect POSTed a
+    no-op TerminalThemeUpdate on EVERY mount, and the daemon wrote OSC 10/11 + focus-in into the
+    PTY master; a shell prompt is raw-mode (ZLE/readline, ECHO+ICANON off) so its line editor
+    treated the injected bytes as INPUT and redrew them.
+  source: web/e2e/new-terminal-osc-echo.spec.ts:99-111,235-238
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:119
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-006
+  kind: invariant
+  family: osc-echo
+  statement: >
+    Fix A — the mount-time no-op `TerminalThemeUpdate` must be SUPPRESSED when the daemon was
+    already spawned with that exact theme.
+  why: new-terminal-osc-echo.spec.ts:26-30 — removes the write that produced the echo at all.
+  source: web/e2e/new-terminal-osc-echo.spec.ts:26-30
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:238
+  owner_slice: systems/terminal/card
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-007
+  kind: invariant
+  family: osc-echo
+  statement: >
+    Fix B — the daemon's mid-session focus-in nudge (`ESC[I`) must be GATED on the child having
+    opted into DECSET 1004 (focus event reporting); the OSC 10/11 reply is synthesized later from
+    the model's defaults only when the child solicits it.
+  why: >
+    new-terminal-osc-echo.spec.ts:31-36 (#305) — a shell's ZLE/readline enables only bracketed
+    paste (2004), never 1004, so a shell terminal must receive nothing on a theme toggle. Verified
+    by flipping dark→light→dark while the shell sits at its prompt.
+  source: web/e2e/new-terminal-osc-echo.spec.ts:240-266
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:255
+  owner_slice: systems/terminal/card
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-008
+  kind: invariant
+  family: osc-echo
+  statement: >
+    The OSC-echo e2e is AUXILIARY coverage of the real `make dev` path; the deterministic hermetic
+    CI anchor is `crates/calm-server/tests/theme_cooked_shell_no_osc_echo.rs`.
+  why: >
+    new-terminal-osc-echo.spec.ts:56-62 — the e2e anchor holds only if the host's real `$SHELL`
+    does not enable DECSET 1004 (true for zsh/bash), so it cannot be the sole gate.
+  source: web/e2e/new-terminal-osc-echo.spec.ts:56-62
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:119
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-TERMTHEME-009
+  kind: invariant
+  family: osc-echo
+  statement: >
+    A codex card enables DECSET 1004 and consumes the OSC reply silently; only a raw-mode shell
+    terminal can ever surface the echo.
+  why: >
+    new-terminal-osc-echo.spec.ts:66-73 — which is why the assertion reads EVERY terminal's buffer
+    rather than just the one under test.
+  source: web/e2e/new-terminal-osc-echo.spec.ts:66-85
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:238
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-TERMTHEME-010
+  kind: capability
+  family: theme-tokens
+  statement: >
+    `DARK_THEME_RGB` = `{fg: [216,219,226], bg: [15,20,24]}` and `LIGHT_THEME_RGB` must live in
+    `web/src/api/themeRgb.ts` and be importable by e2e specs.
+  why: >
+    new-terminal-card.spec.ts:54-57 and tui-theme-protocol.spec.ts:4 — every wave-creating fixture
+    in the suite carries the dark sentinel, and the tui-theme spec imports the real constants so a
+    palette change cannot silently desync spec from app.
+  source: web/e2e/tui-theme-protocol.spec.ts:4
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:167
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-THEME-011
+  kind: capability
+  family: theme-modes
+  statement: >
+    The theme must support three modes — `light`, `dark`, `system` — with the resolved value
+    mirrored to `document.documentElement.dataset.theme`.
+  why: >
+    tui-theme-protocol.spec.ts:6 (`type ThemeName = 'light' | 'dark' | 'system'`) and
+    a11y-axe.spec.ts:72-83 — the dataset attribute is the single integration point for CSS,
+    xterm theming and axe scanning.
+  source: web/e2e/tui-theme-protocol.spec.ts:6,48-67
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:62
+  owner_slice: app/theme
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 14 — Wheel / scroll routing
+# =============================================================================
+
+- id: E2E-INV-WHEEL-001
+  kind: invariant
+  family: wheel-fallthrough
+  statement: >
+    Wheeling DOWN over a terminal whose buffer is empty (nothing to scroll) must FALL THROUGH to
+    the outer `.scroll` container — the page scrolls and the xterm viewport's scrollTop stays put.
+  why: >
+    wheel-mode-edge.spec.ts:100-111 — without fall-through the terminal silently swallows the
+    user's wheel and the page appears frozen.
+  source: web/e2e/wheel-mode-edge.spec.ts:100-111
+  authoritative_test: web/e2e/wheel-mode-edge.spec.ts:100
+  owner_slice: features/wave/scroll
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WHEEL-002
+  kind: invariant
+  family: wheel-fallthrough
+  statement: >
+    Wheeling DOWN over a terminal already at its live tail (viewportY === baseY) must also fall
+    through to the outer scroller.
+  why: >
+    wheel-mode-edge.spec.ts:113-142 — the bottom edge is the common case: the user reads output,
+    reaches the end, and keeps scrolling to see the next card.
+  source: web/e2e/wheel-mode-edge.spec.ts:113-142
+  authoritative_test: web/e2e/wheel-mode-edge.spec.ts:113
+  owner_slice: features/wave/scroll
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WHEEL-003
+  kind: invariant
+  family: xterm-scrollback
+  statement: >
+    xterm.js v6 manages scrollback in its own IBuffer (viewportY/baseY), NOT via browser-native
+    overflow on `.xterm-viewport` — `scrollHeight === clientHeight` always.
+  why: >
+    wheel-mode-edge.spec.ts:129-134 and wheel-wave-switch.spec.ts:93-96 — any scrollback assertion
+    written against `viewport.scrollHeight` is structurally meaningless; measurement must go
+    through the dump hook or rendered `.xterm-screen` text.
+  source: web/e2e/wheel-mode-edge.spec.ts:129-134
+  authoritative_test: web/e2e/wheel-mode-edge.spec.ts:124
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-WHEEL-004
+  kind: capability
+  family: wave-switch
+  statement: >
+    Terminal scrollback must PERSIST across a wave switch: navigating away and back must restore
+    an `.xterm-view` with the SAME `data-terminal-id`, still rendering the previous output.
+  why: >
+    wheel-wave-switch.spec.ts:72-135 — proving the terminal is reattached to the same live session
+    rather than respawned; losing 200 lines of output on a nav is the failure mode.
+  source: web/e2e/wheel-wave-switch.spec.ts:109-135
+  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:72
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WHEEL-005
+  kind: invariant
+  family: wave-switch
+  statement: >
+    After a wave-switch round trip, wheeling UP over the restored xterm must scroll the TERMINAL's
+    scrollback (rendered text changes) and must NOT move the outer `.scroll` container.
+  why: >
+    wheel-wave-switch-routing.spec.ts:91-180 — the routing regression: post-remount the wheel
+    handler can end up bound to a stale element, so the terminal freezes and the page scrolls
+    instead.
+  source: web/e2e/wheel-wave-switch-routing.spec.ts:172-180
+  authoritative_test: web/e2e/wheel-wave-switch-routing.spec.ts:91
+  owner_slice: features/wave/scroll
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-WHEEL-006
+  kind: invariant
+  family: wave-switch
+  statement: >
+    Wheel assertions after a remount must wait for the restored `.xterm-screen` bounding box to
+    STABILIZE across two consecutive reads before dispatching the wheel.
+  why: >
+    wheel-wave-switch-routing.spec.ts:146-170 — the remounted terminal reflows for several frames;
+    wheeling at a stale coordinate lands on a different element and the test lies.
+  source: web/e2e/wheel-wave-switch-routing.spec.ts:146-170
+  authoritative_test: web/e2e/wheel-wave-switch-routing.spec.ts:149
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SCROLL-001
+  kind: capability
+  family: scroll-surfaces
+  statement: >
+    The app owns these distinct scroll containers, each of which must handle wheel input:
+    `.scroll` (page root), `.report-center`, `.term-body`, `.file-viewer-tree-list`,
+    `.file-viewer-changes`, `.file-viewer-code-wrap .cm-scroller`, `.codex-card-pty`,
+    `.xterm-viewport`, `.cal-agenda`.
+  why: >
+    _scroll-probe.spec.ts:41-51 — the authoritative inventory of scroll surfaces in the current
+    build. The probe itself is investigation-only, but the LIST is a capability the new fe must
+    still cover.
+  source: web/e2e/_scroll-probe.spec.ts:41-51
+  authoritative_test: NONE
+  owner_slice: features/wave/scroll
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-SCROLL-002
+  kind: capability
+  family: scroll-surfaces
+  statement: >
+    Card focus must be observable as `:focus-within` on a `.wave-card` element, and the focusable
+    card surfaces are `.report-doc`, `.term.live`, `.term:not(.live)`, `.codex-card`,
+    `.file-viewer-card` (each with a clickable `.card-head`).
+  why: >
+    _scroll-probe.spec.ts:63-70,291-298 — the focus survey enumerates which card types exist and
+    how focus is expressed; a cursor-routed vs focus-routed wheel model decision depends on it.
+  source: web/e2e/_scroll-probe.spec.ts:291-331
+  authoritative_test: NONE
+  owner_slice: features/wave/scroll
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-SCROLL-003
+  kind: invariant
+  family: scroll-surfaces
+  statement: >
+    Edge-of-card wheel chaining (report center scrolled fully down then wheeled further, or fully
+    up then wheeled up) is an explicitly surveyed behaviour that must have a decided answer.
+  why: >
+    _scroll-probe.spec.ts:267-288 — the probe captures it precisely because the current build's
+    behaviour was undecided; a rewrite must pick cursor-routed or focus-routed deliberately.
+  source: web/e2e/_scroll-probe.spec.ts:267-288
+  authoritative_test: NONE
+  owner_slice: features/wave/scroll
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 15 — Color system anchor (form controls across themes)
+# =============================================================================
+
+- id: E2E-CAP-COLOR-001
+  kind: capability
+  family: color-anchor
+  statement: >
+    A `color-anchor.html` harness page must render every form control the design system owns,
+    each tagged `data-color-anchor-id` (slug) and `data-color-anchor-kind` (`text` | `native`),
+    with `window.__calmSetTheme` available to drive light/dark.
+  why: >
+    color-system-anchor.spec.ts:26-34,67-83 — a dedicated harness rather than the SPA so control
+    colours can be snapshotted without navigating real routes.
+  source: web/e2e/color-system-anchor.spec.ts:26-34,67-83
+  authoritative_test: web/e2e/color-system-anchor.spec.ts:26
+  owner_slice: styles/color-system
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-COLOR-002
+  kind: gate
+  family: color-anchor
+  statement: >
+    Every anchored control's COMPUTED `color-scheme` must equal the active theme, in both light
+    and dark.
+  why: >
+    color-system-anchor.spec.ts:42-48 — a wrong `color-scheme` makes native controls (scrollbars,
+    date pickers, select popups) render in the opposite theme's chrome.
+  source: web/e2e/color-system-anchor.spec.ts:42-48
+  authoritative_test: web/e2e/color-system-anchor.spec.ts:45
+  owner_slice: styles/color-system
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-GATE-COLOR-003
+  kind: gate
+  family: color-anchor
+  statement: >
+    In dark theme, every `text`-kind control's background must be neither fully transparent
+    `rgba(0,0,0,0)` nor pure white `rgb(255,255,255)` — EXCEPT the allowlisted inline-rename
+    inputs `wave-title-input`, `cove-title-input`, `cove-nav-edit-input`.
+  why: >
+    color-system-anchor.spec.ts:19-23,49-54 — a transparent or white text input in dark mode is
+    unreadable; the three inline-rename inputs are deliberately transparent because they sit
+    inside a styled header and must inherit its surface.
+  source: web/e2e/color-system-anchor.spec.ts:19-23,49-54
+  authoritative_test: web/e2e/color-system-anchor.spec.ts:52
+  owner_slice: styles/color-system
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-CAP-COLOR-004
+  kind: capability
+  family: color-anchor
+  statement: >
+    The run must regenerate an informational `__snapshots__/color-anchor-baseline.md` table
+    (per-slug kind/bg/color/caret/scheme/rect for light and dark) — and must NOT diff against the
+    committed baseline.
+  why: >
+    e2e/README.md:139-143 — diffing computed colours across environments is fragile; the table is
+    committed drift documentation for humans, not an assertion.
+  source: web/e2e/color-system-anchor.spec.ts:85-109
+  authoritative_test: web/e2e/color-system-anchor.spec.ts:41
+  owner_slice: styles/color-system
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-COLOR-005
+  kind: invariant
+  family: color-anchor
+  statement: >
+    Colour assertions must use `expect.soft` so a single failing control reports every other
+    violation in the same run.
+  why: >
+    color-system-anchor.spec.ts:44-54 — a hard assert would hide the rest of the palette's state
+    behind the first failure, turning a one-pass audit into N runs.
+  source: web/e2e/color-system-anchor.spec.ts:44-54
+  authoritative_test: web/e2e/color-system-anchor.spec.ts:45
+  owner_slice: styles/color-system
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# =============================================================================
+# SECTION 16 — Cross-cutting environment constraints the new fe inherits
+# =============================================================================
+
+- id: E2E-INV-ENV-001
+  kind: invariant
+  family: docker-fs
+  statement: >
+    The kernel's `GET /api/fs/listdir` walks the CONTAINER filesystem; `$HOME` is bind-mounted at
+    the same path but `/tmp` is NOT shared.
+  why: >
+    wave-create-browse-cwd.spec.ts:13-21 — a directory the test mkdirs under /tmp is invisible to
+    the kernel, so the picker spec times out hunting an entry that does not exist from the
+    kernel's POV. Directory-picker fixtures must live under $HOME.
+  source: web/e2e/wave-create-browse-cwd.spec.ts:13-25
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:57
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ENV-002
+  kind: invariant
+  family: docker-fs
+  statement: >
+    The docker server image (debian:bookworm-slim, no netbase) has no `/etc/services`; scrollback
+    fixtures must use a POSIX `echo` loop, not `cat /etc/services`.
+  why: >
+    wheel-wave-switch.spec.ts:92-95 — a real environment constraint that silently produces an
+    empty terminal instead of a failure.
+  source: web/e2e/wheel-wave-switch.spec.ts:92-96
+  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:98
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ENV-003
+  kind: invariant
+  family: timeouts
+  statement: >
+    Specs that traverse lazy-loaded chunks against a cold Vite dev server must raise their timeout
+    to 60–90s; the 30s default routinely blows on the first cold run.
+  why: >
+    a11y-177-theme-toggle-no-remount.spec.ts:85-89, new-terminal-osc-echo.spec.ts:113-117,
+    wheel-*.spec.ts:3 — Vite compiles lazy chunks on first request.
+  source: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:85-89
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:89
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ENV-004
+  kind: invariant
+  family: hermeticity
+  statement: >
+    Only the replay-backed `a11y` project is hermetic; the `chromium` project targets a shared
+    developer stack, so every chromium spec must namespace its cwds/titles with `Date.now()` (and
+    where needed `Math.random()`) to avoid tripping `cove_folders.UNIQUE(path)`.
+  why: >
+    wave-create.spec.ts:12-17 and a11y-wave-cove-ops.spec.ts:20-27 — concurrent or repeated runs
+    otherwise collide on the unique path constraint.
+  source: web/e2e/wave-create.spec.ts:12-17
+  authoritative_test: web/e2e/wave-create.spec.ts:90
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ENV-005
+  kind: invariant
+  family: replay-limits
+  statement: >
+    The replay binary boots with `DaemonClient::new_stub()` + `CodexClient::new_stub()` and seeds
+    the events table WITHOUT projecting it onto entity tables — so entity tables start EMPTY and
+    no real PTY/codex flow can be exercised there.
+  why: >
+    a11y-keyboard.spec.ts:19-29 and new-terminal-osc-echo.spec.ts:47-54 — this is why terminal
+    OSC/exit/wheel specs must live in the chromium project and cannot be moved into the a11y gate.
+  source: web/e2e/a11y-keyboard.spec.ts:19-29
+  authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:47-54
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ENV-006
+  kind: invariant
+  family: hermeticity
+  statement: >
+    Every a11y spec must clear the trace ring buffer AFTER bootstrap completes, so per-test
+    assertions never see the bootstrap path's own `cove.updated` / `wave.updated` frames.
+  why: >
+    a11y-keyboard.spec.ts:203-212 — bootstrap pollution is the single most common source of
+    trace-assertion flakes in this suite.
+  source: web/e2e/a11y-keyboard.spec.ts:203-212
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:212
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: E2E-INV-ENV-007
+  kind: invariant
+  family: negative-assertions
+  statement: >
+    "This event must NOT fire" is asserted as a bounded 1500ms `waitForEvent` whose rejection is
+    the pass condition — never as an unbounded sleep-then-check.
+  why: >
+    a11y-wave-cove-ops.spec.ts:217-223,786-791 — 1500ms is comfortably wider than a kernel write +
+    WS broadcast round trip and narrow enough not to slow the suite. Where a deterministic counter
+    exists (dev force endpoint's `emitted_events`), prefer it over the timing window entirely.
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:217-223
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:221
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending

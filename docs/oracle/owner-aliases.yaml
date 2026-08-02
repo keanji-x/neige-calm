@@ -1,0 +1,240 @@
+# owner_slice 归一化别名表
+#
+# 7 个提取 agent 各自命名，产生 148 个 distinct owner_slice 值。
+# 本表把这 148 个值映射到规范值 `<layer>/<slice>[/<detail>]`。
+#
+# layer ∈ core | ui | systems | features | app | styles | none
+#   core/     api · domain · schemas · keys · state · markdown · events-protocol
+#   ui/       dialog · menu · focus · roving · directory-browser · atoms · …
+#   systems/  cards · terminal · wheel · fs-viewers · editor · events-transport
+#   features/ wave · cove · today · report · spec · settings · auth
+#   app/      router · providers · theme · shell · events-glue · di
+#   styles/   全局样式层（tokens / layer-rules / focus-visible / motion / 排版）
+#   none/     非运行时层（lint 规则 · CI 闸门 · 构建配置 · e2e 基础设施 · 纯文档政策）
+#
+# 每条条目的 runtime_layer 直接由规范值的 layer 前缀派生 —— 单一事实来源。
+# `shared/` 这个筐已废除，其下 104 条全部重新分配。
+# `spec` 是新增 feature（原提取里 78 条 spec 家族无归处）。
+
+aliases:
+  # ── core/ ────────────────────────────────────────────────
+  "api/onUnauthorized": "core/api/unauthorized"
+  "api/wire-types": "core/schemas/wire-types"
+  "app/storage-keys": "core/keys/storage"
+  "state/persistent": "core/state/persistent"
+  "hooks/overlay-state": "core/state/overlay-state"
+  "shared/markdown-outline": "core/markdown/outline"
+  "shared/markdown-pipeline": "core/markdown/pipeline"
+  "shared/issue-url": "core/domain/issue-url"
+  "kernel/overlay": "core/domain/overlay"            # 见「需人工裁决」
+
+  # ── ui/ ──────────────────────────────────────────────────
+  "ui/dialog": "ui/dialog"
+  "web/ui/dialog": "ui/dialog"
+  "ui/modal": "ui/dialog/modal"
+  "ui/confirm-dialog": "ui/confirm-dialog"
+  "shared/confirm-copy": "ui/confirm-dialog/copy"
+  "ui/menu": "ui/menu"
+  "ui/hooks": "ui/roving"
+  "web/hooks/roving-tabindex": "ui/roving"
+  "shared/directory-picker": "ui/directory-browser"
+  "ui/directory-browser": "ui/directory-browser"
+  "shared/calm-select": "ui/calm-select"
+  "web/ui/calm-select": "ui/calm-select"
+  "shared/schema-form": "ui/schema-form"
+  "shared/form-primitive": "ui/schema-form"
+  "shared/editable-title": "ui/editable-title"
+  "shared/atoms": "ui/atoms"
+  "web/components/status-dot": "ui/atoms"
+  "web/components": "ui/activation"
+
+  # ── systems/ ─────────────────────────────────────────────
+  "api/events": "systems/events-transport/stream"
+  "api/events, api/onUnauthorized": "systems/events-transport/stream"   # 拆分：见 split_owners
+  "app/connection-state": "systems/events-transport/connection-state"
+  "cards/registry": "systems/cards/registry"
+  "cards/resolver": "systems/cards/resolver"
+  "cards/schema-versions": "systems/cards/schema-versions"
+  "cards/builtins": "systems/cards/builtins"
+  "cards/card-head": "systems/cards/card-head"
+  "web/cards/card-head": "systems/cards/card-head"
+  "cards/lifecycle": "systems/cards/lifecycle"
+  "cards/visibility": "systems/cards/visibility"
+  "cards/unknown": "systems/cards/unknown"
+  "cards/overlays": "systems/cards/overlays"
+  "web/cards/overlay": "systems/cards/overlays"
+  "cards/iframe": "systems/cards/iframe"
+  "cards/plugin": "systems/cards/plugin"
+  "web/cards/plugin-iframe": "systems/cards/plugin"
+  "cards/claude": "systems/cards/kinds"
+  "web/cards": "systems/cards/semantics"
+  "cards/codex": "systems/cards/codex"
+  "web/cards/codex": "systems/cards/codex"
+  "cards/terminal": "systems/terminal/card"
+  "web/cards/terminal": "systems/terminal/card"
+  "terminal/xterm-view": "systems/terminal/xterm-view"
+  "web/xterm-view": "systems/terminal/xterm-view"
+  "terminal/xterm-geometry": "systems/terminal/xterm-geometry"
+  "terminal/xterm-theme": "systems/terminal/xterm-theme"
+  "terminal/xterm-data": "systems/terminal/xterm-data"
+  "input/xterm-adapter": "systems/terminal/xterm-adapter"
+  "terminal/input": "systems/terminal/input"
+  "terminal/ownership": "systems/terminal/ownership"
+  "terminal/protocol": "systems/terminal/protocol"
+  "ws/terminal": "systems/terminal/protocol"
+  "terminal/exit-badge": "systems/terminal/exit-badge"
+  "terminal/a11y": "systems/terminal/a11y"
+  "input/wheel": "systems/wheel"
+  "cards/file-viewer": "systems/fs-viewers/file-viewer"
+  "cards/wave-file-tree": "systems/fs-viewers/wave-file-tree"
+  "wave-fs-viewers/registry": "systems/fs-viewers/registry"
+  "wave-fs-viewers/schemas": "systems/fs-viewers/schemas"
+  "editor": "systems/editor"
+
+  # ── features/ ────────────────────────────────────────────
+  "pages/wave": "features/wave/page"
+  "web/pages/wave": "features/wave/page"
+  "wave/grid": "features/wave/grid"
+  "web/wave-grid": "features/wave/grid"
+  "wave/list": "features/wave/list"
+  "web/wave-list": "features/wave/list"
+  "wave/list-view": "features/wave/list"
+  "wave/scroll": "features/wave/scroll"
+  "wave/view-mode": "features/wave/view-mode"
+  "wave/lifecycle": "features/wave/lifecycle"
+  "shared/lifecycle-badge": "features/wave/lifecycle-badge"
+  "shared/wave-row": "features/wave/row"
+  "web/components/wave-row": "features/wave/row"
+  "wave/create": "features/wave/create"
+  "shared/new-task-form": "features/wave/create"
+  "web/components/new-task-form": "features/wave/create"
+  "pages/cove": "features/cove/page"
+  "web/pages/cove": "features/cove/page"
+  "cove/folders": "features/cove/folders"
+  "cove/delete": "features/cove/delete"
+  "shared/cove-palette": "features/cove/palette"
+  "pages/today": "features/today/page"
+  "hooks/today-terminal": "features/today/terminal"
+  "pages/wave-report": "features/report/page"
+  "web/pages/wave-report": "features/report/page"
+  "pages/report-shell": "features/report/shell"
+  "pages/report-blocks": "features/report/blocks"
+  "cards/wave-report": "features/report/card"
+  "cards/report": "features/report/exclude-cards"
+  "pages/report-layout": "features/report/layout"
+  "report/layout": "features/report/layout"
+  "report/activity": "features/report/activity"
+  "report/outline": "features/report/outline"
+  "wave/report": "features/report/write"
+  "wave/backlinks": "features/report/backlinks"
+  "spec-chat": "features/spec/chat"
+  "pages/spec-conversation": "features/spec/conversation"
+  "pages/spec-chat-history": "features/spec/chat-history"
+  "pages/spec-chat-items": "features/spec/chat-items"
+  "pages/spec-run": "features/spec/current-run"
+  "cards/spec": "features/spec/card"
+  "pages/settings": "features/settings"
+  "app/session": "features/auth/session"
+  "pages/login": "features/auth/login-page"
+  "auth/actor": "features/auth/actor"                # 见「需人工裁决」
+
+  # ── app/ ─────────────────────────────────────────────────
+  "app/router": "app/router"
+  "app/router → cards/create": "app/router"          # 拆分：见 split_owners
+  "app/navigation": "app/router/navigation"
+  "web/shell": "app/router/navigation"
+  "app/providers": "app/providers"
+  "app/theme": "app/theme"
+  "shared/theme-rgb": "app/theme/host-rgb"
+  "app/event-bridge": "app/events-glue/event-bridge"
+  "web/app/event-bridge": "app/events-glue/event-bridge"
+  "app/invalidation": "app/events-glue/invalidation"
+  "shared/sidebar": "app/shell/sidebar"
+  "shell/sidebar": "app/shell/sidebar"
+  "web/shell/sidebar": "app/shell/sidebar"
+  "shared/add-panel": "app/shell/add-panel"
+  "pages/shared": "app/shell/page-actions"
+
+  # ── styles/ ──────────────────────────────────────────────
+  "design-system/tokens": "styles/tokens"
+  "design/color-system": "styles/color-system"
+  "ui/layer-rules": "styles/layer-rules"
+  "web/styles": "styles/global"
+  "report/typography": "styles/report-typography"
+
+  # ── none/（非运行时）────────────────────────────────────
+  "lint/config": "none/lint/eslint-config"
+  "lint/custom-rules": "none/lint/custom-rules"
+  "design-system/css-lint": "none/lint/stylelint"
+  "build/ts-rs": "none/build/ts-rs"
+  "infra/ci": "none/ci"
+  "infra/e2e": "none/e2e/infra"
+  "web/e2e": "none/e2e/infra"
+  "web/e2e/setup": "none/e2e/infra"
+  "web/e2e/trace": "none/e2e/infra"
+  "web/e2e/wave-create": "none/e2e/infra"
+  "a11y/axe": "none/e2e/a11y-axe"
+  "a11y/keyboard": "none/e2e/a11y-keyboard"
+  "web/a11y-policy": "none/policy/a11y-doc"
+  "web/ui": "none/policy/ui-doc"
+
+  # ── 无 owner 的原始值 ────────────────────────────────────
+  "NONE": null    # 逐条裁决，见 per_entry
+
+# 别名表无法表达的逐条覆盖（原始值同名但归属不同）
+per_entry:
+  INV-DEAD-001: "features/wave/page"           # WaveContext 死代码（Wave.tsx）
+  INV-DEAD-002: "features/spec/current-run"    # useSpecCurrentRun.latestTool 死字段
+  E2E-CAP-KEYBOARD-003: "app/shell/sidebar"    # 是产品能力（侧栏 Tab+Enter），不是 e2e 基建
+
+# 一格填两个值 / 跨 slice：主 owner 进 owner_slice，另一个加注到 why 末尾
+split_owners:
+  GATE-APP-103:
+    primary: "systems/events-transport/stream"
+    also: "core/api/unauthorized"
+  # owner_slice == "app/router → cards/create" 的 7 条
+  GATE-APP-087: { primary: "app/router", also: "systems/cards/create" }
+  INV-APP-088:  { primary: "app/router", also: "systems/cards/create" }
+  GATE-APP-089: { primary: "app/router", also: "systems/cards/create" }
+  INV-APP-090:  { primary: "app/router", also: "systems/cards/create" }
+  INV-APP-091:  { primary: "app/router", also: "systems/cards/create" }
+  INV-APP-092:  { primary: "app/router", also: "systems/cards/create" }
+  INV-APP-093:  { primary: "app/router", also: "systems/cards/create" }
+
+# ============================================================
+# 需人工裁决
+# ============================================================
+# 下列条目已给出「可用的临时归属」（不会阻塞重标），但归属本身有实质性分歧，
+# 请在实现阶段前确认。理由与候选层写在每条下面。
+#
+# 1. "kernel/overlay" (1 条，INV-A11Y-052)
+#    临时归属: core/domain/overlay
+#    这是 **Rust 内核** 的契约（validate_overlay_payload 的兜底分支），不属于任何 web 层。
+#    候选: (a) core/domain/overlay —— 把内核契约视为前端依赖的域边界；
+#          (b) 移出本 oracle，进 crates 侧的契约集。
+#
+# 2. "auth/actor" (1 条，E2E-INV-LIFECYCLE-012)
+#    临时归属: features/auth/actor
+#    同上：`X-Calm-Actor` 的接受规则由服务端 middleware 强制，前端只是遵守方。
+#    候选: (a) features/auth/actor；(b) core/api/actor-header；(c) 移出。
+#
+# 3. "wave/report" (1) / "wave/backlinks" (1) / "ws/terminal" (2)
+#    临时归属: features/report/write · features/report/backlinks · systems/terminal/protocol
+#    这四条描述的是 **REST / WS 协议**本身而非前端实现。若后续把「协议契约」独立成
+#    core/api 与 core/events-protocol 的子集，应整体搬过去。
+#
+# 4. "design/color-system" (5 条，color-anchor e2e)
+#    临时归属: styles/color-system（runtime_layer=styles）
+#    它同时是「设计系统契约」与「e2e 基础设施（color-anchor.html harness）」。
+#    候选: (a) styles/color-system —— 契约归设计系统，harness 只是载体（当前选择）；
+#          (b) none/e2e/color-anchor —— 按载体归为非运行时。
+#
+# 5. "web/components" (1 条，INV-A11Y-059「能用真实 button 就用真实 button」)
+#    临时归属: ui/activation
+#    它是跨切面 a11y 政策，实现散落在 features/wave/row 与 ui/editable-title。
+#    候选: (a) ui/activation（新建横切 slice）；(b) none/policy/a11y-doc（当政策文档处理）。
+#
+# 6. "cards/report" (1 条，INV-CARD-226 excludeReportCards)
+#    临时归属: features/report/exclude-cards
+#    代码住在 web/src/cards/ 但语义完全是 report 的。
+#    候选: (a) features/report/exclude-cards；(b) systems/cards/registry。
