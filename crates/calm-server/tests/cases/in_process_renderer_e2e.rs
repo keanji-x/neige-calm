@@ -416,6 +416,76 @@ async fn wait_for_daemon_terminal_exited(rx: &mut mpsc::Receiver<DaemonMsg>) -> 
     }
 }
 
+/// Issue #993 R1: `drop_entry` must not abort the supervisor attach reader
+/// before that reader has observed `Exited` — it is the task that persists the
+/// terminal exit (`terminal_set_exit`, session-projection completion, plan-task
+/// hook).
+///
+/// The scenario that makes it bite:
+///
+/// * the pty child ignores SIGTERM, so it only dies at the SIGKILL that
+///   `drop_entry` sends after `TERM_TO_KILL_GRACE`;
+/// * it left a `setsid`'d grandchild holding the pty slave, and that grandchild
+///   is in another session so the process-group kill does not reach it. The pty
+///   master therefore never EOFs and the supervisor's waiter has to burn its
+///   whole `PTY_DRAIN_GRACE` before publishing `Exited`.
+///
+/// So `Exited` lands strictly *after* the kill. An unconditional
+/// `abort_tasks()` right after the kill drops it on the floor; waiting on the
+/// attach reader's own completion does not.
+///
+/// `entry.exit` is set inside the attach reader's `Exited` arm, immediately
+/// before the persistence calls, so observing it non-`None` after `drop_entry`
+/// returns is the proof that the reader was still alive to run them.
+#[tokio::test]
+async fn drop_entry_waits_for_the_attach_reader_to_observe_exited() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let control_sock = temp.path().join("proc-supervisor.sock");
+    let mut supervisor = spawn_proc_supervisor(&control_sock).await;
+
+    let registry = TerminalRendererRegistry::new();
+    let terminal_id = Uuid::new_v4().to_string();
+    let entry = registry
+        .ensure(RendererConfig {
+            terminal_id: terminal_id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (216, 219, 226),
+            terminal_bg: (15, 20, 24),
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "trap '' TERM; setsid sleep 5 & echo up; sleep 30".into(),
+            ],
+            envs: std::env::vars().collect(),
+            cwd: workspace_root().display().to_string(),
+            supervisor_sock: control_sock.clone(),
+        })
+        .await
+        .expect("ensure renderer");
+
+    let mut events = entry
+        .take_initial_event_rx()
+        .expect("initial renderer event receiver");
+    wait_for_child_ready(&mut events).await;
+    assert!(
+        entry.exit.lock().expect("exit mutex").is_none(),
+        "sanity: the child must still be running before teardown"
+    );
+
+    registry.drop_entry(&terminal_id).await;
+
+    assert!(
+        entry.exit.lock().expect("exit mutex").is_some(),
+        "issue #993 R1: drop_entry aborted the supervisor attach reader before it saw \
+         Exited, so the terminal's exit was never persisted"
+    );
+
+    let _ = supervisor.kill().await;
+    let _ = supervisor.wait().await;
+}
+
 async fn spawn_proc_supervisor(control_sock: &Path) -> Child {
     let child = Command::new(locate_bin("calm-proc-supervisor"))
         .arg("--control-sock")

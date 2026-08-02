@@ -37,6 +37,29 @@ pub type SharedExitState = Arc<StdMutex<Option<TerminalExitInfo>>>;
 pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
 const SPAWN_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Teardown grace between SIGTERM and SIGKILL for a renderer's pty child.
+const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
+
+/// Bounded wait, after SIGKILL, for the supervisor attach reader to observe
+/// `Exited` and persist it (`terminal_set_exit`, session-projection
+/// completion, plan-task hook) before `abort_tasks()` cuts it off.
+///
+/// Issue #993 R1: the supervisor holds `Exited` back for up to
+/// `PTY_DRAIN_GRACE` after the child is reaped (see
+/// `calm_proc_supervisor::PTY_DRAIN_GRACE`), so an unconditional
+/// abort-right-after-kill can lose the terminal's exit row whenever a
+/// grandchild keeps the pty slave open. The wait is on the attach reader's
+/// own completion rather than a sleep, so it costs nothing on the common path
+/// (the reader is usually already finished) and it does not silently depend on
+/// the two constants happening to be ordered — but the const assert below
+/// makes the ordering a compile error to break anyway.
+const EXIT_PERSIST_GRACE: Duration = Duration::from_millis(1000);
+
+const _: () = assert!(
+    EXIT_PERSIST_GRACE.as_millis() > calm_proc_supervisor::PTY_DRAIN_GRACE.as_millis(),
+    "terminal teardown must outlast the supervisor's pty drain grace (#993 R1)"
+);
+
 /// One work item on the PTY-writer channel. Carries the bytes to write
 /// plus the metadata needed to ack the originating connection after the
 /// write completes.
@@ -96,6 +119,9 @@ pub struct RendererEntry {
     pub exit: SharedExitState,
     initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
     exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
+    /// Held apart from `tasks` because teardown must *wait* for it rather than
+    /// abort it: this is the task that persists the terminal exit (#993 R1).
+    attach_task: StdMutex<Option<JoinHandle<()>>>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
 
@@ -134,7 +160,38 @@ impl RendererEntry {
         signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await;
     }
 
+    /// Waits (bounded) for the supervisor attach reader to finish on its own.
+    ///
+    /// It breaks out of its loop right after handling `Exited` — which is also
+    /// where it persists the terminal's exit — so completing normally is the
+    /// signal that the exit landed. On timeout we abort it and warn: the
+    /// terminal-exit sweep is the retry (#993 R1).
+    async fn await_exit_persisted(&self, budget: Duration) {
+        let handle = self
+            .attach_task
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        let Some(mut handle) = handle else {
+            return;
+        };
+        if tokio::time::timeout(budget, &mut handle).await.is_err() {
+            tracing::warn!(
+                terminal_id = %self.terminal_id,
+                budget_ms = budget.as_millis() as u64,
+                "supervisor attach reader did not observe Exited before teardown; \
+                 aborting it (terminal exit persistence falls back to the sweep)"
+            );
+            handle.abort();
+        }
+    }
+
     fn abort_tasks(&self) {
+        if let Ok(mut attach) = self.attach_task.lock()
+            && let Some(task) = attach.take()
+        {
+            task.abort();
+        }
         if let Ok(mut tasks) = self.tasks.lock() {
             for task in tasks.drain(..) {
                 task.abort();
@@ -257,6 +314,7 @@ impl TerminalRendererRegistry {
             exit,
             initial_event_rx: StdMutex::new(Some(initial_event_rx)),
             exited_rx: StdMutex::new(Some(exited_rx)),
+            attach_task: StdMutex::new(None),
             tasks: StdMutex::new(Vec::new()),
         });
         let mut entries = self
@@ -288,8 +346,12 @@ impl TerminalRendererRegistry {
 
         tracing::info!(terminal_id, "terminal renderer registry dropping entry");
         entry.shutdown_signal(ProcSignal::Term).await;
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(TERM_TO_KILL_GRACE).await;
         entry.shutdown_signal(ProcSignal::Kill).await;
+        // #993 R1: `Exited` can lag the kill by up to the supervisor's pty
+        // drain grace, and the attach reader is what persists it. Let it
+        // finish before the abort.
+        entry.await_exit_persisted(EXIT_PERSIST_GRACE).await;
         entry.abort_tasks();
     }
 }
@@ -443,7 +505,8 @@ async fn ensure_entry(
         exit,
         initial_event_rx: StdMutex::new(Some(initial_event_rx)),
         exited_rx: StdMutex::new(Some(exited_rx)),
-        tasks: StdMutex::new(vec![control_task, attach_task, ready_task]),
+        attach_task: StdMutex::new(Some(attach_task)),
+        tasks: StdMutex::new(vec![control_task, ready_task]),
     })
 }
 
