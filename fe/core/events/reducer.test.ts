@@ -77,5 +77,40 @@ describe('event reducer behavior', () => {
       expect(result.state.cursor).toBe(8);
       expect(result.effects).toEqual([{ type: 'invalidate', keys: [['coves'], ['overlays', 'wave']] }]);
     }
+    const zeroFromColdStart = reduceEventFrame(
+      initialEventState(3),
+      readyFrame({ ev: 'cove.deleted', data: { id: 'c1' }, _id: 0, eventVersion: 3 }),
+    );
+    expect(zeroFromColdStart.effects).toEqual([
+      { type: 'invalidate', keys: [['coves'], ['overlays', 'wave']] },
+    ]);
+  });
+
+  it('emits complete event effects in write-through, invalidate, remove order', () => {
+    const cove = {
+      id: 'c1', name: 'new', color: '#abc', sort: 0, kind: 'user', created_at: 1, updated_at: 2,
+    };
+    const updated = reduceEventFrame(
+      initialEventState(3),
+      readyFrame({ ev: 'cove.updated', data: cove, _id: 7, eventVersion: 3 }),
+    );
+    expect(updated.effects).toEqual([
+      { type: 'persist-cursor', id: 7 },
+      {
+        type: 'write-through',
+        writes: [{ key: ['coves'], mode: 'replace-existing-cove', value: cove }],
+      },
+      { type: 'invalidate', keys: [['coves']] },
+    ]);
+
+    const deleted = reduceEventFrame(
+      updated.state,
+      readyFrame({ ev: 'wave.deleted', data: { id: 'w1', cove_id: 'c1' }, _id: 8, eventVersion: 3 }),
+    );
+    expect(deleted.effects).toEqual([
+      { type: 'persist-cursor', id: 8 },
+      { type: 'invalidate', keys: [['waves', 'cove', 'c1'], ['overlays', 'wave'], ['waves-range']] },
+      { type: 'remove', keys: [['wave', 'w1']] },
+    ]);
   });
 });

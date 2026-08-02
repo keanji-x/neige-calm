@@ -3,6 +3,8 @@ import type { ApiDecodeFailure } from '../api/types.js';
 
 export type Topic = '*' | `cove:${string}` | `wave:${string}` | `card:${string}`;
 
+export type EventSubscriptionFrame = Readonly<{ sub: readonly Topic[]; since: number }>;
+
 export type EventMeta = Readonly<{ id: number; eventVersion: number }>;
 
 export type EventFrame =
@@ -23,6 +25,13 @@ function normalizeLegacyEvent(input: Record<string, unknown>): Record<string, un
   if (input.ev === 'codex.job_requested') return { ...input, ev: 'codex.worker_requested' };
   if (input.ev === 'terminal.job_requested') return { ...input, ev: 'terminal.worker_requested' };
   return input;
+}
+
+export function eventSubscriptionFrame(
+  topics: readonly Topic[],
+  cursor: number | null,
+): EventSubscriptionFrame {
+  return { sub: topics, since: cursor ?? 0 };
 }
 
 export function decodeEventFrame(input: unknown): EventFrameDecodeResult {

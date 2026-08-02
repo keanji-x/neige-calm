@@ -152,7 +152,7 @@ function policies(): PolicyMap {
   'worktree.provisioned': noop('Worktree rows have no query consumer.'),
   'worktree.committed': noop('Worktree rows have no query consumer.'),
   'worktree.removed': noop('Worktree rows have no query consumer.'),
-    'task.gate_result': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
+  'task.gate_result': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
   });
 }
 
@@ -160,7 +160,8 @@ export function invalidationPlanFor(
   event: WireEvent,
   context: InvalidationContext = emptyContext,
 ): InvalidationPlan {
-  const policy: InvalidationPolicy = policies()[event.ev];
+  const policy: InvalidationPolicy | undefined = policies()[event.ev];
+  if (policy === undefined) return result([]);
   if (policy.type === 'noop') return result([]);
   return policy.plan(event, context);
 }

@@ -79,4 +79,18 @@ describe('invalidation plan behavior', () => {
       { findWaveOwningCard: () => 'wave-1' },
     ).invalidate).toEqual([['wave-files', 'wave-1']]);
   });
+
+  it('returns an empty plan for explicit no-op policies', () => {
+    const empty = { invalidate: [], remove: [], writeThrough: [] };
+    expect(invalidationPlanFor(event({ ev: 'plugin.state', data: {} }))).toEqual(empty);
+    expect(invalidationPlanFor(event({ ev: 'proposal.resolved', data: {} }))).toEqual(empty);
+  });
+
+  it('silently ignores an unknown event kind received across versions', () => {
+    expect(invalidationPlanFor(event({ ev: 'zzz.unknown', data: {} }))).toEqual({
+      invalidate: [],
+      remove: [],
+      writeThrough: [],
+    });
+  });
 });

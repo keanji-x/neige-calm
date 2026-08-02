@@ -1,6 +1,6 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { EventFrame, EventMeta, Topic } from './protocol.js';
+import type { EventFrame, EventMeta, EventSubscriptionFrame, Topic } from './protocol.js';
 import { decodeEventFrame } from './protocol.js';
 
 describe('event protocol contract', () => {
@@ -33,6 +33,10 @@ describe('event protocol contract', () => {
 
   it('freezes public frame, metadata, and topic shapes', () => {
     expectTypeOf<EventMeta>().toEqualTypeOf<Readonly<{ id: number; eventVersion: number }>>();
+    expectTypeOf<EventSubscriptionFrame>().toEqualTypeOf<Readonly<{
+      sub: readonly Topic[];
+      since: number;
+    }>>();
     expectTypeOf<Topic>().toEqualTypeOf<'*' | `cove:${string}` | `wave:${string}` | `card:${string}`>();
     expectTypeOf<EventFrame['type']>().toEqualTypeOf<
       'event' | 'malformed-event' | 'replay-complete' | 'snapshot-required'

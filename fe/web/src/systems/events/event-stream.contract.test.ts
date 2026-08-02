@@ -1,7 +1,14 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { WireEvent } from '../../../../core/api/schemas.js';
-import type { ConfiguredEventStream, EventStreamDriver, UnconfiguredEventStream } from './event-stream.js';
+import type {
+  ConfiguredEventStream,
+  ConnectionState,
+  EventStreamConfiguration,
+  EventStreamDriver,
+  EventStreamSink,
+  UnconfiguredEventStream,
+} from './event-stream.js';
 import { EventStream } from './event-stream.js';
 
 describe('event stream typestate contract', () => {
@@ -32,11 +39,14 @@ describe('event stream typestate contract', () => {
       start: () => calls.push('start'),
       stop: () => calls.push('stop'),
     };
-    const stream = EventStream.forTest('ws://test.invalid/api/events', driver);
+    const stream = EventStream.create('ws://test.invalid/api/events', driver);
     const first = stream.configure({ syncEventVersion: 2, topics: ['*', 'wave:w1'] });
     expect(calls).toEqual([]);
     expect(stream.configure({ syncEventVersion: 2, topics: ['*', 'wave:w1'] })).toBe(first);
+    expect(() => stream.configure({ syncEventVersion: 2, topics: ['*'] })).toThrow(TypeError);
+    expect(() => stream.configure({ syncEventVersion: 2, topics: ['wave:w1', '*'] })).toThrow(TypeError);
     expect(() => stream.configure({ syncEventVersion: 3, topics: ['*'] })).toThrow(TypeError);
+    first.start();
     first.start();
     expect(calls).toEqual(['start']);
   });
@@ -44,8 +54,21 @@ describe('event stream typestate contract', () => {
   it('rejects non-finite and negative protocol versions at the configuration boundary', () => {
     const driver: EventStreamDriver = { start: () => undefined, stop: () => undefined };
     for (const syncEventVersion of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const stream = EventStream.forTest('ws://test.invalid/api/events', driver);
+      const stream = EventStream.create('ws://test.invalid/api/events', driver);
       expect(() => stream.configure({ syncEventVersion, topics: ['*'] })).toThrow(TypeError);
     }
+  });
+
+  it('pins configuration and connection-state unions', () => {
+    expectTypeOf<EventStreamConfiguration>().toEqualTypeOf<Readonly<{
+      syncEventVersion: number | null;
+      topics: readonly ('*' | `cove:${string}` | `wave:${string}` | `card:${string}`)[];
+    }>>();
+    expectTypeOf<ConnectionState>().toEqualTypeOf<'connecting' | 'connected' | 'disconnected'>();
+    expectTypeOf<EventStreamDriver['start']>().parameters.toEqualTypeOf<[
+      EventStreamConfiguration,
+      string,
+      EventStreamSink,
+    ]>();
   });
 });

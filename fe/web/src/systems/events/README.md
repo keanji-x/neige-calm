@@ -9,9 +9,8 @@
 - `on` 与 `onConnectionState` 只属于 `UnconfiguredEventStream`，handler 因而在 configure/start 前已经就位，不会漏掉第一帧；连接状态注册同步收到当前 `disconnected` 快照。
 - `configure()` 只冻结 version/topics 并创建 handle，绝不调用 driver `start`，因为兼容性裁决完成前不得连接（INV-APP-021）。
 - 同一实例用相同 version 和有序 topics 重复 configure 时幂等返回同一 handle；任何不同配置抛 `TypeError`，因为一个资源不能悄悄分叉协议天花板或订阅集合。
-- 生产集成中 `app/events-glue/EventBridge` 是共享流唯一 `start()` owner（INV-APP-020）。typestate 无法证明调用点唯一，后续 app slice 必须用 architecture contract test 锁住。
+- 生产集成中 `app/events-glue/EventBridge` 是共享流唯一 `start()` owner（INV-APP-020）。当前 handle 的 `start()` 幂等，为后续 app slice 的唯一调用点 architecture contract test 提供行为锚点。
 - `EventBridge` 必须挂在 `ServerCompatGate` 内（INV-APP-001）。typestate 无法表达 React 树父子关系，后续 `app/events-glue` contract test 负责锁住。
-- 测试可用 `EventStream.forTest(url, driver).configure(...).start()` 绕过 bridge，保留可连接逃生口；仍不得跳过配置，因为 INV-APP-105 已由 typestate 明确取代。
 
 ## 故意不做
 

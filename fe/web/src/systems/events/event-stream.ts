@@ -1,5 +1,5 @@
 import type { WireEvent } from '../../../../core/api/schemas.js';
-import type { EventMeta, Topic } from '../../../../core/events/protocol.js';
+import type { EventFrame, EventMeta, Topic } from '../../../../core/events/protocol.js';
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 export type EventHandler = (event: WireEvent, meta: EventMeta) => void;
@@ -9,8 +9,13 @@ export type EventStreamConfiguration = Readonly<{
   topics: readonly Topic[];
 }>;
 
+export interface EventStreamSink {
+  frame(frame: EventFrame): void;
+  connectionState(state: ConnectionState): void;
+}
+
 export interface EventStreamDriver {
-  start(configuration: EventStreamConfiguration, url: string): void;
+  start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void;
   stop(): void;
 }
 
@@ -38,6 +43,7 @@ export class EventStream implements UnconfiguredEventStream {
   private readonly stateHandlers = new Set<ConnectionStateHandler>();
   private configuration: EventStreamConfiguration | null = null;
   private configuredHandle: ConfiguredEventStream | null = null;
+  private started = false;
 
   private constructor(url: string, driver: EventStreamDriver) {
     this.url = url;
@@ -46,10 +52,6 @@ export class EventStream implements UnconfiguredEventStream {
 
   static create(url: string, driver: EventStreamDriver): UnconfiguredEventStream {
     return new EventStream(url, driver);
-  }
-
-  static forTest(url: string, driver: EventStreamDriver): UnconfiguredEventStream {
-    return EventStream.create(url, driver);
   }
 
   on(handler: EventHandler): () => void {
@@ -81,8 +83,21 @@ export class EventStream implements UnconfiguredEventStream {
       return this.configuredHandle as ConfiguredEventStream;
     }
     this.configuration = frozen;
+    const sink: EventStreamSink = Object.freeze({
+      frame: (frame: EventFrame) => {
+        if (frame.type !== 'event') return;
+        for (const handler of this.handlers) handler(frame.event, frame.meta);
+      },
+      connectionState: (state: ConnectionState) => {
+        for (const handler of this.stateHandlers) handler(state);
+      },
+    });
     const handle: ConfiguredEventStream = Object.freeze({
-      start: () => this.driver.start(frozen, this.url),
+      start: () => {
+        if (this.started) return;
+        this.started = true;
+        this.driver.start(frozen, this.url, sink);
+      },
       stop: () => this.driver.stop(),
     });
     this.configuredHandle = handle;
