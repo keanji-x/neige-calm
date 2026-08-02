@@ -7,6 +7,7 @@ import {
   fileViewerHeadingIdPolicy,
   parse,
   reportHeadingIdPolicy,
+  sanitizeAstPolicy,
 } from '../../../core/markdown/public.ts';
 
 type LegacyHeading = Readonly<{ level: number; id: string; text: string }>;
@@ -103,6 +104,29 @@ function legacyReport(markdown: string) {
 }
 
 describe('legacy markdown outline differential', () => {
+  it('preserves the file-viewer outline when the public sanitize and outline APIs are composed', () => {
+    const markdown = '- x\n    ## Deep\n## Tail';
+    const result = parse(markdown);
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') throw new Error('expected ready markdown');
+    const options = {
+      maxDepth: FILE_VIEWER_MAX_DEPTH,
+      headingId: fileViewerHeadingIdPolicy,
+      textPolicy: 'non-empty-heading-label' as const,
+      referenceText: 'source' as const,
+      traversal: 'line-level' as const,
+    };
+    const direct = extractOutline([{ context: undefined, ast: result.value }], options);
+    const sanitized = extractOutline([{
+      context: undefined,
+      ast: sanitizeAstPolicy(result.value, { rawHtml: 'drop' }),
+    }], options);
+
+    expect(sanitized).toEqual(direct);
+    expect(direct.map(({ depth, id, text }) => ({ depth, id, text }))).toEqual(legacyFileViewer(markdown));
+    expect(sanitized.map(({ depth, id, text }) => ({ depth, id, text }))).toEqual(legacyFileViewer(markdown));
+  });
+
   it('keeps the differential corpus substantive', () => {
     expect(ACTIVE_CORPUS.length).toBeGreaterThanOrEqual(20);
     expect([...EXEMPTIONS]).toEqual(['exempt strike', 'exempt inline html']);

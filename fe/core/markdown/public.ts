@@ -85,6 +85,7 @@ export type MarkdownDiagnostic = Readonly<{
 export type NormalizedMarkdownAst = Readonly<{
   type: 'root';
   dialect: 'gfm';
+  sourceLines: readonly string[];
   children: readonly NormalizedBlock[];
   diagnostics: readonly MarkdownDiagnostic[];
   position: MarkdownPosition;
@@ -171,6 +172,7 @@ export type SafeBlock =
 export type SafeMarkdownAst = Readonly<{
   type: 'root';
   dialect: 'gfm';
+  sourceLines: readonly string[];
   children: readonly SafeBlock[];
   diagnostics: readonly MarkdownDiagnostic[];
   position: MarkdownPosition;
@@ -444,13 +446,11 @@ export function parse(markdown: string): MarkdownParseResult {
       for (const child of node.children ?? []) collectDefinitions(child);
     };
     collectDefinitions(root);
-    const value: NormalizedMarkdownAst & { sourceLines?: readonly string[] } = {
+    const value: NormalizedMarkdownAst = {
       type: 'root', dialect: 'gfm', children: normalizeBlocks(root.children, definitions),
       diagnostics: diagnosticsFor(markdown, root), position: positionOf(root),
+      sourceLines: markdown.replace(/\r\n?/g, '\n').split('\n'),
     };
-    Object.defineProperty(value, 'sourceLines', {
-      value: markdown.replace(/\r\n?/g, '\n').split('\n'), enumerable: false,
-    });
     return {
       status: 'ready',
       value,
@@ -483,7 +483,7 @@ export function extractOutline<Context>(
   const outline: HeadingOutline[] = [];
   let globalOrdinal = 0;
   for (const { ast, context } of inputs) {
-    const sourceLines = (ast as NormalizedMarkdownAst & { sourceLines?: readonly string[] }).sourceLines;
+    const sourceLines = ast.sourceLines;
     let localOrdinal = 0;
     const visit = (nodes: readonly NormalizedBlock[]): void => {
       for (const node of nodes) {
@@ -560,6 +560,7 @@ export function sanitizeAstPolicy(ast: NormalizedMarkdownAst, policy: SanitizeAs
   void policy;
   return {
     ...ast,
+    sourceLines: ast.sourceLines,
     children: ast.children.flatMap((node) => {
       const safe = sanitizeBlock(node);
       return safe === null ? [] : [safe];

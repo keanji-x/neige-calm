@@ -29,12 +29,14 @@ describe('core/markdown public contract', () => {
     expectTypeOf<Extract<MarkdownParseResult, { status: 'failed' }>['error']['kind']>()
       .toEqualTypeOf<'markdown-parse'>();
     expectTypeOf<NormalizedMarkdownAst['dialect']>().toEqualTypeOf<'gfm'>();
+    expectTypeOf<NormalizedMarkdownAst['sourceLines']>().toEqualTypeOf<readonly string[]>();
     expectTypeOf<NormalizedMarkdownAst['children'][number]['type']>().toEqualTypeOf<
       'heading' | 'paragraph' | 'code' | 'blockquote' | 'list' | 'html' | 'table' | 'thematicBreak'
     >();
     expectTypeOf<HeadingIdPolicy<unknown>['version']>().toEqualTypeOf<1>();
     expectTypeOf<TextPolicy>().toEqualTypeOf<'heading-label' | 'non-empty-heading-label'>();
     expectTypeOf<SafeMarkdownAst['children'][number]['type']>().not.toEqualTypeOf<'html'>();
+    expectTypeOf<SafeMarkdownAst['sourceLines']>().toEqualTypeOf<readonly string[]>();
 
     const compileOnly = false as boolean;
     if (compileOnly) {
