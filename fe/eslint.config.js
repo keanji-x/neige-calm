@@ -29,12 +29,27 @@ export default tseslint.config(
     rules: {
       'eslint-comments/require-description': ['error', { ignore: [] }],
       'no-restricted-imports': ['error', {
+        paths: [{
+          name: 'react',
+          importNames: ['useReducer', 'useState'],
+          message: 'Import guarded state hooks from web/src/ui/state/public.ts.',
+        }],
         patterns: [
           { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
       }],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error',
+    },
+  },
+  {
+    files: ['web/src/ui/state/public.ts'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+        ],
+      }],
     },
   },
   {
