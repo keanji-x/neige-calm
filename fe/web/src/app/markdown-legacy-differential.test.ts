@@ -107,8 +107,9 @@ describe('legacy markdown outline differential', () => {
     expect(ACTIVE_CORPUS.length).toBeGreaterThanOrEqual(20);
     expect([...EXEMPTIONS]).toEqual(['exempt strike', 'exempt inline html']);
     const corpusByName = new Map<string, string>(ACTIVE_CORPUS);
-    for (const names of Object.values(REQUIRED_CORPUS_CATEGORIES)) {
-      expect(names.some((name) => (corpusByName.get(name) ?? '').trim().length > 0)).toBe(true);
+    for (const [category, names] of Object.entries(REQUIRED_CORPUS_CATEGORIES)) {
+      const present = (name: string) => (corpusByName.get(name) ?? '').trim().length > 0;
+      expect(category === 'tab' ? names.every(present) : names.some(present)).toBe(true);
     }
   });
 

@@ -227,6 +227,8 @@ describe('core/markdown behavior', () => {
     ['html comment', '<!--\n```\n-->\n'],
     ['html processing instruction', '<?target\n```\n?>\n'],
     ['html declaration', '<!DOCTYPE\n```\n>\n'],
+    ['html lowercase doctype declaration', '<!doctype\n```\n>\n'],
+    ['html lowercase x declaration', '<!x\n```\n>\n'],
     ['html cdata', '<![CDATA[\n```\n]]>\n'],
     ['html block tag', '<div>\n```\n</div>\n\n'],
     ['html complete tag', '<x-box>\n```\n\n'],
@@ -237,6 +239,30 @@ describe('core/markdown behavior', () => {
     ['blockquote fence', '> ```\n'],
     ['list fence', '- ```\n'],
   ] as const);
+
+  const REQUIRED_BYPASS_PREFIX_CATEGORIES = Object.freeze({
+    'html raw': ['html script', 'html pre', 'html style'],
+    comment: ['html comment'],
+    PI: ['html processing instruction'],
+    declaration: ['html declaration', 'html lowercase doctype declaration', 'html lowercase x declaration'],
+    CDATA: ['html cdata'],
+    type6: ['html block tag'],
+    type7: ['html complete tag'],
+    'backtick fence': ['closed backtick fence'],
+    'tilde fence': ['closed tilde fence'],
+    'info ambiguity': ['backtick info ambiguity'],
+    indented: ['indented fence'],
+    blockquote: ['blockquote fence'],
+    list: ['list fence'],
+  });
+
+  it('keeps every bypass prefix category represented', () => {
+    expect(BYPASS_PREFIXES.length).toBeGreaterThanOrEqual(17);
+    const names = new Set<string>(BYPASS_PREFIXES.map(([name]) => name));
+    for (const requiredNames of Object.values(REQUIRED_BYPASS_PREFIX_CATEGORIES)) {
+      expect(requiredNames.some((name) => names.has(name))).toBe(true);
+    }
+  });
 
   it.each(BYPASS_PREFIXES)('fails closed for bypass prefix: %s', (_name, prefix) => {
     const adversarial = `    ${'>'.repeat(65)} x`;

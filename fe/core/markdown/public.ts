@@ -328,7 +328,7 @@ function htmlBlockStart(line: string): HtmlBlock | null {
   if (content.startsWith('<!--')) return { ends: (candidate) => candidate.includes('-->') };
   if (content.startsWith('<?')) return { ends: (candidate) => candidate.includes('?>') };
   if (/^<!\[CDATA\[/i.test(content)) return { ends: (candidate) => candidate.includes(']]>') };
-  if (/^<![A-Z]/.test(content)) return { ends: (candidate) => candidate.includes('>') };
+  if (/^<![A-Za-z]/.test(content)) return { ends: (candidate) => candidate.includes('>') };
   if (/^<\/?[A-Za-z]/.test(content)) {
     return { ends: (candidate) => /^\s*$/.test(candidate) };
   }
