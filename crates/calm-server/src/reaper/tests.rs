@@ -184,6 +184,7 @@ async fn insert_task(repo: &SqlxRepo, wave_id: &WaveId, key: &str, status: TaskS
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

@@ -356,6 +356,12 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Backed by `tasks_wave_status_idx`. Used by the scheduler's sweep
     /// (boot, periodic reconcile, post-`Lagged`) — design §8.
     async fn tasks_nonterminal(&self) -> Result<Vec<Task>>;
+    /// In-flight frozen contexts affected by an edit to `dst_wave_id`.
+    /// The JOIN is a correctness guard: stale index rows never revive a
+    /// terminal or deleted task.
+    async fn task_contexts_by_dst_wave(&self, dst_wave_id: &str) -> Result<Vec<TaskContextRow>>;
+    /// Sweep source. Deliberately reads tasks rather than the reverse index.
+    async fn task_contexts_inflight_fresh(&self) -> Result<Vec<TaskContextRow>>;
     /// Minimal operation lookup for session-owned worker convergence:
     /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`,
     /// which is the immutable task id the worker operation was submitted with.
@@ -522,6 +528,14 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn card_mcp_token_exists_for_card(&self, card_id: &str) -> Result<bool>;
 
     async fn shared_daemon_runtime_get(&self) -> Result<SharedCodexDaemonRecord>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskContextRow {
+    pub task_id: String,
+    pub wave_id: String,
+    pub claim_context_json: Option<String>,
+    pub closure_truncated: bool,
 }
 
 /// Eventized write surface. The **only** path that writes to the persistent

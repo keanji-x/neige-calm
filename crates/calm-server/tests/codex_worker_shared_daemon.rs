@@ -459,6 +459,24 @@ async fn insert_pending_operation_row(repo: &SqlxRepo, op: &Operation) {
     .unwrap();
 }
 
+async fn seed_dispatched_task(repo: &SqlxRepo, wave_id: &WaveId, task_id: &str, kind: &str) {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO tasks (
+               id, wave_id, key, kind, goal, context_json, depends_on_json,
+               status, claim_context_json, created_at_ms, updated_at_ms
+           ) VALUES (?1, ?2, ?1, ?3, 'worker fixture', '{}', '[]',
+                     'dispatched', '[]', ?4, ?4)"#,
+    )
+    .bind(task_id)
+    .bind(wave_id.as_str())
+    .bind(kind)
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
+}
+
 async fn prepared_worker_operation(
     state: &AppState,
     repo: &Arc<SqlxRepo>,
@@ -466,6 +484,7 @@ async fn prepared_worker_operation(
     idempotency_key: &str,
     goal: &str,
 ) -> (Operation, TxOutput) {
+    seed_dispatched_task(repo, wave_id, idempotency_key, "codex").await;
     let payload = serde_json::to_value(CodexWorkerOperationPayload {
         actor: ActorId::KernelDispatcher,
         wave_id: wave_id.to_string(),
@@ -641,6 +660,7 @@ async fn worker_operation_provisions_real_worktree_before_runtime_started_and_re
     let _guard = ENV_LOCK.lock().await;
     let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-real-worktree";
+    seed_dispatched_task(&repo, &wave_id, idem, "codex").await;
     let op_id = state
         .operation_runtime
         .submit(
@@ -921,6 +941,7 @@ async fn worker_recovery_reuses_persisted_thread_and_turn() {
     let _guard = ENV_LOCK.lock().await;
     let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-recovery-thread";
+    seed_dispatched_task(&repo, &wave_id, idem, "codex").await;
     let op_id = state
         .operation_runtime
         .submit(
@@ -1047,6 +1068,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
     let _guard = ENV_LOCK.lock().await;
     let (state, repo, wave_id, _tmp) = app_state_with_fake_worker_daemon().await;
     let idem = "worker-recovery-compensation-turn";
+    seed_dispatched_task(&repo, &wave_id, idem, "codex").await;
     let payload = serde_json::to_value(CodexWorkerOperationPayload {
         actor: ActorId::User,
         wave_id: wave_id.to_string(),

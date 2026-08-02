@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -25,7 +26,8 @@ use calm_server::error::{CalmError, Result as CalmResult};
 use calm_server::event::{Event, EventBus, EventScope, SubscribeFilter, SubscribeScope};
 use calm_server::ids::{ActorId, CoveId, WaveId};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewTerminal, NewWave, WaveLifecycle, WavePatch, new_id, now_ms,
+    CardRole, NewCard, NewCove, NewTerminal, NewWave, Task, TaskKind, TaskStatus, WaveLifecycle,
+    WavePatch, new_id, now_ms,
 };
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
@@ -415,6 +417,172 @@ async fn subscribe_filtered_skips_lagged_without_panic() {
     assert!(saw_ok > 0, "expected to see ok recvs after Lagged");
 }
 
+/// A dispatcher lag is a lost-edge recovery path. The context verdict must
+/// land before the scheduler can resume the same dispatched row; otherwise
+/// the worker crosses the admission point and §5.3.3 deliberately leaves it
+/// alone afterward.
+#[tokio::test(flavor = "current_thread")]
+async fn lagged_context_sweep_precedes_scheduler_resume() {
+    let _guard = DISPATCHER_DAEMON_TEST_LOCK.lock().await;
+    let (repo, events, cache, wcc, wave_id, _cove_id) = boot().await;
+    repo.wave_update(
+        wave_id.as_str(),
+        WavePatch {
+            lifecycle: Some(WaveLifecycle::Working),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("set working lifecycle");
+
+    let pool = repo.sqlite_pool().expect("dispatcher test uses sqlite");
+    let block = serde_json::json!({
+        "id": "b_lagged",
+        "kind": "prose",
+        "rev": 1,
+        "payload": {"markdown": "frozen"}
+    });
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('lagged-context-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+    )
+    .bind(wave_id.as_str())
+    .bind(serde_json::json!({"blocks": [block]}).to_string())
+    .execute(&pool)
+    .await
+    .expect("seed referenced report block");
+
+    let monitor = calm_server::task_context::TaskContextMonitor::new(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
+    );
+    let frozen = monitor
+        .resolve_closure(wave_id.as_str(), "b_lagged")
+        .await
+        .expect("freeze referenced block");
+    let task_id = format!("{}:lagged-stale", wave_id.as_str());
+    let now = now_ms();
+    let task = Task {
+        id: task_id.clone(),
+        wave_id: wave_id.as_str().to_string(),
+        key: "lagged-stale".into(),
+        kind: TaskKind::Terminal,
+        goal: "must not spawn".into(),
+        context_json: "null".into(),
+        acceptance_criteria: None,
+        cwd: None,
+        depends_on_json: "[]".into(),
+        priority: 0,
+        gate_json: None,
+        status: TaskStatus::Dispatched,
+        status_detail: None,
+        worker_card_id: None,
+        gate_result_json: None,
+        gate_attempt: 0,
+        gate_pid: None,
+        gate_pid_starttime: None,
+        gate_pid_boot_id: None,
+        running_deadline_ms: None,
+        context_stale_at_ms: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+        finished_at_ms: None,
+    };
+    calm_server::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::task_insert_tx(tx, &task).await?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed dispatched task");
+    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&frozen.refs).unwrap())
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .expect("persist frozen context");
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'changed') \
+         WHERE id = 'lagged-context-report'",
+    )
+    .execute(&pool)
+    .await
+    .expect("change referenced block without emitting its event");
+
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
+    let completion = OperationCompletionBus::new();
+    let spawn_ctx = SpawnCtx::new(
+        route_repo,
+        operation_repo.clone(),
+        stub_daemon(),
+        TerminalRendererRegistry::new(),
+        events.clone(),
+        completion.clone(),
+    );
+    let runtime = Arc::new(OperationRuntime::new_unchecked(
+        operation_repo,
+        vec![Arc::new(CountingSpawnAdapter {
+            spawned: spawned.clone(),
+        })],
+        events.clone(),
+        completion,
+        spawn_ctx,
+    ));
+    let dispatcher = Dispatcher::spawn_with_operation_runtime(
+        repo.clone(),
+        events.clone(),
+        calm_server::state::WriteContext::new(cache, wcc),
+        stub_codex(),
+        stub_daemon(),
+        None,
+        stub_shared(&repo),
+        runtime,
+        4,
+    );
+    dispatcher.scheduler().mark_boot_sweep_complete();
+    dispatcher.scheduler().mark_context_sweep_boot_complete();
+
+    // No await after subscription creation: on a current-thread runtime the
+    // dispatcher cannot drain until all 1,100 sends have forced one Lagged.
+    for index in 0..1100 {
+        events.emit(
+            ActorId::Kernel,
+            Event::TaskContextAdvanced {
+                task_id: format!("noise-{index}"),
+                verdict: "material".into(),
+            },
+        );
+    }
+
+    let stale = wait_for(Duration::from_secs(5), || {
+        let repo = repo.clone();
+        let task_id = task_id.clone();
+        async move {
+            repo.task_get(&task_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|task| task.context_stale_at_ms)
+        }
+    })
+    .await;
+    assert!(
+        stale.is_some(),
+        "Lagged recovery must persist material verdict"
+    );
+    tokio::task::yield_now().await;
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        0,
+        "scheduler must not start a worker before the Lagged context sweep"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Issue #644 round-2 review F4 — `wave.updated` is a scheduler trigger.
 // ---------------------------------------------------------------------------
@@ -427,6 +595,82 @@ const CARD_SPAWN_ADAPTER_PHASES: &[PhaseTag] = &[];
 struct CardSpawnAdapter {
     kind: &'static str,
     card_id: String,
+}
+
+struct CountingSpawnAdapter {
+    spawned: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ProviderAdapter for CountingSpawnAdapter {
+    fn kind(&self) -> &'static str {
+        "terminal-worker"
+    }
+
+    fn phases(&self) -> &'static [PhaseTag] {
+        CARD_SPAWN_ADAPTER_PHASES
+    }
+
+    async fn validate(&self, _input: &Value) -> CalmResult<()> {
+        Ok(())
+    }
+
+    async fn prepare_tx<'tx>(
+        &self,
+        tx: &mut Tx<'tx>,
+        input: &Value,
+        _op: &Operation,
+    ) -> CalmResult<TxOutput> {
+        calm_server::operation::refuse_if_context_stale(
+            tx,
+            input.get("idempotency_key").and_then(Value::as_str),
+        )
+        .await?;
+        Ok(TxOutput::new("card", None, serde_json::json!({})))
+    }
+
+    async fn app_server_interact(
+        &self,
+        _output: &mut TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<AppServerInteractOutcome> {
+        Ok(AppServerInteractOutcome::NotApplicable)
+    }
+
+    async fn spawn_side_effect(
+        &self,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<SpawnOutcome> {
+        self.spawned.fetch_add(1, Ordering::SeqCst);
+        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
+    }
+
+    async fn plan_compensation(
+        &self,
+        _from_phase: PhaseTag,
+        _reason: &str,
+        _output: &TxOutput,
+        _op: &Operation,
+    ) -> CalmResult<CompensationStateVersioned> {
+        Err(CalmError::Internal(
+            "counting spawn fixture unexpected plan_compensation".into(),
+        ))
+    }
+
+    async fn compensate_step(
+        &self,
+        _step: &calm_server::operation::CompensationStep,
+        _output: &TxOutput,
+        _op: &Operation,
+        _ctx: &SpawnCtx,
+    ) -> CalmResult<()> {
+        Err(CalmError::Internal(
+            "counting spawn fixture unexpected compensate_step".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -554,6 +798,7 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

@@ -27,6 +27,7 @@ fn task(key: &str, status: TaskStatus) -> Task {
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -78,7 +79,7 @@ async fn mark_running_stamps_running_liveness_deadline() {
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
     task_insert_tx(&mut tx, &row).await.expect("insert task");
-    let rows = task_claim_pending_tx(&mut tx, &id, 1000)
+    let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
         .await
         .expect("claim pending");
     assert_eq!(rows, 1);

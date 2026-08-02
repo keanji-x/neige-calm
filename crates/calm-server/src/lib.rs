@@ -222,6 +222,22 @@ pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
     state.dispatcher.scheduler().sweep_boot().await;
 }
 
+/// #985 PR3a correctness sweep. Boot runs this before operation recovery
+/// so a context verdict caused by downtime edits is durable before any
+/// pending operation can cross its `prepare_tx` admission point.
+pub async fn task_context_sweep_on_boot(state: &state::AppState) -> crate::error::Result<()> {
+    task_context::sweep_with_timeout(
+        state.dispatcher.context_monitor().as_ref(),
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
+    state
+        .dispatcher
+        .scheduler()
+        .mark_context_sweep_boot_complete();
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 enum HookReplayProvider {
     Codex,
@@ -560,6 +576,7 @@ pub mod shared_codex_home;
 pub mod spec_appserver;
 pub mod spec_card;
 pub mod state;
+pub mod task_context;
 pub mod terminal_renderer;
 pub mod terminal_sweeper;
 pub mod test_seams;
@@ -686,6 +703,27 @@ mod boot_order_tests {
             .find("scheduler_sweep_on_boot(&state).await")
             .expect("main boot calls scheduler_sweep_on_boot");
         assert!(recover < sweep);
+    }
+
+    #[test]
+    fn boot_order_context_sweep_before_operation_recovery() {
+        let main_rs = include_str!("main.rs");
+        let context_sweep = main_rs
+            .find("task_context_sweep_on_boot(&state).await")
+            .expect("main boot calls task_context_sweep_on_boot");
+        let recover = main_rs
+            .find("recover_operations_on_boot(&state).await")
+            .expect("main boot calls recover_operations_on_boot");
+        let scheduler_sweep = main_rs
+            .find("scheduler_sweep_on_boot(&state).await")
+            .expect("main boot calls scheduler_sweep_on_boot");
+        assert!(context_sweep < recover);
+        assert!(recover < scheduler_sweep);
+        assert!(
+            main_rs
+                .contains("if let Err(e) = calm_server::task_context_sweep_on_boot(&state).await"),
+            "context sweep failure must leave its gate closed without aborting main"
+        );
     }
 
     #[test]

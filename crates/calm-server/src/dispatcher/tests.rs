@@ -359,6 +359,7 @@ async fn gated_self_report_predicate() {
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -1934,6 +1935,24 @@ fn spec_push_predicate_and_observation_mapping_agree() {
                 idempotency_key: "w:k".into(),
                 kind: "codex".into(),
                 agent_message: None,
+            },
+            ActorId::KernelDispatcher,
+            false,
+            false,
+        ),
+        row(
+            Event::TaskContextFrozen {
+                task_id: "w:k".into(),
+                refs: vec![],
+            },
+            ActorId::KernelDispatcher,
+            false,
+            false,
+        ),
+        row(
+            Event::TaskContextAdvanced {
+                task_id: "w:k".into(),
+                verdict: "material".into(),
             },
             ActorId::KernelDispatcher,
             false,

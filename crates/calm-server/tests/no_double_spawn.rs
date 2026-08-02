@@ -2308,6 +2308,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     let adapter = install_terminal_worker_runtime_with_hook(&mut boot, hook);
 
     let idem = "terminal-worker-recovery-exited";
+    seed_dispatched_task(&boot.repo, &boot.wave_id, idem, "terminal").await;
     let payload = terminal_worker_payload(&boot.wave_id, idem);
     let op = pending_operation("terminal-worker", &boot.wave_id, payload.clone());
     insert_pending_operation_row(&boot.repo, &op).await;
@@ -2420,6 +2421,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
     boot.state = boot.state.clone().with_operation_runtime(runtime);
 
     let idem = "codex-worker-recovery-exited";
+    seed_dispatched_task(&boot.repo, &boot.wave_id, idem, "codex").await;
     let payload = codex_worker_payload(&boot.wave_id, idem);
     let op = pending_operation("codex-worker", &boot.wave_id, payload.clone());
     insert_pending_operation_row(&boot.repo, &op).await;
@@ -2528,6 +2530,7 @@ async fn worker_spawn_error_then_fast_exit_finalizes_as_success() {
     install_terminal_worker_runtime_with_hook(&mut boot, hook);
 
     let idem = "terminal-worker-spawn-error-fast-exit";
+    seed_dispatched_task(&boot.repo, &boot.wave_id, idem, "terminal").await;
     let payload = terminal_worker_payload(&boot.wave_id, idem);
     let mut rx = boot.state.events.subscribe();
     let op_id = boot
@@ -2892,6 +2895,24 @@ fn terminal_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {
         cwd: Some("/tmp".into()),
     })
     .unwrap()
+}
+
+async fn seed_dispatched_task(repo: &SqlxRepo, wave_id: &str, task_id: &str, kind: &str) {
+    let now = now_ms();
+    sqlx::query(
+        r#"INSERT INTO tasks (
+               id, wave_id, key, kind, goal, context_json, depends_on_json,
+               status, claim_context_json, created_at_ms, updated_at_ms
+           ) VALUES (?1, ?2, ?1, ?3, 'worker fixture', '{}', '[]',
+                     'dispatched', '[]', ?4, ?4)"#,
+    )
+    .bind(task_id)
+    .bind(wave_id)
+    .bind(kind)
+    .bind(now)
+    .execute(repo.pool())
+    .await
+    .unwrap();
 }
 
 fn codex_worker_payload(wave_id: &str, idempotency_key: &str) -> Value {

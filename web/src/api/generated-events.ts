@@ -297,7 +297,7 @@ hook_idempotency_key: string,
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { wave_id: WaveId, proposal_id: string, 
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { task_id: string, refs: Array<TaskContextRef>, } } | { "ev": "task.context_advanced", "data": { task_id: string, verdict: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { wave_id: WaveId, proposal_id: string, 
 /**
  * Submitting plugin. Injected kernel-side from the callback
  * connection (never trusted from plugin input) and
@@ -438,6 +438,11 @@ export type ReportBlock = { id: string, kind: string, rev: number, payload: unkn
  * Logical review subject key for `review.round`.
  */
 export type ReviewSubject = { phase: string, slice_id: string, pr_number: number | null, };
+
+/**
+ * One report-block identity captured in a task context freeze.
+ */
+export type TaskContextRef = { wave_id: WaveId, block_id: string, rev: number, hash: string, };
 
 export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**

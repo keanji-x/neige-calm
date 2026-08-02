@@ -257,6 +257,62 @@ impl RepoRead for SqlxRepo {
         Ok(rows)
     }
 
+    async fn task_contexts_by_dst_wave(
+        &self,
+        dst_wave_id: &str,
+    ) -> Result<Vec<crate::db::TaskContextRow>> {
+        let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
+            r#"SELECT DISTINCT t.id, t.wave_id, t.claim_context_json, t.context_closure_truncated
+               FROM task_ref_index i
+               JOIN tasks t ON t.id = i.task_id
+               WHERE i.dst_wave_id = ?1
+                 AND t.status IN ('dispatched','running','verifying')
+                 AND t.context_stale_at_ms IS NULL
+               ORDER BY t.id"#,
+        )
+        .bind(dst_wave_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                    crate::db::TaskContextRow {
+                        task_id,
+                        wave_id,
+                        claim_context_json,
+                        closure_truncated: closure_truncated != 0,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    async fn task_contexts_inflight_fresh(&self) -> Result<Vec<crate::db::TaskContextRow>> {
+        let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
+            r#"SELECT id, wave_id, claim_context_json, context_closure_truncated
+               FROM tasks
+               WHERE status IN ('dispatched','running','verifying')
+                 AND context_stale_at_ms IS NULL
+               ORDER BY id"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                    crate::db::TaskContextRow {
+                        task_id,
+                        wave_id,
+                        claim_context_json,
+                        closure_truncated: closure_truncated != 0,
+                    }
+                },
+            )
+            .collect())
+    }
+
     async fn operation_idempotency_key_by_id(&self, op_id: &str) -> Result<Option<String>> {
         let row: Option<Option<String>> =
             sqlx::query_scalar("SELECT idempotency_key FROM operations WHERE id = ?1")

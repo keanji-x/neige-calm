@@ -772,6 +772,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: ClaudeWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         let card_id = new_id();
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();

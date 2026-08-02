@@ -51,6 +51,50 @@ pub type TimestampMs = i64;
 pub type Tx<'tx> = Transaction<'tx, Sqlite>;
 const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
+/// Authoritative registry of operation adapters whose payload is bound to a
+/// task row and must therefore enforce the stale-context admission fence.
+pub const TASK_BOUND_ADAPTER_KINDS: [&str; 4] = [
+    "codex-worker",
+    "claude-worker",
+    "terminal-worker",
+    "task-verify",
+];
+
+/// Registered adapters whose payloads are not tied to a scheduler task row.
+/// Kept explicit so the registry coverage test fails when a new production
+/// adapter has not been classified on either side of the context fence.
+pub const NON_TASK_BOUND_ADAPTER_KINDS: [&str; 8] = [
+    "terminal-create",
+    "codex-create",
+    "claude-create",
+    "claude-restart",
+    "spec-harness-start",
+    "spec-harness-interrupt",
+    "spec-harness-shutdown",
+    "forge-action",
+];
+
+#[doc(hidden)]
+pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> Result<()> {
+    let Some(task_id) = task_id else {
+        return Ok(());
+    };
+    let stale_at: Option<Option<i64>> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
+            .bind(task_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    let stale_at = stale_at.ok_or_else(|| {
+        CalmError::Conflict(format!("context-stale: task {task_id} does not exist"))
+    })?;
+    if stale_at.is_some() {
+        return Err(CalmError::Conflict(
+            "context-stale: frozen closure no longer matches the document".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum ParkedClaimMode {
     SteadyState,

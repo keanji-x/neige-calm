@@ -50,7 +50,7 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
-    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
+    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_legacy_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
     wave_lifecycle_and_budget_tx,
@@ -339,6 +339,9 @@ pub struct Scheduler {
     /// [`Scheduler::sweep_all`], which no-ops until
     /// [`Scheduler::sweep_boot`] completes and opens this gate.
     boot_sweep_done: AtomicBool,
+    /// #985 PR3a — dispatched recovery must not start until the boot
+    /// context sweep has persisted every material verdict.
+    context_sweep_boot_done: AtomicBool,
 }
 
 impl Scheduler {
@@ -398,6 +401,7 @@ impl Scheduler {
             wave_dirty: DashMap::new(),
             inflight: Arc::new(DashMap::new()),
             boot_sweep_done: AtomicBool::new(false),
+            context_sweep_boot_done: AtomicBool::new(false),
         })
     }
 
@@ -638,7 +642,7 @@ impl Scheduler {
                             return Err(race_lost_err());
                         }
                         let now = now_ms();
-                        let rows = task_claim_pending_tx(tx, &task_id, now).await?;
+                        let rows = task_claim_legacy_pending_tx(tx, &task_id, now).await?;
                         if rows == 0 {
                             return Err(race_lost_err());
                         }
@@ -686,18 +690,28 @@ impl Scheduler {
                         if in_flight > budget {
                             return Err(race_lost_err());
                         }
-                        let mut events = vec![(
-                            ActorId::KernelDispatcher,
-                            scope.clone(),
-                            Event::TaskDispatched {
-                                idempotency_key: task_id.clone(),
-                                kind: task_kind_str(frozen.kind).to_string(),
-                                agent_message: Some(format!(
-                                    "[scheduler] dispatching task {}",
-                                    frozen.key
-                                )),
-                            },
-                        )];
+                        let mut events = vec![
+                            (
+                                ActorId::KernelDispatcher,
+                                scope.clone(),
+                                Event::TaskDispatched {
+                                    idempotency_key: task_id.clone(),
+                                    kind: task_kind_str(frozen.kind).to_string(),
+                                    agent_message: Some(format!(
+                                        "[scheduler] dispatching task {}",
+                                        frozen.key
+                                    )),
+                                },
+                            ),
+                            (
+                                ActorId::KernelDispatcher,
+                                scope.clone(),
+                                Event::TaskContextFrozen {
+                                    task_id: task_id.clone(),
+                                    refs: Vec::new(),
+                                },
+                            ),
+                        ];
                         // Same pre-spawn ordering rationale as the legacy
                         // dispatch path: promote before the worker exists so
                         // a fast report's Working → Reviewing promotion can
@@ -1032,6 +1046,16 @@ impl Scheduler {
     /// [`Scheduler::sweep_boot`] (the `scheduler_sweep_on_boot` funnel).
     pub fn mark_boot_sweep_complete(&self) {
         self.boot_sweep_done.store(true, Ordering::SeqCst);
+    }
+
+    /// Open the context-sweep boot gate after its synchronous boot pass.
+    pub fn mark_context_sweep_boot_complete(&self) {
+        self.context_sweep_boot_done.store(true, Ordering::SeqCst);
+    }
+
+    /// TEST seam for assertions around the context-sweep boot fence.
+    pub fn context_sweep_boot_completed(&self) -> bool {
+        self.context_sweep_boot_done.load(Ordering::SeqCst)
     }
 
     /// Shared sweep body: runs the reconcile arms inline and returns
@@ -1395,6 +1419,13 @@ impl Scheduler {
     /// `drive_spawn` covers every sub-case via submit-dedupe + `wait()`
     /// + guarded reconcile writes.
     async fn resume_dispatched(self: &Arc<Self>, task: Task) {
+        if !self.context_sweep_boot_done.load(Ordering::SeqCst) {
+            tracing::debug!(
+                task_id = %task.id,
+                "scheduler sweep: dispatched task left untouched until context boot sweep completes"
+            );
+            return;
+        }
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             return;
         };

@@ -64,6 +64,11 @@ pub struct OperationRuntime {
 }
 
 impl OperationRuntime {
+    /// Kinds installed in this runtime's production adapter registry.
+    pub fn registered_adapter_kinds(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.kinds.keys().copied()
+    }
+
     pub async fn new(
         repo: Arc<dyn OperationRepo>,
         kinds: Vec<Arc<dyn ProviderAdapter>>,

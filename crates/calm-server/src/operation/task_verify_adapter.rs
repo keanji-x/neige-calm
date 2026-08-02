@@ -631,6 +631,7 @@ impl ProviderAdapter for TaskVerifyAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TaskVerifyOperationPayload = serde_json::from_value(input.clone())?;
+        super::refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
         let key = op
             .idempotency_key
             .as_deref()

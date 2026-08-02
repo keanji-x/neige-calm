@@ -130,6 +130,7 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -176,6 +177,18 @@ async fn prepare_worker(
     key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>) {
     let payload = worker_payload(&harness.wave_id, key);
+    let task_id = format!("{}:{key}", harness.wave_id);
+    sqlx::query(
+        "INSERT OR IGNORE INTO tasks \
+         (id, wave_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, ?3, 'codex', 'test', 'null', '[]', 'dispatched', 1, 1)",
+    )
+    .bind(&task_id)
+    .bind(&harness.wave_id)
+    .bind(key)
+    .execute(harness.repo.pool())
+    .await
+    .unwrap();
     let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
     let op_id = op_repo
         .insert_operation(

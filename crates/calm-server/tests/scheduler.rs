@@ -22,7 +22,11 @@
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
 //!     `sweep_resubmits_dispatched_task_with_missing_operation`.
 
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
@@ -31,7 +35,7 @@ use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, task_insert_tx,
 };
 use calm_server::error::Result as CalmResult;
-use calm_server::event::EventBus;
+use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
@@ -42,19 +46,26 @@ use calm_server::model::{
     CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, Task, TaskKind, TaskStatus,
     WaveLifecycle, WavePatch, new_id, now_ms,
 };
+use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
+use calm_server::operation::codex_adapter::CodexWorkerAdapter;
+use calm_server::operation::task_verify_adapter::{TaskVerifyAdapter, TaskVerifyOperationPayload};
+use calm_server::operation::terminal_adapter::TerminalWorkerAdapter;
 use calm_server::operation::{
-    AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
-    OperationKey, OperationOutcome, OperationRepo, OperationRuntime, PhaseTag, ProviderAdapter,
-    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx, TxOutput,
+    AppServerInteractOutcome, CompensationStateVersioned, NON_TASK_BOUND_ADAPTER_KINDS, Operation,
+    OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
+    PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo,
+    TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput,
 };
 use calm_server::plugin_host::mcp::RpcError;
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::state::{DaemonClient, WriteContext};
+use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
+use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
 use serde_json::{Value, json};
@@ -66,6 +77,7 @@ struct Boot {
     /// Same cache instance `write` wraps — kept so tests can register
     /// extra worker cards minted mid-test.
     card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     cove_id: CoveId,
@@ -160,7 +172,7 @@ async fn boot() -> Boot {
     .await;
     let wave_cove_cache = WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache);
+    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
@@ -183,6 +195,7 @@ async fn boot() -> Boot {
         events,
         write,
         card_role_cache,
+        wave_cove_cache,
         ctx,
         registry: Arc::new(registry),
         cove_id: cove.id,
@@ -195,6 +208,26 @@ async fn boot() -> Boot {
 
 async fn seed_runtime_session(repo: &SqlxRepo, card_id: &str, session_id: &str, thread_id: &str) {
     seed_runtime_session_in_pool(repo.pool(), card_id, session_id, thread_id).await;
+}
+
+fn app_state_for_context_events(boot: &Boot) -> AppState {
+    AppState::from_parts(
+        boot.repo.clone(),
+        boot.events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            boot.repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-context-events"),
+            Vec::new(),
+            EventBus::new(),
+            boot.write.clone(),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(boot.card_role_cache.clone()),
+        Some(boot.wave_cove_cache.clone()),
+    )
 }
 
 async fn seed_runtime_session_in_pool(
@@ -250,6 +283,7 @@ fn build_scheduler_with_semaphore(
     // funnel; these tests model the post-boot steady state so backstop
     // sweeps run for real (round-3 review F2).
     scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
     (runtime, scheduler)
 }
 
@@ -268,6 +302,7 @@ fn build_scheduler_with_timeouts(
     // funnel; these tests model the post-boot steady state so backstop
     // sweeps run for real (round-3 review F2).
     scheduler.mark_boot_sweep_complete();
+    scheduler.mark_context_sweep_boot_complete();
     (runtime, scheduler)
 }
 
@@ -364,6 +399,7 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
         gate_pid_starttime: None,
         gate_pid_boot_id: None,
         running_deadline_ms: None,
+        context_stale_at_ms: None,
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -400,6 +436,16 @@ async fn task_row(boot: &Boot, key: &str) -> Task {
         .await
         .expect("task_get")
         .expect("task row exists")
+}
+
+async fn mark_context_stale(boot: &Boot, task_id: &str) {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query("UPDATE tasks SET context_stale_at_ms = ?1 WHERE id = ?2")
+        .bind(now_ms())
+        .bind(task_id)
+        .execute(&pool)
+        .await
+        .expect("mark task context stale");
 }
 
 async fn seed_codex_worker_card_with_terminal(
@@ -678,6 +724,54 @@ fn unexpected(name: &str) -> calm_server::error::CalmError {
 struct CardSpawnAdapter {
     kind: &'static str,
     card_id: String,
+}
+
+fn context_checked_terminal_adapter(
+    boot: &Boot,
+    spawned: Arc<AtomicUsize>,
+) -> Arc<dyn ProviderAdapter> {
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let hook = Arc::new(move |terminal_id: String, _, _, _| {
+        let spawned = Arc::clone(&spawned);
+        Box::pin(async move {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            Ok(SpawnHandle::Terminal {
+                renderer_id: terminal_id.clone(),
+                terminal_id,
+            })
+        }) as futures::future::BoxFuture<'static, CalmResult<SpawnHandle>>
+    });
+    Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
+        route_repo,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+        hook,
+    ))
+}
+
+fn pending_operation(kind: &str, task_id: &str, payload: Value) -> Operation {
+    Operation {
+        id: new_id(),
+        operation_key: new_id(),
+        kind: kind.into(),
+        idempotency_key: Some(task_id.into()),
+        payload_hash: "test-hash".into(),
+        target_type: "unknown".into(),
+        target_id: None,
+        target: json!({ "type": "unknown", "id": null }),
+        payload,
+        tx_output: None,
+        phase: calm_server::operation::Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
+    }
 }
 
 #[async_trait]
@@ -2096,6 +2190,369 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 }
 
+#[tokio::test]
+async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget_pin() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stale-orphan", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    mark_context_stale(&boot, &task_id).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+    );
+
+    scheduler.sweep_all().await;
+
+    assert_eq!(spawned.load(Ordering::SeqCst), 0, "no worker was started");
+    let row = task_row(&boot, "stale-orphan").await;
+    assert_eq!(row.status, TaskStatus::Failed, "budget is no longer pinned");
+    let op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .unwrap()
+        .expect("terminal worker op");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(
+        op.last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("context-stale")
+    );
+}
+
+#[tokio::test]
+async fn every_registered_task_adapter_refuses_material_context() {
+    let boot = boot().await;
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
+        route_repo.clone(),
+        Arc::new(CodexClient::new_stub()),
+        boot.shared_codex_appserver.clone(),
+        None,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+    let claude: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
+        route_repo.clone(),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+    let terminal: Arc<dyn ProviderAdapter> = Arc::new(TerminalWorkerAdapter::new(
+        route_repo,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+
+    let mut cases = Vec::new();
+    for (key, task_kind, adapter) in [
+        ("meta-codex", TaskKind::Codex, codex),
+        ("meta-claude", TaskKind::Claude, claude),
+        ("meta-terminal", TaskKind::Terminal, terminal),
+    ] {
+        let mut task = plan_task(&boot.wave_id, key, task_kind, &[]);
+        task.status = TaskStatus::Dispatched;
+        let task_id = task.id.clone();
+        let (kind, payload) = build_worker_payload(&task).unwrap();
+        seed_task(&boot, task).await;
+        mark_context_stale(&boot, &task_id).await;
+        cases.push((adapter, pending_operation(kind, &task_id, payload)));
+    }
+
+    let verify_task_id = cases[0].1.idempotency_key.clone().unwrap();
+    let verify_payload = serde_json::to_value(TaskVerifyOperationPayload {
+        actor: ActorId::KernelDispatcher,
+        wave_id: boot.wave_id.to_string(),
+        task_id: verify_task_id.clone(),
+        attempt: 1,
+    })
+    .unwrap();
+    cases.push((
+        Arc::new(TaskVerifyAdapter::new(std::env::temp_dir())) as Arc<dyn ProviderAdapter>,
+        pending_operation(
+            "task-verify",
+            &format!("{verify_task_id}#g1"),
+            verify_payload,
+        ),
+    ));
+
+    let fenced = cases
+        .iter()
+        .map(|(adapter, _)| adapter.kind())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        fenced,
+        TASK_BOUND_ADAPTER_KINDS.into_iter().collect(),
+        "task-bound classification changed; add a stale payload proof"
+    );
+
+    // The left side comes from the adapters actually built by AppState's
+    // production `build_operation_adapters`, not from this test's cases.
+    let state = AppState::from_parts(
+        boot.repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            boot.repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join("calm-plugins-data-context-registry"),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        None,
+    );
+    let registered = state
+        .operation_runtime
+        .registered_adapter_kinds()
+        .collect::<std::collections::BTreeSet<_>>();
+    let classified = TASK_BOUND_ADAPTER_KINDS
+        .into_iter()
+        .chain(NON_TASK_BOUND_ADAPTER_KINDS)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        registered, classified,
+        "every production adapter must be classified as task-bound or explicitly non-task-bound"
+    );
+    let pool = boot.repo.sqlite_pool().unwrap();
+    for (adapter, op) in cases {
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &op.payload, &op)
+            .await
+            .expect_err(adapter.kind());
+        assert!(
+            matches!(error, calm_server::error::CalmError::Conflict(ref message) if message.contains("context-stale")),
+            "{} did not fail closed: {error}",
+            adapter.kind()
+        );
+        tx.rollback().await.unwrap();
+    }
+
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let missing = calm_server::operation::refuse_if_context_stale(
+        &mut tx,
+        Some("missing-task-bound-operation"),
+    )
+    .await
+    .expect_err("a task binding whose row vanished must fail closed");
+    assert!(
+        matches!(missing, calm_server::error::CalmError::Conflict(ref message) if message.contains("does not exist"))
+    );
+    tx.rollback().await.unwrap();
+
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    calm_server::operation::refuse_if_context_stale(&mut tx, None)
+        .await
+        .expect("an operation without a task binding is outside the task-context fence");
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stale-pending", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    let (_, payload) = build_worker_payload(&task).unwrap();
+    seed_task(&boot, task).await;
+    mark_context_stale(&boot, &task_id).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+    );
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    repo.insert_operation(
+        "terminal-worker",
+        OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(task_id.clone()),
+            payload_hash: stable_payload_hash(&payload).unwrap(),
+        },
+        payload,
+    )
+    .await
+    .unwrap();
+
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        0,
+        "Pending is not already started"
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    assert!(
+        op.last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("context-stale")
+    );
+
+    scheduler.sweep_all().await;
+    assert_eq!(
+        task_row(&boot, "stale-pending").await.status,
+        TaskStatus::Failed
+    );
+}
+
+#[tokio::test]
+async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "stale-started", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    let (_, payload) = build_worker_payload(&task).unwrap();
+    seed_task(&boot, task).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let adapter = context_checked_terminal_adapter(&boot, spawned.clone());
+    let (runtime, scheduler) = build_scheduler(&boot, vec![adapter.clone()]);
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    let op_id = repo
+        .insert_operation(
+            "terminal-worker",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: Some(task_id.clone()),
+                payload_hash: stable_payload_hash(&payload).unwrap(),
+            },
+            payload.clone(),
+        )
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let pending_op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut prepare_tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let output = adapter
+        .prepare_tx(&mut prepare_tx, &payload, &pending_op)
+        .await
+        .unwrap();
+    prepare_tx.commit().await.unwrap();
+    sqlx::query(
+        "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
+         target_json = ?2 WHERE id = ?3",
+    )
+    .bind(serde_json::to_string(&output).unwrap())
+    .bind(json!({"type": "card", "id": boot.worker_card_id.as_str()}).to_string())
+    .bind(&op_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    mark_context_stale(&boot, &task_id).await;
+
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    assert_eq!(
+        spawned.load(Ordering::SeqCst),
+        1,
+        "already-started terminal work resumes without re-entering prepare_tx"
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Succeeded);
+    assert!(!matches!(op.phase.tag(), PhaseTag::Failed));
+
+    scheduler.sweep_all().await;
+    assert_eq!(
+        task_row(&boot, "stale-started").await.status,
+        TaskStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn context_boot_seam_blocks_dispatched_redrive_until_gate_opens() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Terminal, &[]);
+    pending.status = TaskStatus::Dispatched;
+    let pending_id = pending.id.clone();
+    let (_, pending_payload) = build_worker_payload(&pending).unwrap();
+    seed_task(&boot, pending).await;
+    let mut missing = plan_task(&boot.wave_id, "boot-missing-op", TaskKind::Terminal, &[]);
+    missing.status = TaskStatus::Dispatched;
+    seed_task(&boot, missing).await;
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (runtime, scheduler) = build_scheduler_unbooted(
+        &boot,
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+        Arc::new(tokio::sync::Semaphore::new(8)),
+    );
+    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
+    repo.insert_operation(
+        "terminal-worker",
+        OperationKey {
+            operation_key: new_id(),
+            idempotency_key: Some(pending_id.clone()),
+            payload_hash: stable_payload_hash(&pending_payload).unwrap(),
+        },
+        pending_payload,
+    )
+    .await
+    .unwrap();
+
+    scheduler.sweep_boot().await;
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 1);
+    let pending_op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &pending_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pending_op.phase.tag(), PhaseTag::Pending);
+
+    scheduler.mark_context_sweep_boot_complete();
+    let plan = runtime.recover_on_boot().await.unwrap();
+    runtime.apply_recovery(plan).await.unwrap();
+    scheduler.sweep_boot().await;
+    for _ in 0..100 {
+        if spawned.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(spawned.load(Ordering::SeqCst), 2);
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 2);
+    assert_eq!(
+        task_row(&boot, "boot-pending-op").await.status,
+        TaskStatus::Running
+    );
+    assert_eq!(
+        task_row(&boot, "boot-missing-op").await.status,
+        TaskStatus::Running
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Review round 1 — F1: PTY exits never complete codex-kind tasks
 // ---------------------------------------------------------------------------
@@ -2227,6 +2684,449 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
         "payload must reflect the claimed (frozen) row, not the pre-claim snapshot"
     );
     assert_eq!(task_row(&boot, "revise").await.status, TaskStatus::Running);
+}
+
+#[tokio::test]
+async fn every_dispatch_persists_same_batch_legacy_empty_context_freeze() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "legacy-freeze", TaskKind::Terminal, &[]),
+    )
+    .await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let rows: Vec<(i64, String, Value)> = sqlx::query_as(
+        "SELECT id, kind, json(payload) FROM events \
+         WHERE kind IN ('task.dispatched', 'task.context_frozen') ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read dispatch batch events");
+    assert_eq!(rows.len(), 2, "one dispatch must have exactly one freeze");
+    assert_eq!(rows[0].1, "task.dispatched");
+    assert_eq!(rows[1].1, "task.context_frozen");
+    assert_eq!(rows[1].0, rows[0].0 + 1, "batch events stay adjacent");
+    assert_eq!(
+        rows[1].2["task_id"],
+        json!(format!("{}:legacy-freeze", boot.wave_id))
+    );
+    assert_eq!(
+        rows[1].2["refs"],
+        json!([]),
+        "legacy freeze is explicit empty set"
+    );
+}
+
+async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
+    let block = json!({
+        "id": "b_1000",
+        "kind": "prose",
+        "rev": 1,
+        "payload": {"markdown": "original contract"}
+    });
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('context-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+    )
+    .bind(boot.wave_id.as_str())
+    .bind(json!({"blocks": [block]}).to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let frozen = monitor
+        .resolve_closure(boot.wave_id.as_str(), "b_1000")
+        .await
+        .expect("resolve root block");
+    assert_eq!(frozen.refs.len(), 1, "root is depth-zero closure node");
+    assert!(
+        !frozen.refs[0].hash.is_empty(),
+        "fourth tuple member is hash"
+    );
+
+    let mut task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(boot, task).await;
+    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&frozen.refs).unwrap())
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_1000')")
+        .bind(&task_id)
+        .bind(boot.wave_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+}
+
+#[tokio::test]
+async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "stale-once").await;
+    monitor.sweep().await.unwrap();
+    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let card_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE wave_id = ?1 AND kind = 'wave-report'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'replacement') WHERE id = ?1",
+    )
+    .bind(card_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    monitor.sweep().await.unwrap();
+    monitor.sweep().await.unwrap();
+    monitor.sweep().await.unwrap();
+    assert_eq!(
+        event_rows(&boot, "task.context_advanced").await.len(),
+        1,
+        "once-per-condition guard must survive three more sweeps"
+    );
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
+            .bind(format!("{}:stale-once", boot.wave_id))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(stale.is_some());
+}
+
+#[tokio::test]
+async fn context_sweep_verifies_available_refs_when_closure_was_truncated() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "truncated-still-matches").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET context_closure_truncated = 1 WHERE id = ?1")
+        .bind(format!("{}:truncated-still-matches", boot.wave_id))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    monitor.sweep().await.unwrap();
+
+    assert!(
+        event_rows(&boot, "task.context_advanced").await.is_empty(),
+        "budget exhaustion alone must not invalidate a matching frozen prefix"
+    );
+}
+
+async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {
+    let boot = boot().await;
+    let _monitor = seed_frozen_context_fixture(&boot, key).await;
+    let state = app_state_for_context_events(&boot);
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let task_id = format!("{}:{key}", boot.wave_id);
+    let missing_ref = json!([{
+        "wave_id": deleted_wave_id,
+        "block_id": "b_deleted",
+        "rev": 1,
+        "hash": "deleted"
+    }]);
+    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+        .bind(missing_ref.to_string())
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM task_ref_index WHERE task_id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_deleted')",
+    )
+    .bind(&task_id)
+    .bind(deleted_wave_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    boot.events.emit(ActorId::Kernel, event);
+    for _ in 0..100 {
+        if !event_rows(&boot, "task.context_advanced").await.is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        event_rows(&boot, "task.context_advanced").await.len(),
+        1,
+        "dispatcher deletion arm must run the context sweep"
+    );
+    drop(state);
+}
+
+#[tokio::test]
+async fn wave_deleted_event_runs_context_sweep_end_to_end() {
+    assert_deletion_event_runs_context_sweep(
+        Event::WaveDeleted {
+            id: WaveId::from("deleted-destination"),
+            cove_id: CoveId::from("deleted-destination-cove"),
+        },
+        "deleted-destination",
+        "wave-deleted-event",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cove_deleted_event_runs_context_sweep_end_to_end() {
+    assert_deletion_event_runs_context_sweep(
+        Event::CoveDeleted {
+            id: CoveId::from("deleted-destination-cove"),
+        },
+        "deleted-wave-under-cove",
+        "cove-deleted-event",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "recycled").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'new incarnation') \
+         WHERE wave_id = ?1 AND kind = 'wave-report'",
+    )
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+}
+
+#[tokio::test]
+async fn referenced_block_deletion_is_material_even_without_changed_ids() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "deleted-ref").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks', json('[]')) \
+         WHERE wave_id = ?1 AND kind = 'wave-report'",
+    )
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+}
+
+#[tokio::test]
+async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
+    let boot = boot().await;
+    let mut task = plan_task(&boot.wave_id, "missing", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    monitor.sweep().await.unwrap();
+    assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
+        .bind(task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "terminal task cannot retain reverse-index rows");
+}
+
+#[tokio::test]
+async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
+    let boot = boot().await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let blocks: Vec<Value> = (0..5)
+        .map(|index| {
+            let markdown = if index == 4 {
+                "leaf".to_string()
+            } else {
+                format!("[next](neige://wave/{}#b_{:04})", boot.wave_id, index + 1)
+            };
+            json!({
+                "id": format!("b_{index:04}"),
+                "kind": "prose",
+                "rev": 1,
+                "payload": {"markdown": markdown}
+            })
+        })
+        .collect();
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('closure-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+    )
+    .bind(boot.wave_id.as_str())
+    .bind(json!({"blocks": blocks}).to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    let closure = monitor
+        .resolve_closure(boot.wave_id.as_str(), "b_0000")
+        .await
+        .unwrap();
+    assert_eq!(closure.refs.len(), 4, "depth zero through depth three");
+    assert!(closure.closure_truncated);
+
+    let foreign_cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "foreign".into(),
+            color: "#111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let foreign_wave = boot
+        .repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: foreign_cove.id,
+            title: "foreign".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES ('foreign-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+    )
+    .bind(foreign_wave.id.as_str())
+    .bind(
+        json!({"blocks": [{
+            "id":"b_f000","kind":"prose","rev":1,"payload":{"markdown":"foreign"}
+        }]})
+        .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload = ?1 WHERE id = 'closure-report'",
+    )
+    .bind(json!({"blocks": [{
+        "id":"b_0000","kind":"prose","rev":1,
+        "payload":{"markdown": format!("[foreign](neige://wave/{}#b_f000)", foreign_wave.id)}
+    }]}).to_string())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let error = monitor
+        .resolve_closure(boot.wave_id.as_str(), "b_0000")
+        .await
+        .expect_err("cross-cove closure must fail closed");
+    assert!(matches!(error, ResolveError::CrossCove(_)));
+}
+
+#[tokio::test]
+async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "fanout-00").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let frozen_json: String =
+        sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
+            .bind(format!("{}:fanout-00", boot.wave_id))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    for index in 1..65 {
+        let key = format!("fanout-{index:02}");
+        let mut task = plan_task(&boot.wave_id, &key, TaskKind::Terminal, &[]);
+        task.status = TaskStatus::Dispatched;
+        let task_id = task.id.clone();
+        seed_task(&boot, task).await;
+        sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+            .bind(&frozen_json)
+            .bind(&task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_1000')",
+        )
+        .bind(task_id)
+        .bind(boot.wave_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        event_rows(&boot, "task.context_advanced").await.len(),
+        1,
+        "the first task beyond fanout 64 is material even when tuples match"
+    );
+
+    let mut cap_task = plan_task(&boot.wave_id, "sweep-cap", TaskKind::Terminal, &[]);
+    cap_task.status = TaskStatus::Dispatched;
+    let cap_id = cap_task.id.clone();
+    seed_task(&boot, cap_task).await;
+    let one: Value = serde_json::from_str::<Vec<Value>>(&frozen_json).unwrap()[0].clone();
+    let oversized = vec![one; calm_server::task_context::MAX_SWEEP_NODES + 1];
+    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
+        .bind(serde_json::to_string(&oversized).unwrap())
+        .bind(cap_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    assert_eq!(
+        event_rows(&boot, "task.context_advanced").await.len(),
+        2,
+        "sweep node exhaustion must fail closed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3477,7 +4377,9 @@ async fn backstop_sweep_noops_until_boot_sweep_completes() {
         "gated backstop sweep must not move rows"
     );
 
-    // The boot funnel's sweep reconciles and opens the gate.
+    // The earlier context boot sweep opens its independent admission
+    // gate before the scheduler boot funnel reconciles dispatched rows.
+    scheduler.mark_context_sweep_boot_complete();
     scheduler.sweep_boot().await;
     assert!(scheduler.boot_sweep_completed());
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);
@@ -3977,6 +4879,51 @@ async fn pre_bump_prepare_failure_fails_row_instead_of_looping() {
         op.phase.tag()
     );
     assert_eq!(operation_count(&boot, "task-verify").await, 1);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn stale_gate_before_first_attempt_fails_without_running_shell() {
+    let _guard = GATE_SPAWN_TEST_LOCK.lock().await;
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let dir = unique_gate_dir("context-stale");
+    let marker = dir.join("must-not-exist");
+    let gate = json!({
+        "cwd": dir.to_str().unwrap(),
+        "steps": [{ "name": "forbidden", "cmd": format!("touch '{}'", marker.display()) }]
+    })
+    .to_string();
+    let task = gate_task(&boot, "stale-gate", &gate);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    mark_context_stale(&boot, &task_id).await;
+    let (runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(
+            calm_server::operation::task_verify_adapter::TaskVerifyAdapter::new(dir.clone()),
+        )],
+    );
+
+    scheduler.sweep_all().await;
+    let row = wait_for_terminal_row(&boot, "stale-gate", 30).await;
+
+    assert!(!marker.exists(), "gate shell command must not execute");
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.gate_attempt, 0);
+    let verdict: Value = serde_json::from_str(row.gate_result_json.as_deref().unwrap()).unwrap();
+    assert!(
+        verdict["log_tail"]
+            .as_str()
+            .unwrap()
+            .contains("context-stale")
+    );
+    let op = runtime
+        .find_by_kind_and_idempotency("task-verify", &format!("{task_id}#g1"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
     std::fs::remove_dir_all(&dir).ok();
 }
 

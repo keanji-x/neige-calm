@@ -770,6 +770,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());

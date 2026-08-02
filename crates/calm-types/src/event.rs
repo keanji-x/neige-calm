@@ -32,6 +32,16 @@ use serde_json::Value;
 use std::ops::Deref;
 use ts_rs::TS;
 
+/// One report-block identity captured in a task context freeze.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct TaskContextRef {
+    pub wave_id: WaveId,
+    pub block_id: String,
+    pub rev: i64,
+    pub hash: String,
+}
+
 // ---------------------------------------------------------------------------
 // ArtifactRef — placeholder identifier for #129 Artifact Stream
 // ---------------------------------------------------------------------------
@@ -355,7 +365,10 @@ impl EventScope {
 ///   optional `author_plugin_id`. A v11 tab's zod union doesn't know
 ///   the new discriminators (and rejects the new author arm), so it
 ///   would silently fail zod past the new frames without this bump.
-pub const SYNC_EVENT_VERSION: u32 = 12;
+/// * `13` — task-context audit events (issue #985 PR3a-i). Adds
+///   `task.context_frozen` and `task.context_advanced`; a v12 tab does not
+///   recognize either discriminator and must not advance past those frames.
+pub const SYNC_EVENT_VERSION: u32 = 13;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -800,6 +813,23 @@ pub enum Event {
         #[ts(optional)]
         agent_message: Option<String>,
     },
+
+    /// Issue #985 PR3a-i — the kernel froze the task's resolved report-block
+    /// context in the same transaction as `task.dispatched`. Legacy tasks
+    /// carry an empty `refs` array: empty is an explicit freeze, not missing
+    /// context. Strict Kernel / KernelDispatcher only (plain User is denied).
+    #[serde(rename = "task.context_frozen")]
+    TaskContextFrozen {
+        task_id: String,
+        refs: Vec<TaskContextRef>,
+    },
+
+    /// Issue #985 PR3a-i — the kernel recorded that a frozen task context
+    /// advanced. This slice only emits the fail-closed `material` verdict;
+    /// later slices may add a second-level adjudicator. Strict Kernel /
+    /// KernelDispatcher only (plain User is denied).
+    #[serde(rename = "task.context_advanced")]
+    TaskContextAdvanced { task_id: String, verdict: String },
 
     /// Issue #760 slice 1 — the kernel acquired a workflow-agnostic
     /// isolated workspace lease for a Codex task. The lease is just a
@@ -1258,6 +1288,12 @@ impl Event {
                 entity_kind: None,
                 entity_id: None,
             },
+            Event::TaskContextFrozen { .. } | Event::TaskContextAdvanced { .. } => EventMetadata {
+                kind_tag,
+                plugin_id: None,
+                entity_kind: None,
+                entity_id: None,
+            },
             Event::WorkspaceLeased { card_id, .. } | Event::WorkspaceReleased { card_id, .. } => {
                 EventMetadata {
                     kind_tag,
@@ -1352,6 +1388,8 @@ impl Event {
             Event::TaskFailed { .. } => "task.failed",
             Event::PlanUpdated { .. } => "plan.updated",
             Event::TaskDispatched { .. } => "task.dispatched",
+            Event::TaskContextFrozen { .. } => "task.context_frozen",
+            Event::TaskContextAdvanced { .. } => "task.context_advanced",
             Event::WorkspaceLeased { .. } => "workspace.leased",
             Event::WorkspaceReleased { .. } => "workspace.released",
             Event::ForgePrMerged { .. } => "forge.pr.merged",
@@ -1532,6 +1570,8 @@ pub fn topics(ev: &Event) -> Vec<String> {
         | Event::TaskCompleted { .. }
         | Event::TaskFailed { .. }
         | Event::TaskDispatched { .. }
+        | Event::TaskContextFrozen { .. }
+        | Event::TaskContextAdvanced { .. }
         | Event::TaskGateResult { .. } => vec!["*".into()],
 
         Event::WorkspaceLeased {

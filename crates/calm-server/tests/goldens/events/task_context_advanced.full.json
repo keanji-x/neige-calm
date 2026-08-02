@@ -1,0 +1,10 @@
+{
+  "description": "task.context_advanced full shape pins the PR3a material-only verdict.",
+  "wire": {
+    "ev": "task.context_advanced",
+    "data": {
+      "task_id": "wave-01:build-step",
+      "verdict": "material"
+    }
+  }
+}
