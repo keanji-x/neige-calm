@@ -17,6 +17,7 @@ export interface EventStreamSink {
 
 export interface EventStreamDriver {
   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void;
+  /** Must be idempotent: the stream may call stop before start or after an earlier stop. */
   stop(): void;
 }
 
@@ -48,6 +49,7 @@ export class EventStream implements UnconfiguredEventStream {
   private configuredHandle: ConfiguredEventStream | null = null;
   private started = false;
   private acceptingDelivery = false;
+  private generation = 0;
 
   private constructor(url: string, driver: EventStreamDriver) {
     this.url = url;
@@ -92,24 +94,25 @@ export class EventStream implements UnconfiguredEventStream {
       return this.configuredHandle as ConfiguredEventStream;
     }
     this.configuration = frozen;
-    const sink: EventStreamSink = Object.freeze({
-      frame: (frame: EventFrame) => {
-        if (!this.acceptingDelivery) return;
-        for (const handler of this.frameHandlers) handler(frame);
-        if (frame.type === 'event') {
-          for (const handler of this.handlers) handler(frame.event, frame.meta);
-        }
-      },
-      connectionState: (state: ConnectionState) => {
-        if (!this.acceptingDelivery) return;
-        for (const handler of this.stateHandlers) handler(state);
-      },
-    });
     const handle: ConfiguredEventStream = Object.freeze({
       start: () => {
         if (this.started) return;
         this.started = true;
         this.acceptingDelivery = true;
+        const generation = ++this.generation;
+        const sink: EventStreamSink = Object.freeze({
+          frame: (frame: EventFrame) => {
+            if (!this.acceptingDelivery || generation !== this.generation) return;
+            for (const handler of this.frameHandlers) handler(frame);
+            if (frame.type === 'event') {
+              for (const handler of this.handlers) handler(frame.event, frame.meta);
+            }
+          },
+          connectionState: (state: ConnectionState) => {
+            if (!this.acceptingDelivery || generation !== this.generation) return;
+            for (const handler of this.stateHandlers) handler(state);
+          },
+        });
         try {
           this.driver.start(frozen, this.url, sink);
         } catch (error) {
@@ -121,6 +124,7 @@ export class EventStream implements UnconfiguredEventStream {
       stop: () => {
         this.started = false;
         this.acceptingDelivery = false;
+        for (const handler of this.stateHandlers) handler('disconnected');
         this.driver.stop();
       },
     });

@@ -11,6 +11,7 @@
 - `configure()` 只冻结 version/topics 并创建 handle，绝不调用 driver `start`，因为兼容性裁决完成前不得连接（INV-APP-021）。
 - 同一实例用相同 version 和有序 topics 重复 configure 时幂等返回同一 handle；任何不同配置抛 `TypeError`，因为一个资源不能悄悄分叉协议天花板或订阅集合。
 - 生产集成中 `app/events-glue/EventBridge` 是共享流唯一 `start()` owner（INV-APP-020）。当前 handle 的 `start()` 幂等，为后续 app slice 的唯一调用点 architecture contract test 提供行为锚点。
+- `stop()` 复位 `started`、关闭当前 generation 的投递闸、向连接状态订阅者广播 `disconnected`，并允许后续重新 `start()`；driver 的 `stop()` 可能在尚未 start 或已经 stop 时被调用，因此必须幂等。
 - `EventBridge` 必须挂在 `ServerCompatGate` 内（INV-APP-001）。typestate 无法表达 React 树父子关系，后续 `app/events-glue` contract test 负责锁住。
 - platform driver 是 `EventSubscriptionFrame` / `eventSubscriptionFrame` 出站义务的接收者：每次连接都必须用当前 topics 与 cursor 构造必带 `since` 的订阅帧；systems port 只传入原始配置与 URL，不重复冻结 transport 编码。
 
