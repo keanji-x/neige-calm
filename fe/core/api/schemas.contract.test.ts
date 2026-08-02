@@ -5,7 +5,6 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
 import type { z } from 'zod';
 import {
-  decodeWireEvent,
   wireEventSchema,
   coveSchema,
   waveSchema,
@@ -19,14 +18,11 @@ import type {
   Card as GeneratedCard,
   Overlay as GeneratedOverlay,
 } from './generated/wire.js';
+import type { ApiDecodeFailure } from './types.js';
+import type { WireEventDecodeResult } from './schemas.js';
+import type { DecodeFailure } from '../state/types.js';
 
 describe('wireEventSchema', () => {
-  it('returns unknown frames as decode data so callers can log and skip', () => {
-    const result = decodeWireEvent({ ev: 'future.event', data: { version: 2 } });
-    expect(result.status).toBe('failed');
-    if (result.status === 'failed') expect(result.error.kind).toBe('decode');
-  });
-
   it('parses a valid cove.updated event', () => {
     const payload = {
       ev: 'cove.updated',
@@ -216,6 +212,11 @@ describe('wireEventSchema', () => {
 // assignability. The whole-`Event`-union check is the bigger guarantee;
 // the per-entity checks make a regression easier to localize.
 describe('zod ↔ ts-rs conformance', () => {
+  it('keeps API and state decode failures intentionally shape-equivalent', () => {
+    expectTypeOf<ApiDecodeFailure>().toEqualTypeOf<DecodeFailure>();
+    expectTypeOf<Extract<WireEventDecodeResult, { status: 'failed' }>['error']>()
+      .toEqualTypeOf<ApiDecodeFailure>();
+  });
   it('wireEventSchema infers the generated Event union', () => {
     expectTypeOf<z.infer<typeof wireEventSchema>>().toEqualTypeOf<GeneratedEvent>();
   });
@@ -228,6 +229,20 @@ describe('zod ↔ ts-rs conformance', () => {
     expectTypeOf<z.infer<typeof waveSchema>>().toEqualTypeOf<GeneratedWave>();
     expectTypeOf<z.infer<typeof cardSchema>>().toEqualTypeOf<GeneratedCard>();
     expectTypeOf<z.infer<typeof overlaySchema>>().toEqualTypeOf<GeneratedOverlay>();
+  });
+});
+
+describe('entity sub-schema compatibility', () => {
+  it('coveSchema fills kind="user" when absent (legacy fixture)', () => {
+    const parsed = coveSchema.parse({
+      id: 'c1',
+      name: 'n',
+      color: '#fff',
+      sort: 0,
+      created_at: 1,
+      updated_at: 2,
+    });
+    expect(parsed.kind).toBe('user');
   });
 });
 

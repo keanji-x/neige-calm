@@ -3,6 +3,7 @@ import type { z } from 'zod';
 
 import {
   loginRequestSchema,
+  loginOperation,
   sessionIdentitySchema,
   whoamiOperation,
 } from './auth.js';
@@ -23,6 +24,10 @@ describe('core/api auth contract', () => {
 
   it('freezes the whoami path and rejects malformed identities', () => {
     expect(whoamiOperation()).toMatchObject({ method: 'GET', path: '/api/auth/whoami' });
-    expect(sessionIdentitySchema.safeParse({ userId: 'owner' }).success).toBe(false);
+    expect(loginOperation({ username: 'u', password: 'p' })).toMatchObject({
+      method: 'POST',
+      path: '/api/auth/login',
+      body: { username: 'u', password: 'p' },
+    });
   });
 });

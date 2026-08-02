@@ -514,7 +514,7 @@ export type WaveFsCardMeta = { created_at: number, deletable: boolean, id: CardI
 
 export type WaveFsHookEvent = { created_at: number, event_id: number, hook_kind: string, kind: string, payload: unknown, };
 
-export type WaveFsRunDetail = { events: WaveFsRunEvents, finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: WaveFsRunStatus, verdict: WaveFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown, };
+export type WaveFsRunDetail = { events: WaveFsRunEvents, finished_at: number | null, idempotency_key: string, kind: string, requested_at: number | null, status: WaveFsRunStatus, verdict: WaveFsRunVerdict | null, worker_card_id: CardId | null, worker_card_payload: unknown | null, };
 
 export type WaveFsRunEventRef = { created_at: number, event_id: number, kind: string, payload: unknown, };
 
@@ -696,7 +696,7 @@ export type WorkerSessionId = string;
 
 export type WorkerSessionKind = "terminal" | "codex" | "claude" | "shared-spec";
 
-export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };
+export type WorkerSessionProjection = { id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, terminal_run_id: string | null, thread_id: string | null, session_id: string | null, active_turn_id: string | null, handle_state_json: unknown | null, created_at_ms: number, updated_at_ms: number, completed_at_ms: number | null, };
 
 /**
  * Session state machine column (`worker_sessions.state`, issue #679 §1).

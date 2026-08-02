@@ -8,9 +8,10 @@
     "dev": "vite web",
     "build": "tsc -b && vite build web",
     "typecheck": "tsc -b",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:wire",
+    "test:wire": "diff -w ../web/src/api/generated-events.ts core/api/generated/wire.ts",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
-    "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs",
+    "lint:js": "eslint . --ignore-pattern 'core/api/generated/**' && node tools/architecture/check-eslint-hygiene.mjs",
     "lint:css": "stylelint 'web/src/**/*.css' --allow-empty-input",
     "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs . && node tools/architecture/check-core-no-jsx.mjs core",
     "e2e": "playwright test"

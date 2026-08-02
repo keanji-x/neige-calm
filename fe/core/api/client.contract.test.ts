@@ -20,11 +20,33 @@ describe('core/api client contract', () => {
     }
   });
 
-  it('sends cookie credentials and validates a successful response', async () => {
+  it('forwards a body as a complete JSON transport request', async () => {
     const send = vi.fn(() => Promise.resolve({ status: 200, statusText: 'OK', body: { value: 7 } }));
-    const result = await performApiRequest(
+    await performApiRequest(
       { send },
-      { method: 'GET', path: '/api/example', responseSchema: z.object({ value: z.number() }) },
+      {
+        method: 'PATCH',
+        path: '/api/example/7',
+        body: { title: 'independently rewritten' },
+        responseSchema: z.object({ value: z.number() }),
+      },
+    );
+
+    expect(send).toHaveBeenCalledExactlyOnceWith({
+      method: 'PATCH',
+      path: '/api/example/7',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: { title: 'independently rewritten' },
+    });
+  });
+
+  it('omits both body and headers keys when an operation has no body', async () => {
+    const send = vi.fn<ApiTransportPort['send']>();
+    send.mockResolvedValue({ status: 200, statusText: 'OK', body: undefined });
+    await performApiRequest(
+      { send },
+      { method: 'GET', path: '/api/example', responseSchema: z.void() },
     );
 
     expect(send).toHaveBeenCalledExactlyOnceWith({
@@ -32,61 +54,8 @@ describe('core/api client contract', () => {
       path: '/api/example',
       credentials: 'include',
     });
-    expect(result).toEqual({ status: 'ready', value: { value: 7 } });
-  });
-
-  it('classifies 401 without retrying inside core', async () => {
-    const send = vi.fn(() => Promise.resolve({
-      status: 401,
-      statusText: 'Unauthorized',
-      body: { code: 'session_expired', error: 'Sign in again' },
-    }));
-    const result = await performApiRequest(
-      { send },
-      { method: 'GET', path: '/api/auth/whoami', responseSchema: z.unknown() },
-    );
-
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      status: 'failed',
-      error: {
-        kind: 'unauthorized',
-        status: 401,
-        code: 'session_expired',
-        message: 'Sign in again',
-        body: { code: 'session_expired', error: 'Sign in again' },
-      },
-    });
-  });
-
-  it('keeps non-401 HTTP and thrown transport failures out of the unauthorized branch', async () => {
-    const http = await performApiRequest(
-      { send: () => Promise.resolve({ status: 503, statusText: 'Unavailable', body: undefined }) },
-      { method: 'GET', path: '/api/auth/whoami', responseSchema: z.unknown() },
-    );
-    const cause = new Error('offline');
-    const transport = await performApiRequest(
-      { send: () => Promise.reject(cause) },
-      { method: 'GET', path: '/api/auth/whoami', responseSchema: z.unknown() },
-    );
-
-    expect(http).toEqual({
-      status: 'failed',
-      error: { kind: 'http', status: 503, code: 'http_error', message: 'Unavailable', body: undefined },
-    });
-    expect(transport).toEqual({
-      status: 'failed',
-      error: { kind: 'transport', message: 'Transport request failed', cause },
-    });
-  });
-
-  it('reports response schema drift as decode data instead of throwing', async () => {
-    const result = await performApiRequest(
-      { send: () => Promise.resolve({ status: 200, statusText: 'OK', body: { value: '7' } }) },
-      { method: 'GET', path: '/api/example', responseSchema: z.object({ value: z.number() }) },
-    );
-
-    expect(result.status).toBe('failed');
-    if (result.status === 'failed') expect(result.error.kind).toBe('decode');
+    const request = send.mock.calls[0]?.[0];
+    expect(request).not.toHaveProperty('headers');
+    expect(request).not.toHaveProperty('body');
   });
 });

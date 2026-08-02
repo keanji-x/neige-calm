@@ -8,11 +8,9 @@
 // check exists to catch *unexpected* payload shapes (schema drift, partial
 // rollouts, broken proxies) rather than to police every field.
 //
-// Inferred TS types are re-exported so consumers can opt in without touching
-// the legacy `wire.ts` `WireEvent` union. The two are intentionally parallel
-// today — a future migration can collapse them once all consumers move over.
-
 import { z } from 'zod';
+
+import type { ApiDecodeFailure } from './types.js';
 
 // ---------------- Entity schemas (mirror model.rs) ----------------
 
@@ -1045,7 +1043,7 @@ export type WireEvent = z.infer<typeof wireEventSchema>;
 
 export type WireEventDecodeResult =
   | Readonly<{ status: 'ready'; value: WireEvent }>
-  | Readonly<{ status: 'failed'; error: Readonly<{ kind: 'decode'; message: string; cause: unknown }> }>;
+  | Readonly<{ status: 'failed'; error: ApiDecodeFailure }>;
 
 /** Unknown or malformed frames are returned as data so callers can log and skip dispatch. */
 export function decodeWireEvent(input: unknown): WireEventDecodeResult {

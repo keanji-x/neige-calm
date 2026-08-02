@@ -1,4 +1,5 @@
 import type { ApiFailure, ApiOperation, ApiResult, ApiTransportPort } from './types.js';
+import type { UnauthorizedChannel } from './unauthorized.js';
 
 function errorText(body: unknown, key: 'code' | 'error', fallback: string): string {
   if (typeof body !== 'object' || body === null) return fallback;
@@ -17,6 +18,7 @@ function normalizeHttpFailure(status: number, statusText: string, body: unknown)
 export async function performApiRequest<T>(
   transport: ApiTransportPort,
   operation: ApiOperation<T>,
+  unauthorized?: UnauthorizedChannel,
 ): Promise<ApiResult<T>> {
   let response;
   try {
@@ -34,13 +36,15 @@ export async function performApiRequest<T>(
   }
 
   if (response.status < 200 || response.status >= 300) {
+    const error = normalizeHttpFailure(response.status, response.statusText, response.body);
+    if (error.kind === 'unauthorized') unauthorized?.notify();
     return {
       status: 'failed',
-      error: normalizeHttpFailure(response.status, response.statusText, response.body),
+      error,
     };
   }
 
-  const parsed = operation.responseSchema.safeParse(response.body);
+  const parsed = operation.responseSchema.safeParse(response.status === 204 ? undefined : response.body);
   if (!parsed.success) {
     return {
       status: 'failed',
