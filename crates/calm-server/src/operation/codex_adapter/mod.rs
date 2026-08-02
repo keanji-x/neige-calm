@@ -307,9 +307,8 @@ impl ProviderAdapter for CodexAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        op: &Operation,
+        _op: &Operation,
     ) -> Result<TxOutput> {
-        super::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
         let payload: CodexCreateOperationPayload = serde_json::from_value(input.clone())?;
         let card_id = new_id();
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
@@ -771,6 +770,7 @@ impl ProviderAdapter for CodexWorkerAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: CodexWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());

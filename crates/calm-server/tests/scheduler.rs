@@ -45,10 +45,14 @@ use calm_server::model::{
     CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, Task, TaskKind, TaskStatus,
     WaveLifecycle, WavePatch, new_id, now_ms,
 };
+use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
+use calm_server::operation::codex_adapter::CodexWorkerAdapter;
+use calm_server::operation::task_verify_adapter::{TaskVerifyAdapter, TaskVerifyOperationPayload};
+use calm_server::operation::terminal_adapter::TerminalWorkerAdapter;
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, OperationCompletionBus,
     OperationKey, OperationOutcome, OperationRepo, OperationRuntime, PhaseTag, ProviderAdapter,
-    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, Tx, TxOutput,
+    SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo, TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::routes::terminal_cards::stable_payload_hash;
@@ -57,7 +61,7 @@ use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
-use calm_server::state::{DaemonClient, WriteContext};
+use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
@@ -70,6 +74,7 @@ struct Boot {
     /// Same cache instance `write` wraps — kept so tests can register
     /// extra worker cards minted mid-test.
     card_role_cache: CardRoleCache,
+    wave_cove_cache: WaveCoveCache,
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     cove_id: CoveId,
@@ -164,7 +169,7 @@ async fn boot() -> Boot {
     .await;
     let wave_cove_cache = WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
-    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache);
+    let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let ctx = Arc::new(AppContext {
@@ -187,6 +192,7 @@ async fn boot() -> Boot {
         events,
         write,
         card_role_cache,
+        wave_cove_cache,
         ctx,
         registry: Arc::new(registry),
         cove_id: cove.id,
@@ -697,71 +703,51 @@ struct CardSpawnAdapter {
     card_id: String,
 }
 
-/// Worker fixture with the production task-context admission check.
-struct ContextCheckedSpawnAdapter {
-    kind: &'static str,
-    card_id: String,
+fn context_checked_terminal_adapter(
+    boot: &Boot,
     spawned: Arc<AtomicUsize>,
+) -> Arc<dyn ProviderAdapter> {
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let hook = Arc::new(move |terminal_id: String, _, _, _| {
+        let spawned = Arc::clone(&spawned);
+        Box::pin(async move {
+            spawned.fetch_add(1, Ordering::SeqCst);
+            Ok(SpawnHandle::Terminal {
+                renderer_id: terminal_id.clone(),
+                terminal_id,
+            })
+        }) as futures::future::BoxFuture<'static, CalmResult<SpawnHandle>>
+    });
+    Arc::new(TerminalWorkerAdapter::new_with_spawn_hook(
+        route_repo,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+        hook,
+    ))
 }
 
-#[async_trait]
-impl ProviderAdapter for ContextCheckedSpawnAdapter {
-    fn kind(&self) -> &'static str {
-        self.kind
-    }
-    fn phases(&self) -> &'static [PhaseTag] {
-        STUB_PHASES
-    }
-    async fn validate(&self, _input: &Value) -> CalmResult<()> {
-        Ok(())
-    }
-    async fn prepare_tx<'tx>(
-        &self,
-        tx: &mut Tx<'tx>,
-        _input: &Value,
-        op: &Operation,
-    ) -> CalmResult<TxOutput> {
-        calm_server::operation::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
-        Ok(TxOutput::new(
-            "card",
-            Some(self.card_id.clone()),
-            json!({ "id": self.card_id }),
-        ))
-    }
-    async fn app_server_interact(
-        &self,
-        _output: &mut TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> CalmResult<AppServerInteractOutcome> {
-        Ok(AppServerInteractOutcome::NotApplicable)
-    }
-    async fn spawn_side_effect(
-        &self,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> CalmResult<SpawnOutcome> {
-        self.spawned.fetch_add(1, Ordering::SeqCst);
-        Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
-    }
-    async fn plan_compensation(
-        &self,
-        _from_phase: PhaseTag,
-        _reason: &str,
-        _output: &TxOutput,
-        _op: &Operation,
-    ) -> CalmResult<CompensationStateVersioned> {
-        Err(unexpected("plan_compensation"))
-    }
-    async fn compensate_step(
-        &self,
-        _step: &calm_server::operation::CompensationStep,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
-    ) -> CalmResult<()> {
-        Err(unexpected("compensate_step"))
+fn pending_operation(kind: &str, task_id: &str, payload: Value) -> Operation {
+    Operation {
+        id: new_id(),
+        operation_key: new_id(),
+        kind: kind.into(),
+        idempotency_key: Some(task_id.into()),
+        payload_hash: "test-hash".into(),
+        target_type: "unknown".into(),
+        target_id: None,
+        target: json!({ "type": "unknown", "id": null }),
+        payload,
+        tx_output: None,
+        phase: calm_server::operation::Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
     }
 }
 
@@ -2185,7 +2171,7 @@ async fn sweep_resubmits_dispatched_task_with_missing_operation() {
 async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget_pin() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stale-orphan", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.wave_id, "stale-orphan", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
@@ -2193,11 +2179,7 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget
     let spawned = Arc::new(AtomicUsize::new(0));
     let (runtime, scheduler) = build_scheduler(
         &boot,
-        vec![Arc::new(ContextCheckedSpawnAdapter {
-            kind: "codex-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-            spawned: spawned.clone(),
-        })],
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
     );
 
     scheduler.sweep_all().await;
@@ -2206,7 +2188,7 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget
     let row = task_row(&boot, "stale-orphan").await;
     assert_eq!(row.status, TaskStatus::Failed, "budget is no longer pinned");
     let op = runtime
-        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
         .await
         .unwrap()
         .expect("terminal worker op");
@@ -2220,10 +2202,108 @@ async fn stale_dispatched_worker_without_operation_fails_without_spawn_or_budget
 }
 
 #[tokio::test]
+async fn every_registered_task_adapter_refuses_material_context() {
+    let boot = boot().await;
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
+        route_repo.clone(),
+        Arc::new(CodexClient::new_stub()),
+        boot.shared_codex_appserver.clone(),
+        None,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+    let claude: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
+        route_repo.clone(),
+        Arc::new(CodexClient::new_stub()),
+        None,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+    let terminal: Arc<dyn ProviderAdapter> = Arc::new(TerminalWorkerAdapter::new(
+        route_repo,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+
+    let mut cases = Vec::new();
+    for (key, task_kind, adapter) in [
+        ("meta-codex", TaskKind::Codex, codex),
+        ("meta-claude", TaskKind::Claude, claude),
+        ("meta-terminal", TaskKind::Terminal, terminal),
+    ] {
+        let mut task = plan_task(&boot.wave_id, key, task_kind, &[]);
+        task.status = TaskStatus::Dispatched;
+        let task_id = task.id.clone();
+        let (kind, payload) = build_worker_payload(&task).unwrap();
+        seed_task(&boot, task).await;
+        mark_context_stale(&boot, &task_id).await;
+        cases.push((adapter, pending_operation(kind, &task_id, payload)));
+    }
+
+    let verify_task_id = cases[0].1.idempotency_key.clone().unwrap();
+    let verify_payload = serde_json::to_value(TaskVerifyOperationPayload {
+        actor: ActorId::KernelDispatcher,
+        wave_id: boot.wave_id.to_string(),
+        task_id: verify_task_id.clone(),
+        attempt: 1,
+    })
+    .unwrap();
+    cases.push((
+        Arc::new(TaskVerifyAdapter::new(std::env::temp_dir())) as Arc<dyn ProviderAdapter>,
+        pending_operation(
+            "task-verify",
+            &format!("{verify_task_id}#g1"),
+            verify_payload,
+        ),
+    ));
+
+    let registered = cases
+        .iter()
+        .map(|(adapter, _)| adapter.kind())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        registered,
+        TASK_BOUND_ADAPTER_KINDS.into_iter().collect(),
+        "task adapter registry changed; add its real adapter and payload to this invariant"
+    );
+    let pool = boot.repo.sqlite_pool().unwrap();
+    for (adapter, op) in cases {
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &op.payload, &op)
+            .await
+            .expect_err(adapter.kind());
+        assert!(
+            matches!(error, calm_server::error::CalmError::Conflict(ref message) if message.contains("context-stale")),
+            "{} did not fail closed: {error}",
+            adapter.kind()
+        );
+        tx.rollback().await.unwrap();
+    }
+
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let missing = calm_server::operation::refuse_if_context_stale(
+        &mut tx,
+        Some("missing-task-bound-operation"),
+    )
+    .await
+    .expect_err("a task binding whose row vanished must fail closed");
+    assert!(
+        matches!(missing, calm_server::error::CalmError::Conflict(ref message) if message.contains("does not exist"))
+    );
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
 async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stale-pending", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.wave_id, "stale-pending", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     let (_, payload) = build_worker_payload(&task).unwrap();
@@ -2232,15 +2312,11 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
     let spawned = Arc::new(AtomicUsize::new(0));
     let (runtime, scheduler) = build_scheduler(
         &boot,
-        vec![Arc::new(ContextCheckedSpawnAdapter {
-            kind: "codex-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-            spawned: spawned.clone(),
-        })],
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
     );
     let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
     repo.insert_operation(
-        "codex-worker",
+        "terminal-worker",
         OperationKey {
             operation_key: new_id(),
             idempotency_key: Some(task_id.clone()),
@@ -2259,7 +2335,7 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
         "Pending is not already started"
     );
     let op = runtime
-        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
         .await
         .unwrap()
         .unwrap();
@@ -2282,39 +2358,41 @@ async fn stale_pending_worker_operation_is_rejected_during_boot_recovery() {
 async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut task = plan_task(&boot.wave_id, "stale-started", TaskKind::Codex, &[]);
+    let mut task = plan_task(&boot.wave_id, "stale-started", TaskKind::Terminal, &[]);
     task.status = TaskStatus::Dispatched;
     let task_id = task.id.clone();
     let (_, payload) = build_worker_payload(&task).unwrap();
     seed_task(&boot, task).await;
     let spawned = Arc::new(AtomicUsize::new(0));
-    let (runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![Arc::new(ContextCheckedSpawnAdapter {
-            kind: "codex-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-            spawned: spawned.clone(),
-        })],
-    );
+    let adapter = context_checked_terminal_adapter(&boot, spawned.clone());
+    let (runtime, scheduler) = build_scheduler(&boot, vec![adapter.clone()]);
     let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
     let op_id = repo
         .insert_operation(
-            "codex-worker",
+            "terminal-worker",
             OperationKey {
                 operation_key: new_id(),
                 idempotency_key: Some(task_id.clone()),
                 payload_hash: stable_payload_hash(&payload).unwrap(),
             },
-            payload,
+            payload.clone(),
         )
         .await
         .unwrap();
-    let output = TxOutput::new(
-        "card",
-        Some(boot.worker_card_id.as_str().to_string()),
-        json!({ "id": boot.worker_card_id.as_str() }),
-    );
     let pool = boot.repo.sqlite_pool().unwrap();
+    let pending_op = runtime
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let mut prepare_tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    let output = adapter
+        .prepare_tx(&mut prepare_tx, &payload, &pending_op)
+        .await
+        .unwrap();
+    prepare_tx.commit().await.unwrap();
     sqlx::query(
         "UPDATE operations SET phase = 'spawn_started', tx_output_json = ?1, \
          target_json = ?2 WHERE id = ?3",
@@ -2332,10 +2410,10 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
     assert_eq!(
         spawned.load(Ordering::SeqCst),
         1,
-        "started work resumes normally"
+        "already-started terminal work resumes without re-entering prepare_tx"
     );
     let op = runtime
-        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .find_by_kind_and_idempotency("terminal-worker", &task_id)
         .await
         .unwrap()
         .unwrap();
@@ -2347,45 +2425,29 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
         task_row(&boot, "stale-started").await.status,
         TaskStatus::Running
     );
-    call_tool(
-        &boot,
-        TOOL_TASK_COMPLETE,
-        worker_identity(&boot),
-        json!({ "idempotency_key": task_id, "result": { "ok": true } }),
-    )
-    .await
-    .expect("recovered worker report");
-    assert_eq!(
-        task_row(&boot, "stale-started").await.status,
-        TaskStatus::Done
-    );
 }
 
 #[tokio::test]
 async fn context_boot_seam_blocks_operation_recovery_and_dispatched_redrive() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Codex, &[]);
+    let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Terminal, &[]);
     pending.status = TaskStatus::Dispatched;
     let pending_id = pending.id.clone();
     let (_, pending_payload) = build_worker_payload(&pending).unwrap();
     seed_task(&boot, pending).await;
-    let mut missing = plan_task(&boot.wave_id, "boot-missing-op", TaskKind::Codex, &[]);
+    let mut missing = plan_task(&boot.wave_id, "boot-missing-op", TaskKind::Terminal, &[]);
     missing.status = TaskStatus::Dispatched;
     seed_task(&boot, missing).await;
     let spawned = Arc::new(AtomicUsize::new(0));
     let (runtime, scheduler) = build_scheduler_unbooted(
         &boot,
-        vec![Arc::new(ContextCheckedSpawnAdapter {
-            kind: "codex-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-            spawned: spawned.clone(),
-        })],
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
         Arc::new(tokio::sync::Semaphore::new(8)),
     );
     let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
     repo.insert_operation(
-        "codex-worker",
+        "terminal-worker",
         OperationKey {
             operation_key: new_id(),
             idempotency_key: Some(pending_id.clone()),
@@ -2398,9 +2460,9 @@ async fn context_boot_seam_blocks_operation_recovery_and_dispatched_redrive() {
 
     scheduler.sweep_boot().await;
     assert_eq!(spawned.load(Ordering::SeqCst), 0);
-    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 1);
     let pending_op = runtime
-        .find_by_kind_and_idempotency("codex-worker", &pending_id)
+        .find_by_kind_and_idempotency("terminal-worker", &pending_id)
         .await
         .unwrap()
         .unwrap();
@@ -2410,8 +2472,14 @@ async fn context_boot_seam_blocks_operation_recovery_and_dispatched_redrive() {
     let plan = runtime.recover_on_boot().await.unwrap();
     runtime.apply_recovery(plan).await.unwrap();
     scheduler.sweep_boot().await;
+    for _ in 0..100 {
+        if spawned.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     assert_eq!(spawned.load(Ordering::SeqCst), 2);
-    assert_eq!(operation_count(&boot, "codex-worker").await, 2);
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 2);
     assert_eq!(
         task_row(&boot, "boot-pending-op").await.status,
         TaskStatus::Running

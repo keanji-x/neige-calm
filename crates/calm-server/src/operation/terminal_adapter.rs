@@ -220,9 +220,8 @@ impl ProviderAdapter for TerminalAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        op: &Operation,
+        _op: &Operation,
     ) -> Result<TxOutput> {
-        super::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
         let cwd = payload.request.cwd.clone();
@@ -581,6 +580,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());

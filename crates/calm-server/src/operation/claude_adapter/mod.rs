@@ -418,9 +418,8 @@ impl ProviderAdapter for ClaudeAdapter {
         &self,
         tx: &mut Tx<'tx>,
         input: &Value,
-        op: &Operation,
+        _op: &Operation,
     ) -> Result<TxOutput> {
-        super::refuse_if_context_stale(tx, op.idempotency_key.as_deref()).await?;
         let payload: ClaudeCreateOperationPayload = serde_json::from_value(input.clone())?;
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         let request = payload.request;
@@ -773,6 +772,7 @@ impl ProviderAdapter for ClaudeWorkerAdapter {
         op: &Operation,
     ) -> Result<TxOutput> {
         let payload: ClaudeWorkerOperationPayload = serde_json::from_value(input.clone())?;
+        super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
         let card_id = new_id();
         let runtime_id = new_id();
         let claude_session_id = uuid::Uuid::new_v4().to_string();

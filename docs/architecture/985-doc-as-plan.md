@@ -1979,8 +1979,10 @@ r6 两个通道各自证明 **`resume_dispatched` 根本不是唯一会起活的
 
 **为什么 `prepare_tx` 是那个漏斗（三条逐字事实）：**
 
-1. **没有 operation 就没有工作。** 会为一条 `tasks` 行起活的 op kind 是一个
-   **封闭集合**：`build_worker_payload`（`scheduler/mod.rs:197-253`）枚举的
+1. **没有 operation 就没有工作。** 准入判据是 **payload 里存在 task 绑定**，
+   **不是 op kind**：kind 并非封闭的任务集合，`codex-create` / `claude-create` /
+   `terminal-create` 等 kind 同时服务用户手动建卡，不能据此推断 task 身份。
+   当前任务派发由 `build_worker_payload`（`scheduler/mod.rs:197-253`）枚举的
    `codex-worker` / `claude-worker` / `terminal-worker`，加上 gate 的
    `TASK_VERIFY_KIND`。四者的 op 都携带 task 身份——三个 worker kind 的
    `idempotency_key` 就是 `task.id`（`drive_spawn` 逐字设置，`scheduler/mod.rs:772-780`），
@@ -2018,13 +2020,12 @@ r6 两个通道各自证明 **`resume_dispatched` 根本不是唯一会起活的
 - **四个调用点**（本设计"点名读者"的全部内容，每处一行，放在各自 `prepare_tx`
   的**最前面**）：`CodexWorkerAdapter` / `ClaudeWorkerAdapter` /
   `TerminalWorkerAdapter` / `TaskVerifyAdapter` 的 `prepare_tx`。
-  **task_id 从哪来（写死，免得实现时猜）**：三个 worker adapter 用
-  `op.idempotency_key`（`drive_spawn` 逐字把它设成 `task.id`，
-  `scheduler/mod.rs:772-780`；它们的 payload 里那个同名字段是同一个值）；
+  **task_id 从哪来（写死，免得实现时猜）**：三个 worker adapter 解码
+  **payload 的任务绑定** `payload.idempotency_key`（它与 `task.id` 同值）；
   `TaskVerifyAdapter` 用 `payload.task_id`（它已经在解析了，`:633`）。
-  **`op.idempotency_key` 为 `None` 时 fail closed**——一个 task 绑定的 worker op
-  按构造不可能没有它，缺失即是不该发生的形状，按 `Conflict` 拒。
-  非 task 绑定的适配器（会话卡、forge、harness 启停…）**一律不碰**。
+  task op 的绑定缺失、或绑定存在但查不到 task 行，均按 `Conflict` fail closed；
+  payload 根本没有 task 绑定的用户建卡 op 则直接放行。非 task 绑定的适配器
+  （会话卡、forge、harness 启停…）**一律不碰**。
 
 **下游收敛完全走既有路径，不新增任何分支**（这是选 `prepare_tx` 而不是选
 scheduler 的第二个理由）：
@@ -3131,7 +3132,8 @@ wire 连带面"对 r5 不成立**：切片 3a 从此带**两个** NEW 事件的�
 5. **（r6 重述，⑲）** 一条 `TaskContextAdvanced{verdict: material}` **提交之后**，
    该 task 上**任何进入 `prepare_tx` 的 operation 一律被拒**——
    `codex-worker` / `claude-worker` / `terminal-worker`（`build_worker_payload`
-   `scheduler/mod.rs:197-253` 的封闭集合）与 `task-verify` 四个 kind；
+   `scheduler/mod.rs:197-253` 的三个 worker）与 `task-verify`；判据是 payload
+   的 task 绑定，不是 op kind（kind 与用户手动建卡路径共用）；
    因而**不产生任何新的 worker、也不产生任何新的 gate 执行**。
    已越过 `prepare_tx` 的 operation 照常跑完（§6.5）。
    **三条可证伪构造（这条不变量唯一有意义的测法是崩溃重启）**：
@@ -3531,7 +3533,7 @@ r1 为"切片 3 先于切片 6"所作的辩护只覆盖了**递归**，没覆盖
     `tasks.context_stale_at_ms`，非空即 `CalmError::Conflict("context-stale: …")`；
   - **四个点名的调用点**，各一行，放在各自 `prepare_tx` 的最前面：
     `CodexWorkerAdapter` / `ClaudeWorkerAdapter` / `TerminalWorkerAdapter`
-    （`build_worker_payload` `scheduler/mod.rs:197-253` 的封闭集合）与
+    （task 绑定从各自 payload 读取；判据不是共享的 op kind）与
     `TaskVerifyAdapter`（`operation/task_verify_adapter.rs:627`，紧邻它既有的
     `task.status != Verifying` 检查 `:651-658`）。**非 task 绑定的适配器不碰。**
   - **下游零新分支**：`Conflict` 是 `client_failure_parts` 认的永久性客户端失败
@@ -4508,7 +4510,7 @@ rebuild 与增量在删除/取消路径上仍然分叉。
 | r6 | 自查 | **`prepare_tx` 是一个已经存在的、强制性的、事务内的准入点**：`drive_one` 的 `Phase::Pending` 分支（`operation/driver.rs:388-393`）唯一的动作就是 `prepare_tx_and_advance`，phase 只前进不后退 ⇒ 越过 `TxCommitted` 之后不再经过（**r7 更正：不是"恰好一次"而是"至少一次"**——`prepare_tx_and_advance` 的 phase UPDATE 守卫在 `lease_owner` 上，0 行时回滚并把 op 留在 `Pending`，`operation/repo_sqlite.rs:321-323`；承重方向不变，§5.3.3 事实 2）；签名带 `&mut Tx`（`operation/mod.rs:585-590`）；`task_verify_adapter::prepare_tx`（`:627`）**今天就在**同一处读 task 行并对不合适的状态返回 `Conflict`（`:651-658`）| 这是 ⑲ 能成为"一条规则"而不是"三个豁免口"的全部原因：不需要新机制、不需要新载体、不需要新状态，只需要在四个 `prepare_tx` 的最前面各加一行 | §5.3.3 |
 | r6 | 自查 | **拒绝之后的收敛路径也已经存在**：`CalmError::Conflict` 是 `client_failure_parts`（`operation/driver.rs:1180-1191`）认的永久性客户端失败 ⇒ op 在 `Pending` 处 `mark_failed`；worker 侧由 `reconcile_spawn_result`（`scheduler/mod.rs:812`）落到既有的 `fail_spawn`（`:891`）；gate 侧正好落进 #685 review F4 留下的 **pre-bump 失败臂**（`:1679-1699`，注释逐字描述的就是"`prepare_tx` 在 guarded bump 之前返回 Conflict"这一情形）| 于是 r5 的 b2 动作**原封不动地发生**，但 scheduler 里一个 `if` 都不用加；gate 侧的行终结同理。**这也是把强制点选在 `prepare_tx` 而不是选在 scheduler 的第二个理由** | §5.3.3、§12 切片 3a |
 | r6 | 自查 | **`DATA_KINDS` 在 `crates/calm-types/src/report_blocks/kinds.rs:45`，不是 `:44`**；`validate_payload` 是 `:55-91`，未知 kind 的报错臂在 `:67-70` | 更正 §3.1 与 §12 切片 1 的两处引用。（r4 声称已按 HEAD 重校全文 248 处 `file:line`，这一处是漏网的第 249 处；通道 A 本轮也沿用了错误值——**两边同错说明"引用已复核"本身也需要抽样复核**）| §3.1、§12 切片 1 |
-| r6 | 自查 | **旧的第五条起活入口 `calm.task.dispatch` 确已退役**：今天只剩一个直接报错的兼容 shim（`crates/calm-server/src/mcp_server/tools/emit.rs:88-118`，逐字 `"calm.task.dispatch was retired (#644); no task was dispatched"`）| 这条对 ⑲ 是必需的：只有它成立，"为 task 起活的 op kind 是一个封闭集合（三个 worker + `task-verify`）"才是真话，而整条规则压在那个封闭性上。**若将来新增第五个 task 绑定的 op kind 而忘了加那一行，保证会静默破掉**——已记进 §13.23 | §5.3.3、§13.23 |
+| r6 | 自查 | **旧的第五条起活入口 `calm.task.dispatch` 确已退役**：今天只剩一个直接报错的兼容 shim（`crates/calm-server/src/mcp_server/tools/emit.rs:88-118`，逐字 `"calm.task.dispatch was retired (#644); no task was dispatched"`）| 更正：保证不依赖 op kind 的封闭性；kind 与用户手动建卡共用。判据是 payload 的 task 绑定，任务绑定存在却缺行必须 fail closed，payload 无 task 绑定的用户建卡则放行。注册表元测试逐个驱动所有声明为 task 绑定的适配器，使新增适配器漏接准入检查时直接失败 | §5.3.3、§13.23 |
 | r1 | 自查 | **`calm.report.write_markdown` 完全不受 stomp guard 约束**（`wave_report.rs:167-184` 只对 `Replace` 调它）⇒ spec 今天就能任意改删任何非 prose 块 | 这是本轮最重要的自发现：它使"块级工具的入口校验"作为安全边界**整体失效**，逼出 §3.7 的收口设计 | §0.2(a′)、§3.7 |
 
 ---

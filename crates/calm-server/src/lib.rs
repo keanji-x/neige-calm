@@ -226,7 +226,11 @@ pub async fn scheduler_sweep_on_boot(state: &state::AppState) {
 /// so a context verdict caused by downtime edits is durable before any
 /// pending operation can cross its `prepare_tx` admission point.
 pub async fn task_context_sweep_on_boot(state: &state::AppState) -> crate::error::Result<()> {
-    state.dispatcher.context_monitor().sweep().await?;
+    task_context::sweep_with_timeout(
+        state.dispatcher.context_monitor().as_ref(),
+        std::time::Duration::from_secs(30),
+    )
+    .await?;
     state
         .dispatcher
         .scheduler()

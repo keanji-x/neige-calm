@@ -1034,9 +1034,12 @@ impl Inner {
             Event::WaveDeleted { .. } | Event::CoveDeleted { .. } => {
                 // Payloads intentionally stay unchanged. The tasks-based
                 // sweep discovers vanished waves/coves fail-closed.
-                if let Err(error) = self.context_monitor.sweep().await {
-                    tracing::warn!(%error, "task context deletion sweep failed");
-                }
+                let context_monitor = Arc::clone(&self.context_monitor);
+                tokio::spawn(async move {
+                    if let Err(error) = context_monitor.sweep().await {
+                        tracing::warn!(%error, "task context deletion sweep failed");
+                    }
+                });
             }
             Event::WorkspaceLeased { wave_id, .. } | Event::WorkspaceReleased { wave_id, .. } => {
                 if event_warrants_spec_push(&envelope.event, &envelope.actor, &self.write) {

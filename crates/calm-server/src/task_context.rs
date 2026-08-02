@@ -99,6 +99,20 @@ impl ContextMetrics {
             consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
         }
     }
+
+    fn export(&self) -> ContextMetricsSnapshot {
+        let health = self.snapshot();
+        tracing::info!(
+            context_sweep_last_success_age_seconds = health.last_success_age_seconds,
+            context_sweep_consecutive_failures = health.consecutive_failures,
+            context_sweep_duration_ms = health.sweep_duration_ms,
+            context_sweep_verified_tuples = health.sweep_verified_tuples,
+            context_sweep_hits = health.sweep_hits,
+            context_sweep_caps = health.sweep_caps,
+            "task context sweep metrics"
+        );
+        health
+    }
 }
 
 pub struct TaskContextMonitor {
@@ -205,13 +219,9 @@ impl TaskContextMonitor {
             .ok_or_else(|| ResolveError::Missing(format!("blocks:{wave_id}")))?;
         let block = blocks
             .iter()
-            .find_map(|value| serde_json::from_value::<ReportBlock>(value.clone()).ok())
-            .filter(|block| block.id == block_id)
-            .or_else(|| {
-                blocks.iter().find_map(|value| {
-                    let block = serde_json::from_value::<ReportBlock>(value.clone()).ok()?;
-                    (block.id == block_id).then_some(block)
-                })
+            .find_map(|value| {
+                let block = serde_json::from_value::<ReportBlock>(value.clone()).ok()?;
+                (block.id == block_id).then_some(block)
             })
             .ok_or_else(|| ResolveError::Missing(format!("{wave_id}#{block_id}")))?;
         Ok((wave.cove_id.to_string(), block))
@@ -312,6 +322,7 @@ impl TaskContextMonitor {
                     .fetch_add(1, Ordering::Relaxed);
             }
         }
+        self.metrics.export();
         result.map(|_| ())
     }
 
@@ -363,7 +374,25 @@ impl TaskContextMonitor {
 
     async fn mark_material(&self, task_id: String, wave_id: String) -> Result<()> {
         let wave = self.repo.wave_get(&wave_id).await?;
-        let Some(wave) = wave else { return Ok(()) };
+        let Some(wave) = wave else {
+            // Wave/cove deletion removes its tasks in the same transaction. A
+            // missing wave is therefore safe only because the task row is
+            // already gone; keep this coupling loud if either delete path changes.
+            let pool = self
+                .repo
+                .sqlite_pool()
+                .expect("task context monitor requires sqlite");
+            let task_exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)")
+                    .bind(&task_id)
+                    .fetch_one(&pool)
+                    .await?;
+            debug_assert!(!task_exists, "task survived deletion of its owning wave");
+            if task_exists {
+                tracing::warn!(%task_id, %wave_id, "task survived deletion of its owning wave");
+            }
+            return Ok(());
+        };
         let scope = EventScope::Wave {
             wave: WaveId::from(wave_id),
             cove: wave.cove_id,
@@ -456,4 +485,21 @@ pub async fn sweep_with_timeout(monitor: &TaskContextMonitor, timeout: Duration)
     tokio::time::timeout(timeout, monitor.sweep())
         .await
         .map_err(|_| CalmError::Internal("task context sweep timed out".into()))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_export_contains_positive_sweep_signals() {
+        let metrics = ContextMetrics::default();
+        metrics.last_success_ms.store(now_ms(), Ordering::Relaxed);
+        metrics.consecutive_failures.store(3, Ordering::Relaxed);
+
+        let exported = metrics.export();
+
+        assert_ne!(exported.last_success_age_seconds, u64::MAX);
+        assert_eq!(exported.consecutive_failures, 3);
+    }
 }

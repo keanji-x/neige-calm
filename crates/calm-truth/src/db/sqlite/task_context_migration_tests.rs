@@ -51,4 +51,17 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
             .await
             .expect("read upgraded legacy task");
     assert_eq!(claim_context.as_deref(), Some("[]"));
+
+    // The first correctness sweep treats a present empty closure as a
+    // verified legacy claim, not as the fail-closed "snapshot missing"
+    // case. Pin both halves of that distinction at the upgrade boundary.
+    let frozen = claim_context
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<calm_types::event::TaskContextRef>>(json).ok());
+    assert_eq!(frozen, Some(Vec::new()));
+    let first_sweep_material = frozen.is_none();
+    assert!(
+        !first_sweep_material,
+        "the first sweep after upgrade must not mark a backfilled legacy task material"
+    );
 }

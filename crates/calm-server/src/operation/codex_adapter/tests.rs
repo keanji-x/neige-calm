@@ -177,6 +177,18 @@ async fn prepare_worker(
     key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>) {
     let payload = worker_payload(&harness.wave_id, key);
+    let task_id = format!("{}:{key}", harness.wave_id);
+    sqlx::query(
+        "INSERT OR IGNORE INTO tasks \
+         (id, wave_id, key, kind, goal, context_json, depends_on_json, status, created_at_ms, updated_at_ms) \
+         VALUES (?1, ?2, ?3, 'codex', 'test', 'null', '[]', 'dispatched', 1, 1)",
+    )
+    .bind(&task_id)
+    .bind(&harness.wave_id)
+    .bind(key)
+    .execute(harness.repo.pool())
+    .await
+    .unwrap();
     let op_repo = SqlxOperationRepo::new(harness.repo.pool().clone());
     let op_id = op_repo
         .insert_operation(
