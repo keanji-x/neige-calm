@@ -68,12 +68,15 @@ pub async fn tasks_rebuild_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     wave_id: &str,
 ) -> crate::error::Result<TaskProjectionOutcome> {
-    let (payload, body_crdt): (String, Option<Vec<u8>>) = sqlx::query_as(
+    let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
     )
     .bind(wave_id)
-    .fetch_one(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await?;
+    let Some((payload, body_crdt)) = report else {
+        return Ok(TaskProjectionOutcome::default());
+    };
     let payload: WaveReportPayload = serde_json::from_str(&payload).map_err(|error| {
         CalmError::Internal(format!("decode report payload for task rebuild: {error}"))
     })?;
