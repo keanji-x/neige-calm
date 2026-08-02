@@ -220,6 +220,7 @@ describe('WaveReportPage', () => {
   beforeEach(() => {
     mockUseSpecChatHistory.mockReturnValue({
       entries: [],
+      initialLoading: false,
       hasEarlier: false,
       loadEarlierPending: false,
       loadEarlier: vi.fn(async () => {}),
@@ -344,6 +345,7 @@ describe('WaveReportPage', () => {
         { id: 3, atMs: 3, kind: 'system', text: 'System note' },
         { id: 4, atMs: 4, kind: 'user', text: 'New instruction' },
       ],
+      initialLoading: false,
       hasEarlier: false,
       loadEarlierPending: false,
       loadEarlier: vi.fn(async () => {}),
@@ -374,6 +376,64 @@ describe('WaveReportPage', () => {
     await waitFor(() => {
       expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation drawer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open conversation drawer' }));
+    await new Promise((resolve) => window.setTimeout(resolve, 60));
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not claim the conversation is empty before initial history loads', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: [],
+      initialLoading: true,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    expect(screen.getByText('Loading conversation activity…'))
+      .toBeInTheDocument();
+    expect(screen.queryByText('Open the conversation drawer to start a conversation.'))
+      .not.toBeInTheDocument();
+  });
+
+  it('caps activity focus stops and discloses omitted earlier turns', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: Array.from({ length: 15 }, (_, index) => ({
+        id: index + 1,
+        atMs: index + 1,
+        kind: 'user' as const,
+        text: `Instruction ${index + 1}`,
+      })),
+      initialLoading: false,
+      hasEarlier: false,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    expect(within(panel).getAllByRole('button')).toHaveLength(12);
+    expect(within(panel).getByText('3 earlier turns')).toBeInTheDocument();
+    expect(within(panel).queryByText('Instruction 3')).not.toBeInTheDocument();
   });
 
   it('distinguishes both activity empty states', () => {
@@ -401,6 +461,7 @@ describe('WaveReportPage', () => {
         { id: 1, atMs: 1, kind: 'user', text: 'Old instruction' },
         { id: 2, atMs: 2, kind: 'user', text: 'New instruction' },
       ],
+      initialLoading: false,
       hasEarlier: false,
       loadEarlierPending: false,
       loadEarlier: vi.fn(async () => {}),

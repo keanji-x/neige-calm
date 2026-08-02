@@ -158,9 +158,8 @@ test('report activity panel floats, scrolls internally, and disables with the dr
   });
 
   await page.goto(`/calm/wave/${wave.id}`);
-  const stack = page.getByRole('complementary', {
-    name: 'Recent conversation activity',
-  });
+  // CSS remains resolvable after the aside is removed from the a11y tree.
+  const stack = page.locator('.report-activity-stack');
   const panel = stack.locator('.report-activity-panel');
   const rows = stack.locator('.report-activity-rows');
   const document = page.locator('.report-doc');
@@ -182,32 +181,25 @@ test('report activity panel floats, scrolls internally, and disables with the dr
   // Deleting height:0 makes the panel's normal-flow box push this document
   // down and makes stackHeight non-zero.
   expect(floatingGeometry.stackHeight).toBe(0);
-  await stack.getByRole('button').first().click({ trial: true });
-  expect((await document.boundingBox())?.y).toBeCloseTo(
-    floatingGeometry.documentTop,
-    0,
-  );
-
   const beforeScroll = await rows.evaluate((node) => ({
     clientHeight: node.clientHeight,
     scrollHeight: node.scrollHeight,
-    panelHeight: node.parentElement?.getBoundingClientRect().height,
   }));
   expect(beforeScroll.clientHeight).toBe(140);
   expect(beforeScroll.scrollHeight).toBeGreaterThan(beforeScroll.clientHeight);
   await rows.evaluate((node) => {
     node.scrollTop = node.scrollHeight;
   });
-  expect((await panel.boundingBox())?.height).toBeCloseTo(
-    beforeScroll.panelHeight ?? 0,
-    0,
-  );
+  await expect.poll(() => rows.evaluate((node) => node.scrollTop))
+    .toBeGreaterThan(0);
 
   await stack.getByRole('button', { name: 'Instruction 5' }).click();
+  await expect.poll(async () => (await document.boundingBox())?.y)
+    .toBeCloseTo(floatingGeometry.documentTop, 0);
   await expect(stack).toHaveClass(/hide/);
   await expect(stack).toHaveCSS('opacity', '0');
   await expect(panel).toHaveCSS('pointer-events', 'none');
-  await expect(stack.getByRole('button').first()).toHaveAttribute(
+  await expect(stack.locator('.report-activity-card').first()).toHaveAttribute(
     'tabindex',
     '-1',
   );

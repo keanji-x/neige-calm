@@ -7,7 +7,7 @@
 // independently). Unknown kinds and malformed payloads degrade to a small
 // mono placeholder so one bad block never takes down the page.
 
-import { lazy, Suspense } from 'react';
+import { lazy, memo, Suspense } from 'react';
 import { Link } from '@tanstack/react-router';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
@@ -89,7 +89,11 @@ export function ReportLink({
   );
 }
 
-export function ReportBlockView({ block }: { block: ReportBlock }) {
+export const ReportBlockView = memo(function ReportBlockView({
+  block,
+}: {
+  block: ReportBlock;
+}) {
   switch (block.kind) {
     case 'prose': {
       const parsed = proseBlockPayloadSchema.safeParse(block.payload);
@@ -166,4 +170,4 @@ export function ReportBlockView({ block }: { block: ReportBlock }) {
     default:
       return <UnsupportedBlock block={block} />;
   }
-}
+});

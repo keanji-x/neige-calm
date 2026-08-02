@@ -1832,9 +1832,15 @@ select:-webkit-autofill {
 }
 .report-activity-empty {
   padding: var(--space-6) var(--space-8);
-  color: var(--text-4);
+  color: var(--text-3);
   font-size: 11.5px;
   line-height: var(--leading-loose);
+}
+.report-activity-earlier {
+  padding: var(--space-4);
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-align: center;
 }
 @container (min-width: 1140px) {
   .report-doc {
@@ -1846,8 +1852,8 @@ select:-webkit-autofill {
   .report-activity-stack {
     position: static;
     width: 258px;
-    height: auto;
-    margin: var(--space-8) calc(var(--space-12) + var(--space-6)) var(--space-0) auto;
+    height: 0;
+    margin: var(--space-8) calc(var(--space-12) + var(--space-6)) calc(-1 * var(--space-8)) auto;
   }
 }
 /* One left edge runs the whole page (#960 PR3): the document container is

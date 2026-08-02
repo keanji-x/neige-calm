@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   type ReactNode,
+  useCallback,
 } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
 import ReactMarkdown from 'react-markdown';
@@ -169,20 +170,24 @@ function ReportEmptyState() {
 function ReportActivityPanel({
   specCardId,
   entries,
+  initialLoading,
   working,
   hidden,
   onSelect,
 }: {
   specCardId: string | null;
   entries: ReturnType<typeof useSpecChatHistory>['entries'];
+  initialLoading: boolean;
   working: boolean;
   hidden: boolean;
   onSelect(entryId: number): void;
 }) {
-  const userEntries = useMemo(
+  const allUserEntries = useMemo(
     () => entries.filter((entry) => entry.kind === 'user').reverse(),
     [entries],
   );
+  const userEntries = allUserEntries.slice(0, 12);
+  const omittedCount = allUserEntries.length - userEntries.length;
 
   return (
     <aside
@@ -191,7 +196,11 @@ function ReportActivityPanel({
       aria-hidden={hidden}
     >
       <div className="report-activity-panel">
-        {userEntries.length > 0 ? (
+        {initialLoading ? (
+          <div className="report-activity-empty" role="status">
+            Loading conversation activity…
+          </div>
+        ) : userEntries.length > 0 ? (
           <div className="report-activity-rows">
             {userEntries.map((entry, index) => (
               <button
@@ -210,6 +219,11 @@ function ReportActivityPanel({
                 )}
               </button>
             ))}
+            {omittedCount > 0 && (
+              <div className="report-activity-earlier">
+                {omittedCount} earlier {omittedCount === 1 ? 'turn' : 'turns'}
+              </div>
+            )}
           </div>
         ) : (
           <div className="report-activity-empty">
@@ -711,6 +725,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     setShowHiddenFiles((current) => !current);
   };
   const toggleConversationCollapsed = () => {
+    setConversationTargetEntryId(null);
     setConversationCollapsed((current) => {
       const next = !current;
       writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, next);
@@ -723,6 +738,13 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     setConversationCollapsed(false);
     writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, false);
   };
+  const consumeConversationTarget = useCallback(() => {
+    setConversationTargetEntryId(null);
+  }, []);
+
+  useEffect(() => {
+    setConversationTargetEntryId(null);
+  }, [specCardId]);
 
   const railCollapseButton = (
     <button
@@ -854,6 +876,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           <ReportActivityPanel
             specCardId={specCardId}
             entries={chatHistory.entries}
+            initialLoading={chatHistory.initialLoading}
             working={run.working}
             hidden={conversationOpen}
             onSelect={openConversationAt}
@@ -915,6 +938,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             run={run}
             chatHistory={chatHistory}
             targetEntryId={conversationTargetEntryId}
+            onTargetConsumed={consumeConversationTarget}
             onClose={toggleConversationCollapsed}
           />
         </div>

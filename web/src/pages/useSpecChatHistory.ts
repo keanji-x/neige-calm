@@ -18,6 +18,7 @@ type QueuedUserEntry = Extract<ChatEntry, { kind: 'user' }> & {
 
 export interface SpecChatHistorySnapshot {
   entries: VisibleChatEntry[];
+  initialLoading: boolean;
   hasEarlier: boolean;
   loadEarlierPending: boolean;
   loadEarlier(): Promise<void>;
@@ -122,6 +123,9 @@ export function useSpecChatHistory(
   const [systemNotes, setSystemNotes] = useState<SystemNote[]>([]);
   const [hasEarlier, setHasEarlier] = useState(false);
   const [loadEarlierPending, setLoadEarlierPending] = useState(false);
+  const [initialLoadedCardId, setInitialLoadedCardId] = useState<string | null>(
+    null,
+  );
   const entriesRef = useRef<ChatEntry[]>([]);
 
   const dropEchoesFor = useCallback((parsedEntries: ChatEntry[]) => {
@@ -207,12 +211,14 @@ export function useSpecChatHistory(
         return;
       }
       replaceWithRows(rows);
+      setInitialLoadedCardId(expectedCardId);
     } catch {
       if (
         cardIdRef.current === expectedCardId &&
         requestSeqRef.current === seq
       ) {
         clearHistory();
+        setInitialLoadedCardId(expectedCardId);
       }
     }
   }, [clearHistory, replaceWithRows]);
@@ -351,6 +357,7 @@ export function useSpecChatHistory(
       ) {
         requestSeqRef.current += 1;
         clearHistory();
+        setInitialLoadedCardId(null);
         void refetchLatest(cardId);
         return;
       }
@@ -468,6 +475,7 @@ export function useSpecChatHistory(
 
   return {
     entries: visibleEntries,
+    initialLoading: cardId != null && initialLoadedCardId !== cardId,
     hasEarlier,
     loadEarlierPending,
     loadEarlier,

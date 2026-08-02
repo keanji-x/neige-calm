@@ -22,6 +22,7 @@ export interface SpecConversationProps {
   chatHistory: SpecChatHistorySnapshot;
   /** Entry selected from the report activity panel. */
   targetEntryId?: number | null;
+  onTargetConsumed?(): void;
   /** Close control supplied by the report shell. */
   onClose?: () => void;
 }
@@ -329,6 +330,7 @@ export function SpecConversation({
   run,
   chatHistory,
   targetEntryId,
+  onTargetConsumed,
   onClose,
 }: SpecConversationProps) {
   const [draft, setDraft] = useState('');
@@ -358,6 +360,8 @@ export function SpecConversation({
     stickToBottomRef.current = true;
     const id = window.setTimeout(() => {
       scrollToBottom(scrollRef.current);
+      // Also moves focus off an activity-row button once its panel becomes
+      // aria-hidden; activity-panel selection relies on this handoff.
       textareaRef.current?.focus();
     }, 30);
     return () => window.clearTimeout(id);
@@ -367,12 +371,19 @@ export function SpecConversation({
     if (!drawerOpen || targetEntryId == null) return;
     stickToBottomRef.current = false;
     const id = window.setTimeout(() => {
-      scrollRef.current
-        ?.querySelector<HTMLElement>(`[data-chat-entry-id="${targetEntryId}"]`)
-        ?.scrollIntoView({ block: 'center' });
+      const target = scrollRef.current?.querySelector<HTMLElement>(
+        `[data-chat-entry-id="${targetEntryId}"]`,
+      );
+      if (target) {
+        target.scrollIntoView({ block: 'center' });
+      } else {
+        stickToBottomRef.current = true;
+        scrollToBottom(scrollRef.current);
+      }
+      onTargetConsumed?.();
     }, 40);
     return () => window.clearTimeout(id);
-  }, [drawerOpen, targetEntryId]);
+  }, [drawerOpen, onTargetConsumed, targetEntryId]);
 
   useEffect(() => {
     setExpandedEntries(new Set());
