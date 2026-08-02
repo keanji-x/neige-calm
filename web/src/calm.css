@@ -1852,8 +1852,12 @@ select:-webkit-autofill {
   .report-activity-stack {
     position: static;
     width: 258px;
+    height: auto;
+    margin: calc(var(--space-5) + var(--space-6)) calc(var(--space-5) + var(--space-6)) var(--space-0) auto;
+  }
+  .report-activity-stack.hide {
     height: 0;
-    margin: var(--space-8) calc(var(--space-12) + var(--space-6)) calc(-1 * var(--space-8)) auto;
+    margin-bottom: calc(-1 * (var(--space-5) + var(--space-6)));
   }
 }
 /* One left edge runs the whole page (#960 PR3): the document container is

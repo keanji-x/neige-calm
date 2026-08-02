@@ -1381,6 +1381,16 @@ describe('SpecConversation', () => {
     ).toBeInTheDocument();
   });
 
+  it('leaves initial loading when the first history request fails', async () => {
+    mocks.listHarnessItems.mockRejectedValueOnce(new Error('network down'));
+
+    await renderHarness();
+
+    expect(
+      await screen.findByText('No messages yet — ask the Spec Agent below.'),
+    ).toBeInTheDocument();
+  });
+
   it('does not show the empty state while earlier history is available', async () => {
     mocks.listHarnessItems.mockResolvedValue(fullStartedCommandPage(1));
 

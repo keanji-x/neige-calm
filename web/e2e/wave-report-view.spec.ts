@@ -165,22 +165,62 @@ test('report activity panel floats, scrolls internally, and disables with the dr
   const document = page.locator('.report-doc');
   await expect(stack.getByRole('button')).toHaveCount(5);
 
-  const floatingGeometry = await page
-    .locator('.report-document-scroll')
+  const scrollRoot = page.locator('.report-document-scroll');
+  await scrollRoot.evaluate((node) => {
+    node.style.width = '1200px';
+  });
+  const stickyGeometry = await scrollRoot
     .evaluate((scrollRoot) => {
       const stackNode = scrollRoot.querySelector('.report-activity-stack');
-      const documentNode = scrollRoot.querySelector('.report-doc');
-      if (!(stackNode instanceof HTMLElement) || !(documentNode instanceof HTMLElement)) {
-        throw new Error('Activity stack or report document not found');
+      if (!(stackNode instanceof HTMLElement)) {
+        throw new Error('Activity stack not found');
       }
       return {
         stackHeight: stackNode.getBoundingClientRect().height,
-        documentTop: documentNode.getBoundingClientRect().top,
+        position: getComputedStyle(stackNode).position,
       };
     });
-  // Deleting height:0 makes the panel's normal-flow box push this document
-  // down and makes stackHeight non-zero.
-  expect(floatingGeometry.stackHeight).toBe(0);
+  // At a fixed 1200px container width the sticky overlay never occupies flow.
+  expect(stickyGeometry.position).toBe('sticky');
+  expect(stickyGeometry.stackHeight).toBe(0);
+
+  await scrollRoot.evaluate((node) => {
+    node.style.width = '900px';
+  });
+  const staticGeometry = await scrollRoot.evaluate((scrollRoot) => {
+    const stackNode = scrollRoot.querySelector('.report-activity-stack');
+    const panelNode = scrollRoot.querySelector('.report-activity-panel');
+    const documentNode = scrollRoot.querySelector('.report-doc');
+    if (
+      !(stackNode instanceof HTMLElement) ||
+      !(panelNode instanceof HTMLElement) ||
+      !(documentNode instanceof HTMLElement)
+    ) {
+      throw new Error('Activity stack, panel, or report document not found');
+    }
+    const panelBottom = panelNode.getBoundingClientRect().bottom;
+    const documentTop = documentNode.getBoundingClientRect().top;
+    stackNode.style.display = 'none';
+    const documentTopWithoutPanel = documentNode.getBoundingClientRect().top;
+    stackNode.style.removeProperty('display');
+    return {
+      position: getComputedStyle(stackNode).position,
+      stackHeight: stackNode.getBoundingClientRect().height,
+      panelBottom,
+      documentTop,
+      documentTopWithoutPanel,
+    };
+  });
+  // At a fixed 900px container width the visible static panel occupies its
+  // real height and finishes before the document begins.
+  expect(staticGeometry.position).toBe('static');
+  expect(staticGeometry.stackHeight).toBeGreaterThan(0);
+  expect(staticGeometry.documentTop).toBeGreaterThan(
+    staticGeometry.documentTopWithoutPanel,
+  );
+  expect(staticGeometry.panelBottom).toBeLessThanOrEqual(
+    staticGeometry.documentTop,
+  );
   const beforeScroll = await rows.evaluate((node) => ({
     clientHeight: node.clientHeight,
     scrollHeight: node.scrollHeight,
@@ -194,9 +234,11 @@ test('report activity panel floats, scrolls internally, and disables with the dr
     .toBeGreaterThan(0);
 
   await stack.getByRole('button', { name: 'Instruction 5' }).click();
-  await expect.poll(async () => (await document.boundingBox())?.y)
-    .toBeCloseTo(floatingGeometry.documentTop, 0);
   await expect(stack).toHaveClass(/hide/);
+  // The same fixed 900px container now exercises the hidden static branch:
+  // it must collapse to the exact document position measured with no stack.
+  await expect.poll(async () => (await document.boundingBox())?.y)
+    .toBeCloseTo(staticGeometry.documentTopWithoutPanel, 0);
   await expect(stack).toHaveCSS('opacity', '0');
   await expect(panel).toHaveCSS('pointer-events', 'none');
   await expect(stack.locator('.report-activity-card').first()).toHaveAttribute(

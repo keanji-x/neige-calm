@@ -3,6 +3,7 @@ import {
   Suspense,
   useEffect,
   useLayoutEffect,
+  memo,
   useMemo,
   useRef,
   type ReactNode,
@@ -171,6 +172,7 @@ function ReportActivityPanel({
   specCardId,
   entries,
   initialLoading,
+  hasEarlier,
   working,
   hidden,
   onSelect,
@@ -178,6 +180,7 @@ function ReportActivityPanel({
   specCardId: string | null;
   entries: ReturnType<typeof useSpecChatHistory>['entries'];
   initialLoading: boolean;
+  hasEarlier: boolean;
   working: boolean;
   hidden: boolean;
   onSelect(entryId: number): void;
@@ -221,7 +224,9 @@ function ReportActivityPanel({
             ))}
             {omittedCount > 0 && (
               <div className="report-activity-earlier">
-                {omittedCount} earlier {omittedCount === 1 ? 'turn' : 'turns'}
+                {hasEarlier
+                  ? `At least ${omittedCount} earlier ${omittedCount === 1 ? 'turn' : 'turns'}`
+                  : `${omittedCount} earlier ${omittedCount === 1 ? 'turn' : 'turns'}`}
               </div>
             )}
           </div>
@@ -342,6 +347,24 @@ function ReportContent({
   );
 }
 
+const MemoizedMarkdownBody = memo(function MemoizedMarkdownBody({
+  body,
+}: {
+  body: string;
+}) {
+  return (
+    <div className="report-block report-prose calm-prose">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        urlTransform={reportUrlTransform}
+        components={{ a: ReportLink }}
+      >
+        {body}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
 export function ReportMarkdown({
   body,
   blocks,
@@ -369,17 +392,7 @@ export function ReportMarkdown({
       </>
     );
   }
-  return (
-    <div className="report-block report-prose calm-prose">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={reportUrlTransform}
-        components={{ a: ReportLink }}
-      >
-        {body}
-      </ReactMarkdown>
-    </div>
-  );
+  return <MemoizedMarkdownBody body={body} />;
 }
 
 function RailSection({
@@ -877,6 +890,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             specCardId={specCardId}
             entries={chatHistory.entries}
             initialLoading={chatHistory.initialLoading}
+            hasEarlier={chatHistory.hasEarlier}
             working={run.working}
             hidden={conversationOpen}
             onSelect={openConversationAt}

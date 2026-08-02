@@ -436,6 +436,36 @@ describe('WaveReportPage', () => {
     expect(within(panel).queryByText('Instruction 3')).not.toBeInTheDocument();
   });
 
+  it('does not claim an exact omitted count while earlier pages remain', () => {
+    mockUseSpecChatHistory.mockReturnValue({
+      entries: Array.from({ length: 15 }, (_, index) => ({
+        id: index + 1,
+        atMs: index + 1,
+        kind: 'user' as const,
+        text: `Instruction ${index + 1}`,
+      })),
+      initialLoading: false,
+      hasEarlier: true,
+      loadEarlierPending: false,
+      loadEarlier: vi.fn(async () => {}),
+      addEcho: vi.fn(),
+      addSystemNote: vi.fn(),
+    });
+
+    render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot('Report'), specSlot()]}
+      />,
+    );
+
+    const panel = screen.getByLabelText('Recent conversation activity');
+    expect(within(panel).getAllByRole('button')).toHaveLength(12);
+    expect(within(panel).getByText('At least 3 earlier turns'))
+      .toBeInTheDocument();
+    expect(within(panel).queryByText('3 earlier turns')).not.toBeInTheDocument();
+  });
+
   it('distinguishes both activity empty states', () => {
     const { rerender } = render(
       <WaveReportPage wave={makeWave()} cards={[reportSlot('Report')]} />,
