@@ -11,6 +11,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -923,8 +924,14 @@ async fn try_spawn_pty(
             child_already_reaped: false,
         })?
         .insert(request.proc_id.clone(), entry.clone());
-    spawn_pty_reader_task(request.proc_id.clone(), entry.clone(), reader);
-    spawn_pty_waiter(request.proc_id.clone(), entry, child);
+    let drain_gate = Arc::new(PtyDrainGate::new());
+    spawn_pty_reader_task(
+        request.proc_id.clone(),
+        entry.clone(),
+        reader,
+        drain_gate.clone(),
+    );
+    spawn_pty_waiter(request.proc_id.clone(), entry, child, drain_gate);
 
     Ok(Spawned {
         proc_id: request.proc_id,
@@ -936,12 +943,89 @@ async fn try_spawn_pty(
     })
 }
 
+/// How long the waiter thread waits for the pty reader to reach EOF after the
+/// child has been reaped, before publishing `Exited` anyway.
+///
+/// The happy path never spends this window: once the child (and every process
+/// holding the pty slave) is gone the master goes EOF, the reader signals the
+/// gate and the waiter publishes immediately. The window only bites when a
+/// grandchild inherited the slave fd and outlives its parent — then the master
+/// never EOFs and an unbounded wait would leave the terminal stuck on
+/// "running" forever.
+///
+/// 500ms is chosen as "orders of magnitude above the real drain cost, far
+/// below human patience": the bytes still unread at reap time are bounded by
+/// the kernel pty buffer (~64 KiB), which the 8 KiB read loop drains in
+/// microseconds, so any wait past a few milliseconds means the master is being
+/// held open, not that data is still in flight.
+const PTY_DRAIN_GRACE: Duration = Duration::from_millis(500);
+
+/// Handshake between the pty reader thread and the pty waiter thread.
+///
+/// The waiter is the *single* publisher of `DataFrame::Exited` (see
+/// `spawn_pty_waiter`); this gate is how it learns that the reader has stopped
+/// producing `Output` frames, so `Exited` can be published strictly after the
+/// process' trailing bytes (issue #993).
+struct PtyDrainGate {
+    drained: StdMutex<bool>,
+    signal: Condvar,
+}
+
+impl PtyDrainGate {
+    fn new() -> Self {
+        Self {
+            drained: StdMutex::new(false),
+            signal: Condvar::new(),
+        }
+    }
+
+    /// Marks the reader as finished (EOF, read error, or panic) and wakes the
+    /// waiter.
+    fn mark_drained(&self) {
+        let mut guard = self
+            .drained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = true;
+        drop(guard);
+        self.signal.notify_all();
+    }
+
+    /// Waits for the reader to finish, at most `PTY_DRAIN_GRACE`. Returns
+    /// `true` when the reader really finished (so no further `Output` frame
+    /// can be broadcast), `false` when the grace window expired.
+    fn wait_for_drain(&self) -> bool {
+        let guard = self
+            .drained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = self
+            .signal
+            .wait_timeout_while(guard, PTY_DRAIN_GRACE, |drained| !*drained)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard
+    }
+}
+
+/// Signals the drain gate from `Drop`, so the reader thread cannot leave the
+/// waiter hanging on any exit path — including an early `return`/`break` or a
+/// panic.
+struct DrainGuard(Arc<PtyDrainGate>);
+
+impl Drop for DrainGuard {
+    fn drop(&mut self) {
+        self.0.mark_drained();
+    }
+}
+
 fn spawn_pty_reader_task(
     proc_id: String,
     entry: Arc<ProcEntry>,
     mut reader: Box<dyn io::Read + Send>,
+    gate: Arc<PtyDrainGate>,
 ) {
     std::thread::spawn(move || {
+        let _drain_guard = DrainGuard(gate);
         let mut buf = [0_u8; 8192];
         loop {
             match reader.read(&mut buf) {
@@ -974,10 +1058,22 @@ fn spawn_pty_reader_task(
     });
 }
 
+/// Publishes `DataFrame::Exited` for a pty process — the **only** place that
+/// does so for a pty (issue #993).
+///
+/// `child.wait()` returning does not mean the pty master is drained: the
+/// reader thread may still be appending the process' trailing output to the
+/// ring. Publishing `Exited` at that moment races the last `Output` frames,
+/// and since every consumer treats `Exited` as terminal, those bytes are lost
+/// and `exit.cursor` under-reports. So we wait for the reader to finish (EOF
+/// or read error) before stamping the cursor and broadcasting — bounded by
+/// `PTY_DRAIN_GRACE` so a grandchild holding the slave fd cannot wedge the
+/// exit event forever.
 fn spawn_pty_waiter(
     proc_id: String,
     entry: Arc<ProcEntry>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    gate: Arc<PtyDrainGate>,
 ) {
     // OS thread, NOT `tokio::task::spawn_blocking`: a long-lived PTY child
     // (shell / codex / claude) keeps `child.wait()` blocked for the
@@ -991,23 +1087,37 @@ fn spawn_pty_waiter(
     // tracing) — no `.await`, no tokio context required.
     std::thread::spawn(move || {
         let status = child.wait().ok();
+        if !gate.wait_for_drain() {
+            tracing::warn!(
+                proc_id = %proc_id,
+                grace_ms = PTY_DRAIN_GRACE.as_millis() as u64,
+                "pty master still open after child exit (slave fd likely held by a \
+                 surviving grandchild); publishing Exited without full drain"
+            );
+        }
+        // Sampled after the drain gate: this is the process' real final byte
+        // position, and no `Output` frame can follow it on the happy path.
+        let cursor = entry.cursor_tail.load(Ordering::SeqCst);
         let exit = match status.as_ref() {
             Some(status) if status.signal().is_some() => ProcExit {
                 status: None,
                 signalled: true,
-                cursor: entry.cursor_tail.load(Ordering::SeqCst),
+                cursor,
             },
             Some(status) => ProcExit {
                 status: Some(status.exit_code() as i32),
                 signalled: false,
-                cursor: entry.cursor_tail.load(Ordering::SeqCst),
+                cursor,
             },
             None => ProcExit {
                 status: None,
                 signalled: false,
-                cursor: entry.cursor_tail.load(Ordering::SeqCst),
+                cursor,
             },
         };
+        // The sticky slot must hold exactly the broadcast value and must be
+        // visible no later than the frame: `handle_attach`'s fast path decides
+        // correctness with `exit.cursor <= snapshot_tail`.
         if let Ok(mut slot) = entry.exit.lock() {
             *slot = Some(exit.clone());
         }
