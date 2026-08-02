@@ -1,2 +1,2 @@
-import { value } from '../../systems/value.ts';
-export const good = value;
+import { sibling } from './sibling.ts';
+export const good = sibling;

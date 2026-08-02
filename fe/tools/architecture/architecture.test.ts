@@ -2,6 +2,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { cruise as dependencyCruise, type IConfiguration } from 'dependency-cruiser';
+import { ESLint } from 'eslint';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { checkCoreNoJsx } from './check-core-no-jsx.mjs';
@@ -13,9 +14,9 @@ const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfig
 const cruiseOptions = config.options ?? {};
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
-  if (caseName === 'top-level-only-main') {
+  if (caseName === 'source-layout' || caseName === 'top-level-only-main') {
     const cwd = resolve(fixtures, caseName, kind);
-    const error = checkTopLevel(resolve(cwd, 'web/src'));
+    const error = checkTopLevel(cwd);
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
   if (caseName === 'core-no-jsx') {
@@ -29,8 +30,17 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram(parsed.fileNames, parsed.options));
     return { status: diagnostics.length ? 1 : 0, stdout: diagnostics.length ? `${caseName}: ${diagnostics.map((item) => item.code).join(',')}` : '', stderr: '' };
   }
+  if (caseName === 'core-no-platform-globals' || caseName === 'core-no-node-access') {
+    const filePath = resolve(fixtures, caseName, kind, 'core/case.ts');
+    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
+      filePath: resolve(import.meta.dirname, '../../core/platform-independent.ts'),
+    });
+    const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
+    return { status: result.errorCount ? 1 : 0, stdout: output ? `${caseName}: ${output}` : '', stderr: '' };
+  }
   if (caseName.startsWith('eslint-')) {
-    const errors = checkEslintHygiene(resolve(fixtures, caseName, kind));
+    const errors = await checkEslintHygiene(resolve(fixtures, caseName, kind));
     return { status: errors.length ? 1 : 0, stdout: errors.join('\n'), stderr: '' };
   }
   const cwd = resolve(fixtures, caseName, kind);
@@ -65,4 +75,15 @@ describe('architecture fixtures', () => {
       expect(negative.stdout + negative.stderr).toContain(expectedRule);
     });
   }
+
+  it('pins the Node engine floor required by Vite', () => {
+    const packageJson = JSON.parse(ts.sys.readFile(resolve(import.meta.dirname, '../../package.json')) ?? '{}') as { engines?: { node?: string } };
+    expect(packageJson.engines?.node).toBe('^20.19.0 || >=22.12.0');
+  });
+
+  it('keeps the jsx-a11y preset free of redundant restatements', () => {
+    const source = ts.sys.readFile(resolve(import.meta.dirname, '../../eslint.config.js')) ?? '';
+    expect(source).not.toContain('plugins: jsxA11y.flatConfigs.recommended.plugins');
+    expect(source).not.toContain('rules: jsxA11y.flatConfigs.recommended.rules');
+  });
 });

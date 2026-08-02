@@ -11,7 +11,7 @@ export default tseslint.config(
   { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', '**/fixtures/**'] },
   { linterOptions: { reportUnusedDisableDirectives: 'error' } },
   { files: ['**/*.{js,mjs,cjs,jsx,ts,tsx}'], ...js.configs.recommended },
-  { files: ['**/*.{js,mjs,cjs,ts}'], languageOptions: { globals: globals.node } },
+  { files: ['tools/**/*.{js,mjs,cjs,ts}', '*.{js,mjs,cjs,ts}'], languageOptions: { globals: globals.node } },
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,
     files: typedFiles,
@@ -37,13 +37,17 @@ export default tseslint.config(
   {
     files: ['**/*.{jsx,tsx}'],
     ...jsxA11y.flatConfigs.recommended,
-    plugins: jsxA11y.flatConfigs.recommended.plugins,
-    rules: jsxA11y.flatConfigs.recommended.rules,
   },
   {
     files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     rules: {
-      'no-restricted-globals': ['error', 'WebSocket', 'fetch', 'location'],
+      'no-restricted-globals': ['error', 'WebSocket', 'fetch', 'location', 'process', 'require', 'Buffer'],
+      'no-restricted-imports': ['error', {
+        patterns: [
+          { group: ['node:*'], message: 'Core must remain platform-independent.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+        ],
+      }],
     },
   },
   {
