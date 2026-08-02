@@ -6,7 +6,7 @@
 
 ## 不放什么
 
-不得放 React、JSX、DOM/browser API、fetch/WebSocket/localStorage 的直接调用、组件或端侧 renderer。
+不得放 React、JSX、组件或端侧 renderer；不得直接触碰 WebSocket、fetch、localStorage、location、定时器等平台能力，一律经注入 port 使用。
 
 ## 依赖方向
 

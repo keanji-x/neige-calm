@@ -1,1 +1,2 @@
-export const value = 1;
+import { internal } from './internal.ts';
+export const value = internal;

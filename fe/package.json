@@ -12,7 +12,7 @@
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
     "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs",
     "lint:css": "stylelint 'web/src/**/*.css' --allow-empty-input",
-    "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs web/src && node tools/architecture/check-core-platform.mjs core",
+    "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs web/src && node tools/architecture/check-core-no-jsx.mjs core",
     "e2e": "playwright test"
   },
   "dependencies": {
@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@eslint-community/eslint-plugin-eslint-comments": "^4.5.0",
+    "@eslint/js": "^9.39.5",
     "@playwright/test": "^1.60.0",
     "@types/node": "^25.9.0",
     "@types/react": "^19.2.14",
@@ -32,6 +33,9 @@
     "@vitejs/plugin-react": "^6.0.1",
     "dependency-cruiser": "^17.4.3",
     "eslint": "^9.39.4",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^16.5.0",
     "stylelint": "^17.12.0",
     "stylelint-config-recommended": "^18.0.0",
     "typescript": "~5.9.0",
