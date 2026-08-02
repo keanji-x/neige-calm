@@ -60,8 +60,8 @@ use crate::mcp_server::tools::lifecycle_args::{
 use crate::model::{CardRole, Task, TaskKind, TaskStatus, Wave, now_ms};
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use calm_types::report_blocks::tasks::{
-    GATE_TIMEOUT_MAX_SECS, TaskDeclaration, dup_keys, find_cycle, gate_rule_violations,
-    unknown_deps,
+    GATE_TIMEOUT_MAX_SECS, TaskDeclaration, dup_keys, find_cycle, gate_rule_violations, json_eq,
+    opt_json_eq, unknown_deps,
 };
 pub use calm_types::report_blocks::tasks::{
     GateInput, GateStepInput, key_is_valid, validate_gate_shape,
@@ -418,6 +418,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         .transpose()
         .map_err(|error| format!("task {}: invalid normalized gate_json: {error}", task.key))?;
     Ok(TaskDeclaration {
+        block_index: None,
         block_id: String::new(),
         key: task.key.clone(),
         kind: match task.kind {
@@ -431,6 +432,13 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         gate,
         no_gate_reason: task.has_no_gate_reason.then(String::new),
         depends_on: task.depends_on.clone(),
+        context: serde_json::json!({}),
+        cwd: task.cwd.clone(),
+        priority: task.priority,
+        refs: Vec::new(),
+        declared_by: "spec".into(),
+        released_by_user: false,
+        tombstoned_by_user: false,
         ready: true,
         tombstone: false,
     })
@@ -440,22 +448,6 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
 /// payload. JSON columns compare as parsed `Value`s so formatting can
 /// never produce a spurious `updated`.
 fn task_payload_equal(row: &Task, cand: &NormalizedTask) -> bool {
-    let json_eq = |a: &str, b: &str| -> bool {
-        match (
-            serde_json::from_str::<Value>(a),
-            serde_json::from_str::<Value>(b),
-        ) {
-            (Ok(av), Ok(bv)) => av == bv,
-            _ => a == b,
-        }
-    };
-    let opt_json_eq = |a: &Option<String>, b: &Option<String>| -> bool {
-        match (a, b) {
-            (None, None) => true,
-            (Some(a), Some(b)) => json_eq(a, b),
-            _ => false,
-        }
-    };
     let mut row_deps = row.depends_on();
     row_deps.sort();
     row_deps.dedup();
@@ -496,6 +488,8 @@ fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task
         gate_pid_boot_id: None,
         running_deadline_ms: None,
         context_stale_at_ms: None,
+        declared_by: "spec".into(),
+        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

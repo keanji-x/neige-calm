@@ -29,6 +29,8 @@ mod frozen_gate_vectors;
 mod frozen_gate_vectors_transport;
 #[path = "cases/in_process_renderer_e2e.rs"]
 mod in_process_renderer_e2e;
+#[path = "cases/migration_0068_projection_policy.rs"]
+mod migration_0068_projection_policy;
 #[path = "cases/neige_cli_task_report.rs"]
 mod neige_cli_task_report;
 #[path = "cases/openapi.rs"]
@@ -51,3 +53,5 @@ mod threads_resolve_claude;
 mod today_launchpad;
 #[path = "cases/version.rs"]
 mod version;
+#[path = "cases/wave_projection_policy_patch.rs"]
+mod wave_projection_policy_patch;

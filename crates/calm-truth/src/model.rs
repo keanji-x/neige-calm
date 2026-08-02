@@ -167,6 +167,14 @@ pub struct WavePatch {
     /// alone. Inert until the PR-B scheduler reads it.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub task_budget: Option<Option<i64>>,
+    /// Issue #985 — maximum admitted spec-declared task inventory. A
+    /// present null resets to the kernel default.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub spec_task_ceiling: Option<Option<i64>>,
+    /// Issue #985 — per-wave declaration policy. A present null resets to
+    /// the kernel default.
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub automation_policy: Option<Option<String>>,
     /// Issue #644 — wave-level gate policy (`waves.require_task_gates`,
     /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
     /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
@@ -395,6 +403,8 @@ pub struct Task {
     pub gate_pid_boot_id: Option<String>,
     pub running_deadline_ms: Option<i64>,
     pub context_stale_at_ms: Option<i64>,
+    pub declared_by: String,
+    pub origin: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub finished_at_ms: Option<i64>,

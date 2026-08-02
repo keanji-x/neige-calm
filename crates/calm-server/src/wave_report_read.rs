@@ -15,6 +15,7 @@ pub struct ReportReadSnapshot {
     pub summary: String,
     pub body: String,
     pub blocks: Vec<ReportBlock>,
+    pub task_diagnostics: Vec<crate::db::sqlite::BlockVerdict>,
 }
 
 /// Load the read snapshot for the report card.
@@ -62,6 +63,9 @@ pub async fn load_report_read_snapshot(
     //     over the same body with the same (absent) hints.
     let Some(bytes) = bytes else {
         let blocks = derive(&payload.body);
+        let task_diagnostics = repo
+            .task_diagnostics(card.wave_id.as_str(), &blocks)
+            .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
             schema_version: payload.schema_version,
@@ -69,6 +73,7 @@ pub async fn load_report_read_snapshot(
             summary: payload.summary,
             body: payload.body,
             blocks,
+            task_diagnostics,
         });
     };
     let doc = crate::wave_report_doc::ReportDoc::from_bytes(&bytes).map_err(|e| {
@@ -84,6 +89,9 @@ pub async fn load_report_read_snapshot(
     // Cache may provide the projection, but revision always comes from
     // the CRDT root rather than the JSON mirror.
     if let Some(blocks) = payload.blocks {
+        let task_diagnostics = repo
+            .task_diagnostics(card.wave_id.as_str(), &blocks)
+            .await?;
         return Ok(ReportReadSnapshot {
             updated_at: card.updated_at,
             schema_version: payload.schema_version,
@@ -91,6 +99,7 @@ pub async fn load_report_read_snapshot(
             summary: payload.summary,
             body: payload.body,
             blocks,
+            task_diagnostics,
         });
     }
     let internal =
@@ -106,6 +115,9 @@ pub async fn load_report_read_snapshot(
         // the doc's own projected body.
         derive(&body)
     };
+    let task_diagnostics = repo
+        .task_diagnostics(card.wave_id.as_str(), &blocks)
+        .await?;
     Ok(ReportReadSnapshot {
         updated_at: card.updated_at,
         schema_version: payload.schema_version,
@@ -113,6 +125,7 @@ pub async fn load_report_read_snapshot(
         summary,
         body,
         blocks,
+        task_diagnostics,
     })
 }
 

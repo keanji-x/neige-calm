@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use sqlx::Row;
 
+use super::read_transaction::begin_read_tx;
 use super::task::TASK_COLUMNS;
 use super::{
     SqlxRepo, derive_session_identity, session_get_by_active_token_hash, session_get_by_id,
@@ -181,7 +182,7 @@ impl RepoRead for SqlxRepo {
         // cache's writer slot. Writing transactions must use
         // `begin_immediate_tx` instead (see the deferred_write_tx
         // invariant test).
-        let mut tx = self.pool.begin().await?;
+        let mut tx = begin_read_tx(&self.pool).await?;
         let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
             r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
@@ -379,6 +380,20 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|row| (Card::from(row.card), row.body_crdt)))
+    }
+
+    async fn task_diagnostics(
+        &self,
+        wave_id: &str,
+        blocks: &[calm_types::wave_report::ReportBlock],
+    ) -> Result<Vec<super::BlockVerdict>> {
+        let mut tx = begin_read_tx(&self.pool).await?;
+        let (declarations, local) =
+            calm_types::report_blocks::tasks::project_task_declarations(blocks);
+        let diagnostics =
+            super::evaluate_schedulability_tx(&mut tx, wave_id, &declarations, &local).await?;
+        tx.commit().await?;
+        Ok(diagnostics)
     }
 
     async fn card_role_get(&self, id: &str) -> Result<Option<CardRole>> {

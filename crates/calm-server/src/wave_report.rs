@@ -48,7 +48,9 @@
 //! seeds the canonical "agent hasn't run yet" defaults.
 
 use crate::db::RouteRepo;
-use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx};
+use crate::db::sqlite::{
+    TaskProjectionOutcome, card_body_crdt_get_tx, card_update_with_crdt_tx, project_tasks_tx,
+};
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
@@ -58,6 +60,43 @@ use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
+
+/// Re-evaluate the task projection from the report CRDT inside the caller's
+/// write transaction. `payload` is used only to seed rows whose CRDT has not
+/// been initialized yet; once `body_crdt` exists it is the sole source.
+pub async fn tasks_rebuild_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wave_id: &str,
+) -> crate::error::Result<TaskProjectionOutcome> {
+    let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+    )
+    .bind(wave_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((payload, body_crdt)) = report else {
+        return Ok(TaskProjectionOutcome::default());
+    };
+    let payload: WaveReportPayload = serde_json::from_str(&payload).map_err(|error| {
+        CalmError::Internal(format!("decode report payload for task rebuild: {error}"))
+    })?;
+    let mut doc = match body_crdt {
+        Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|error| {
+            CalmError::Internal(format!("load report CRDT for task rebuild: {error}"))
+        })?,
+        None => ReportDoc::from_payload(&payload),
+    };
+    doc.ensure_blocks_layout(payload.blocks.as_deref())
+        .map_err(|error| {
+            CalmError::Internal(format!("migrate report CRDT for task rebuild: {error}"))
+        })?;
+    let blocks = doc.blocks_snapshot().map_err(|error| {
+        CalmError::Internal(format!("snapshot report CRDT for task rebuild: {error}"))
+    })?;
+    let (declarations, diagnostics) =
+        calm_types::report_blocks::tasks::project_task_declarations(&blocks);
+    Ok(project_tasks_tx(tx, wave_id, &declarations, &diagnostics).await?)
+}
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
 use crate::wave_report_task_guard::{guard_task_declarations, normalize_report_op};
 use std::sync::Arc;
@@ -620,6 +659,12 @@ pub(crate) async fn persist_report_with_shadow(
                         "wave_report: snapshot CRDT blocks for card {id}: {e}"
                     ))
                 })?);
+                let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
+                let (declarations, block_diagnostics) =
+                    calm_types::report_blocks::tasks::project_task_declarations(blocks);
+                let task_projection =
+                    project_tasks_tx(tx, wave_id.as_str(), &declarations, &block_diagnostics)
+                        .await?;
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -640,7 +685,7 @@ pub(crate) async fn persist_report_with_shadow(
                 //    order before PR2 added the structured event).
                 let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
                 let report_edited = Event::WaveReportEdited {
-                    wave_id,
+                    wave_id: wave_id.clone(),
                     card_id: report_card_id,
                     author,
                     // Kept on the event wire for historical compatibility;
@@ -658,7 +703,18 @@ pub(crate) async fn persist_report_with_shadow(
                     scope.clone(),
                     Event::CardUpdated(updated.clone()),
                 ));
-                events.push((actor, scope, report_edited));
+                events.push((actor.clone(), scope, report_edited));
+                if !task_projection.changed_keys.is_empty() {
+                    events.push((
+                        actor.clone(),
+                        wave_scope,
+                        Event::PlanUpdated {
+                            wave_id,
+                            changed_keys: task_projection.changed_keys,
+                            agent_message: None,
+                        },
+                    ));
+                }
                 Ok(((updated, outcome), events))
             })
         },
