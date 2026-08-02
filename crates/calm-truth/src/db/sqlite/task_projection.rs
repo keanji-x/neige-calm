@@ -274,6 +274,12 @@ pub async fn evaluate_schedulability_tx(
             ));
             verdict.schedulable = false;
         }
+        if !verdict.schedulable {
+            verdict.diagnostics.push(Diagnostic::new(
+                "key",
+                "task is already executing and cannot be withdrawn immediately; its result will still pass through the gate and be reported as usual",
+            ));
+        }
     }
 
     // Pending rows are outputs, never inputs. Only clean declarations that can
@@ -341,25 +347,22 @@ pub async fn project_tasks_tx(
         .collect();
     let mut changed = BTreeSet::new();
     for (id, key, status) in &existing {
-        if !schedulable_by_key.get(key).is_some_and(|value| *value) && status == "pending" {
-            if task_delete_pending_tx(tx, id).await? != 0 {
-                changed.insert(key.clone());
-            } else if let Some(index) = verdict_index_by_key.get(key) {
-                verdicts[*index].diagnostics.push(Diagnostic::new(
+        if !schedulable_by_key.get(key).is_some_and(|value| *value) {
+            if status != "pending" {
+                let diagnostic = Diagnostic::new(
                     "key",
-                    "task is already executing and cannot be withdrawn immediately",
-                ));
-                verdicts[*index].schedulable = false;
-            } else {
-                verdicts.push(BlockVerdict {
-                    block_id: String::new(),
-                    key: key.clone(),
-                    diagnostics: vec![Diagnostic::new(
-                        "key",
-                        "task is already executing and cannot be withdrawn immediately",
-                    )],
-                    schedulable: false,
-                });
+                    "task is already executing and cannot be withdrawn immediately; its result will still pass through the gate and be reported as usual",
+                );
+                if !verdict_index_by_key.contains_key(key) {
+                    verdicts.push(BlockVerdict {
+                        block_id: String::new(),
+                        key: key.clone(),
+                        diagnostics: vec![diagnostic],
+                        schedulable: false,
+                    });
+                }
+            } else if task_delete_pending_tx(tx, id).await? != 0 {
+                changed.insert(key.clone());
             }
         }
     }

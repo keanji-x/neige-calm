@@ -210,7 +210,7 @@ fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
 #[tokio::test]
 async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
     let boot = new_boot().await;
-    sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
+    sqlx::query("UPDATE waves SET automation_policy='declare-and-wait',task_budget=0 WHERE id=?1")
         .bind(boot.wave_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
@@ -227,39 +227,42 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
     released["released_by_user"] = json!(true);
     let (rev, doc_rev_before) = user_upsert(&boot, &id, rev, released).await;
     assert_eq!(keys(&boot).await, ["waited"]);
+    sqlx::query("UPDATE tasks SET status='dispatched' WHERE wave_id=?1 AND key='waited'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
 
-    let (withdraw_rev, doc_rev_after) = user_upsert(&boot, &id, rev, task("waited")).await;
-    let keys_1 = keys(&boot).await;
-    let keys_after_delay = keys(&boot).await;
+    let (_, doc_rev_after) = user_upsert(&boot, &id, rev, task("waited")).await;
     let after_withdraw = read(&boot).await;
-    let policy: Option<String> =
-        sqlx::query_scalar("SELECT automation_policy FROM waves WHERE id=?1")
-            .bind(boot.wave_id.as_str())
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
-            .await
-            .unwrap();
-    let persisted_payload: String =
-        sqlx::query_scalar("SELECT payload FROM cards WHERE wave_id=?1 AND kind='wave-report'")
-            .bind(boot.wave_id.as_str())
-            .fetch_one(&boot.repo.sqlite_pool().unwrap())
-            .await
-            .unwrap();
+    let after_withdraw_rest = rest_read(&boot).await;
     let row = boot
         .repo
         .tasks_by_wave(boot.wave_id.as_str())
         .await
         .unwrap()
         .into_iter()
-        .find(|task| task.key == "waited");
-    eprintln!(
-        "declare-and-wait withdrawal diagnostics: keys_1={keys_1:?}; keys_after_delay={keys_after_delay:?}; policy={policy:?}; persisted_payload={persisted_payload}; row={row:#?}; taskDiagnostics={:#?}; withdraw_rev={withdraw_rev}; docRev_before={:?}; docRev_after={:?}",
-        after_withdraw["taskDiagnostics"], doc_rev_before, doc_rev_after,
-    );
-    assert!(
-        keys_1.is_empty(),
-        "expected no rows, got keys_1={keys_1:?}; keys_after_delay={keys_after_delay:?}; policy={policy:?}; persisted_payload={persisted_payload}; row={row:?}; taskDiagnostics={:?}; withdraw_rev={withdraw_rev}; docRev_before={doc_rev_before:?}; docRev_after={doc_rev_after:?}",
-        after_withdraw["taskDiagnostics"],
-    );
+        .find(|task| task.key == "waited")
+        .expect("dispatched row remains");
+    assert_eq!(row.status, calm_server::model::TaskStatus::Dispatched);
+    assert!(doc_rev_after > doc_rev_before);
+    for snapshot in [&after_withdraw, &after_withdraw_rest] {
+        assert!(diagnostic_contains(
+            snapshot,
+            "waited",
+            "requires user release"
+        ));
+        assert!(diagnostic_contains(
+            snapshot,
+            "waited",
+            "already executing and cannot be withdrawn immediately"
+        ));
+        assert!(diagnostic_contains(
+            snapshot,
+            "waited",
+            "pass through the gate and be reported as usual"
+        ));
+    }
 
     let mut forbidden = task("forbidden");
     forbidden["released_by_user"] = json!(true);
