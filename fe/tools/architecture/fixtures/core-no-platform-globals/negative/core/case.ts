@@ -1,1 +1,1 @@
-export const bad = [WebSocket, fetch, location];
+export const bad = WebSocket;

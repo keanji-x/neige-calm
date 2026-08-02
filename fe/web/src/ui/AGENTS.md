@@ -10,7 +10,7 @@ Dialog、menu、focus、roving、directory-browser、schema-form fields，以及
 
 ## 依赖方向
 
-只依赖 `core`；core 类型仅可从显式 `core/types/ids.ts` 与 `core/types/a11y.ts` 获取 branded ID 和无障碍原语类型。
+只依赖 `core`；core 类型仅可从显式 `core/types/ids.ts`、`core/types/a11y.ts` 获取 branded ID 和无障碍原语类型，或从 `core/state/types.ts` 获取 `Persistent<T>`、codec、storage port 等基础设施类型。判据是类型不得携带业务 domain 字段；`core/domain` 始终禁止。
 
 ## 契约模板
 

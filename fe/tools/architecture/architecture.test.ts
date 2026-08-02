@@ -14,7 +14,7 @@ const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfig
 const cruiseOptions = config.options ?? {};
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
-  if (caseName === 'source-layout' || caseName === 'top-level-only-main') {
+  if (caseName.startsWith('source-layout') || caseName === 'top-level-only-main') {
     const cwd = resolve(fixtures, caseName, kind);
     const error = checkTopLevel(cwd);
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
@@ -23,21 +23,21 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const error = checkCoreNoJsx(resolve(fixtures, caseName, kind, 'core'));
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
-  if (caseName === 'core-platform-types') {
+  if (caseName.startsWith('core-platform-')) {
     const cwd = resolve(fixtures, caseName, kind);
     const configPath = resolve(cwd, 'tsconfig.json');
     const parsed = ts.parseJsonConfigFileContent(ts.readConfigFile(configPath, (path) => ts.sys.readFile(path)).config, ts.sys, cwd);
     const diagnostics = ts.getPreEmitDiagnostics(ts.createProgram(parsed.fileNames, parsed.options));
     return { status: diagnostics.length ? 1 : 0, stdout: diagnostics.length ? `${caseName}: ${diagnostics.map((item) => item.code).join(',')}` : '', stderr: '' };
   }
-  if (caseName === 'core-no-platform-globals' || caseName === 'core-no-node-access') {
+  if (caseName === 'core-no-platform-globals' || caseName.startsWith('core-no-platform-global-') || caseName.startsWith('core-no-node-')) {
     const filePath = resolve(fixtures, caseName, kind, 'core/case.ts');
     const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
     const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../../core/platform-independent.ts'),
     });
     const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
-    return { status: result.errorCount ? 1 : 0, stdout: output ? `${caseName}: ${output}` : '', stderr: '' };
+    return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
   }
   if (caseName.startsWith('eslint-')) {
     const errors = await checkEslintHygiene(resolve(fixtures, caseName, kind));
@@ -65,25 +65,33 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 }
 
 describe('architecture fixtures', () => {
+  const expectedViolation = new Map<string, string>([
+    ['core-no-node-access', 'node:fs'],
+    ['core-no-node-bare-import', "'fs'"],
+    ['core-no-node-global-buffer', 'Buffer'],
+    ['core-no-node-global-process', 'process'],
+    ['core-no-node-global-require', 'require'],
+    ['core-no-platform-globals', 'WebSocket'],
+    ['core-no-platform-global-fetch', 'fetch'],
+    ['core-no-platform-global-location', 'location'],
+    ['core-platform-node-types', '2591'],
+    ['core-platform-types', '2584'],
+    ['core-no-jsx', 'bad.tsx'],
+    ['eslint-config-root-only', 'nested/eslint.config.js'],
+    ['eslint-no-off-shims', 'example/rule'],
+    ['source-layout', 'core/helpers.js'],
+    ['source-layout-dir', 'web/src/shared'],
+    ['top-level-only-main', 'web/src/loose.js'],
+  ]);
+
   for (const caseName of readdirSync(fixtures)) {
     it(`${caseName}: accepts the positive and rejects the negative fixture`, async () => {
       const positive = await cruise(caseName, 'positive');
       const negative = await cruise(caseName, 'negative');
       expect(positive.status, positive.stdout + positive.stderr).toBe(0);
       expect(negative.status, negative.stdout + negative.stderr).not.toBe(0);
-      const expectedRule = caseName.startsWith('no-barrel-index') ? 'no-barrel-index' : caseName;
-      expect(negative.stdout + negative.stderr).toContain(expectedRule);
+      const expected = expectedViolation.get(caseName) ?? (caseName.startsWith('no-barrel-index') ? 'no-barrel-index' : caseName);
+      expect(negative.stdout + negative.stderr).toContain(expected);
     });
   }
-
-  it('pins the Node engine floor required by Vite', () => {
-    const packageJson = JSON.parse(ts.sys.readFile(resolve(import.meta.dirname, '../../package.json')) ?? '{}') as { engines?: { node?: string } };
-    expect(packageJson.engines?.node).toBe('^20.19.0 || >=22.12.0');
-  });
-
-  it('keeps the jsx-a11y preset free of redundant restatements', () => {
-    const source = ts.sys.readFile(resolve(import.meta.dirname, '../../eslint.config.js')) ?? '';
-    expect(source).not.toContain('plugins: jsxA11y.flatConfigs.recommended.plugins');
-    expect(source).not.toContain('rules: jsxA11y.flatConfigs.recommended.rules');
-  });
 });

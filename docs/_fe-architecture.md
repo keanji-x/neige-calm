@@ -266,7 +266,7 @@ fe/
 │   ├── schemas/             zod 边界校验
 │   ├── keys/                持久化 key 工厂 + storage port（治 calm:sync:cursor 三处硬编码）
 │   ├── state/               Persistent<T> 条件类型 · codec · storage port（**无 React**）
-│   ├── tokens/              token 定义 + 十类形状契约
+│   ├── types/               跨层基础原语类型；token 统一归 `web/src/styles/tokens`
 │   ├── markdown/            parse · normalize · sanitize-ast-policy · outline（**不含 JSX**）
 │   └── events/              protocol · reducer · invalidation-plan（纯，见 §4.6）
 ├── mock/                    从 openapi.json 生成
