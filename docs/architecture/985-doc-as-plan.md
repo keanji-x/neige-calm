@@ -1805,6 +1805,9 @@ refs: [{ wave_id, block_id, rev, content_hash }], truncated: bool }`
   （`NEIGE_SCHEDULER_RECONCILE_SECS`，默认 300 秒，`scheduler/mod.rs:24-27`、
   `:83`、`:432`）。**不新增任何 `NEIGE_*` 环境旋钮**——复用既有的那一个，
   节奏与调度活性兜底同频。
+  **凡是会起活的路径，上下文 sweep 都必须排在它前面**：boot 的 operation
+  恢复 / `sweep_boot` 如此，`Lagged` 分支的 `sweep_all` 也如此。上下文 sweep
+  失败只告警，不能跳过后续调度 sweep；失败前已经落库的 stale 判决继续生效。
   **boot 上的挂点：r5 更正了一次，r6 又前移了一格。** r4 写的是"跟在
   `sweep_boot` 之后"，而 `sweep_boot`（`scheduler/mod.rs:1015`）的**第一件事**
   就是 `sweep_reconcile()`（`:1016`），它的 `Dispatched` 分支（`:1067`）已经把

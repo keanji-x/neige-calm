@@ -816,10 +816,10 @@ impl Dispatcher {
                         let scheduler = Arc::clone(&inner_for_task.scheduler);
                         let context_monitor = Arc::clone(&inner_for_task.context_monitor);
                         tokio::spawn(async move {
-                            scheduler.sweep_all().await;
                             if let Err(error) = context_monitor.sweep().await {
                                 tracing::warn!(%error, "task context sweep after lag failed");
                             }
+                            scheduler.sweep_all().await;
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
