@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { extractOutline, fileViewerHeadingIdPolicy, parse, type MarkdownDepth } from './public.js';
+import {
+  extractOutline, fileViewerHeadingIdPolicy, parse, reportHeadingIdPolicy, type MarkdownDepth,
+} from './public.js';
 
 function outline(markdown: string, maxDepth: MarkdownDepth = 6) {
   const result = parse(markdown);
@@ -10,6 +12,7 @@ function outline(markdown: string, maxDepth: MarkdownDepth = 6) {
     maxDepth,
     headingId: fileViewerHeadingIdPolicy,
     textPolicy: 'non-empty-heading-label',
+    traversal: 'line-level',
   });
 }
 
@@ -22,6 +25,38 @@ describe('core/markdown behavior', () => {
   it('uses image alt and inline-code literal text in heading labels', () => {
     expect(outline('## A ![diagram](asset.png) with `x < y` and **bold**')[0]?.text)
       .toBe('A diagram with x < y and bold');
+  });
+
+  it('resolves reference links and images and preserves undefined references literally', () => {
+    const markdown = '# See [label][id] here\n# ![alt][id]\n# [label][id]\n# [missing][nope]\n\n[id]: /target "title"';
+    const result = parse(markdown);
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(outline(markdown).map(({ id, text }) => ({ id, text }))).toEqual([
+      { id: 'md-h-0', text: 'See [label][id] here' },
+      { id: 'md-h-1', text: '![alt][id]' },
+      { id: 'md-h-2', text: '[label][id]' },
+      { id: 'md-h-3', text: '[missing][nope]' },
+    ]);
+    expect(extractOutline([{ context: { blockId: 'b_ref' }, ast: result.value }], {
+      maxDepth: 2, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'recursive',
+    }).map(({ id, text }) => ({ id, text }))).toEqual([
+      { id: 'b_ref-h1', text: 'See label here' },
+      { id: 'b_ref-h2', text: 'alt' },
+      { id: 'b_ref-h3', text: 'label' },
+      { id: 'b_ref-h4', text: '[missing][nope]' },
+    ]);
+    expect(result.value.children[0]).toMatchObject({
+      type: 'heading',
+      children: [
+        { type: 'text', value: 'See ' },
+        { type: 'link', destination: '/target', title: 'title', children: [{ type: 'text', value: 'label' }] },
+        { type: 'text', value: ' here' },
+      ],
+    });
+    expect(result.value.children[1]).toMatchObject({
+      type: 'heading', children: [{ type: 'image', alt: 'alt', destination: '/target', title: 'title' }],
+    });
   });
 
   it('keeps visible CommonMark characters and omits empty file-viewer headings before numbering', () => {
@@ -69,9 +104,18 @@ describe('core/markdown behavior', () => {
     expect(result.value.diagnostics).toEqual([]);
   });
 
+  it('does not diagnose table-like prose', () => {
+    for (const markdown of ['a | b\ncross-reference | x-y', 'see foo | bar\nnote - baz | qux']) {
+      const result = parse(markdown);
+      expect(result.status).toBe('ready');
+      if (result.status !== 'ready') continue;
+      expect(result.value.diagnostics).toEqual([]);
+    }
+  });
+
   it.each([
     ['unclosed fence', '```md\n# not a heading', { kind: 'malformed', message: 'Unclosed fenced code block', line: 1 }],
-    ['malformed table', '| a | b |\n| -- | nope |\n# after', { kind: 'malformed', message: 'Malformed GFM table delimiter', line: 2 }],
+    ['malformed table', '| a | b |\n| -- | --- | --- |\n# after', { kind: 'malformed', message: 'Malformed GFM table delimiter', line: 2 }],
     ['raw script', '<script>alert(1)</script>\n# after', { kind: 'unsafe-raw-html', message: 'Raw HTML requires sanitization', line: 1 }],
   ])('degrades %s without throwing and locks its diagnostic schema', (_name, markdown, diagnostic) => {
     expect(() => parse(markdown)).not.toThrow();
@@ -105,6 +149,14 @@ describe('core/markdown behavior', () => {
     expect(result.error.diagnostics).toContainEqual({
       kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: 65,
     });
+  });
+
+  it('keeps legal deeply indented inputs ready', () => {
+    for (const markdown of [
+      `    ${'>'.repeat(65)}`,
+      `- item\n${' '.repeat(140)}continuation`,
+      `${' '.repeat(130)}code`,
+    ]) expect(parse(markdown).status).toBe('ready');
   });
 
   it('rejects oversized source before parsing', () => {

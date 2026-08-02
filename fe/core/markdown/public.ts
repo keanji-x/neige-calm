@@ -11,12 +11,15 @@ type Positioned<T> = Readonly<T & { position: MarkdownPosition }>;
 
 export type NormalizedText = Positioned<{ type: 'text'; value: string }>;
 export type NormalizedInlineCode = Positioned<{ type: 'inlineCode'; value: string }>;
-export type NormalizedImage = Positioned<{ type: 'image'; alt: string; destination: string; title: string | null }>;
+export type NormalizedImage = Positioned<{
+  type: 'image'; alt: string; destination: string; title: string | null; referenceSource?: string;
+}>;
 export type NormalizedLink = Positioned<{
   type: 'link';
   destination: string;
   title: string | null;
   children: readonly NormalizedInline[];
+  referenceSource?: string;
 }>;
 export type NormalizedDelete = Positioned<{ type: 'delete'; children: readonly NormalizedInline[] }>;
 export type NormalizedEmphasis = Positioned<{ type: 'emphasis'; children: readonly NormalizedInline[] }>;
@@ -123,6 +126,7 @@ export type ExtractOutlineOptions<Context> = Readonly<{
   maxDepth: MarkdownDepth;
   headingId: HeadingIdPolicy<Context>;
   textPolicy: TextPolicy;
+  traversal: 'recursive' | 'line-level';
 }>;
 
 export const REPORT_MAX_DEPTH = 2 as const;
@@ -142,22 +146,22 @@ export type SafeInline =
   | NormalizedInlineCode
   | NormalizedImage
   | NormalizedBreak
-  | Readonly<{ type: 'link'; destination: string; title: string | null; children: readonly SafeInline[] }>
-  | Readonly<{ type: 'delete' | 'emphasis' | 'strong'; children: readonly SafeInline[] }>;
+  | Positioned<{ type: 'link'; destination: string; title: string | null; children: readonly SafeInline[] }>
+  | Positioned<{ type: 'delete' | 'emphasis' | 'strong'; children: readonly SafeInline[] }>;
 export type SafeBlock =
-  | Readonly<{ type: 'heading'; depth: MarkdownDepth; children: readonly SafeInline[] }>
-  | Readonly<{ type: 'paragraph'; children: readonly SafeInline[] }>
+  | Positioned<{ type: 'heading'; depth: MarkdownDepth; children: readonly SafeInline[] }>
+  | Positioned<{ type: 'paragraph'; children: readonly SafeInline[] }>
   | NormalizedCode
-  | Readonly<{ type: 'blockquote'; children: readonly SafeBlock[] }>
-  | Readonly<{
+  | Positioned<{ type: 'blockquote'; children: readonly SafeBlock[] }>
+  | Positioned<{
     type: 'list'; ordered: boolean; start: number | null; spread: boolean;
-    children: readonly Readonly<{ type: 'listItem'; checked: boolean | null; children: readonly SafeBlock[] }>[];
+    children: readonly Positioned<{ type: 'listItem'; checked: boolean | null; children: readonly SafeBlock[] }>[];
   }>
-  | Readonly<{
+  | Positioned<{
     type: 'table'; align: readonly ('left' | 'right' | 'center' | null)[];
-    children: readonly Readonly<{
+    children: readonly Positioned<{
       type: 'tableRow';
-      children: readonly Readonly<{ type: 'tableCell'; children: readonly SafeInline[] }>[];
+      children: readonly Positioned<{ type: 'tableCell'; children: readonly SafeInline[] }>[];
     }>[];
   }>
   | NormalizedThematicBreak;
@@ -166,6 +170,7 @@ export type SafeMarkdownAst = Readonly<{
   dialect: 'gfm';
   children: readonly SafeBlock[];
   diagnostics: readonly MarkdownDiagnostic[];
+  position: MarkdownPosition;
 }>;
 
 type MdNode = Readonly<{
@@ -182,6 +187,9 @@ type MdNode = Readonly<{
   spread?: boolean;
   checked?: boolean | null;
   align?: readonly ('left' | 'right' | 'center' | null)[];
+  identifier?: string;
+  label?: string | null;
+  referenceType?: 'shortcut' | 'collapsed' | 'full';
   children?: readonly MdNode[];
   position?: Readonly<{
     start: Readonly<{ line: number; offset?: number }>;
@@ -196,39 +204,63 @@ function positionOf(node: MdNode): MarkdownPosition {
   };
 }
 
-function normalizeInline(node: MdNode): NormalizedInline | null {
+type Definition = Readonly<{ destination: string; title: string | null }>;
+
+function normalizeInline(node: MdNode, definitions: ReadonlyMap<string, Definition>): NormalizedInline | null {
   switch (node.type) {
     case 'text': return { type: 'text', value: node.value ?? '', position: positionOf(node) };
     case 'inlineCode': return { type: 'inlineCode', value: node.value ?? '', position: positionOf(node) };
     case 'image': return { type: 'image', alt: node.alt ?? '', destination: node.url ?? '', title: node.title ?? null, position: positionOf(node) };
-    case 'link': return { type: 'link', destination: node.url ?? '', title: node.title ?? null, children: normalizeInlines(node.children), position: positionOf(node) };
-    case 'delete': return { type: 'delete', children: normalizeInlines(node.children), position: positionOf(node) };
-    case 'emphasis': return { type: 'emphasis', children: normalizeInlines(node.children), position: positionOf(node) };
-    case 'strong': return { type: 'strong', children: normalizeInlines(node.children), position: positionOf(node) };
+    case 'link': return { type: 'link', destination: node.url ?? '', title: node.title ?? null, children: normalizeInlines(node.children, definitions), position: positionOf(node) };
+    case 'linkReference': {
+      const definition = definitions.get(node.identifier ?? '');
+      if (definition === undefined) return { type: 'text', value: referenceLiteral(node), position: positionOf(node) };
+      return {
+        type: 'link', ...definition, children: normalizeInlines(node.children, definitions),
+        referenceSource: referenceLiteral(node), position: positionOf(node),
+      };
+    }
+    case 'imageReference': {
+      const definition = definitions.get(node.identifier ?? '');
+      if (definition === undefined) return { type: 'text', value: `!${referenceLiteral(node)}`, position: positionOf(node) };
+      return {
+        type: 'image', alt: node.alt ?? '', ...definition, referenceSource: `!${referenceLiteral(node)}`, position: positionOf(node),
+      };
+    }
+    case 'delete': return { type: 'delete', children: normalizeInlines(node.children, definitions), position: positionOf(node) };
+    case 'emphasis': return { type: 'emphasis', children: normalizeInlines(node.children, definitions), position: positionOf(node) };
+    case 'strong': return { type: 'strong', children: normalizeInlines(node.children, definitions), position: positionOf(node) };
     case 'break': return { type: 'break', position: positionOf(node) };
     case 'html': return { type: 'html', value: node.value ?? '', position: positionOf(node) };
     default: return null;
   }
 }
 
-function normalizeInlines(nodes: readonly MdNode[] | undefined): readonly NormalizedInline[] {
+function referenceLiteral(node: MdNode): string {
+  const label = node.alt ?? node.children?.map((child) => child.value ?? '').join('') ?? node.label ?? '';
+  if (node.referenceType === 'shortcut') return `[${label}]`;
+  if (node.referenceType === 'collapsed') return `[${label}][]`;
+  return `[${label}][${node.identifier ?? ''}]`;
+}
+
+function normalizeInlines(nodes: readonly MdNode[] | undefined, definitions: ReadonlyMap<string, Definition>): readonly NormalizedInline[] {
   return (nodes ?? []).flatMap((node) => {
-    const normalized = normalizeInline(node);
+    const normalized = normalizeInline(node, definitions);
     return normalized === null ? [] : [normalized];
   });
 }
 
-function normalizeBlock(node: MdNode): NormalizedBlock | null {
+function normalizeBlock(node: MdNode, definitions: ReadonlyMap<string, Definition>): NormalizedBlock | null {
   switch (node.type) {
     case 'heading':
-      return { type: 'heading', depth: node.depth as MarkdownDepth, children: normalizeInlines(node.children), position: positionOf(node) };
-    case 'paragraph': return { type: 'paragraph', children: normalizeInlines(node.children), position: positionOf(node) };
+      return { type: 'heading', depth: node.depth as MarkdownDepth, children: normalizeInlines(node.children, definitions), position: positionOf(node) };
+    case 'paragraph': return { type: 'paragraph', children: normalizeInlines(node.children, definitions), position: positionOf(node) };
     case 'code': return { type: 'code', language: node.lang ?? null, meta: node.meta ?? null, value: node.value ?? '', position: positionOf(node) };
-    case 'blockquote': return { type: 'blockquote', children: normalizeBlocks(node.children), position: positionOf(node) };
+    case 'blockquote': return { type: 'blockquote', children: normalizeBlocks(node.children, definitions), position: positionOf(node) };
     case 'list': return {
       type: 'list', ordered: node.ordered ?? false, start: node.start ?? null, spread: node.spread ?? false,
       position: positionOf(node), children: (node.children ?? []).flatMap((child) => {
-        const item = normalizeListItem(child);
+        const item = normalizeListItem(child, definitions);
         return item === null ? [] : [item];
       }),
     };
@@ -237,7 +269,7 @@ function normalizeBlock(node: MdNode): NormalizedBlock | null {
       type: 'table', align: node.align ?? [],
       position: positionOf(node), children: (node.children ?? []).map((row) => ({
         type: 'tableRow',
-        position: positionOf(row), children: (row.children ?? []).map((cell) => ({ type: 'tableCell', children: normalizeInlines(cell.children), position: positionOf(cell) })),
+        position: positionOf(row), children: (row.children ?? []).map((cell) => ({ type: 'tableCell', children: normalizeInlines(cell.children, definitions), position: positionOf(cell) })),
       })),
     };
     case 'thematicBreak': return { type: 'thematicBreak', position: positionOf(node) };
@@ -245,14 +277,14 @@ function normalizeBlock(node: MdNode): NormalizedBlock | null {
   }
 }
 
-function normalizeListItem(node: MdNode): NormalizedListItem | null {
+function normalizeListItem(node: MdNode, definitions: ReadonlyMap<string, Definition>): NormalizedListItem | null {
   if (node.type !== 'listItem') return null;
-  return { type: 'listItem', checked: node.checked ?? null, children: normalizeBlocks(node.children), position: positionOf(node) };
+  return { type: 'listItem', checked: node.checked ?? null, children: normalizeBlocks(node.children, definitions), position: positionOf(node) };
 }
 
-function normalizeBlocks(nodes: readonly MdNode[] | undefined): readonly NormalizedBlock[] {
+function normalizeBlocks(nodes: readonly MdNode[] | undefined, definitions: ReadonlyMap<string, Definition>): readonly NormalizedBlock[] {
   return (nodes ?? []).flatMap((node) => {
-    const normalized = normalizeBlock(node);
+    const normalized = normalizeBlock(node, definitions);
     return normalized === null ? [] : [normalized];
   });
 }
@@ -279,9 +311,13 @@ function diagnosticsFor(markdown: string, root: MdNode): readonly MarkdownDiagno
     const quoteDepth = /^(?:>\s*)+/.exec(line)?.[0].split('>').length ?? 1;
     if (quoteDepth - 1 > 64) diagnostics.push({ kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: index + 1 });
     const possibleDelimiter = lines[index + 1] ?? '';
-    if (line.includes('|') && possibleDelimiter.includes('|') && possibleDelimiter.includes('-')) {
+    const tableShaped = line.includes('|') && possibleDelimiter.includes('|')
+      && possibleDelimiter.includes('-') && /^[\s|:-]+$/.test(possibleDelimiter);
+    if (tableShaped && possibleDelimiter.includes('-')) {
+      const headerCells = line.replace(/^\s*\||\|\s*$/g, '').split('|');
       const delimiterCells = possibleDelimiter.replace(/^\s*\||\|\s*$/g, '').split('|');
-      const validDelimiter = delimiterCells.length > 0 && delimiterCells.every((cell) => /^\s*:?-+:?\s*$/.test(cell));
+      const validDelimiter = delimiterCells.length === headerCells.length
+        && delimiterCells.length > 0 && delimiterCells.every((cell) => /^\s*:?-+:?\s*$/.test(cell));
       if (!validDelimiter) diagnostics.push({ kind: 'malformed', message: 'Malformed GFM table delimiter', line: index + 2 });
     }
   }
@@ -321,8 +357,11 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
       continue;
     }
     const indentation = /^( *)/.exec(line)?.[1].length ?? 0;
-    const quoteDepth = (line.slice(indentation).match(/^(?:>\s*)+/)?.[0].match(/>/g) ?? []).length;
-    const listDepth = Math.floor(indentation / 2) + (/^(?:[-+*]|\d+[.)])\s/.test(line.slice(indentation)) ? 1 : 0);
+    const content = line.slice(indentation);
+    const listMarker = /^(?:[-+*]|\d+[.)])\s/.test(content);
+    if (indentation >= 4 && !listMarker) continue;
+    const quoteDepth = (content.match(/^(?:>\s*)+/)?.[0].match(/>/g) ?? []).length;
+    const listDepth = listMarker ? Math.floor(indentation / 2) + 1 : 0;
     if (quoteDepth + listDepth > MAX_MARKDOWN_NESTING_DEPTH) {
       return { kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: index + 1 };
     }
@@ -340,10 +379,18 @@ export function parse(markdown: string): MarkdownParseResult {
   }
   try {
     const root = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) as MdNode;
+    const definitions = new Map<string, Definition>();
+    const collectDefinitions = (node: MdNode): void => {
+      if (node.type === 'definition' && node.identifier !== undefined) {
+        definitions.set(node.identifier, { destination: node.url ?? '', title: node.title ?? null });
+      }
+      for (const child of node.children ?? []) collectDefinitions(child);
+    };
+    collectDefinitions(root);
     return {
       status: 'ready',
       value: {
-        type: 'root', dialect: 'gfm', children: normalizeBlocks(root.children),
+        type: 'root', dialect: 'gfm', children: normalizeBlocks(root.children, definitions),
         diagnostics: diagnosticsFor(markdown, root), position: positionOf(root),
       },
     };
@@ -358,9 +405,13 @@ function inlineText(nodes: readonly NormalizedInline[], policy: TextPolicy): str
   void policy;
   return nodes.map((node) => {
     if (node.type === 'text' || node.type === 'inlineCode') return node.value;
-    if (node.type === 'image') return node.alt;
+    if (node.type === 'image') return policy === 'non-empty-heading-label' && node.referenceSource !== undefined
+      ? node.referenceSource : node.alt;
     if (node.type === 'break') return ' ';
     if (node.type === 'html') return '';
+    if (node.type === 'link' && policy === 'non-empty-heading-label' && node.referenceSource !== undefined) {
+      return node.referenceSource;
+    }
     return inlineText(node.children, policy);
   }).join('').replace(/\s+/g, ' ').trim();
 }
@@ -375,8 +426,8 @@ export function extractOutline<Context>(
     let localOrdinal = 0;
     const visit = (nodes: readonly NormalizedBlock[]): void => {
       for (const node of nodes) {
-        if (node.type === 'blockquote') visit(node.children);
-        if (node.type === 'list') for (const item of node.children) visit(item.children);
+        if (options.traversal === 'recursive' && node.type === 'blockquote') visit(node.children);
+        if (options.traversal === 'recursive' && node.type === 'list') for (const item of node.children) visit(item.children);
       if (node.type !== 'heading' || node.depth > options.maxDepth) continue;
       const text = inlineText(node.children, options.textPolicy);
       if (options.textPolicy === 'non-empty-heading-label' && text.length === 0) continue;

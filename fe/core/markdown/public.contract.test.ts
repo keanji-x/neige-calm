@@ -45,9 +45,9 @@ describe('core/markdown public contract', () => {
       const invalidTextPolicy: TextPolicy = () => 'anything';
       void invalidTextPolicy;
       // @ts-expect-error -- outline maxDepth cannot be below the H1-H6 domain.
-      extractOutline([], { maxDepth: 0, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label' });
+      extractOutline([], { maxDepth: 0, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'line-level' });
       // @ts-expect-error -- outline maxDepth cannot exceed the H1-H6 domain.
-      extractOutline([], { maxDepth: 7, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label' });
+      extractOutline([], { maxDepth: 7, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'line-level' });
     }
   });
 
@@ -60,11 +60,13 @@ describe('core/markdown public contract', () => {
       maxDepth: REPORT_MAX_DEPTH,
       headingId: reportHeadingIdPolicy,
       textPolicy: 'heading-label',
+      traversal: 'recursive',
     });
     const fileViewer = extractOutline(inputs.map(({ ast }) => ({ context: undefined, ast })), {
       maxDepth: FILE_VIEWER_MAX_DEPTH,
       headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      traversal: 'line-level',
     });
 
     expect(report.map(({ depth, id, text, globalOrdinal, localOrdinal }) => ({
@@ -89,25 +91,28 @@ describe('core/markdown public contract', () => {
       maxDepth: REPORT_MAX_DEPTH,
       headingId: reportHeadingIdPolicy,
       textPolicy: 'heading-label',
+      traversal: 'recursive',
     });
     const fileViewer = extractOutline([{ context: undefined, ast }], {
       maxDepth: FILE_VIEWER_MAX_DEPTH,
       headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      traversal: 'line-level',
     });
 
     expect(report.map(({ id }) => id)).toEqual(['b_ab12-h1', 'b_ab12-h2']);
     expect(fileViewer.map(({ id }) => id)).toEqual(['md-h-0', 'md-h-1', 'md-h-2', 'md-h-3']);
   });
 
-  it('recursively preserves legacy ordinals for blockquotes, lists, and multi-level nesting', () => {
+  it('parameterizes traversal to preserve both distinct legacy outlines', () => {
     const ast = ready('# Alpha\n\n> ## Quoted\n\n- item\n  ## InList\n\n> - nested\n>   ## Deep\n\n## Beta');
     const report = extractOutline([{ context: { blockId: 'b_nested' }, ast }], {
-      maxDepth: REPORT_MAX_DEPTH, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label',
+      maxDepth: REPORT_MAX_DEPTH, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'recursive',
     });
     const fileViewer = extractOutline([{ context: undefined, ast }], {
       maxDepth: FILE_VIEWER_MAX_DEPTH, headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      traversal: 'line-level',
     });
 
     expect(report.map(({ text, id, localOrdinal }) => ({ text, id, localOrdinal }))).toEqual([
@@ -119,10 +124,7 @@ describe('core/markdown public contract', () => {
     ]);
     expect(fileViewer.map(({ text, id, globalOrdinal }) => ({ text, id, globalOrdinal }))).toEqual([
       { text: 'Alpha', id: 'md-h-0', globalOrdinal: 0 },
-      { text: 'Quoted', id: 'md-h-1', globalOrdinal: 1 },
-      { text: 'InList', id: 'md-h-2', globalOrdinal: 2 },
-      { text: 'Deep', id: 'md-h-3', globalOrdinal: 3 },
-      { text: 'Beta', id: 'md-h-4', globalOrdinal: 4 },
+      { text: 'Beta', id: 'md-h-1', globalOrdinal: 1 },
     ]);
   });
 
@@ -136,6 +138,7 @@ describe('core/markdown public contract', () => {
     const outline = extractOutline([{ context: undefined, ast }], {
       maxDepth: FILE_VIEWER_MAX_DEPTH, headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      traversal: 'line-level',
     });
     expect(outline[0]?.position).toEqual({ start: { line: 3, offset: 7 }, end: { offset: 20 } });
   });
@@ -147,6 +150,9 @@ describe('core/markdown public contract', () => {
     expect(safe.children).toMatchObject([
       { type: 'heading', depth: 1, children: [{ type: 'text', value: 'Safe ' }, { type: 'text', value: 'label' }] },
     ]);
+    expectTypeOf(safe.position.start.offset).toEqualTypeOf<number>();
+    const heading = safe.children[0];
+    if (heading?.type === 'heading') expectTypeOf(heading.position.start.offset).toEqualTypeOf<number>();
   });
 
   it('removes raw HTML at every nested block level at runtime', () => {
