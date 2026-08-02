@@ -90,7 +90,7 @@ describe('architecture fixtures', () => {
     ['eslint-config-root-only', 'nested/eslint.config.js'],
     ['eslint-no-off-shims', 'example/rule'],
     ['source-layout', 'core/helpers.js'],
-    ['source-layout-dir', 'web/src/shared'],
+    ['source-layout-dir', 'web/src/features/inbox/shared'],
     ['top-level-only-main', 'web/src/loose.js'],
   ]);
 

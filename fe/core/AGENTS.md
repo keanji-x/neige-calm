@@ -2,7 +2,7 @@
 
 ## 放什么
 
-平台无关的 API 契约、domain 纯逻辑、zod schemas、持久化 keys/ports、无 React state codec、markdown AST policy，以及纯 events protocol/reducer/plan。
+平台无关的 API 契约、domain 纯逻辑、zod schemas、持久化 keys/ports、branded ID 类型与无障碍原语类型、无 React state codec、markdown AST policy，以及纯 events protocol/reducer/plan。
 
 ## 不放什么
 
