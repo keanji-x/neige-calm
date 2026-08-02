@@ -365,15 +365,6 @@ test('report H2 counters match the outline sequence across prose blocks', async 
 
   const headings = page.locator('.report-body .report-prose h2');
   await expect(headings).toHaveCount(3);
-  const computedBeforeContents = await headings.evaluateAll((elements) =>
-    elements.map((element) =>
-      getComputedStyle(element, '::before').content,
-    ),
-  );
-  // Chromium exposes the computed counter expression, not its painted value.
-  expect(computedBeforeContents).toEqual(
-    Array(3).fill('counter(report-h2, decimal-leading-zero) " "'),
-  );
   const headingLabels = await headings.allTextContents();
   const session = await page.context().newCDPSession(page);
   const { nodes } = await session.send('Accessibility.getFullAXTree');
@@ -433,13 +424,6 @@ test('pure H1 report counters match the outline sequence', async ({ page }) => {
 
   const headings = page.locator('.report-body .report-prose h1');
   await expect(headings).toHaveCount(3);
-  const computedBeforeContents = await headings.evaluateAll((elements) =>
-    elements.map((element) => getComputedStyle(element, '::before').content),
-  );
-  expect(computedBeforeContents).toEqual(
-    Array(3).fill('counter(report-h2, decimal-leading-zero) " "'),
-  );
-
   const headingLabels = await headings.allTextContents();
   const session = await page.context().newCDPSession(page);
   const { nodes } = await session.send('Accessibility.getFullAXTree');

@@ -79,7 +79,12 @@ test.describe('spec chat input path', () => {
     // The FE-local echo entry lands in the transcript (queued until the
     // harness would emit the real item — which the paused dev harness
     // never does).
-    await expect(page.getByText('Summarize the open risks')).toBeVisible();
+    const conversationDrawer = page.getByRole('complementary', {
+      name: 'Conversation drawer',
+    });
+    await expect(
+      conversationDrawer.getByText('Summarize the open risks'),
+    ).toBeVisible();
     await expect(page.getByText(SPEC_CHAT_COPY.queuedEcho)).toBeVisible();
     // No error surface.
     await expect(page.getByRole('alert')).toHaveCount(0);

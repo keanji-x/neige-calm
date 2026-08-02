@@ -197,7 +197,8 @@ function ReportActivityPanel({
   const omittedCount = allUserEntries.length - userEntries.length;
 
   return (
-    <aside
+    <div
+      role="group"
       className={'report-activity-stack' + (hidden ? ' hide' : '')}
       aria-label="Recent conversation activity"
       aria-hidden={hidden}
@@ -260,7 +261,7 @@ function ReportActivityPanel({
           </div>
         )}
       </div>
-    </aside>
+    </div>
   );
 }
 
