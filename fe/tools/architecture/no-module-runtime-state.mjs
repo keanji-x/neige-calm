@@ -8,9 +8,11 @@
  *
  * Known escapes intentionally not proved: `const x = importedMutable`, a
  * getter returning `new Map`, mutation hidden inside an allowlisted factory,
- * computed property values/spreads, tagged templates such as gql templates, mutable
- * regex literals such as `/a/g`, a namespace alias such as `const R2 = React;
- * R2.useState()`, and shadowing an allowlisted global such as `Symbol`.
+ * a top-level `for (const x of [new Map()])` iterable expression, top-level
+ * non-call expression statements such as `void new Map()`, tagged templates
+ * such as gql templates, mutable regex literals such as `/a/g`, a namespace
+ * alias such as `const R2 = React; R2.useState()`, and shadowing an allowlisted
+ * global such as `Symbol`.
  * `Intl.NumberFormat` and `TextEncoder` are possible narrow immutable-
  * constructor candidates, but remain rejected until fixtures justify them.
  * Closing the other shapes needs type/data-flow analysis.
@@ -207,7 +209,7 @@ export const noModuleRuntimeState = {
         if (isModuleEvaluationReachable(node) && (!node.readonly || isMutableValue(node.value, bindings))) report(node);
       },
       AssignmentExpression(/** @type {any} */ node) {
-        if (isModuleEvaluationReachable(node) && isMutableValue(node.right, bindings)) report(node);
+        if (isModuleEvaluationReachable(node)) report(node);
       },
       ExportDefaultDeclaration(/** @type {any} */ node) {
         if (!['ClassDeclaration', 'FunctionDeclaration'].includes(node.declaration.type) && isMutableValue(node.declaration, bindings)) report(node.declaration);
@@ -216,12 +218,6 @@ export const noModuleRuntimeState = {
         if (!isModuleEvaluationReachable(node)) return;
         const expression = unwrap(node.expression);
         if (expression?.type !== 'CallExpression') return;
-        const objectAssign = expression.callee.type === 'MemberExpression' && expression.callee.object.type === 'Identifier' &&
-          expression.callee.object.name === 'Object' && memberName(expression.callee) === 'assign';
-        if (objectAssign) {
-          for (const argument of expression.arguments) if (argument.type !== 'SpreadElement' && isMutableValue(argument, bindings)) report(argument);
-          return;
-        }
         for (const argument of expression.arguments) if (argument.type !== 'SpreadElement' && isMutableValue(argument, bindings)) report(argument);
       },
       StaticBlock() {

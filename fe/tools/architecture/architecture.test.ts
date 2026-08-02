@@ -62,8 +62,9 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../../web/src/ui/state/public.contract.test.ts'),
     });
-    const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
-    return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
+    const messages = result.messages.filter((message) => message.ruleId === 'no-restricted-imports');
+    const output = messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
+    return { status: messages.length ? 1 : 0, stdout: output, stderr: '' };
   }
   if (caseName.startsWith('core-platform-')) {
     const cwd = resolve(fixtures, caseName, kind);

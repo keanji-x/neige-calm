@@ -48,6 +48,8 @@ describe('architecture/no-module-runtime-state', () => {
     ['freeze-nested-map.ts', 'Object.freeze'],
     ['custom-constructor.ts', 'new Store'],
     ['assignment.ts', 'f.cache'],
+    ['assignment-primitive.ts', 'holder.current'],
+    ['static-block-primitive.ts', 'R.count'],
     ['object-keys-unfrozen.ts', 'Object.freeze(Object.keys(X))'],
     ['router-factory.ts', 'createRouter'],
     ['file-route-factory.ts', 'createFileRoute'],
