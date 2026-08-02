@@ -6,9 +6,22 @@
 //!    process wrote must reach an online attacher *before* `Exited`.
 //! B. `exit.cursor` must equal the process' real final byte count.
 //!
-//! Both tests make the race deterministic by having the child burst a large
+//! The A/B tests make the race deterministic by having the child burst a large
 //! blob and exit immediately afterwards, with the whole test (and every thread
 //! it spawns) pinned to a single CPU — see `pin_to_single_cpu`.
+//!
+//! Two more cover the degraded path, where a surviving grandchild holds the pty
+//! slave open so the master never EOFs and the drain gate has to time out:
+//!
+//! C. the ring seal still makes `Exited` final
+//!    (`exited_is_final_when_a_grandchild_holds_the_pty_open`);
+//! D. the seal stops *publishing* but not *reading*, so the grandchild is not
+//!    wedged on a full tty queue
+//!    (`the_reader_keeps_draining_the_master_after_the_seal`).
+//!
+//! Neither degraded-path test asserts on elapsed time: both prove they are on
+//! the degraded path by checking that the slave holder is still alive/making
+//! progress, which is causal rather than schedule-dependent.
 //!
 //! Linux-only: `pin_to_single_cpu` needs `sched_setaffinity`/`cpu_set_t`, which
 //! `libc` only exposes on Linux, and the degraded-path test relies on Linux pty
@@ -18,7 +31,6 @@
 //! `#[cfg(all(unix, not(target_os = "linux")))]` split in `src/lib.rs`.
 #![cfg(target_os = "linux")]
 
-use calm_proc_supervisor::PTY_DRAIN_GRACE;
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{
     AttachRequest, ControlMsg, ControlReply, EnsureProcRequest, IoMode, WriteStdinRequest,
@@ -181,12 +193,40 @@ const PARENT_SENTINEL: &str = "PARENT-DONE-993";
 /// closes the fork/trap race — without it the parent can exit (and the HUP can
 /// land) before the freshly forked subshell has installed the trap.
 ///
-/// The self-check on `waited` in the test proves this actually worked.
-fn grandchild_script() -> String {
+/// The parent writes the subshell's pid to `pid_file` (`$!`, so it is the real
+/// pid regardless of how the shell forks) *before* it exits. That file is what
+/// the test's degradation self-check reads — see `process_is_alive`.
+fn grandchild_script(pid_file: &Path) -> String {
     format!(
         "read x; (trap '' HUP; i=0; while [ $i -lt 100 ]; do printf 'X'; sleep 0.05; \
-         i=$((i+1)); done) & sleep 0.2; printf '\\n{PARENT_SENTINEL}\\n'; exit 0"
+         i=$((i+1)); done) & printf '%s' \"$!\" > {}; sleep 0.2; \
+         printf '\\n{PARENT_SENTINEL}\\n'; exit 0",
+        pid_file.display(),
     )
+}
+
+/// True when `pid` names a process that still exists and has not become a
+/// zombie. Zombies are excluded deliberately: a reaped-but-unwaited process has
+/// already closed every fd it held, so it proves nothing about the pty slave.
+fn process_is_alive(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // `pid (comm) STATE ...`, and `comm` may itself contain spaces and
+    // parentheses — split at the LAST ')' so the state field is unambiguous.
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    matches!(rest.split_whitespace().next(), Some(state) if state != "Z" && state != "X")
+}
+
+/// Reads the pid the parent stashed in `pid_file`.
+fn read_pid_file(pid_file: &Path) -> i32 {
+    let raw = std::fs::read_to_string(pid_file)
+        .unwrap_or_else(|e| panic!("read {}: {e}", pid_file.display()));
+    raw.trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("parse pid {raw:?}: {e}"))
 }
 
 /// Invariant C (#993 R2, degraded path): when a surviving grandchild holds the
@@ -204,8 +244,10 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
     let supervisor = InProcessProcSupervisor::start()
         .await
         .expect("start supervisor");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let pid_file = temp.path().join("grandchild.pid");
     let proc_id = "pty-exit-order-grandchild";
-    ensure_pty(supervisor.sock(), proc_id, &grandchild_script()).await;
+    ensure_pty(supervisor.sock(), proc_id, &grandchild_script(&pid_file)).await;
 
     let mut attach = attach(supervisor.sock(), proc_id).await;
     let mut seen = match timeout_read(&mut attach).await {
@@ -239,19 +281,33 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
             other => panic!("unexpected attach frame: {other:?}"),
         }
     };
+    // Degradation self-check: this test is only meaningful if the drain gate
+    // actually timed out, i.e. the master never EOFed. Proving that with a
+    // *duration* would be a race — `sentinel_at` is when the TEST TASK was
+    // scheduled to read the sentinel frame (parent write → reader thread →
+    // append+broadcast → attach handler task → socket → this task: 3-4 wakeups),
+    // while the reap path needs one, so on a contended CI runner the measured
+    // gap can legitimately fall below the 50ms grace even on the degraded path.
+    //
+    // Instead we check the *cause* directly and monotonically: the grandchild
+    // is the only holder of the pty slave fd, so if it is still alive here —
+    // strictly after `Exited` was published, which is strictly after the gate
+    // resolved — then it was alive when the gate ran, and the master provably
+    // could not have EOFed. No timing assumption at all. (It sleeps ~5s total,
+    // and `Exited` lands ~0.25s in.)
+    let grandchild_pid = read_pid_file(&pid_file);
+    assert!(
+        process_is_alive(grandchild_pid),
+        "this test must exercise the DEGRADED path, but the grandchild (pid \
+         {grandchild_pid}) was already gone when Exited arrived — it did not keep the \
+         pty slave fd open, so the master EOFed and the drain gate never timed out",
+    );
+
+    // Liveness bound. Only ever compared in the safe direction: a late-delivered
+    // sentinel makes `waited` SMALLER, so this can never fire spuriously.
     let waited = sentinel_at
         .expect("the parent's trailing output must arrive before Exited")
         .elapsed();
-    // Self-check: this test is only meaningful if the gate actually timed out.
-    // If the grandchild ever stops holding the slave open (a shell that ignores
-    // the trap, a lost fork/trap race) the master EOFs in microseconds and this
-    // silently becomes a third happy-path test.
-    assert!(
-        waited >= PTY_DRAIN_GRACE,
-        "this test must exercise the DEGRADED path, but Exited arrived {waited:?} after \
-         the parent's last output (< the {PTY_DRAIN_GRACE:?} drain grace) — the pty master \
-         reached EOF, so the grandchild did not keep the slave fd open",
-    );
     assert!(
         waited < Duration::from_secs(5),
         "Exited took {waited:?}; the drain grace must bound the degraded path",
@@ -289,6 +345,102 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
         "issue #993 R2: the ring grew by {} bytes after Exited — the grandchild's \
          output is still being appended/broadcast, so Exited was not the last frame",
         tail_later.saturating_sub(exit_cursor),
+    );
+}
+
+/// Bytes the grandchild bursts *after* the ring is sealed. Must comfortably
+/// exceed the kernel's pty buffer (~64 KiB) so an unread master would block the
+/// writer instead of merely buffering it.
+const POST_SEAL_BURST: usize = 300_000;
+
+/// Same shape as `grandchild_script`, but the grandchild stays quiet until well
+/// past the seal and then bursts `POST_SEAL_BURST` bytes into the slave before
+/// touching `done_file`.
+fn post_seal_writer_script(done_file: &Path) -> String {
+    format!(
+        "read x; (trap '' HUP; sleep 0.6; printf '%0{POST_SEAL_BURST}d' 0; \
+         printf 'done' > {}) & sleep 0.2; printf '\\n{PARENT_SENTINEL}\\n'; exit 0",
+        done_file.display(),
+    )
+}
+
+/// Invariant D (#993 R3): sealing the ring must stop *publishing*, not
+/// *reading*.
+///
+/// The entry owns the pty master for the process' whole lifetime and no
+/// production code path sends `ControlMsg::Cleanup`, so if the reader thread
+/// stopped at the seal the master would stay open and unread forever. A
+/// surviving grandchild that still holds the slave would then fill the kernel's
+/// ~64 KiB tty queue and block inside `write()` for good — a hang that did not
+/// exist before the seal was introduced.
+///
+/// The grandchild here bursts 300 KiB well after the seal and only then writes
+/// its done-marker. The marker appearing proves the master is still being
+/// drained; the frozen ring tail proves those bytes were discarded rather than
+/// published, i.e. that the burst really landed on the post-seal path.
+#[tokio::test]
+async fn the_reader_keeps_draining_the_master_after_the_seal() {
+    let supervisor = InProcessProcSupervisor::start()
+        .await
+        .expect("start supervisor");
+    let temp = tempfile::tempdir().expect("tempdir");
+    let done_file = temp.path().join("grandchild.done");
+    let proc_id = "pty-exit-order-post-seal-drain";
+    ensure_pty(
+        supervisor.sock(),
+        proc_id,
+        &post_seal_writer_script(&done_file),
+    )
+    .await;
+
+    let mut attach = attach(supervisor.sock(), proc_id).await;
+    match timeout_read(&mut attach).await {
+        ControlReply::AttachOk(_) => {}
+        other => panic!("unexpected attach reply: {other:?}"),
+    }
+    write_stdin(supervisor.sock(), proc_id, b"go\n").await;
+
+    let exit_cursor = loop {
+        match timeout_read(&mut attach).await {
+            ControlReply::Output { .. } => {}
+            ControlReply::Exited { cursor, status, .. } => {
+                assert_eq!(status, Some(0), "parent should exit cleanly");
+                break cursor;
+            }
+            other => panic!("unexpected attach frame: {other:?}"),
+        }
+    };
+
+    // The grandchild has not started its burst yet (it sleeps 0.6s, the seal
+    // lands ~0.25s in), so this is the sealed tail.
+    assert_eq!(
+        attach_tail(supervisor.sock(), proc_id).await,
+        exit_cursor,
+        "ring tail right after Exited must equal exit.cursor",
+    );
+
+    // The marker is written only after all `POST_SEAL_BURST` bytes have been
+    // accepted by the tty. With a reader that stops at the seal, the grandchild
+    // wedges in `write()` after ~64 KiB and this never appears.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !done_file.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "issue #993 R3: the grandchild never finished writing {POST_SEAL_BURST} bytes \
+             after the exit seal — the supervisor stopped reading the pty master, so the \
+             surviving grandchild is blocked in write() on a full tty queue",
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // ...and the drained bytes were discarded, not published: had they been
+    // appended, the tail would have grown by ~300 KiB. This is also the proof
+    // that the burst really landed after the seal.
+    assert_eq!(
+        attach_tail(supervisor.sock(), proc_id).await,
+        exit_cursor,
+        "the post-seal burst must be discarded, not appended: the ring is frozen at \
+         exit.cursor forever",
     );
 }
 

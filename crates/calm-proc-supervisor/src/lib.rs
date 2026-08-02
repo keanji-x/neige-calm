@@ -719,6 +719,21 @@ async fn handle_cleanup(
     // Pty: `pty_running` goes false the moment the child is reaped, so a
     // cleanup arriving inside the drain grace no longer bounces with
     // WrongState (issue #993 R4). Pipe: unchanged sticky-exit semantics.
+    //
+    // Known and accepted (issue #993 R2/F6): a cleanup landing inside the
+    // ≤`PTY_DRAIN_GRACE` window removes the entry before the waiter has
+    // stamped the sticky `exit`, so a later `Attach` gets `UnknownProc`
+    // instead of the exit. Left as-is on purpose:
+    //   * no production path sends `ControlMsg::Cleanup` at all (tests only),
+    //     so nothing can reach it today;
+    //   * `Cleanup` means "I am done with this proc" — discarding its sticky
+    //     exit is what the caller asked for, and `UnknownProc` is exactly how
+    //     every other post-cleanup attach already answers;
+    //   * the two alternatives are both worse: bouncing with `WrongState`
+    //     during the grace is the R4 bug this branch exists to fix, and
+    //     blocking the handler until the exit is stamped would pin a control
+    //     connection on a window whose whole purpose is being skippable.
+    // If a production caller is ever added, revisit this first.
     let still_running = match &entry.runtime {
         ProcRuntime::Pty { .. } => entry.pty_running(),
         ProcRuntime::Pipe { .. } => entry.exit.lock().map(|exit| exit.is_none()).unwrap_or(true),
@@ -1078,11 +1093,13 @@ fn spawn_pty_reader_task(
     std::thread::spawn(move || {
         let _drain_guard = DrainGuard(gate);
         let mut buf = [0_u8; 8192];
+        // Bytes read after the seal and thrown away. Also the "already warned"
+        // flag: only the first post-seal chunk logs, the rest are counted.
+        let mut discarded_after_seal: u64 = 0;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let bytes = buf[..n].to_vec();
                     // Append AND broadcast inside the ring critical section.
                     // Doing the broadcast outside would let the waiter's
                     // seal + `Exited` slip between them, so this `Output`
@@ -1090,21 +1107,32 @@ fn spawn_pty_reader_task(
                     // it carries was already accounted for (issue #993 R2).
                     let mut ring = match entry.byte_ring.lock() {
                         Ok(ring) => ring,
-                        Err(_) => break,
+                        Err(poisoned) => poisoned.into_inner(),
                     };
                     if ring.is_sealed() {
+                        drop(ring);
                         // The waiter already published `Exited`; by contract
-                        // nothing may follow it, so stop reading entirely.
-                        // Only reachable when a surviving grandchild kept the
-                        // slave open past the drain grace.
-                        tracing::warn!(
-                            proc_id = %proc_id,
-                            dropped_bytes = n,
-                            "pty output arrived after the exit seal; dropping (slave fd \
-                             still held by a surviving grandchild)"
-                        );
-                        break;
+                        // nothing may follow it, so this chunk is neither
+                        // appended nor broadcast. But we must KEEP READING
+                        // (issue #993 R3): the surviving grandchild still
+                        // holds the slave fd, the entry still owns the master,
+                        // and nothing in production ever sends
+                        // `ControlMsg::Cleanup`, so an unread master would fill
+                        // the ~64 KiB kernel tty queue and wedge the grandchild
+                        // forever inside `write()`. Draining to EOF keeps it
+                        // running and lets the fd close on its own.
+                        if discarded_after_seal == 0 {
+                            tracing::warn!(
+                                proc_id = %proc_id,
+                                "pty output arrived after the exit seal; draining and \
+                                 discarding until EOF (slave fd still held by a surviving \
+                                 grandchild)"
+                            );
+                        }
+                        discarded_after_seal += n as u64;
+                        continue;
                     }
+                    let bytes = buf[..n].to_vec();
                     let (start, tail) = ring.append(bytes.clone());
                     let (head, _) = ring.window();
                     entry.cursor_head.store(head, Ordering::SeqCst);
@@ -1120,6 +1148,13 @@ fn spawn_pty_reader_task(
                     break;
                 }
             }
+        }
+        if discarded_after_seal > 0 {
+            tracing::info!(
+                proc_id = %proc_id,
+                discarded_bytes = discarded_after_seal,
+                "pty reader finished; discarded post-seal output"
+            );
         }
     });
 }
@@ -1156,9 +1191,15 @@ fn spawn_pty_reader_task(
 /// * **Degraded path** (grace expired because a surviving grandchild still
 ///   holds the slave fd): the ordering guarantee above still holds, but
 ///   completeness does not — bytes written to the pty after the seal are
-///   dropped on the floor rather than buffered. This is a deliberate trade
-///   against wedging the terminal on "running" forever, and both the waiter
-///   and the reader emit a WARN when it happens.
+///   *read and discarded*: never appended, never broadcast, never replayed to
+///   a future attacher. The reader deliberately keeps draining the master to
+///   EOF instead of stopping (issue #993 R3): the entry keeps the master open
+///   for the process' whole lifetime and no production path sends
+///   `ControlMsg::Cleanup`, so an unread master would fill the kernel tty
+///   queue and block the surviving grandchild inside `write()` forever.
+///   Losing that output is a deliberate trade against wedging the terminal on
+///   "running" forever; both the waiter and the reader emit a WARN when it
+///   happens.
 ///
 /// The grace is *not* load-bearing for ordering; shortening or lengthening it
 /// only changes how much genuinely in-flight output the degraded path is

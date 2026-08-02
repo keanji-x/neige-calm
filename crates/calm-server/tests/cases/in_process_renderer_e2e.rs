@@ -3,6 +3,11 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use calm_server::db::RouteRepo;
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::SqlxRepo;
+use calm_server::model::{NewCard, NewCove, NewTerminal, NewWave, Terminal};
+use calm_server::routes::theme::RequestTheme;
 use calm_server::terminal_renderer::{
     ClientPumpContext, RendererConfig, RendererEntry, TerminalRendererRegistry, run_client_pump,
 };
@@ -10,6 +15,7 @@ use calm_session::{
     ClientCapabilities, ClientMsg, DaemonMsg, InitialScrollback, PROTOCOL_VERSION, PtySize,
     RenderEncoding,
 };
+use serde_json::json;
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -434,17 +440,44 @@ async fn wait_for_daemon_terminal_exited(rx: &mut mpsc::Receiver<DaemonMsg>) -> 
 /// `abort_tasks()` right after the kill drops it on the floor; waiting on the
 /// attach reader's own completion does not.
 ///
-/// `entry.exit` is set inside the attach reader's `Exited` arm, immediately
-/// before the persistence calls, so observing it non-`None` after `drop_entry`
-/// returns is the proof that the reader was still alive to run them.
+/// The registry is wired to a **real sqlite repo** and the assertion is on the
+/// persisted row (`terminal_get(...).signal_killed`), not on the in-memory
+/// `entry.exit`: `entry.exit` is stamped a few statements *before*
+/// `terminal_set_exit` runs, so asserting on it would only prove "the reader
+/// observed Exited", while R1's actual claim is that the exit reaches the
+/// database. The in-memory check is kept too, as a cheap locator.
+///
+/// Two degradation self-checks keep the test honest — without them a missing
+/// `setsid`, a shell that drops the TERM trap, or a change in process-group
+/// kill semantics would silently turn this into a happy-path test that passes
+/// with or without the fix:
+///
+/// * the `setsid`'d grandchild must still be alive after `drop_entry` returns.
+///   It is the only holder of the pty slave, so if it survived the teardown the
+///   master provably never EOFed and the supervisor's drain gate provably had
+///   to time out. This is a causal check, not a timing one.
+/// * the persisted exit must be `signal_killed`, proving the child died from
+///   the teardown's signal rather than exiting on its own.
 #[tokio::test]
-async fn drop_entry_waits_for_the_attach_reader_to_observe_exited() {
+async fn drop_entry_persists_the_terminal_exit_to_the_database() {
     let temp = tempfile::tempdir().expect("tempdir");
     let control_sock = temp.path().join("proc-supervisor.sock");
     let mut supervisor = spawn_proc_supervisor(&control_sock).await;
 
-    let registry = TerminalRendererRegistry::new();
-    let terminal_id = Uuid::new_v4().to_string();
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+    let term = seed_terminal_row(repo.as_ref()).await;
+    let terminal_id = term.id.clone();
+
+    let registry = TerminalRendererRegistry::new_with_repo(route_repo);
+    // The grandchild records its own pid so the self-check below can prove it
+    // outlived the teardown. `setsid` puts it in a fresh session, so the
+    // process-group kill cannot reach it.
+    let gc_pid_file = temp.path().join("grandchild.pid");
     let entry = registry
         .ensure(RendererConfig {
             terminal_id: terminal_id.clone(),
@@ -456,7 +489,10 @@ async fn drop_entry_waits_for_the_attach_reader_to_observe_exited() {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                "trap '' TERM; setsid sleep 5 & echo up; sleep 30".into(),
+                format!(
+                    "trap '' TERM; setsid sh -c 'echo $$ > {}; sleep 5' & echo up; sleep 30",
+                    gc_pid_file.display()
+                ),
             ],
             envs: std::env::vars().collect(),
             cwd: workspace_root().display().to_string(),
@@ -473,17 +509,134 @@ async fn drop_entry_waits_for_the_attach_reader_to_observe_exited() {
         entry.exit.lock().expect("exit mutex").is_none(),
         "sanity: the child must still be running before teardown"
     );
+    assert!(
+        repo.terminal_get(&terminal_id)
+            .await
+            .expect("terminal_get")
+            .expect("terminal row")
+            .exit_code
+            .is_none(),
+        "sanity: the row must carry no exit before teardown"
+    );
+    // Written by the grandchild itself, so it is its real pid whatever `setsid`
+    // decides to do about forking.
+    let grandchild_pid = wait_for_pid_file(&gc_pid_file).await;
 
     registry.drop_entry(&terminal_id).await;
 
+    // Degradation self-check #1: the pty slave holder outlived the teardown, so
+    // the master could not EOF and the supervisor really took the drain-grace
+    // path that R1 is about.
+    assert!(
+        process_is_alive(grandchild_pid),
+        "this test must exercise the DEGRADED path, but the setsid'd grandchild (pid \
+         {grandchild_pid}) was already gone after teardown — the pty master EOFed, so \
+         `Exited` never had to wait for the drain grace"
+    );
+
+    // The load-bearing assertion, checked first: the exit reached the database.
+    let row = repo
+        .terminal_get(&terminal_id)
+        .await
+        .expect("terminal_get")
+        .expect("terminal row");
+    assert!(
+        row.signal_killed,
+        "issue #993 R1: terminal exit was not persisted (signal_killed still false) — \
+         drop_entry cut the attach reader off before `terminal_set_exit` ran; row = {row:?}"
+    );
+    // Degradation self-check #2: signalled, not a self-inflicted clean exit.
+    assert!(
+        row.exit_code.is_none(),
+        "a signal-killed child must persist no exit code; row = {row:?}"
+    );
+    // Cheap locator: `entry.exit` is stamped inside the same `Exited` arm, a few
+    // statements before the persistence calls above.
     assert!(
         entry.exit.lock().expect("exit mutex").is_some(),
         "issue #993 R1: drop_entry aborted the supervisor attach reader before it saw \
-         Exited, so the terminal's exit was never persisted"
+         Exited"
     );
 
     let _ = supervisor.kill().await;
     let _ = supervisor.wait().await;
+}
+
+/// Minimal cove → wave → card → terminal chain so `terminal_set_exit` has a row
+/// to write to.
+async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
+    let cove = repo
+        .cove_create(NewCove {
+            name: "renderer-e2e".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .expect("create cove");
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id,
+            title: "renderer-e2e".into(),
+            sort: None,
+            cwd: workspace_root().display().to_string(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .expect("create wave");
+    let card = repo
+        .card_create(NewCard {
+            wave_id: wave.id,
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .expect("create card");
+    repo.terminal_create(NewTerminal {
+        card_id: card.id,
+        program: "sleep 30".into(),
+        cwd: workspace_root().display().to_string(),
+        env: json!({}),
+        theme: RequestTheme::default_dark(),
+    })
+    .await
+    .expect("create terminal")
+}
+
+/// Waits for the grandchild to publish its pid, then parses it.
+async fn wait_for_pid_file(path: &Path) -> i32 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(raw) = std::fs::read_to_string(path)
+            && let Ok(pid) = raw.trim().parse::<i32>()
+        {
+            return pid;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the setsid'd grandchild never wrote its pid to {}",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// True when `pid` still names a live (non-zombie) process. A zombie has
+/// already closed every fd it held, so it proves nothing about the pty slave.
+fn process_is_alive(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // `pid (comm) STATE ...`; `comm` may contain spaces and parens, so split at
+    // the LAST ')'.
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    matches!(rest.split_whitespace().next(), Some(state) if state != "Z" && state != "X")
 }
 
 async fn spawn_proc_supervisor(control_sock: &Path) -> Child {

@@ -38,6 +38,10 @@ pub(crate) const SCROLLBACK_MAX_LINES: usize = 2000;
 const SPAWN_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Teardown grace between SIGTERM and SIGKILL for a renderer's pty child.
+///
+/// An upper bound, not a fixed sleep: teardown waits on the attach reader and
+/// proceeds to the SIGKILL as soon as the child's exit has been observed (#993
+/// F3).
 const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
 
 /// Bounded wait, after SIGKILL, for the supervisor attach reader to observe
@@ -51,13 +55,37 @@ const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
 /// grandchild keeps the pty slave open. The wait is on the attach reader's
 /// own completion rather than a sleep, so it costs nothing on the common path
 /// (the reader is usually already finished) and it does not silently depend on
-/// the two constants happening to be ordered — but the const assert below
-/// makes the ordering a compile error to break anyway.
+/// the two constants happening to be ordered — but the const asserts below
+/// make a degenerate ordering a compile error anyway.
 const EXIT_PERSIST_GRACE: Duration = Duration::from_millis(1000);
 
+/// What the budget actually has to cover, in order:
+///
+///   `PTY_DRAIN_GRACE` (supervisor holds `Exited` back)
+/// + reap → seal → broadcast → UDS write → attach-reader wakeup
+/// + `terminal_set_exit` + `session_projection_complete_for_terminal`
+/// + the plan-task completion hook (one more DB transaction).
+///
+/// Only the first term is a compile-time constant; everything after it is
+/// runtime work whose latency depends on the DB and on scheduler pressure, so
+/// **no** const assert can prove the budget is sufficient — the terminal-exit
+/// sweep is the real backstop, and `await_exit_persisted` WARNs on timeout so a
+/// too-small budget is visible in the logs rather than silent.
+///
+/// What the asserts below *do* buy: they fail the build if someone shrinks the
+/// margin to the point where the constant part alone eats most of the budget.
+/// The plain `>` the first version used would have been satisfied by
+/// `PTY_DRAIN_GRACE = 999ms`, which is why the ratio and the absolute headroom
+/// are both pinned here (#993 R2/F4).
 const _: () = assert!(
-    EXIT_PERSIST_GRACE.as_millis() > calm_proc_supervisor::PTY_DRAIN_GRACE.as_millis(),
-    "terminal teardown must outlast the supervisor's pty drain grace (#993 R1)"
+    EXIT_PERSIST_GRACE.as_millis() >= calm_proc_supervisor::PTY_DRAIN_GRACE.as_millis() * 4,
+    "terminal teardown must give the post-drain persistence work several times the \
+     supervisor's pty drain grace, not merely one millisecond more (#993 R1)"
+);
+const _: () = assert!(
+    EXIT_PERSIST_GRACE.as_millis() - calm_proc_supervisor::PTY_DRAIN_GRACE.as_millis() >= 500,
+    "terminal teardown must leave at least 500ms of absolute headroom over the pty drain \
+     grace for reap → broadcast → terminal_set_exit → projection → task hook (#993 R1)"
 );
 
 /// One work item on the PTY-writer channel. Carries the bytes to write
@@ -164,26 +192,27 @@ impl RendererEntry {
     ///
     /// It breaks out of its loop right after handling `Exited` — which is also
     /// where it persists the terminal's exit — so completing normally is the
-    /// signal that the exit landed. On timeout we abort it and warn: the
-    /// terminal-exit sweep is the retry (#993 R1).
-    async fn await_exit_persisted(&self, budget: Duration) {
+    /// signal that the exit landed. Returns `true` in that case.
+    ///
+    /// On timeout the handle is put back (so a later stage can keep waiting and
+    /// `abort_tasks` can still abort it) and `false` is returned; the caller
+    /// decides whether to escalate. Never aborts on its own.
+    async fn await_exit_persisted(&self, budget: Duration) -> bool {
         let handle = self
             .attach_task
             .lock()
             .ok()
             .and_then(|mut guard| guard.take());
         let Some(mut handle) = handle else {
-            return;
+            return true;
         };
-        if tokio::time::timeout(budget, &mut handle).await.is_err() {
-            tracing::warn!(
-                terminal_id = %self.terminal_id,
-                budget_ms = budget.as_millis() as u64,
-                "supervisor attach reader did not observe Exited before teardown; \
-                 aborting it (terminal exit persistence falls back to the sweep)"
-            );
-            handle.abort();
+        if tokio::time::timeout(budget, &mut handle).await.is_ok() {
+            return true;
         }
+        if let Ok(mut guard) = self.attach_task.lock() {
+            *guard = Some(handle);
+        }
+        false
     }
 
     fn abort_tasks(&self) {
@@ -334,6 +363,26 @@ impl TerminalRendererRegistry {
 
     /// Tear down a renderer: drop the broadcast, signal Term/Kill to
     /// the supervisor via a fresh UDS connection, and remove from the map.
+    ///
+    /// # Latency contract (#993 F3) — read this before calling it in a loop
+    ///
+    /// * Common case (child dies on SIGTERM): returns as soon as the attach
+    ///   reader has persisted `Exited`, typically single-digit ms. The old
+    ///   unconditional `sleep(TERM_TO_KILL_GRACE)` is gone.
+    /// * Worst case (child ignores SIGTERM *and* a grandchild holds the pty
+    ///   slave past the supervisor's drain grace):
+    ///   `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE` = **1.2 s**.
+    ///
+    /// The batch teardown paths — `routes::waves` wave-delete,
+    /// `terminal_sweeper::sweep`, `routes::coves` — call this serially, once
+    /// per terminal, so a wave of N terminals costs up to `N * 1.2 s` in the
+    /// worst case. That is accepted deliberately rather than fanned out: those
+    /// loops interleave per-card repo writes and event emission whose ordering
+    /// the callers rely on, and every one of them is a rare
+    /// administrative/janitor path with no interactive latency budget. The
+    /// worst case also requires a wedged child *per terminal*; the realistic
+    /// batch cost is N × single-digit ms. If a fan-out ever becomes necessary,
+    /// the unit to parallelise is this call, not the surrounding repo work.
     pub async fn drop_entry(&self, terminal_id: &str) {
         let entry = self
             .entries
@@ -346,12 +395,26 @@ impl TerminalRendererRegistry {
 
         tracing::info!(terminal_id, "terminal renderer registry dropping entry");
         entry.shutdown_signal(ProcSignal::Term).await;
-        tokio::time::sleep(TERM_TO_KILL_GRACE).await;
+        // Wait on the attach reader instead of sleeping the full grace: a child
+        // that dies on SIGTERM cuts the teardown from a fixed 200ms to
+        // single-digit ms, which is what keeps the serial batch paths cheap
+        // (#993 F3). A child that ignores SIGTERM costs exactly the old 200ms.
+        let persisted = entry.await_exit_persisted(TERM_TO_KILL_GRACE).await;
+        // Unconditional, even when the child is already gone: this signals the
+        // whole *process group*, so it is also what reaps group members that
+        // outlived the SIGTERM. Skipping it would leak them.
         entry.shutdown_signal(ProcSignal::Kill).await;
         // #993 R1: `Exited` can lag the kill by up to the supervisor's pty
         // drain grace, and the attach reader is what persists it. Let it
         // finish before the abort.
-        entry.await_exit_persisted(EXIT_PERSIST_GRACE).await;
+        if !persisted && !entry.await_exit_persisted(EXIT_PERSIST_GRACE).await {
+            tracing::warn!(
+                terminal_id,
+                budget_ms = EXIT_PERSIST_GRACE.as_millis() as u64,
+                "supervisor attach reader did not observe Exited before teardown; \
+                 aborting it (terminal exit persistence falls back to the sweep)"
+            );
+        }
         entry.abort_tasks();
     }
 }
