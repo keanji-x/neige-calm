@@ -402,12 +402,16 @@ export function parse(markdown: string): MarkdownParseResult {
       for (const child of node.children ?? []) collectDefinitions(child);
     };
     collectDefinitions(root);
+    const value: NormalizedMarkdownAst & { sourceLines?: readonly string[] } = {
+      type: 'root', dialect: 'gfm', children: normalizeBlocks(root.children, definitions),
+      diagnostics: diagnosticsFor(markdown, root), position: positionOf(root),
+    };
+    Object.defineProperty(value, 'sourceLines', {
+      value: markdown.replace(/\r\n?/g, '\n').split('\n'), enumerable: false,
+    });
     return {
       status: 'ready',
-      value: {
-        type: 'root', dialect: 'gfm', children: normalizeBlocks(root.children, definitions),
-        diagnostics: diagnosticsFor(markdown, root), position: positionOf(root),
-      },
+      value,
     };
   } catch (cause) {
     return {
@@ -437,13 +441,17 @@ export function extractOutline<Context>(
   const outline: HeadingOutline[] = [];
   let globalOrdinal = 0;
   for (const { ast, context } of inputs) {
+    const sourceLines = (ast as NormalizedMarkdownAst & { sourceLines?: readonly string[] }).sourceLines;
     let localOrdinal = 0;
     const visit = (nodes: readonly NormalizedBlock[]): void => {
       for (const node of nodes) {
         if (options.traversal === 'recursive' && node.type === 'blockquote') visit(node.children);
         if (node.type === 'list') for (const item of node.children) visit(item.children);
       if (node.type !== 'heading' || node.depth > options.maxDepth) continue;
-      if (options.traversal === 'line-level' && node.position.start.column > 4) continue;
+      if (options.traversal === 'line-level') {
+        const sourceLine = sourceLines?.[node.position.start.line - 1];
+        if (sourceLine !== undefined && /^[ \t]*#/.test(sourceLine) && !/^ {0,3}#/.test(sourceLine)) continue;
+      }
       const text = inlineText(node.children, options.referenceText);
       if (options.textPolicy === 'non-empty-heading-label' && text.length === 0) continue;
       const input = { heading: node, globalOrdinal, localOrdinal, context };

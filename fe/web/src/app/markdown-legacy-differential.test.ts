@@ -34,6 +34,11 @@ const CORPUS = Object.freeze([
   ['fenced backticks', '# Before\n```md\n## Hidden\n```\n## After'],
   ['fenced tildes', '~~~\n# Hidden\n~~~\n# Visible'],
   ['indented code', '    # Hidden\n# Visible'],
+  ['tab heading', '# Root\n\t## Tab\n## Tail'],
+  ['tab space heading', '# Root\n\t ## Tab\n## Tail'],
+  ['space tab heading', '# Root\n \t## Tab\n## Tail'],
+  ['two spaces tab heading', '# Root\n  \t## Tab\n## Tail'],
+  ['tab list then heading', '# Root\n-\ta\n\t## Tab\n## Tail'],
   ['table cell hash', '| value |\n| --- |\n| # cell |\n# Visible'],
   ['html block', '<div>block</div>\n\n# Visible'],
   ['reference full case', '# [label][ID]\n\n[ID]: /target'],
@@ -65,6 +70,7 @@ const REQUIRED_CORPUS_CATEGORIES = Object.freeze({
   table: ['table cell hash'],
   'reference-style': ['reference full case', 'reference collapsed', 'reference shortcut', 'reference image'],
   'html-block': ['html block'],
+  tab: ['tab heading', 'tab space heading', 'space tab heading', 'two spaces tab heading', 'tab list then heading'],
 });
 
 function normalized(markdown: string, policy: 'report' | 'file-viewer') {
