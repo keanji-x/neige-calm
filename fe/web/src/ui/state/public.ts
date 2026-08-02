@@ -4,10 +4,16 @@ import type { ActionDispatch, AnyActionArg, Dispatch, SetStateAction } from 'rea
 
 import type { Persistent } from '../../../../core/state/types.ts';
 
+type ContainsPersistent<T> = (
+  T extends unknown ? (T extends Persistent<unknown> ? true : never) : never
+) extends never
+  ? false
+  : true;
+
 export function useState<T>(
   initialState: T | (() => T),
-): [T] extends [Persistent<unknown>] ? never : [T, Dispatch<SetStateAction<T>>];
-export function useState<T = undefined>(): [T] extends [Persistent<unknown>]
+): ContainsPersistent<T> extends true ? never : [T, Dispatch<SetStateAction<T>>];
+export function useState<T = undefined>(): ContainsPersistent<T> extends true
   ? never
   : [T | undefined, Dispatch<SetStateAction<T | undefined>>];
 export function useState(initialState?: unknown) {
@@ -17,12 +23,12 @@ export function useState(initialState?: unknown) {
 export function useReducer<S, A extends AnyActionArg>(
   reducer: (previousState: S, ...args: A) => S,
   initialState: S,
-): [S] extends [Persistent<unknown>] ? never : [S, ActionDispatch<A>];
+): ContainsPersistent<S> extends true ? never : [S, ActionDispatch<A>];
 export function useReducer<S, I, A extends AnyActionArg>(
   reducer: (previousState: S, ...args: A) => S,
   initializerArgument: I,
   initializer: (argument: I) => S,
-): [S] extends [Persistent<unknown>] ? never : [S, ActionDispatch<A>];
+): ContainsPersistent<S> extends true ? never : [S, ActionDispatch<A>];
 export function useReducer(reducer: unknown, initialState: unknown, initializer?: unknown) {
   return (
     reactUseReducer as unknown as (

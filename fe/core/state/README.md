@@ -6,7 +6,7 @@
 
 ## 契约
 
-`Persistent<T>` 只存在于编译期，因为运行时包装会改变数据和值身份。codec 把解码失败作为结果返回，因为损坏数据必须与“没有数据”区分。storage 结果把读取失败、解码失败、普通写失败和配额超限显式分类，因为调用方需要分别决定保留旧值、采用默认值或提示用户；overlay 读取复用该显式结果，保证失败不会伪装成 missing。overlay 状态固定为 `[Persistent<T>, setter]`，因为它必须与本地 state 的消费形状对称。overlay key 固定为五元组，因为持久化与失效都依赖同一 key 族；同步更新返回含 previous/next 的逐调用 mutation，再把它传给 persist/rollback，因为乐观写必须立即可见且并发失败不能串用快照。
+`Persistent<T>` 只存在于编译期，因为运行时包装会改变数据和值身份。可空持久状态写作 `Persistent<T> | null`，不要写 `Persistent<T | null>`：brand 标记的是持久化槽位，而“缺失”是与槽位是否持久化正交的维度。codec 把解码失败作为结果返回，因为损坏数据必须与“没有数据”区分。storage 结果把读取失败、解码失败、普通写失败和配额超限显式分类，因为调用方需要分别决定保留旧值、采用默认值或提示用户；overlay 读取复用该显式结果，保证失败不会伪装成 missing。overlay 状态固定为 `[Persistent<T>, setter]`，因为它必须与本地 state 的消费形状对称。overlay key 固定为五元组，因为持久化与失效都依赖同一 key 族；同步更新返回含 previous/next 的逐调用 mutation，再把它传给 persist/rollback，因为乐观写必须立即可见且并发失败不能串用快照。
 
 ## 故意不做
 

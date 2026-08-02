@@ -21,6 +21,8 @@ describe('core/state public type contract', () => {
 
   it('keeps the brand phantom and exposes codec and storage error channels', () => {
     expectTypeOf<Persistent<{ count: number }>>().toMatchTypeOf<{ count: number }>();
+    expectTypeOf<Persistent<string>>().toMatchTypeOf<string>();
+    expectTypeOf<null>().toMatchTypeOf<Persistent<string> | null>();
     expectTypeOf<Codec<number>>().toHaveProperty('encode');
     expectTypeOf<Codec<number>>().toHaveProperty('decode');
     expectTypeOf<StorageReadResult<number>['status']>().toEqualTypeOf<
