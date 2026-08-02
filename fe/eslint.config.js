@@ -57,7 +57,9 @@ export default tseslint.config(
     files: ['core/markdown/**'],
     rules: {
       // Reason: core/markdown is the sole public adapter allowed to own markdown tooling.
-      'no-restricted-imports': 'off',
+      'no-restricted-imports': ['error', {
+        paths: nodeBuiltinImports.map((name) => ({ name, message: 'Core must remain platform-independent.' })),
+      }],
     },
   },
 );

@@ -23,6 +23,15 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const error = checkCoreNoJsx(resolve(fixtures, caseName, kind, 'core'));
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
+  if (caseName === 'core-markdown-node-import') {
+    const filePath = resolve(fixtures, caseName, kind, 'core/markdown/case.js');
+    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
+      filePath: resolve(import.meta.dirname, '../../core/markdown/case.js'),
+    });
+    const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
+    return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
+  }
   if (caseName.startsWith('core-platform-')) {
     const cwd = resolve(fixtures, caseName, kind);
     const configPath = resolve(cwd, 'tsconfig.json');
@@ -66,6 +75,7 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 
 describe('architecture fixtures', () => {
   const expectedViolation = new Map<string, string>([
+    ['core-markdown-node-import', 'node:fs'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
     ['core-no-node-global-buffer', 'Buffer'],

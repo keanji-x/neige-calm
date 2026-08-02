@@ -547,7 +547,7 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 | 4 | `events` 归属 | 三分：`core/events`（纯）+ `systems/events`（平台）+ `app/events`（React 胶水） | §4.6/4.7 |
 | 5 | 重复实现检测 | **硬编码清单**，展开成具体 import/path/entry 约束（不能只引 oracle ID —— oracle ID 不是 lint 配置）。范围是 `INV-DUP-001..010` **全部**（实测到 010，前一版写 006 是截断）及后续追加项。AST 相似度只作非阻断报告 | 阈值会被重命名/抽 helper/JSX 展开漂移，相似表单会误报。只写 001..006 会把已知重复排除在闸门外 |
 | 6 | `declare module` 类型注册 | **保留机制，但接口面必须可直读**：`systems/cards/public.ts` 重新导出合并后的完整接口类型；§3.2 的 `no-module-runtime-state` 豁免 type-only 声明 | `GATE-CARD-083/084` 证明它是类型穷尽的唯一机制，无法改注入。但单读 `registry.ts` 会看到"用了未声明字段"——用 `public.ts` 的再导出消除这个心智负担 |
-| 7 | `ui` 可依赖的 `core/types` 白名单 | **只允许两类**：①branded ID 类型（`WaveId`/`CoveId`/`CardId` 等，无字段无方法）；②无障碍原语类型（role 枚举、focus 目标描述）。**任何带业务字段的 domain 类型一律禁止** | "`ui` 不得 import domain"过严，Dialog/Menu 确实需要标识与 a11y 类型。但白名单必须封闭可枚举，否则会变成 domain 的后门 |
+| 7 | `ui` 可依赖的 `core/types` 白名单 | **只允许三类**：①branded ID 类型（`WaveId`/`CoveId`/`CardId` 等，无字段无方法）；②无障碍原语类型（role 枚举、focus 目标描述）；③基础设施类型（`Persistent<T>`、codec、storage port）。判据是类型不得携带业务 domain 字段；`core/domain` 始终禁止 | "`ui` 不得 import domain"过严，Dialog/Menu 确实需要标识与 a11y 类型。但白名单必须封闭可枚举，否则会变成 domain 的后门 |
 
 **升级 `systems/editor` 为 workspace 的触发条件**（写死，免得凭感觉）：出现第二个 JS 消费端 / 需要独立版本发布 / 依赖树或构建耗时需要隔离。
 
