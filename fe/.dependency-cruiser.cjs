@@ -1,7 +1,7 @@
 /** @type {import('dependency-cruiser').IConfiguration} */
 module.exports = {
   forbidden: [
-    { name: 'core-no-web-layers', severity: 'error', from: { path: '^core/' }, to: { path: '^web/src/(app|features|systems|ui)/' } },
+    { name: 'core-no-web-layers', severity: 'error', from: { path: '^core/' }, to: { path: '^web/src/(app|features|styles|systems|ui)/' } },
     // UI may consume branded/a11y primitives and core/state infrastructure types only;
     // business-field domain types remain forbidden regardless of type-only imports.
     { name: 'ui-only-core-type-whitelist', severity: 'error', from: { path: '^web/src/ui/' }, to: { path: '^(web/src/(app|features|systems)/|core/(?!(types/(ids|a11y)|state/types)\\.ts$))' } },

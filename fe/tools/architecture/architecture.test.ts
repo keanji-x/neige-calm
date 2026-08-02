@@ -84,6 +84,7 @@ describe('architecture fixtures', () => {
     ['core-no-platform-globals', 'WebSocket'],
     ['core-no-platform-global-fetch', 'fetch'],
     ['core-no-platform-global-location', 'location'],
+    ['core-no-web-styles', 'web/src/styles'],
     ['core-platform-node-types', '2591'],
     ['core-platform-types', '2584'],
     ['core-no-jsx', 'bad.tsx'],
