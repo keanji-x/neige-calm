@@ -48,7 +48,9 @@
 //! seeds the canonical "agent hasn't run yet" defaults.
 
 use crate::db::RouteRepo;
-use crate::db::sqlite::{card_body_crdt_get_tx, card_update_with_crdt_tx, project_tasks_tx};
+use crate::db::sqlite::{
+    TaskProjectionOutcome, card_body_crdt_get_tx, card_update_with_crdt_tx, project_tasks_tx,
+};
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
@@ -58,6 +60,40 @@ use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
+
+/// Re-evaluate the task projection from the report CRDT inside the caller's
+/// write transaction. `payload` is used only to seed rows whose CRDT has not
+/// been initialized yet; once `body_crdt` exists it is the sole source.
+pub async fn tasks_rebuild_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wave_id: &str,
+) -> crate::error::Result<TaskProjectionOutcome> {
+    let (payload, body_crdt): (String, Option<Vec<u8>>) = sqlx::query_as(
+        "SELECT json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+    )
+    .bind(wave_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let payload: WaveReportPayload = serde_json::from_str(&payload).map_err(|error| {
+        CalmError::Internal(format!("decode report payload for task rebuild: {error}"))
+    })?;
+    let mut doc = match body_crdt {
+        Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|error| {
+            CalmError::Internal(format!("load report CRDT for task rebuild: {error}"))
+        })?,
+        None => ReportDoc::from_payload(&payload),
+    };
+    doc.ensure_blocks_layout(payload.blocks.as_deref())
+        .map_err(|error| {
+            CalmError::Internal(format!("migrate report CRDT for task rebuild: {error}"))
+        })?;
+    let blocks = doc.blocks_snapshot().map_err(|error| {
+        CalmError::Internal(format!("snapshot report CRDT for task rebuild: {error}"))
+    })?;
+    let (declarations, diagnostics) =
+        calm_types::report_blocks::tasks::project_task_declarations(&blocks);
+    Ok(project_tasks_tx(tx, wave_id, &declarations, &diagnostics).await?)
+}
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
 use crate::wave_report_task_guard::{guard_task_declarations, normalize_report_op};
 use std::sync::Arc;

@@ -17,6 +17,10 @@ type FrozenDeclarationRow = (
     String,
     String,
     String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
     i64,
     Option<String>,
     Option<String>,
@@ -68,7 +72,7 @@ pub async fn evaluate_schedulability_tx(
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait")
         || (configured_policy.is_none() && declarations.iter().any(|d| d.tombstoned_by_user));
     let inflight: Vec<(String,)> = sqlx::query_as(
-        "SELECT key FROM tasks WHERE wave_id=?1 AND status IN ('dispatched','running','verifying')",
+        "SELECT key FROM tasks WHERE wave_id=?1 AND declared_by='spec' AND origin='block' AND status IN ('dispatched','running','verifying')",
     )
     .bind(wave_id)
     .fetch_all(&mut **tx)
@@ -96,7 +100,7 @@ pub async fn evaluate_schedulability_tx(
     let mut verdicts = Vec::with_capacity(declarations.len());
     for declaration in declarations {
         let mut diagnostics = block_local_diags
-            .get(declaration.block_index)
+            .get(declaration.block_index.unwrap_or(usize::MAX))
             .cloned()
             .unwrap_or_default();
         for (_, dependency) in unknown.iter().filter(|(key, _)| key == &declaration.key) {
@@ -112,21 +116,34 @@ pub async fn evaluate_schedulability_tx(
             ));
         }
         for reference in &declaration.refs {
-            let Some((dst_wave, _)) = parse_destination(reference) else {
+            let target: Option<(String, String)> = if let Some((dst_wave, _)) =
+                parse_destination(reference)
+            {
+                sqlx::query_as("SELECT w.cove_id,c.kind FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1")
+                    .bind(dst_wave).fetch_optional(&mut **tx).await?
+            } else if let Some(card_id) = reference
+                .strip_prefix("neige://card/")
+                .filter(|id| !id.is_empty() && !id.contains('/'))
+            {
+                sqlx::query_as("SELECT w.cove_id,c.kind FROM cards card JOIN waves w ON w.id=card.wave_id JOIN coves c ON c.id=w.cove_id WHERE card.id=?1")
+                    .bind(card_id).fetch_optional(&mut **tx).await?
+            } else {
                 continue;
             };
-            let allowed: Option<(i64,)> = sqlx::query_as(
-                "SELECT 1 FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1 AND (w.cove_id=?2 OR c.kind='system')",
-            )
-            .bind(dst_wave)
-            .bind(&source_cove)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if allowed.is_none() {
-                diagnostics.push(Diagnostic::new(
+            match target {
+                None => diagnostics.push(Diagnostic::new(
                     "refs",
-                    format!("cross-cove reference `{reference}` is not schedulable"),
-                ));
+                    format!("reference target `{reference}` does not exist"),
+                )),
+                Some((target_cove, target_kind))
+                    if target_cove != source_cove && target_kind != "system" =>
+                {
+                    diagnostics.push(Diagnostic::new(
+                        "refs",
+                        format!("cross-cove reference `{reference}` is not schedulable"),
+                    ));
+                }
+                Some(_) => {}
             }
         }
         if effective_wait
@@ -147,8 +164,68 @@ pub async fn evaluate_schedulability_tx(
         });
     }
 
-    // Pending rows are outputs, never inputs. Only clean spec declarations compete for
-    // the capacity left after immutable in-flight input, in block order then key order.
+    // Freeze all persisted declaration columns before ceiling admission. A stale
+    // in-flight declaration cannot consume capacity, and a terminal key can never
+    // produce a new live row.
+    let frozen: Vec<FrozenDeclarationRow> = sqlx::query_as(
+        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by FROM tasks WHERE wave_id=?1 AND status!='pending'",
+    )
+    .bind(wave_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let frozen_by_key: BTreeMap<_, _> =
+        frozen.into_iter().map(|row| (row.1.clone(), row)).collect();
+    for (declaration, verdict) in declarations.iter().zip(&mut verdicts) {
+        let Some((
+            status,
+            _key,
+            kind,
+            goal,
+            context,
+            acceptance,
+            cwd,
+            depends,
+            priority,
+            gate,
+            declared_by,
+        )) = frozen_by_key.get(&declaration.key)
+        else {
+            continue;
+        };
+        let expected_context = serde_json::to_string(&declaration.context)
+            .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
+        let expected_depends = serde_json::to_string(&declaration.depends_on)
+            .map_err(|e| CalmError::Internal(format!("serialize task dependencies: {e}")))?;
+        let expected_gate = declaration
+            .gate
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
+        let changed = kind != &declaration.kind
+            || goal != &declaration.goal
+            || context != &expected_context
+            || acceptance != &declaration.acceptance
+            || cwd != &declaration.cwd
+            || depends != &expected_depends
+            || priority != &declaration.priority
+            || gate != &expected_gate
+            || declared_by.as_deref() != Some(declaration.declared_by.as_str());
+        if changed || !matches!(status.as_str(), "dispatched" | "running" | "verifying") {
+            verdict.diagnostics.push(Diagnostic::new(
+                "key",
+                if changed {
+                    "task is already executing; declaration changes were not applied"
+                } else {
+                    "task key has already completed; declare a new key instead"
+                },
+            ));
+            verdict.schedulable = false;
+        }
+    }
+
+    // Pending rows are outputs, never inputs. Only clean declarations that can
+    // produce a live row compete for remaining capacity.
     let mut candidates: Vec<usize> = verdicts
         .iter()
         .enumerate()
@@ -156,49 +233,22 @@ pub async fn evaluate_schedulability_tx(
             verdict.schedulable
                 && declarations[*i].declared_by == "spec"
                 && !inflight_key_set.contains(declarations[*i].key.as_str())
+                && !frozen_by_key.contains_key(&declarations[*i].key)
         })
         .map(|(i, _)| i)
         .collect();
-    candidates.sort_by_key(|i| (declarations[*i].block_index, declarations[*i].key.clone()));
+    candidates.sort_by_key(|i| {
+        (
+            declarations[*i].block_index.unwrap_or(usize::MAX),
+            declarations[*i].key.clone(),
+        )
+    });
     for index in candidates.into_iter().skip(capacity) {
         verdicts[index].diagnostics.push(Diagnostic::new(
             "key",
             format!("spec task ceiling of {ceiling} is reached"),
         ));
         verdicts[index].schedulable = false;
-    }
-    for (declaration, verdict) in declarations.iter().zip(&mut verdicts) {
-        let row: Option<FrozenDeclarationRow> =
-            sqlx::query_as(
-                "SELECT status,kind,goal,depends_on_json,priority,gate_json,declared_by FROM tasks WHERE wave_id=?1 AND key=?2 AND status!='pending'",
-            )
-            .bind(wave_id)
-            .bind(&declaration.key)
-            .fetch_optional(&mut **tx)
-            .await?;
-        if let Some((_status, kind, goal, depends, priority, gate, declared_by)) = row {
-            let expected_depends = serde_json::to_string(&declaration.depends_on)
-                .map_err(|e| CalmError::Internal(format!("serialize task dependencies: {e}")))?;
-            let expected_gate = declaration
-                .gate
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
-            if kind != declaration.kind
-                || goal != declaration.goal
-                || depends != expected_depends
-                || priority != declaration.priority
-                || gate != expected_gate
-                || declared_by.as_deref() != Some(declaration.declared_by.as_str())
-            {
-                verdict.diagnostics.push(Diagnostic::new(
-                    "key",
-                    "task is already executing; declaration changes were not applied",
-                ));
-                verdict.schedulable = false;
-            }
-        }
     }
     Ok(verdicts)
 }
@@ -220,25 +270,45 @@ pub async fn project_tasks_tx(
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<TaskProjectionOutcome> {
     let verdicts = evaluate_schedulability_tx(tx, wave_id, declarations, block_local_diags).await?;
-    let verdict_by_key: BTreeMap<_, _> = verdicts
+    let schedulable_by_key: BTreeMap<_, _> = verdicts
         .iter()
         .filter(|v| !v.key.is_empty())
-        .map(|v| (v.key.as_str(), v))
+        .map(|v| (v.key.clone(), v.schedulable))
         .collect();
     let existing: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id,key,status FROM tasks WHERE wave_id=?1 AND origin='block'")
             .bind(wave_id)
             .fetch_all(&mut **tx)
             .await?;
+    let mut verdicts = verdicts;
+    let verdict_index_by_key: BTreeMap<_, _> = verdicts
+        .iter()
+        .enumerate()
+        .filter(|(_, verdict)| !verdict.key.is_empty())
+        .map(|(index, verdict)| (verdict.key.clone(), index))
+        .collect();
     let mut changed = BTreeSet::new();
     for (id, key, status) in &existing {
-        if !verdict_by_key
-            .get(key.as_str())
-            .is_some_and(|v| v.schedulable)
-            && status == "pending"
-            && task_delete_pending_tx(tx, id).await? != 0
-        {
-            changed.insert(key.clone());
+        if !schedulable_by_key.get(key).is_some_and(|value| *value) && status == "pending" {
+            if task_delete_pending_tx(tx, id).await? != 0 {
+                changed.insert(key.clone());
+            } else if let Some(index) = verdict_index_by_key.get(key) {
+                verdicts[*index].diagnostics.push(Diagnostic::new(
+                    "key",
+                    "task is already executing and cannot be withdrawn immediately",
+                ));
+                verdicts[*index].schedulable = false;
+            } else {
+                verdicts.push(BlockVerdict {
+                    block_id: String::new(),
+                    key: key.clone(),
+                    diagnostics: vec![Diagnostic::new(
+                        "key",
+                        "task is already executing and cannot be withdrawn immediately",
+                    )],
+                    schedulable: false,
+                });
+            }
         }
     }
     let now = now_ms();
@@ -287,29 +357,6 @@ pub async fn project_tasks_tx(
     })
 }
 
-pub async fn tasks_rebuild_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
-) -> Result<TaskProjectionOutcome> {
-    let payload: String = sqlx::query_scalar(
-        "SELECT json(payload) FROM cards WHERE wave_id=?1 AND kind='wave-report'",
-    )
-    .bind(wave_id)
-    .fetch_one(&mut **tx)
-    .await?;
-    let payload: calm_types::wave_report::WaveReportPayload = serde_json::from_str(&payload)
-        .map_err(|e| CalmError::Internal(format!("decode report payload for rebuild: {e}")))?;
-    let blocks = payload.blocks.unwrap_or_else(|| {
-        calm_types::report_blocks::reassign_ids(
-            &[],
-            &calm_types::report_blocks::split_body(&payload.body),
-        )
-    });
-    let (declarations, local) =
-        calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    project_tasks_tx(tx, wave_id, &declarations, &local).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,7 +365,7 @@ mod tests {
 
     fn declaration(index: usize, key: &str) -> TaskDeclaration {
         TaskDeclaration {
-            block_index: index,
+            block_index: Some(index),
             block_id: format!("b_{index:04x}"),
             key: key.into(),
             kind: "codex".into(),

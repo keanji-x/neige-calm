@@ -28,7 +28,9 @@ pub struct GateStepInput {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskDeclaration {
-    pub block_index: usize,
+    /// Present only for declarations projected from report blocks. Plan-upsert
+    /// validation has no block whose diagnostics could be indexed.
+    pub block_index: Option<usize>,
     pub block_id: String,
     pub key: String,
     pub kind: String,
@@ -333,7 +335,7 @@ pub fn project_task_declarations(
             .get("tombstone")
             .is_some_and(|value| !value.is_null());
         let declaration = TaskDeclaration {
-            block_index: index,
+            block_index: Some(index),
             block_id: block.id.clone(),
             key: payload["key"].as_str().expect("validated key").to_string(),
             kind: payload
@@ -459,7 +461,7 @@ mod tests {
 
     fn declaration(key: &str, dependencies: &[&str]) -> TaskDeclaration {
         TaskDeclaration {
-            block_index: 0,
+            block_index: None,
             block_id: key.into(),
             key: key.into(),
             kind: "codex".into(),

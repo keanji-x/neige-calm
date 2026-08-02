@@ -111,7 +111,7 @@ pub use task::{
 };
 pub use task_projection::{
     BlockVerdict, TaskProjectionOutcome, evaluate_schedulability_tx, project_tasks_tx,
-    task_delete_pending_tx, tasks_rebuild_tx,
+    task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_update_tx};
 

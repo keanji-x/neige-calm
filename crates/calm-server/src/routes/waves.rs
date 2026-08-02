@@ -62,7 +62,9 @@ use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::validate_transition;
-use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
+use crate::wave_report::{
+    WaveReportPayload, persist_report, resolve_report_for_wave, tasks_rebuild_tx,
+};
 use crate::wave_report_read::load_report_read_snapshot;
 use axum::{
     Json, Router,
@@ -925,6 +927,7 @@ pub(crate) async fn update_wave(
     // row shape. Both share scope + actor; both land or neither does.
     let cove_id_for_event = existing.cove_id.clone();
     let wave_id_for_event = existing.id.clone();
+    let projection_policy_changed = p.spec_task_ceiling.is_some() || p.automation_policy.is_some();
     let p_for_tx = p.clone();
     let (wave, _ids) = write_with_events_typed(
         s.repo.as_ref(),
@@ -936,6 +939,11 @@ pub(crate) async fn update_wave(
             let scope = scope.clone();
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p_for_tx).await?;
+                let projection = if projection_policy_changed {
+                    Some(tasks_rebuild_tx(tx, &id).await?)
+                } else {
+                    None
+                };
                 let mut events: Vec<(EventScope, Event)> = Vec::new();
                 if let Some((from, to)) = lifecycle_change {
                     events.push((
@@ -950,9 +958,21 @@ pub(crate) async fn update_wave(
                     ));
                 }
                 events.push((
-                    scope,
+                    scope.clone(),
                     Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
                 ));
+                if let Some(projection) = projection
+                    && !projection.changed_keys.is_empty()
+                {
+                    events.push((
+                        scope,
+                        Event::PlanUpdated {
+                            wave_id: wave_id_for_event,
+                            changed_keys: projection.changed_keys,
+                            agent_message: None,
+                        },
+                    ));
+                }
                 Ok((wave, events))
             })
         },

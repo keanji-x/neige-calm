@@ -418,7 +418,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         .transpose()
         .map_err(|error| format!("task {}: invalid normalized gate_json: {error}", task.key))?;
     Ok(TaskDeclaration {
-        block_index: 0,
+        block_index: None,
         block_id: String::new(),
         key: task.key.clone(),
         kind: match task.kind {
@@ -504,8 +504,8 @@ fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task
         gate_pid_boot_id: None,
         running_deadline_ms: None,
         context_stale_at_ms: None,
-        declared_by: None,
-        origin: None,
+        declared_by: Some("spec".into()),
+        origin: Some("legacy".into()),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
