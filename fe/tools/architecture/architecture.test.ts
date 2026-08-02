@@ -28,16 +28,13 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const eslint = new ESLint({
       cwd: resolve(import.meta.dirname, '../..'),
       ignore: false,
-      overrideConfig: { rules: {
-        'architecture/no-create-context-outside-allowlist': 'off',
-        'architecture/no-module-runtime-state': 'off',
-      } },
     });
     const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../../core/markdown/case.js'),
     });
-    const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
-    return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
+    const messages = result.messages.filter((message) => message.ruleId === 'no-restricted-imports');
+    const output = messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
+    return { status: messages.length ? 1 : 0, stdout: output, stderr: '' };
   }
   if (caseName === 'react-state-hook-import') {
     const filePath = resolve(fixtures, caseName, kind, 'web/src/ui/case.ts');
@@ -60,16 +57,15 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const eslint = new ESLint({
       cwd: resolve(import.meta.dirname, '../..'),
       ignore: false,
-      overrideConfig: { rules: {
-        'architecture/no-create-context-outside-allowlist': 'off',
-        'architecture/no-module-runtime-state': 'off',
-      } },
     });
     const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../../core/platform-independent.ts'),
     });
-    const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
-    return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
+    const target = caseName === 'core-no-platform-globals' || caseName.startsWith('core-no-platform-global-') || caseName.startsWith('core-no-node-global-')
+      ? 'no-restricted-globals' : 'no-restricted-imports';
+    const messages = result.messages.filter((message) => message.ruleId === target);
+    const output = messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
+    return { status: messages.length ? 1 : 0, stdout: output, stderr: '' };
   }
   if (caseName.startsWith('eslint-')) {
     const errors = await checkEslintHygiene(resolve(fixtures, caseName, kind));

@@ -17,3 +17,5 @@
 ## 验证
 
 每道架构门禁都需要正反 fixture。检查应静态且明确；不得弱化规则，新增 allowlist 必须限定到窄路径并记录理由。
+
+模块级静态数组必须运行时冻结；`as const` 只提供类型只读性，不改变运行时对象。应写成 `Object.freeze(['a', 'b'] as const)`。模块状态规则的 pure-factory 白名单仅接受经正反 fixture 证明不会产生可变模块对象图的具体 API；扩充时须在 `tools/architecture/no-module-runtime-state.mjs` 登记 import 来源与导出名，并补误报回归及反向变异。

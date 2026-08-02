@@ -34,7 +34,7 @@ export default tseslint.config(
         paths: [{
           name: 'react',
           importNames: ['useReducer', 'useState'],
-          message: 'Import guarded state hooks from web/src/ui/state/public.ts.',
+          message: 'Import guarded state hooks from web/src/ui/state/public.ts so the Persistent<T> guard applies.',
         }],
         patterns: [
           { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
@@ -63,6 +63,19 @@ export default tseslint.config(
     files: ['web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     ignores: createContextAllowlist,
     rules: { 'architecture/no-create-context-outside-allowlist': 'error' },
+  },
+  {
+    files: ['web/src/ui/state/public.ts'],
+    rules: {
+      // Reason: this is the sole controlled React-state hook outlet with the Persistent<T> guard.
+      'architecture/no-create-context-outside-allowlist': ['error', { allowReactStateHooks: true }],
+      // Reason: this outlet must import the original React hooks that its guarded wrappers forward to.
+      'no-restricted-imports': ['error', {
+        patterns: [
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+        ],
+      }],
+    },
   },
   {
     files: ['**/*.{jsx,tsx}'],

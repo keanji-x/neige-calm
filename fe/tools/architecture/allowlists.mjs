@@ -14,6 +14,4 @@ export const moduleRuntimeStateAllowlist = [
 
 /** @type {ReadonlyArray<string>} */
 export const createContextAllowlist = [
-  // The application composition root may own cross-domain provider contexts.
-  'web/src/main.tsx',
 ];
