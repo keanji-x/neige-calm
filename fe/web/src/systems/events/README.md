@@ -6,11 +6,13 @@
 
 ## 契约
 
-- `on` 与 `onConnectionState` 只属于 `UnconfiguredEventStream`，handler 因而在 configure/start 前已经就位，不会漏掉第一帧；连接状态注册同步收到当前 `disconnected` 快照。
+- `on`、`onFrame` 与 `onConnectionState` 只属于 `UnconfiguredEventStream`，handler 因而在 configure/start 前已经就位，不会漏掉第一帧；连接状态注册同步收到当前 `disconnected` 快照。`onFrame` 投递普通事件、坏事件和两种 control frame，供端侧把完整协议交给 core reducer；`on` 保留为普通 `WireEvent` 的便捷通道。
+- configure 之后才通过仍持有的未配置引用注册 handler，会漏掉此前已同步投递的帧；这是有意的标准 pub/sub 语义，不重放历史帧，也不视为数据丢失。
 - `configure()` 只冻结 version/topics 并创建 handle，绝不调用 driver `start`，因为兼容性裁决完成前不得连接（INV-APP-021）。
 - 同一实例用相同 version 和有序 topics 重复 configure 时幂等返回同一 handle；任何不同配置抛 `TypeError`，因为一个资源不能悄悄分叉协议天花板或订阅集合。
 - 生产集成中 `app/events-glue/EventBridge` 是共享流唯一 `start()` owner（INV-APP-020）。当前 handle 的 `start()` 幂等，为后续 app slice 的唯一调用点 architecture contract test 提供行为锚点。
 - `EventBridge` 必须挂在 `ServerCompatGate` 内（INV-APP-001）。typestate 无法表达 React 树父子关系，后续 `app/events-glue` contract test 负责锁住。
+- platform driver 是 `EventSubscriptionFrame` / `eventSubscriptionFrame` 出站义务的接收者：每次连接都必须用当前 topics 与 cursor 构造必带 `since` 的订阅帧；systems port 只传入原始配置与 URL，不重复冻结 transport 编码。
 
 ## 故意不做
 

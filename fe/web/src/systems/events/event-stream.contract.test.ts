@@ -17,6 +17,7 @@ describe('event stream typestate contract', () => {
     if (compileOnly) {
       const stream = null as unknown as UnconfiguredEventStream;
       stream.on((_event: WireEvent) => void _event);
+      stream.onFrame(() => undefined);
       stream.onConnectionState(() => undefined);
       // @ts-expect-error -- unconfigured streams cannot start; delete this whole line to verify the gate.
       void stream.start;
@@ -28,6 +29,8 @@ describe('event stream typestate contract', () => {
       void configured.on;
       // @ts-expect-error -- configured handles cannot be configured again.
       void configured.configure;
+      // @ts-expect-error -- frame handlers register before configure so control frames cannot be missed.
+      void configured.onFrame;
     }
     expectTypeOf<UnconfiguredEventStream>().not.toHaveProperty('start');
     expectTypeOf<ConfiguredEventStream>().not.toHaveProperty('configure');
@@ -46,7 +49,6 @@ describe('event stream typestate contract', () => {
     expect(() => stream.configure({ syncEventVersion: 2, topics: ['*'] })).toThrow(TypeError);
     expect(() => stream.configure({ syncEventVersion: 2, topics: ['wave:w1', '*'] })).toThrow(TypeError);
     expect(() => stream.configure({ syncEventVersion: 3, topics: ['*'] })).toThrow(TypeError);
-    first.start();
     first.start();
     expect(calls).toEqual(['start']);
   });

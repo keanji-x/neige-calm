@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ConnectionState, EventStreamDriver, EventStreamSink } from './event-stream.js';
+import type { EventStreamDriver, EventStreamSink } from './event-stream.js';
 import { EventStream } from './event-stream.js';
 
 describe('EventStream behavior', () => {
@@ -33,8 +33,7 @@ describe('EventStream behavior', () => {
     const states: string[] = [];
     const driver: EventStreamDriver = {
       start: (_configuration, _url, sink) => {
-        const connecting: string = 'connecting';
-        sink.connectionState(connecting as ConnectionState);
+        sink.connectionState('connecting');
         sink.frame({
           type: 'event',
           event: { ev: 'cove.deleted', data: { id: 'c1' } },
@@ -52,6 +51,79 @@ describe('EventStream behavior', () => {
 
     expect(events).toEqual(['cove.deleted:1']);
     expect(states).toEqual(['disconnected', 'connecting', 'connected']);
+  });
+
+  it('delivers every frame variant through the public frame consumer', () => {
+    let sink: EventStreamSink | undefined;
+    const seen: string[] = [];
+    const stream = EventStream.create('ws://test.invalid/api/events', {
+      start: (_configuration, _url, value) => { sink = value; },
+      stop: () => undefined,
+    });
+    stream.onFrame((frame) => seen.push(frame.type));
+    stream.configure({ syncEventVersion: 2, topics: ['*'] }).start();
+
+    sink?.frame({ type: 'replay-complete', id: 4 });
+    sink?.frame({ type: 'snapshot-required' });
+    sink?.frame({
+      type: 'malformed-event',
+      id: 5,
+      eventVersion: 2,
+      error: { kind: 'decode', message: 'bad event', cause: null },
+    });
+    sink?.frame({
+      type: 'event',
+      event: { ev: 'cove.deleted', data: { id: 'c1' } },
+      meta: { id: 6, eventVersion: 2 },
+    });
+
+    expect(seen).toEqual(['replay-complete', 'snapshot-required', 'malformed-event', 'event']);
+  });
+
+  it('keeps consecutive starts idempotent', () => {
+    let startCount = 0;
+    const configured = EventStream.create('ws://test.invalid/api/events', {
+      start: () => { startCount += 1; },
+      stop: () => undefined,
+    }).configure({ syncEventVersion: 2, topics: ['*'] });
+
+    configured.start();
+    configured.start();
+
+    expect(startCount).toBe(1);
+  });
+
+  it('can start again after it is stopped', () => {
+    let startCount = 0;
+    const configured = EventStream.create('ws://test.invalid/api/events', {
+      start: () => { startCount += 1; },
+      stop: () => undefined,
+    }).configure({ syncEventVersion: 2, topics: ['*'] });
+
+    configured.start();
+    configured.stop();
+    configured.start();
+
+    expect(startCount).toBe(2);
+  });
+
+  it('ignores driver delivery after stop', () => {
+    let sink: EventStreamSink | undefined;
+    const seen: string[] = [];
+    const stream = EventStream.create('ws://test.invalid/api/events', {
+      start: (_configuration, _url, value) => { sink = value; },
+      stop: () => undefined,
+    });
+    stream.onFrame((frame) => seen.push(frame.type));
+    stream.onConnectionState((state) => seen.push(state));
+    const configured = stream.configure({ syncEventVersion: 2, topics: ['*'] });
+    configured.start();
+    configured.stop();
+
+    sink?.frame({ type: 'snapshot-required' });
+    sink?.connectionState('connected');
+
+    expect(seen).toEqual(['disconnected']);
   });
 
   it('misses an immediate first frame when a handler is registered after start', () => {

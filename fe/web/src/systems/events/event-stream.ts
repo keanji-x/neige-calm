@@ -3,6 +3,7 @@ import type { EventFrame, EventMeta, Topic } from '../../../../core/events/proto
 
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 export type EventHandler = (event: WireEvent, meta: EventMeta) => void;
+export type EventFrameHandler = (frame: EventFrame) => void;
 export type ConnectionStateHandler = (state: ConnectionState) => void;
 export type EventStreamConfiguration = Readonly<{
   syncEventVersion: number | null;
@@ -21,6 +22,7 @@ export interface EventStreamDriver {
 
 export interface UnconfiguredEventStream {
   on(handler: EventHandler): () => void;
+  onFrame(handler: EventFrameHandler): () => void;
   onConnectionState(handler: ConnectionStateHandler): () => void;
   configure(options: EventStreamConfiguration): ConfiguredEventStream;
 }
@@ -40,10 +42,12 @@ export class EventStream implements UnconfiguredEventStream {
   private readonly url: string;
   private readonly driver: EventStreamDriver;
   private readonly handlers = new Set<EventHandler>();
+  private readonly frameHandlers = new Set<EventFrameHandler>();
   private readonly stateHandlers = new Set<ConnectionStateHandler>();
   private configuration: EventStreamConfiguration | null = null;
   private configuredHandle: ConfiguredEventStream | null = null;
   private started = false;
+  private acceptingDelivery = false;
 
   private constructor(url: string, driver: EventStreamDriver) {
     this.url = url;
@@ -57,6 +61,11 @@ export class EventStream implements UnconfiguredEventStream {
   on(handler: EventHandler): () => void {
     this.handlers.add(handler);
     return () => this.handlers.delete(handler);
+  }
+
+  onFrame(handler: EventFrameHandler): () => void {
+    this.frameHandlers.add(handler);
+    return () => this.frameHandlers.delete(handler);
   }
 
   onConnectionState(handler: ConnectionStateHandler): () => void {
@@ -85,10 +94,14 @@ export class EventStream implements UnconfiguredEventStream {
     this.configuration = frozen;
     const sink: EventStreamSink = Object.freeze({
       frame: (frame: EventFrame) => {
-        if (frame.type !== 'event') return;
-        for (const handler of this.handlers) handler(frame.event, frame.meta);
+        if (!this.acceptingDelivery) return;
+        for (const handler of this.frameHandlers) handler(frame);
+        if (frame.type === 'event') {
+          for (const handler of this.handlers) handler(frame.event, frame.meta);
+        }
       },
       connectionState: (state: ConnectionState) => {
+        if (!this.acceptingDelivery) return;
         for (const handler of this.stateHandlers) handler(state);
       },
     });
@@ -96,9 +109,20 @@ export class EventStream implements UnconfiguredEventStream {
       start: () => {
         if (this.started) return;
         this.started = true;
-        this.driver.start(frozen, this.url, sink);
+        this.acceptingDelivery = true;
+        try {
+          this.driver.start(frozen, this.url, sink);
+        } catch (error) {
+          this.started = false;
+          this.acceptingDelivery = false;
+          throw error;
+        }
       },
-      stop: () => this.driver.stop(),
+      stop: () => {
+        this.started = false;
+        this.acceptingDelivery = false;
+        this.driver.stop();
+      },
     });
     this.configuredHandle = handle;
     return handle;
