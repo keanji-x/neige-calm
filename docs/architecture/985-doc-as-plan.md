@@ -16,7 +16,25 @@ scheduler / gate 的现状事实源）、`docs/architecture/955-kernel-app-bound
 > `dispatcher/mod.rs`、`event.rs`、`role_gate.rs` 重度漂移；引用的**内容**经
 > r8 抽查（37 组约 150 处）确认在基线上逐字准确，漂移的是行号本身。
 
-> **r8d 修订状态（NEW，最新）：第四轮双通道 —— 载体补全轮，已折叠。**
+> **r8e 修订状态（NEW，最新）：第五轮双通道 —— 载体的选型、迁移与出口，已折叠。**
+> 第五轮比第四轮又下沉一层：**载体补了，但没说它住在哪一列、存量怎么 backfill、
+> 事件怎么出函数**（逐条见 §14.8）。
+> **① `doc_revs` 不得塞进 `claim_context_json`** —— 该列今天是纯数组、解析失败即判
+> material，而 `0067` 已在生产库 backfill `'[]'` ⇒ 改信封即跨升级必然 Stuck-ops
+> （**与 r5 ⑱ 同一个洞，r8d 重开了一遍**）⇒ **新开一列 `claim_doc_revs_json`**；
+> **② `doc_revs` 永不进 `refs_match`/sweep 判据** —— 它随任意报告写自增，纳入即
+> 全 wave 误杀；不一致只产生 race-lost；
+> **③ 判决事件出 `project_tasks_tx` 的载体** —— `TaskProjectionOutcome` 增
+> `kernel_events`，且 **`routes/waves.rs:932` 必须从单 actor 的
+> `write_with_events_typed` 迁走**，否则 `PATCH /waves/{id}` 会被闸拒 403；
+> **④ 例外 (d) 的判据改为「冻结集为空」** —— `origin='legacy'` 划错了范围，
+> 且该集合在切片 5 之前**持续增长**；
+> **⑤ `released_by_user` 的撤回加策略条件** —— `auto-declare` 下它是惰性位，
+> 照判即新误杀通道；
+> **⑥ §9 补四列的 migration backfill** —— `decl_ready` 不 backfill 则升级当天
+> 所有在飞任务永久豁免撤回规则。
+
+> **r8d 修订状态：第四轮双通道 —— 载体补全轮，已折叠。**
 > 第四轮的发现有统一形状：**r8c 定义了机制，没有定义机制的载体**（逐条见 §14.7）。
 > **① 撤回规则的边沿没有前值载体** ⇒ rebuild 判不出"曾经是 true"、
 > 且照字面实现会**杀光该 wave 所有 `auto-declare` 在跑任务**（默认策略下
@@ -1570,7 +1588,27 @@ r8c 只定义了**边沿**（`true → false`），而边沿需要前值，投�
 > （`INTEGER NOT NULL DEFAULT 0`），与既有声明列
 > （`kind/goal/context_json/acceptance_criteria/cwd/depends_on_json/priority/
 > gate_json/declared_by`）**同批写入、同样对非 `pending` 行不再更新**。
-> 撤回判据 = `row.decl_* == 1 ∧ decl.* == false`。
+> 撤回判据 =
+> `row.decl_ready == 1 ∧ decl.ready == false`，或
+> `row.decl_released_by_user == 1 ∧ decl.released_by_user == false`
+> **∧ 该 wave 当前的 `effective_policy == declare-and-wait`**（见下）。
+
+**`released_by_user` 的撤回必须带策略条件（NEW，r8e，通道 B MAJOR，成立）。**
+r8d 的判据不看策略（刻意的，为了不持久化冻结时的 `effective_policy`），
+但 `released_by_user` 只在 `effective_wait` 时才对可调度谓词有贡献
+（`task_projection.rs:211-219`）。于是在 `auto-declare` 的 wave 里，
+**用户把一个语义上完全惰性的复选框从 `true` 改回 `false` ⇒ in-flight 任务判
+material ⇒ 不可逆 `failed` 且同 key 不可重开**。用 ㉒ 拒绝 `priority` 时的
+同一把尺子量（"不会让 worker 按错的规格干活""因果链使用者无法预测"），
+这条必须被挡住。§11.2 不变量 3d 已经承认该位在 `auto-declare` 下无语义
+（`false → true` 不判），对反方向照判是不自洽的。
+
+裁决：**用当前文档的 `effective_policy`，不用冻结时的**。代价要写出来——
+若 wave 的策略在任务在飞期间从 `declare-and-wait` 翻成 `auto-declare`，
+先前的撤回将不再被兑现（语义漂移）。接受它，因为替代方案是持久化冻结时策略，
+而 §5.1 已经为哈希拒绝过同一笔成本；且策略翻转是人的显式动作，
+翻转本身就表达了"这个 wave 不再需要逐条放行"。
+**`ready` 的撤回不带任何条件**——它在两种策略下都对可调度谓词有贡献。
 
 这样两位**对称**、不依赖"claim 时 `ready` 必为 true"这个易碎的推理、
 不依赖 wave 策略，且**天然可重放**：rebuild 与增量都不动非 pending 行的声明列，
@@ -1583,6 +1621,33 @@ r8c 只定义了**边沿**（`true → false`），而边沿需要前值，投�
 `withdrawal_diagnostic`），**一次 GET 就会写 `context_stale_at_ms` 并发事件**。
 裁决：**规则只在 `project_tasks_tx` 内执行；`evaluate_schedulability_tx`
 只产诊断，永不写判决。**
+
+**(3′) 判决事件出 `project_tasks_tx` 的载体（NEW，r8e，两个通道均判 BLOCKER）。**
+r8d 只写了"归因 `ActorId::Kernel`"，**没写事件怎么回到外层批次**——而
+`project_tasks_tx` 今天返回的 `TaskProjectionOutcome`
+（`task_projection.rs:354-445`）**没有事件通道**。实现者只有两条路，都是坑：
+沿现有调用者形状把新事件包成 `actor.clone()` ⇒ 被 `TaskContextAdvanced` 的
+Kernel-only 闸拒 ⇒ **回滚整个人的报告写事务**；或在 `_tx` 原语内自行
+`event_append_in_tx` ⇒ **绕过 role_gate 与 commit-then-emit 广播**。
+
+**先澄清一个事实**：role_gate 是**逐 `(actor, scope, event)` 元组**校验的
+（`events.rs:361-375` 的 `write_with_actor_events`），**混合 actor 批次本来
+就受支持**——人的报告写路径已经在同批混发 `ActorId::Kernel` 事件
+（`wave_report.rs:547` 用的正是 `write_with_actor_events_typed`，`:571` 混发）。
+所以问题不是"批次 actor 是 User 就一定被拒"，而是**载体缺失**。
+
+裁决，四条都是强制的：
+
+1. **`TaskProjectionOutcome` 增 `kernel_events: Vec<(ActorId, EventScope, Event)>`**；
+   `mark_context_material_tx` 只更新行并把事件**交还调用者**；
+2. **`tasks_rebuild_tx` 透传**该字段；
+3. **`routes/waves.rs:932` 必须从 `write_with_events_typed` 迁到
+   `write_with_actor_events_typed`** —— 它今天是**单 actor 批（= 请求者 `User`）**
+   且在 `:943` 调 `tasks_rebuild_tx → project_tasks_tx`。一旦该路径产出撤回
+   事件，**整个 `PATCH /waves/{id}` 事务被闸拒 → 403，wave 策略列改不动**。
+   这是一颗运行期地雷，可达性偏窄（多数情况下报告写路径已抢先判 stale、
+   `rows_affected == 0` 不再发事件）但确定存在；
+4. **显式禁止在任何 `_tx` 原语内直接 `event_append_in_tx`。**
 
 **(3) 幂等守卫与归因：复用同一个单赢家原语。**
 今天 `mark_material`（`task_context.rs:374-441`）用
@@ -1611,7 +1676,8 @@ will be rejected"**从此是真话**——它今天是假的（见切片 3b′ �
 哈希因此保持为**块内容的纯函数**，不依赖 wave 策略、不需要持久化冻结时的
 `effective_policy`（那会让哈希的解释随策略漂移，是更贵的一条路）。
 
-**可证伪**：若出现一个「改了排除清单里的 6 个字段之一、而 worker 确实应当
+**可证伪**：若出现一个「改了排除清单里的 8 个字段之一、其撤回方向也未被撤回
+规则覆盖、而 worker 确实应当
 停下来」的真实场景，本裁决被推翻，退回整块哈希。
 
 **`spawn` 的排除是版本化的，不是永久的**（r8b 补，通道 B PLAUSIBLE 成立）：
@@ -1723,11 +1789,24 @@ wave-report 文档自己的**计数器（`wave_report_doc.rs:121-145`），
 
 **栅栏的三件事 r8c 一件没写，r8d 补全（两个通道分别判 MAJOR / BLOCKER）**：
 
-1. **载体**：`FrozenClosure` 增 `doc_revs: BTreeMap<WaveId, u64>`，随冻结集一起
-   进 `tasks.claim_context_json` 与 `TaskContextFrozen` 的 payload；
-   `task_claim_pending_tx`（`task.rs:223-228`）的签名相应增一个参数。
-   今天 `TaskContextRef`（`event.rs:38-43`）与 `FrozenClosure`
-   （`task_context.rs:27-30`）都没有这个字段，交付项里也没有人要它。
+1. **载体：新开一列 `tasks.claim_doc_revs_json TEXT NULL`，
+   绝不塞进 `claim_context_json`（r8e 更正，通道 B BLOCKER）。**
+   `FrozenClosure` 增 `doc_revs: BTreeMap<WaveId, u64>`，落库到**新列**、
+   并进 `TaskContextFrozen` 的 payload；`task_claim_pending_tx`
+   （`task.rs:223-228`）的签名相应增一个参数。
+
+   **r8d 写的"随冻结集一起进 `claim_context_json`"会造成一次跨升级的必然
+   Stuck-ops 事故**：该列今天是**纯 JSON 数组**，两个现役读者都按
+   `Vec<TaskContextRef>` 解析，**解析失败即 fail-closed 判 material**
+   （`task_context.rs:273-280` 的 `detect_wave_edit`、`:335-340` 的
+   `sweep_inner`）；而 `0067` 已经在生产库里 backfill 了 `'[]'`
+   （`0067_task_context_freeze.sql` 第 11-13 行）。改成
+   `{refs:[…], doc_revs:{…}}` 信封 ⇒ **升级那一刻所有存量在飞行解析失败
+   ⇒ 全判 material**，叠加 §5.3.3 强制点即为事故。
+   **这与 r5 ⑱（§9 第 5 项）是同一个洞，r8d 把它重新打开了一遍。**
+   项目自己的先例就是另开一列——`context_closure_truncated`（`0067` 第 5 行）
+   正是这么处理的。**不变量 3a 与例外 (d) 逐字依赖 `claim_context_json`
+   的数组形状，本裁决同时保住它们。**
 2. **采集时序**（更硬的一条）：**每个 wave 的 `doc_rev` 必须在读该 wave 的
    第一个块之前采集**。若实现者在闭包展开**之后**再逐 wave 补读 `doc_rev`，
    那么"读块 → 读 doc_rev"之间落的一次写会被记成**新** `doc_rev`，
@@ -1735,6 +1814,20 @@ wave-report 文档自己的**计数器（`wave_report_doc.rs:121-145`），
    反向的误差（先采 `doc_rev`、后读块）只会造成保守的 race-lost，是安全侧。
 3. **缺失即不一致**：窗口内 wave 或报告卡被删 ⇒ 栅栏 `SELECT` 返回 `None`
    ⇒ **视为不一致、race-lost**。必须写明，不能让实现写成 `unwrap_or(frozen)`。
+4. **使用边界（NEW，r8e，两个通道分别判 BLOCKER / MAJOR）**：
+
+   > **`doc_revs` 只用于 claim 事务提交前的栅栏比较，
+   > 永不进入 `refs_match` / sweep / detect 的相等式。
+   > `doc_rev` 不一致只产生 race-lost，绝不形成 post-claim 的 `material`。**
+
+   方向是灾难侧，所以必须写死：`doc_rev` 随该 wave 的**任意**报告写自增
+   （`wave_report.rs:641`，与块内容无关）。若实现者把它并入 sweep 判据，
+   **该 wave 任意一次编辑 ⇒ 全部引用它的在飞任务判 material ⇒ 不可逆 failed**
+   ——比 ㉒ 定价过的 `priority` 误杀严重一个数量级，并当场推翻 9/8 哈希裁决。
+   本裁决是"新开一列"的第二个理由：载体分开，实现者就不容易顺手把它并进
+   `refs_match` 正在反序列化的那个结构。
+   **配一条 E2E**：claim 后编辑同 wave 的**无关块**（`doc_rev` 必变）
+   ⇒ sweep **不**判 material。
 
 已复核的三个非窗口：同一 wave 在闭包出现多次 → 按 wave 去重即可；
 报告卡删除重建导致 `doc_rev` 归零 → 归零只会小于冻结值、仍是 mismatch，保守；
@@ -2283,11 +2376,21 @@ refs: [{ wave_id, block_id, rev, content_hash }], truncated: bool }`
 > §5.1 的**撤回规则**覆盖；
 > **(b)** SHA-256 碰撞（密码学残余）；
 > **(c)** 连续 N 轮瞬时存储失败之内的窗口——期间不下判决，行仍 in-flight；
-> **(d)** **`origin='legacy'` 的存量行**——它们的冻结集是**空集**，
+> **(d)** **冻结集为空（`claim_context_json = '[]'`）的行**——
 > `refs_match` 对空 `refs` 的循环零次迭代即 `return true`，**按构造永不
-> material**（`task.rs:265-268` 硬编码 `&[], false`；
-> `read.rs:292-299` 的枚举源**不过滤 `origin`**；注意空集落进 `Some("[]")`
-> 而不是 `None`，与"冻结集缺失"是两条路径）。
+> material**（`read.rs:292-299` 的枚举源**不过滤 `origin`**；注意空集落进
+> `Some("[]")` 而不是 `None`，与"冻结集缺失"是两条路径）。
+> **判据是"冻结集为空"，不是 `origin='legacy'`（r8e 更正，通道 B MAJOR）**
+> ——后者划错了范围，漏掉两类：
+> **(i)** 收编路径会把在飞的 legacy 行 `origin` 翻成 `'block'`
+> （`task_projection.rs:404-411` 的 `UPDATE … WHERE origin='legacy' AND
+> status!='pending'`）而 `claim_context_json` 仍是 `'[]'`；
+> **(ii)** 更大的一块——**切片 3b′ 通电之前，生产 claim 对所有行都走空闭包**
+> （`scheduler/mod.rs:645` → `task_claim_legacy_pending_tx`，
+> `task.rs:267-272` 硬编码 `&[], false`），即**每一条在飞行**都属于这一类。
+> 把它写成"存量行"会让人误以为它已经是有界的历史集合。
+> **新 legacy 行真正停增要到切片 5（`calm.plan.upsert` 退场）**；
+> 在那之前 (d) 是一个**持续在增长**的集合，这必须如实说。
 > **本条必须显式列出**：否则 (A) 在这批行上是**空洞成立**的全称命题——
 > 而"每一条『此后 X 不会发生』都必须指出它的载体与读它的代码"正是本项目
 > 明令要审的那类断言。
@@ -2302,8 +2405,13 @@ refs: [{ wave_id, block_id, rev, content_hash }], truncated: bool }`
 > 的变化——栅栏在提交那一刻即解除，而事件路径是 lossy 的、sweep 最多 300 秒
 > 一轮，于是 worker 可能先于判决启动。这是**允许的检测延迟**，不是漏洞，
 > 但 (B) 因此**不能**被读成"所有 material 变化都先于 operation 首启被判定"。
-> 要那种更强的保证，只能让 `prepare_tx` 重新核对冻结闭包，或引入文档版本租约
-> ——**本设计不做**，代价与收益见 §13.25。
+> 要那种更强的保证，只有两条路，**本设计都不做**（r8e 补定价，此前是一处悬挂引用）：
+> **(i) 让 `prepare_tx` 重新核对冻结闭包** —— 把最多 64 个节点的跨 wave 读放进
+> **每一次 operation 启动**的事务里（而不是每次 claim 一次），是数量级更贵的
+> 持锁开销，且 `prepare_tx` 是所有 worker/gate 的必经漏斗，抖动会放大到全局；
+> **(ii) 文档版本租约** —— 要求被引用 wave 在任务在飞期间不得被写，
+> 与"文档永不拒绝合并"（§4 的地基）直接冲突。
+> 相比之下，允许一段有界的检测延迟、由 sweep 兜底，是唯一不破坏地基的选项。
 >
 > **(A) 与 (B) 的关系**：(A) 是"最终会发现"，(B) 是"发现之后不许起活"。
 > **(B) 不由 (A) 推出**，(A) 也不由 (B) 推出；两条要分别验收。
@@ -3540,7 +3648,25 @@ plan 表降为投影后，一次 `tasks_rebuild_tx` 会把它们全部抹掉。�
    对存量行是正确的默认。
    （纪律提醒：这条 backfill 必须写进**新**的 migration 文件；
    **已发布的 migration 一律不可编辑**——sqlx 对整个文件做 checksum。）
-6. **不做的事**：不在服务器启动时批量重写报告；不删任何 legacy 行；
+6. **切片 3b′ 的三列 + 一列，同一个 migration（`0069_`）里连 backfill 一起写
+   （NEW，r8e，两个通道分别判 BLOCKER / MAJOR）。** r8d 只在 §5.1/§5.3.1
+   裁决了这几列的存在，**§9 与切片 migration 条目一处没写**——而第 5 项的教训
+   逐字就是这个形状：新列 + 同片上机制 + 无 backfill = 跨升级必然事故。
+
+   | 列 | 类型 | 存量 backfill | 理由 |
+   |---|---|---|---|
+   | `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | `UPDATE tasks SET decl_ready=1 WHERE status IN ('dispatched','running','verifying') AND origin='block'` | 保守可重建：能落成 `pending` 并被 claim 就说明当时 `ready==true`（`schedulable = declaration.ready && …`，`task_projection.rs:224`）。**不 backfill 则升级当天所有在飞任务永久豁免撤回规则**——一条新的空洞"此后 X 不会发生" |
+   | `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | **保持 0，并列为显式例外** | 该位**不可从 `tasks` 行重建**（r8d 自己证过：`auto-declare` 下当前值全是缺省 `false`），从报告按 `(wave,key)` 重建又要在 migration 里解析 CRDT。**代价如实写**：升级时已在飞的任务不享有 `released_by_user` 撤回检测；新 claim 的行不受影响 |
+   | `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | 直接 `0` | 语义正是"尚未连续失败" |
+   | `claim_doc_revs_json` | `TEXT NULL` | **不 backfill，`NULL` 即"无栅栏基线"** | 存量行没有 per-wave 基线；栅栏只在**新** claim 上生效。**`NULL` 绝不可被解释成"不一致"**——否则 §5.1 栅栏第 3 条的 fail-closed 会把存量行全部 race-lost 到饿死 |
+
+   另需一并裁决（否则是本项目"加列不同步显式 SELECT ⇒ 运行期失败"的老坑）：
+   **这四列是否进 `TASK_COLUMNS`（`task.rs:19-24`）与 `Task` 的 `FromRow`**。
+   裁决：`decl_ready` / `decl_released_by_user` **进**（投影要读它们）；
+   `context_verify_failures` / `claim_doc_revs_json` **不进**
+   （只被定向 SQL 读写），**并在 migration 旁注明这是刻意的**。
+
+7. **不做的事**：不在服务器启动时批量重写报告；不删任何 legacy 行；
    不改 `crates/calm-truth/migrations/0041_tasks.sql`（已发布的 migration
    一律不可编辑——sqlx 对整个文件做 checksum）。
 
@@ -4454,7 +4580,7 @@ rebuild 给出同一终态（§11.2 不变量 11 的生成器覆盖它）；
 `automation_policy` / `spec_task_ceiling` → **403**、列值不变、无事件；
 人 PATCH → 200 且发 `WaveUpdated`。
 
-### 切片 3b′ — 冻结通电 + 3a 加固（~700 行，NEW，r8；**部署硬门**）
+### 切片 3b′ — 冻结通电 + 3a 加固（~1100 行，NEW，r8；**部署硬门**）
 
 依赖：切片 3b（`a6de2260`）。**这一片之前，`task` 块的写口不得对人开放**——
 3b 已经能投影出 `origin='block'` 的行并驱动调度，而冻结闭包的输入端整条没有
@@ -4464,7 +4590,9 @@ rebuild 给出同一终态（§11.2 不变量 11 的生成器覆盖它）；
 拒绝过的形状（当时宁可多改一批 E2E 断言，也要让不变量从第一天起被真实流量执行）。
 **合入 main 与对人可用可以分开：3b 已在 main，但两者必须进同一次发布。**
 
-交付项（**八条**，r8 六条 + r8b 双通道复审新增两条）：
+交付项（**十条**：r8 六条 + r8b 两条 + r8c 两条；r8d/r8e 又给其中数条补了载体、
+迁移与事件管线。规模已从初估 ~700 行上修到 **~1100 行** —— 新增 4 列 + 一个
+migration + 三态枚举 + 单赢家原语提取 + 事件回传管线改造 + 一条写助手迁移）：
 
 1. **㉔ 冻结根接线 + 事务内栅栏**：claim 前按 `(wave_id, key)` 在当前报告块
    快照里定位根块 → `resolve_closure` → 把 `refs` / `truncated` 传进
@@ -4512,7 +4640,11 @@ rebuild 给出同一终态（§11.2 不变量 11 的生成器覆盖它）；
    `refs_match` / `sweep_inner` 今天对 `wave_get` / `load_block` 的任意 `Err`
    （含 `Storage`）一律 `return false ⇒ material ⇒ 不可逆 failed`。
    改为只有**确定性**不可验证才判 `material`；瞬时失败本轮**不下判决**。
-   **`refs_match` 改三态返回**（相同 / 确定不匹配 / 可重试失败），
+   **`refs_match` 改三态返回**（相同 / 确定不匹配 / 可重试失败）。
+   **三个吞错点都要改，不止两个**（r8e，通道 B N3）：`wave_get`（`:231-233`）、
+   `load_block`（`:237-242`）、以及 **`cove_get_system().await.ok().flatten()`
+   （`:235`）**——第三处会把存储错读成 `None`，进而产生一个**看起来确定性的**
+   cross-cove mismatch ⇒ 误判 material。
    **`tasks` 增 `context_verify_failures INTEGER NOT NULL DEFAULT 0`**
    （成功或落确定性判决时清零，retryable 时 +1，达到 3 才升级）——
    **不得复用 `ContextMetrics::consecutive_failures`**，那是全局的、
@@ -4820,10 +4952,13 @@ fork 后立刻 rebuild，声明一致、状态全新；`calm.plan.upsert` 不在
 17. **`content_hash` 是抗碰撞检测，不是不可能性证明**（§5.1）。"不允许漏报"这条
    断言的精确形式带一个 SHA-256 碰撞的例外。这是可接受的残余风险，但它意味着
    该断言**不能**写成全称命题，也不能作为更强推理的前提。
-   **（r8c 更正：例外不止一个。**最终形式见 §5.3.1 末尾「断言的最终形式」——
-   (a) 根块的 8 个排除字段刻意不检测、(b) SHA-256 碰撞、(c) 连续瞬时失败窗口；
-   且**"最终检出"与"启动前检出"是两条不同强度的性质**，后者由 claim 事务栅栏 +
-   `prepare_tx` 强制点承载，**不能由前者推出**。）
+   **（r8c/r8e 更正：例外不止一个。**最终形式见 §5.3.1 末尾「断言的最终形式」——
+   (a) 根块的 8 个排除字段刻意不检测、(b) SHA-256 碰撞、(c) 连续瞬时失败窗口、
+   **(d) 冻结集为空的行（含 3b′ 通电前的全部在飞行）**；
+   且**"最终检出"与"启动前检出"是两条不同强度的性质**：后者已拆成 **(B1)** claim
+   事务栅栏窗口 + **(B2)** 判决落库后禁止起活，**且不覆盖"claim 提交 → 判决落库"
+   那一段**（允许的检测延迟，与 §5.3.3 的条件「判 material 之后不得再开始」不冲突）。
+   **不能由 (A) 推出 (B)。**）
 18. **`spec_task_ceiling` 只约束未结存量，不约束生命周期总量**（§8(A)，
    r3 通道 B MAJOR）。"每完成一条就再声明一条"的细水长流式失控不被它挡住。
    本文**刻意不引入累计配额**——单调计数器不是当前文档的函数，rebuild
@@ -5418,7 +5553,37 @@ BLOCKER + 6 个 MAJOR**，全部接受。两个 BLOCKER 都是**裁决本身**�
 | **㉒ 与生产里第二套判据不一致，诊断会说谎** | 通道 B | `task_projection.rs:266-274` 的 in-flight 比较集含 `priority`/`declared_by`，命中后追加的 `withdrawal_diagnostic` 逐字承诺"any gate operation that has not started will be rejected"——㉒ 之后改 `priority` 会看到这句话而 gate 不会被拒 | 3b′ 新增交付项 7：两套判据对齐 + 断言诊断与 `context_stale_at_ms` 一致 |
 | **`spawn` 的排除只能是版本化的** | 通道 A | "切片 6 之前无消费者"论证不了稳定协议中的永久排除 | §13.26 + 切片 6 前置 |
 
-### 14.7 r8d：第四轮双通道 —— 载体补全轮（NEW）
+### 14.8 r8e：第五轮双通道 —— 载体的选型、迁移与出口（NEW）
+
+第五轮的形状比第四轮又下沉一层：**载体补了，但没说它住在哪一列、
+存量怎么 backfill、事件怎么出函数。** 两个通道各判 2 和 3 个 BLOCKER。
+
+| 发现 | 命中 | 处置 |
+|---|---|---|
+| **`doc_revs` 塞进 `claim_context_json` 会造成跨升级必然 Stuck-ops** —— 该列今天是纯 JSON 数组，两个现役读者按 `Vec<TaskContextRef>` 解析、**失败即判 material**（`task_context.rs:273-280`/`:335-340`），而 `0067` 已在生产库 backfill 了 `'[]'`。改信封 ⇒ 升级那一刻全部在飞行解析失败 ⇒ 全判 material。**这与 r5 ⑱ 是同一个洞，r8d 把它重新打开了一遍**；且不变量 3a 与例外 (d) 逐字依赖数组形状 | 通道 B（BLOCKER）| **新开一列 `tasks.claim_doc_revs_json TEXT NULL`**（先例：`context_closure_truncated` 就是另开列而不是塞 JSON）|
+| **没裁决"sweep 要不要比对 `doc_revs`"，而载体选择正把实现者推向灾难侧** —— `doc_rev` 随该 wave 任意报告写自增，纳入比对 ⇒ 该 wave 一次编辑就把全部引用它的在飞任务判 material，当场推翻 9/8 哈希裁决 | 两通道 | 写死「**只用于 claim 栅栏，永不进 `refs_match`/sweep/detect；不一致只产生 race-lost**」+ E2E |
+| **判决事件出 `project_tasks_tx` 没有载体，且有一条边运行时必然 403** —— `TaskProjectionOutcome` 无事件通道；`routes/waves.rs:932` 用的是**单 actor** `write_with_events_typed`（actor = 请求者 `User`）并在 `:943` 调 `tasks_rebuild_tx` ⇒ 一旦产出撤回事件，`PATCH /waves/{id}` 整个事务被闸拒 | 两通道（均判 BLOCKER）| `TaskProjectionOutcome` 增 `kernel_events`、`tasks_rebuild_tx` 透传、**`routes/waves.rs:932` 迁到 `write_with_actor_events_typed`**、显式禁止 `_tx` 内直接 `event_append_in_tx`。**顺带澄清**：role_gate 是逐 `(actor, scope, event)` 校验的，混合 actor 批次本来就受支持（`events.rs:361-375`），人的报告写路径已在混发 `ActorId::Kernel`（`wave_report.rs:547`/`:571`）—— 问题从来不是"批次 actor 是 User"，是载体缺失 |
+| **例外 (d) 的判据划错范围** —— 应是"冻结集为空"而非 `origin='legacy'`：收编会把在飞 legacy 行的 `origin` 翻成 `'block'` 而 `claim_context_json` 仍是 `'[]'`（`task_projection.rs:404-411`）；更大的一块是 **3b′ 通电前生产 claim 对所有行都走空闭包**，即每一条在飞行都属于这类 | 通道 B | (d) 改述为"冻结集为空的行"，并写明它在切片 5 之前是**持续增长**的集合，不是有界历史 |
+| **`auto-declare` 下 `released_by_user` 的撤回是新误杀通道** —— 该位在那里对可调度谓词无贡献，用户把一个惰性复选框改回 `false` ⇒ 在飞任务不可逆 `failed`。而不变量 3d 已承认它无语义（`false→true` 不判），对反方向照判不自洽 | 通道 B | 撤回判据加条件「**当前**文档的 `effective_policy == declare-and-wait`」；代价（策略翻转期语义漂移）如实写出。`ready` 的撤回不带条件 |
+| **三列 + 一列的 migration backfill 完全没写** —— §9 与切片 migration 条目一处没有；`decl_ready` 若不 backfill，**升级当天所有在飞任务永久豁免撤回规则** | 两通道 | §9 新增第 6 项：四列的类型、backfill、理由逐行写死；并裁决哪几列进 `TASK_COLUMNS`/`FromRow` |
+
+**同轮一并改的一致性项**：§13.17 的断言摘要补 (d) 并换成 (B1)/(B2) 形式；
+交付项计数 8 → **10**、规模 ~700 → **~1100 行**（新增 4 列 + 一个 migration +
+三态枚举 + 原语提取 + 事件回传管线 + 一条写助手迁移）；
+`refs_match` 的吞错点是**三个**不是两个（漏了 `cove_get_system().ok().flatten()`
+`:235`——它会产生一个**看起来确定性的** cross-cove mismatch）；
+(B) 那句"代价与收益见 §13.25"是悬挂引用，已就地补上两条替代方案的定价。
+
+**一处判断分歧，以通道 B 为准**：通道 A 认为 (B) 的拆分与 §5.3.3 冲突；
+通道 B 逐字核了 §5.3.3 的条件本来就是「**判 material 之后**不得再开始」，
+因而"claim 提交 → 判决落库"那段延迟**不构成矛盾**，只需同步 §13.17 的旧表述。
+采纳通道 B。
+
+**收敛判断**：通道 B 判"第六轮之后应可定稿"，四条主干（撤回退化为纯函数、
+单赢家原语、per-row 计数器、(A)/(B) 拆分）**都成立且实现路径清晰**，
+剩余是载体选型与迁移，不触及设计方向。
+
+### 14.7 r8d：第四轮双通道 —— 载体补全轮
 
 第四轮的发现有一个统一形状：**r8c 定义了机制，但没有定义机制的载体。**
 两个通道各判 2 和 2 个 BLOCKER，交集全部成立。
