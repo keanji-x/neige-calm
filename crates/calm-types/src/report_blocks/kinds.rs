@@ -18,10 +18,14 @@
 
 use serde_json::{Map, Value};
 
+use super::tasks::{GateInput, key_is_valid, validate_gate_shape};
+use crate::report_links::parse_destination;
+
 pub const KIND_PROSE: &str = "prose";
 pub const KIND_CHART_CANDLES: &str = "chart.candles";
 pub const KIND_TABLE: &str = "table";
 pub const KIND_APP: &str = "app";
+pub const KIND_TASK: &str = "task";
 
 // -- payload size caps (#960 PR3 review round 1) ----------------------
 //
@@ -42,10 +46,31 @@ pub const MAX_STRING_CHARS: usize = 2048;
 pub const MAX_CANONICAL_BYTES: usize = 256 * 1024;
 
 /// The non-prose kinds a report may contain, in `blocks.kinds` order.
-pub const DATA_KINDS: [&str; 3] = [KIND_CHART_CANDLES, KIND_TABLE, KIND_APP];
+pub const DATA_KINDS: [&str; 4] = [KIND_CHART_CANDLES, KIND_TABLE, KIND_APP, KIND_TASK];
 
 pub fn is_data_kind(kind: &str) -> bool {
     DATA_KINDS.contains(&kind)
+}
+
+/// Markdown-bearing payload fields the kernel declares safe to scan for
+/// report links. Structured blocks are opt-in: scanning their canonical
+/// JSON fence would corrupt Markdown syntax through JSON escaping.
+pub fn scannable_text_fields<'a>(kind: &str, payload: &'a Value) -> Vec<&'a str> {
+    let Some(payload) = payload.as_object() else {
+        return Vec::new();
+    };
+    match kind {
+        KIND_PROSE => payload
+            .get("markdown")
+            .and_then(Value::as_str)
+            .into_iter()
+            .collect(),
+        KIND_TASK => ["goal", "acceptance"]
+            .into_iter()
+            .filter_map(|field| payload.get(field).and_then(Value::as_str))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Validate a non-prose payload against its kind's schema. `Err` is a
@@ -64,6 +89,7 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         KIND_CHART_CANDLES => validate_chart(map, &mut errors),
         KIND_TABLE => validate_table(map, &mut errors),
         KIND_APP => validate_app(map, &mut errors),
+        KIND_TASK => validate_task(map, &mut errors),
         other => errors.push(format!(
             "unknown block kind `{other}` — known data kinds: {}",
             DATA_KINDS.join(", ")
@@ -87,6 +113,258 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err(errors.join("; "))
+    }
+}
+
+fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    const TASK_FIELDS: &[&str] = &[
+        "key",
+        "kind",
+        "goal",
+        "acceptance",
+        "gate",
+        "no_gate_reason",
+        "depends_on",
+        "priority",
+        "cwd",
+        "context",
+        "refs",
+        "ready",
+        "declared_by",
+        "released_by_user",
+        "spawn",
+        "tombstone",
+        "tombstoned_by",
+    ];
+    reject_unknown(map, TASK_FIELDS, errors);
+
+    let key = match map.get("key") {
+        Some(Value::String(key)) if key_is_valid(key) => {
+            check_string_cap("key", key, errors);
+            Some(key.as_str())
+        }
+        Some(Value::String(_)) => {
+            errors.push("key: must match ^[a-z0-9][a-z0-9._-]{0,63}$".into());
+            None
+        }
+        _ => {
+            errors.push("key: required string matching ^[a-z0-9][a-z0-9._-]{0,63}$".into());
+            None
+        }
+    };
+
+    let tombstone = map.get("tombstone").is_some_and(|value| !value.is_null());
+    if tombstone {
+        for field in TASK_FIELDS
+            .iter()
+            .filter(|field| !["key", "tombstone", "declared_by", "tombstoned_by"].contains(field))
+        {
+            if map.contains_key(*field) {
+                errors.push(format!("{field}: must be absent from a tombstone task"));
+            }
+        }
+        validate_declared_by(map, errors);
+        required_enum(map, "tombstoned_by", &["spec", "user"], errors);
+        match &map["tombstone"] {
+            Value::Object(value) => {
+                reject_unknown(value, &["reason"], errors);
+                if let Some(reason) = value.get("reason") {
+                    match reason {
+                        Value::Null => {}
+                        Value::String(reason) => {
+                            check_string_cap("tombstone.reason", reason, errors)
+                        }
+                        _ => errors.push("tombstone.reason: must be a string or null".into()),
+                    }
+                }
+            }
+            _ => errors.push("tombstone: must be an object".into()),
+        }
+        return;
+    }
+
+    if map.contains_key("tombstoned_by") {
+        errors.push("tombstoned_by: must be absent from a non-tombstone task".into());
+    }
+    match map.get("kind").and_then(Value::as_str) {
+        Some("codex" | "claude" | "terminal") => {}
+        _ => errors
+            .push("kind: required; must be one of \"codex\" | \"claude\" | \"terminal\"".into()),
+    }
+    required_non_empty_string(map, "goal", errors);
+    optional_non_empty_string(map, "acceptance", errors);
+    optional_non_empty_string(map, "no_gate_reason", errors);
+    optional_abs_path(map, "cwd", errors);
+    if let Some(gate) = map.get("gate") {
+        match serde_json::from_value::<GateInput>(gate.clone()) {
+            Ok(gate) => {
+                if let Err(error) = validate_gate_shape(key.unwrap_or("<invalid>"), &gate) {
+                    let detail = error
+                        .strip_prefix(&format!("task {}: ", key.unwrap_or("<invalid>")))
+                        .unwrap_or(error.as_str());
+                    errors.push(detail.to_string());
+                }
+                check_gate_strings(&gate, errors);
+            }
+            Err(error) => errors.push(format!("gate: invalid shape: {error}")),
+        }
+    }
+    optional_string_array(map, "depends_on", false, errors);
+    if let Some(priority) = map.get("priority")
+        && priority.as_i64().is_none()
+    {
+        errors.push(format!(
+            "priority: must be an integer between {} and {}",
+            i64::MIN,
+            i64::MAX
+        ));
+    }
+    if let Some(context) = map.get("context") {
+        check_nested_string_caps("context", context, errors);
+    }
+    match map.get("refs") {
+        None => {}
+        Some(Value::Array(refs)) => {
+            for (index, reference) in refs.iter().enumerate() {
+                match reference.as_str() {
+                    Some(reference) => {
+                        check_string_cap(&format!("refs[{index}]"), reference, errors);
+                        if !matches!(parse_destination(reference), Some((_, Some(_)))) {
+                            errors.push(format!("refs[{index}]: must be a neige://wave/<wave>#b_xxxx block reference"));
+                        }
+                    }
+                    None => errors.push(format!("refs[{index}]: must be a string")),
+                }
+            }
+        }
+        Some(_) => errors.push("refs: must be an array".into()),
+    }
+    if !matches!(map.get("ready"), Some(Value::Bool(_))) {
+        errors.push("ready: required boolean".into());
+    }
+    validate_declared_by(map, errors);
+    if let Some(value) = map.get("released_by_user")
+        && !value.is_boolean()
+    {
+        errors.push("released_by_user: must be a boolean".into());
+    }
+    if let Some(value) = map.get("spawn")
+        && !matches!(value.as_str(), Some("in-wave" | "sub-wave"))
+    {
+        errors.push("spawn: must be one of \"in-wave\" | \"sub-wave\"".into());
+    }
+}
+
+fn validate_declared_by(map: &Map<String, Value>, errors: &mut Vec<String>) {
+    if !matches!(
+        map.get("declared_by").and_then(Value::as_str),
+        Some("spec" | "user")
+    ) {
+        errors.push("declared_by: required; must be one of \"spec\" | \"user\"".into());
+    }
+}
+
+fn required_enum(
+    map: &Map<String, Value>,
+    field: &str,
+    allowed: &[&str],
+    errors: &mut Vec<String>,
+) {
+    if !map
+        .get(field)
+        .and_then(Value::as_str)
+        .is_some_and(|value| allowed.contains(&value))
+    {
+        errors.push(format!(
+            "{field}: required; must be one of {}",
+            allowed
+                .iter()
+                .map(|v| format!("\"{v}\""))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        ));
+    }
+}
+
+fn required_non_empty_string(map: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    match map.get(field) {
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            check_string_cap(field, value, errors)
+        }
+        _ => errors.push(format!("{field}: required non-empty string")),
+    }
+}
+
+fn optional_non_empty_string(map: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    if map.contains_key(field) {
+        required_non_empty_string(map, field, errors);
+    }
+}
+
+fn optional_abs_path(map: &Map<String, Value>, field: &str, errors: &mut Vec<String>) {
+    if let Some(value) = map.get(field) {
+        match value.as_str() {
+            Some(path)
+                if path.trim().starts_with('/') && !path.chars().any(|c| c.is_ascii_control()) =>
+            {
+                check_string_cap(field, path, errors)
+            }
+            _ => errors.push(format!(
+                "{field}: must be an absolute path without ASCII control characters"
+            )),
+        }
+    }
+}
+
+fn check_nested_string_caps(path: &str, value: &Value, errors: &mut Vec<String>) {
+    match value {
+        Value::String(value) => check_string_cap(path, value, errors),
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                check_nested_string_caps(&format!("{path}[{index}]"), value, errors);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                check_string_cap(&format!("{path}.{key}"), key, errors);
+                check_nested_string_caps(&format!("{path}.{key}"), value, errors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn optional_string_array(
+    map: &Map<String, Value>,
+    field: &str,
+    non_empty: bool,
+    errors: &mut Vec<String>,
+) {
+    if let Some(value) = map.get(field) {
+        match value.as_array() {
+            Some(values) if !non_empty || !values.is_empty() => {
+                for (index, value) in values.iter().enumerate() {
+                    match value.as_str() {
+                        Some(value) => {
+                            check_string_cap(&format!("{field}[{index}]"), value, errors)
+                        }
+                        None => errors.push(format!("{field}[{index}]: must be a string")),
+                    }
+                }
+            }
+            Some(_) => errors.push(format!("{field}: must be non-empty")),
+            None => errors.push(format!("{field}: must be an array")),
+        }
+    }
+}
+
+fn check_gate_strings(gate: &GateInput, errors: &mut Vec<String>) {
+    if let Some(cwd) = &gate.cwd {
+        check_string_cap("gate.cwd", cwd, errors);
+    }
+    for (index, step) in gate.steps.iter().enumerate() {
+        check_string_cap(&format!("gate.steps[{index}].name"), &step.name, errors);
+        check_string_cap(&format!("gate.steps[{index}].cmd"), &step.cmd, errors);
     }
 }
 
@@ -313,220 +591,5 @@ fn type_name(value: &Value) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn chart_payload_valid_and_invalid() {
-        assert_eq!(
-            validate_payload(
-                KIND_CHART_CANDLES,
-                &json!({
-                    "symbol": "0700.HK",
-                    "period": "day",
-                    "candles": [[1000, 1.0, 2.0, 0.5, 1.5, 100], [2000, 1.5, 2.5, 1.0, 2.0]],
-                    "overlays": ["ma20", "ma60"],
-                    "caption": "Tencent daily"
-                }),
-            ),
-            Ok(())
-        );
-        // Field-level errors, all collected.
-        let err = validate_payload(
-            KIND_CHART_CANDLES,
-            &json!({ "candles": [[1, 2]], "period": "year", "extra": 1 }),
-        )
-        .unwrap_err();
-        assert!(err.contains("extra: unknown field"), "{err}");
-        assert!(err.contains("symbol: required"), "{err}");
-        assert!(err.contains("period: must be one of"), "{err}");
-        assert!(err.contains("at least 2 candles"), "{err}");
-        assert!(err.contains("candles[0]"), "{err}");
-        // Non-object payload.
-        assert!(validate_payload(KIND_CHART_CANDLES, &json!([1])).is_err());
-    }
-
-    #[test]
-    fn table_payload_valid_and_invalid() {
-        assert_eq!(
-            validate_payload(
-                KIND_TABLE,
-                &json!({
-                    "columns": [
-                        { "key": "name", "label": "公司" },
-                        { "key": "pe", "label": "PE", "align": "right" }
-                    ],
-                    "rows": [
-                        { "name": "腾讯", "pe": 18.2 },
-                        { "name": "阿里", "pe": null }
-                    ],
-                    "caption": "可比公司",
-                    "highlight": "腾讯"
-                }),
-            ),
-            Ok(())
-        );
-        let err = validate_payload(
-            KIND_TABLE,
-            &json!({
-                "columns": [
-                    { "key": "a", "label": "A", "align": "center", "width": 1 },
-                    { "key": "a", "label": 3 }
-                ],
-                "rows": [{ "b": {} }],
-            }),
-        )
-        .unwrap_err();
-        assert!(err.contains("columns[0].align"), "{err}");
-        assert!(err.contains("columns[0].width: unknown field"), "{err}");
-        assert!(err.contains("columns[1].key: duplicate"), "{err}");
-        assert!(err.contains("columns[1].label: required string"), "{err}");
-        assert!(
-            err.contains("rows[0].b: not a declared column key"),
-            "{err}"
-        );
-        assert!(
-            err.contains("rows[0].b: must be string | number | null"),
-            "{err}"
-        );
-        assert!(
-            validate_payload(KIND_TABLE, &json!({ "columns": [], "rows": [] })).is_err(),
-            "empty columns rejected"
-        );
-    }
-
-    #[test]
-    fn app_payload_valid_and_invalid() {
-        assert_eq!(
-            validate_payload(
-                KIND_APP,
-                &json!({ "src": "/apps/screener", "title": "选股器", "height": 600 })
-            ),
-            Ok(())
-        );
-        assert_eq!(validate_payload(KIND_APP, &json!({ "src": "/x" })), Ok(()));
-        // Percent-encoded control chars are harmless (browsers do not
-        // pre-decode before URL parsing) — stay allowed, as do spaces
-        // and non-control UTF-8.
-        for ok in ["/%0A/page", "/apps/%5C", "/path with space", "/应用/看板"] {
-            assert_eq!(
-                validate_payload(KIND_APP, &json!({ "src": ok })),
-                Ok(()),
-                "{ok} must stay allowed"
-            );
-        }
-        for (payload, needle) in [
-            (json!({ "src": "https://evil.example/x" }), "src"),
-            (json!({ "src": "//evil.example/x" }), "src"),
-            (json!({ "src": "relative/path" }), "src"),
-            (json!({}), "src"),
-            // Backslash bypasses (#960 PR3 review round 1): WHATWG URL
-            // parsing normalizes `\` to `/`, so `/\host` becomes a
-            // protocol-relative URL in the browser.
-            (json!({ "src": "/\\evil.example/x" }), "src"),
-            (json!({ "src": "/x\\..\\..\\evil" }), "src"),
-            (json!({ "src": "/apps\\x" }), "src"),
-            // Control-character bypasses (#960 PR3 review round 2):
-            // WHATWG strips tab/newline/C0 before parsing, so
-            // `/\n/evil` would normalize to `//evil` in the browser.
-            (json!({ "src": "/\n/evil.example/x" }), "src"),
-            (json!({ "src": "/\t/evil.example/x" }), "src"),
-            (json!({ "src": "/\r/evil.example/x" }), "src"),
-            (json!({ "src": "/x\u{0}" }), "src"),
-            (json!({ "src": "/x\u{7f}" }), "src"),
-            (json!({ "src": "/x\u{85}y" }), "src"),
-            (json!({ "src": "/x", "height": 80 }), "height"),
-            (json!({ "src": "/x", "height": 9000 }), "height"),
-            (json!({ "src": "/x", "onload": "x" }), "unknown field"),
-        ] {
-            let err = validate_payload(KIND_APP, &payload).unwrap_err();
-            assert!(err.contains(needle), "{payload} → {err}");
-        }
-    }
-
-    #[test]
-    fn payload_size_caps_are_enforced_with_the_limit_in_the_error() {
-        // candles > 5000
-        let candles: Vec<Value> = (0..(MAX_CHART_CANDLES as i64 + 1))
-            .map(|i| json!([i, 1, 2, 0, 1]))
-            .collect();
-        let err = validate_payload(
-            KIND_CHART_CANDLES,
-            &json!({ "symbol": "X", "candles": candles }),
-        )
-        .unwrap_err();
-        assert!(err.contains("limit is 5000"), "{err}");
-
-        // columns > 32
-        let columns: Vec<Value> = (0..=MAX_TABLE_COLUMNS)
-            .map(|i| json!({ "key": format!("k{i}"), "label": "L" }))
-            .collect();
-        let err =
-            validate_payload(KIND_TABLE, &json!({ "columns": columns, "rows": [] })).unwrap_err();
-        assert!(err.contains("limit is 32"), "{err}");
-
-        // rows > 500
-        let rows: Vec<Value> = (0..=MAX_TABLE_ROWS).map(|_| json!({ "k": 1 })).collect();
-        let err = validate_payload(
-            KIND_TABLE,
-            &json!({ "columns": [{ "key": "k", "label": "K" }], "rows": rows }),
-        )
-        .unwrap_err();
-        assert!(err.contains("limit is 500"), "{err}");
-
-        // any string field > 2048 chars
-        let long = "x".repeat(MAX_STRING_CHARS + 1);
-        for payload in [
-            json!({ "symbol": long, "candles": [[1,1,1,1,1],[2,2,2,2,2]] }),
-            json!({ "src": format!("/{long}") }),
-            json!({ "src": "/x", "title": long }),
-        ] {
-            let kind = if payload.get("symbol").is_some() {
-                KIND_CHART_CANDLES
-            } else {
-                KIND_APP
-            };
-            let err = validate_payload(kind, &payload).unwrap_err();
-            assert!(err.contains("limit is 2048"), "{payload} → {err}");
-        }
-        let err = validate_payload(
-            KIND_TABLE,
-            &json!({ "columns": [{ "key": "k", "label": "K" }], "rows": [{ "k": long }] }),
-        )
-        .unwrap_err();
-        assert!(
-            err.contains("rows[0].k") && err.contains("limit is 2048"),
-            "{err}"
-        );
-
-        // canonical JSON > 256KB (field-valid table: 200 rows of
-        // 2000-char strings ≈ 400KB)
-        let cell = "y".repeat(2000);
-        let rows: Vec<Value> = (0..200).map(|_| json!({ "k": cell })).collect();
-        let err = validate_payload(
-            KIND_TABLE,
-            &json!({ "columns": [{ "key": "k", "label": "K" }], "rows": rows }),
-        )
-        .unwrap_err();
-        assert!(err.contains("256KB"), "{err}");
-
-        // At-the-limit shapes pass.
-        let candles: Vec<Value> = (0..100).map(|i| json!([i, 1, 2, 0, 1])).collect();
-        assert_eq!(
-            validate_payload(
-                KIND_CHART_CANDLES,
-                &json!({ "symbol": "X", "candles": candles })
-            ),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn unknown_kind_is_an_error() {
-        let err = validate_payload("metrics", &json!({})).unwrap_err();
-        assert!(err.contains("unknown block kind `metrics`"), "{err}");
-        assert!(!is_data_kind("prose"));
-        assert!(is_data_kind("chart.candles"));
-    }
-}
+#[path = "kinds_tests.rs"]
+mod tests;

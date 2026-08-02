@@ -50,6 +50,7 @@ async fn add_wave(
         report,
         initial,
         WaveReportPayload::new("", body),
+        0,
         None,
         None,
         false,

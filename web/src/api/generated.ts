@@ -824,6 +824,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/waves/{id}/report/blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_block"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/waves/{id}/report/blocks/{block_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_block"];
+        options?: never;
+        head?: never;
+        patch: operations["update_block"];
+        trace?: never;
+    };
+    "/api/waves/{id}/report/blocks/{block_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["move_block"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves/{wave_id}/cards": {
         parameters: {
             query?: never;
@@ -1141,6 +1189,18 @@ export interface components {
             title?: string | null;
             via_tool_call?: null | components["schemas"]["ViaToolCall"];
         };
+        CreateReportBlockBody: {
+            /** Format: int64 */
+            ifDocRev: number;
+            kind: string;
+            markdown?: string | null;
+            payload?: unknown;
+            position?: number | null;
+        };
+        DeleteReportBlockBody: {
+            /** Format: int32 */
+            ifBlockRev: number;
+        };
         DirEntry: {
             is_dir: boolean;
             name: string;
@@ -1289,6 +1349,11 @@ export interface components {
             parent?: string | null;
             /** @description Canonical absolute path of the listed directory. */
             path: string;
+        };
+        MoveReportBlockBody: {
+            /** Format: int64 */
+            ifDocRev: number;
+            toIndex: number;
         };
         NewCard: {
             kind: string;
@@ -1605,6 +1670,15 @@ export interface components {
             /** Format: int32 */
             rev: number;
         };
+        ReportBlockWriteResponse: {
+            /** Format: int64 */
+            docRev: number;
+            id?: string | null;
+            /** Format: int32 */
+            rev?: number | null;
+            /** Format: int64 */
+            updatedAt: number;
+        };
         /**
          * @description Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
          *     `calm_session::TerminalTheme` value type one-for-one — duplicated
@@ -1754,12 +1828,20 @@ export interface components {
             call_id?: string | null;
             name: string;
         };
+        UpdateReportBlockBody: {
+            /** Format: int32 */
+            ifBlockRev: number;
+            kind: string;
+            markdown?: string | null;
+            payload?: unknown;
+        };
         /**
          * @description Request body for `POST /api/waves/:id/report`.
          *
-         *     Both fields are required `String`s (per `WaveReportPayload`'s
-         *     [[required-over-option]] rule). An empty `summary` is a valid
-         *     value; the caller must commit to *some* string.
+         *     `summary` and `body` are required `String`s (per
+         *     `WaveReportPayload`'s [[required-over-option]] rule), and
+         *     `ifDocRev` is the required document-wide revision anchor. An empty
+         *     `summary` is valid; the caller must commit to *some* string.
          *
          *     **No `author` field.** Author is derived server-side from the
          *     authenticated session and pinned to [`EditAuthor::User`] for this
@@ -1783,6 +1865,12 @@ export interface components {
              *     the structure.
              */
             body: string;
+            /**
+             * Format: int64
+             * @description Expected document revision from the latest report read. Use zero
+             *     for a document that has never been persisted through the CRDT path.
+             */
+            ifDocRev: number;
             /**
              * @description One-line summary the wave-list sidebars surface. Empty string
              *     is a valid value; the caller must commit.
@@ -2105,7 +2193,8 @@ export interface components {
          *
          *     ```json
          *     {
-         *       "schemaVersion": 1,
+         *       "schemaVersion": 3,
+         *       "docRev": 7,
          *       "summary": "Refactored the dispatcher into a typed actor",
          *       "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
          *     }
@@ -2131,13 +2220,20 @@ export interface components {
              */
             body: string;
             /**
+             * Format: int64
+             * @description Document-wide optimistic-concurrency revision. This is mirrored
+             *     from the authoritative CRDT root and increments after every
+             *     successful report persist (whole-document or block-level).
+             */
+            docRev: number;
+            /**
              * Format: int32
              * @description Tier A persistence contract — see
              *     `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-             *     `validation.rs`. `2` since #960 PR2 (blocks became the
-             *     authoritative source; `body` is the flat projection). v1 rows
-             *     (absent or `1`) remain readable and are lazily upgraded at the
-             *     next persist via the CRDT-layer migrator
+             *     `validation.rs`. `3` since #979 added document-wide optimistic
+             *     concurrency; blocks remain authoritative and `body` is their
+             *     flat projection. v1/v2 rows remain readable and are lazily
+             *     upgraded at the next persist via the CRDT-layer migrator
              *     (`ReportDoc::ensure_blocks_layout`).
              */
             schemaVersion: number;
@@ -4742,7 +4838,311 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Report document revision conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Internal error (incl. missing report-card invariant) */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_block: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateReportBlockBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportBlockWriteResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_block: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteReportBlockBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportBlockWriteResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_block: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateReportBlockBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportBlockWriteResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    move_block: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MoveReportBlockBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportBlockWriteResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             500: {
                 headers: {
                     [name: string]: unknown;

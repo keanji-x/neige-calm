@@ -3211,8 +3211,440 @@
               }
             }
           },
+          "409": {
+            "description": "Report document revision conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error (incl. missing report-card invariant)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{id}/report/blocks": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "create_block",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateReportBlockBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportBlockWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{id}/report/blocks/{block_id}": {
+      "delete": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "delete_block",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "block_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteReportBlockBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportBlockWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "update_block",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "block_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateReportBlockBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportBlockWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{id}/report/blocks/{block_id}/move": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "move_block",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "block_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveReportBlockBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportBlockWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
@@ -3961,6 +4393,52 @@
           }
         }
       },
+      "CreateReportBlockBody": {
+        "type": "object",
+        "required": [
+          "kind",
+          "ifDocRev"
+        ],
+        "properties": {
+          "ifDocRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {},
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeleteReportBlockBody": {
+        "type": "object",
+        "required": [
+          "ifBlockRev"
+        ],
+        "properties": {
+          "ifBlockRev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "DirEntry": {
         "type": "object",
         "required": [
@@ -4331,6 +4809,25 @@
             "description": "Canonical absolute path of the listed directory."
           }
         }
+      },
+      "MoveReportBlockBody": {
+        "type": "object",
+        "required": [
+          "toIndex",
+          "ifDocRev"
+        ],
+        "properties": {
+          "ifDocRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "toIndex": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "NewCard": {
         "type": "object",
@@ -4929,6 +5426,38 @@
           }
         }
       },
+      "ReportBlockWriteResponse": {
+        "type": "object",
+        "required": [
+          "docRev",
+          "updatedAt"
+        ],
+        "properties": {
+          "docRev": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rev": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "RequestTheme": {
         "type": "object",
         "description": "Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the\n`calm_session::TerminalTheme` value type one-for-one — duplicated\nhere so the route can keep its own `ToSchema` derive (the\n`calm_session` crate is utoipa-free).",
@@ -5219,10 +5748,36 @@
           }
         }
       },
+      "UpdateReportBlockBody": {
+        "type": "object",
+        "required": [
+          "kind",
+          "ifBlockRev"
+        ],
+        "properties": {
+          "ifBlockRev": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {}
+        },
+        "additionalProperties": false
+      },
       "UpdateWaveReportBody": {
         "type": "object",
-        "description": "Request body for `POST /api/waves/:id/report`.\n\nBoth fields are required `String`s (per `WaveReportPayload`'s\n[[required-over-option]] rule). An empty `summary` is a valid\nvalue; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
+        "description": "Request body for `POST /api/waves/:id/report`.\n\n`summary` and `body` are required `String`s (per\n`WaveReportPayload`'s [[required-over-option]] rule), and\n`ifDocRev` is the required document-wide revision anchor. An empty\n`summary` is valid; the caller must commit to *some* string.\n\n**No `author` field.** Author is derived server-side from the\nauthenticated session and pinned to [`EditAuthor::User`] for this\nendpoint — accepting one on the wire would let a User forge\n`EditAuthor::Spec` and make a hand-typed edit look like the AI\ndid it. Even if a client serializes an `author` key the handler\nignores it (serde `deny_unknown_fields` would 400 it; this is the\nstricter contract that closes the spoofing risk by construction).\n\n`schemaVersion` is also intentionally absent — it's a server-managed\ninvariant pinned to [`WaveReportPayload::SCHEMA_VERSION`] and the\nprojected payload returned in the response reasserts the current\nversion. Letting clients write the version field would invite\nsilent shape drift the first time someone forgot to update both\nsides.",
         "required": [
+          "ifDocRev",
           "summary",
           "body"
         ],
@@ -5230,6 +5785,12 @@
           "body": {
             "type": "string",
             "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."
+          },
+          "ifDocRev": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Expected document revision from the latest report read. Use zero\nfor a document that has never been persisted through the CRDT path.",
+            "minimum": 0
           },
           "summary": {
             "type": "string",
@@ -6008,9 +6569,10 @@
       },
       "WaveReportPayload": {
         "type": "object",
-        "description": "The payload persisted in a wave-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 1,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the WaveReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
+        "description": "The payload persisted in a wave-report card's `payload` JSON column.\n\nWire shape (camelCase to match the rest of the kernel's payloads):\n\n```json\n{\n  \"schemaVersion\": 3,\n  \"docRev\": 7,\n  \"summary\": \"Refactored the dispatcher into a typed actor\",\n  \"body\": \"# Goal\\n\\nReplace the ad-hoc loop with…\\n\\n# Progress\\n...\"\n}\n```\n\n`summary` is the one-line previewable in sidebars / list views;\n`body` is the Markdown source the WaveReportCard renders. The\nfrontend derives sections from `body` by splitting on H1 headings;\nthe storage layer does not impose a section vocabulary.",
         "required": [
           "schemaVersion",
+          "docRev",
           "summary",
           "body"
         ],
@@ -6029,10 +6591,16 @@
             "type": "string",
             "description": "Markdown source. Sections are derived at render time by\nsplitting at H1 (`^# `) headings; the kernel does not interpret\nthe structure."
           },
+          "docRev": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Document-wide optimistic-concurrency revision. This is mirrored\nfrom the authoritative CRDT root and increments after every\nsuccessful report persist (whole-document or block-level).",
+            "minimum": 0
+          },
           "schemaVersion": {
             "type": "integer",
             "format": "int32",
-            "description": "Tier A persistence contract — see\n`WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `2` since #960 PR2 (blocks became the\nauthoritative source; `body` is the flat projection). v1 rows\n(absent or `1`) remain readable and are lazily upgraded at the\nnext persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
+            "description": "Tier A persistence contract — see\n`WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's\n`validation.rs`. `3` since #979 added document-wide optimistic\nconcurrency; blocks remain authoritative and `body` is their\nflat projection. v1/v2 rows remain readable and are lazily\nupgraded at the next persist via the CRDT-layer migrator\n(`ReportDoc::ensure_blocks_layout`).",
             "minimum": 0
           },
           "summary": {

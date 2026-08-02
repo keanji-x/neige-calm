@@ -124,14 +124,21 @@ impl CardKindHandler for WaveReportCardHandler {
         struct WaveReportShape {
             #[serde(default)]
             schema_version: Option<u32>,
+            #[serde(default)]
+            doc_rev: Option<u64>,
             summary: String,
             body: String,
         }
 
         check_schema_version(self.kind_id(), payload, WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)?;
-        serde_json::from_value::<WaveReportShape>(payload.clone())
-            .map(|_| ())
-            .map_err(|e| bad(self.kind_id(), e))
+        let shape = serde_json::from_value::<WaveReportShape>(payload.clone())
+            .map_err(|e| bad(self.kind_id(), e))?;
+        if shape.schema_version == Some(WAVE_REPORT_PAYLOAD_SCHEMA_VERSION)
+            && shape.doc_rev.is_none()
+        {
+            return Err(bad(self.kind_id(), "missing field `docRev`"));
+        }
+        Ok(())
     }
 }
 

@@ -132,7 +132,7 @@ export async function seedWaveReport(
   const waveUrl = `http://127.0.0.1:${REPLAY_PORT}/api/waves/${encodeURIComponent(waveId)}`;
   const reportUrl = `${waveUrl}/report`;
   const response = await request.post(reportUrl, {
-    data: { summary, body },
+    data: { summary, body, ifDocRev: 0 },
     headers: { 'content-type': 'application/json' },
   });
   if (!response.ok()) {

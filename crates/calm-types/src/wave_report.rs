@@ -27,7 +27,8 @@ pub struct ReportBlock {
 ///
 /// ```json
 /// {
-///   "schemaVersion": 1,
+///   "schemaVersion": 3,
+///   "docRev": 7,
 ///   "summary": "Refactored the dispatcher into a typed actor",
 ///   "body": "# Goal\n\nReplace the ad-hoc loop with…\n\n# Progress\n..."
 /// }
@@ -43,12 +44,18 @@ pub struct ReportBlock {
 pub struct WaveReportPayload {
     /// Tier A persistence contract — see
     /// `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
-    /// `validation.rs`. `2` since #960 PR2 (blocks became the
-    /// authoritative source; `body` is the flat projection). v1 rows
-    /// (absent or `1`) remain readable and are lazily upgraded at the
-    /// next persist via the CRDT-layer migrator
+    /// `validation.rs`. `3` since #979 added document-wide optimistic
+    /// concurrency; blocks remain authoritative and `body` is their
+    /// flat projection. v1/v2 rows remain readable and are lazily
+    /// upgraded at the next persist via the CRDT-layer migrator
     /// (`ReportDoc::ensure_blocks_layout`).
     pub schema_version: u32,
+    /// Document-wide optimistic-concurrency revision. This is mirrored
+    /// from the authoritative CRDT root and increments after every
+    /// successful report persist (whole-document or block-level).
+    #[serde(default)]
+    #[schema(required = true)]
+    pub doc_rev: u64,
     /// One-line summary used by sidebars / wave-list previews. Empty
     /// string is valid (means "spec agent has not produced a summary
     /// yet"); the field stays a required `String` per the
@@ -72,11 +79,12 @@ impl WaveReportPayload {
     /// [`crate::card_kind::WaveReportCardHandler`] and the matching
     /// frontend zod schema in
     /// `web/src/api/schemas.ts`.
-    pub const SCHEMA_VERSION: u32 = 2;
+    pub const SCHEMA_VERSION: u32 = 3;
 
     pub fn new(summary: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
             schema_version: Self::SCHEMA_VERSION,
+            doc_rev: 0,
             summary: summary.into(),
             body: body.into(),
             blocks: None,

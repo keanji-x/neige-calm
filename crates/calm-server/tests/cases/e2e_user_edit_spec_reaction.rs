@@ -437,6 +437,7 @@ async fn user_edit_via_rest_reaches_wave_subscriber_and_spec_reads_back_user_bod
             "body": initial_body,
             "summary": "initial summary from spec",
             "message": "seed initial report",
+            "if_doc_rev": 0,
         }),
     )
     .await
@@ -474,6 +475,7 @@ async fn user_edit_via_rest_reaches_wave_subscriber_and_spec_reads_back_user_bod
                     serde_json::to_vec(&json!({
                         "summary": "user edited the report",
                         "body": user_body,
+                        "ifDocRev": 1,
                     }))
                     .unwrap(),
                 ))
@@ -600,6 +602,7 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wave_stream() {
             "body": "# Goal\n\npriming body\n",
             "summary": "priming",
             "message": "prime report stream",
+            "if_doc_rev": 0,
         }),
     )
     .await
@@ -624,6 +627,7 @@ async fn spec_self_write_echoes_as_author_spec_on_the_wave_stream() {
             "body": "# Goal\n\nsecond spec write\n",
             "summary": "self echo",
             "message": "second spec report write",
+            "if_doc_rev": 1,
         }),
     )
     .await

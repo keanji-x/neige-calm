@@ -17,12 +17,26 @@
 //! UI iterations on the section vocabulary, and avoids a second
 //! storage-shape negotiation if the section list ever needs to change.
 //!
+//! The persisted payload has this wire shape:
+//!
+//! | Field | Meaning |
+//! | --- | --- |
+//! | `schemaVersion` | Tier-A payload schema version |
+//! | `docRev` | optimistic-concurrency anchor returned by `calm.report.read` |
+//! | `summary` | short report summary |
+//! | `body` | complete Markdown document |
+//! | `blocks` | optional derived block index |
+//!
 //! ## Schema versioning (Tier A persistence contract)
 //!
 //! See `docs/upgrade-stability.md`. The struct carries `schema_version`
 //! explicitly + matches it against
 //! [`crate::validation::WAVE_REPORT_PAYLOAD_SCHEMA_VERSION`] at every
-//! write boundary. v1 is the only shape that has ever existed.
+//! write boundary. The current shape is v3 (`docRev` + optional block
+//! index). During a downgrade window, an old binary can overwrite the JSON
+//! payload back to v2, drop `docRev`, and fail to advance CRDT `doc_rev`;
+//! mixed-version report writes therefore have a real lost-write window and
+//! are unsupported.
 //!
 //! ## Field rationale ([[required-over-option]])
 //!
@@ -45,6 +59,7 @@ use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
+use crate::wave_report_task_guard::{guard_task_declarations, normalize_report_op};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
@@ -77,6 +92,7 @@ pub enum ReportDocOp {
     Replace {
         summary: Option<String>,
         body: String,
+        if_doc_rev: u64,
     },
     /// `calm.report.write_markdown`: wholesale replace whose body may
     /// carry `<!-- neige:b_xxxx -->` marker lines. Markers are
@@ -87,9 +103,11 @@ pub enum ReportDocOp {
     WriteMarkdown {
         summary: Option<String>,
         body: String,
+        if_doc_rev: u64,
     },
     /// `calm.report.blocks.upsert`. `id: None` creates (at `position`,
-    /// default append); `id: Some` replaces and requires `if_rev`.
+    /// default append) and requires `if_doc_rev`; `id: Some` replaces
+    /// and requires `if_rev`.
     /// `content` is the block's flat text: markdown for `prose`, the
     /// canonical `neige-block` fence (already rendered + validated by
     /// the tool layer) for data kinds (#960 PR3).
@@ -98,13 +116,15 @@ pub enum ReportDocOp {
         kind: String,
         content: String,
         if_rev: Option<u32>,
+        if_doc_rev: Option<u64>,
         position: Option<usize>,
     },
-    /// `calm.report.blocks.move`: reorder only, rev untouched.
+    /// `calm.report.blocks.move`: reorder only, rev untouched; requires
+    /// the document-wide `if_doc_rev` because it mutates block order.
     MoveBlock {
         id: String,
         to_index: usize,
-        if_rev: Option<u32>,
+        if_doc_rev: u64,
     },
     /// `calm.report.blocks.delete`: `if_rev` is mandatory.
     DeleteBlock { id: String, if_rev: u32 },
@@ -131,6 +151,7 @@ pub(crate) fn block_not_found(id: &str) -> CalmError {
 pub(crate) fn apply_report_op(
     doc: &mut ReportDoc,
     op: &ReportDocOp,
+    author: EditAuthor,
 ) -> Result<Option<BlockOpOutcome>, CalmError> {
     fn check_rev(doc: &ReportDoc, id: &str, expected: u32) -> Result<u32, CalmError> {
         // A malformed doc/rev is Internal (corruption), never folded
@@ -163,15 +184,29 @@ pub(crate) fn apply_report_op(
                 .0),
         }
     };
-    match op {
-        ReportDocOp::Replace { summary, body } => {
+    let op = normalize_report_op(doc, op.clone(), author)?;
+    let before = doc.blocks_snapshot().map_err(|e| {
+        CalmError::Internal(format!("wave_report: snapshot before task guard: {e}"))
+    })?;
+    let outcome: Result<Option<BlockOpOutcome>, CalmError> = match &op {
+        ReportDocOp::Replace {
+            summary,
+            body,
+            if_doc_rev,
+        } => {
+            check_doc_rev(doc, *if_doc_rev)?;
             let summary = tx_summary(doc, summary)?;
             validate_body_fences(body)?;
             guard_non_prose_stomp(doc, body)?;
             doc.update(&summary, body).map_err(internal)?;
             Ok(None)
         }
-        ReportDocOp::WriteMarkdown { summary, body } => {
+        ReportDocOp::WriteMarkdown {
+            summary,
+            body,
+            if_doc_rev,
+        } => {
+            check_doc_rev(doc, *if_doc_rev)?;
             let summary = tx_summary(doc, summary)?;
             let marked = calm_types::report_blocks::strip_markers_and_split(body);
             // The escape hatch MAY rewrite/delete non-prose blocks
@@ -188,6 +223,7 @@ pub(crate) fn apply_report_op(
             kind,
             content,
             if_rev,
+            if_doc_rev,
             position,
         } => match id {
             Some(id) => {
@@ -203,6 +239,10 @@ pub(crate) fn apply_report_op(
                 Ok(Some(BlockOpOutcome { id, rev }))
             }
             None => {
+                let expected = if_doc_rev.ok_or_else(|| {
+                    CalmError::BadRequest("if_doc_rev is required when creating a block".into())
+                })?;
+                check_doc_rev(doc, expected)?;
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len
@@ -223,15 +263,13 @@ pub(crate) fn apply_report_op(
         ReportDocOp::MoveBlock {
             id,
             to_index,
-            if_rev,
+            if_doc_rev,
         } => {
+            check_doc_rev(doc, *if_doc_rev)?;
             let current = doc
                 .block_rev(id)
                 .map_err(|e| CalmError::Internal(format!("wave_report: block rev: {e}")))?
                 .ok_or_else(|| block_not_found(id))?;
-            if let Some(expected) = if_rev {
-                check_rev(doc, id, *expected)?;
-            }
             let len = doc.block_index().map_err(internal)?.len();
             if *to_index >= len {
                 return Err(CalmError::BadRequest(format!(
@@ -249,7 +287,42 @@ pub(crate) fn apply_report_op(
             doc.delete_block(id).map_err(internal)?;
             Ok(None)
         }
+    };
+    let outcome = outcome?;
+    let after = doc
+        .blocks_snapshot()
+        .map_err(|e| CalmError::Internal(format!("wave_report: snapshot after task guard: {e}")))?;
+    guard_task_declarations(&before, &after, author)?;
+    Ok(outcome)
+}
+
+/// Apply one successful persist operation and advance the document-wide
+/// revision exactly once. Keeping the increment outside [`apply_report_op`]
+/// is load-bearing: every operation invalidates whole-document anchors,
+/// including moves and content-equal replacements that do not bump a block.
+fn apply_persisted_report_op(
+    doc: &mut ReportDoc,
+    op: &ReportDocOp,
+    author: EditAuthor,
+) -> Result<(Option<BlockOpOutcome>, u64), CalmError> {
+    let outcome = apply_report_op(doc, op, author)?;
+    let doc_rev = doc.increment_doc_rev().map_err(|e| {
+        CalmError::Internal(format!("wave_report: increment document revision: {e}"))
+    })?;
+    Ok((outcome, doc_rev))
+}
+
+fn check_doc_rev(doc: &ReportDoc, expected: u64) -> Result<(), CalmError> {
+    let current = doc
+        .doc_rev()
+        .map_err(|e| CalmError::Internal(format!("wave_report: doc rev: {e}")))?;
+    if current != expected {
+        return Err(CalmError::Conflict(format!(
+            "document revision conflict: current doc_rev is {current}, expected if_doc_rev {expected} \
+             — re-read the report and retry with the current docRev"
+        )));
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +447,7 @@ pub async fn persist_report(
     report_card: Card,
     current_payload: WaveReportPayload,
     next: WaveReportPayload,
+    if_doc_rev: u64,
     agent_message: Option<String>,
     lifecycle: Option<WaveLifecycle>,
     auto_promote_draft: bool,
@@ -390,6 +464,7 @@ pub async fn persist_report(
         ReportDocOp::Replace {
             summary: Some(next.summary),
             body: next.body,
+            if_doc_rev,
         },
         agent_message,
         lifecycle,
@@ -524,7 +599,7 @@ pub(crate) async fn persist_report_with_shadow(
                 //    checks happen in here, against the CRDT truth
                 //    inside this transaction — a conflict aborts the
                 //    tx (nothing written, no events emitted).
-                let outcome = apply_report_op(&mut doc, &op)?;
+                let (outcome, doc_rev) = apply_persisted_report_op(&mut doc, &op, author)?;
                 // 4. Project back — these are the authoritative values
                 //    that go into the JSON cache. Since #960 PR2 the
                 //    CRDT block map is the source of truth: `body` is
@@ -539,6 +614,7 @@ pub(crate) async fn persist_report_with_shadow(
                 })?;
                 let mut projected_payload =
                     WaveReportPayload::new(summary_after.clone(), body_after.clone());
+                projected_payload.doc_rev = doc_rev;
                 projected_payload.blocks = Some(doc.blocks_snapshot().map_err(|e| {
                     CalmError::Internal(format!(
                         "wave_report: snapshot CRDT blocks for card {id}: {e}"
@@ -614,7 +690,8 @@ mod tests {
         assert_eq!(
             v,
             json!({
-                "schemaVersion": 2,
+                "schemaVersion": 3,
+                "docRev": 0,
                 "summary": "hi",
                 "body": "# A\n\nb\n",
             })
@@ -657,7 +734,9 @@ mod tests {
             &ReportDocOp::WriteMarkdown {
                 summary: None,
                 body: "# A\n\nalpha edited\n".into(),
+                if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         assert!(outcome.is_none());
@@ -674,7 +753,9 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: None,
                 body: "# B\n\nbeta\n".into(),
+                if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "racing summary");
@@ -683,10 +764,72 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: Some("explicit".into()),
                 body: "# C\n\ngamma\n".into(),
+                if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap();
         assert_eq!(doc.project().unwrap().0, "explicit");
+    }
+
+    #[test]
+    fn every_report_doc_op_advances_document_revision() {
+        fn assert_advances(mut doc: ReportDoc, op: ReportDocOp) {
+            let before = doc.doc_rev().unwrap();
+            apply_persisted_report_op(&mut doc, &op, EditAuthor::Spec).unwrap();
+            assert_eq!(doc.doc_rev().unwrap(), before + 1, "op: {op:?}");
+        }
+
+        let payload = WaveReportPayload::new("summary", "# A\n\nalpha\n\n# B\n\nbeta\n");
+        let base = ReportDoc::from_payload(&payload);
+        let blocks = base.block_index().unwrap();
+        let first = blocks[0].clone();
+        let second = blocks[1].clone();
+
+        // Content-equal replace is deliberately included: it is a document
+        // write even when no block revision changes.
+        assert_advances(
+            ReportDoc::from_payload(&payload),
+            ReportDocOp::Replace {
+                summary: Some(payload.summary.clone()),
+                body: payload.body.clone(),
+                if_doc_rev: 0,
+            },
+        );
+        assert_advances(
+            ReportDoc::from_payload(&payload),
+            ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: payload.body.clone(),
+                if_doc_rev: 0,
+            },
+        );
+        assert_advances(
+            ReportDoc::from_payload(&payload),
+            ReportDocOp::UpsertBlock {
+                id: Some(first.0.clone()),
+                kind: "prose".into(),
+                content: "# A\n\nchanged\n".into(),
+                if_rev: Some(first.2),
+                if_doc_rev: None,
+                position: None,
+            },
+        );
+        assert_advances(
+            ReportDoc::from_payload(&payload),
+            ReportDocOp::MoveBlock {
+                id: first.0.clone(),
+                to_index: 1,
+                if_doc_rev: 0,
+            },
+        );
+        assert_advances(
+            ReportDoc::from_payload(&payload),
+            ReportDocOp::DeleteBlock {
+                id: second.0,
+                if_rev: second.2,
+            },
+        );
     }
 
     #[test]
@@ -716,8 +859,10 @@ mod tests {
                 kind: "prose".into(),
                 content: "x\n".into(),
                 if_rev: Some(1),
+                if_doc_rev: None,
                 position: None,
             },
+            EditAuthor::Spec,
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
@@ -735,7 +880,9 @@ mod tests {
             &ReportDocOp::Replace {
                 summary: Some("s".into()),
                 body: String::new(),
+                if_doc_rev: 0,
             },
+            EditAuthor::Spec,
         )
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");

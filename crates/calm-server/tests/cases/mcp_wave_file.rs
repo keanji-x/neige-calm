@@ -2139,7 +2139,8 @@ async fn hidden_wave_history_tools_are_callable_and_patch_report() {
         json!({
             "body": "# Report\n\n- visible change\n",
             "summary": "changed",
-            "message": "write report for VCS diff"
+            "message": "write report for VCS diff",
+            "if_doc_rev": 0
         }),
     )
     .await

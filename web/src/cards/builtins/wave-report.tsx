@@ -17,6 +17,7 @@ export interface WaveReportCardData {
   id?: string;
   summary: string;
   body: string;
+  docRev: number;
   blocks?: ReportBlock[];
   updatedAt?: number;
   unsupportedVersion?: number;
@@ -121,10 +122,51 @@ export const appBlockPayloadSchema = z.strictObject({
   height: z.number().min(120).max(2000).optional(),
 });
 
+const taskGateStepSchema = z.strictObject({
+  name: z.string(),
+  cmd: z.string(),
+});
+
+const liveTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  kind: z.enum(['codex', 'claude', 'terminal']),
+  goal: z.string(),
+  acceptance: z.string().optional(),
+  gate: z.strictObject({
+    cwd: z.string().optional(),
+    timeout_secs: z.number().int().optional(),
+    steps: z.array(taskGateStepSchema),
+  }).optional(),
+  no_gate_reason: z.string().optional(),
+  depends_on: z.array(z.string()).optional(),
+  priority: z.number().int().optional(),
+  cwd: z.string().optional(),
+  context: z.unknown().optional(),
+  refs: z.array(z.string()).optional(),
+  ready: z.boolean(),
+  declared_by: z.enum(['spec', 'user']),
+  released_by_user: z.boolean().optional(),
+  spawn: z.enum(['in-wave', 'sub-wave']).optional(),
+  tombstone: z.null().optional(),
+});
+
+const tombstoneTaskBlockPayloadSchema = z.strictObject({
+  key: z.string(),
+  tombstone: z.strictObject({ reason: z.string().nullable().optional() }),
+  declared_by: z.enum(['spec', 'user']),
+  tombstoned_by: z.enum(['spec', 'user']),
+});
+
+export const taskBlockPayloadSchema = z.union([
+  liveTaskBlockPayloadSchema,
+  tombstoneTaskBlockPayloadSchema,
+]);
+
 export type ProseBlockPayload = z.infer<typeof proseBlockPayloadSchema>;
 export type ChartCandlesPayload = z.infer<typeof chartCandlesPayloadSchema>;
 export type TableBlockPayload = z.infer<typeof tableBlockPayloadSchema>;
 export type AppBlockPayload = z.infer<typeof appBlockPayloadSchema>;
+export type TaskBlockPayload = z.infer<typeof taskBlockPayloadSchema>;
 
 const blockCommon = {
   id: z.string(),
@@ -140,6 +182,7 @@ const typedReportBlockSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ ...blockCommon, kind: z.literal('table'), payload: tableBlockPayloadSchema }),
   z.object({ ...blockCommon, kind: z.literal('app'), payload: appBlockPayloadSchema }),
+  z.object({ ...blockCommon, kind: z.literal('task'), payload: taskBlockPayloadSchema }),
 ]);
 
 /** Catch-all: preserves the block (kind + raw payload) so the renderer
@@ -161,6 +204,7 @@ export type ReportBlock = z.infer<typeof reportBlockSchema>;
  *  absent (treated as v1). */
 export const waveReportPayloadSchema = z.object({
   schemaVersion: z.number().int().optional(),
+  docRev: z.number().int().nonnegative().default(0),
   summary: z.string(),
   body: z.string(),
   blocks: z.array(reportBlockSchema).optional(),
@@ -191,6 +235,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
         title: k.title,
         summary: '',
         body: '',
+        docRev: 0,
         updatedAt: k.updated_at,
         unsupportedVersion: version,
       };
@@ -209,6 +254,7 @@ export const WaveReportEntry: CardEntry<WaveReportCardData> = {
       id: k.id,
       summary: parsed.data.summary,
       body: parsed.data.body,
+      docRev: parsed.data.docRev,
       blocks: parsed.data.blocks,
       updatedAt: k.updated_at,
     };

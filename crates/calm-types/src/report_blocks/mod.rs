@@ -15,15 +15,16 @@
 
 pub mod fence;
 pub mod kinds;
+pub mod tasks;
 
 mod align;
 
 pub use align::{mint_id, reassign_ids, reassign_ids_with_hints};
 pub use fence::{NonProseFence, canonical_json, neige_open_kind, parse_fence, render_fence};
 pub use kinds::{
-    DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_PROSE, KIND_TABLE, MAX_CANONICAL_BYTES,
-    MAX_CHART_CANDLES, MAX_STRING_CHARS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS, is_data_kind,
-    validate_payload,
+    DATA_KINDS, KIND_APP, KIND_CHART_CANDLES, KIND_PROSE, KIND_TABLE, KIND_TASK,
+    MAX_CANONICAL_BYTES, MAX_CHART_CANDLES, MAX_STRING_CHARS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS,
+    is_data_kind, scannable_text_fields, validate_payload,
 };
 
 use crate::wave_report::ReportBlock;

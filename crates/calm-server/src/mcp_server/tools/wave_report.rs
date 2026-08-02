@@ -94,7 +94,7 @@ fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
         description: "Spec-only: read the wave's report. Returns \
-             `{ text, body, summary, schemaVersion, updated_at, \
+             `{ text, body, summary, schemaVersion, docRev, updated_at, \
              blocks }` — `text` is the flat Markdown (`body` is a \
              legacy alias with the same value) and `blocks` is the \
              addressable index `[{ id, kind, rev }]` in document \
@@ -174,6 +174,7 @@ pub(crate) async fn report_read(
         "body": text,
         "summary": snapshot.summary,
         "schemaVersion": snapshot.schema_version,
+        "docRev": snapshot.doc_rev,
         "updated_at": snapshot.updated_at,
         "blocks": index,
     }))
@@ -193,7 +194,7 @@ fn write_descriptor() -> ToolDescriptor {
              `calm.report.write_markdown` for full rewrites that \
              preserve block identity via markers. Behaves like the \
              codex `Write` file tool — clobbers prior content; block \
-             ids are re-derived best-effort. Returns `{ updated_at }`. \
+             ids are re-derived best-effort. Returns `{ updated_at, docRev }`. \
              Omitting `summary` leaves the existing summary unchanged. \
              `message` is required and is persisted as `agent_message`; \
              optional `lifecycle` advances the wave state machine in \
@@ -201,9 +202,10 @@ fn write_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["body", "message"],
+            "required": ["body", "message", "if_doc_rev"],
             "properties": {
                 "body": { "type": "string" },
+                "if_doc_rev": { "type": "integer", "minimum": 0, "description": "The document-wide docRev returned by calm.report.read; not a block rev." },
                 "summary": { "type": "string" },
                 "message": message_schema(),
                 "lifecycle": lifecycle_schema()
@@ -229,6 +231,7 @@ async fn report_write(
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError::invalid_params("calm.report.write: missing `body` (string)"))?
         .to_string();
+    let if_doc_rev = required_doc_rev(obj, "calm.report.write")?;
     // `summary` is optional — if omitted, retain the existing one.
     let summary_override = match obj.get("summary") {
         None | Some(Value::Null) => None,
@@ -257,6 +260,7 @@ async fn report_write(
             body,
             agent_message: write_args.message,
             lifecycle: write_args.lifecycle,
+            if_doc_rev,
         },
     )
     .await
@@ -280,7 +284,7 @@ fn edit_descriptor() -> ToolDescriptor {
              write that still bumps `updated_at` and emits the same \
              `CardUpdated` + `WaveReportEdited` event pair as every \
              other persist (with `body_before == body_after`). \
-             Returns `{ updated_at }`. The summary is preserved — \
+             Returns `{ updated_at, docRev }`. The summary is preserved — \
              call `calm.report.write` to update both at once. `message` \
              is required and is persisted as `agent_message`; optional \
              `lifecycle` advances the wave state machine in the same \
@@ -288,10 +292,11 @@ fn edit_descriptor() -> ToolDescriptor {
             .into(),
         input_schema: json!({
             "type": "object",
-            "required": ["old_string", "new_string", "message"],
+            "required": ["old_string", "new_string", "message", "if_doc_rev"],
             "properties": {
                 "old_string": { "type": "string", "minLength": 1 },
                 "new_string": { "type": "string" },
+                "if_doc_rev": { "type": "integer", "minimum": 0, "description": "The document-wide docRev returned by calm.report.read; not a block rev." },
                 "replace_all": { "type": "boolean" },
                 "message": message_schema(),
                 "lifecycle": lifecycle_schema()
@@ -338,6 +343,7 @@ async fn report_edit(
             ));
         }
     };
+    let if_doc_rev = required_doc_rev(obj, "calm.report.edit")?;
 
     let (wave, _, report_card, current) = resolve_report_for_caller(&ctx, &identity).await?;
 
@@ -387,6 +393,7 @@ async fn report_edit(
             body: new_body,
             agent_message: write_args.message,
             lifecycle: write_args.lifecycle,
+            if_doc_rev,
         },
     )
     .await
@@ -496,7 +503,7 @@ pub(crate) async fn load_report_for_wave(
 /// (Spec maps to `ActorId::AiSpecSession`; `require_role` upstream guarantees
 /// the role is Spec by the time we reach this site), tags every write as the
 /// spec-MCP emitter inside the sink, and projects the returned
-/// `Card` into the MCP wire shape `{ updated_at }`. The error mapping
+/// `Card` into the MCP wire shape `{ updated_at, docRev }`. The error mapping
 /// reproduces the pre-PR3 contract
 /// (`CalmError::Forbidden` → `-32403`, anything else → internal).
 ///
@@ -518,6 +525,7 @@ struct ReportSinkCall {
     body: String,
     agent_message: String,
     lifecycle: Option<WaveLifecycle>,
+    if_doc_rev: u64,
 }
 
 async fn commit_report_write_for_identity(
@@ -534,13 +542,17 @@ async fn commit_report_write_for_identity(
             ReportDocOp::Replace {
                 summary: call.summary,
                 body: call.body,
+                if_doc_rev: call.if_doc_rev,
             },
             Some(call.agent_message),
             call.lifecycle,
         )
         .await
     {
-        Ok((updated, _outcome)) => Ok(json!({ "updated_at": updated.updated_at })),
+        Ok((updated, _outcome)) => {
+            let doc_rev = updated_report_doc_rev(&updated, "wave_report")?;
+            Ok(json!({ "updated_at": updated.updated_at, "docRev": doc_rev }))
+        }
         Err(CalmError::Forbidden(msg)) => Err(RpcError::custom(
             -32403,
             format!("wave_report: forbidden: {msg}"),
@@ -551,8 +563,29 @@ async fn commit_report_write_for_identity(
         Err(CalmError::BadRequest(msg)) => {
             Err(RpcError::invalid_params(format!("wave_report: {msg}")))
         }
+        Err(CalmError::Conflict(msg)) => Err(RpcError::custom(
+            crate::mcp_server::tools::wave_report_blocks::RPC_REV_CONFLICT,
+            format!("wave_report: {msg}"),
+        )),
         Err(e) => Err(RpcError::internal(format!("wave_report: {e}"))),
     }
+}
+
+pub(crate) fn updated_report_doc_rev(card: &Card, tool: &str) -> Result<u64, RpcError> {
+    card.payload
+        .get("docRev")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| RpcError::internal(format!("{tool}: updated report payload has no docRev")))
+}
+
+fn required_doc_rev(obj: &serde_json::Map<String, Value>, tool: &str) -> Result<u64, RpcError> {
+    obj.get("if_doc_rev")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            RpcError::invalid_params(format!(
+                "{tool}: missing `if_doc_rev` (document-wide docRev; use 0 for a new document)"
+            ))
+        })
 }
 
 #[cfg(test)]

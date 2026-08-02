@@ -96,7 +96,8 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
         json!({
             "body": "# A\n\nalpha\n\n# B\n\nbeta\n",
             "summary": "seeded",
-            "message": "seed two blocks"
+            "message": "seed two blocks",
+            "if_doc_rev": 0
         }),
     )
     .await
@@ -106,12 +107,132 @@ async fn seed_two_blocks(boot: &Boot) -> Vec<(String, u64)> {
     index
 }
 
+#[tokio::test]
+async fn block_write_invalidates_previously_read_whole_document_revision() {
+    let boot = boot().await;
+    let before = read(&boot, json!({})).await;
+    assert_eq!(before["docRev"], 0);
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "payload": {"markdown": "# Added\n"}, "if_doc_rev": 0}),
+    )
+    .await
+    .unwrap();
+
+    let conflict = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({"body": "# stale rewrite\n", "if_doc_rev": 0}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(conflict.code, RPC_REV_CONFLICT);
+    assert!(conflict.message.contains("current doc_rev is 1"));
+    let after = read(&boot, json!({})).await;
+    assert_eq!(after["docRev"], 1);
+    assert_ne!(after["body"], "# stale rewrite\n");
+}
+
+#[tokio::test]
+async fn block_revision_cannot_be_used_as_a_whole_document_anchor() {
+    let boot = boot().await;
+    let created = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "markdown": "# Added\n", "if_doc_rev": 0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created["rev"], 1);
+    assert_eq!(created["docRev"], 1);
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE,
+        spec_identity(&boot),
+        json!({
+            "body": "# accidental overwrite\n",
+            "message": "wrong revision domain",
+            "if_rev": 1
+        }),
+    )
+    .await
+    .expect_err("a block if_rev must not satisfy the document anchor");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("if_doc_rev"));
+    assert_ne!(
+        read(&boot, json!({})).await["body"],
+        "# accidental overwrite\n"
+    );
+}
+
+#[tokio::test]
+async fn old_create_and_move_shapes_return_self_healing_invalid_params() {
+    let boot = boot().await;
+    let create = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "markdown": "# Old caller\n"}),
+    )
+    .await
+    .expect_err("old create shape must be rejected during contract migration");
+    assert_eq!(create.code, RpcError::INVALID_PARAMS);
+    assert!(create.message.contains("if_doc_rev"));
+    assert!(create.message.contains("calm.report.read"));
+    assert!(create.message.contains("docRev"));
+
+    let current = read(&boot, json!({})).await;
+    let created = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "kind": "prose",
+            "markdown": "# Retried caller\n",
+            "if_doc_rev": current["docRev"]
+        }),
+    )
+    .await
+    .expect("caller can self-heal by reading docRev and retrying");
+    assert_eq!(created["docRev"], current["docRev"].as_u64().unwrap() + 1);
+
+    let current = read(&boot, json!({})).await;
+    let index = index_of(&current);
+    let moved = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({"id": index[0].0, "to_index": 0}),
+    )
+    .await
+    .expect_err("old move shape must be rejected during contract migration");
+    assert_eq!(moved.code, RpcError::INVALID_PARAMS);
+    assert!(moved.message.contains("if_doc_rev"));
+    assert!(moved.message.contains("calm.report.read"));
+    assert!(moved.message.contains("docRev"));
+
+    let moved = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({"id": index[0].0, "to_index": 0, "if_doc_rev": current["docRev"]}),
+    )
+    .await
+    .expect("caller can self-heal move by reading docRev and retrying");
+    assert_eq!(moved["docRev"], current["docRev"].as_u64().unwrap() + 1);
+}
+
 // ---------------------------------------------------------------------------
 // blocks.kinds
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn kinds_returns_all_four_schemas() {
+async fn kinds_returns_all_five_schemas() {
     let boot = boot().await;
     let out = call_tool(
         &boot,
@@ -129,7 +250,7 @@ async fn kinds_returns_all_four_schemas() {
         .iter()
         .map(|k| k.get("kind").and_then(Value::as_str).unwrap())
         .collect();
-    assert_eq!(names, ["prose", "chart.candles", "table", "app"]);
+    assert_eq!(names, ["prose", "chart.candles", "table", "app", "task"]);
     for kind in kinds {
         assert_eq!(
             kind.pointer("/schema/type").and_then(Value::as_str),
@@ -152,6 +273,20 @@ async fn kinds_returns_all_four_schemas() {
     assert_eq!(
         chart.pointer("/schema/required").unwrap(),
         &json!(["symbol", "candles"]),
+    );
+    let task = &kinds[4];
+    assert_eq!(
+        task.pointer("/schema/properties/context/$ref"),
+        Some(&json!("#/$defs/contextValue"))
+    );
+    assert_eq!(
+        task.pointer("/schema/$defs/contextValue/oneOf/0/maxLength"),
+        Some(&json!(calm_types::report_blocks::MAX_STRING_CHARS))
+    );
+    assert!(
+        task["usage"]
+            .as_str()
+            .is_some_and(|usage| usage.contains("context") && usage.contains("2048"))
     );
     assert_eq!(
         chart
@@ -178,6 +313,15 @@ async fn kinds_returns_all_four_schemas() {
         app.pointer("/schema/properties/height/maximum")
             .and_then(Value::as_u64),
         Some(2000),
+    );
+    let task = &kinds[4];
+    assert_eq!(
+        task.pointer("/schema/additionalProperties"),
+        Some(&Value::Bool(false))
+    );
+    assert_eq!(
+        task.pointer("/schema/properties/declared_by/enum"),
+        Some(&json!(["spec", "user"]))
     );
 
     // #960 PR3 review round 1: advertised limits mirror the Rust
@@ -312,7 +456,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# 新块\n\ncontent\n" }),
+        json!({ "kind": "prose", "markdown": "# 新块\n\ncontent\n", "if_doc_rev": 0 }),
     )
     .await
     .expect("upsert create succeeds");
@@ -324,6 +468,7 @@ async fn upsert_new_block_appends_and_emits_both_events() {
     assert!(id.starts_with("b_"));
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(1));
     assert!(out.get("updated_at").and_then(Value::as_i64).is_some());
+    assert_eq!(out.get("docRev").and_then(Value::as_u64), Some(1));
 
     // Dual-event invariant: exactly one CardUpdated + one
     // WaveReportEdited, flat projections, summary untouched.
@@ -365,7 +510,7 @@ async fn upsert_new_block_at_position_inserts() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "# 首块\n\nfirst\n", "position": 0 }),
+        json!({ "kind": "prose", "markdown": "# 首块\n\nfirst\n", "position": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("insert at 0 succeeds");
@@ -384,7 +529,7 @@ async fn upsert_new_block_at_position_inserts() {
         &boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(&boot),
-        json!({ "kind": "prose", "markdown": "x\n", "position": 99 }),
+        json!({ "kind": "prose", "markdown": "x\n", "position": 99, "if_doc_rev": 2 }),
     )
     .await
     .expect_err("position out of range");
@@ -433,6 +578,31 @@ async fn upsert_replace_without_if_rev_is_invalid_params() {
     .expect_err("replace without if_rev must be rejected");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert!(err.message.contains("if_rev"), "msg = {err:?}");
+}
+
+#[tokio::test]
+async fn upsert_replace_rejects_if_doc_rev_instead_of_ignoring_it() {
+    let boot = boot().await;
+    let index = index_of(&read(&boot, json!({})).await);
+    let (id, rev) = index[0].clone();
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({
+            "id": id,
+            "kind": "prose",
+            "markdown": "x\n",
+            "if_rev": rev,
+            "if_doc_rev": 0
+        }),
+    )
+    .await
+    .expect_err("replace must reject the create-only document revision anchor");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(err.message.contains("if_doc_rev"), "msg = {err:?}");
+    assert!(err.message.contains("if_rev"), "msg = {err:?}");
+    assert!(err.message.contains("block-level rev"), "msg = {err:?}");
 }
 
 #[tokio::test]
@@ -608,13 +778,14 @@ async fn move_reorders_without_touching_rev() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0, "if_rev": ids[1].1 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("move succeeds");
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(ids[1].1));
 
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n# A\n\nalpha\n\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(
@@ -625,7 +796,7 @@ async fn move_reorders_without_touching_rev() {
 }
 
 #[tokio::test]
-async fn move_rev_conflict_returns_32001_and_moves_nothing() {
+async fn move_doc_rev_conflict_returns_32001_and_moves_nothing() {
     let boot = boot().await;
     let ids = seed_two_blocks(&boot).await;
     let before = current_payload(&boot).await;
@@ -635,12 +806,15 @@ async fn move_rev_conflict_returns_32001_and_moves_nothing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0, "if_rev": ids[1].1 + 7 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 8 }),
     )
     .await
     .expect_err("stale if_rev must conflict");
     assert_eq!(err.code, RPC_REV_CONFLICT);
-    assert!(err.message.contains("rev conflict"), "msg = {err:?}");
+    assert!(
+        err.message.contains("document revision conflict"),
+        "msg = {err:?}"
+    );
     assert_eq!(current_payload(&boot).await, before);
     let no_event = tokio::time::timeout(Duration::from_millis(150), rx.recv()).await;
     assert!(no_event.is_err(), "conflict emitted event: {no_event:?}");
@@ -650,7 +824,7 @@ async fn move_rev_conflict_returns_32001_and_moves_nothing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": "b_nope", "to_index": 0 }),
+        json!({ "id": "b_nope", "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect_err("unknown id");
@@ -659,7 +833,7 @@ async fn move_rev_conflict_returns_32001_and_moves_nothing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[0].0, "to_index": 5 }),
+        json!({ "id": ids[0].0, "to_index": 5, "if_doc_rev": 1 }),
     )
     .await
     .expect_err("index out of range");
@@ -702,7 +876,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     assert_eq!(current_payload(&boot).await, before);
 
     // Matching if_rev deletes.
-    call_tool(
+    let out = call_tool(
         &boot,
         TOOL_REPORT_BLOCKS_DELETE,
         spec_identity(&boot),
@@ -711,6 +885,7 @@ async fn delete_requires_if_rev_and_honors_it() {
     .await
     .expect("delete succeeds");
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# B\n\nbeta\n");
     let index = index_of(&read(&boot, json!({})).await);
     assert_eq!(index, vec![(ids[1].0.clone(), ids[1].1)]);
@@ -719,6 +894,42 @@ async fn delete_requires_if_rev_and_honors_it() {
 // ---------------------------------------------------------------------------
 // write_markdown
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn write_markdown_requires_if_doc_rev_and_maps_stale_revision_to_conflict() {
+    let boot = boot().await;
+    let missing = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# Missing rev\n" }),
+    )
+    .await
+    .expect_err("write_markdown without if_doc_rev must be rejected");
+    assert_eq!(missing.code, RpcError::INVALID_PARAMS);
+
+    let first = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# First\n", "if_doc_rev": 0 }),
+    )
+    .await
+    .expect("fresh revision succeeds");
+    assert_eq!(first["docRev"], 1);
+
+    let stale = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": "# Stale\n", "if_doc_rev": 0 }),
+    )
+    .await
+    .expect_err("stale whole-document anchor must conflict");
+    assert_eq!(stale.code, RPC_REV_CONFLICT);
+    assert!(stale.message.contains("current doc_rev is 1"));
+    assert_eq!(current_payload(&boot).await.body, "# First\n");
+}
 
 #[tokio::test]
 async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
@@ -734,11 +945,11 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
         "<!-- neige:{} -->\n# A\n\nalpha\n\n<!-- neige:{} -->\n# B\n\nbeta edited\n",
         ids[0].0, ids[1].0
     );
-    call_tool(
+    let out = call_tool(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": body }),
+        json!({ "body": body, "if_doc_rev": 1 }),
     )
     .await
     .expect("write_markdown succeeds");
@@ -755,6 +966,7 @@ async fn write_markdown_with_markers_reuses_ids_and_strips_them() {
 
     // Hard assertion: markers never reach storage nor the event log.
     let payload = current_payload(&boot).await;
+    assert_eq!(out["docRev"], payload.doc_rev);
     assert_eq!(payload.body, "# A\n\nalpha\n\n# B\n\nbeta edited\n");
     assert!(!payload.body.contains("<!-- neige:"));
     assert_eq!(payload.summary, "seeded", "omitted summary is preserved");
@@ -789,7 +1001,8 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
         spec_identity(&boot),
         json!({
             "body": "# A\nsame\n# A\nsame\n",
-            "message": "seed duplicate blocks"
+            "message": "seed duplicate blocks",
+            "if_doc_rev": 0
         }),
     )
     .await
@@ -806,7 +1019,7 @@ async fn write_markdown_markers_make_duplicate_blocks_addressable() {
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": body }),
+        json!({ "body": body, "if_doc_rev": 1 }),
     )
     .await
     .expect("write_markdown succeeds");
@@ -828,7 +1041,8 @@ async fn write_markdown_without_markers_falls_back_to_lcs() {
         spec_identity(&boot),
         json!({
             "body": "# X\n\nbrand new\n\n# A\n\nalpha touched\n\n# B\n\nbeta\n",
-            "summary": "restructured"
+            "summary": "restructured",
+            "if_doc_rev": 1
         }),
     )
     .await
@@ -918,7 +1132,7 @@ async fn read_blocks_index_comes_from_crdt_truth_when_cache_missing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("move succeeds");
@@ -970,7 +1184,7 @@ async fn read_serves_one_self_consistent_snapshot_when_cache_missing() {
         &boot,
         TOOL_REPORT_BLOCKS_MOVE,
         spec_identity(&boot),
-        json!({ "id": ids[1].0, "to_index": 0 }),
+        json!({ "id": ids[1].0, "to_index": 0, "if_doc_rev": 1 }),
     )
     .await
     .expect("move succeeds");
@@ -1029,11 +1243,14 @@ const CHART_PAYLOAD_V1: &str = r#"{
 
 /// Upsert one chart block after the seed prose; returns `(id, rev)`.
 async fn upsert_chart(boot: &Boot, payload: Value) -> (String, u64) {
+    let if_doc_rev = read(boot, json!({})).await["docRev"]
+        .as_u64()
+        .expect("read returns docRev");
     let out = call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(boot),
-        json!({ "kind": "chart.candles", "payload": payload }),
+        json!({ "kind": "chart.candles", "payload": payload, "if_doc_rev": if_doc_rev }),
     )
     .await
     .expect("chart upsert succeeds");
@@ -1120,7 +1337,7 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
         &boot,
         TOOL_REPORT_WRITE,
         spec_identity(&boot),
-        json!({ "body": "# 概要\n\nprose only now\n", "message": "stomp" }),
+        json!({ "body": "# 概要\n\nprose only now\n", "message": "stomp", "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("write dropping the fence must fail");
@@ -1133,7 +1350,7 @@ async fn write_and_edit_stomping_a_data_block_fail_32602_and_write_nothing() {
         &boot,
         TOOL_REPORT_EDIT,
         spec_identity(&boot),
-        json!({ "old_string": "\"ma20\"", "new_string": "\"ma60\"", "message": "stomp" }),
+        json!({ "old_string": "\"ma20\"", "new_string": "\"ma60\"", "message": "stomp", "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("edit inside the fence must fail");
@@ -1164,7 +1381,8 @@ async fn write_preserving_the_fence_verbatim_passes_and_holds_id_rev() {
         spec_identity(&boot),
         json!({
             "body": format!("# 概要\n\nrewritten prose\n{fence}# 新节\n\ntail\n"),
-            "message": "legal whole-document rewrite"
+            "message": "legal whole-document rewrite",
+            "if_doc_rev": 1
         }),
     )
     .await
@@ -1194,7 +1412,7 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": "# 概要\n```neige-block chart.candles\n{oops\n```\n" }),
+        json!({ "body": "# 概要\n```neige-block chart.candles\n{oops\n```\n", "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("malformed fence must reject the whole write");
@@ -1209,7 +1427,7 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": format!("{SEED_BODY}{edited}") }),
+        json!({ "body": format!("{SEED_BODY}{edited}"), "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect("fence-editing write_markdown passes");
