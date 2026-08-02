@@ -22,6 +22,8 @@ use calm_server::routes::wave_report_blocks::{
 };
 use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState};
 use calm_server::wave_report::tasks_rebuild_tx;
+use calm_server::wave_report_doc::ReportDoc;
+use calm_types::report_blocks::render_fence;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -144,6 +146,48 @@ async fn assert_diagnosed_on_both_reads(boot: &Boot, key: &str, needle: &str) {
     );
 }
 
+async fn rebuild(boot: &Boot) -> calm_server::db::sqlite::TaskProjectionOutcome {
+    let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
+    let outcome = tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    outcome
+}
+
+async fn user_delete(boot: &Boot, id: &str, rev: u64) {
+    let _ = delete_block(
+        State(RouteState::from_ref(&route_state(boot).await)),
+        principal(),
+        Actor("user".into()),
+        Path((boot.wave_id.to_string(), id.into())),
+        Json(DeleteReportBlockBody {
+            if_block_rev: rev as u32,
+        }),
+    )
+    .await
+    .unwrap();
+}
+
+async fn patch_policy(boot: &Boot, policy: &str) {
+    let response = calm_server::routes::waves::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(route_state(boot).await)
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .header("content-type", "application/json")
+                .uri(format!("/api/waves/{}", boot.wave_id))
+                .body(Body::from(json!({"automation_policy": policy}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+}
+
 async fn keys(boot: &Boot) -> Vec<String> {
     sqlx::query_scalar("SELECT key FROM tasks WHERE wave_id=?1 ORDER BY key")
         .bind(boot.wave_id.as_str())
@@ -262,9 +306,16 @@ async fn report_write_emits_three_events_or_two_when_projection_is_unchanged() {
     let boot = new_boot().await;
     let mut rx = boot.ctx.events.subscribe();
     let (id, rev) = upsert(&boot, None, task("events")).await;
-    let first: Vec<_> = (0..3).map(|_| ()).collect();
-    for _ in first {
-        rx.recv().await.unwrap();
+    let events = [
+        rx.recv().await.unwrap(),
+        rx.recv().await.unwrap(),
+        rx.recv().await.unwrap(),
+    ];
+    assert!(matches!(events[0].event, Event::CardUpdated(_)));
+    assert!(matches!(events[1].event, Event::WaveReportEdited { .. }));
+    match &events[2].event {
+        Event::PlanUpdated { changed_keys, .. } => assert_eq!(changed_keys, &["events"]),
+        other => panic!("expected PlanUpdated, got {other:?}"),
     }
     assert!(matches!(
         rx.try_recv(),
@@ -349,18 +400,19 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
 }
 
 async fn task_bytes(boot: &Boot) -> Vec<String> {
-    sqlx::query_scalar("SELECT json_object('key',key,'kind',kind,'goal',goal,'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd,'depends',depends_on_json,'priority',priority,'gate',gate_json,'declared_by',declared_by,'origin',origin,'status',status,'status_detail',status_detail,'worker',worker_card_id,'gate_result',gate_result_json,'gate_pid',gate_pid,'finished',finished_at_ms,'deadline',running_deadline_ms) FROM tasks WHERE wave_id=?1 ORDER BY key")
+    sqlx::query_scalar("SELECT json_object('key',key,'kind',kind,'goal',goal,'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd,'depends',depends_on_json,'priority',priority,'gate',gate_json,'declared_by',declared_by,'origin',origin,'status',status,'status_detail',status_detail,'worker',worker_card_id,'gate_result',gate_result_json,'gate_attempt',gate_attempt,'gate_pid',gate_pid,'gate_pid_starttime',gate_pid_starttime,'gate_pid_boot_id',gate_pid_boot_id,'finished',finished_at_ms,'deadline',running_deadline_ms,'claim_context',claim_context_json,'context_stale',context_stale_at_ms,'closure_truncated',context_closure_truncated) FROM tasks WHERE wave_id=?1 ORDER BY key")
         .bind(boot.wave_id.as_str()).fetch_all(&boot.repo.sqlite_pool().unwrap()).await.unwrap()
 }
 
 #[tokio::test]
 async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     let boot = new_boot().await;
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'legacy','codex','legacy goal','{}','[]',0,'running','spec','legacy',0,0)")
-        .bind(format!("{}:legacy", boot.wave_id)).bind(boot.wave_id.as_str())
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,status,status_detail,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'flight','codex','goal flight','{\"key\":\"flight\"}','accept flight','/flight','[]',3,'{\"steps\":[{\"name\":\"accept\",\"cmd\":\"true\"}]}','running','owned-byte','spec','legacy',0,0)")
+        .bind(format!("{}:flight", boot.wave_id)).bind(boot.wave_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     let (a, a_rev) = upsert(&boot, None, task("a")).await;
     let (b, _) = upsert(&boot, None, task("b")).await;
+    upsert(&boot, None, task("flight")).await;
     let (x, x_rev) = upsert(&boot, None, task("x")).await;
     let (y, y_rev) = upsert(&boot, None, task("y")).await;
     let mut duplicate = task("x");
@@ -393,6 +445,19 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     changed["ready"] = json!(false);
     upsert(&boot, Some((&a, a_rev)), changed).await;
     let before = task_bytes(&boot).await;
+    // Option (a): damage materialized block rows so rebuild must recreate a
+    // surviving pending row and re-adopt the frozen in-flight legacy row.
+    sqlx::query("DELETE FROM tasks WHERE wave_id=?1 AND key='b'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1 AND key='flight'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_ne!(task_bytes(&boot).await, before, "damage must be observable");
     let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
     tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
         .await
@@ -403,16 +468,24 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
         before,
         "all declaration and state bytes"
     );
-    assert_eq!(keys(&boot).await, vec!["b", "legacy"]);
+    assert_eq!(keys(&boot).await, vec!["b", "flight"]);
     assert!(!b.is_empty());
 }
 
 #[tokio::test]
 async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row_mutation() {
-    for field in ["goal", "acceptance", "gate"] {
+    for field in [
+        "goal",
+        "acceptance",
+        "gate",
+        "context",
+        "cwd",
+        "depends_on",
+        "priority",
+    ] {
         let boot = new_boot().await;
         let (id, rev) = upsert(&boot, None, task("flight")).await;
-        sqlx::query("UPDATE tasks SET status='running',status_detail='owned' WHERE wave_id=?1 AND key='flight'")
+        sqlx::query("UPDATE tasks SET status='running',status_detail='owned',declared_by='user' WHERE wave_id=?1 AND key='flight'")
             .bind(boot.wave_id.as_str()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
         let before = task_bytes(&boot).await;
         let mut changed = task("flight");
@@ -420,6 +493,10 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             "goal" => changed[field] = json!("new goal"),
             "acceptance" => changed[field] = json!("new acceptance"),
             "gate" => changed[field] = json!({"steps":[{"name":"changed","cmd":"false"}]}),
+            "context" => changed[field] = json!({"changed": true}),
+            "cwd" => changed[field] = json!("/changed"),
+            "depends_on" => changed[field] = json!(["other"]),
+            "priority" => changed[field] = json!(99),
             _ => unreachable!(),
         }
         upsert(&boot, Some((&id, rev)), changed).await;
@@ -433,6 +510,147 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             "{field}"
         );
     }
+}
+
+#[tokio::test]
+async fn unknown_dependencies_use_all_inflight_rows_but_not_legacy_pending_rows() {
+    let boot = new_boot().await;
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'old-running','codex','old','{}','[]',0,'running','spec','legacy',0,0), (?3,?2,'old-pending','codex','old','{}','[]',0,'pending','spec','legacy',0,0)")
+        .bind(format!("{}:old-running", boot.wave_id)).bind(boot.wave_id.as_str())
+        .bind(format!("{}:old-pending", boot.wave_id))
+        .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+    let mut known = task("uses-running");
+    known["depends_on"] = json!(["old-running"]);
+    upsert(&boot, None, known).await;
+    assert!(keys(&boot).await.contains(&"uses-running".into()));
+
+    let mut unknown = task("uses-pending");
+    unknown["depends_on"] = json!(["old-pending"]);
+    upsert(&boot, None, unknown).await;
+    assert_diagnosed_on_both_reads(&boot, "uses-pending", "unknown dependency `old-pending`").await;
+}
+
+#[tokio::test]
+async fn deleting_dependency_converges_in_one_evaluation_and_rebuild_matches_reads() {
+    let boot = new_boot().await;
+    let (k1, k1_rev) = upsert(&boot, None, task("k1")).await;
+    let mut k2 = task("k2");
+    k2["depends_on"] = json!(["k1"]);
+    upsert(&boot, None, k2).await;
+    assert_eq!(keys(&boot).await, ["k1", "k2"]);
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_DELETE,
+        spec_identity(&boot),
+        json!({"id":k1,"if_rev":k1_rev}),
+    )
+    .await
+    .unwrap();
+    assert_diagnosed_on_both_reads(&boot, "k2", "unknown dependency `k1`").await;
+    let outcome = rebuild(&boot).await;
+    assert!(outcome.diagnostics.iter().any(|v| {
+        v.key == "k2"
+            && v.diagnostics
+                .iter()
+                .any(|d| d.message.contains("unknown dependency `k1`"))
+    }));
+    assert!(keys(&boot).await.is_empty());
+}
+
+#[tokio::test]
+async fn uncleared_user_tombstone_derives_wait_and_explicit_auto_declare_recovers() {
+    let boot = new_boot().await;
+    let (denied, denied_rev) = upsert(&boot, None, task("denied")).await;
+    user_delete(&boot, &denied, denied_rev).await;
+    let (replacement, _) = upsert(&boot, None, task("replacement")).await;
+    assert_diagnosed_on_both_reads(&boot, "replacement", "requires user release").await;
+    assert!(
+        rest_read(&boot).await["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
+    );
+    patch_policy(&boot, "auto-declare").await;
+    assert_eq!(keys(&boot).await, ["replacement"]);
+    assert!(
+        rest_read(&boot).await["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
+    );
+    assert!(!replacement.is_empty());
+}
+
+#[tokio::test]
+async fn user_veto_removes_other_unreleased_pending_rows_with_readable_reason() {
+    let boot = new_boot().await;
+    let (vetoed, vetoed_rev) = upsert(&boot, None, task("vetoed")).await;
+    upsert(&boot, None, task("collateral")).await;
+    assert_eq!(keys(&boot).await, ["collateral", "vetoed"]);
+    user_delete(&boot, &vetoed, vetoed_rev).await;
+    assert_diagnosed_on_both_reads(&boot, "collateral", "requires user release").await;
+}
+
+#[tokio::test]
+async fn invalid_task_payload_deletes_pending_row_with_readable_reason() {
+    let boot = new_boot().await;
+    let (id, rev) = upsert(&boot, None, task("invalidated")).await;
+    let mut invalid = task("invalidated");
+    invalid["acceptance"] = json!("");
+    let (card_id, payload_json, bytes): (String, String, Vec<u8>) = sqlx::query_as(
+        "SELECT id,json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+    doc.upsert_block(Some(&id), "task", &render_fence("task", &invalid))
+        .unwrap();
+    let mut payload: calm_server::wave_report::WaveReportPayload =
+        serde_json::from_str(&payload_json).unwrap();
+    payload.body = doc.project().unwrap().1;
+    payload.blocks = Some(doc.blocks_snapshot().unwrap());
+    sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=?2 WHERE id=?3")
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(doc.to_bytes())
+        .bind(card_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let _ = rev;
+    rebuild(&boot).await;
+    assert_diagnosed_on_both_reads(&boot, "invalidated", "acceptance").await;
+}
+
+#[tokio::test]
+async fn ceiling_rebuild_is_stable_and_only_new_candidate_is_rejected() {
+    let boot = new_boot().await;
+    sqlx::query("UPDATE waves SET spec_task_ceiling=2 WHERE id=?1")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    upsert(&boot, None, task("k1")).await;
+    upsert(&boot, None, task("k2")).await;
+    let settled = task_bytes(&boot).await;
+    upsert(&boot, None, task("k3")).await;
+    assert_eq!(
+        task_bytes(&boot).await,
+        settled,
+        "k1/k2 bytes must not move"
+    );
+    assert_diagnosed_on_both_reads(&boot, "k3", "ceiling of 2").await;
+    rebuild(&boot).await;
+    let once = task_bytes(&boot).await;
+    rebuild(&boot).await;
+    assert_eq!(
+        task_bytes(&boot).await,
+        once,
+        "two rebuilds must be byte-identical"
+    );
 }
 
 #[tokio::test]

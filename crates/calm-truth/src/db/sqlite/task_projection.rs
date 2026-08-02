@@ -71,8 +71,10 @@ pub async fn evaluate_schedulability_tx(
         wave_projection_policy_tx(tx, wave_id).await?;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait")
         || (configured_policy.is_none() && declarations.iter().any(|d| d.tombstoned_by_user));
+    // unknown_deps knows every in-flight key in the wave, including rows
+    // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
     let inflight: Vec<(String,)> = sqlx::query_as(
-        "SELECT key FROM tasks WHERE wave_id=?1 AND declared_by='spec' AND origin='block' AND status IN ('dispatched','running','verifying')",
+        "SELECT key FROM tasks WHERE wave_id=?1 AND status IN ('dispatched','running','verifying')",
     )
     .bind(wave_id)
     .fetch_all(&mut **tx)

@@ -325,7 +325,23 @@ pub fn project_task_declarations(
         }
         if let Err(error) = super::validate_payload(super::KIND_TASK, &block.payload) {
             diagnostics[index].push(Diagnostic::new("payload", error));
-            continue;
+            // Preserve a keyed declaration when the payload is structurally
+            // readable.  Its payload diagnostic keeps it unschedulable while
+            // allowing both diagnostic read paths to explain why an existing
+            // pending row was removed.
+            if block.payload.get("key").and_then(Value::as_str).is_none()
+                || block
+                    .payload
+                    .get("declared_by")
+                    .and_then(Value::as_str)
+                    .is_none()
+                || block
+                    .payload
+                    .get("gate")
+                    .is_some_and(|gate| serde_json::from_value::<GateInput>(gate.clone()).is_err())
+            {
+                continue;
+            }
         }
         let payload = block
             .payload
@@ -354,7 +370,7 @@ pub fn project_task_declarations(
                 .map(str::to_string),
             gate: payload
                 .get("gate")
-                .map(|gate| serde_json::from_value(gate.clone()).expect("validated gate")),
+                .map(|gate| serde_json::from_value(gate.clone()).expect("gate checked above")),
             no_gate_reason: payload
                 .get("no_gate_reason")
                 .and_then(Value::as_str)
