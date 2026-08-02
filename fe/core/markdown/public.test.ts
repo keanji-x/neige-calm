@@ -40,11 +40,11 @@ describe('core/markdown behavior', () => {
     expect(result.value.children.map(({ type }) => type)).toEqual([
       'list', 'blockquote', 'list', 'paragraph', 'paragraph', 'table',
     ]);
-    expect(result.value.children[3]).toEqual({
+    expect(result.value.children[3]).toMatchObject({
       type: 'paragraph',
       children: [{ type: 'link', destination: 'b', title: null, children: [{ type: 'text', value: 'a' }] }],
     });
-    expect(result.value.children[4]).toEqual({
+    expect(result.value.children[4]).toMatchObject({
       type: 'paragraph',
       children: [{ type: 'text', value: 'left line\nright line' }],
     });
@@ -56,7 +56,7 @@ describe('core/markdown behavior', () => {
     expect(result.status).toBe('ready');
     if (result.status !== 'ready') return;
     expect(result.value.children.map(({ type }) => type)).toEqual(['heading', 'heading', 'paragraph']);
-    expect(result.value.children[2]).toEqual({ type: 'paragraph', children: [{ type: 'text', value: '####### Seven' }] });
+    expect(result.value.children[2]).toMatchObject({ type: 'paragraph', children: [{ type: 'text', value: '####### Seven' }] });
     expect(result.value.diagnostics).toContainEqual({
       kind: 'malformed', message: 'ATX heading depth exceeds six', line: 3,
     });
@@ -72,7 +72,6 @@ describe('core/markdown behavior', () => {
   it.each([
     ['unclosed fence', '```md\n# not a heading', { kind: 'malformed', message: 'Unclosed fenced code block', line: 1 }],
     ['malformed table', '| a | b |\n| -- | nope |\n# after', { kind: 'malformed', message: 'Malformed GFM table delimiter', line: 2 }],
-    ['deep nesting', `${'> '.repeat(80)}# nested`, { kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: 1 }],
     ['raw script', '<script>alert(1)</script>\n# after', { kind: 'unsafe-raw-html', message: 'Raw HTML requires sanitization', line: 1 }],
   ])('degrades %s without throwing and locks its diagnostic schema', (_name, markdown, diagnostic) => {
     expect(() => parse(markdown)).not.toThrow();
@@ -85,7 +84,6 @@ describe('core/markdown behavior', () => {
   it.each([
     ['unclosed fence', '```md\nbody'],
     ['table', '| a | b |\n| --- | --- |\n| 1 |'],
-    ['deep nesting', `${'> '.repeat(100)}value`],
     ['raw script', '<script>alert(1)</script>'],
     ['unclosed link', '[label](destination'],
     ['BOM', '\uFEFF# title'],
@@ -95,5 +93,43 @@ describe('core/markdown behavior', () => {
   ])('does not throw for malformed/stress input: %s', (_name, markdown) => {
     expect(() => parse(markdown)).not.toThrow();
     expect(parse(markdown).status).toBe('ready');
+  });
+
+  it('rejects deeply nested lists before parsing within the runtime budget', () => {
+    const markdown = Array.from({ length: 1_000 }, (_, depth) => `${'  '.repeat(depth)}- x`).join('\n');
+    const started = Date.now();
+    const result = parse(markdown);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') return;
+    expect(result.error.diagnostics).toContainEqual({
+      kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: 65,
+    });
+  });
+
+  it('rejects oversized source before parsing', () => {
+    const result = parse('x'.repeat(2_000_001));
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') return;
+    expect(result.error.diagnostics).toEqual([
+      { kind: 'limit-exceeded', message: 'Markdown source exceeds 2000000 characters', line: 1 },
+    ]);
+  });
+
+  it('uses each HTML node position for duplicate raw HTML diagnostics', () => {
+    const result = parse('<div>same</div>\n\ntext\n\n<div>same</div>');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.value.diagnostics.filter(({ kind }) => kind === 'unsafe-raw-html').map(({ line }) => line))
+      .toEqual([1, 5]);
+  });
+
+  it('does not treat a fenced prefix with trailing content as a closing fence', () => {
+    const result = parse('```md\n```notclose\n```');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.value.diagnostics).not.toContainEqual(expect.objectContaining({
+      message: 'Unclosed fenced code block',
+    }));
   });
 });

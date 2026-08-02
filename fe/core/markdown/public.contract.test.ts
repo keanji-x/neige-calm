@@ -9,7 +9,6 @@ import {
   reportHeadingIdPolicy,
   sanitizeAstPolicy,
   type HeadingIdPolicy,
-  type HeadingOutline,
   type MarkdownParseResult,
   type NormalizedHeading,
   type NormalizedMarkdownAst,
@@ -68,12 +67,14 @@ describe('core/markdown public contract', () => {
       textPolicy: 'non-empty-heading-label',
     });
 
-    expect(report).toEqual([
+    expect(report.map(({ depth, id, text, globalOrdinal, localOrdinal }) => ({
+      depth, id, text, globalOrdinal, localOrdinal,
+    }))).toEqual([
       { depth: 1, id: 'b_one-h1', text: 'One', globalOrdinal: 0, localOrdinal: 0 },
       { depth: 2, id: 'b_one-h2', text: 'Two', globalOrdinal: 1, localOrdinal: 1 },
       { depth: 1, id: 'b_two-h1', text: 'Three', globalOrdinal: 2, localOrdinal: 0 },
       { depth: 2, id: 'b_two-h2', text: 'Four', globalOrdinal: 3, localOrdinal: 1 },
-    ] satisfies HeadingOutline[]);
+    ]);
     expect(fileViewer.map(({ id, globalOrdinal, localOrdinal }) => ({ id, globalOrdinal, localOrdinal }))).toEqual([
       { id: 'md-h-0', globalOrdinal: 0, localOrdinal: 0 },
       { id: 'md-h-1', globalOrdinal: 1, localOrdinal: 1 },
@@ -99,12 +100,59 @@ describe('core/markdown public contract', () => {
     expect(fileViewer.map(({ id }) => id)).toEqual(['md-h-0', 'md-h-1', 'md-h-2', 'md-h-3']);
   });
 
+  it('recursively preserves legacy ordinals for blockquotes, lists, and multi-level nesting', () => {
+    const ast = ready('# Alpha\n\n> ## Quoted\n\n- item\n  ## InList\n\n> - nested\n>   ## Deep\n\n## Beta');
+    const report = extractOutline([{ context: { blockId: 'b_nested' }, ast }], {
+      maxDepth: REPORT_MAX_DEPTH, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label',
+    });
+    const fileViewer = extractOutline([{ context: undefined, ast }], {
+      maxDepth: FILE_VIEWER_MAX_DEPTH, headingId: fileViewerHeadingIdPolicy,
+      textPolicy: 'non-empty-heading-label',
+    });
+
+    expect(report.map(({ text, id, localOrdinal }) => ({ text, id, localOrdinal }))).toEqual([
+      { text: 'Alpha', id: 'b_nested-h1', localOrdinal: 0 },
+      { text: 'Quoted', id: 'b_nested-h2', localOrdinal: 1 },
+      { text: 'InList', id: 'b_nested-h3', localOrdinal: 2 },
+      { text: 'Deep', id: 'b_nested-h4', localOrdinal: 3 },
+      { text: 'Beta', id: 'b_nested-h5', localOrdinal: 4 },
+    ]);
+    expect(fileViewer.map(({ text, id, globalOrdinal }) => ({ text, id, globalOrdinal }))).toEqual([
+      { text: 'Alpha', id: 'md-h-0', globalOrdinal: 0 },
+      { text: 'Quoted', id: 'md-h-1', globalOrdinal: 1 },
+      { text: 'InList', id: 'md-h-2', globalOrdinal: 2 },
+      { text: 'Deep', id: 'md-h-3', globalOrdinal: 3 },
+      { text: 'Beta', id: 'md-h-4', globalOrdinal: 4 },
+    ]);
+  });
+
+  it('preserves source positions on the AST and extracted headings', () => {
+    const markdown = 'intro\n\n## Positioned\n';
+    const ast = ready(markdown);
+    const heading = ast.children[1];
+    expect(heading).toMatchObject({
+      type: 'heading', position: { start: { line: 3, offset: 7 }, end: { offset: 20 } },
+    });
+    const outline = extractOutline([{ context: undefined, ast }], {
+      maxDepth: FILE_VIEWER_MAX_DEPTH, headingId: fileViewerHeadingIdPolicy,
+      textPolicy: 'non-empty-heading-label',
+    });
+    expect(outline[0]?.position).toEqual({ start: { line: 3, offset: 7 }, end: { offset: 20 } });
+  });
+
   it('removes raw HTML nodes through a narrowed safe AST', () => {
     const ast = ready('<script>alert(1)</script>\n\n# Safe <i>label</i>');
     expect(ast.children.some(({ type }) => type === 'html')).toBe(true);
     const safe = sanitizeAstPolicy(ast, { rawHtml: 'drop' });
-    expect(safe.children).toEqual([
+    expect(safe.children).toMatchObject([
       { type: 'heading', depth: 1, children: [{ type: 'text', value: 'Safe ' }, { type: 'text', value: 'label' }] },
     ]);
+  });
+
+  it('removes raw HTML at every nested block level at runtime', () => {
+    const safe = sanitizeAstPolicy(ready('> - item\n>\n>   <span>unsafe</span>'), { rawHtml: 'drop' });
+    const serialized = JSON.stringify(safe.children);
+    expect(serialized).not.toContain('"type":"html"');
+    expect(serialized).not.toContain('<span>');
   });
 });
