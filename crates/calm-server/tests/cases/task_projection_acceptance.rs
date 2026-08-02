@@ -60,7 +60,7 @@ async fn upsert(boot: &Boot, id_rev: Option<(&str, u64)>, payload: Value) -> (St
     )
 }
 
-async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> u64 {
+async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> (u64, u64) {
     let state = route_state(boot).await;
     update_block(
         State(RouteState::from_ref(&state)),
@@ -75,11 +75,11 @@ async fn user_upsert(boot: &Boot, id: &str, rev: u64, payload: Value) -> u64 {
         }),
     )
     .await
+    .map(|response| {
+        let response = response.0;
+        (response.rev.unwrap().into(), response.doc_rev)
+    })
     .expect("user task update")
-    .0
-    .rev
-    .unwrap()
-    .into()
 }
 
 fn principal() -> Principal {
@@ -225,11 +225,39 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
 
     let mut released = task("waited");
     released["released_by_user"] = json!(true);
-    let rev = user_upsert(&boot, &id, rev, released).await;
+    let (rev, doc_rev_before) = user_upsert(&boot, &id, rev, released).await;
     assert_eq!(keys(&boot).await, ["waited"]);
 
-    user_upsert(&boot, &id, rev, task("waited")).await;
-    assert!(keys(&boot).await.is_empty());
+    let (withdraw_rev, doc_rev_after) = user_upsert(&boot, &id, rev, task("waited")).await;
+    let after_withdraw = read(&boot).await;
+    let policy: Option<String> =
+        sqlx::query_scalar("SELECT automation_policy FROM waves WHERE id=?1")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let persisted_payload: String =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE wave_id=?1 AND kind='wave-report'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let row = boot
+        .repo
+        .tasks_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|task| task.key == "waited");
+    let current_keys = keys(&boot).await;
+    eprintln!(
+        "declare-and-wait withdrawal diagnostics: policy={policy:?}; persisted_payload={persisted_payload}; row={row:#?}; taskDiagnostics={:#?}; withdraw_rev={withdraw_rev}; docRev_before={:?}; docRev_after={:?}",
+        after_withdraw["taskDiagnostics"], doc_rev_before, doc_rev_after,
+    );
+    assert!(
+        current_keys.is_empty(),
+        "expected no rows, got {current_keys:?}; policy={policy:?}; row={row:?}"
+    );
 
     let mut forbidden = task("forbidden");
     forbidden["released_by_user"] = json!(true);
