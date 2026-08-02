@@ -1,34 +1,69 @@
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { gfm } from 'micromark-extension-gfm';
+
 export type MarkdownDepth = 1 | 2 | 3 | 4 | 5 | 6;
 
 export type NormalizedText = Readonly<{ type: 'text'; value: string }>;
-export type NormalizedInlineCode = Readonly<{ type: 'inline-code'; value: string }>;
-export type NormalizedImage = Readonly<{ type: 'image'; alt: string; destination: string }>;
+export type NormalizedInlineCode = Readonly<{ type: 'inlineCode'; value: string }>;
+export type NormalizedImage = Readonly<{ type: 'image'; alt: string; destination: string; title: string | null }>;
+export type NormalizedLink = Readonly<{
+  type: 'link';
+  destination: string;
+  title: string | null;
+  children: readonly NormalizedInline[];
+}>;
 export type NormalizedDelete = Readonly<{ type: 'delete'; children: readonly NormalizedInline[] }>;
-export type NormalizedInline = NormalizedText | NormalizedInlineCode | NormalizedImage | NormalizedDelete;
+export type NormalizedEmphasis = Readonly<{ type: 'emphasis'; children: readonly NormalizedInline[] }>;
+export type NormalizedStrong = Readonly<{ type: 'strong'; children: readonly NormalizedInline[] }>;
+export type NormalizedBreak = Readonly<{ type: 'break' }>;
+export type NormalizedHtml = Readonly<{ type: 'html'; value: string }>;
+export type NormalizedInline =
+  | NormalizedText
+  | NormalizedInlineCode
+  | NormalizedImage
+  | NormalizedLink
+  | NormalizedDelete
+  | NormalizedEmphasis
+  | NormalizedStrong
+  | NormalizedBreak
+  | NormalizedHtml;
 
 export type NormalizedHeading = Readonly<{
   type: 'heading';
   depth: MarkdownDepth;
   children: readonly NormalizedInline[];
 }>;
-export type NormalizedParagraph = Readonly<{
-  type: 'paragraph';
-  children: readonly NormalizedInline[];
+export type NormalizedParagraph = Readonly<{ type: 'paragraph'; children: readonly NormalizedInline[] }>;
+export type NormalizedCode = Readonly<{ type: 'code'; language: string | null; meta: string | null; value: string }>;
+export type NormalizedBlockquote = Readonly<{ type: 'blockquote'; children: readonly NormalizedBlock[] }>;
+export type NormalizedListItem = Readonly<{
+  type: 'listItem';
+  checked: boolean | null;
+  children: readonly NormalizedBlock[];
 }>;
-export type NormalizedCode = Readonly<{
-  type: 'code';
-  language: string | null;
-  value: string;
+export type NormalizedList = Readonly<{
+  type: 'list';
+  ordered: boolean;
+  start: number | null;
+  spread: boolean;
+  children: readonly NormalizedListItem[];
 }>;
+export type NormalizedTableCell = Readonly<{ type: 'tableCell'; children: readonly NormalizedInline[] }>;
+export type NormalizedTableRow = Readonly<{ type: 'tableRow'; children: readonly NormalizedTableCell[] }>;
 export type NormalizedTable = Readonly<{
   type: 'table';
-  rows: readonly (readonly (readonly NormalizedInline[])[])[];
+  align: readonly ('left' | 'right' | 'center' | null)[];
+  children: readonly NormalizedTableRow[];
 }>;
-export type NormalizedThematicBreak = Readonly<{ type: 'thematic-break' }>;
+export type NormalizedThematicBreak = Readonly<{ type: 'thematicBreak' }>;
 export type NormalizedBlock =
   | NormalizedHeading
   | NormalizedParagraph
   | NormalizedCode
+  | NormalizedBlockquote
+  | NormalizedList
+  | NormalizedHtml
   | NormalizedTable
   | NormalizedThematicBreak;
 
@@ -45,19 +80,13 @@ export type NormalizedMarkdownAst = Readonly<{
   diagnostics: readonly MarkdownDiagnostic[];
 }>;
 
-export type MarkdownParseFailure = Readonly<{
-  kind: 'markdown-parse';
-  message: string;
-  cause?: unknown;
-}>;
-
-/** Parse failures are values, matching core/api and core/state; malformed source degrades with diagnostics. */
+export type MarkdownParseFailure = Readonly<{ kind: 'markdown-parse'; message: string; cause?: unknown }>;
 export type MarkdownParseResult =
   | Readonly<{ status: 'ready'; value: NormalizedMarkdownAst }>
   | Readonly<{ status: 'failed'; error: MarkdownParseFailure }>;
 
-/** Heading labels have one closed rule: setext is included, fences excluded, image alt and inline code included. */
-export type TextPolicy = 'heading-label';
+/** The file viewer omits headings whose normalized label is empty, matching its legacy TOC. */
+export type TextPolicy = 'heading-label' | 'non-empty-heading-label';
 
 export type HeadingIdInput<Context> = Readonly<{
   heading: NormalizedHeading;
@@ -65,13 +94,10 @@ export type HeadingIdInput<Context> = Readonly<{
   localOrdinal: number;
   context: Context;
 }>;
-
-/** Version 1 is ordinal-based and therefore independent of parser offsets and title text. */
 export type HeadingIdPolicy<Context> = Readonly<{
   version: 1;
   createId(input: HeadingIdInput<Context>): string;
 }>;
-
 export type HeadingOutline = Readonly<{
   depth: MarkdownDepth;
   id: string;
@@ -79,177 +105,274 @@ export type HeadingOutline = Readonly<{
   globalOrdinal: number;
   localOrdinal: number;
 }>;
-
+export type OutlineInput<Context> = Readonly<{ context: Context; ast: NormalizedMarkdownAst }>;
 export type ExtractOutlineOptions<Context> = Readonly<{
   maxDepth: MarkdownDepth;
   headingId: HeadingIdPolicy<Context>;
   textPolicy: TextPolicy;
-  context: Context;
 }>;
 
+export const REPORT_MAX_DEPTH = 2 as const;
+export const FILE_VIEWER_MAX_DEPTH = 4 as const;
+export const reportHeadingIdPolicy: HeadingIdPolicy<Readonly<{ blockId: string }>> = Object.freeze({
+  version: 1,
+  createId: ({ context, localOrdinal }) => `${context.blockId}-h${localOrdinal + 1}`,
+});
+export const fileViewerHeadingIdPolicy: HeadingIdPolicy<undefined> = Object.freeze({
+  version: 1,
+  createId: ({ globalOrdinal }) => `md-h-${globalOrdinal}`,
+});
+
 export type SanitizeAstPolicy = Readonly<{ rawHtml: 'drop' }>;
-export type SafeMarkdownAst = NormalizedMarkdownAst;
+export type SafeInline =
+  | NormalizedText
+  | NormalizedInlineCode
+  | NormalizedImage
+  | NormalizedBreak
+  | Readonly<{ type: 'link'; destination: string; title: string | null; children: readonly SafeInline[] }>
+  | Readonly<{ type: 'delete' | 'emphasis' | 'strong'; children: readonly SafeInline[] }>;
+export type SafeBlock =
+  | Readonly<{ type: 'heading'; depth: MarkdownDepth; children: readonly SafeInline[] }>
+  | Readonly<{ type: 'paragraph'; children: readonly SafeInline[] }>
+  | NormalizedCode
+  | Readonly<{ type: 'blockquote'; children: readonly SafeBlock[] }>
+  | Readonly<{
+    type: 'list'; ordered: boolean; start: number | null; spread: boolean;
+    children: readonly Readonly<{ type: 'listItem'; checked: boolean | null; children: readonly SafeBlock[] }>[];
+  }>
+  | Readonly<{
+    type: 'table'; align: readonly ('left' | 'right' | 'center' | null)[];
+    children: readonly Readonly<{
+      type: 'tableRow';
+      children: readonly Readonly<{ type: 'tableCell'; children: readonly SafeInline[] }>[];
+    }>[];
+  }>
+  | NormalizedThematicBreak;
+export type SafeMarkdownAst = Readonly<{
+  type: 'root';
+  dialect: 'gfm';
+  children: readonly SafeBlock[];
+  diagnostics: readonly MarkdownDiagnostic[];
+}>;
 
-function inlineNodes(source: string): readonly NormalizedInline[] {
-  const nodes: NormalizedInline[] = [];
-  let rest = source;
-  while (rest.length > 0) {
-    const image = rest.match(/!\[([^\]]*)\]\(([^)]*)\)/);
-    const code = rest.match(/`([^`]*)`/);
-    const deletion = rest.match(/~~([^~]+)~~/);
-    const candidates = [image, code, deletion].filter((match): match is RegExpMatchArray => match !== null);
-    let next: RegExpMatchArray | undefined;
-    for (const candidate of candidates) {
-      if (next === undefined || (candidate.index ?? 0) < (next.index ?? 0)) next = candidate;
-    }
-    if (next === undefined) {
-      const plain = rest.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[\\*_]/g, '');
-      if (plain.length > 0) nodes.push({ type: 'text', value: plain });
-      break;
-    }
-    const index = next.index ?? 0;
-    if (index > 0) {
-      const plain = rest.slice(0, index).replace(/\[([^\]]+)\]\([^)]*\)/g, '$1').replace(/[\\*_]/g, '');
-      if (plain.length > 0) nodes.push({ type: 'text', value: plain });
-    }
-    if (next === image) nodes.push({ type: 'image', alt: next[1] ?? '', destination: next[2] ?? '' });
-    else if (next === code) nodes.push({ type: 'inline-code', value: next[1] ?? '' });
-    else nodes.push({ type: 'delete', children: inlineNodes(next[1] ?? '') });
-    rest = rest.slice(index + next[0].length);
+type MdNode = Readonly<{
+  type: string;
+  value?: string;
+  alt?: string | null;
+  url?: string;
+  title?: string | null;
+  lang?: string | null;
+  meta?: string | null;
+  depth?: number;
+  ordered?: boolean;
+  start?: number | null;
+  spread?: boolean;
+  checked?: boolean | null;
+  align?: readonly ('left' | 'right' | 'center' | null)[];
+  children?: readonly MdNode[];
+}>;
+
+function normalizeInline(node: MdNode): NormalizedInline | null {
+  switch (node.type) {
+    case 'text': return { type: 'text', value: node.value ?? '' };
+    case 'inlineCode': return { type: 'inlineCode', value: node.value ?? '' };
+    case 'image': return { type: 'image', alt: node.alt ?? '', destination: node.url ?? '', title: node.title ?? null };
+    case 'link': return { type: 'link', destination: node.url ?? '', title: node.title ?? null, children: normalizeInlines(node.children) };
+    case 'delete': return { type: 'delete', children: normalizeInlines(node.children) };
+    case 'emphasis': return { type: 'emphasis', children: normalizeInlines(node.children) };
+    case 'strong': return { type: 'strong', children: normalizeInlines(node.children) };
+    case 'break': return { type: 'break' };
+    case 'html': return { type: 'html', value: node.value ?? '' };
+    default: return null;
   }
-  return nodes;
 }
 
-function isDepth(value: number): value is MarkdownDepth {
-  return value >= 1 && value <= 6;
+function normalizeInlines(nodes: readonly MdNode[] | undefined): readonly NormalizedInline[] {
+  return (nodes ?? []).flatMap((node) => {
+    const normalized = normalizeInline(node);
+    return normalized === null ? [] : [normalized];
+  });
 }
 
-function tableDelimiter(line: string): boolean {
-  const cells = line.replace(/^\||\|$/g, '').split('|');
-  return cells.length > 0 && cells.every((cell) => /^\s*:?-{3,}:?\s*$/.test(cell));
+function normalizeBlock(node: MdNode): NormalizedBlock | null {
+  switch (node.type) {
+    case 'heading':
+      if (node.depth === undefined || node.depth < 1 || node.depth > 6) return null;
+      return { type: 'heading', depth: node.depth as MarkdownDepth, children: normalizeInlines(node.children) };
+    case 'paragraph': return { type: 'paragraph', children: normalizeInlines(node.children) };
+    case 'code': return { type: 'code', language: node.lang ?? null, meta: node.meta ?? null, value: node.value ?? '' };
+    case 'blockquote': return { type: 'blockquote', children: normalizeBlocks(node.children) };
+    case 'list': return {
+      type: 'list', ordered: node.ordered ?? false, start: node.start ?? null, spread: node.spread ?? false,
+      children: (node.children ?? []).flatMap((child) => {
+        const item = normalizeListItem(child);
+        return item === null ? [] : [item];
+      }),
+    };
+    case 'html': return { type: 'html', value: node.value ?? '' };
+    case 'table': return {
+      type: 'table', align: node.align ?? [],
+      children: (node.children ?? []).map((row) => ({
+        type: 'tableRow',
+        children: (row.children ?? []).map((cell) => ({ type: 'tableCell', children: normalizeInlines(cell.children) })),
+      })),
+    };
+    case 'thematicBreak': return { type: 'thematicBreak' };
+    default: return null;
+  }
 }
 
-function tableRow(line: string): readonly (readonly NormalizedInline[])[] {
-  return line.replace(/^\||\|$/g, '').split('|').map((cell) => inlineNodes(cell.trim()));
+function normalizeListItem(node: MdNode): NormalizedListItem | null {
+  if (node.type !== 'listItem') return null;
+  return { type: 'listItem', checked: node.checked ?? null, children: normalizeBlocks(node.children) };
+}
+
+function normalizeBlocks(nodes: readonly MdNode[] | undefined): readonly NormalizedBlock[] {
+  return (nodes ?? []).flatMap((node) => {
+    const normalized = normalizeBlock(node);
+    return normalized === null ? [] : [normalized];
+  });
+}
+
+function diagnosticsFor(markdown: string, root: MdNode): readonly MarkdownDiagnostic[] {
+  const diagnostics: MarkdownDiagnostic[] = [];
+  const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
+  let openFence: Readonly<{ marker: string; size: number; line: number }> | null = null;
+  for (const [index, line] of lines.entries()) {
+    const fence = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (openFence !== null) {
+      const run = fence?.[1] ?? '';
+      if (run[0] === openFence.marker && run.length >= openFence.size) openFence = null;
+      continue;
+    }
+    if (fence !== null) {
+      const run = fence[1] ?? '';
+      openFence = { marker: run[0] ?? '`', size: run.length, line: index + 1 };
+      continue;
+    }
+    const atx = /^ {0,3}(#{7,})(?:\s+|$)/.exec(line);
+    if (atx !== null) diagnostics.push({ kind: 'malformed', message: 'ATX heading depth exceeds six', line: index + 1 });
+    const quoteDepth = /^(?:>\s*)+/.exec(line)?.[0].split('>').length ?? 1;
+    if (quoteDepth - 1 > 64) diagnostics.push({ kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: index + 1 });
+    const possibleDelimiter = lines[index + 1] ?? '';
+    if (line.includes('|') && possibleDelimiter.includes('|') && possibleDelimiter.includes('-')) {
+      const delimiterCells = possibleDelimiter.replace(/^\s*\||\|\s*$/g, '').split('|');
+      const validDelimiter = delimiterCells.length > 0 && delimiterCells.every((cell) => /^\s*:?-+:?\s*$/.test(cell));
+      if (!validDelimiter) diagnostics.push({ kind: 'malformed', message: 'Malformed GFM table delimiter', line: index + 2 });
+    }
+  }
+  if (openFence !== null) diagnostics.push({ kind: 'malformed', message: 'Unclosed fenced code block', line: openFence.line });
+  const visitHtml = (node: MdNode): void => {
+    if (node.type === 'html') {
+      const line = lines.findIndex((candidate) => candidate.includes(node.value ?? '')) + 1;
+      diagnostics.push({ kind: 'unsafe-raw-html', message: 'Raw HTML requires sanitization', line: Math.max(1, line) });
+    }
+    for (const child of node.children ?? []) visitHtml(child);
+  };
+  visitHtml(root);
+  return diagnostics;
 }
 
 export function parse(markdown: string): MarkdownParseResult {
   try {
-    const lines = markdown.replace(/\r\n?/g, '\n').split('\n');
-    const children: NormalizedBlock[] = [];
-    const diagnostics: MarkdownDiagnostic[] = [];
-    let lineIndex = 0;
-    while (lineIndex < lines.length) {
-      const line = lines[lineIndex] ?? '';
-      if (line.trim().length === 0) {
-        lineIndex += 1;
-        continue;
-      }
-      const quoteDepth = line.match(/^(?:>\s*)+/)?.[0].match(/>/g)?.length ?? 0;
-      if (quoteDepth > 64) diagnostics.push({ kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: lineIndex + 1 });
-
-      const fence = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/);
-      if (fence !== null) {
-        const marker = fence[1] ?? '```';
-        const language = (fence[2] ?? '').trim() || null;
-        const body: string[] = [];
-        let cursor = lineIndex + 1;
-        while (cursor < lines.length && !(lines[cursor] ?? '').match(new RegExp(`^\\s{0,3}${marker[0]}{${marker.length},}\\s*$`))) {
-          body.push(lines[cursor] ?? '');
-          cursor += 1;
-        }
-        if (cursor >= lines.length) diagnostics.push({ kind: 'malformed', message: 'Unclosed fenced code block', line: lineIndex + 1 });
-        children.push({ type: 'code', language, value: body.join('\n') });
-        lineIndex = cursor < lines.length ? cursor + 1 : cursor;
-        continue;
-      }
-
-      const atx = line.match(/^\s{0,3}(#{1,})(?:\s+|$)(.*)$/);
-      if (atx !== null) {
-        const depth = (atx[1] ?? '').length;
-        if (isDepth(depth)) {
-          const label = (atx[2] ?? '').replace(/\s+#+\s*$/, '').trim();
-          children.push({ type: 'heading', depth, children: inlineNodes(label) });
-        } else diagnostics.push({ kind: 'malformed', message: 'ATX heading depth exceeds six', line: lineIndex + 1 });
-        lineIndex += 1;
-        continue;
-      }
-
-      const nextLine = lines[lineIndex + 1] ?? '';
-      const setext = nextLine.match(/^\s{0,3}(=+|-+)\s*$/);
-      if (setext !== null) {
-        children.push({ type: 'heading', depth: (setext[1] ?? '').startsWith('=') ? 1 : 2, children: inlineNodes(line.trim()) });
-        lineIndex += 2;
-        continue;
-      }
-
-      if (/^\s{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/.test(line)) {
-        children.push({ type: 'thematic-break' });
-        lineIndex += 1;
-        continue;
-      }
-
-      if (line.includes('|') && nextLine.includes('|')) {
-        if (tableDelimiter(nextLine)) {
-          const rows: Array<readonly (readonly NormalizedInline[])[]> = [tableRow(line)];
-          let cursor = lineIndex + 2;
-          while (cursor < lines.length && (lines[cursor] ?? '').includes('|')) {
-            rows.push(tableRow(lines[cursor] ?? ''));
-            cursor += 1;
-          }
-          children.push({ type: 'table', rows });
-          lineIndex = cursor;
-          continue;
-        }
-        diagnostics.push({ kind: 'malformed', message: 'Malformed GFM table delimiter', line: lineIndex + 2 });
-      }
-
-      if (/<\/?(?:script|style|iframe|object|embed|img)\b/i.test(line)) {
-        diagnostics.push({ kind: 'unsafe-raw-html', message: 'Raw HTML is retained only as literal text', line: lineIndex + 1 });
-      }
-      children.push({ type: 'paragraph', children: inlineNodes(line) });
-      lineIndex += 1;
-    }
-    return { status: 'ready', value: { type: 'root', dialect: 'gfm', children, diagnostics } };
+    const root = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) as MdNode;
+    return {
+      status: 'ready',
+      value: { type: 'root', dialect: 'gfm', children: normalizeBlocks(root.children), diagnostics: diagnosticsFor(markdown, root) },
+    };
   } catch (cause) {
     return { status: 'failed', error: { kind: 'markdown-parse', message: 'Markdown normalization failed', cause } };
   }
 }
 
 function inlineText(nodes: readonly NormalizedInline[], policy: TextPolicy): string {
-  if (policy !== 'heading-label') return '';
+  void policy;
   return nodes.map((node) => {
-    if (node.type === 'text' || node.type === 'inline-code') return node.value;
+    if (node.type === 'text' || node.type === 'inlineCode') return node.value;
     if (node.type === 'image') return node.alt;
+    if (node.type === 'break') return ' ';
+    if (node.type === 'html') return '';
     return inlineText(node.children, policy);
   }).join('').replace(/\s+/g, ' ').trim();
 }
 
 export function extractOutline<Context>(
-  ast: NormalizedMarkdownAst,
+  inputs: readonly OutlineInput<Context>[],
   options: ExtractOutlineOptions<Context>,
 ): HeadingOutline[] {
   const outline: HeadingOutline[] = [];
   let globalOrdinal = 0;
-  let localOrdinal = 0;
-  for (const node of ast.children) {
-    if (node.type !== 'heading' || node.depth > options.maxDepth) continue;
-    const input = { heading: node, globalOrdinal, localOrdinal, context: options.context };
-    outline.push({
-      depth: node.depth,
-      id: options.headingId.createId(input),
-      text: inlineText(node.children, options.textPolicy),
-      globalOrdinal,
-      localOrdinal,
-    });
-    globalOrdinal += 1;
-    localOrdinal += 1;
+  for (const { ast, context } of inputs) {
+    let localOrdinal = 0;
+    for (const node of ast.children) {
+      if (node.type !== 'heading' || node.depth > options.maxDepth) continue;
+      const text = inlineText(node.children, options.textPolicy);
+      if (options.textPolicy === 'non-empty-heading-label' && text.length === 0) continue;
+      const input = { heading: node, globalOrdinal, localOrdinal, context };
+      outline.push({
+        depth: node.depth, id: options.headingId.createId(input), text, globalOrdinal, localOrdinal,
+      });
+      globalOrdinal += 1;
+      localOrdinal += 1;
+    }
   }
   return outline;
 }
 
-/** This is an AST boundary, not an HTML sanitizer or renderer allowlist. */
+function sanitizeInline(node: NormalizedInline): SafeInline | null {
+  if (node.type === 'html') return null;
+  if (node.type === 'link' || node.type === 'delete' || node.type === 'emphasis' || node.type === 'strong') {
+    return { ...node, children: node.children.flatMap((child) => {
+      const safe = sanitizeInline(child);
+      return safe === null ? [] : [safe];
+    }) };
+  }
+  return node;
+}
+
+function sanitizeBlock(node: NormalizedBlock): SafeBlock | null {
+  if (node.type === 'html') return null;
+  if (node.type === 'blockquote') {
+    return { ...node, children: node.children.flatMap((child) => {
+      const safe = sanitizeBlock(child);
+      return safe === null ? [] : [safe];
+    }) };
+  }
+  if (node.type === 'list') return {
+    ...node,
+    children: node.children.map((item) => ({ ...item, children: item.children.flatMap((child) => {
+      const safe = sanitizeBlock(child);
+      return safe === null ? [] : [safe];
+    }) })),
+  };
+  if (node.type === 'heading' || node.type === 'paragraph') return {
+    ...node,
+    children: node.children.flatMap((child) => {
+      const safe = sanitizeInline(child);
+      return safe === null ? [] : [safe];
+    }),
+  };
+  if (node.type === 'table') return {
+    ...node,
+    children: node.children.map((row) => ({ ...row, children: row.children.map((cell) => ({
+      ...cell,
+      children: cell.children.flatMap((child) => {
+        const safe = sanitizeInline(child);
+        return safe === null ? [] : [safe];
+      }),
+    })) })),
+  };
+  return node;
+}
+
+/** This AST policy removes raw HTML nodes; it is not an HTML renderer allowlist. */
 export function sanitizeAstPolicy(ast: NormalizedMarkdownAst, policy: SanitizeAstPolicy): SafeMarkdownAst {
-  if (policy.rawHtml !== 'drop') return ast;
-  return ast;
+  void policy;
+  return {
+    ...ast,
+    children: ast.children.flatMap((node) => {
+      const safe = sanitizeBlock(node);
+      return safe === null ? [] : [safe];
+    }),
+  };
 }

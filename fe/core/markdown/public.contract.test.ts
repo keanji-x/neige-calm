@@ -1,27 +1,41 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import {
+  FILE_VIEWER_MAX_DEPTH,
+  REPORT_MAX_DEPTH,
   extractOutline,
+  fileViewerHeadingIdPolicy,
   parse,
+  reportHeadingIdPolicy,
   sanitizeAstPolicy,
   type HeadingIdPolicy,
   type HeadingOutline,
   type MarkdownParseResult,
   type NormalizedHeading,
   type NormalizedMarkdownAst,
+  type SafeMarkdownAst,
   type TextPolicy,
 } from './public.js';
 
+function ready(markdown: string): NormalizedMarkdownAst {
+  const result = parse(markdown);
+  expect(result.status).toBe('ready');
+  if (result.status !== 'ready') throw new Error('expected ready markdown');
+  return result.value;
+}
+
 describe('core/markdown public contract', () => {
-  it('uses the shared ready/failed data channel and freezes the GFM AST vocabulary', () => {
+  it('freezes the parse channel, GFM vocabulary, and policy domains', () => {
     expectTypeOf<MarkdownParseResult['status']>().toEqualTypeOf<'ready' | 'failed'>();
     expectTypeOf<Extract<MarkdownParseResult, { status: 'failed' }>['error']['kind']>()
       .toEqualTypeOf<'markdown-parse'>();
     expectTypeOf<NormalizedMarkdownAst['dialect']>().toEqualTypeOf<'gfm'>();
     expectTypeOf<NormalizedMarkdownAst['children'][number]['type']>().toEqualTypeOf<
-      'heading' | 'paragraph' | 'code' | 'table' | 'thematic-break'
+      'heading' | 'paragraph' | 'code' | 'blockquote' | 'list' | 'html' | 'table' | 'thematicBreak'
     >();
-    expectTypeOf<TextPolicy>().toEqualTypeOf<'heading-label'>();
+    expectTypeOf<HeadingIdPolicy<unknown>['version']>().toEqualTypeOf<1>();
+    expectTypeOf<TextPolicy>().toEqualTypeOf<'heading-label' | 'non-empty-heading-label'>();
+    expectTypeOf<SafeMarkdownAst['children'][number]['type']>().not.toEqualTypeOf<'html'>();
 
     const compileOnly = false as boolean;
     if (compileOnly) {
@@ -31,86 +45,66 @@ describe('core/markdown public contract', () => {
       // @ts-expect-error -- text extraction is a closed policy, not a callback escape hatch.
       const invalidTextPolicy: TextPolicy = () => 'anything';
       void invalidTextPolicy;
+      // @ts-expect-error -- outline maxDepth cannot be below the H1-H6 domain.
+      extractOutline([], { maxDepth: 0, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label' });
+      // @ts-expect-error -- outline maxDepth cannot exceed the H1-H6 domain.
+      extractOutline([], { maxDepth: 7, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label' });
     }
   });
 
-  it('passes the node, zero-based global/local ordinals, and caller context to the id policy', () => {
-    const seen: Array<Readonly<{ depth: number; global: number; local: number; blockId: string }>> = [];
-    const headingId: HeadingIdPolicy<Readonly<{ blockId: string }>> = {
-      version: 1,
-      createId(input) {
-        seen.push({
-          depth: input.heading.depth,
-          global: input.globalOrdinal,
-          local: input.localOrdinal,
-          blockId: input.context.blockId,
-        });
-        return `${input.context.blockId}-h${input.localOrdinal}`;
-      },
-    };
-    const parsed = parse('# One\n\n## Two');
-    expect(parsed.status).toBe('ready');
-    if (parsed.status !== 'ready') return;
-
-    const outline = extractOutline(parsed.value, {
-      maxDepth: 2,
-      headingId,
+  it('resets report local ordinals per block while file-viewer ordinals stay global', () => {
+    const inputs = [
+      { context: { blockId: 'b_one' }, ast: ready('# One\n## Two') },
+      { context: { blockId: 'b_two' }, ast: ready('# Three\n## Four') },
+    ];
+    const report = extractOutline(inputs, {
+      maxDepth: REPORT_MAX_DEPTH,
+      headingId: reportHeadingIdPolicy,
       textPolicy: 'heading-label',
-      context: { blockId: 'b_1234' },
+    });
+    const fileViewer = extractOutline(inputs.map(({ ast }) => ({ context: undefined, ast })), {
+      maxDepth: FILE_VIEWER_MAX_DEPTH,
+      headingId: fileViewerHeadingIdPolicy,
+      textPolicy: 'non-empty-heading-label',
     });
 
-    expect(outline).toEqual([
-      { depth: 1, id: 'b_1234-h0', text: 'One', globalOrdinal: 0, localOrdinal: 0 },
-      { depth: 2, id: 'b_1234-h1', text: 'Two', globalOrdinal: 1, localOrdinal: 1 },
+    expect(report).toEqual([
+      { depth: 1, id: 'b_one-h1', text: 'One', globalOrdinal: 0, localOrdinal: 0 },
+      { depth: 2, id: 'b_one-h2', text: 'Two', globalOrdinal: 1, localOrdinal: 1 },
+      { depth: 1, id: 'b_two-h1', text: 'Three', globalOrdinal: 2, localOrdinal: 0 },
+      { depth: 2, id: 'b_two-h2', text: 'Four', globalOrdinal: 3, localOrdinal: 1 },
     ] satisfies HeadingOutline[]);
-    expect(seen).toEqual([
-      { depth: 1, global: 0, local: 0, blockId: 'b_1234' },
-      { depth: 2, global: 1, local: 1, blockId: 'b_1234' },
+    expect(fileViewer.map(({ id, globalOrdinal, localOrdinal }) => ({ id, globalOrdinal, localOrdinal }))).toEqual([
+      { id: 'md-h-0', globalOrdinal: 0, localOrdinal: 0 },
+      { id: 'md-h-1', globalOrdinal: 1, localOrdinal: 1 },
+      { id: 'md-h-2', globalOrdinal: 2, localOrdinal: 0 },
+      { id: 'md-h-3', globalOrdinal: 3, localOrdinal: 1 },
     ]);
   });
 
-  it('produces both legacy outline schemes from the same extractor', () => {
-    const parsed = parse('# Top\n## Child\n### Detail\n#### Leaf\n##### Hidden');
-    expect(parsed.status).toBe('ready');
-    if (parsed.status !== 'ready') return;
-
-    const report = extractOutline(parsed.value, {
-      maxDepth: 2,
+  it('exports both depth and id policies with exact legacy schemes', () => {
+    const ast = ready('# Top\n## Child\n### Detail\n#### Leaf\n##### Hidden');
+    const report = extractOutline([{ context: { blockId: 'b_ab12' }, ast }], {
+      maxDepth: REPORT_MAX_DEPTH,
+      headingId: reportHeadingIdPolicy,
       textPolicy: 'heading-label',
-      context: { blockId: 'b_ab12' },
-      headingId: {
-        version: 1,
-        createId: ({ context, localOrdinal }) => `${context.blockId}-h${localOrdinal}`,
-      },
     });
-    const fileViewer = extractOutline(parsed.value, {
-      maxDepth: 4,
-      textPolicy: 'heading-label',
-      context: undefined,
-      headingId: { version: 1, createId: ({ globalOrdinal }) => `md-h-${globalOrdinal}` },
+    const fileViewer = extractOutline([{ context: undefined, ast }], {
+      maxDepth: FILE_VIEWER_MAX_DEPTH,
+      headingId: fileViewerHeadingIdPolicy,
+      textPolicy: 'non-empty-heading-label',
     });
 
-    expect(report.map(({ depth, id }) => ({ depth, id }))).toEqual([
-      { depth: 1, id: 'b_ab12-h0' },
-      { depth: 2, id: 'b_ab12-h1' },
-    ]);
-    expect(fileViewer.map(({ depth, id }) => ({ depth, id }))).toEqual([
-      { depth: 1, id: 'md-h-0' },
-      { depth: 2, id: 'md-h-1' },
-      { depth: 3, id: 'md-h-2' },
-      { depth: 4, id: 'md-h-3' },
-    ]);
+    expect(report.map(({ id }) => id)).toEqual(['b_ab12-h1', 'b_ab12-h2']);
+    expect(fileViewer.map(({ id }) => id)).toEqual(['md-h-0', 'md-h-1', 'md-h-2', 'md-h-3']);
   });
 
-  it('removes raw HTML through a platform-independent AST policy', () => {
-    const parsed = parse('<script>alert(1)</script>\n\n# Safe');
-    expect(parsed.status).toBe('ready');
-    if (parsed.status !== 'ready') return;
-
-    const safe = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' });
+  it('removes raw HTML nodes through a narrowed safe AST', () => {
+    const ast = ready('<script>alert(1)</script>\n\n# Safe <i>label</i>');
+    expect(ast.children.some(({ type }) => type === 'html')).toBe(true);
+    const safe = sanitizeAstPolicy(ast, { rawHtml: 'drop' });
     expect(safe.children).toEqual([
-      { type: 'paragraph', children: [{ type: 'text', value: '<script>alert(1)</script>' }] },
-      { type: 'heading', depth: 1, children: [{ type: 'text', value: 'Safe' }] },
+      { type: 'heading', depth: 1, children: [{ type: 'text', value: 'Safe ' }, { type: 'text', value: 'label' }] },
     ]);
   });
 });
