@@ -45,9 +45,9 @@ describe('core/markdown public contract', () => {
       const invalidTextPolicy: TextPolicy = () => 'anything';
       void invalidTextPolicy;
       // @ts-expect-error -- outline maxDepth cannot be below the H1-H6 domain.
-      extractOutline([], { maxDepth: 0, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'line-level' });
+      extractOutline([], { maxDepth: 0, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label', referenceText: 'source', traversal: 'line-level' });
       // @ts-expect-error -- outline maxDepth cannot exceed the H1-H6 domain.
-      extractOutline([], { maxDepth: 7, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'line-level' });
+      extractOutline([], { maxDepth: 7, headingId: fileViewerHeadingIdPolicy, textPolicy: 'heading-label', referenceText: 'source', traversal: 'line-level' });
     }
   });
 
@@ -60,12 +60,14 @@ describe('core/markdown public contract', () => {
       maxDepth: REPORT_MAX_DEPTH,
       headingId: reportHeadingIdPolicy,
       textPolicy: 'heading-label',
+      referenceText: 'visible',
       traversal: 'recursive',
     });
     const fileViewer = extractOutline(inputs.map(({ ast }) => ({ context: undefined, ast })), {
       maxDepth: FILE_VIEWER_MAX_DEPTH,
       headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      referenceText: 'source',
       traversal: 'line-level',
     });
 
@@ -91,12 +93,14 @@ describe('core/markdown public contract', () => {
       maxDepth: REPORT_MAX_DEPTH,
       headingId: reportHeadingIdPolicy,
       textPolicy: 'heading-label',
+      referenceText: 'visible',
       traversal: 'recursive',
     });
     const fileViewer = extractOutline([{ context: undefined, ast }], {
       maxDepth: FILE_VIEWER_MAX_DEPTH,
       headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      referenceText: 'source',
       traversal: 'line-level',
     });
 
@@ -107,11 +111,12 @@ describe('core/markdown public contract', () => {
   it('parameterizes traversal to preserve both distinct legacy outlines', () => {
     const ast = ready('# Alpha\n\n> ## Quoted\n\n- item\n  ## InList\n\n> - nested\n>   ## Deep\n\n## Beta');
     const report = extractOutline([{ context: { blockId: 'b_nested' }, ast }], {
-      maxDepth: REPORT_MAX_DEPTH, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'recursive',
+      maxDepth: REPORT_MAX_DEPTH, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label', referenceText: 'visible', traversal: 'recursive',
     });
     const fileViewer = extractOutline([{ context: undefined, ast }], {
       maxDepth: FILE_VIEWER_MAX_DEPTH, headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      referenceText: 'source',
       traversal: 'line-level',
     });
 
@@ -124,7 +129,8 @@ describe('core/markdown public contract', () => {
     ]);
     expect(fileViewer.map(({ text, id, globalOrdinal }) => ({ text, id, globalOrdinal }))).toEqual([
       { text: 'Alpha', id: 'md-h-0', globalOrdinal: 0 },
-      { text: 'Beta', id: 'md-h-1', globalOrdinal: 1 },
+      { text: 'InList', id: 'md-h-1', globalOrdinal: 1 },
+      { text: 'Beta', id: 'md-h-2', globalOrdinal: 2 },
     ]);
   });
 
@@ -132,12 +138,16 @@ describe('core/markdown public contract', () => {
     const markdown = 'intro\n\n## Positioned\n';
     const ast = ready(markdown);
     const heading = ast.children[1];
-    expect(heading).toMatchObject({
+    expect(heading && 'depth' in heading ? {
+      type: heading.type, depth: heading.depth, position: heading.position,
+    } : null).toEqual({
       type: 'heading', position: { start: { line: 3, offset: 7 }, end: { offset: 20 } },
+      depth: 2,
     });
     const outline = extractOutline([{ context: undefined, ast }], {
       maxDepth: FILE_VIEWER_MAX_DEPTH, headingId: fileViewerHeadingIdPolicy,
       textPolicy: 'non-empty-heading-label',
+      referenceText: 'source',
       traversal: 'line-level',
     });
     expect(outline[0]?.position).toEqual({ start: { line: 3, offset: 7 }, end: { offset: 20 } });
@@ -147,7 +157,16 @@ describe('core/markdown public contract', () => {
     const ast = ready('<script>alert(1)</script>\n\n# Safe <i>label</i>');
     expect(ast.children.some(({ type }) => type === 'html')).toBe(true);
     const safe = sanitizeAstPolicy(ast, { rawHtml: 'drop' });
-    expect(safe.children).toMatchObject([
+    expect(safe.children.map((child) => ({
+      type: child.type,
+      ...('depth' in child ? { depth: child.depth } : {}),
+      ...('children' in child ? {
+        children: child.children.map(({ position, ...inline }) => {
+          void position;
+          return inline;
+        }),
+      } : {}),
+    }))).toEqual([
       { type: 'heading', depth: 1, children: [{ type: 'text', value: 'Safe ' }, { type: 'text', value: 'label' }] },
     ]);
     expectTypeOf(safe.position.start.offset).toEqualTypeOf<number>();

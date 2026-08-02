@@ -126,6 +126,7 @@ export type ExtractOutlineOptions<Context> = Readonly<{
   maxDepth: MarkdownDepth;
   headingId: HeadingIdPolicy<Context>;
   textPolicy: TextPolicy;
+  referenceText: 'visible' | 'source';
   traversal: 'recursive' | 'line-level';
 }>;
 
@@ -146,7 +147,9 @@ export type SafeInline =
   | NormalizedInlineCode
   | NormalizedImage
   | NormalizedBreak
-  | Positioned<{ type: 'link'; destination: string; title: string | null; children: readonly SafeInline[] }>
+  | Positioned<{
+    type: 'link'; destination: string; title: string | null; children: readonly SafeInline[]; referenceSource?: string;
+  }>
   | Positioned<{ type: 'delete' | 'emphasis' | 'strong'; children: readonly SafeInline[] }>;
 export type SafeBlock =
   | Positioned<{ type: 'heading'; depth: MarkdownDepth; children: readonly SafeInline[] }>
@@ -214,6 +217,7 @@ function normalizeInline(node: MdNode, definitions: ReadonlyMap<string, Definiti
     case 'link': return { type: 'link', destination: node.url ?? '', title: node.title ?? null, children: normalizeInlines(node.children, definitions), position: positionOf(node) };
     case 'linkReference': {
       const definition = definitions.get(node.identifier ?? '');
+      // micromark currently emits undefined references as text; retain this fail-soft guard for parser-extension drift.
       if (definition === undefined) return { type: 'text', value: referenceLiteral(node), position: positionOf(node) };
       return {
         type: 'link', ...definition, children: normalizeInlines(node.children, definitions),
@@ -222,6 +226,7 @@ function normalizeInline(node: MdNode, definitions: ReadonlyMap<string, Definiti
     }
     case 'imageReference': {
       const definition = definitions.get(node.identifier ?? '');
+      // micromark currently emits undefined references as text; retain this fail-soft guard for parser-extension drift.
       if (definition === undefined) return { type: 'text', value: `!${referenceLiteral(node)}`, position: positionOf(node) };
       return {
         type: 'image', alt: node.alt ?? '', ...definition, referenceSource: `!${referenceLiteral(node)}`, position: positionOf(node),
@@ -237,10 +242,12 @@ function normalizeInline(node: MdNode, definitions: ReadonlyMap<string, Definiti
 }
 
 function referenceLiteral(node: MdNode): string {
-  const label = node.alt ?? node.children?.map((child) => child.value ?? '').join('') ?? node.label ?? '';
+  const inlineLiteral = (child: MdNode): string => child.value ?? child.alt
+    ?? child.children?.map(inlineLiteral).join('') ?? '';
+  const label = node.alt ?? node.children?.map(inlineLiteral).join('') ?? '';
   if (node.referenceType === 'shortcut') return `[${label}]`;
   if (node.referenceType === 'collapsed') return `[${label}][]`;
-  return `[${label}][${node.identifier ?? ''}]`;
+  return `[${label}][${node.label ?? node.identifier ?? ''}]`;
 }
 
 function normalizeInlines(nodes: readonly MdNode[] | undefined, definitions: ReadonlyMap<string, Definition>): readonly NormalizedInline[] {
@@ -313,7 +320,7 @@ function diagnosticsFor(markdown: string, root: MdNode): readonly MarkdownDiagno
     const possibleDelimiter = lines[index + 1] ?? '';
     const tableShaped = line.includes('|') && possibleDelimiter.includes('|')
       && possibleDelimiter.includes('-') && /^[\s|:-]+$/.test(possibleDelimiter);
-    if (tableShaped && possibleDelimiter.includes('-')) {
+    if (tableShaped) {
       const headerCells = line.replace(/^\s*\||\|\s*$/g, '').split('|');
       const delimiterCells = possibleDelimiter.replace(/^\s*\||\|\s*$/g, '').split('|');
       const validDelimiter = delimiterCells.length === headerCells.length
@@ -401,18 +408,17 @@ export function parse(markdown: string): MarkdownParseResult {
   }
 }
 
-function inlineText(nodes: readonly NormalizedInline[], policy: TextPolicy): string {
-  void policy;
+function inlineText(nodes: readonly NormalizedInline[], referenceText: 'visible' | 'source'): string {
   return nodes.map((node) => {
     if (node.type === 'text' || node.type === 'inlineCode') return node.value;
-    if (node.type === 'image') return policy === 'non-empty-heading-label' && node.referenceSource !== undefined
+    if (node.type === 'image') return referenceText === 'source' && node.referenceSource !== undefined
       ? node.referenceSource : node.alt;
     if (node.type === 'break') return ' ';
     if (node.type === 'html') return '';
-    if (node.type === 'link' && policy === 'non-empty-heading-label' && node.referenceSource !== undefined) {
+    if (node.type === 'link' && referenceText === 'source' && node.referenceSource !== undefined) {
       return node.referenceSource;
     }
-    return inlineText(node.children, policy);
+    return inlineText(node.children, referenceText);
   }).join('').replace(/\s+/g, ' ').trim();
 }
 
@@ -427,9 +433,9 @@ export function extractOutline<Context>(
     const visit = (nodes: readonly NormalizedBlock[]): void => {
       for (const node of nodes) {
         if (options.traversal === 'recursive' && node.type === 'blockquote') visit(node.children);
-        if (options.traversal === 'recursive' && node.type === 'list') for (const item of node.children) visit(item.children);
+        if (node.type === 'list') for (const item of node.children) visit(item.children);
       if (node.type !== 'heading' || node.depth > options.maxDepth) continue;
-      const text = inlineText(node.children, options.textPolicy);
+      const text = inlineText(node.children, options.referenceText);
       if (options.textPolicy === 'non-empty-heading-label' && text.length === 0) continue;
       const input = { heading: node, globalOrdinal, localOrdinal, context };
       outline.push({

@@ -12,6 +12,7 @@ function outline(markdown: string, maxDepth: MarkdownDepth = 6) {
     maxDepth,
     headingId: fileViewerHeadingIdPolicy,
     textPolicy: 'non-empty-heading-label',
+    referenceText: 'source',
     traversal: 'line-level',
   });
 }
@@ -39,24 +40,45 @@ describe('core/markdown behavior', () => {
       { id: 'md-h-3', text: '[missing][nope]' },
     ]);
     expect(extractOutline([{ context: { blockId: 'b_ref' }, ast: result.value }], {
-      maxDepth: 2, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label', traversal: 'recursive',
+      maxDepth: 2, headingId: reportHeadingIdPolicy, textPolicy: 'heading-label', referenceText: 'visible', traversal: 'recursive',
     }).map(({ id, text }) => ({ id, text }))).toEqual([
       { id: 'b_ref-h1', text: 'See label here' },
       { id: 'b_ref-h2', text: 'alt' },
       { id: 'b_ref-h3', text: 'label' },
       { id: 'b_ref-h4', text: '[missing][nope]' },
     ]);
-    expect(result.value.children[0]).toMatchObject({
+    const referenceHeading = result.value.children[0];
+    expect(Object.keys(referenceHeading ?? {}).sort()).toEqual(['children', 'depth', 'position', 'type']);
+    expect(referenceHeading && 'children' in referenceHeading ? referenceHeading.children.map((child) => {
+      const { position: _position, ...value } = child;
+      void _position;
+      return value;
+    }) : []).toEqual([
+      { type: 'text', value: 'See ' },
+      {
+        type: 'link', destination: '/target', title: 'title', referenceSource: '[label][id]',
+        children: [{ type: 'text', value: 'label', position: { start: { line: 1, offset: 7 }, end: { offset: 12 } } }],
+      },
+      { type: 'text', value: ' here' },
+    ]);
+    expect(referenceHeading && { type: referenceHeading.type, depth: 'depth' in referenceHeading ? referenceHeading.depth : undefined }).toEqual({
       type: 'heading',
-      children: [
-        { type: 'text', value: 'See ' },
-        { type: 'link', destination: '/target', title: 'title', children: [{ type: 'text', value: 'label' }] },
-        { type: 'text', value: ' here' },
-      ],
+      depth: 1,
     });
-    expect(result.value.children[1]).toMatchObject({
-      type: 'heading', children: [{ type: 'image', alt: 'alt', destination: '/target', title: 'title' }],
-    });
+    const imageHeading = result.value.children[1];
+    expect(Object.keys(imageHeading ?? {}).sort()).toEqual(['children', 'depth', 'position', 'type']);
+    expect(imageHeading && 'children' in imageHeading ? imageHeading.children.map(({ position, ...child }) => {
+      void position;
+      return child;
+    }) : [])
+      .toEqual([{ type: 'image', alt: 'alt', destination: '/target', title: 'title', referenceSource: '![alt][id]' }]);
+  });
+
+  it('preserves source spelling and nested visible text in reference literals', () => {
+    expect(outline('# [label][ID]\n# [*em* x][id]\n\n[ID]: /target').map(({ text }) => text)).toEqual([
+      '[label][ID]',
+      '[em x][id]',
+    ]);
   });
 
   it('keeps visible CommonMark characters and omits empty file-viewer headings before numbering', () => {
@@ -75,11 +97,26 @@ describe('core/markdown behavior', () => {
     expect(result.value.children.map(({ type }) => type)).toEqual([
       'list', 'blockquote', 'list', 'paragraph', 'paragraph', 'table',
     ]);
-    expect(result.value.children[3]).toMatchObject({
+    expect(result.value.children[3] && 'children' in result.value.children[3] ? {
+      type: result.value.children[3].type,
+      children: result.value.children[3].children.map(({ position, ...child }) => {
+        void position;
+        return child;
+      }),
+    } : null).toEqual({
       type: 'paragraph',
-      children: [{ type: 'link', destination: 'b', title: null, children: [{ type: 'text', value: 'a' }] }],
+      children: [{
+        type: 'link', destination: 'b', title: null,
+        children: [{ type: 'text', value: 'a', position: { start: { line: 7, offset: 28 }, end: { offset: 29 } } }],
+      }],
     });
-    expect(result.value.children[4]).toMatchObject({
+    expect(result.value.children[4] && 'children' in result.value.children[4] ? {
+      type: result.value.children[4].type,
+      children: result.value.children[4].children.map(({ position, ...child }) => {
+        void position;
+        return child;
+      }),
+    } : null).toEqual({
       type: 'paragraph',
       children: [{ type: 'text', value: 'left line\nright line' }],
     });
@@ -91,7 +128,13 @@ describe('core/markdown behavior', () => {
     expect(result.status).toBe('ready');
     if (result.status !== 'ready') return;
     expect(result.value.children.map(({ type }) => type)).toEqual(['heading', 'heading', 'paragraph']);
-    expect(result.value.children[2]).toMatchObject({ type: 'paragraph', children: [{ type: 'text', value: '####### Seven' }] });
+    expect(result.value.children[2] && 'children' in result.value.children[2] ? {
+      type: result.value.children[2].type,
+      children: result.value.children[2].children.map(({ position, ...child }) => {
+        void position;
+        return child;
+      }),
+    } : null).toEqual({ type: 'paragraph', children: [{ type: 'text', value: '####### Seven' }] });
     expect(result.value.diagnostics).toContainEqual({
       kind: 'malformed', message: 'ATX heading depth exceeds six', line: 3,
     });
@@ -123,6 +166,13 @@ describe('core/markdown behavior', () => {
     expect(result.status).toBe('ready');
     if (result.status !== 'ready') return;
     expect(result.value.diagnostics).toContainEqual(diagnostic);
+  });
+
+  it('does not classify a prose-like table delimiter as a malformed GFM table', () => {
+    const result = parse('| a | b |\n| -- | nope |\n# after');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.value.diagnostics).toEqual([]);
   });
 
   it.each([
