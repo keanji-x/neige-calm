@@ -57,7 +57,7 @@ describe('core/markdown behavior', () => {
       { type: 'text', value: 'See ' },
       {
         type: 'link', destination: '/target', title: 'title', referenceSource: '[label][id]',
-        children: [{ type: 'text', value: 'label', position: { start: { line: 1, offset: 7 }, end: { offset: 12 } } }],
+        children: [{ type: 'text', value: 'label', position: { start: { line: 1, column: 8, offset: 7 }, end: { offset: 12 } } }],
       },
       { type: 'text', value: ' here' },
     ]);
@@ -107,7 +107,7 @@ describe('core/markdown behavior', () => {
       type: 'paragraph',
       children: [{
         type: 'link', destination: 'b', title: null,
-        children: [{ type: 'text', value: 'a', position: { start: { line: 7, offset: 28 }, end: { offset: 29 } } }],
+        children: [{ type: 'text', value: 'a', position: { start: { line: 7, column: 2, offset: 28 }, end: { offset: 29 } } }],
       }],
     });
     expect(result.value.children[4] && 'children' in result.value.children[4] ? {
@@ -207,6 +207,22 @@ describe('core/markdown behavior', () => {
       `- item\n${' '.repeat(140)}continuation`,
       `${' '.repeat(130)}code`,
     ]) expect(parse(markdown).status).toBe('ready');
+  });
+
+  it('cannot hide adversarial nesting behind a backtick in a fence info string', () => {
+    const markdown = `\`\`\`x\`\n${Array.from({ length: 100 }, (_, depth) => `${'  '.repeat(depth)}- x`).join('\n')}`;
+    const started = Date.now();
+    const result = parse(markdown);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.status).toBe('failed');
+    if (result.status !== 'failed') return;
+    expect(result.error.diagnostics).toContainEqual({
+      kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: 66,
+    });
+  });
+
+  it('keeps repository-scale plain input ready', () => {
+    expect(parse('x'.repeat(500_000)).status).toBe('ready');
   });
 
   it('rejects oversized source before parsing', () => {

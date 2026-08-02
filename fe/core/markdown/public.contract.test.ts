@@ -141,7 +141,7 @@ describe('core/markdown public contract', () => {
     expect(heading && 'depth' in heading ? {
       type: heading.type, depth: heading.depth, position: heading.position,
     } : null).toEqual({
-      type: 'heading', position: { start: { line: 3, offset: 7 }, end: { offset: 20 } },
+      type: 'heading', position: { start: { line: 3, column: 1, offset: 7 }, end: { offset: 20 } },
       depth: 2,
     });
     const outline = extractOutline([{ context: undefined, ast }], {
@@ -150,7 +150,7 @@ describe('core/markdown public contract', () => {
       referenceText: 'source',
       traversal: 'line-level',
     });
-    expect(outline[0]?.position).toEqual({ start: { line: 3, offset: 7 }, end: { offset: 20 } });
+    expect(outline[0]?.position).toEqual({ start: { line: 3, column: 1, offset: 7 }, end: { offset: 20 } });
   });
 
   it('removes raw HTML nodes through a narrowed safe AST', () => {

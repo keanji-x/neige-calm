@@ -29,6 +29,8 @@ const CORPUS = Object.freeze([
   ['list two spaces', '# Root\n- Setup\n  ## Install\n## Tail'],
   ['ordered list three spaces', '1. item\n   ## InList\n## Tail'],
   ['nested list', '- outer\n  - inner\n   ## Nested\n## Tail'],
+  ['list heading four spaces', '# T\n- Setup\n    ## Deep\n## Tail'],
+  ['nested list heading four spaces', '# T\n- outer\n  - inner\n    ## Nested\n## Tail'],
   ['fenced backticks', '# Before\n```md\n## Hidden\n```\n## After'],
   ['fenced tildes', '~~~\n# Hidden\n~~~\n# Visible'],
   ['indented code', '    # Hidden\n# Visible'],
@@ -48,10 +50,22 @@ const CORPUS = Object.freeze([
   // Established migrations: GFM strike contributes visible text and inline HTML is stripped.
   ['exempt strike', '# ~~gone~~ kept'],
   ['exempt inline html', '# Safe <i>label</i>'],
-]);
+] as const);
 
 const EXEMPTIONS = Object.freeze(new Set(['exempt strike', 'exempt inline html']));
 const ACTIVE_CORPUS = CORPUS;
+
+const REQUIRED_CORPUS_CATEGORIES = Object.freeze({
+  blockquote: ['blockquote'],
+  list: ['list two spaces', 'ordered list three spaces'],
+  'nested list': ['nested list', 'nested list heading four spaces'],
+  fence: ['fenced backticks', 'fenced tildes'],
+  'indented-code': ['indented code'],
+  setext: ['setext h1', 'setext h2'],
+  table: ['table cell hash'],
+  'reference-style': ['reference full case', 'reference collapsed', 'reference shortcut', 'reference image'],
+  'html-block': ['html block'],
+});
 
 function normalized(markdown: string, policy: 'report' | 'file-viewer') {
   const result = parse(markdown);
@@ -86,6 +100,10 @@ describe('legacy markdown outline differential', () => {
   it('keeps the differential corpus substantive', () => {
     expect(ACTIVE_CORPUS.length).toBeGreaterThanOrEqual(20);
     expect([...EXEMPTIONS]).toEqual(['exempt strike', 'exempt inline html']);
+    const corpusByName = new Map<string, string>(ACTIVE_CORPUS);
+    for (const names of Object.values(REQUIRED_CORPUS_CATEGORIES)) {
+      expect(names.some((name) => (corpusByName.get(name) ?? '').trim().length > 0)).toBe(true);
+    }
   });
 
   it.each(ACTIVE_CORPUS.filter(([name]) => !EXEMPTIONS.has(name)))('%s matches both real legacy implementations', (_name, markdown) => {

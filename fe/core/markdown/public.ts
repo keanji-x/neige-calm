@@ -4,7 +4,7 @@ import { gfm } from 'micromark-extension-gfm';
 
 export type MarkdownDepth = 1 | 2 | 3 | 4 | 5 | 6;
 export type MarkdownPosition = Readonly<{
-  start: Readonly<{ line: number; offset: number }>;
+  start: Readonly<{ line: number; column: number; offset: number }>;
   end: Readonly<{ offset: number }>;
 }>;
 type Positioned<T> = Readonly<T & { position: MarkdownPosition }>;
@@ -195,14 +195,18 @@ type MdNode = Readonly<{
   referenceType?: 'shortcut' | 'collapsed' | 'full';
   children?: readonly MdNode[];
   position?: Readonly<{
-    start: Readonly<{ line: number; offset?: number }>;
+    start: Readonly<{ line: number; column?: number; offset?: number }>;
     end: Readonly<{ offset?: number }>;
   }>;
 }>;
 
 function positionOf(node: MdNode): MarkdownPosition {
   return {
-    start: { line: node.position?.start.line ?? 1, offset: node.position?.start.offset ?? 0 },
+    start: {
+      line: node.position?.start.line ?? 1,
+      column: node.position?.start.column ?? 1,
+      offset: node.position?.start.offset ?? 0,
+    },
     end: { offset: node.position?.end.offset ?? node.position?.start.offset ?? 0 },
   };
 }
@@ -308,7 +312,9 @@ function diagnosticsFor(markdown: string, root: MdNode): readonly MarkdownDiagno
       if (run[0] === openFence.marker && run.length >= openFence.size && /^\s*$/.test(remainder)) openFence = null;
       continue;
     }
-    if (fence !== null) {
+    const fenceInfo = fence === null ? '' : line.slice(fence[0].length);
+    const validOpeningFence = fence !== null && (fence[1]?.startsWith('~') === true || !fenceInfo.includes('`'));
+    if (validOpeningFence) {
       const run = fence[1] ?? '';
       openFence = { marker: run[0] ?? '`', size: run.length, line: index + 1 };
       continue;
@@ -358,7 +364,9 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
       if (run[0] === openFence.marker && run.length >= openFence.size && /^\s*$/.test(remainder)) openFence = null;
       continue;
     }
-    if (fence !== null) {
+    const fenceInfo = fence === null ? '' : line.slice(fence[0].length);
+    const validOpeningFence = fence !== null && (fence[1]?.startsWith('~') === true || !fenceInfo.includes('`'));
+    if (validOpeningFence) {
       const run = fence[1] ?? '';
       openFence = { marker: run[0] ?? '`', size: run.length };
       continue;
@@ -435,6 +443,7 @@ export function extractOutline<Context>(
         if (options.traversal === 'recursive' && node.type === 'blockquote') visit(node.children);
         if (node.type === 'list') for (const item of node.children) visit(item.children);
       if (node.type !== 'heading' || node.depth > options.maxDepth) continue;
+      if (options.traversal === 'line-level' && node.position.start.column > 4) continue;
       const text = inlineText(node.children, options.referenceText);
       if (options.textPolicy === 'non-empty-heading-label' && text.length === 0) continue;
       const input = { heading: node, globalOrdinal, localOrdinal, context };
