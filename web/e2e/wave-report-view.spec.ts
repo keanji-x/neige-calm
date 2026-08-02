@@ -121,13 +121,13 @@ test('wave report view renders real report data and report rail controls', async
   await expect(page.getByRole('region', { name: 'Outline' })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Backlinks' })).toBeVisible();
 
-  const conversationToggle = page.getByRole('button', {
-    name: 'Open conversation drawer',
+  const conversationEntry = page.getByRole('button', {
+    name: 'Open conversation',
   });
-  await expect(conversationToggle).toBeEnabled();
+  await expect(conversationEntry).toBeEnabled();
 
   // Sending is available only after opening the adjacent drawer.
-  await conversationToggle.click();
+  await conversationEntry.click();
   await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
     .toHaveClass(/report-conversation-drawer--open/);
 
@@ -270,18 +270,14 @@ test('narrow conversation drawer stays docked to the viewport', async ({
     name: 'Conversation drawer',
   });
   const panel = drawer.locator('.report-conversation-drawer-panel');
-  const openToggle = page.getByRole('button', {
-    name: 'Open conversation drawer',
+  const conversationEntry = page.getByRole('button', {
+    name: 'Open conversation',
   });
   await expect(panel).toHaveCSS('height', '0px');
-  await expect.poll(async () => {
-    const box = await openToggle.boundingBox();
-    return box == null ? undefined : box.y + box.height;
-  }).toBeCloseTo(await page.evaluate(() => window.innerHeight), 0);
 
-  await openToggle.click();
-  const closeToggle = page.getByRole('button', {
-    name: 'Close conversation drawer',
+  await conversationEntry.click();
+  const closeButton = page.getByRole('button', {
+    name: 'Close conversation',
   });
   await expect.poll(async () => {
     const box = await panel.boundingBox();
@@ -331,13 +327,10 @@ test('narrow conversation drawer stays docked to the viewport', async ({
     return box == null ? undefined : box.y + box.height - viewportHeight;
   }).toBeCloseTo(0, 0);
 
-  await closeToggle.click();
+  await closeButton.click();
   await expect(panel).toHaveCSS('height', '0px');
-  await expect.poll(async () => {
-    const box = await openToggle.boundingBox();
-    const viewportHeight = await page.evaluate(() => window.innerHeight);
-    return box == null ? undefined : box.y + box.height - viewportHeight;
-  }).toBeCloseTo(0, 0);
+  await expect(page.getByRole('button', { name: 'Open conversation' }))
+    .toBeVisible();
 });
 
 test('report H2 counters match the outline sequence across prose blocks', async ({

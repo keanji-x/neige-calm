@@ -62,7 +62,8 @@ test.describe('spec chat seed path (#676 pin)', () => {
 
     // The liveness UI lives in conversation mode (the header chip + stop
     // affordances render only there).
-    await page.getByRole('button', { name: 'Open conversation drawer' }).click();
+    await page.getByLabel('Recent conversation activity')
+      .getByRole('button').first().click();
     await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
       .toHaveClass(/report-conversation-drawer--open/);
 
@@ -95,7 +96,8 @@ test.describe('spec chat seed path (#676 pin)', () => {
     await expect(
       page.getByRole('heading', { level: 1, name: 'Spec seed test' }),
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Open conversation drawer' }).click();
+    await page.getByLabel('Recent conversation activity')
+      .getByRole('button').first().click();
     await expect(page.getByRole('complementary', { name: 'Conversation drawer' }))
       .toHaveClass(/report-conversation-drawer--open/);
 

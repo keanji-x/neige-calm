@@ -54,6 +54,8 @@ export interface WaveReportPageProps {
 }
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
+const REPORT_OUTLINE_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:outline:collapsed';
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
   'calm:report-rail:backlinks:collapsed';
 const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
@@ -176,6 +178,7 @@ function ReportActivityPanel({
   working,
   hidden,
   onSelect,
+  onOpen,
 }: {
   specCardId: string | null;
   entries: ReturnType<typeof useSpecChatHistory>['entries'];
@@ -184,6 +187,7 @@ function ReportActivityPanel({
   working: boolean;
   hidden: boolean;
   onSelect(entryId: number): void;
+  onOpen(): void;
 }) {
   const allUserEntries = useMemo(
     () => entries.filter((entry) => entry.kind === 'user').reverse(),
@@ -198,7 +202,14 @@ function ReportActivityPanel({
       aria-label="Recent conversation activity"
       aria-hidden={hidden}
     >
-      <div className="report-activity-panel">
+      <div
+        className={
+          'report-activity-panel' +
+          (!initialLoading && userEntries.length === 0 && specCardId != null
+            ? ' report-activity-panel--compact'
+            : '')
+        }
+      >
         {initialLoading ? (
           <div className="report-activity-empty" role="status">
             Loading conversation activity…
@@ -230,11 +241,22 @@ function ReportActivityPanel({
               </div>
             )}
           </div>
+        ) : specCardId != null ? (
+          <button
+            type="button"
+            className="report-activity-chat"
+            aria-label="Open conversation"
+            title="Open conversation"
+            tabIndex={hidden ? -1 : undefined}
+            onClick={onOpen}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.75h14v10.5H9l-4 3v-13.5Z" />
+            </svg>
+          </button>
         ) : (
           <div className="report-activity-empty">
-            {specCardId == null
-              ? 'This wave has no Spec Agent.'
-              : 'Open the conversation drawer to start a conversation.'}
+            This wave has no Spec Agent.
           </div>
         )}
       </div>
@@ -692,6 +714,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const [reportRailCollapsed, setReportRailCollapsed] = useState(
     () => readReportRailCollapsed(),
   );
+  const [outlineCollapsed, setOutlineCollapsed] = useState(() =>
+    readRailSectionCollapsed(REPORT_OUTLINE_COLLAPSED_STORAGE_KEY),
+  );
   const [backlinksCollapsed, setBacklinksCollapsed] = useState(() =>
     readRailSectionCollapsed(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
   );
@@ -751,6 +776,11 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     setConversationCollapsed(false);
     writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, false);
   };
+  const openConversation = () => {
+    setConversationTargetEntryId(null);
+    setConversationCollapsed(false);
+    writeCollapsedState(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY, false);
+  };
   const consumeConversationTarget = useCallback(() => {
     setConversationTargetEntryId(null);
   }, []);
@@ -758,22 +788,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   useEffect(() => {
     setConversationTargetEntryId(null);
   }, [specCardId]);
-
-  const railCollapseButton = (
-    <button
-      type="button"
-      ref={railCollapseButtonRef}
-      className="report-rail-toggle"
-      onClick={toggleReportRailCollapsed}
-      aria-expanded={!reportRailCollapsed}
-      aria-label={
-        reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'
-      }
-      title={reportRailCollapsed ? 'Expand report rail' : 'Collapse report rail'}
-    >
-      <ChevronIcon />
-    </button>
-  );
 
   return (
     <div
@@ -791,28 +805,24 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         hidden={reportRailCollapsed}
         aria-label="Report context"
       >
-        <div className="report-rail-top">
-          <span>Document</span>
-          {railCollapseButton}
-        </div>
-        <section
-          className="report-rail-section report-rail-section--outline"
-          aria-label="Outline"
+        <RailSection
+          title="Outline"
+          count={outline.length}
+          collapsed={outlineCollapsed}
+          onCollapsedChange={(collapsed) => {
+            setOutlineCollapsed(collapsed);
+            writeCollapsedState(
+              REPORT_OUTLINE_COLLAPSED_STORAGE_KEY,
+              collapsed,
+            );
+          }}
         >
-          <h2 className="report-rail-head report-rail-head--static">
-            <span className="report-rail-heading">Outline</span>
-            <span className="report-rail-count" aria-hidden="true">
-              {outline.length}
-            </span>
-          </h2>
-          <div className="report-rail-section-body">
-            <OutlinePanel
-              outline={outline}
-              unavailable={reportCard?.unsupportedVersion != null}
-              bodyOnly={hasReportCard && reportCard?.blocks == null}
-            />
-          </div>
-        </section>
+          <OutlinePanel
+            outline={outline}
+            unavailable={reportCard?.unsupportedVersion != null}
+            bodyOnly={hasReportCard && reportCard?.blocks == null}
+          />
+        </RailSection>
         <RailSection
           title="Backlinks"
           count={backlinksQ.data?.backlinks.length ?? 0}
@@ -867,6 +877,19 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
           </div>
         </RailSection>
       </aside>
+      <button
+        type="button"
+        ref={railCollapseButtonRef}
+        className="report-rail-close"
+        hidden={reportRailCollapsed}
+        onClick={toggleReportRailCollapsed}
+        aria-expanded="true"
+        aria-label="Collapse report rail"
+        aria-controls="report-context-rail"
+        title="Collapse report rail"
+      >
+        <ChevronIcon />
+      </button>
       <section className="report-center" aria-label="Report">
         <button
           type="button"
@@ -894,6 +917,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             working={run.working}
             hidden={conversationOpen}
             onSelect={openConversationAt}
+            onOpen={openConversation}
           />
           <article className="report-doc">
             {reportSlots.length > 1 && (
@@ -926,21 +950,6 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         }
         aria-label="Conversation drawer"
       >
-        <button
-          type="button"
-          className="report-conversation-toggle"
-          aria-controls="report-conversation-panel"
-          aria-expanded={conversationOpen}
-          aria-label={
-            conversationOpen
-              ? 'Close conversation drawer'
-              : 'Open conversation drawer'
-          }
-          title={conversationOpen ? 'Close conversation' : 'Open conversation'}
-          onClick={toggleConversationCollapsed}
-        >
-          <ChevronIcon />
-        </button>
         <div
           id="report-conversation-panel"
           className="report-conversation-drawer-panel"

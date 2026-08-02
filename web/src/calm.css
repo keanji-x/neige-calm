@@ -1756,6 +1756,35 @@ select:-webkit-autofill {
   transform: translateX(12px);
   pointer-events: none;
 }
+.report-activity-chat {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  margin-left: auto;
+  padding: var(--space-0);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-lg);
+  background: var(--paper);
+  color: var(--text-3);
+  pointer-events: auto;
+}
+.report-activity-chat:hover {
+  background: var(--surface-card);
+  color: var(--text);
+}
+.report-activity-chat:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.report-activity-chat svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
 .report-activity-panel {
   overflow: hidden;
   border-radius: calc(var(--radius-xl) + var(--space-1) + var(--space-px));
@@ -1765,6 +1794,10 @@ select:-webkit-autofill {
   box-shadow: var(--float);
   pointer-events: auto;
   animation: report-activity-drop .26s cubic-bezier(.2,.8,.3,1);
+}
+.report-activity-panel--compact {
+  width: fit-content;
+  margin-left: auto;
 }
 .report-activity-stack.hide .report-activity-panel {
   pointer-events: none;
@@ -2811,24 +2844,6 @@ select:-webkit-autofill {
   background: var(--bg);
   scrollbar-width: thin;
 }
-.report-rail-top {
-  display: flex;
-  align-items: center;
-  padding: var(--space-6) var(--space-6) var(--space-5) var(--space-7);
-}
-.report-rail-top > span {
-  color: var(--text-4);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: .14em;
-  text-transform: uppercase;
-}
-.report-rail-top .report-rail-toggle {
-  width: 22px;
-  height: 22px;
-  margin-left: auto;
-  border-radius: var(--radius-md);
-}
 .report-rail-section {
   position: relative;
 }
@@ -2875,13 +2890,6 @@ button.report-rail-head:hover {
 }
 .report-rail-section[data-collapsed="true"] > .report-rail-section-body {
   display: none;
-}
-.report-rail-head--static {
-  cursor: default;
-  padding-top: var(--space-2);
-}
-.report-rail-head.report-rail-head--static:hover {
-  color: var(--text-4);
 }
 .report-rail-count {
   margin-left: auto;
@@ -3035,6 +3043,38 @@ button.report-rail-head:hover {
   width: 12px;
   height: 12px;
 }
+.report-rail-close {
+  position: absolute;
+  z-index: var(--z-raised);
+  top: var(--space-6);
+  left: 249px;
+  width: 24px;
+  height: var(--report-rail-open-height);
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--hairline);
+  border-left: none;
+  border-radius:
+    var(--space-0) var(--radius-lg) var(--radius-lg) var(--space-0);
+  background: var(--bg);
+  color: var(--text-4);
+}
+.report-rail-close[hidden] {
+  display: none;
+}
+.report-rail-close:hover {
+  background: var(--surface-card);
+  color: var(--text);
+}
+.report-rail-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.report-rail-close svg {
+  width: 12px;
+  height: 12px;
+  transform: rotate(180deg);
+}
 /* stylelint-enable no-duplicate-selectors */
 /* Conversation drawer (#654/#975). It stays mounted at width zero so drafts
    and in-flight cross-card guards survive close/open cycles. */
@@ -3065,41 +3105,6 @@ button.report-rail-head:hover {
   visibility: visible;
   pointer-events: auto;
   transition-delay: 0s;
-}
-.report-conversation-toggle {
-  position: absolute;
-  z-index: var(--z-raised);
-  top: var(--space-6);
-  left: -24px;
-  width: 24px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  padding: var(--space-0);
-  border: 1px solid var(--hairline);
-  border-right: none;
-  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
-  background: var(--paper);
-  color: var(--text-3);
-  transition:
-    background var(--motion-quick),
-    color var(--motion-quick);
-  pointer-events: auto;
-}
-.report-conversation-toggle svg {
-  transform: rotate(180deg);
-  transition: transform var(--motion-medium) ease;
-}
-.report-conversation-drawer--open .report-conversation-toggle svg {
-  transform: rotate(0deg);
-}
-.report-conversation-toggle:hover {
-  background: var(--overlay-hover);
-  color: var(--text);
-}
-.report-conversation-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 .report-convo {
   height: 100%;
@@ -3622,23 +3627,6 @@ button.report-rail-head:hover {
     border-top-width: 1px;
     border-top-color: var(--hairline);
   }
-  .report-conversation-toggle {
-    top: -24px;
-    left: auto;
-    right: var(--space-5);
-    width: 30px;
-    height: 24px;
-    border-right: 1px solid var(--hairline);
-    border-bottom: none;
-    border-radius: var(--radius-md) var(--radius-md) 0 0;
-    transform: none;
-  }
-  .report-conversation-toggle svg {
-    transform: rotate(-90deg);
-  }
-  .report-conversation-drawer--open .report-conversation-toggle svg {
-    transform: rotate(90deg);
-  }
   .report-rail {
     max-height: 30vh;
     border-right: none;
@@ -3649,6 +3637,10 @@ button.report-rail-head:hover {
     z-index: var(--z-raised);
     top: var(--space-6);
     margin-bottom: calc(var(--report-rail-open-height) * -1);
+  }
+  .report-rail-close {
+    right: var(--space-0);
+    left: auto;
   }
   .report-convo,
   .report-convo-head,

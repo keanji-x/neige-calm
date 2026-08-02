@@ -111,6 +111,8 @@ const mockUseSpecChatHistory = vi.mocked(useSpecChatHistory);
 const mockUseSpecCurrentRun = vi.mocked(useSpecCurrentRun);
 
 const REPORT_RAIL_COLLAPSED_STORAGE_KEY = 'calm:report-rail:collapsed';
+const REPORT_OUTLINE_COLLAPSED_STORAGE_KEY =
+  'calm:report-rail:outline:collapsed';
 const REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY =
   'calm:report-rail:backlinks:collapsed';
 const REPORT_FILES_COLLAPSED_STORAGE_KEY = 'calm:report-rail:files:collapsed';
@@ -377,10 +379,10 @@ describe('WaveReportPage', () => {
       expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close conversation drawer' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Open conversation drawer' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New instruction' }));
     await new Promise((resolve) => window.setTimeout(resolve, 60));
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalledTimes(2);
   });
 
   it('does not claim the conversation is empty before initial history loads', () => {
@@ -403,7 +405,7 @@ describe('WaveReportPage', () => {
 
     expect(screen.getByText('Loading conversation activity…'))
       .toBeInTheDocument();
-    expect(screen.queryByText('Open the conversation drawer to start a conversation.'))
+    expect(screen.queryByRole('button', { name: 'Open conversation' }))
       .not.toBeInTheDocument();
   });
 
@@ -478,9 +480,8 @@ describe('WaveReportPage', () => {
         cards={[reportSlot('Report'), specSlot()]}
       />,
     );
-    expect(
-      screen.getByText('Open the conversation drawer to start a conversation.'),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open conversation' }))
+      .toBeInTheDocument();
     expect(screen.queryByText('This wave has no Spec Agent.'))
       .not.toBeInTheDocument();
   });
@@ -989,7 +990,7 @@ describe('WaveReportPage', () => {
       .toBe('false');
   });
 
-  it('switches between the rail-top toggle and edge opener', () => {
+  it('switches focus between the mirrored rail edge controls', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -1043,6 +1044,7 @@ describe('WaveReportPage', () => {
     };
     const { unmount } = render(<WaveReportPage {...props} />);
 
+    fireEvent.click(screen.getByRole('button', { name: 'Outline' }));
     fireEvent.click(screen.getByRole('button', { name: 'Backlinks' }));
     fireEvent.click(screen.getByRole('button', { name: 'Files' }));
 
@@ -1057,11 +1059,16 @@ describe('WaveReportPage', () => {
       window.localStorage.getItem(REPORT_BACKLINKS_COLLAPSED_STORAGE_KEY),
     ).toBe('true');
     expect(
+      window.localStorage.getItem(REPORT_OUTLINE_COLLAPSED_STORAGE_KEY),
+    ).toBe('true');
+    expect(
       window.localStorage.getItem(REPORT_FILES_COLLAPSED_STORAGE_KEY),
     ).toBe('true');
 
     unmount();
     render(<WaveReportPage {...props} />);
+    expect(screen.getByRole('button', { name: 'Outline' }))
+      .toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('button', { name: 'Backlinks' }))
       .toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByRole('button', { name: 'Files' }))
@@ -1101,8 +1108,9 @@ describe('WaveReportPage', () => {
     expect(screen.queryByRole('region', { name: 'Event line' })).toBeNull();
     const page = container.querySelector('.report-page');
     expect(page?.firstElementChild).toBe(rail);
-    expect(page?.children[1]).toHaveClass('report-center');
-    expect(page?.children[1]?.firstElementChild).toHaveClass('report-rail-open');
+    expect(page?.children[1]).toHaveClass('report-rail-close');
+    expect(page?.children[2]).toHaveClass('report-center');
+    expect(page?.children[2]?.firstElementChild).toHaveClass('report-rail-open');
     expect(page?.lastElementChild).toHaveClass('report-conversation-drawer');
   });
 
@@ -2046,7 +2054,8 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: 'Open conversation drawer' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Open conversation' }))
+      .toBeEnabled();
     expect(container.querySelector('.report-page')).not.toHaveClass(
       'report-page--conversation-open',
     );
@@ -2065,7 +2074,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Open conversation drawer' }),
+      screen.getByRole('button', { name: 'Open conversation' }),
     );
 
     expect(container.querySelector('.report-page')).toHaveClass(
@@ -2075,7 +2084,7 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('Report with chat')).toBeInTheDocument();
   });
 
-  it('opens the empty drawer and omits the composer without a spec card', () => {
+  it('does not offer a meaningless drawer entry without a spec card', () => {
     render(
       <WaveReportPage
         wave={makeWave()}
@@ -2083,17 +2092,10 @@ describe('WaveReportPage', () => {
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Open conversation drawer' }),
-    );
-    expect(screen.getByRole('button', { name: 'Close conversation drawer' }))
-      .toHaveAttribute('aria-expanded', 'true');
-    expect(
-      screen.getByText('Spec Agent is unavailable for this wave.'),
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByLabelText('Ask the Spec Agent'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open conversation' }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText('This wave has no Spec Agent.'))
+      .toBeInTheDocument();
   });
 
   it('keeps the draft alive when the drawer closes and reopens', () => {
@@ -2105,17 +2107,17 @@ describe('WaveReportPage', () => {
     );
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Open conversation drawer' }),
+      screen.getByRole('button', { name: 'Open conversation' }),
     );
     const draft = screen.getByLabelText('Ask the Spec Agent');
     fireEvent.change(draft, { target: { value: 'Persistent draft' } });
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Close conversation drawer' }),
+      screen.getByRole('button', { name: 'Close conversation' }),
     );
     expect(screen.getByLabelText('Ask the Spec Agent')).toBe(draft);
     fireEvent.click(
-      screen.getByRole('button', { name: 'Open conversation drawer' }),
+      screen.getByRole('button', { name: 'Open conversation' }),
     );
     expect(screen.getByLabelText('Ask the Spec Agent')).toHaveValue(
       'Persistent draft',
@@ -2130,7 +2132,7 @@ describe('WaveReportPage', () => {
     const first = render(<WaveReportPage {...props} />);
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Open conversation drawer' }),
+      screen.getByRole('button', { name: 'Open conversation' }),
     );
     expect(
       window.localStorage.getItem(REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY),
@@ -2139,8 +2141,8 @@ describe('WaveReportPage', () => {
     first.unmount();
     render(<WaveReportPage {...props} />);
     expect(
-      screen.getByRole('button', { name: 'Close conversation drawer' }),
-    ).toHaveAttribute('aria-expanded', 'true');
+      screen.getByRole('button', { name: 'Close conversation' }),
+    ).toBeEnabled();
   });
 
   it('renders backlinks grouped by source wave with source block anchors', () => {
