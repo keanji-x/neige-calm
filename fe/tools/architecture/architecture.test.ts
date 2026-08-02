@@ -32,6 +32,15 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
     return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
   }
+  if (caseName === 'react-state-hook-import') {
+    const filePath = resolve(fixtures, caseName, kind, 'web/src/ui/case.ts');
+    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
+      filePath: resolve(import.meta.dirname, '../../web/src/ui/state/public.contract.test.ts'),
+    });
+    const output = result.messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
+    return { status: result.errorCount ? 1 : 0, stdout: output, stderr: '' };
+  }
   if (caseName.startsWith('core-platform-')) {
     const cwd = resolve(fixtures, caseName, kind);
     const configPath = resolve(cwd, 'tsconfig.json');
@@ -88,6 +97,7 @@ describe('architecture fixtures', () => {
     ['core-platform-node-types', '2591'],
     ['core-platform-types', '2584'],
     ['core-no-jsx', 'bad.tsx'],
+    ['react-state-hook-import', 'web/src/ui/state/public.ts'],
     ['eslint-config-root-only', 'nested/eslint.config.js'],
     ['eslint-no-off-shims', 'example/rule'],
     ['source-layout', 'core/helpers.js'],
