@@ -4,7 +4,7 @@
  * Covered: top-level let/var, mutable built-in construction, object/array
  * literals, mutable static class fields, closure/IIFE singletons, and calls to
  * non-whitelisted factories. Type-only declarations, primitives, functions,
- * schema construction, and deeply static data passed to Object.freeze are
+ * schema construction, and static data passed to Object.freeze are
  * intentionally accepted. This syntax-based rule cannot prove deep
  * immutability or factory purity; narrowly justified file exceptions cover
  * unavoidable false positives.
