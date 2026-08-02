@@ -81,6 +81,16 @@ describe('core/markdown behavior', () => {
     ]);
   });
 
+  it('uses the first duplicate reference definition', () => {
+    const result = parse('# [x][id]\n\n[id]: /first\n[id]: /second');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    const heading = result.value.children[0];
+    expect(heading?.type).toBe('heading');
+    if (heading?.type !== 'heading') return;
+    expect(heading.children[0]).toEqual(expect.objectContaining({ type: 'link', destination: '/first' }));
+  });
+
   it('keeps visible CommonMark characters and omits empty file-viewer headings before numbering', () => {
     expect(outline('# snake_case\n# C\\*\n# price * tax\n# <i></i>\n# Last').map(({ id, text }) => ({ id, text }))).toEqual([
       { id: 'md-h-0', text: 'snake_case' },
@@ -219,6 +229,50 @@ describe('core/markdown behavior', () => {
     expect(result.error.diagnostics).toContainEqual({
       kind: 'limit-exceeded', message: 'Block nesting exceeds 64 levels', line: 66,
     });
+  });
+
+  const BYPASS_PREFIXES = Object.freeze([
+    ['html script', '<script>\n```\n</script>\n'],
+    ['html pre', '<pre>\n```\n</pre>\n'],
+    ['html style', '<style>\n```\n</style>\n'],
+    ['html comment', '<!--\n```\n-->\n'],
+    ['html processing instruction', '<?target\n```\n?>\n'],
+    ['html declaration', '<!DOCTYPE\n```\n>\n'],
+    ['html cdata', '<![CDATA[\n```\n]]>\n'],
+    ['html block tag', '<div>\n```\n</div>\n\n'],
+    ['html complete tag', '<x-box>\n```\n\n'],
+    ['closed backtick fence', '```\ninside\n```\n'],
+    ['closed tilde fence', '~~~js\ninside\n~~~\n'],
+    ['backtick info ambiguity', '```js`bad\n'],
+    ['indented fence', '    ```\n'],
+    ['blockquote fence', '> ```\n'],
+    ['list fence', '- ```\n'],
+  ] as const);
+
+  it.each(BYPASS_PREFIXES)('fails closed for bypass prefix: %s', (_name, prefix) => {
+    const adversarial = Array.from({ length: 250 }, (_, depth) => `${'  '.repeat(depth)}- x`).join('\n');
+    const started = Date.now();
+    const result = parse(prefix + adversarial);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.status).toBe('failed');
+  });
+
+  it('applies invalid backtick-info fence classification in diagnosticsFor', () => {
+    const result = parse('```js`bad\n####### Seven');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.value.diagnostics).toContainEqual({
+      kind: 'malformed', message: 'ATX heading depth exceeds six', line: 2,
+    });
+  });
+
+  it('keeps the first duplicate reference definition', () => {
+    const result = parse('[x][id]\n\n[id]: /first\n[id]: /second');
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    const paragraph = result.value.children[0];
+    const link = paragraph !== undefined && 'children' in paragraph ? paragraph.children[0] : undefined;
+    expect(link?.type === 'link' ? link.destination : null).toBe('/first');
   });
 
   it('keeps repository-scale plain input ready', () => {

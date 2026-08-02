@@ -397,7 +397,9 @@ export function parse(markdown: string): MarkdownParseResult {
     const definitions = new Map<string, Definition>();
     const collectDefinitions = (node: MdNode): void => {
       if (node.type === 'definition' && node.identifier !== undefined) {
-        definitions.set(node.identifier, { destination: node.url ?? '', title: node.title ?? null });
+        if (!definitions.has(node.identifier)) {
+          definitions.set(node.identifier, { destination: node.url ?? '', title: node.title ?? null });
+        }
       }
       for (const child of node.children ?? []) collectDefinitions(child);
     };
