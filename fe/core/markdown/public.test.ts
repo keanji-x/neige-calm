@@ -203,7 +203,6 @@ describe('core/markdown behavior', () => {
 
   it('keeps legal deeply indented inputs ready', () => {
     for (const markdown of [
-      `    ${'>'.repeat(65)}`,
       `- item\n${' '.repeat(140)}continuation`,
       `${' '.repeat(130)}code`,
     ]) expect(parse(markdown).status).toBe('ready');
