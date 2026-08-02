@@ -238,6 +238,8 @@ describe('core/markdown behavior', () => {
     ['indented fence', '    ```\n'],
     ['blockquote fence', '> ```\n'],
     ['list fence', '- ```\n'],
+    ['tab-indented list', Array.from({ length: 65 }, (_, depth) => `${'\t'.repeat(depth)}- x`).join('\n')],
+    ['mixed tab-space-indented list', Array.from({ length: 65 }, (_, depth) => `${'\t '.repeat(depth)}- x`).join('\n')],
   ] as const);
 
   const REQUIRED_BYPASS_PREFIX_CATEGORIES = Object.freeze({
@@ -257,17 +259,17 @@ describe('core/markdown behavior', () => {
   });
 
   it('keeps every bypass prefix category represented', () => {
-    expect(BYPASS_PREFIXES.length).toBeGreaterThanOrEqual(17);
+    expect(BYPASS_PREFIXES.length).toBeGreaterThanOrEqual(19);
     const names = new Set<string>(BYPASS_PREFIXES.map(([name]) => name));
     for (const requiredNames of Object.values(REQUIRED_BYPASS_PREFIX_CATEGORIES)) {
       expect(requiredNames.some((name) => names.has(name))).toBe(true);
     }
   });
 
-  it.each(BYPASS_PREFIXES)('fails closed for bypass prefix: %s', (_name, prefix) => {
+  it.each(BYPASS_PREFIXES)('fails closed for bypass prefix: %s', (name, prefix) => {
     const adversarial = `    ${'>'.repeat(65)} x`;
     const started = Date.now();
-    const result = parse(prefix + adversarial);
+    const result = parse(prefix + (name.endsWith('indented list') ? '' : adversarial));
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(result.status).toBe('failed');
   });

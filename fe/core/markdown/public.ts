@@ -405,8 +405,15 @@ function inputLimitDiagnostic(markdown: string): MarkdownDiagnostic | null {
       openFence = fence;
       continue;
     }
-    const indentation = /^( *)/.exec(line)?.[1].length ?? 0;
-    const content = line.slice(indentation);
+    let indentation = 0;
+    let contentOffset = 0;
+    while (contentOffset < line.length) {
+      if (line[contentOffset] === ' ') indentation += 1;
+      else if (line[contentOffset] === '\t') indentation += 4 - (indentation % 4);
+      else break;
+      contentOffset += 1;
+    }
+    const content = line.slice(contentOffset);
     const listMarker = /^(?:[-+*]|\d+[.)])\s/.test(content);
     const quoteDepth = (content.match(/^(?:>\s*)+/)?.[0].match(/>/g) ?? []).length;
     const listDepth = listMarker ? Math.floor(indentation / 2) + 1 : 0;
