@@ -1,10 +1,9 @@
-在 `fe/` 下重建前端，目标不是复制现有 `web/`，是**拿到更干净的架构**。
+在 `fe/` 下重建前端。目标不是复制现有 `web/`，是**拿到更干净的架构**。
 
-阶段 0（架构设计）与阶段 2（oracle 提取）已完成，架构经七轮双通道 review 收敛，判定**可进入阶段 1 接口冻结**。本 issue 是实现的唯一输入。
+架构设计与契约提取已完成，当前进入**阶段 1：接口冻结**。本 issue 是实现的唯一输入。
 
-- 架构全文：`docs/_fe-architecture.md`
-- 执行计划：`docs/_fe-rewrite-plan.md`
-- 契约库：`docs/oracle/`（**1127 条**，schema 见 `docs/oracle/SCHEMA.md`）
+- 架构全文 `docs/_fe-architecture.md` · 执行计划 `docs/_fe-rewrite-plan.md`
+- 契约库 `docs/oracle/`（**1127 条**，schema 见 `docs/oracle/SCHEMA.md`）
 
 ---
 
@@ -18,9 +17,10 @@
 
 **非目标**：
 
-- ❌ **不是像素对齐现有 web**。视觉只需"设计系统内部一致"，不需要跟老的一样
+- ❌ **不是像素对齐现有 web**。视觉只需"设计系统内部一致"
 - ❌ **不换技术栈**。React 19 + Vite + TanStack Router/Query + zod 全部沿用
 - ❌ oracle **不是**截图基线，是能力清单 + 不变量集 + 契约测试
+- ❌ **mobile 端不在本次范围**（已 defer）
 
 ## 2. 现状事实
 
@@ -56,28 +56,27 @@ intentional_omission true = "故意不做"型契约
 migration            pending | skipped（skipped 必带 skip_reason）
 ```
 
-> `enforcement` 字段**不存在**，别去找它——承担该语义的是 `verification_owner`。
-
 ### 关键统计
 
 ```
 runtime_layer   features 407 · systems 271 · app 138 · ui 132 · none 96 · styles 57 · core 26
 test_tier       browser 585 · jsdom 424 · static 80 · none 38
 migration       pending 1122 · skipped 5
-归层率          100%（1127/1127）
+归层率          100%（1127/1127），114 个规范 owner_slice
 ```
 
 ### ⚠️ 两个必须先知道的数字
 
-**① `core` 只有 26 / 1127 条。** 跨端共享面远小于预期。这从数据侧支持了收紧 `core`（禁 JSX）的裁决。
+**① `core` 只有 26 / 1127 条。** 平台无关的纯逻辑面很小——这决定了 `core` 的边界必须收紧（见 §9）。
 
-**② 200 条恒真断言风险。** `test_tier: browser` 共 585 条，其中 **200 条当前 `verification_owner: unit`**（systems 100 · features 54 · ui 38 · app 6 · core 1 · styles 1）。它们涉及布局／几何／滚动／真实焦点／canvas／PTY——**jsdom 没有布局，"断言没有发生重排"永远通过**。这批必须搬到真实浏览器，单 slice 的验证成本要按此上调，不能按单测估。
+**② 200 条恒真断言风险。** `test_tier: browser` 共 585 条，其中 **200 条当前 `verification_owner: unit`**（systems 100 · features 54 · ui 38 · app 6 · core 1 · styles 1）。它们涉及布局／几何／滚动／真实焦点／canvas／PTY——**jsdom 没有布局，"断言没有发生重排"永远通过**。这批必须搬到真实浏览器，单 slice 的验证成本按此上调，不能按单测估。
 
 ### 如何消费
 
 - 有测试的 → 翻译（提取其断言的不变量，在新结构下重述）
 - **无测试的 325 条 → oracle 条目本身就是规格，必须新写 contract test**
 - **`migration: skipped` 的 5 条不要实现**：`INV-APP-019`、`INV-APP-105`（被 events typestate 取代）、`INV-DEAD-001..003`（死代码）
+- `NORMALIZATION-REPORT.md` 里 **13 条 / 6 项**标「需人工裁决」——有临时归属，但层的选择存在实质分歧，**必须在阶段 1 内裁决**，否则会把分歧固化进文件划分
 
 ## 4. 架构：五层
 
@@ -98,7 +97,7 @@ migration       pending 1122 · skipped 5
 │            ★ 不得依赖业务 domain（仅 core/types 白名单）        │
 ├──────────────────────────────────────────────────────────────┤
 │ core/      api · domain · schemas · keys · state              │
-│            markdown · events = protocol · reducer · plan      │
+│            markdown · events = protocol · reducer · plan       │
 │            ★ 禁 JSX、禁 React、禁浏览器 API                    │
 └──────────────────────────────────────────────────────────────┘
               依赖只能向下，不能向上或横向
@@ -110,17 +109,18 @@ migration       pending 1122 · skipped 5
 
 **没有 `shared/`。** "shared" 是没想清楚归属的代名词；现有 `shared/components/` 混装 primitive、业务组件、外壳三种东西，oracle 里 104 条挂在 `shared/*`，全部重新分配。
 
-## 5. 目录：`core` 跨端，其余每端一份
+## 5. 目录
 
 ```
 fe/
-├── core/        ★ 唯一跨端共享。api · domain · schemas · keys · state · markdown · events
+├── core/        平台无关逻辑。api · domain · schemas · keys · state · markdown · events
 ├── mock/        从 openapi.json 生成（禁止手写 handler）
-├── web/src/     app/ features/ systems/ ui/ styles/
-└── mobile/src/  app/ features/(只有 report+auth) systems/(近乎为空) ui/ styles/
+└── web/src/     app/ features/ systems/ ui/ styles/
 ```
 
-**`core` 的判据是 platform-independent，不是 DOM-free。** 这两个不是一回事——`web/src/api/events.ts` 一行 DOM 也没有，但有 7 处浏览器平台依赖：
+**`core` 与 `web` 分离的理由是可测试性，不是跨端。** `core` 里没有 `WebSocket`/`localStorage`/`location`/`fetch` 的直接调用，平台能力一律经注入的 port——因此 `core` 能在 node 里直接跑测试，不需要 jsdom、不需要假 WebSocket。
+
+判据是 **platform-independent**，不只是 **DOM-free**。这两个不是一回事：`web/src/api/events.ts` 一行 DOM 也没有，但有 7 处浏览器平台依赖：
 
 ```
 WebSocket                        events.ts:172-175, 306-360
@@ -129,8 +129,10 @@ localStorage                     events.ts:511-529, 585-596
 location.protocol / host         events.ts:599-602
 fetch(credentials:'include')     events.ts:551-578
 模块级共享实例                     events.ts:604-634
-loadCursor() 构造函数内同步返回      events.ts:204   ← 连"形状"都不跨端
+loadCursor() 构造函数内同步返回      events.ts:204   ← 连"形状"都不是平台无关的
 ```
+
+> mobile 端已 defer。`core` 的平台无关约束同时也是未来加端时的预留，但当前的正当性来自可测试性。
 
 ## 6. 十一条病灶 × 机器检查
 
@@ -142,7 +144,7 @@ loadCursor() 构造函数内同步返回      events.ts:204   ← 连"形状"都
 | 2 | 6 处模块级单例 | `architecture/no-module-runtime-state`，见下方精确定义 |
 | 3 | context 跨域穿透 | 基于 **import binding** 检测 `createContext`/`React.createContext`/alias（不能文本匹配）；白名单精确到文件 |
 | 4 | `calm:sync:cursor` 硬编码 3 处 | ①字面量 `/^calm[:.]/` 只许在 `core/keys`；②`no-direct-persistence` 禁直连 localStorage/sessionStorage/IndexedDB |
-| 5 | markdown pipeline 5 份 / SchemaForm 2 份 / calm-select 2 份 / TOC 2 套 | **硬编码清单，不用 AST 相似度**。唯一 public entry + 禁止直接 import `react-markdown`/remark/rehype/**`mdast-util-*`** + 禁手写 markdown 正则解析器（漏掉后两者，两个现存重复实现都能逃过）。清单 = oracle `INV-DUP-001..010` |
+| 5 | markdown pipeline 5 份 / SchemaForm 2 份 / calm-select 2 份 / TOC 2 套 | **硬编码清单，不用 AST 相似度**（重命名／抽 helper／JSX 展开会让阈值漂移，相似表单会误报）。唯一 public entry + 禁止直接 import `react-markdown`/remark/rehype/**`mdast-util-*`** + 禁手写 markdown 正则解析器（漏掉后两者，两个现存重复实现都能逃过）。清单 = `INV-DUP-001..010` |
 | 6 | 6392 行全局 CSS | ①组件只可 import `*.module.css`；②普通 `.css` 只许 `styles/entry.css` import；③第三方 CSS 只从 `styles/vendor.css` 汇入 |
 | 7 | 高扇出共享类（`.go` 跨 8 文件 6 域等） | CSS AST 生成 manifest 并**双向 set 相等**比对；禁 `:global(...)`（除 allowlist）；禁 manifest 外的全局类字符串；禁运行时拼类名 |
 | 8 | 运行时按 class 查 DOM | 解析静态 selector，任何 class selector 都报错；覆盖 `querySelector(All)`/`closest`/`matches`/`getElementsByClassName`；**第三方 DOM 开 allowlist 口子**（`file-viewer.tsx:135` 查 `.cm-scroller`，CM 内部结构加不了 `data-*`）且必须带容器前缀 |
@@ -165,13 +167,26 @@ loadCursor() 构造函数内同步返回      events.ts:204   ← 连"形状"都
 
 **无法零误报**，需要小型 allowlist。别指望规则全自动。
 
+### 隐性契约的机器化
+
+无测试锁定的 a11y 契约按 `verification_owner` 指派责任，**不能机械套模板**：
+
+| 契约类 | 检查方式 |
+|---|---|
+| 逐页 Tab 顺序 | 独立契约文件 `contracts/a11y/tab-order.yaml`，用 **role + accessible name + 条件**描述（不用 CSS selector）。Playwright 从 `body` 真实按 Tab 遍历。**e2e 不得 import 生产代码旁的 TS 常量**——否则实现和预期会被一次修改"自洽地改错"。必须分别覆盖条件状态、Shift+Tab、Dialog 打开后的 trap |
+| focus-visible | 禁 `outline: none\|0`，除非带注释且在 allowlist；允许移除 outline 的组件要求同一 stylesheet 有对应 `:focus-visible` 且提供非透明 outline/box-shadow；关键控件由 Playwright computed-style 兜底。**不要用"相邻规则"判定**——CSS Modules／嵌套／layer／媒体查询会让"相邻"失去意义 |
+| motion | **只对出现 `animation`/`transition`/`scroll-behavior` 的模块**要求 reduced-motion override；关键页面用 `reducedMotion:'reduce'` 跑 e2e。（没动画的文件不该被迫加空块；`!important` 不是正确性的必要条件；全禁 `animationend` 会误杀合法清理） |
+| 215 条"故意不做" | **逐条评估**：反向键盘测试 / 正向精确断言 / node identity 保留断言 / 行为回归锁定（effect 声明顺序不能用"不发生"测）/ oracle migration gate（纯产品决策不写运行测试） |
+
+> ⚠️ **恒真断言是最大陷阱。** jsdom 没有布局，"断言没有发生重排"**永远通过**。凡布局／几何／滚动／真实焦点／canvas／PTY 相关，`test_tier` 必须是 `browser`。
+
 ## 7. CSS 分层
 
 ```css
 @layer reset, vendor, tokens, base, astryx, ui, features, overrides;
 ```
 
-**六个坑**（Astryx spike 实测 + review 逐条验证）：
+**六个坑**：
 
 1. **自定义属性不免疫 layer** — 它同样参加 cascade 与 layer 排序；`var()` 在使用点解析是另一回事
 2. **声明 `@layer astryx` 控制不了 Astryx** — 它用的是 `astryx-base`，必须 `@import url(...) layer(astryx)` 或把真实层名写进总层序
@@ -193,6 +208,7 @@ web/app/events/      EventBridge.tsx · query-invalidation-adapter
 ```
 
 reducer 输出 effect 由端侧执行：`{persist-cursor} | {invalidate} | {clear-cache} | {reconnect}`。
+拆分的收益是**协议正确性变成纯函数测试**——cursor 推进、control frame、version gate 不再需要在 React + TanStack + 假 WebSocket 里验。
 
 **排序不变量用类型消除，不用运行时守卫。** `INV-APP-019` 要求 `setSyncEventVersion → subscribe → start`。运行时守卫只能保住 `set < start`，`set → start → subscribe` 照样通过。改用：
 
@@ -213,11 +229,9 @@ subscribe 折进 configure，三步坍缩成一步——**排序不变量消失�
 
 **裁决：不允许 `core/render/`。** 黑名单 lint（禁 `react-dom`/`useState`/`useEffect`/`on(Key|Pointer|Touch)*`/`createContext`）有 8 类绕过：`onClick`/`onChange`/`onWheel` 不在正则内、`useRef`/`useLayoutEffect`/`useSyncExternalStore` 未禁、`document`/`window`/`matchMedia` 未禁、hook 可 alias、可渲染内部有 state 的导入组件、class component、`dangerouslySetInnerHTML`、间接 `createPortal`。封死这些等于写一个不完整的 React effect system。
 
-**而且跨端共享 JSX 没有真实用例**：四份 markdown 管线**行为已发散**（`SpecConversation.tsx:106-110` 缺 `urlTransform` + `ReportLink`），`ReportLink` 天然端相关只能注入。
-
 ```
-core/markdown/     parse · normalize · sanitize-ast-policy · outline · block schema
-{web,mobile}/src/features/report/render/    React renderer
+core/markdown/                     parse · normalize · sanitize-ast-policy · outline · block schema
+web/src/features/report/render/    React renderer
 ```
 
 `sanitize` 在 core 里是 **sanitize-ast-policy**（输出平台无关的安全中间 AST）。一旦它依赖 React 元素/属性白名单、`ReportLink`、URL transform 或 `dangerouslySetInnerHTML`，就属于 renderer adapter。
@@ -236,6 +250,8 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 | ID | `<blockId>-h<n>`，**block 内局部 ordinal** | `md-h-<n>`，**全文件全局 ordinal** |
 
 > report 的 **block-to-heading 归组、fallback 顶层项（`number:null`）、连续编号、`children` 组装**不是 AST heading policy，属 `features/report` 的纯组合函数，**不进 core**。
+>
+> `headingId` 必须能拿到 heading 节点、全局/局部 ordinal 与调用上下文；`textPolicy` 必须是**冻结的策略类型**而非无约束 callback。
 
 ## 10. 技术栈
 
@@ -243,16 +259,17 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 |---|---|---|
 | React 19 + Vite + TanStack + zod | **沿用** | 栈不变则老代码可作参考，知识可迁移 |
 | CSS Modules + `@layer` | 采用 | 病灶 6/7 |
-| **Astryx** | **采用，锁死精确版本** | spike 实测：**零构建配置**（它自己预编译 dist，peer dep 只为运行时 `stylex.props`）；14/14 组件齐；tree-shaking 有效。但 **5.5 周 12 版、67% 带 breaking 且无 codemod** → 升级必须当独立任务排期，不能顺手升 |
+| **Astryx**（`@astryxdesign/core`） | **采用，锁死精确版本** | 实测：**零构建配置**（自带预编译 dist，peer dep 只为运行时 `stylex.props`）；14/14 组件齐；tree-shaking 有效。但 **5.5 周 12 版、67% 带 breaking 且无 codemod** → 升级必须当独立任务排期 |
 | Astryx `<Theme>` 组件 | **不用** | 它往 `<html>` 写 `data-theme`，与自有主题机制撞车。只用组件，主题归 `app/theme` |
-| `astryx.css` 128.6 kB / 22.8 kB gzip | 桌面接受；**mobile 待评估** | 单体，与用量无关 |
+| Astryx Tooltip | **禁用** | 触屏 tap 无反应（源码 `if (!target.matches(':focus-visible')) return`），只有键盘可达 |
+| `astryx.css` 148.6 kB / 25.8 kB gzip | 接受 | 单体，与用量无关，`exports` 无组件级子路径 |
 
 ## 11. 八项已裁决
 
 | # | 裁决 |
 |---|---|
-| 1 | `core` **不允许** JSX → `core/markdown` + 各端 renderer |
-| 2 | `DirectoryPicker` **两层，全在 `ui/`**：`ui/directory-browser`（注入 `listDir` port）+ `ui/schema-form/fields/DirectoryField`。**不设 `features/wave/create` 那层**——实读 `SchemaForm.tsx:119-126`，它由卡片 create schema 的 `type:'directory'/'file'` 驱动，与 wave create 无专属关系；放进 features 会让 `ui/schema-form` 向上 import features |
+| 1 | `core` **不允许** JSX → `core/markdown` + 端侧 renderer |
+| 2 | `DirectoryPicker` **两层，全在 `ui/`**：`ui/directory-browser`（注入 `listDir` port）+ `ui/schema-form/fields/DirectoryField`。**不设 `features/wave/create` 那层**——它由卡片 create schema 的 `type:'directory'/'file'` 驱动（`SchemaForm.tsx:119-126`），与 wave create 无专属关系；放进 features 会让 `ui/schema-form` 向上 import features |
 | 3 | `systems/editor` 沿用 **folder-level split，不建 npm workspace**。升级触发条件：出现第二个 JS 消费端 / 需独立版本发布 / 依赖树或构建耗时需隔离 |
 | 4 | `events` 三分（§8） |
 | 5 | 重复检测用**硬编码清单**（`INV-DUP-001..010` 全部），展开成具体 import/path 约束。AST 相似度只作非阻断报告 |
@@ -260,15 +277,15 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 | 7 | `ui` 可依赖的 `core/types` 白名单**只允许两类**：branded ID 类型（`WaveId`/`CoveId`/`CardId`，无字段无方法）、无障碍原语类型（role 枚举、focus 目标描述）。**任何带业务字段的 domain 类型一律禁止** |
 | 8 | **不要宣称"消除 boot 顺序依赖"**：`INV-CARD-225` 中 codex 与 spec 共用 kernel kind `'codex'`，注册顺序决定兜底全扫的命中结果。顺序依赖是**语义**的不是**机制**的，改注入只是搬家。正确做法：顺序从"隐式 import 副作用"变成 `app` 里显式的一行，并由 contract test 锁定 |
 
-## 12. 并行策略：接口优先，不是切片优先
+## 12. 并行策略：接口优先
 
-按页面切片会继承现有耦合（review 找到 10 组硬耦合、5–6 层依赖链），并行不起来。**先冻结跨模块接口，实现只依赖接口，才能扁平并行。**
+按页面切片会继承现有耦合（10 组硬耦合、5–6 层依赖链），并行不起来。**先冻结跨模块接口，实现只依赖接口，才能扁平并行。**
 
-| 阶段 | 可并发 | 约束 |
+| 阶段 | 可并发 | 状态 |
 |---|---|---|
-| 架构设计 | 1 | ✅ 已完成 |
-| oracle 提取 | 30–50 | ✅ 已完成（1127 条） |
-| **接口冻结** | 3–5 | ← 当前阶段 |
+| 架构设计 | 1 | ✅ |
+| oracle 提取 | 30–50 | ✅ 1127 条 |
+| **接口冻结** | 3–5 | ← 当前 |
 | 实现 | 20–30 | 见下 |
 | 集成 | 1–3 | 不可压缩 |
 
@@ -304,14 +321,14 @@ CommonMark/GFM 方言 · raw HTML 是否保留 · setext/fence/图片 alt/inline
 
 ### 出口验收清单
 
-- [ ] §13 全部接口形成**可编译的类型 + 公开入口 + 错误/生命周期语义**，不再只有目录名或概念描述
+- [ ] 全部接口形成**可编译的类型 + 公开入口 + 错误/生命周期语义**，不再只有目录名或概念描述
 - [ ] `core/markdown` 七项语义决定全部落定
 - [ ] `systems/events` 四项冻结面 + 两条 typestate 外 contract test 已确定
 - [ ] `styles` 的 token 形状、layer 顺序、全局类 manifest、unlayered 例外 manifest、`data-*` 约定固化
 - [ ] 每个冻结接口至少有编译型/契约型测试覆盖主要消费者；**不得靠生产端与测试端共享常量形成自洽断言**
 - [ ] 根据最终接口落出完整模块/文件清单
 - [ ] **ownership manifest** 覆盖未来全部实现文件，每文件恰好一个 owner；冻结接口与 `styles/` 标只读
-- [ ] **解决 `NORMALIZATION-REPORT.md` 中 13 条 / 6 项人工裁决**（有临时归属但层的选择存在实质分歧，不裁决会把分歧固化进文件划分）
+- [ ] **解决 `NORMALIZATION-REPORT.md` 中 13 条 / 6 项人工裁决**
 - [ ] change-request 流程可执行，结束时无悬而未决的公开面变更请求
 - [ ] schema / 枚举 / ID 唯一性 / owner 与 runtime_layer 一致性校验全绿
 
@@ -330,7 +347,7 @@ CommonMark/GFM 方言 · raw HTML 是否保留 · setext/fence/图片 alt/inline
 
 ## 15. ⚠️ 已知陷阱速查
 
-**215 条 `intentional_omission`，其中 100 条（47%）无测试锁定**——看到"没实现"就补上，不会有任何测试报错。下面是最容易被"顺手修好"的：
+**215 条 `intentional_omission`，其中 100 条（47%）无测试锁定**——看到"没实现"就补上，不会有任何测试报错。最容易被"顺手修好"的：
 
 | 契约 | 会被误当成 | 真实后果 |
 |---|---|---|
@@ -356,10 +373,7 @@ CommonMark/GFM 方言 · raw HTML 是否保留 · setext/fence/图片 alt/inline
 - `--tracking-normal` 必须是 `0` 不是 CSS `normal`（为了让 linter 能禁裸关键字）
 - `themeRgb.ts` ↔ `XtermView` ↔ Rust `RequestTheme::default_dark()` **三处必须同步**（跨语言不变量）
 - **产品级"故意不做"**：wave archive UI、cove-folder 管理 UI、`report.md` 的 file-viewer 面板——kernel 支持但前端刻意没有，别热心补上
-
-## 16. 仍待定
-
-- **mobile 是否引 Astryx**（128.6 kB 单体 CSS 与用量无关）—— mobile 开工前定即可，不阻塞阶段 1
+- 测试钉法：断言最终状态会漏掉"多发了一个请求"这类 bug（`#288` 用**计数 PATCH 请求**来钉）
 
 ---
 

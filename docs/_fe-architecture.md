@@ -1,6 +1,6 @@
 # `fe/` 架构设计
 
-状态：草案 v5（已过四轮双通道 review）
+状态：定稿 v6 — 阶段 0 完成，进入阶段 1 接口冻结
 日期：2026-08-02
 上游：`_fe-rewrite-plan.md`（阶段 0 的产出）
 
@@ -277,16 +277,16 @@ fe/
 │       ├── systems/         cards · terminal · wheel · fs-viewers · editor
 │       ├── ui/              dialog · menu · focus · roving
 │       └── styles/          @layer 全局层
-└── mobile/                  移动端（后做）
-    └── src/
-        ├── app/
-        ├── features/        ★ 只有 report（+ auth）
-        ├── systems/         ★ 近乎为空 —— 不需要 cards/terminal/wheel
-        ├── ui/              移动自己的交互原语（sheet/手势），不复用桌面的
-        └── styles/
 ```
 
-### 为什么只有 `core` 跨端
+> **mobile 端已 defer，不在本次范围。** 下方「（未来加端时）为什么只有 `core` 跨端」保留为将来的判据。
+
+### `core` 与 `web` 分离的理由：可测试性
+
+`core` 里没有 `WebSocket`/`localStorage`/`location`/`fetch` 的直接调用，平台能力一律经注入的 port——
+因此 **`core` 能在 node 里直接跑测试**，不需要 jsdom、不需要假 WebSocket。这是当前分离的正当性来源。
+
+### （未来加端时）为什么只有 `core` 跨端
 
 - **`ui`** — 桌面 hover/右键/多栏 vs 移动 tap/手势/单栏，交互模型不同。共享必然长出 `isMobile` 分支
 - **`systems`** — `cards`/`terminal`/`wheel` 是桌面特有；移动端"只读阅读"的定位下这层近乎为空
@@ -419,7 +419,6 @@ interface ConfiguredEventStream {
 ```
 core/markdown/                  parse · normalize · sanitize-ast-policy · outline · block schema
 web/src/features/report/render/ React renderer（端侧）
-mobile/src/features/report/render/
 ```
 
 **不要为一个不存在的用例放宽 `core` 的定义。** 将来实测两端 JSX 映射确实相同，再抽 `render-react` 包。
@@ -474,7 +473,8 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 | CSS Modules + `@layer` | **采用** | §3 病灶 6/7 |
 | Astryx | **采用，锁死精确版本** | spike：零构建配置、14/14 组件齐、tree-shaking 有效。但 **5.5 周 12 版、67% 带 breaking 且无 codemod** → 升级必须当独立任务排期 |
 | Astryx `<Theme>` 组件 | **不用** | 它往 `<html>` 写 `data-theme`，与自有主题机制撞车。只用它的组件，主题归 `app/theme` 管 |
-| `astryx.css` 单体 128.6 kB / 22.8 kB gzip | **接受（桌面）；mobile 待评估** | 与用量无关，mobile 端可能需要裁剪或不引 |
+| `astryx.css` 148.6 kB / 25.8 kB gzip | **接受** | 单体，与用量无关，`exports` 无组件级子路径，不可裁剪 |
+| Astryx Tooltip | **禁用** | 触屏 tap 无反应（源码 `if (!target.matches(':focus-visible')) return`），只有键盘可达 |
 
 ---
 
@@ -491,7 +491,7 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 | 4 | `styles/tokens`：token 定义 + **十类形状契约**（原写"六类"，实读 `calm-tokens.test.ts` 是十类，且单模标量内部还有 7 个形状各异的子族） | 所有样式 |
 | 5a | `core/events`：protocol / reducer / invalidation-plan（**不 import QueryClient**） | systems · app |
 | 5b | `systems/events`：`UnconfiguredEventStream` → `configure()` → `ConfiguredEventStream`（§4.7.1）。**冻结面必须含四项**：①handler 注册（`on`/`onConnectionState`）属于哪个 typestate、会不会漏第一帧；②`configure()` 本身**不得连接**（INV-APP-021）；③重复 `configure()` 的语义；④唯一 start ownership（INV-APP-020，typestate 管不了） | app |
-| 5c | `core/markdown`：`NormalizedMarkdownAst` · `parse()` 的返回/error 通道 · `sanitize-ast-policy` · `TextPolicy` · `HeadingIdPolicy` · `HeadingOutline`，**外加 §9.2 七项语义决定**（方言 / rawHTML / 文本规则 / depth / ID 策略与稳定性 / 重复标题 / malformed）。<br>★ report 的 block-to-heading 归组与 fallback 顶层项**不在此面**，属 `features/report` 的纯组合函数 | features/report · systems/fs-viewers · mobile |
+| 5c | `core/markdown`：`NormalizedMarkdownAst` · `parse()` 的返回/error 通道 · `sanitize-ast-policy` · `TextPolicy` · `HeadingIdPolicy` · `HeadingOutline`，**外加 §9 七项语义决定**（方言 / rawHTML / 文本规则 / depth / ID 策略与稳定性 / 重复标题 / malformed）。<br>★ report 的 block-to-heading 归组与 fallback 顶层项**不在此面**，属 `features/report` 的纯组合函数 | features/report · systems/fs-viewers |
 | 6 | `systems/cards/public.ts`：registry / lifecycle / host / resolver，**并重新导出完整接口类型**（见 §8 裁决 6） | app · features/wave · today |
 | 7a | `ui/directory-browser`：注入 `listDir` port 的通用浏览器 | schema-form · NewTaskForm · Wave 快捷创建 |
 | 7b | `ui/schema-form/fields/DirectoryField`：表单字段包装 | SchemaForm（由卡片 create schema 驱动） |
@@ -551,13 +551,9 @@ extractOutline(ast, { maxDepth, headingId, textPolicy }): HeadingOutline[]
 
 **升级 `systems/editor` 为 workspace 的触发条件**（写死，免得凭感觉）：出现第二个 JS 消费端 / 需要独立版本发布 / 依赖树或构建耗时需要隔离。
 
-## 9. 仍待定
+## 9. 阶段 1 内必须冻结的语义
 
-### 9.1 不阻塞阶段 1
 
-1. **mobile 是否引 Astryx** —— 128.6 kB 单体 CSS 与用量无关，移动端可能不划算。mobile 开工前定即可
-
-### 9.2 **必须在阶段 1 内冻结**（前一版误列为"不阻塞"，是矛盾）
 
 `core/markdown` 的语义细节**直接决定 `NormalizedMarkdownAst` 的类型与 `textPolicy` 的取值域**，
 而 §6 又要求阶段 1 冻结这两个接口——所以它们不可能留到冻结之后。必须一并定死：
