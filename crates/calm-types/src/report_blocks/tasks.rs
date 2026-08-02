@@ -9,6 +9,24 @@ use utoipa::ToSchema;
 pub const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
 pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 
+pub fn json_eq(a: &str, b: &str) -> bool {
+    match (
+        serde_json::from_str::<Value>(a),
+        serde_json::from_str::<Value>(b),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+pub fn opt_json_eq(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => json_eq(a, b),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GateInput {
@@ -335,10 +353,6 @@ pub fn project_task_declarations(
                     .get("declared_by")
                     .and_then(Value::as_str)
                     .is_none()
-                || block
-                    .payload
-                    .get("gate")
-                    .is_some_and(|gate| serde_json::from_value::<GateInput>(gate.clone()).is_err())
             {
                 continue;
             }
@@ -370,7 +384,7 @@ pub fn project_task_declarations(
                 .map(str::to_string),
             gate: payload
                 .get("gate")
-                .map(|gate| serde_json::from_value(gate.clone()).expect("gate checked above")),
+                .and_then(|gate| serde_json::from_value(gate.clone()).ok()),
             no_gate_reason: payload
                 .get("no_gate_reason")
                 .and_then(Value::as_str)

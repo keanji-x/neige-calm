@@ -14,7 +14,7 @@ use calm_server::auth::Principal;
 use calm_server::event::{Event, EventBus};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::wave_report_blocks::{
-    TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_UPSERT,
+    TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_MOVE, TOOL_REPORT_BLOCKS_UPSERT,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::wave_report_blocks::{
@@ -485,9 +485,27 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
     ] {
         let boot = new_boot().await;
         let (id, rev) = upsert(&boot, None, task("flight")).await;
-        sqlx::query("UPDATE tasks SET status='running',status_detail='owned',declared_by='user' WHERE wave_id=?1 AND key='flight'")
+        sqlx::query("UPDATE tasks SET status='running',status_detail='owned' WHERE wave_id=?1 AND key='flight'")
             .bind(boot.wave_id.as_str()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
         let before = task_bytes(&boot).await;
+        upsert(&boot, Some((&id, rev)), task("flight")).await;
+        assert_eq!(
+            task_bytes(&boot).await,
+            before,
+            "unchanged declaration bytes"
+        );
+        assert!(
+            !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
+            "unchanged declaration must not be stale"
+        );
+        let rev = read(&boot).await["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["id"] == id)
+            .unwrap()["rev"]
+            .as_u64()
+            .unwrap();
         let mut changed = task("flight");
         match field {
             "goal" => changed[field] = json!("new goal"),
@@ -510,6 +528,22 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             "{field}"
         );
     }
+}
+
+#[tokio::test]
+async fn legacy_canonical_gate_and_context_are_semantically_equal_to_block_declaration() {
+    let boot = new_boot().await;
+    let (id, rev) = upsert(&boot, None, task("flight")).await;
+    sqlx::query("UPDATE tasks SET status='running',origin='legacy',gate_json=?1,context_json=?2 WHERE wave_id=?3 AND key='flight'")
+        .bind(r#"{"steps":[{"name":"accept","cmd":"true"}]}"#)
+        .bind(r#"{"key":"flight"}"#)
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+    upsert(&boot, Some((&id, rev)), task("flight")).await;
+    assert!(
+        !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
+        "legacy JSON spelling must not create a stale diagnostic"
+    );
 }
 
 #[tokio::test]
@@ -626,6 +660,38 @@ async fn invalid_task_payload_deletes_pending_row_with_readable_reason() {
 }
 
 #[tokio::test]
+async fn malformed_gate_keeps_keyed_declaration_and_readable_payload_diagnostic() {
+    let boot = new_boot().await;
+    let (id, _) = upsert(&boot, None, task("invalid-gate")).await;
+    let (card_id, payload_json, bytes): (String, String, Vec<u8>) = sqlx::query_as(
+        "SELECT id,json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    let mut invalid = task("invalid-gate");
+    invalid["gate"] = Value::Null;
+    let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+    doc.upsert_block(Some(&id), "task", &render_fence("task", &invalid))
+        .unwrap();
+    let mut payload: calm_server::wave_report::WaveReportPayload =
+        serde_json::from_str(&payload_json).unwrap();
+    payload.body = doc.project().unwrap().1;
+    payload.blocks = Some(doc.blocks_snapshot().unwrap());
+    sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=?2 WHERE id=?3")
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(doc.to_bytes())
+        .bind(card_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    rebuild(&boot).await;
+    assert!(!keys(&boot).await.contains(&"invalid-gate".into()));
+    assert_diagnosed_on_both_reads(&boot, "invalid-gate", "gate").await;
+}
+
+#[tokio::test]
 async fn ceiling_rebuild_is_stable_and_only_new_candidate_is_rejected() {
     let boot = new_boot().await;
     sqlx::query("UPDATE waves SET spec_task_ceiling=2 WHERE id=?1")
@@ -651,6 +717,29 @@ async fn ceiling_rebuild_is_stable_and_only_new_candidate_is_rejected() {
         once,
         "two rebuilds must be byte-identical"
     );
+}
+
+#[tokio::test]
+async fn document_order_is_ceiling_priority_and_move_reprojects_pending_rows() {
+    let boot = new_boot().await;
+    sqlx::query("UPDATE waves SET spec_task_ceiling=1 WHERE id=?1")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    upsert(&boot, None, task("first")).await;
+    let (second, _) = upsert(&boot, None, task("second")).await;
+    assert_eq!(keys(&boot).await, ["first"]);
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_MOVE,
+        spec_identity(&boot),
+        json!({"id":second,"to_index":0,"if_doc_rev":read(&boot).await["docRev"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(keys(&boot).await, ["second"]);
+    assert_diagnosed_on_both_reads(&boot, "first", "ceiling of 1").await;
 }
 
 #[tokio::test]

@@ -57,7 +57,7 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
         goal: "old goal".into(),
         acceptance: None,
         gate: None,
-        no_gate_reason: Some("legacy".into()),
+        no_gate_reason: None,
         depends_on: vec![],
         context: json!({}),
         cwd: None,

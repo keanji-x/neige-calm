@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use calm_types::report_blocks::tasks::{
-    Diagnostic, TaskDeclaration, gate_rule_violations, unknown_deps,
+    Diagnostic, GateInput, TaskDeclaration, gate_rule_violations, json_eq, opt_json_eq,
+    unknown_deps,
 };
 use calm_types::report_links::parse_destination;
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,58 @@ type FrozenDeclarationRow = (
     String,
     i64,
     Option<String>,
-    Option<String>,
+    String,
+    String,
 );
+
+fn declaration_context_json(declaration: &TaskDeclaration, legacy: bool) -> Result<String> {
+    let mut context = declaration.context.clone();
+    if legacy && let Some(reason) = &declaration.no_gate_reason {
+        match &mut context {
+            serde_json::Value::Null => {
+                context = serde_json::json!({"no_gate_reason": reason});
+            }
+            serde_json::Value::Object(map) => {
+                map.insert(
+                    "no_gate_reason".into(),
+                    serde_json::Value::String(reason.clone()),
+                );
+            }
+            _ => {}
+        }
+    }
+    serde_json::to_string(&context)
+        .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))
+}
+
+fn context_eq(actual: &str, expected: &str, declaration: &TaskDeclaration, legacy: bool) -> bool {
+    if legacy
+        && declaration.no_gate_reason.is_none()
+        && declaration
+            .context
+            .as_object()
+            .is_some_and(|value| value.is_empty())
+        && serde_json::from_str::<serde_json::Value>(actual)
+            .is_ok_and(|value| value.is_null() || value.as_object().is_some_and(|v| v.is_empty()))
+    {
+        return true;
+    }
+    json_eq(actual, expected)
+}
+
+fn gate_eq(actual: &Option<String>, expected: &Option<GateInput>) -> Result<bool> {
+    if let Some(actual) = actual
+        && let Ok(actual) = serde_json::from_str::<GateInput>(actual)
+    {
+        return Ok(Some(actual) == *expected);
+    }
+    let expected = expected
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
+    Ok(opt_json_eq(actual, &expected))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -170,7 +221,7 @@ pub async fn evaluate_schedulability_tx(
     // in-flight declaration cannot consume capacity, and a terminal key can never
     // produce a new live row.
     let frozen: Vec<FrozenDeclarationRow> = sqlx::query_as(
-        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by FROM tasks WHERE wave_id=?1 AND status!='pending'",
+        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,origin FROM tasks WHERE wave_id=?1 AND status!='pending'",
     )
     .bind(wave_id)
     .fetch_all(&mut **tx)
@@ -190,29 +241,28 @@ pub async fn evaluate_schedulability_tx(
             priority,
             gate,
             declared_by,
+            origin,
         )) = frozen_by_key.get(&declaration.key)
         else {
             continue;
         };
-        let expected_context = serde_json::to_string(&declaration.context)
-            .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
-        let expected_depends = serde_json::to_string(&declaration.depends_on)
-            .map_err(|e| CalmError::Internal(format!("serialize task dependencies: {e}")))?;
-        let expected_gate = declaration
-            .gate
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
+        let legacy = origin == "legacy";
+        let expected_context = declaration_context_json(declaration, legacy)?;
+        let mut actual_depends: Vec<String> = serde_json::from_str(depends).unwrap_or_default();
+        actual_depends.sort();
+        actual_depends.dedup();
+        let mut expected_depends = declaration.depends_on.clone();
+        expected_depends.sort();
+        expected_depends.dedup();
         let changed = kind != &declaration.kind
             || goal != &declaration.goal
-            || context != &expected_context
+            || !context_eq(context, &expected_context, declaration, legacy)
             || acceptance != &declaration.acceptance
             || cwd != &declaration.cwd
-            || depends != &expected_depends
+            || actual_depends != expected_depends
             || priority != &declaration.priority
-            || gate != &expected_gate
-            || declared_by.as_deref() != Some(declaration.declared_by.as_str());
+            || !gate_eq(gate, &declaration.gate)?
+            || declared_by != &declaration.declared_by;
         if changed || !matches!(status.as_str(), "dispatched" | "running" | "verifying") {
             verdict.diagnostics.push(Diagnostic::new(
                 "key",
@@ -315,7 +365,7 @@ pub async fn project_tasks_tx(
     }
     let now = now_ms();
     for (declaration, verdict) in declarations.iter().zip(&verdicts) {
-        if !declaration.tombstone {
+        if verdict.schedulable && !declaration.tombstone {
             let adopted = sqlx::query(
                 "UPDATE tasks SET origin='block',updated_at_ms=?1 WHERE wave_id=?2 AND key=?3 AND origin='legacy' AND status!='pending'",
             )
