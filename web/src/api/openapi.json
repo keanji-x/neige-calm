@@ -6518,6 +6518,13 @@
             "format": "int64",
             "description": "Pass `Some(Some(ts))` to archive, `Some(None)` to unarchive,\nor omit (`None`) to leave alone."
           },
+          "automation_policy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Issue #985 — per-wave declaration policy. A present null resets to\nthe kernel default."
+          },
           "lifecycle": {
             "oneOf": [
               {
@@ -6550,6 +6557,14 @@
               "null"
             ],
             "format": "double"
+          },
+          "spec_task_ceiling": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #985 — maximum admitted spec-declared task inventory. A\npresent null resets to the kernel default."
           },
           "task_budget": {
             "type": [

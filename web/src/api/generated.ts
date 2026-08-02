@@ -2161,6 +2161,11 @@ export interface components {
              *     or omit (`None`) to leave alone.
              */
             archived_at?: number | null;
+            /**
+             * @description Issue #985 — per-wave declaration policy. A present null resets to
+             *     the kernel default.
+             */
+            automation_policy?: string | null;
             lifecycle?: null | components["schemas"]["WaveLifecycle"];
             /**
              * Format: int64
@@ -2176,6 +2181,12 @@ export interface components {
             require_task_gates?: boolean | null;
             /** Format: double */
             sort?: number | null;
+            /**
+             * Format: int64
+             * @description Issue #985 — maximum admitted spec-declared task inventory. A
+             *     present null resets to the kernel default.
+             */
+            spec_task_ceiling?: number | null;
             /**
              * Format: int64
              * @description Issue #644 — per-wave scheduler budget (`waves.task_budget`,

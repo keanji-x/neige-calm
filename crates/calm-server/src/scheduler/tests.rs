@@ -23,6 +23,8 @@ fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
         gate_pid_boot_id: None,
         running_deadline_ms: None,
         context_stale_at_ms: None,
+        declared_by: None,
+        origin: None,
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

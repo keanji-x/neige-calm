@@ -829,6 +829,17 @@ pub(crate) async fn update_wave(
     };
     let actor_id = actor.to_actor_id();
 
+    // Issue #985 — wave-level automation controls are human decisions.
+    // Reject non-user actors before entering the eventized write so neither
+    // the row nor a WaveUpdated event can land.
+    if (p.spec_task_ceiling.is_some() || p.automation_policy.is_some())
+        && !matches!(actor_id, ActorId::User)
+    {
+        return Err(CalmError::Forbidden(
+            "automation_policy and spec_task_ceiling are user-only".into(),
+        ));
+    }
+
     // Issue #145 — lifecycle transitions go through a typed state
     // machine. The validator runs *before* the write so an illegal
     // transition surfaces as `Forbidden` without persisting either
@@ -872,6 +883,20 @@ pub(crate) async fn update_wave(
             "task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
         )));
     }
+    if let Some(Some(ceiling)) = p.spec_task_ceiling
+        && ceiling < 0
+    {
+        return Err(CalmError::BadRequest(format!(
+            "spec_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
+        )));
+    }
+    if let Some(Some(policy)) = &p.automation_policy
+        && !matches!(policy.as_str(), "auto-declare" | "declare-and-wait")
+    {
+        return Err(CalmError::BadRequest(format!(
+            "automation_policy must be auto-declare or declare-and-wait (got {policy}); pass null to reset to the kernel default"
+        )));
+    }
 
     // If the patch is now entirely empty (lifecycle was a no-op and
     // no other field was supplied) there's nothing to write and
@@ -882,7 +907,9 @@ pub(crate) async fn update_wave(
         || p.archived_at.is_some()
         || p.pinned_at.is_some()
         || p.task_budget.is_some()
-        || p.require_task_gates.is_some();
+        || p.require_task_gates.is_some()
+        || p.spec_task_ceiling.is_some()
+        || p.automation_policy.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
         return Ok(Json(existing));
     }

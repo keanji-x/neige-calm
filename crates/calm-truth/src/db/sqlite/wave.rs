@@ -185,6 +185,20 @@ pub async fn wave_update_tx(
             .execute(&mut **tx)
             .await?;
     }
+    if let Some(ceiling) = p.spec_task_ceiling {
+        sqlx::query("UPDATE waves SET spec_task_ceiling = ?1 WHERE id = ?2")
+            .bind(ceiling)
+            .bind(w.id.as_str())
+            .execute(&mut **tx)
+            .await?;
+    }
+    if let Some(policy) = p.automation_policy {
+        sqlx::query("UPDATE waves SET automation_policy = ?1 WHERE id = ?2")
+            .bind(policy)
+            .bind(w.id.as_str())
+            .execute(&mut **tx)
+            .await?;
+    }
     Ok(w)
 }
 
