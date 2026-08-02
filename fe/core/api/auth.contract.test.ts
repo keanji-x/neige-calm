@@ -22,12 +22,15 @@ describe('core/api auth contract', () => {
     }
   });
 
-  it('freezes the whoami path and rejects malformed identities', () => {
+  it('freezes the whoami operation', () => {
     expect(whoamiOperation()).toMatchObject({ method: 'GET', path: '/api/auth/whoami' });
-    expect(loginOperation({ username: 'u', password: 'p' })).toMatchObject({
-      method: 'POST',
-      path: '/api/auth/login',
-      body: { username: 'u', password: 'p' },
-    });
+  });
+
+  it.each([
+    ['method', 'POST'],
+    ['path', '/api/auth/login'],
+    ['body', { username: 'u', password: 'p' }],
+  ] as const)('freezes the login operation: %s', (field, expected) => {
+    expect(loginOperation({ username: 'u', password: 'p' })[field]).toEqual(expected);
   });
 });

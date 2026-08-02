@@ -99,6 +99,13 @@ export default tseslint.config(
     },
   },
   {
+    files: ['core/api/generated/**/*.ts'],
+    rules: {
+      // Reason: ts-rs emits `unknown | null` verbatim; the generator is the single source of truth and generated output must not be hand-edited to satisfy lint.
+      '@typescript-eslint/no-redundant-type-constituents': 'off',
+    },
+  },
+  {
     files: ['core/markdown/**'],
     rules: {
       // Reason: core/markdown is the sole public adapter allowed to own markdown tooling.

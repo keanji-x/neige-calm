@@ -31,6 +31,18 @@ describe('core/api client behavior', () => {
     });
   });
 
+  it('classifies 401 without an injected unauthorized channel', async () => {
+    const result = await performApiRequest(
+      { send: () => Promise.resolve({ status: 401, statusText: 'Unauthorized', body: undefined }) },
+      { method: 'GET', path: '/api/auth/whoami', responseSchema: z.unknown() },
+    );
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { kind: 'unauthorized', status: 401 },
+    });
+  });
+
   it('keeps non-401 HTTP and thrown transport failures out of unauthorized', async () => {
     const notify = vi.fn();
     const channel = { subscribe: vi.fn(), notify };

@@ -30,7 +30,7 @@ export type AgentProvider = "codex" | "claude";
  */
 export type ArtifactRef = string;
 
-export type Card = { id: CardId, wave_id: WaveId,
+export type Card = { id: CardId, wave_id: WaveId, 
 /**
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
  * plugin-provided cards (the canonical MCP Apps resource URI). The
@@ -39,13 +39,13 @@ export type Card = { id: CardId, wave_id: WaveId,
  * before the M4 cut-over and in server-side perms/manifest enforcement
  * — see `docs/architecture/terminology-glossary.md` (plugin card kind).
  */
-kind: string, sort: number,
+kind: string, sort: number, 
 /**
  * Opaque JSON blob — ts-rs would otherwise emit `unknown` via the
  * `serde-json-impl` feature, but we pin it explicitly so a future
  * feature-flag change can't silently widen / narrow the surface.
  */
-payload: unknown, title?: string, runtime?: CardRuntimeView,
+payload: unknown, title?: string, runtime?: CardRuntimeView, 
 /**
  * Issue #229 PR A — system-card guard. `true` for user-facing cards
  * (the default; all pre-#229 rows backfill via the column DEFAULT in
@@ -118,7 +118,7 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
-export type Cove = { id: CoveId, name: string, color: string, sort: number,
+export type Cove = { id: CoveId, name: string, color: string, sort: number, 
 /**
  * Issue #175 — `User` for sidebar-visible coves, `System` for the
  * internal singleton that hosts the default Today terminal's wave.
@@ -149,11 +149,11 @@ kind: CoveKind, created_at: number, updated_at: number, };
  * later reconcile. The compact integer also keeps `/folders/:id` URLs
  * readable.
  */
-export type CoveFolder = { id: number, cove_id: CoveId, path: string,
+export type CoveFolder = { id: number, cove_id: CoveId, path: string, 
 /**
  * Normalized `owner/name` from the folder's Git origin, when resolvable.
  */
-repo_identity: string | null,
+repo_identity: string | null, 
 /**
  * Unix epoch milliseconds of the most recent identity probe.
  */
@@ -240,14 +240,14 @@ export type EditAuthor = "spec" | "user" | "kernel" | "plugin";
  * are emitted directly; tuple variants over a named struct (e.g.
  * `CoveUpdated(Cove)`) pull in the struct's own export.
  */
-export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor,
+export type Event = { "ev": "cove.updated", "data": Cove } | { "ev": "cove.deleted", "data": { id: CoveId, } } | { "ev": "wave.updated", "data": WaveUpdatedPayload } | { "ev": "wave.deleted", "data": { id: WaveId, cove_id: CoveId, } } | { "ev": "wave.lifecycle_changed", "data": { id: WaveId, cove_id: CoveId, from: WaveLifecycle, to: WaveLifecycle, agent_message?: string, } } | { "ev": "card.added", "data": Card } | { "ev": "card.updated", "data": Card } | { "ev": "card.deleted", "data": { id: CardId, wave_id: WaveId, } } | { "ev": "runtime.started", "data": { runtime_id: string, card_id: string, kind: WorkerSessionKind, agent_provider: AgentProvider | null, status: WorkerSessionState, } } | { "ev": "runtime.status_changed", "data": { runtime_id: string, card_id: string, old_status: WorkerSessionState, new_status: WorkerSessionState, } } | { "ev": "runtime.superseded", "data": { old_runtime_id: string, new_runtime_id: string, card_id: string, } } | { "ev": "harness.item.added", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, item_db_id: number, item_uuid: string | null, item_type: string | null, turn_id: string | null, method: string, } } | { "ev": "harness.phase.changed", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, old_phase: HarnessPhaseTag, new_phase: HarnessPhaseTag, } } | { "ev": "harness.transcript.cleared", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, } } | { "ev": "harness.user_message.enqueued", "data": { runtime_id: string, card_id: CardId, wave_id: WaveId, char_count: number, } } | { "ev": "wave.report_edited", "data": { wave_id: WaveId, card_id: CardId, author: EditAuthor, 
 /**
  * Submitting plugin id when `author == EditAuthor::Plugin`
  * (#955 §5.3); `None` for every other author.
  * `#[serde(default)]` keeps pre-#955 history rows replayable
  * (field absent on old events ⇒ `None`).
  */
-author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string,
+author_plugin_id?: string, edit_id: string, summary_before: string, summary_after: string, body_before: string, body_after: string, agent_message?: string, } } | { "ev": "overlay.set", "data": Overlay } | { "ev": "overlay.deleted", "data": { plugin_id: string, entity_kind: string, entity_id: string, kind: string, } } | { "ev": "terminal.deleted", "data": { id: string, card_id: CardId, } } | { "ev": "plugin.state", "data": { id: string, state: string, 
 /**
  * Crash reason / initialize-rejected message, surfaced to the WS so
  * the UI can show it without a separate `/log` fetch. `None` for
@@ -261,64 +261,64 @@ author_plugin_id?: string, edit_id: string, summary_before: string, summary_afte
  * ts-rs would emit `last_error: string | null` which would diverge
  * from what the server actually serializes.)
  */
-last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "workflow.registered", "data": { pluginId: string, workflowId: string, } } | { "ev": "codex.hook", "data": {
+last_error?: string, } } | { "ev": "plugin.tool.registered", "data": { plugin_id: string, tool_name: string, } } | { "ev": "workflow.registered", "data": { pluginId: string, workflowId: string, } } | { "ev": "codex.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
-card_id: CardId,
+card_id: CardId, 
 /**
  * Snake_case discriminator: `hook.codex.<event_name>` (e.g.
  * `hook.codex.pre_tool_use`). Derived from `hook_event_name` in
  * the codex payload; defaults to `hook.codex.unknown` if missing.
  */
-kind: string,
+kind: string, 
 /**
  * Stable hook ingest key used by the server and spec harness to
  * suppress duplicate lifecycle posts.
  */
-hook_idempotency_key: string,
+hook_idempotency_key: string, 
 /**
  * Original codex hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "claude.hook", "data": {
+payload: unknown, } } | { "ev": "claude.hook", "data": { 
 /**
  * Owning card id — topic key `card:<card_id>`.
  */
-card_id: CardId,
+card_id: CardId, 
 /**
  * Hook discriminator supplied by the future Claude hook route.
  */
-kind: string,
+kind: string, 
 /**
  * Stable hook ingest key used by the server and spec harness to
  * suppress duplicate lifecycle posts.
  */
-hook_idempotency_key: string,
+hook_idempotency_key: string, 
 /**
  * Original Claude hook JSON, verbatim.
  */
-payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { task_id: string, refs: Array<TaskContextRef>, } } | { "ev": "task.context_advanced", "data": { task_id: string, verdict: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { wave_id: WaveId, proposal_id: string,
+payload: unknown, } } | { "ev": "codex.worker_requested", "data": { idempotency_key: string, goal: string, context: unknown, acceptance_criteria?: string, agent_message?: string, } } | { "ev": "terminal.worker_requested", "data": { idempotency_key: string, cmd: string, cwd?: string, agent_message?: string, } } | { "ev": "task.completed", "data": { idempotency_key: string, result: unknown, artifacts: Array<ArtifactRef>, agent_message?: string, } } | { "ev": "task.failed", "data": { idempotency_key: string, reason: string, agent_message?: string, } } | { "ev": "plan.updated", "data": { wave_id: WaveId, changed_keys: Array<string>, agent_message?: string, } } | { "ev": "task.dispatched", "data": { idempotency_key: string, kind: string, agent_message?: string, } } | { "ev": "task.context_frozen", "data": { task_id: string, refs: Array<TaskContextRef>, } } | { "ev": "task.context_advanced", "data": { task_id: string, verdict: string, } } | { "ev": "workspace.leased", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, path: string, } } | { "ev": "workspace.released", "data": { wave_id: WaveId, card_id: CardId, lease_id: string, } } | { "ev": "forge.pr.merged", "data": { wave_id: WaveId, subject: ForgeMergeSubject, head_sha: string, merge_sha: string, } } | { "ev": "review.round", "data": { wave_id: WaveId, subject: ReviewSubject, head_sha: string | null, n: number, cap: number, converged: boolean, channels: Array<ChannelVerdict>, root_cause: string | null, idempotency_key: string, } } | { "ev": "ratify.requested", "data": { wave_id: WaveId, reason: string, } } | { "ev": "ratify.resolved", "data": { wave_id: WaveId, decision: RatifyDecision, } } | { "ev": "proposal.submitted", "data": { wave_id: WaveId, proposal_id: string, 
 /**
  * Submitting plugin. Injected kernel-side from the callback
  * connection (never trusted from plugin input) and
  * cross-checked against the envelope actor by `role_gate`.
  */
-plugin_id: string,
+plugin_id: string, 
 /**
  * Proposal subject kind — `"report"` is the only accepted
  * value today; this field is the wire's single extension
  * point (design D2).
  */
-subject_kind: string,
+subject_kind: string, 
 /**
  * Opaque Automerge canonical-heads token of the snapshot the
  * plugin proposed against (`ReportDoc::doc_heads`).
  */
-base_doc_heads: string, ops: Array<ProposalOp>,
+base_doc_heads: string, ops: Array<ProposalOp>, 
 /**
  * Human-facing rationale rendered in the adjudication UI.
  */
-note: string,
+note: string, 
 /**
  * Pending-scoped idempotency key: while a `(plugin, wave,
  * idem_key)` proposal is pending, re-submits return the
@@ -370,15 +370,15 @@ export type HarnessItem = { id: number, runtime_id: string, card_id: CardId, wav
 
 export type HarnessPhaseTag = "pending_thread_start" | "idle" | "issuing_turn" | "issuing_interrupt" | "turn_running" | "turn_completed" | "resumed" | "wedged";
 
-export type Overlay = { id: string, plugin_id: string,
+export type Overlay = { id: string, plugin_id: string, 
 /**
  * `"wave"` or `"card"`.
  */
-entity_kind: string, entity_id: string,
+entity_kind: string, entity_id: string, 
 /**
  * Plugin-defined string. Kernel does not interpret.
  */
-kind: string,
+kind: string, 
 /**
  * Opaque JSON blob — see `Card.payload` for the rationale on the
  * explicit `unknown` override.
@@ -444,7 +444,7 @@ export type ReviewSubject = { phase: string, slice_id: string, pr_number: number
  */
 export type TaskContextRef = { wave_id: WaveId, block_id: string, rev: number, hash: string, };
 
-export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null,
+export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**
  * Issue #145 — the wave's lifecycle state. **Required** (no
  * `Option`): every wave-creating code path must seed
@@ -457,7 +457,7 @@ export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, a
  * forcing a fixture rewrite — matches the DB DEFAULT in
  * migration 0012.
  */
-lifecycle: WaveLifecycle,
+lifecycle: WaveLifecycle, 
 /**
  * Issue #250 PR 2 — the working directory the wave's spec daemon
  * runs in. **Required at the route layer**: `POST /api/waves`
@@ -472,15 +472,15 @@ lifecycle: WaveLifecycle,
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */
-cwd: string,
+cwd: string, 
 /**
  * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
  */
-workflow_id: string | null,
+workflow_id: string | null, 
 /**
  * Server-owned structural marker. Public wave creation cannot set this.
  */
-purpose: string | null,
+purpose: string | null, 
 /**
  * Issue #891 — input JSON for the bound workflow, validated against the
  * descriptor's `input_schema` at create time and persisted verbatim; the
@@ -488,7 +488,7 @@ purpose: string | null,
  * `wave.updated` replays as `None` (same pattern as `workflow_id`).
  * Explicit `unknown` override — see `Card.payload` for the rationale.
  */
-workflow_input: unknown,
+workflow_input: unknown, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -575,7 +575,7 @@ export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "
  * frontend derives sections from `body` by splitting on H1 headings;
  * the storage layer does not impose a section vocabulary.
  */
-export type WaveReportPayload = {
+export type WaveReportPayload = { 
 /**
  * Tier A persistence contract — see
  * `WAVE_REPORT_PAYLOAD_SCHEMA_VERSION` in calm-truth's
@@ -585,26 +585,26 @@ export type WaveReportPayload = {
  * upgraded at the next persist via the CRDT-layer migrator
  * (`ReportDoc::ensure_blocks_layout`).
  */
-schemaVersion: number,
+schemaVersion: number, 
 /**
  * Document-wide optimistic-concurrency revision. This is mirrored
  * from the authoritative CRDT root and increments after every
  * successful report persist (whole-document or block-level).
  */
-docRev: number,
+docRev: number, 
 /**
  * One-line summary used by sidebars / wave-list previews. Empty
  * string is valid (means "spec agent has not produced a summary
  * yet"); the field stays a required `String` per the
  * [[required-over-option]] rule.
  */
-summary: string,
+summary: string, 
 /**
  * Markdown source. Sections are derived at render time by
  * splitting at H1 (`^# `) headings; the kernel does not interpret
  * the structure.
  */
-body: string,
+body: string, 
 /**
  * Block mirror of the authoritative CRDT block map (#960 PR2).
  * Since schema v2 the CRDT `blocks`/`order` layout is the source
@@ -621,7 +621,7 @@ blocks?: Array<ReportBlock> | null, };
  * optional adjacent field for #597. Older persisted rows that lack the field
  * deserialize with `None`.
  */
-export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null,
+export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
 /**
  * Issue #145 — the wave's lifecycle state. **Required** (no
  * `Option`): every wave-creating code path must seed
@@ -634,7 +634,7 @@ export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: 
  * forcing a fixture rewrite — matches the DB DEFAULT in
  * migration 0012.
  */
-lifecycle: WaveLifecycle,
+lifecycle: WaveLifecycle, 
 /**
  * Issue #250 PR 2 — the working directory the wave's spec daemon
  * runs in. **Required at the route layer**: `POST /api/waves`
@@ -649,15 +649,15 @@ lifecycle: WaveLifecycle,
  * Production wave-create paths inside this binary always stamp a
  * real path — the migration default is the "old data only" fallback.
  */
-cwd: string,
+cwd: string, 
 /**
  * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
  */
-workflow_id: string | null,
+workflow_id: string | null, 
 /**
  * Server-owned structural marker. Public wave creation cannot set this.
  */
-purpose: string | null,
+purpose: string | null, 
 /**
  * Issue #891 — input JSON for the bound workflow, validated against the
  * descriptor's `input_schema` at create time and persisted verbatim; the
@@ -665,7 +665,7 @@ purpose: string | null,
  * `wave.updated` replays as `None` (same pattern as `workflow_id`).
  * Explicit `unknown` override — see `Card.payload` for the rationale.
  */
-workflow_input: unknown,
+workflow_input: unknown, 
 /**
  * Issue #250 PR 2 — unix-ms timestamp the wave most recently
  * entered a terminal lifecycle state (Done / Canceled / Failed),
