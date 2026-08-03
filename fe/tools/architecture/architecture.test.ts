@@ -272,7 +272,7 @@ describe('duplication manifest on the application tree', () => {
     for (const [shape, mustReject] of publicSymbolShapes) {
       const fixtureRoot = resolve(shapeFixtures, 'public-symbol', shape);
       const errors = checkDuplicationManifest(fixtureRoot);
-      expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(mustReject);
+      expect(errors.some((error) => error.includes('must be defined only in')), shape).toBe(mustReject);
       if (!mustReject) {
         const fixtureSource = sourceFilesUnder(fixtureRoot).map((file) => readFileSync(file, 'utf8')).join('\n');
         expect(fixtureSource, `${shape} must contain the managed symbol`).toMatch(/\bSchemaForm\b/);
@@ -293,7 +293,7 @@ describe('duplication manifest on the application tree', () => {
     for (const [shape, mustReject] of consumerImportShapes) {
       const fixtureRoot = resolve(shapeFixtures, 'consumer-import', shape);
       const errors = checkDuplicationManifest(fixtureRoot);
-      expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(mustReject);
+      expect(errors.some((error) => error.includes('consumers must import')), shape).toBe(mustReject);
       if (!mustReject) {
         const fixtureSource = sourceFilesUnder(fixtureRoot).map((file) => readFileSync(file, 'utf8')).join('\n');
         expect(fixtureSource, `${shape} must contain the managed symbol`).toMatch(/\bSchemaForm\b/);

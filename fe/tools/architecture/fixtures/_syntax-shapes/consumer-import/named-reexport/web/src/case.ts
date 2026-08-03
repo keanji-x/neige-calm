@@ -1,1 +1,1 @@
-export { SchemaForm } from './other';
+export { SchemaForm as LocalForm } from './other';
