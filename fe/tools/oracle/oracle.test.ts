@@ -18,9 +18,9 @@ function run(rule: string, kind: 'positive' | 'negative') {
 
 const cases = [
   'document-shape', 'required-fields', 'enum-kind', 'enum-runtime_layer', 'enum-verification_owner', 'enum-test_tier', 'enum-migration',
-  'id-format', 'id-kind-prefix', 'id-unique', 'owner-slice', 'runtime-owner-layer', 'skipped-fields', 'skipped-owner',
+  'id-format', 'id-kind-prefix', 'id-unique', 'former-id-format', 'former-id-unique', 'owner-slice', 'runtime-owner-layer', 'skipped-fields', 'skipped-owner',
   'non-skipped-reason', 'non-skipped-owner', 'intentional-omission-boolean', 'source-location',
-  'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
+  'source-anchor', 'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
 ] as const;
 
 describe('oracle rule fixtures', () => {
@@ -49,6 +49,7 @@ describe('oracle rule fixtures', () => {
   });
   const fieldRules: Record<(typeof ORACLE_YAML_FIELDS)[number], string> = {
     id: 'id-format',
+    former_id: 'former-id-format',
     kind: 'enum-kind',
     family: 'required-fields',
     statement: 'statement-nonempty',

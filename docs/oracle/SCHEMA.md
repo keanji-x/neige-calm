@@ -4,6 +4,7 @@
 
 ```yaml
 - id: INV-DIALOG-001          # <KIND>-<域大写>-<三位序号>，KIND ∈ {INV, CAP, GATE}
+  former_id: GATE-DIALOG-001  # 可选；仅 id 改名时保留退休的旧稳定句柄
   kind: invariant             # invariant | capability | gate
   family: dialog-focus        # 同族条目共享，用于分组
   statement: >                # 一句话，陈述句，说"必须/不得"，不写"应该"
@@ -37,6 +38,12 @@
 - **invariant** — 踩坑教训、排序依赖、竞态防护、"故意不做"。**丢了会重新踩坑**
 - **capability** — 用户可达的能力：一个操作、一个快捷键、一个错误态/空态。**丢了功能就少了**
 - **gate** — 机器闸门：类型级穷尽、lint 规则、token 形状契约。**丢了防线就没了**
+
+## `former_id`
+
+`former_id` 是可选字段，仅用于条目因语义纠正而改名时保存旧的外部稳定句柄。值必须符合
+与 `id` 相同的格式、不得等于当前 `id`，并与全部当前 `id` 及其他 `former_id` 一起参与
+全局唯一性检查。退休句柄永不复用；从未改名的条目不得添加此字段。
 
 ## 多位置引用文法
 

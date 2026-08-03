@@ -17,13 +17,13 @@ export interface ValidateOptions {
 
 export const ORACLE_RULES = Object.freeze([
   'document-shape', 'required-fields', 'enum-kind', 'enum-runtime_layer', 'enum-verification_owner', 'enum-test_tier',
-  'enum-migration', 'id-format', 'id-kind-prefix', 'id-unique', 'owner-slice', 'runtime-owner-layer',
+  'enum-migration', 'id-format', 'id-kind-prefix', 'id-unique', 'former-id-format', 'former-id-unique', 'owner-slice', 'runtime-owner-layer',
   'skipped-fields', 'skipped-owner', 'non-skipped-reason', 'non-skipped-owner', 'intentional-omission-boolean',
-  'source-location', 'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
+  'source-location', 'source-anchor', 'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
 ] as const);
 
 export const ORACLE_YAML_FIELDS = Object.freeze([
-  'id', 'kind', 'family', 'statement', 'why', 'source', 'authoritative_test', 'owner_slice',
+  'id', 'former_id', 'kind', 'family', 'statement', 'why', 'source', 'authoritative_test', 'owner_slice',
   'intentional_omission', 'runtime_layer', 'verification_owner', 'test_tier', 'migration', 'skip_reason',
 ] as const);
 
@@ -40,6 +40,12 @@ const KIND_PREFIX: Record<string, string> = { invariant: 'INV', capability: 'CAP
 const ID_PATTERN = /^(?:E2E-)?(INV|CAP|GATE)-(?:[A-Z0-9]+-)+\d{3}$/;
 const LOCATION_PATTERN = /^([^\s:]+):(\d+)(?:-(\d+))?$/;
 
+interface SourceLocation {
+  path: string;
+  start: number;
+  end: number;
+}
+
 function strings(value: unknown): string[] {
   if (typeof value === 'string') return [value];
   if (Array.isArray(value)) return value.flatMap(strings);
@@ -53,9 +59,8 @@ function canonicalOwners(path: string): Set<string> {
   return new Set(strings(document).filter((value) => /^(?:core|ui|systems|features|app|styles|none)\//.test(value)));
 }
 
-function locationErrors(value: unknown, repoRoot: string): string[] {
-  if (typeof value !== 'string') return ['must be a string location'];
-  const errors: string[] = [];
+function parseLocations(value: string): Array<SourceLocation | string> {
+  const parsed: Array<SourceLocation | string> = [];
   for (const group of value.trim().split(/\s*;\s*|\s+\+\s+|\s+/)) {
     const [first, ...additionalRanges] = group.split(',');
     const firstMatch = LOCATION_PATTERN.exec(first);
@@ -64,11 +69,23 @@ function locationErrors(value: unknown, repoRoot: string): string[] {
       : [first, ...additionalRanges];
     for (const location of locations) {
       const match = LOCATION_PATTERN.exec(location);
-      if (!match) {
-        errors.push(`invalid location: ${location}`);
+      parsed.push(match
+        ? { path: match[1], start: Number(match[2]), end: Number(match[3] ?? match[2]) }
+        : `invalid location: ${location}`);
+    }
+  }
+  return parsed;
+}
+
+function locationErrors(value: unknown, repoRoot: string): string[] {
+  if (typeof value !== 'string') return ['must be a string location'];
+  const errors: string[] = [];
+  for (const location of parseLocations(value)) {
+      if (typeof location === 'string') {
+        errors.push(location);
         continue;
       }
-      const [, path, startText, endText] = match;
+      const { path, start, end } = location;
       const target = resolve(repoRoot, path);
       const relativeTarget = relative(repoRoot, target);
       if (isAbsolute(path) || relativeTarget === '..' || relativeTarget.startsWith(`..${sep}`) || isAbsolute(relativeTarget)) {
@@ -81,12 +98,42 @@ function locationErrors(value: unknown, repoRoot: string): string[] {
       }
       const contents = readFileSync(target, 'utf8');
       const lineCount = contents === '' ? 0 : contents.replace(/\r?\n$/, '').split(/\r?\n/).length;
-      const start = Number(startText);
-      const end = Number(endText ?? startText);
       if (start < 1 || end < start || end > lineCount) errors.push(`line range ${start}-${end} outside ${path} (1-${lineCount})`);
-    }
   }
   return errors;
+}
+
+function statementIdentifiers(statement: unknown): string[] {
+  if (typeof statement !== 'string') return [];
+  const identifiers = new Set<string>();
+  const addMatches = (text: string, pattern: RegExp): void => {
+    for (const match of text.matchAll(pattern)) identifiers.add(match[0]);
+  };
+  for (const code of statement.matchAll(/`([^`]+)`/g)) {
+    addMatches(code[1], /aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$-]*/g);
+  }
+  addMatches(statement, /aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:[_-][\w$-]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g);
+  return [...identifiers];
+}
+
+function sourceAnchorError(source: unknown, statement: unknown, repoRoot: string): string | null {
+  if (typeof source !== 'string') return null;
+  const identifiers = statementIdentifiers(statement);
+  if (identifiers.length === 0) return null;
+  const locations = parseLocations(source);
+  if (locations.some((location) => typeof location === 'string')) return null;
+  const citedText = locations.map((location) => {
+    if (typeof location === 'string') return '';
+    const lines = readFileSync(resolve(repoRoot, location.path), 'utf8').split(/\r?\n/);
+    return lines.slice(location.start - 1, location.end).join('\n');
+  }).join('\n');
+  if (identifiers.some((identifier) => {
+    const variants = identifier.startsWith('.') || identifier.startsWith('#')
+      ? [identifier, identifier.slice(1)]
+      : [identifier];
+    return variants.some((variant) => citedText.includes(variant));
+  })) return null;
+  return `source ranges contain none of the statement identifiers: ${identifiers.join(', ')}`;
 }
 
 export function validateOracle(options: ValidateOptions): Violation[] {
@@ -94,7 +141,20 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   const files = readdirSync(options.oracleDir).filter((file) => file.endsWith('.yaml') && file !== 'owner-aliases.yaml').sort();
   const violations: Violation[] = [];
   const seen = new Map<string, string>();
+  const retired = new Map<string, string>();
+  const currentIds = new Set<string>();
   const add = (file: string, id: string, rule: string, message: string): void => { violations.push({ file, id, rule, message }); };
+
+  for (const file of files) {
+    const value: unknown = parse(readFileSync(resolve(options.oracleDir, file), 'utf8'));
+    if (!Array.isArray(value)) continue;
+    for (const raw of value) {
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        const currentId = (raw as Record<string, unknown>).id;
+        if (typeof currentId === 'string') currentIds.add(currentId);
+      }
+    }
+  }
 
   for (const file of files) {
     const value: unknown = parse(readFileSync(resolve(options.oracleDir, file), 'utf8'));
@@ -121,6 +181,18 @@ export function validateOracle(options: ValidateOptions): Violation[] {
         if (previous) add(file, id, 'id-unique', `duplicate also found in ${previous}`);
         else seen.set(entry.id, file);
       }
+      if (Object.hasOwn(entry, 'former_id')) {
+        if (typeof entry.former_id !== 'string' || !ID_PATTERN.test(entry.former_id) || entry.former_id === entry.id) {
+          add(file, id, 'former-id-format', 'former_id must be a different, valid retired id');
+        } else {
+          const previous = retired.get(entry.former_id);
+          if (currentIds.has(entry.former_id) || previous) {
+            add(file, id, 'former-id-unique', previous
+              ? `former_id duplicate also found in ${previous}`
+              : 'former_id collides with a current id');
+          } else retired.set(entry.former_id, file);
+        }
+      }
       if (typeof entry.owner_slice !== 'string' || !owners.has(entry.owner_slice)) add(file, id, 'owner-slice', 'owner_slice is not canonical');
       if (typeof entry.owner_slice === 'string' && ENUMS.runtime_layer.includes(entry.runtime_layer) && entry.runtime_layer !== entry.owner_slice.split('/')[0]) add(file, id, 'runtime-owner-layer', 'runtime_layer differs from owner_slice prefix');
       if (entry.migration === 'skipped') {
@@ -133,6 +205,10 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       if (typeof entry.intentional_omission !== 'boolean') add(file, id, 'intentional-omission-boolean', 'intentional_omission must be boolean');
       const sourceErrors = locationErrors(entry.source, options.repoRoot);
       if (sourceErrors.length) add(file, id, 'source-location', sourceErrors.join('; '));
+      else {
+        const anchorError = sourceAnchorError(entry.source, entry.statement, options.repoRoot);
+        if (anchorError) add(file, id, 'source-anchor', anchorError);
+      }
       if (entry.authoritative_test !== 'NONE') {
         const testErrors = locationErrors(entry.authoritative_test, options.repoRoot);
         if (testErrors.length) add(file, id, 'authoritative-test-location', testErrors.join('; '));
