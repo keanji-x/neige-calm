@@ -9,6 +9,7 @@ import { checkCoreNoJsx } from './check-core-no-jsx.mjs';
 import { checkEslintHygiene } from './check-eslint-hygiene.mjs';
 import { checkTopLevel } from './check-top-level.mjs';
 import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
+import { duplicationManifest } from './duplication-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfiguration;
@@ -179,6 +180,13 @@ describe('architecture fixtures', () => {
 });
 
 describe('duplication manifest on the application tree', () => {
+  it('retains every oracle contract with an explicit merge obligation', () => {
+    const idsWithOracleMergeObligations = ['INV-DUP-004', 'INV-DUP-005', 'INV-DUP-006', 'INV-DUP-008'];
+    const idsWithManifestObligations = duplicationManifest
+      .filter((entry) => entry.mergeObligations?.length)
+      .map((entry) => entry.id);
+    expect(idsWithManifestObligations).toEqual(idsWithOracleMergeObligations);
+  });
   it('keeps INV-DUP-001..010 implementations and consumers canonical', () => {
     expect(checkDuplicationManifest(resolve(import.meta.dirname, '../..'))).toEqual([]);
   });
