@@ -34,6 +34,7 @@ describe('oracle rule fixtures', () => {
     const parsed: unknown = parse(example ?? '');
     expect(Array.isArray(parsed) && parsed.length === 1 && parsed[0] && typeof parsed[0] === 'object').toBe(true);
     const schemaFields = new Set(Object.keys((parsed as Record<string, unknown>[])[0] ?? {}));
+    // skip_reason is specified by the SCHEMA.md prose discipline, not by the non-skipped example entry.
     const documentedElsewhere = new Set(['skip_reason']);
     const guardedExampleFields = new Set(ORACLE_YAML_FIELDS.filter((field) => !documentedElsewhere.has(field)));
     expect(schemaFields).toEqual(guardedExampleFields);
