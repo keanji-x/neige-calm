@@ -1,1 +1,2 @@
 export const BadHook = () => <div data-card-id="42" />;
+export const BadCase = () => <div data-NC-card="42" />;

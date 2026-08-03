@@ -39,11 +39,10 @@ export function auditDataAttributes(code, file) {
     file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const violations = [];
   const checkName = (rawName) => {
-    const name = rawName.toLowerCase();
-    if (name.startsWith('data-') && name !== 'data-theme' && name !== 'data-testid'
-      && !/^data-nc-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name)
-      && !LEGACY_DATA_ATTRIBUTES.has(`${file}:${name}`)) {
-      violations.push(`${file}: nonconforming ${name}; use data-nc-<kebab-case>`);
+    if (rawName.toLowerCase().startsWith('data-') && rawName !== 'data-theme' && rawName !== 'data-testid'
+      && !/^data-nc-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(rawName)
+      && !LEGACY_DATA_ATTRIBUTES.has(`${file}:${rawName}`)) {
+      violations.push(`${file}: nonconforming ${rawName}; use data-nc-<kebab-case>`);
     }
   };
   const visit = (node) => {
