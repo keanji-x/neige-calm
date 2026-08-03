@@ -654,7 +654,7 @@ kind 头，这条依赖必须写出来）。
 | 级 | 机制 |
 |---|---|
 | **第 1 级** | 机械检测：逐元组重解析 + 比对 `content_hash`。**不允许漏报**（精确形式见 §5.7）|
-| **第 2 级** | LLM 裁决（切片 4）：把「`b_1f3a` 从 X 变成了 Y」**递给任务所在 wave 的 spec**（不是被编辑 wave 的 —— 这也是闭包不得跨 cove 的原因），返回值只有 `{ verdict, rationale }`。**缺席 / 解析失败 / 超时一律按 `material`** |
+| **第 2 级** | LLM 裁决（切片 4）：把「`b_1f3a` 从 X 变成了 Y」**递给任务所在 wave 的 spec**（不是被编辑 wave 的 —— 这也是闭包不得跨 cove 的原因），返回值只有 `{ verdict: "material" \| "immaterial", rationale }`（封闭二值）。**缺席 / 解析失败 / 超时一律按 `material`** |
 | **第 3 级** | 人只在**实质变更**处出现（诊断 + UI）。**判 material 后不自动重做** |
 
 **第 2 级的路由通道**：dispatcher 的 `WaveReportEdited` 分支必须从「单 wave
