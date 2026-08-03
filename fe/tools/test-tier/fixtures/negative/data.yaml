@@ -1,0 +1,8 @@
+- id: GATE-TIER-FIXTURE-101
+  migration: migrated
+  test_tier: browser
+  authoritative_test: fe/tools/test-tier/fixtures/negative/wrong-browser.test.ts:1
+- id: GATE-TIER-FIXTURE-102
+  migration: migrated
+  test_tier: static
+  authoritative_test: fe/tools/test-tier/fixtures/negative/orphan.spec.ts:1

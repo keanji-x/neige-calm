@@ -1,0 +1,12 @@
+- id: GATE-TIER-FIXTURE-001
+  migration: migrated
+  test_tier: browser
+  authoritative_test: fe/tools/test-tier/fixtures/positive/browser.browser.test.ts:1
+- id: GATE-TIER-FIXTURE-002
+  migration: migrated
+  test_tier: static
+  authoritative_test: fe/tools/test-tier/fixtures/positive/static.test.ts:1
+- id: GATE-TIER-FIXTURE-003
+  migration: pending
+  test_tier: browser
+  authoritative_test: fe/tools/test-tier/fixtures/positive/static.test.ts:1

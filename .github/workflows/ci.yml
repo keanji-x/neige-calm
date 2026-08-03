@@ -393,6 +393,70 @@ jobs:
       - name: npm run test
         run: npm run test
 
+  fe-browser:
+    name: fe-browser (vitest + chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: fe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Install Chromium with system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: npm run test:browser
+        run: npm run test:browser
+
+  fe-mutation:
+    name: fe-mutation (tracked evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+    defaults:
+      run:
+        working-directory: fe
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Run mutation evidence selected by PR target intersection
+        if: github.event_name == 'pull_request'
+        run: npm run test:mutation -- --base "$BASE_SHA" --report /tmp/mutation-report.json
+
+      - name: Run all mutation evidence on main
+        if: github.event_name == 'push'
+        run: npm run test:mutation -- --report /tmp/mutation-report.json
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: /tmp/mutation-report.json
+          if-no-files-found: warn
+
   # #903 — the rust-dependent half of the `web (build + test + a11y)` split
   # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).
   # It builds the replay bin the Playwright setup hook needs. Deliberately
