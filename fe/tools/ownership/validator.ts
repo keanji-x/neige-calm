@@ -9,7 +9,7 @@ export interface OwnershipEntry {
   readonly?: boolean;
 }
 
-export interface ChangeRequest { path: string; reason: string }
+export interface ChangeRequest { path: string; reason: string; issue: string }
 export interface OwnershipViolation { rule: string; message: string }
 
 function clean(path: string): string {
@@ -73,7 +73,8 @@ export function validateOwnership(
   for (const path of changedPaths.map(clean).sort()) {
     const frozen = entries.filter((entry) => entry.readonly === true && entryMatches(entry, path));
     if (frozen.length === 0) continue;
-    const approved = changeRequests.some((request) => request.reason.trim() !== '' && (path === clean(request.path) || path.startsWith(`${clean(request.path)}/`)));
+    const approved = changeRequests.some((request) => request.reason.trim() !== ''
+      && request.issue.trim() !== '' && path === clean(request.path));
     if (!approved) violations.push({ rule: 'readonly-change-request', message: `${path} changed without a change request` });
   }
   return violations;

@@ -35,11 +35,17 @@ describe('ownership fixtures', () => {
 
   it('requires a corresponding change request for readonly changes', () => {
     const manifest = entries('readonly', 'positive');
-    const requests: ChangeRequest[] = [{ path: 'fe/web/src/styles', reason: 'approved token update' }];
+    const requests: ChangeRequest[] = [{ path: 'fe/web/src/styles/tokens.css', reason: 'approved token update', issue: '#997' }];
     expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], requests)).toEqual([]);
     expect(validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css'])).toEqual([
       { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
     ]);
+    const prefixRequest: ChangeRequest[] = [{ path: 'fe/web/src/styles', reason: 'broad request', issue: '#997' }];
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], prefixRequest)).toHaveLength(1);
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/other.css'], requests)).toHaveLength(1);
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], [
+      { path: 'fe/web/src/styles/tokens.css', reason: 'missing issue', issue: '' },
+    ])).toHaveLength(1);
   });
 
 });
