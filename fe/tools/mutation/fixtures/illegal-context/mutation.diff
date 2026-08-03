@@ -1,0 +1,13 @@
+diff --git a/tools/mutation/fixtures/illegal-context/source.ts b/tools/mutation/fixtures/illegal-context/source.ts
+index 1111111..2222222 100644
+--- a/tools/mutation/fixtures/illegal-context/source.ts
++++ b/tools/mutation/fixtures/illegal-context/source.ts
+@@ -1,7 +1,7 @@
+ // fixture line one
+ // fixture line two
+ // fixture line three
+-export const guarded = true;
++export const guarded = false;
+ 
+ /** fixture context */
+export const tail = true;

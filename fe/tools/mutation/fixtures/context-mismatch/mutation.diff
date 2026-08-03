@@ -1,0 +1,7 @@
+diff --git a/tools/mutation/fixtures/context-mismatch/source.ts b/tools/mutation/fixtures/context-mismatch/source.ts
+index 66be2d2..47a3132 100644
+--- a/tools/mutation/fixtures/context-mismatch/source.ts
++++ b/tools/mutation/fixtures/context-mismatch/source.ts
+@@ -1 +1 @@
+-export const guarded = missing;
++export const guarded = false;

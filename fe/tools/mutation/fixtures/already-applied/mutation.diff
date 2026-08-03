@@ -1,0 +1,7 @@
+diff --git a/tools/mutation/fixtures/already-applied/source.ts b/tools/mutation/fixtures/already-applied/source.ts
+index 47a3132..66be2d2 100644
+--- a/tools/mutation/fixtures/already-applied/source.ts
++++ b/tools/mutation/fixtures/already-applied/source.ts
+@@ -1 +1 @@
+-export const guarded = false;
++export const guarded = true;
