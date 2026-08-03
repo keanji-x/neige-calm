@@ -36,7 +36,14 @@ function rightmostCompound(selector: string): string {
 
 function classes(selector: string): string[] {
   const found: string[] = [];
+  let square = 0;
+  let round = 0;
   for (let index = 0; index < selector.length; index += 1) {
+    if (selector[index] === '[') { square += 1; continue; }
+    if (selector[index] === ']') { square -= 1; continue; }
+    if (selector[index] === '(') { round += 1; continue; }
+    if (selector[index] === ')') { round -= 1; continue; }
+    if (square !== 0 || round !== 0) continue;
     if (selector[index] !== '.') continue;
     let cursor = index + 1;
     let name = '';

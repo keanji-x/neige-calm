@@ -25,6 +25,8 @@ describe('CSS AST fixtures', () => {
   it('limits each exception selector by its rightmost compound', () => {
     expect(auditLayeredCss(read('unlayered-cm/positive/case.css'), order, true)).toEqual([]);
     expect(auditLayeredCss(read('unlayered-cm/negative/case.css'), order, true)).toHaveLength(1);
+    expect(auditLayeredCss('.application-panel[data-target=".cm-editor"] {}', order, true)).toHaveLength(1);
+    expect(auditLayeredCss('.application-panel:not(.cm-editor) {}', order, true)).toHaveLength(1);
   });
 
   it('compares extracted global classes with the manifest in both directions', () => {
