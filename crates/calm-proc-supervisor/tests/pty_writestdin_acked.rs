@@ -66,7 +66,6 @@ async fn pty_writestdin_acked() {
                     break;
                 }
             }
-            ControlReply::Exited { .. } if contains(&output, b"got:hello") => break,
             other => panic!("unexpected attach frame before got output: {other:?}"),
         }
     }
