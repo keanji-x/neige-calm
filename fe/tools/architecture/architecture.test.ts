@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
 import { cruise as dependencyCruise, type IConfiguration } from 'dependency-cruiser';
 import { ESLint } from 'eslint';
 import ts from 'typescript';
@@ -179,27 +178,6 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 }
 
 describe('architecture fixtures', () => {
-  it('does not rely on fixture directories that Git cannot checkout', () => {
-    const trackedFiles = execFileSync('git', ['ls-files', '--', 'tools/architecture/fixtures'], {
-      cwd: resolve(import.meta.dirname, '../..'),
-      encoding: 'utf8',
-    }).trim().split('\n').filter(Boolean);
-    const trackedDirectories = new Set(trackedFiles.flatMap((file) => {
-      const parts = file.split('/');
-      return parts.slice(1, -1).map((_, index) => parts.slice(0, index + 2).join('/'));
-    }));
-    const fixtureDirectories = (function directoriesUnder(root: string): string[] {
-      return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
-        if (!entry.isDirectory()) return [];
-        const directory = resolve(root, entry.name);
-        return [directory, ...directoriesUnder(directory)];
-      });
-    })(fixtures).map((directory) => relative(resolve(import.meta.dirname, '../..'), directory).replaceAll('\\', '/'));
-
-    expect(fixtureDirectories.filter((directory) => !trackedDirectories.has(directory)))
-      .toEqual([]);
-  });
-
   const expectedViolation = new Map<string, string>([
     ['dup-inv-001', 'INV-DUP-001'],
     ['dup-inv-002', 'INV-DUP-002'],

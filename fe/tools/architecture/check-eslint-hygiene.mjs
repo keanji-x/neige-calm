@@ -58,6 +58,9 @@ export async function checkEslintHygiene(rootPath = '.') {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const errors = await checkEslintHygiene();
+  const { checkTrackedFixtures } = await import('./check-tracked-fixtures.mjs');
+  const fixtureError = checkTrackedFixtures();
+  if (fixtureError) errors.push(fixtureError);
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;
 }
