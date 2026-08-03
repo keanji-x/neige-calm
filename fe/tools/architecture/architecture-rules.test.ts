@@ -146,6 +146,35 @@ describe('architecture/no-calm-key-outside-core-keys', () => {
   }
 });
 
+describe('architecture/no-class-dom-query', () => {
+  for (const fixture of [
+    'dom-selector/query-selector.ts',
+    'dom-selector/query-selector-all.ts',
+    'dom-selector/closest.ts',
+    'dom-selector/matches.ts',
+    'dom-selector/get-elements-by-class-name.ts',
+    'dom-selector/dynamic.ts',
+    'dom-selector/template.ts',
+  ] as const) {
+    it(`rejects ${fixture}`, async () => {
+      expect(await lintFixture('no-class-dom-query', fixture)).toHaveLength(1);
+    });
+  }
+  it('allows an exact third-party selector with an application container prefix', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/allowlisted.ts', {
+      allowlist: [{ file: 'rule-fixtures/dom-selector/allowlisted.ts', selector: '.file-viewer-code-wrap .cm-scroller' }],
+    })).toHaveLength(0);
+  });
+  it('rejects an allowlist entry without a container prefix', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/bare-allowlisted.ts', {
+      allowlist: [{ file: 'rule-fixtures/dom-selector/bare-allowlisted.ts', selector: '.cm-scroller' }],
+    })).toHaveLength(1);
+  });
+  it('accepts a static data selector', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/data-selector.ts')).toHaveLength(0);
+  });
+});
+
 describe('architecture/no-create-context-outside-allowlist', () => {
   const rejected = [
     ['create-context-named.ts', 'createContext'],

@@ -14,3 +14,10 @@ import a key factory or accept the key through an injected port. A deliberately
 split constant such as `'calm' + ':x'` is a known escape: recognizing it safely
 requires constant folding/data-flow, while banning all concatenation would be
 unrelated to this namespace contract.
+
+`architecture/no-class-dom-query` parses static selectors used by
+`querySelector(All)`, `closest`, and `matches`; every class selector is banned,
+and dynamic selectors fail closed. `getElementsByClassName` is always banned.
+Use stable `data-*` hooks. Third-party DOM may use an exact `{ file, selector }`
+exception only when the selector includes an application container prefix,
+such as `.file-viewer-code-wrap .cm-scroller`.

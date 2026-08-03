@@ -51,6 +51,7 @@ export default tseslint.config(
       'architecture/no-module-runtime-state': 'error',
       'architecture/no-direct-persistence': 'error',
       'architecture/no-calm-key-outside-core-keys': 'error',
+      'architecture/no-class-dom-query': 'error',
     },
   },
   {
