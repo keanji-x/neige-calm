@@ -117,6 +117,13 @@ export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef =
   }));
 }
 
+export function ownershipCommitsForEvent(
+  eventName: string | undefined,
+  load: () => readonly OwnershipCommit[],
+): readonly OwnershipCommit[] {
+  return eventName === 'push' ? [] : load();
+}
+
 export function resolveOwnershipBase(repoRoot: string, injectedBase = process.env.OWNERSHIP_BASE_SHA ?? '', headRef = 'HEAD'): string {
   if (injectedBase !== '') {
     try {
@@ -140,9 +147,4 @@ export function resolveOwnershipBase(repoRoot: string, injectedBase = process.en
   } catch {
     throw new Error('cannot resolve ownership audit base ref origin/main; run: git fetch origin main');
   }
-}
-
-export function auditRepositoryOwnership(repoRoot: string, entries: readonly OwnershipEntry[]): OwnershipViolation[] {
-  const base = resolveOwnershipBase(repoRoot);
-  return validateOwnership(entries, repositoryFiles(repoRoot), gitOwnershipCommits(repoRoot, base));
 }

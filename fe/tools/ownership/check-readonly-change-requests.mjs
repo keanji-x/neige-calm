@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const validatorPath = './validator.ts';
-const { gitOwnershipCommits, repositoryFiles, resolveOwnershipBase, validateOwnership } = await import(validatorPath);
+const { gitOwnershipCommits, ownershipCommitsForEvent, repositoryFiles, resolveOwnershipBase, validateOwnership } = await import(validatorPath);
 const { auditStyleRepository } = await import('../styles/repository-check.mjs');
 const { ownershipManifest } = await import('../../ownership-manifest.mjs');
 
@@ -18,15 +18,15 @@ function git(...args) {
 try {
   const feRoot = join(import.meta.dirname, '../..');
   const base = resolveOwnershipBase(join(feRoot, '..'));
-  const commits = process.env.OWNERSHIP_EVENT_NAME === 'push'
-    ? []
-    : gitOwnershipCommits(join(feRoot, '..'), base);
+  const commits = ownershipCommitsForEvent(process.env.OWNERSHIP_EVENT_NAME,
+    () => gitOwnershipCommits(join(feRoot, '..'), base));
   const repositoryViolations = validateOwnership(
     ownershipManifest, repositoryFiles(join(feRoot, '..')), commits,
   );
   if (repositoryViolations.length) {
     throw new Error(`repository ownership audit failed:\n${repositoryViolations
-      .map(/** @param {{message: string}} violation */ (violation) => violation.message).join('\n')}`);
+      .map(/** @param {{message: string}} violation */ (violation) => violation.message).join('\n')}\n`
+      + 'if the commit is already on main, run `git fetch origin main`');
   }
   console.log(`ownership manifest: ${ownershipManifest.length} entries, complete coverage, no overlaps`);
   const styleViolations = auditStyleRepository(join(import.meta.dirname, '../..'));

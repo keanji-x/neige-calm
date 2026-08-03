@@ -1,8 +1,11 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
-import { describe, expect, it } from 'vitest';
-import { OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, repositoryFiles, validateOwnership, type OwnershipEntry } from './validator';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, ownershipCommitsForEvent, repositoryFiles, validateOwnership,
+  type OwnershipCommit, type OwnershipEntry,
+} from './validator';
 import { ownershipManifest } from '../../ownership-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
@@ -154,5 +157,21 @@ describe('P8b2 ownership exit', () => {
     expect(validateOwnership(ownershipManifest, [], [{
       sha: 'mutation', message: 'weaken gate', paths: ['fe/core/state/types.ts'],
     }]).some(({ rule }) => rule === 'readonly-change-trailer')).toBe(true);
+  });
+});
+
+describe('ownership event routing', () => {
+  const commits: readonly OwnershipCommit[] = [{ sha: 'abc123', message: 'change', paths: ['frozen.txt'] }];
+
+  it('skips loading trailer-range commits for push events', () => {
+    const load = vi.fn(() => commits);
+    expect(ownershipCommitsForEvent('push', load)).toEqual([]);
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it.each(['pull_request', undefined])('loads trailer-range commits for %s events', (eventName) => {
+    const load = vi.fn(() => commits);
+    expect(ownershipCommitsForEvent(eventName, load)).toBe(commits);
+    expect(load).toHaveBeenCalledOnce();
   });
 });
