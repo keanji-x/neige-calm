@@ -15,6 +15,7 @@ export interface ValidateOptions {
   repoRoot: string;
   oracleDir: string;
   ownerAliasesPath: string;
+  anchorNonePath?: string;
 }
 
 export const ORACLE_RULES = Object.freeze([
@@ -235,6 +236,10 @@ function sourceAnchorError(source: unknown, statement: unknown, repoRoot: string
 
 export function validateOracle(options: ValidateOptions): Violation[] {
   const owners = canonicalOwners(options.ownerAliasesPath);
+  const anchorNoneIds = options.anchorNonePath && existsSync(options.anchorNonePath)
+    ? new Set([...readFileSync(options.anchorNonePath, 'utf8').matchAll(/`((?:E2E-)?(?:INV|CAP|GATE)-(?:[A-Z0-9]+-)+\d{3})`/g)]
+      .map((match) => match[1]!))
+    : new Set<string>();
   const files = readdirSync(options.oracleDir).filter((file) => file.endsWith('.yaml') && file !== 'owner-aliases.yaml').sort();
   const violations: Violation[] = [];
   const seen = new Map<string, string>();
@@ -304,7 +309,7 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       if (sourceErrors.length) add(file, id, 'source-location', sourceErrors.join('; '));
       else {
         const anchorError = sourceAnchorError(entry.source, entry.statement, options.repoRoot);
-        if (anchorError) add(file, id, 'source-anchor', anchorError);
+        if (anchorError && !anchorNoneIds.has(id)) add(file, id, 'source-anchor', anchorError);
       }
       if (entry.authoritative_test !== 'NONE') {
         const testErrors = locationErrors(entry.authoritative_test, options.repoRoot);
@@ -322,5 +327,6 @@ export function defaultOracleOptions(repoRoot: string): ValidateOptions {
     repoRoot,
     oracleDir: resolve(repoRoot, 'docs/oracle'),
     ownerAliasesPath: resolve(repoRoot, 'docs/oracle/owner-aliases.yaml'),
+    anchorNonePath: resolve(repoRoot, 'docs/oracle/ANCHOR-NONE.md'),
   };
 }
