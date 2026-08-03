@@ -115,8 +115,10 @@ describe('P8b2 ownership exit', () => {
     'fe/mock/.gitkeep',
     'fe/web/index.html',
     'fe/tools/ownership/validator.ts',
-    'fe/web/dist/index.html',
-  ].slice(0, 3));
+    'fe/module-file-inventory.yaml',
+    'fe/ownership-manifest.mjs',
+    'fe/stylelint.config.js',
+  ]);
 
   it('covers an injected tracked repository file list exactly once without prefix overlap', () => {
     expect(validateOwnership(ownershipManifest, trackedRepositoryFiles)).toEqual([]);
@@ -125,6 +127,7 @@ describe('P8b2 ownership exit', () => {
   it('includes mock, web bootstrap, and tooling in repository coverage', () => {
     expect(trackedRepositoryFiles).toEqual(expect.arrayContaining([
       'fe/mock/.gitkeep', 'fe/web/index.html', 'fe/tools/ownership/validator.ts',
+      'fe/module-file-inventory.yaml', 'fe/ownership-manifest.mjs', 'fe/stylelint.config.js',
     ]));
   });
 

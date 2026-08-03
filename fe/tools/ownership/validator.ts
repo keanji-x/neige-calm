@@ -93,12 +93,14 @@ export function validateOwnership(
 }
 
 export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
-  const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', 'fe/core', 'fe/mock', 'fe/web', 'fe/tools'], {
+  const roots = ['fe/core', 'fe/mock', 'fe/web', 'fe/tools'];
+  const controls = ['fe/module-file-inventory.yaml', 'fe/ownership-manifest.mjs', 'fe/stylelint.config.js'];
+  const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', ...roots, ...controls], {
     cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).split(/\r?\n/).filter(Boolean);
   return files.map((path) => posix.normalize(clean(path)))
-    .filter((path) => ['fe/core', 'fe/mock', 'fe/web', 'fe/tools']
-      .some((directory) => path === directory || path.startsWith(`${directory}/`)))
+    .filter((path) => controls.includes(path)
+      || roots.some((directory) => path === directory || path.startsWith(`${directory}/`)))
     .sort();
 }
 
