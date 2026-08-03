@@ -223,7 +223,6 @@ function sourceAnchorResult(source: unknown, statement: unknown, repoRoot: strin
   const empty: AnchorResult = { error: null, subtype: null, unsupported: [] };
   if (typeof source !== 'string') return empty;
   const identifiers = extractStatementIdentifiers(statement).filter((identifier) => !ignoredIdentifiers.has(identifier));
-  if (identifiers.length === 0) return empty;
   const locations = parseLocations(source);
   if (locations.some((location) => typeof location === 'string')) return empty;
   const sourceFiles = new Map<string, { contents: string; anchors: Map<string, Set<number>> | null }>();
@@ -237,6 +236,7 @@ function sourceAnchorResult(source: unknown, statement: unknown, repoRoot: strin
   const unsupported = locations.filter((location): location is SourceLocation =>
     typeof location !== 'string' && sourceFiles.get(location.path)?.anchors === null)
     .map((location) => `${location.path}:${location.start}${location.end === location.start ? '' : `-${location.end}`}`);
+  if (identifiers.length === 0) return { error: null, subtype: null, unsupported };
   if (supportedFiles.length === 0) return { error: null, subtype: null, unsupported };
   const present = identifiers.filter((identifier) => supportedFiles.some((file) => file.anchors!.get(identifier)!.size > 0));
   if (present.length === 0) return {
@@ -384,12 +384,14 @@ export function validateOracle(options: ValidateOptions): Violation[] {
     add('<baseline>', '<count>', 'source-anchor',
       `baseline count must equal actual count: declared ${baselineRows.length}, distinct valid ${baseline.size}, actual ${actualBaseline.size}`);
   }
-  const unsupportedIds = new Set([...actualUnsupported.keys(), ...registeredUnsupported.keys()]);
-  for (const id of unsupportedIds) {
-    const actual = actualUnsupported.get(id) ?? [];
-    const registered = registeredUnsupported.get(id) ?? [];
-    if (JSON.stringify(actual) !== JSON.stringify(registered)) {
-      add('<unsupported>', id, 'source-anchor', `unsupported locations changed: expected [${registered.join(', ')}], actual [${actual.join(', ')}]`);
+  if (options.anchorUnsupportedPath) {
+    const unsupportedIds = new Set([...actualUnsupported.keys(), ...registeredUnsupported.keys()]);
+    for (const id of unsupportedIds) {
+      const actual = actualUnsupported.get(id) ?? [];
+      const registered = registeredUnsupported.get(id) ?? [];
+      if (JSON.stringify(actual) !== JSON.stringify(registered)) {
+        add('<unsupported>', id, 'source-anchor', `unsupported locations changed: expected [${registered.join(', ')}], actual [${actual.join(', ')}]`);
+      }
     }
   }
   return violations.sort((a, b) => `${a.id}\0${a.rule}\0${a.file}`.localeCompare(`${b.id}\0${b.rule}\0${b.file}`));

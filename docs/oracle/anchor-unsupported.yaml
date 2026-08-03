@@ -135,5 +135,61 @@
       "web/src/ui/README.md:180-183",
       "web/src/ui/README.md:286-289"
     ]
+  },
+  {
+    "id": "GATE-UI-LAYER-072",
+    "locations": ["web/src/ui/README.md:71-75"]
+  },
+  {
+    "id": "GATE-UI-LAYER-073",
+    "locations": ["web/src/ui/README.md:65-67"]
+  },
+  {
+    "id": "GATE-UI-LAYER-074",
+    "locations": ["web/src/ui/README.md:79-81"]
+  },
+  {
+    "id": "GATE-UI-LAYER-075",
+    "locations": ["web/src/ui/README.md:76-78"]
+  },
+  {
+    "id": "GATE-UI-LAYER-077",
+    "locations": ["web/src/ui/README.md:68-70"]
+  },
+  {
+    "id": "INV-A11Y-001",
+    "locations": ["docs/a11y-contract.md:11-14"]
+  },
+  {
+    "id": "INV-A11Y-037",
+    "locations": ["docs/a11y-contract.md:67"]
+  },
+  {
+    "id": "INV-A11Y-058",
+    "locations": ["docs/a11y-contract.md:111"]
+  },
+  {
+    "id": "INV-A11Y-095",
+    "locations": ["docs/a11y-contract.md:219"]
+  },
+  {
+    "id": "INV-A11Y-097",
+    "locations": ["docs/a11y-contract.md:223"]
+  },
+  {
+    "id": "INV-A11Y-098",
+    "locations": ["docs/a11y-contract.md:225"]
+  },
+  {
+    "id": "INV-A11Y-106",
+    "locations": ["docs/a11y-contract.md:262"]
+  },
+  {
+    "id": "INV-EDITOR-001",
+    "locations": ["web/src/editor/README.md:19-21"]
+  },
+  {
+    "id": "INV-UI-LAYER-081",
+    "locations": ["web/src/ui/README.md:42-44"]
   }
 ]
