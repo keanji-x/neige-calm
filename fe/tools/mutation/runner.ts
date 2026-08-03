@@ -1,9 +1,10 @@
 export interface MutationEntry {
   mutation_id: string;
-  oracle_ids: string[];
+  defends: string[];
   target: string;
   patch: string;
   expected_red: string[];
+  selection_paths: string[];
   why_more_than_one: string;
 }
 
@@ -14,6 +15,8 @@ export interface MutationRunResult {
   reverse_exit_code: number | null;
   target_changed_after_apply: boolean;
   target_restored_after_revert: boolean;
+  test_run_exit_code: number | null;
+  test_infrastructure_errors: readonly string[];
 }
 
 export type MutationErrorCode =
@@ -22,6 +25,8 @@ export type MutationErrorCode =
   | 'patch-check-failed'
   | 'patch-apply-failed'
   | 'patch-noop'
+  | 'test-run-failed'
+  | 'test-infrastructure-failed'
   | 'dead-mutation'
   | 'under-red'
   | 'over-red'
@@ -33,14 +38,17 @@ export interface MutationVerdict {
   errors: Array<{ code: MutationErrorCode; test_ids: string[] }>;
 }
 
-export const declaredFixtureSources = Object.freeze([
-  'tools/mutation/fixtures/already-applied/source.ts',
-  'tools/mutation/fixtures/context-mismatch/source.ts',
-  'tools/mutation/fixtures/crlf-mismatch/source.ts',
-  'tools/mutation/fixtures/empty-hunk/source.ts',
-  'tools/mutation/fixtures/illegal-context/source.ts',
-  'tools/mutation/fixtures/missing-target/source.ts',
-  'tools/mutation/fixtures/valid/source.ts',
+export const gitApplyDirectory = 'fe';
+
+export const declaredFixtureDirectories = Object.freeze([
+  'tools/mutation/fixtures/already-applied',
+  'tools/mutation/fixtures/context-mismatch',
+  'tools/mutation/fixtures/crlf-mismatch',
+  'tools/mutation/fixtures/empty-hunk',
+  'tools/mutation/fixtures/illegal-context',
+  'tools/mutation/fixtures/missing-target',
+  'tools/mutation/fixtures/mode-only',
+  'tools/mutation/fixtures/valid',
 ] as const);
 
 function duplicates(values: readonly string[]): string[] {
@@ -74,35 +82,71 @@ export function parsePatchTarget(patch: string): string {
   return oldHeader;
 }
 
-export function parseFailedTestIds(json: string): string[] {
+export function parseVitestReport(json: string): { failedTestIds: string[]; infrastructureErrors: string[] } {
   const report: unknown = JSON.parse(json);
   if (typeof report !== 'object' || report === null || !Array.isArray((report as { testResults?: unknown }).testResults)) {
     throw new Error('vitest JSON report has no testResults array');
   }
-  return (report as { testResults: unknown[] }).testResults.flatMap((file) => {
+  const infrastructureErrors: string[] = [];
+  const reportFields = report as { unhandledErrors?: unknown; error?: unknown };
+  if (Array.isArray(reportFields.unhandledErrors) && reportFields.unhandledErrors.length > 0) infrastructureErrors.push('global-unhandled-error');
+  if (reportFields.error !== undefined && reportFields.error !== null) infrastructureErrors.push('global-reporter-error');
+  const failedTestIds = (report as { testResults: unknown[] }).testResults.flatMap((file, index) => {
     if (typeof file !== 'object' || file === null || !Array.isArray((file as { assertionResults?: unknown }).assertionResults)) {
       throw new Error('vitest JSON test result has no assertionResults array');
     }
-    return (file as { assertionResults: unknown[] }).assertionResults.flatMap((test) => {
+    const typedFile = file as { assertionResults: unknown[]; status?: unknown; message?: unknown; name?: unknown };
+    const failed = typedFile.assertionResults.flatMap((test) => {
       if (typeof test !== 'object' || test === null) throw new Error('vitest JSON assertion is not an object');
       const { status, fullName } = test as { status?: unknown; fullName?: unknown };
       if (typeof status !== 'string' || typeof fullName !== 'string') throw new Error('vitest JSON assertion lacks status/fullName');
       return status === 'failed' ? [fullName] : [];
     });
+    if (typedFile.status === 'failed' && failed.length === 0) {
+      infrastructureErrors.push(typeof typedFile.name === 'string' ? typedFile.name : `testResults[${index}]`);
+    }
+    if (typeof typedFile.message === 'string' && typedFile.message.trim() !== '') {
+      infrastructureErrors.push(typeof typedFile.name === 'string' ? typedFile.name : `testResults[${index}]`);
+    }
+    return failed;
   }).sort();
+  return { failedTestIds, infrastructureErrors: [...new Set(infrastructureErrors)].sort() };
 }
 
-export function validateManifest(entries: MutationEntry[]): void {
+export function parseFailedTestIds(json: string): string[] {
+  return parseVitestReport(json).failedTestIds;
+}
+
+export function validateManifest(
+  entries: MutationEntry[],
+  namespaces: { oracle: ReadonlySet<string>; 'arch-rule': ReadonlySet<string> },
+): void {
   const ids = new Set<string>();
   for (const entry of entries) {
     if (ids.has(entry.mutation_id)) throw new Error(`duplicate mutation_id: ${entry.mutation_id}`);
     ids.add(entry.mutation_id);
     if (parsePatchTarget(entry.patch) !== entry.target) throw new Error(`${entry.mutation_id}: patch target differs from target`);
-    if (!Array.isArray(entry.oracle_ids) || entry.oracle_ids.length === 0 || !Array.isArray(entry.expected_red)
+    if (!Array.isArray(entry.defends) || entry.defends.length === 0 || !Array.isArray(entry.expected_red)
+      || !Array.isArray(entry.selection_paths) || entry.selection_paths.length === 0
       || typeof entry.why_more_than_one !== 'string' || entry.why_more_than_one.trim() === '') {
       throw new Error(`${entry.mutation_id}: incomplete structured manifest entry`);
     }
+    for (const defended of entry.defends) {
+      if (typeof defended !== 'string') throw new Error(`${entry.mutation_id}: invalid defends item`);
+      const separator = defended.indexOf(':');
+      const namespace = defended.slice(0, separator) as keyof typeof namespaces;
+      const id = defended.slice(separator + 1);
+      if (separator < 1 || id === '' || !Object.hasOwn(namespaces, namespace) || !namespaces[namespace].has(id)) {
+        throw new Error(`${entry.mutation_id}: unknown defended contract: ${defended}`);
+      }
+    }
   }
+}
+
+export function selectedEntries(entries: MutationEntry[], changedPaths: readonly string[]): MutationEntry[] {
+  const changed = new Set(changedPaths);
+  if (changedPaths.some((path) => path.startsWith('fe/tools/mutation/'))) return [...entries];
+  return entries.filter((entry) => [`fe/${entry.target}`, ...entry.selection_paths].some((path) => changed.has(path)));
 }
 
 export function equalPathSets(declared: readonly string[], tracked: readonly string[]): boolean {
@@ -112,7 +156,9 @@ export function equalPathSets(declared: readonly string[], tracked: readonly str
 }
 
 export function trackedFixtureSetMatches(gitLsFilesOutput: string): boolean {
-  return equalPathSets(declaredFixtureSources, gitLsFilesOutput.split('\n').filter(Boolean));
+  const trackedDirectories = [...new Set(gitLsFilesOutput.split('\n').filter((path) => path.split('/').length > 4)
+    .map((path) => path.split('/').slice(0, 4).join('/')))];
+  return equalPathSets(declaredFixtureDirectories, trackedDirectories);
 }
 
 export function judgeMutation(entry: MutationEntry, result: MutationRunResult): MutationVerdict {
@@ -127,13 +173,17 @@ export function judgeMutation(entry: MutationEntry, result: MutationRunResult): 
   if (result.reverse_exit_code !== null && result.reverse_exit_code !== 0) errors.push({ code: 'revert-failed', test_ids: [] });
   if (!result.target_restored_after_revert) errors.push({ code: 'revert-drift', test_ids: [] });
 
+  if (result.test_run_exit_code !== 0 && result.test_run_exit_code !== 1) errors.push({ code: 'test-run-failed', test_ids: [] });
+  if (result.test_infrastructure_errors.length > 0) errors.push({ code: 'test-infrastructure-failed', test_ids: [...result.test_infrastructure_errors] });
   const expected = new Set(entry.expected_red);
   const actual = new Set(result.failed_test_ids);
-  if (actual.size === 0) errors.push({ code: 'dead-mutation', test_ids: [] });
-  const missing = difference(expected, actual);
-  const extra = difference(actual, expected);
-  if (missing.length > 0 && actual.size > 0) errors.push({ code: 'under-red', test_ids: missing });
-  if (extra.length > 0) errors.push({ code: 'over-red', test_ids: extra });
+  if (!errors.some(({ code }) => code === 'test-run-failed' || code === 'test-infrastructure-failed')) {
+    if (actual.size === 0) errors.push({ code: 'dead-mutation', test_ids: [] });
+    const missing = difference(expected, actual);
+    const extra = difference(actual, expected);
+    if (missing.length > 0 && actual.size > 0) errors.push({ code: 'under-red', test_ids: missing });
+    if (extra.length > 0) errors.push({ code: 'over-red', test_ids: extra });
+  }
   return { ok: errors.length === 0, errors };
 }
 
