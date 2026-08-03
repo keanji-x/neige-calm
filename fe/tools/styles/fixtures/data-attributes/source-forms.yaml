@@ -1,0 +1,21 @@
+jsx-literal-attribute:
+  source: 'const node = <div data-card-id="1" />;'
+  outcome: violation
+jsx-spread-literal-key:
+  source: "const node = <div {...{'data-card-id': '1'}} />;"
+  outcome: violation
+object-literal-key:
+  source: "const props = {'data-card-id': '1'};"
+  outcome: violation
+computed-static-string:
+  source: "const props = {['data-card-id']: '1'};"
+  outcome: violation
+computed-static-template:
+  source: "const props = {[`data-card-id`]: '1'};"
+  outcome: violation
+set-attribute-static-string:
+  source: "element.setAttribute('data-card-id', '1');"
+  outcome: violation
+variable-key-known-escape:
+  source: "const key = 'data-card-id'; const props = {[key]: '1'};"
+  outcome: known-escape

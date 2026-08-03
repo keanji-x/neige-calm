@@ -42,3 +42,4 @@ external/
 # Local mutation harnesses; they edit tracked files transiently and must not ship.
 /scratchpad/mut-p0c.sh
 /scratchpad/mut-p8a.sh
+/scratchpad/mut-p8b2.sh

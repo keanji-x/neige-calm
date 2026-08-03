@@ -6,12 +6,3 @@ entry.owner:
   entries: [{ path: fe/core/model.ts, type: file, owner: 1, readonly: false }]
 entry.readonly:
   entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: "false" }]
-changeRequest.path:
-  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
-  requests: [{ path: 1, reason: approved, issue: "#997" }]
-changeRequest.reason:
-  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
-  requests: [{ path: fe/core/model.ts, reason: 1, issue: "#997" }]
-changeRequest.issue:
-  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
-  requests: [{ path: fe/core/model.ts, reason: approved, issue: 1 }]

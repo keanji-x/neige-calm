@@ -2,12 +2,15 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import stylelint from 'stylelint';
+import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
+import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, auditUnlayeredExceptions, CSS_SOURCE_ENTRY_FORMS, DATA_ATTRIBUTE_SOURCE_FORMS, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
-const order = layerOrder(read('entry.css'));
+const productionEntry = resolve(import.meta.dirname, '../../web/src/styles/entry.css');
+const order = layerOrder(readFileSync(productionEntry, 'utf8'));
 const jsdomModule: unknown = createRequire(import.meta.url)('jsdom');
 const JSDOM = (jsdomModule as { JSDOM: new (html: string) => { window: { document: RuntimeDocument } } }).JSDOM;
 
@@ -102,7 +105,7 @@ describe('CSS AST fixtures', () => {
     }
   });
   it('uses entry.css as the sole layer-order source', () => {
-    expect(order).toEqual(['reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides']);
+    expect(order).toEqual(EXPECTED_LAYER_ORDER);
   });
 
   it('accepts layered rules and rejects an unlayered rule', () => {
@@ -299,4 +302,127 @@ it('runtime audit reads CSSOM rules inserted into a style-owned sheet', () => {
   expect(auditRuntimeStyles(document, order)).toEqual([
     { rule: 'rule-in-layer', message: 'unlayered selector: .cssom-injected' },
   ]);
+});
+
+describe('P8b2 forward style gates', () => {
+  it('rejects an unregistered global class against the empty manifest', () => {
+    expect(compareGlobalClassManifest(extractGlobalClasses(['.escaped {}']), [])).toEqual([
+      { rule: 'global-class-manifest', message: 'CSS-only class: escaped' },
+    ]);
+  });
+
+  it('rejects a non-prefixed data attribute from the negative fixture', () => {
+    expect(auditDataAttributes(read('data-attributes/negative.txt'), 'fixture.tsx')).toEqual([
+      'fixture.tsx: nonconforming data-card-id; use data-nc-<kebab-case>',
+      'fixture.tsx: nonconforming data-NC-card; use data-nc-<kebab-case>',
+      'fixture.tsx: nonconforming DATA-NC-CARD; use data-nc-<kebab-case>',
+    ]);
+    expect(auditDataAttributes('const x = <div data-nc-card-id="42" aria-label="card" />;', 'ok.tsx')).toEqual([]);
+    expect(auditDataAttributes("const x = <div {...{'data-card-id': 1}} />;", 'spread.tsx'))
+      .toContain('spread.tsx: nonconforming data-card-id; use data-nc-<kebab-case>');
+    expect(auditDataAttributes("el.setAttribute('data-card-id', '1');", 'core/dom.ts'))
+      .toContain('core/dom.ts: nonconforming data-card-id; use data-nc-<kebab-case>');
+    expect(auditDataAttributes('const x = <div data-NC-card="42" />;', 'case.tsx')).toEqual([
+      'case.tsx: nonconforming data-NC-card; use data-nc-<kebab-case>',
+    ]);
+  });
+
+  it('covers every data-* attribute source form in both directions', () => {
+    const cases = parse(read('data-attributes/source-forms.yaml')) as Record<string, {
+      source: string; outcome: 'violation' | 'known-escape';
+    }>;
+    expect(new Set(Object.keys(cases))).toEqual(new Set(DATA_ATTRIBUTE_SOURCE_FORMS));
+    for (const [form, fixture] of Object.entries(cases)) {
+      const violations = auditDataAttributes(fixture.source, `${form}.tsx`);
+      if (fixture.outcome === 'known-escape') expect(violations, form).toEqual([]);
+      else expect(violations, form).toEqual([
+        `${form}.tsx: nonconforming data-card-id; use data-nc-<kebab-case>`,
+      ]);
+    }
+  });
+
+  it('requires every CSS Module to declare its owning layer', () => {
+    expect(auditModuleLayer(read('module-layer/negative.module.css'), 'web/src/features/wave/bad.module.css'))
+      .toEqual(['web/src/features/wave/bad.module.css: unlayered selector: .unlayered']);
+    expect(auditModuleLayer('@layer features { .local {} }', 'web/src/features/wave/good.module.css')).toEqual([]);
+    expect(auditModuleLayer('@layer ui { .local {} }', 'web/src/ui/dialog/good.module.css')).toEqual([]);
+    const nestedUi = 'web/src/features/wave/ui/toolbar.module.css';
+    expect(auditModuleLayer(read('module-layer/nested-ui-negative.module.css'), nestedUi))
+      .toContain(`${nestedUi}: unknown layer ui`);
+    expect(auditModuleLayer(read('module-layer/nested-ui-positive.module.css'), nestedUi)).toEqual([]);
+    for (const layer of ['systems', 'app', 'core']) {
+      const nestedOwner = layer === 'core' ? 'core/wave/ui/toolbar.module.css'
+        : `web/src/${layer}/wave/ui/toolbar.module.css`;
+      expect(auditModuleLayer('@layer ui { .local {} }', nestedOwner), layer)
+        .toEqual([`${nestedOwner}: CSS Module must live below ui/ or features/`]);
+    }
+  });
+
+  it('rejects an unlayered rule in an ordinary non-module stylesheet', () => {
+    const fixtureRoot = resolve(fixtures, 'repository/non-module-negative');
+    expect(auditStyleRepository(fixtureRoot)).toContain(
+      'web/src/features/wave/legacy.css: unlayered selector: button',
+    );
+  });
+
+  it('audits entry.css imports rather than only reading its layer order', () => {
+    expect(auditStyleRepository(resolve(fixtures, 'repository/entry-import-negative'))).toContain(
+      'web/src/styles/entry.css: imported rules cannot be statically inspected; @import must explicitly declare layer',
+    );
+  });
+
+  it('rejects a reversed production layer order', () => {
+    expect(auditStyleRepository(resolve(fixtures, 'repository/order-negative'))).toContain(
+      `web/src/styles/entry.css: layer order must be ${EXPECTED_LAYER_ORDER.join(' → ')}`,
+    );
+  });
+
+  it('enforces the single CSS entry and vendor import boundary', () => {
+    expect(auditCssImports('@import "./loose.css" layer(ui);', 'web/src/ui/loose.css')).toHaveLength(1);
+    expect(auditCssImports(read('css-imports/ts-direct.txt'), 'web/src/main.tsx')).toHaveLength(1);
+    expect(auditCssImports("@import '@astryxdesign/core/astryx.css' layer(astryx);", 'web/src/styles/entry.css'))
+      .toContain('web/src/styles/entry.css: third-party CSS must be imported from styles/vendor.css');
+    expect(auditCssImports("@import '@astryxdesign/core/astryx.css' layer(astryx);", 'web/src/styles/vendor.css'))
+      .toEqual([]);
+  });
+
+  it('covers every source-level CSS entry syntax in both directions', () => {
+    const cases = parse(read('css-imports/source-forms.yaml')) as Record<string, string>;
+    expect(new Set(Object.keys(cases))).toEqual(new Set(CSS_SOURCE_ENTRY_FORMS));
+    for (const [form, source] of Object.entries(cases)) {
+      expect(auditCssImports(source, `${form}.tsx`), form).toEqual([
+        `${form}.tsx: CSS must enter through styles/entry.css, not a source import`,
+      ]);
+    }
+  });
+
+  it('binds each unlayered exception to selector, property, expiry, and actual use', () => {
+    const css = read('unlayered-exceptions/exact.css');
+    const negative = parse(read('unlayered-exceptions/negative.yaml')) as Record<string, {
+      selector: string; property: string; expiry: string;
+    }[]>;
+    expect(auditUnlayeredExceptions(css, 'case.css', order,
+      [{ selector: '.editor > .cm-content', property: 'caret-color', expiry: '2099-01-01' }], '2026-08-03'))
+      .toEqual([]);
+    expect(auditUnlayeredExceptions(css, 'case.css', order,
+      negative['wrong-property'] ?? [], '2026-08-03'))
+      .toEqual(expect.arrayContaining([
+        'case.css: unapproved unlayered declaration .editor > .cm-content { caret-color }',
+        'case.css: unused exception .editor > .cm-content { color }',
+      ]));
+    expect(auditUnlayeredExceptions(css, 'case.css', order,
+      negative.expired ?? [], '2026-08-03'))
+      .toContain('case.css: exception 1 expired on 2020-01-01');
+    expect(auditUnlayeredExceptions(css, 'case.css', order,
+      negative['invalid-calendar-date'] ?? [], '2026-08-03'))
+      .toContain('case.css: exception 1 has invalid expiry 2026-02-30');
+    expect(auditUnlayeredExceptions(css, 'case.css', order, negative.unused ?? [], '2026-08-03'))
+      .toContain('case.css: unused exception .editor > .cm-line { color }');
+    expect(auditUnlayeredExceptions(css, 'case.css', order, negative['wrong-selector'] ?? [], '2026-08-03'))
+      .toContain('case.css: exception 1 selector lacks rightmost .cm- scope: .editor > .not-cm');
+  });
+
+  it('audits the real repository manifests and forward gates', () => {
+    expect(auditStyleRepository(resolve(import.meta.dirname, '../..'))).toEqual([]);
+  });
 });

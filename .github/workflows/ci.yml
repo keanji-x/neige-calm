@@ -358,11 +358,16 @@ jobs:
     name: fe-unit (lint + build + test)
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
     defaults:
       run:
         working-directory: fe
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the readonly gate can diff against the PR base.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -377,6 +382,9 @@ jobs:
         run: node -e "const semver=require('semver');const range=require('./package.json').engines.node;if(!semver.satisfies(process.version,range))process.exit(1)"
 
       - name: npm run lint
+        env:
+          OWNERSHIP_BASE_SHA: ${{ env.BASE_SHA }}
+          OWNERSHIP_EVENT_NAME: ${{ github.event_name }}
         run: npm run lint
 
       - name: npm run build
