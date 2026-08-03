@@ -64,3 +64,7 @@
 | 58 | INV-CONNIND-019 authoritative_test | axe suite `229-425` 双主题 | source 注释/相邻 axe 条目 → `229-425` | 是 |
 
 结论：58/58 区间重叠；0 条分歧，未硬填候选。
+
+## 穷尽式措辞自查
+
+对 7 份 Oracle YAML 中含“每个 / 每张 / 全部 / 任何 / 所有”的 142 个 statement/why 命中逐条复核。发现并补全两条 source：`INV-A11Y-036` 覆盖 7 类 card 的全部 `card-drag-handle` 渲染点及 `CardHead` 传播点；`GATE-REPORT-BLOCKS-002` 覆盖 wave-report 的 app/task strict schemas 到 `:163`。其余命中要么已有完整枚举区间，要么量词描述的是区间内控制流而非仓库全局位置，未发现第三条部分引用。

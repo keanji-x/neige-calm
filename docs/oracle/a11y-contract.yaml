@@ -650,7 +650,7 @@
     唯一视为可拖拽的部分；header 承载 card 的 accessible name
   why: >
     §2.3：header 之外的一切因此保持正常键盘可聚焦，pointer-only 交互不会截走按键
-  source: web/src/WaveGrid.tsx:239-254; web/src/cards/builtins/terminal.tsx:129-155; web/src/cards/builtins/codex.tsx:355-362; web/src/cards/plugin-iframe.tsx:375-381
+  source: web/src/WaveGrid.tsx:239-254; web/src/cards/UnknownCard.tsx:30-35; web/src/cards/plugin-iframe.tsx:375-381; web/src/cards/builtins/codex.tsx:171-177,355-362; web/src/cards/builtins/iframe.tsx:118-124; web/src/cards/builtins/terminal.tsx:129-135,148-155; web/src/cards/builtins/file-viewer.tsx:376-382; web/src/cards/CardHead.tsx:146,158,167-172
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
   intentional_omission: false

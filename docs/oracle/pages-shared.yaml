@@ -442,7 +442,7 @@
   why: >
     测试名 "enforces the Rust-parity caps and strict shapes" —— 前端宽于后端会渲染出后端永远拒收的东西。
     schema 定义来自 cards/builtins/wave-report，由 report-blocks 渲染入口消费。
-  source: web/src/pages/report-blocks/index.tsx:15-27; web/src/cards/builtins/wave-report.tsx:26-90
+  source: web/src/pages/report-blocks/index.tsx:15-27; web/src/cards/builtins/wave-report.tsx:26-163
   authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:565
   owner_slice: features/report/blocks
   intentional_omission: false
