@@ -454,3 +454,7 @@ mod proposal_withdraw_upgrade_tests;
 mod wave_detail_json_shape_tests;
 #[cfg(test)]
 mod wave_detail_sort_precision_tests;
+// …and the order file pins what `group_concat` does NOT give for free: an
+// aggregate's input order is arbitrary, so both arrays state their own.
+#[cfg(test)]
+mod wave_detail_order_tests;

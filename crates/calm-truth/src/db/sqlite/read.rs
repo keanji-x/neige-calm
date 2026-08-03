@@ -286,8 +286,10 @@ impl RepoRead for SqlxRepo {
         //     binary64. `json_object` would have rendered it `%!0.15g`
         //     (`jsonAppendSqlValue`) with no round-trip fallback, silently
         //     turning `1.0000000000000002` into `1.0`. Nothing errors when
-        //     that happens: `total_cmp` below then orders two neighbouring
-        //     cards wrong, and the web client writes back what it read on
+        //     that happens: the two neighbouring cards collapse onto one
+        //     `sort`, so `ORDER BY c.sort` can no longer separate them (they
+        //     fall through to the `id` tiebreak, i.e. the wrong order half the
+        //     time), and the web client writes back what it read on
         //     the next reorder (`WaveList.tsx`) — an unlogged rewrite of
         //     persisted data. Pinned by `wave_detail_sort_precision_tests`.
         //
@@ -339,12 +341,75 @@ impl RepoRead for SqlxRepo {
             return Ok(None);
         };
 
+        // ORDER (#1016 review). `group_concat` above takes its input in an
+        // ARBITRARY order — sqlite documents it as unspecified and free to
+        // change between releases, and an `ORDER BY` in the subquery does not
+        // constrain it (`https://www.sqlite.org/lang_aggfunc.html`). So the
+        // order of both arrays as they arrive is a fact about the current
+        // query plan, not about the data, and it has to be imposed here.
+        //
+        // The bug this replaces: `cards` was sorted by `sort` ALONE and
+        // `overlays` was not sorted at all. A sort by a NON-unique key only
+        // permutes within tie groups, so every card sharing a `sort` kept
+        // whatever order the scan produced — and `sort` is client-assigned, so
+        // ties are normal, not exotic. Today `idx_cards_wave (wave_id, sort)`
+        // happens to make that scan order look reasonable; a different plan
+        // unmakes it silently, with no error anywhere.
+        //
+        // The fix is that each comparator below is a TOTAL order — no two
+        // distinct rows compare `Equal` — which is exactly the property that
+        // makes the sorted result independent of the input permutation. That
+        // is what turns "sqlite may reorder its aggregate input" from a
+        // correctness risk into a non-event; it does NOT depend on the sort
+        // being stable.
+        //
+        //   * cards    — `(sort, id)`. `id` is the PK, so the pair is unique.
+        //     `total_cmp` orders every f64 bit pattern (NaN cannot reach here
+        //     anyway: sqlite stores NaN as NULL and `cards.sort` is NOT NULL).
+        //   * overlays — `(entity_kind, entity_id, plugin_id, kind)`, exactly
+        //     the table's UNIQUE key, so uniqueness is DB-enforced. This is a
+        //     NEW guarantee — the pre-#1016 three-SELECT shape had no ORDER BY
+        //     on overlays either. Grouping an entity's overlays together beats
+        //     ordering by a random uuid `id`.
+        //
+        // Why not `group_concat(… ORDER BY …)` (sqlite >= 3.44, and the
+        // bundled 3.46.0 does support it — this was measured, not assumed):
+        // it costs ~28% on payload-heavy waves and cannot be indexed away.
+        // `EXPLAIN QUERY PLAN` reports `USE TEMP B-TREE FOR
+        // group_concat(ORDER BY)` even when the ORDER BY is exactly the
+        // index order (`c.sort` alone against `idx_cards_wave`), i.e. 3.46
+        // never elides the sorter, so every ~20 KB element string is copied
+        // through a temp b-tree. Same fixture as the cost table above (half
+        // the cards sharing a `sort`, so the tiebreak has real work), release
+        // build, 30 calls per point, median of 3 runs:
+        //
+        //                        aggregate ORDER BY   sorted in Rust
+        //     60 cards × 20 KB           7.6 ms            5.4 ms
+        //    200 cards × 8 KB           12.5 ms           10.1 ms
+        //
+        // The Rust column is within noise of doing no ordering at all, so the
+        // ~40% the hand-assembled `printf` bought above survives intact —
+        // routing it through a temp b-tree would have given most of it back.
+        // Sorting a `Vec` that is already nearly ordered is far cheaper than
+        // buffering the payloads twice, and the guarantee is identical
+        // because the key is total. Both orders pinned by
+        // `wave_detail_order_tests`, which is RED if either key is weakened
+        // to a non-unique one.
         let mut cards: Vec<Card> = serde_json::from_str(&row.cards_json)?;
-        // `ORDER BY sort ASC` used to sit in the cards SELECT; an aggregate
-        // ORDER BY would pin us to sqlite >= 3.44, and sorting here is
-        // equivalent (stable, so ties keep scan order).
-        cards.sort_by(|a, b| a.sort.total_cmp(&b.sort));
-        let overlays: Vec<Overlay> = serde_json::from_str(&row.overlays_json)?;
+        cards.sort_by(|a, b| {
+            a.sort
+                .total_cmp(&b.sort)
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        let mut overlays: Vec<Overlay> = serde_json::from_str(&row.overlays_json)?;
+        overlays.sort_by(|a, b| {
+            (&a.entity_kind, &a.entity_id, &a.plugin_id, &a.kind).cmp(&(
+                &b.entity_kind,
+                &b.entity_id,
+                &b.plugin_id,
+                &b.kind,
+            ))
+        });
 
         Ok(Some(WaveDetail {
             wave: Wave::from(row.wave),
