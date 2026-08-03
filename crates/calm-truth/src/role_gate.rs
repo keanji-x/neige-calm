@@ -1667,8 +1667,13 @@ mod tests {
         let worker = CardId::from("worker-1");
         cache.insert(worker.clone(), CardRole::Worker, WaveId::from("w"));
         let event = Event::TaskContextFrozen {
+            wave_id: WaveId::default(),
+            task_key: String::new(),
+            idempotency_key: String::new(),
             task_id: "w:legacy".into(),
             refs: Vec::new(),
+            doc_revs: Default::default(),
+            truncated: false,
         };
         let err = enforce_role(
             &ActorId::AiCodex(worker),

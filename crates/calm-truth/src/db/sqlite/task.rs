@@ -235,7 +235,7 @@ pub async fn task_claim_pending_tx(
                claim_context_json = ?1,
                context_closure_truncated = ?2,
                updated_at_ms = ?3
-           WHERE id = ?4 AND status = 'pending'"#,
+           WHERE id = ?4 AND status = 'pending' AND context_stale_at_ms IS NULL"#,
     )
     .bind(&context_json)
     .bind(i64::from(closure_truncated))

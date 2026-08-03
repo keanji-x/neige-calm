@@ -1944,8 +1944,13 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::TaskContextFrozen {
+                wave_id: WaveId::default(),
+                task_key: String::new(),
+                idempotency_key: String::new(),
                 task_id: "w:k".into(),
                 refs: vec![],
+                doc_revs: Default::default(),
+                truncated: false,
             },
             ActorId::KernelDispatcher,
             false,

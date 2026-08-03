@@ -50,12 +50,12 @@ use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
 use crate::db::sqlite::{
-    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_legacy_pending_tx,
+    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
     wave_lifecycle_and_budget_tx,
 };
-use crate::db::{Repo, write_with_actor_events_typed};
+use crate::db::{Repo, write_in_tx_typed, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, WaveId};
@@ -71,6 +71,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
+use crate::task_context::{FrozenClosure, ResolveError, TaskContextMonitor, context_ref};
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 /// Kernel default per-wave task budget when `waves.task_budget` is NULL
@@ -614,6 +615,48 @@ impl Scheduler {
     /// (round-2 review F1), or the wave row was deleted. No event is
     /// persisted.
     async fn claim_task(&self, task: &Task, wave: &Wave) -> Result<Option<Task>> {
+        let closure = if task.origin == "legacy" {
+            FrozenClosure::default()
+        } else {
+            let monitor = TaskContextMonitor::new(
+                Arc::clone(&self.repo),
+                self.events.clone(),
+                self.write.clone(),
+            );
+            match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
+                Ok(closure) => closure,
+                Err(
+                    ResolveError::StorageUnavailable(_) | ResolveError::MalformedStoredReport(_),
+                ) => return Ok(None),
+                Err(
+                    ResolveError::RootAbsent
+                    | ResolveError::RootTombstoned
+                    | ResolveError::DuplicateLiveKey
+                    | ResolveError::ReferencedWaveAbsent(_)
+                    | ResolveError::ReferencedBlockAbsent(_)
+                    | ResolveError::ReportAbsent(_)
+                    | ResolveError::CrossCove(_)
+                    | ResolveError::InvalidReference(_),
+                ) => {
+                    let task_id = task.id.clone();
+                    write_in_tx_typed(self.repo.as_ref(), move |tx| {
+                        Box::pin(async move {
+                            sqlx::query(
+                                "UPDATE tasks SET context_stale_at_ms = ?1, updated_at_ms = ?1 \
+                                 WHERE id = ?2 AND status = 'pending' AND context_stale_at_ms IS NULL",
+                            )
+                            .bind(now_ms())
+                            .bind(task_id)
+                            .execute(&mut **tx)
+                            .await?;
+                            Ok(())
+                        })
+                    })
+                    .await?;
+                    return Ok(None);
+                }
+            }
+        };
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
             cove: wave.cove_id.clone(),
@@ -621,138 +664,196 @@ impl Scheduler {
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
         let budget_default = self.budget_default;
-        let result =
-            write_with_actor_events_typed::<Task, _>(
-                self.repo.as_ref(),
-                None,
-                &self.events,
-                &self.write,
-                move |tx| {
-                    Box::pin(async move {
-                        // §5.2 lifecycle gate, re-checked IN the claim tx
-                        // (review F4): the pass's pre-claim read can go
-                        // stale across the semaphore wait, and a wave moved
-                        // to Blocked/Canceled/Done must not have new work
-                        // claimed. Loss is silent (race-lost, no event).
-                        let (lifecycle, task_budget) =
-                            wave_lifecycle_and_budget_tx(tx, wave_id.as_str())
-                                .await?
-                                .ok_or_else(race_lost_err)?;
-                        if !lifecycle_allows_scheduling(lifecycle) {
-                            return Err(race_lost_err());
-                        }
-                        let now = now_ms();
-                        let rows = task_claim_legacy_pending_tx(tx, &task_id, now).await?;
-                        if rows == 0 {
-                            return Err(race_lost_err());
-                        }
-                        // Post-claim re-read = the frozen row (review F2).
-                        // Gone row = concurrent wave delete; treat as lost.
-                        let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
-                        // Round-2 review F1: revalidate the §5.2 ready
-                        // predicate against the wave's CURRENT plan in the
-                        // same tx. The pass's ready set was computed before
-                        // the semaphore wait, so a `plan.updated` that added
-                        // a dependency or a PATCH that shrank the budget
-                        // mid-window must abort the claim (race-lost, the
-                        // rollback un-flips the row, the next poke
-                        // re-evaluates). Strict priority ORDER is
-                        // deliberately NOT revalidated — the design only
-                        // fixes the ready-set order per pass (§5.4).
-                        let siblings = tasks_by_wave_tx(tx, wave_id.as_str()).await?;
-                        let done_keys: BTreeSet<&str> = siblings
-                            .iter()
-                            .filter(|t| t.status == TaskStatus::Done)
-                            .map(|t| t.key.as_str())
-                            .collect();
-                        if !frozen
-                            .depends_on()
-                            .iter()
-                            .all(|dep| done_keys.contains(dep.as_str()))
+        let claim_refs = closure.refs;
+        let claim_doc_revs = closure.doc_revs;
+        let claim_truncated = closure.closure_truncated;
+        let task_key = task.key.clone();
+        let result = write_with_actor_events_typed::<Task, _>(
+            self.repo.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    // §5.2 lifecycle gate, re-checked IN the claim tx
+                    // (review F4): the pass's pre-claim read can go
+                    // stale across the semaphore wait, and a wave moved
+                    // to Blocked/Canceled/Done must not have new work
+                    // claimed. Loss is silent (race-lost, no event).
+                    let (lifecycle, task_budget) =
+                        wave_lifecycle_and_budget_tx(tx, wave_id.as_str())
+                            .await?
+                            .ok_or_else(race_lost_err)?;
+                    if !lifecycle_allows_scheduling(lifecycle) {
+                        return Err(race_lost_err());
+                    }
+                    // §5.2 claim fence: missing wave/report, a changed root, or any
+                    // changed report doc_rev is a silent race loss. This runs before
+                    // the pending -> dispatched state flip.
+                    for (frozen_wave, frozen_rev) in &claim_doc_revs {
+                        let current: Option<i64> = sqlx::query_scalar(
+                            "SELECT json_extract(c.payload, '$.doc_rev') FROM cards c \
+                                 JOIN waves w ON w.id = c.wave_id \
+                                 WHERE c.wave_id = ?1 AND c.kind = 'wave-report' LIMIT 1",
+                        )
+                        .bind(frozen_wave)
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                        if current.and_then(|value| u64::try_from(value).ok()) != Some(*frozen_rev)
                         {
                             return Err(race_lost_err());
                         }
-                        let budget = task_budget.unwrap_or(budget_default).max(0);
-                        // `siblings` was read AFTER the claim flip, so the
-                        // in-flight count includes this row — it must fit
-                        // the budget, not stay strictly under it.
-                        let in_flight = siblings
-                            .iter()
-                            .filter(|t| {
-                                matches!(
-                                    t.status,
-                                    TaskStatus::Dispatched
-                                        | TaskStatus::Running
-                                        | TaskStatus::Verifying
-                                )
+                    }
+                    if let Some(root) = claim_refs.iter().find(|reference| reference.is_root) {
+                        let payload: Option<String> = sqlx::query_scalar(
+                            "SELECT payload FROM cards WHERE wave_id = ?1 \
+                                 AND kind = 'wave-report' LIMIT 1",
+                        )
+                        .bind(root.wave_id.as_str())
+                        .fetch_optional(&mut **tx)
+                        .await?;
+                        let current_root = payload
+                            .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+                            .and_then(|payload| {
+                                payload.get("blocks").and_then(Value::as_array).cloned()
                             })
-                            .count() as i64;
-                        if in_flight > budget {
+                            .and_then(|blocks| {
+                                blocks.into_iter().find_map(|value| {
+                                    let block = serde_json::from_value(value).ok()?;
+                                    (context_ref(root.wave_id.as_str(), &block, true).block_id
+                                        == root.block_id)
+                                        .then_some(context_ref(root.wave_id.as_str(), &block, true))
+                                })
+                            });
+                        if current_root
+                            .as_ref()
+                            .map(|current| (&current.block_id, &current.hash))
+                            != Some((&root.block_id, &root.hash))
+                        {
                             return Err(race_lost_err());
                         }
-                        let mut events = vec![
-                            (
-                                ActorId::KernelDispatcher,
-                                scope.clone(),
-                                Event::TaskDispatched {
-                                    idempotency_key: task_id.clone(),
-                                    kind: task_kind_str(frozen.kind).to_string(),
-                                    agent_message: Some(format!(
-                                        "[scheduler] dispatching task {}",
-                                        frozen.key
-                                    )),
-                                },
-                            ),
-                            (
-                                ActorId::KernelDispatcher,
-                                scope.clone(),
-                                Event::TaskContextFrozen {
-                                    task_id: task_id.clone(),
-                                    refs: Vec::new(),
-                                },
-                            ),
-                        ];
-                        // Same pre-spawn ordering rationale as the legacy
-                        // dispatch path: promote before the worker exists so
-                        // a fast report's Working → Reviewing promotion can
-                        // never race ahead of this one. §5.2 deliberately
-                        // schedules Planning waves (review F5) — a wave the
-                        // spec never moved past Planning is promoted along
-                        // the legal kernel chain Planning → Dispatching →
-                        // Working here. §5.2 also keeps Reviewing in the
-                        // schedulable set (round-5 review F1): a dependent
-                        // task that becomes ready after the first worker's
-                        // completion promoted the wave to Reviewing is
-                        // claimed from Reviewing, so the legal Reviewing →
-                        // Working edge rides the same claim tx. A
-                        // successful claim therefore always leaves the wave
-                        // `Working` and the later Working → Reviewing
-                        // auto-transition can fire again.
-                        for (from, to) in [
-                            (WaveLifecycle::Reviewing, WaveLifecycle::Working),
-                            (WaveLifecycle::Planning, WaveLifecycle::Dispatching),
-                            (WaveLifecycle::Dispatching, WaveLifecycle::Working),
-                        ] {
-                            if let Some(auto_events) = auto_transition_if_current_in_tx(
-                                tx,
-                                &wave_id,
-                                from,
-                                to,
-                                &ActorId::KernelDispatcher,
-                                Some("[auto] scheduler claimed a task".to_string()),
+                    }
+                    let now = now_ms();
+                    let rows =
+                        task_claim_pending_tx(tx, &task_id, now, &claim_refs, claim_truncated)
+                            .await?;
+                    if rows == 0 {
+                        return Err(race_lost_err());
+                    }
+                    // Post-claim re-read = the frozen row (review F2).
+                    // Gone row = concurrent wave delete; treat as lost.
+                    let frozen = task_get_tx(tx, &task_id).await?.ok_or_else(race_lost_err)?;
+                    // Round-2 review F1: revalidate the §5.2 ready
+                    // predicate against the wave's CURRENT plan in the
+                    // same tx. The pass's ready set was computed before
+                    // the semaphore wait, so a `plan.updated` that added
+                    // a dependency or a PATCH that shrank the budget
+                    // mid-window must abort the claim (race-lost, the
+                    // rollback un-flips the row, the next poke
+                    // re-evaluates). Strict priority ORDER is
+                    // deliberately NOT revalidated — the design only
+                    // fixes the ready-set order per pass (§5.4).
+                    let siblings = tasks_by_wave_tx(tx, wave_id.as_str()).await?;
+                    let done_keys: BTreeSet<&str> = siblings
+                        .iter()
+                        .filter(|t| t.status == TaskStatus::Done)
+                        .map(|t| t.key.as_str())
+                        .collect();
+                    if !frozen
+                        .depends_on()
+                        .iter()
+                        .all(|dep| done_keys.contains(dep.as_str()))
+                    {
+                        return Err(race_lost_err());
+                    }
+                    let budget = task_budget.unwrap_or(budget_default).max(0);
+                    // `siblings` was read AFTER the claim flip, so the
+                    // in-flight count includes this row — it must fit
+                    // the budget, not stay strictly under it.
+                    let in_flight = siblings
+                        .iter()
+                        .filter(|t| {
+                            matches!(
+                                t.status,
+                                TaskStatus::Dispatched
+                                    | TaskStatus::Running
+                                    | TaskStatus::Verifying
                             )
-                            .await?
-                            {
-                                events.extend(auto_events.into_iter().map(|event| {
-                                    (ActorId::KernelDispatcher, scope.clone(), event)
-                                }));
-                            }
+                        })
+                        .count() as i64;
+                    if in_flight > budget {
+                        return Err(race_lost_err());
+                    }
+                    let mut events = vec![
+                        (
+                            ActorId::KernelDispatcher,
+                            scope.clone(),
+                            Event::TaskDispatched {
+                                idempotency_key: task_id.clone(),
+                                kind: task_kind_str(frozen.kind).to_string(),
+                                agent_message: Some(format!(
+                                    "[scheduler] dispatching task {}",
+                                    frozen.key
+                                )),
+                            },
+                        ),
+                        (
+                            ActorId::KernelDispatcher,
+                            scope.clone(),
+                            Event::TaskContextFrozen {
+                                wave_id: wave_id.clone(),
+                                task_key: task_key.clone(),
+                                idempotency_key: task_id.clone(),
+                                task_id: task_id.clone(),
+                                refs: claim_refs.clone(),
+                                doc_revs: claim_doc_revs.clone(),
+                                truncated: claim_truncated,
+                            },
+                        ),
+                    ];
+                    // Same pre-spawn ordering rationale as the legacy
+                    // dispatch path: promote before the worker exists so
+                    // a fast report's Working → Reviewing promotion can
+                    // never race ahead of this one. §5.2 deliberately
+                    // schedules Planning waves (review F5) — a wave the
+                    // spec never moved past Planning is promoted along
+                    // the legal kernel chain Planning → Dispatching →
+                    // Working here. §5.2 also keeps Reviewing in the
+                    // schedulable set (round-5 review F1): a dependent
+                    // task that becomes ready after the first worker's
+                    // completion promoted the wave to Reviewing is
+                    // claimed from Reviewing, so the legal Reviewing →
+                    // Working edge rides the same claim tx. A
+                    // successful claim therefore always leaves the wave
+                    // `Working` and the later Working → Reviewing
+                    // auto-transition can fire again.
+                    for (from, to) in [
+                        (WaveLifecycle::Reviewing, WaveLifecycle::Working),
+                        (WaveLifecycle::Planning, WaveLifecycle::Dispatching),
+                        (WaveLifecycle::Dispatching, WaveLifecycle::Working),
+                    ] {
+                        if let Some(auto_events) = auto_transition_if_current_in_tx(
+                            tx,
+                            &wave_id,
+                            from,
+                            to,
+                            &ActorId::KernelDispatcher,
+                            Some("[auto] scheduler claimed a task".to_string()),
+                        )
+                        .await?
+                        {
+                            events.extend(
+                                auto_events
+                                    .into_iter()
+                                    .map(|event| (ActorId::KernelDispatcher, scope.clone(), event)),
+                            );
                         }
-                        Ok((frozen, events))
-                    })
-                },
-            )
-            .await;
+                    }
+                    Ok((frozen, events))
+                })
+            },
+        )
+        .await;
         match result {
             Ok((frozen, _)) => Ok(Some(frozen)),
             Err(e) if is_race_lost(&e) => Ok(None),

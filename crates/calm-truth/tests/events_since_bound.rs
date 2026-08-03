@@ -87,6 +87,37 @@ async fn events_since_non_positive_limit_returns_no_rows() {
     }
 }
 
+#[tokio::test]
+async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open sqlite repo");
+    sqlx::query(
+        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+           VALUES ('task.context_frozen', '{"task_id":"w:old","refs":[]}', 'kernel', 0, 1)"#,
+    )
+    .execute(repo.pool())
+    .await
+    .expect("insert historical freeze");
+
+    let rows = repo.events_since(0, 10).await.expect("events_since");
+    assert_eq!(
+        rows.len(),
+        1,
+        "historical freeze must not be silently dropped"
+    );
+    assert!(matches!(
+        &rows[0].3,
+        Event::TaskContextFrozen {
+            task_id,
+            refs,
+            doc_revs,
+            truncated: false,
+            ..
+        } if task_id == "w:old" && refs.is_empty() && doc_revs.is_empty()
+    ));
+}
+
 /// PR #867 review — the WS replay cap decision runs on
 /// `events_raw_window_since`, which must probe RAW rows (including ones
 /// `events_since` drops at deserialization time), report the raw window

@@ -3,13 +3,19 @@
   "wire": {
     "ev": "task.context_frozen",
     "data": {
+      "wave_id": "wave-01",
+      "task_key": "build-step",
+      "idempotency_key": "wave-01:build-step",
       "task_id": "wave-01:build-step",
       "refs": [{
         "wave_id": "wave-01",
         "block_id": "block-01",
         "rev": 7,
-        "hash": "sha256:context"
-      }]
+        "hash": "sha256:context",
+        "is_root": true
+      }],
+      "doc_revs": {"wave-01": 7},
+      "truncated": true
     }
   }
 }

@@ -1,12 +1,12 @@
 //! Frozen report-block closures and fail-closed stale-context detection.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use calm_types::event::TaskContextRef;
-use calm_types::report_blocks::{flat_text, scannable_text_fields};
+use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::wave_report::ReportBlock;
 use sha2::{Digest, Sha256};
@@ -23,18 +23,48 @@ pub const MAX_REF_NODES: usize = 64;
 pub const MAX_RERESOLVE_FANOUT: usize = 64;
 pub const MAX_SWEEP_NODES: usize = 4096;
 
+const ROOT_HASH_TASK_FIELDS: &[&str] = &[
+    "kind",
+    "goal",
+    "acceptance",
+    "gate",
+    "no_gate_reason",
+    "depends_on",
+    "refs",
+    "cwd",
+    "context",
+];
+#[cfg(test)]
+const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
+    "key",
+    "priority",
+    "declared_by",
+    "spawn",
+    "tombstone",
+    "tombstoned_by",
+    "ready",
+    "released_by_user",
+];
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrozenClosure {
     pub refs: Vec<TaskContextRef>,
+    pub doc_revs: BTreeMap<String, u64>,
     pub closure_truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ResolveError {
-    Missing(String),
+    StorageUnavailable(String),
+    MalformedStoredReport(String),
+    RootAbsent,
+    RootTombstoned,
+    DuplicateLiveKey,
+    ReferencedWaveAbsent(String),
+    ReferencedBlockAbsent(String),
+    ReportAbsent(String),
     CrossCove(String),
     InvalidReference(String),
-    Storage(String),
 }
 
 #[derive(Default)]
@@ -141,17 +171,69 @@ impl TaskContextMonitor {
         task_wave_id: &str,
         root_block_id: &str,
     ) -> std::result::Result<FrozenClosure, ResolveError> {
+        self.resolve_from_root(task_wave_id, root_block_id).await
+    }
+
+    pub async fn resolve_task_closure(
+        &self,
+        task_wave_id: &str,
+        task_key: &str,
+    ) -> std::result::Result<FrozenClosure, ResolveError> {
+        let mut doc_revs = BTreeMap::new();
+        let (_, blocks) = self.report_snapshot(task_wave_id, &mut doc_revs).await?;
+        let mut live = Vec::new();
+        let mut tombstoned = false;
+        for block in blocks {
+            if block.kind == "task"
+                && block.payload.get("key").and_then(serde_json::Value::as_str) == Some(task_key)
+            {
+                if block
+                    .payload
+                    .get("tombstone")
+                    .is_some_and(|value| !value.is_null())
+                {
+                    tombstoned = true;
+                } else {
+                    live.push(block.id);
+                }
+            }
+        }
+        let root = match live.as_slice() {
+            [root] => root.clone(),
+            [] if tombstoned => return Err(ResolveError::RootTombstoned),
+            [] => return Err(ResolveError::RootAbsent),
+            _ => return Err(ResolveError::DuplicateLiveKey),
+        };
+        self.resolve_from_root_with_revs(task_wave_id, &root, doc_revs)
+            .await
+    }
+
+    async fn resolve_from_root(
+        &self,
+        task_wave_id: &str,
+        root_block_id: &str,
+    ) -> std::result::Result<FrozenClosure, ResolveError> {
+        self.resolve_from_root_with_revs(task_wave_id, root_block_id, BTreeMap::new())
+            .await
+    }
+
+    async fn resolve_from_root_with_revs(
+        &self,
+        task_wave_id: &str,
+        root_block_id: &str,
+        mut doc_revs: BTreeMap<String, u64>,
+    ) -> std::result::Result<FrozenClosure, ResolveError> {
         let task_wave = self
             .repo
             .wave_get(task_wave_id)
             .await
-            .map_err(|e| ResolveError::Storage(e.to_string()))?
-            .ok_or_else(|| ResolveError::Missing(task_wave_id.into()))?;
+            .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
+            .ok_or_else(|| ResolveError::ReferencedWaveAbsent(task_wave_id.into()))?;
         let system_cove = self
             .repo
             .cove_get_system()
             .await
-            .map_err(|e| ResolveError::Storage(e.to_string()))?
+            .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
             .map(|c| c.id.to_string());
         let mut queue = VecDeque::from([(task_wave_id.to_string(), root_block_id.to_string(), 0)]);
         let mut visited = BTreeSet::new();
@@ -165,13 +247,16 @@ impl TaskContextMonitor {
                 truncated = true;
                 break;
             }
-            let (cove_id, block) = self.load_block(&wave_id, &block_id).await?;
+            let is_root = depth == 0;
+            let (cove_id, block) = self
+                .load_block(&wave_id, &block_id, is_root, &mut doc_revs)
+                .await?;
             if cove_id != task_wave.cove_id.as_str()
                 && system_cove.as_deref() != Some(cove_id.as_str())
             {
                 return Err(ResolveError::CrossCove(format!("{wave_id}#{block_id}")));
             }
-            refs.push(context_ref(&wave_id, &block));
+            refs.push(context_ref(&wave_id, &block, is_root));
             for (dst_wave, dst_block) in block_links(&block)? {
                 if depth == MAX_REF_DEPTH {
                     truncated = true;
@@ -188,43 +273,72 @@ impl TaskContextMonitor {
         }
         Ok(FrozenClosure {
             refs,
+            doc_revs,
             closure_truncated: truncated,
         })
+    }
+
+    async fn report_snapshot(
+        &self,
+        wave_id: &str,
+        doc_revs: &mut BTreeMap<String, u64>,
+    ) -> std::result::Result<(String, Vec<ReportBlock>), ResolveError> {
+        let wave = self
+            .repo
+            .wave_get(wave_id)
+            .await
+            .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?
+            .ok_or_else(|| ResolveError::ReferencedWaveAbsent(wave_id.into()))?;
+        let cards = self
+            .repo
+            .cards_by_wave(wave_id)
+            .await
+            .map_err(|e| ResolveError::StorageUnavailable(e.to_string()))?;
+        let report = cards
+            .into_iter()
+            .find(|card| card.kind == "wave-report")
+            .ok_or_else(|| ResolveError::ReportAbsent(wave_id.into()))?;
+        let doc_rev = report
+            .payload
+            .get("doc_rev")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        // Fence baseline is captured before the first block in this wave is decoded.
+        doc_revs.entry(wave_id.into()).or_insert(doc_rev);
+        let values = report
+            .payload
+            .get("blocks")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| ResolveError::MalformedStoredReport(wave_id.into()))?;
+        let blocks = values
+            .iter()
+            .map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|_| ResolveError::MalformedStoredReport(wave_id.into()))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok((wave.cove_id.to_string(), blocks))
     }
 
     async fn load_block(
         &self,
         wave_id: &str,
         block_id: &str,
+        is_root: bool,
+        doc_revs: &mut BTreeMap<String, u64>,
     ) -> std::result::Result<(String, ReportBlock), ResolveError> {
-        let wave = self
-            .repo
-            .wave_get(wave_id)
-            .await
-            .map_err(|e| ResolveError::Storage(e.to_string()))?
-            .ok_or_else(|| ResolveError::Missing(wave_id.into()))?;
-        let cards = self
-            .repo
-            .cards_by_wave(wave_id)
-            .await
-            .map_err(|e| ResolveError::Storage(e.to_string()))?;
-        let report = cards
-            .into_iter()
-            .find(|card| card.kind == "wave-report")
-            .ok_or_else(|| ResolveError::Missing(format!("report:{wave_id}")))?;
-        let blocks = report
-            .payload
-            .get("blocks")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| ResolveError::Missing(format!("blocks:{wave_id}")))?;
+        let (cove, blocks) = self.report_snapshot(wave_id, doc_revs).await?;
         let block = blocks
-            .iter()
-            .find_map(|value| {
-                let block = serde_json::from_value::<ReportBlock>(value.clone()).ok()?;
-                (block.id == block_id).then_some(block)
-            })
-            .ok_or_else(|| ResolveError::Missing(format!("{wave_id}#{block_id}")))?;
-        Ok((wave.cove_id.to_string(), block))
+            .into_iter()
+            .find(|block| block.id == block_id)
+            .ok_or_else(|| {
+                if is_root {
+                    ResolveError::RootAbsent
+                } else {
+                    ResolveError::ReferencedBlockAbsent(format!("{wave_id}#{block_id}"))
+                }
+            })?;
+        Ok((cove, block))
     }
 
     async fn refs_match(&self, task_wave_id: &str, refs: &[TaskContextRef]) -> bool {
@@ -234,8 +348,14 @@ impl TaskContextMonitor {
         };
         let system = self.repo.cove_get_system().await.ok().flatten();
         for frozen in refs {
+            let mut ignored_doc_revs = BTreeMap::new();
             let Ok((cove, block)) = self
-                .load_block(frozen.wave_id.as_str(), &frozen.block_id)
+                .load_block(
+                    frozen.wave_id.as_str(),
+                    &frozen.block_id,
+                    frozen.is_root,
+                    &mut ignored_doc_revs,
+                )
                 .await
             else {
                 return false;
@@ -245,8 +365,11 @@ impl TaskContextMonitor {
             {
                 return false;
             }
-            let current = context_ref(frozen.wave_id.as_str(), &block);
-            if &current != frozen {
+            let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
+            if current.wave_id != frozen.wave_id
+                || current.block_id != frozen.block_id
+                || current.hash != frozen.hash
+            {
                 return false;
             }
         }
@@ -444,13 +567,31 @@ impl TaskContextMonitor {
     }
 }
 
-fn context_ref(wave_id: &str, block: &ReportBlock) -> TaskContextRef {
+pub(crate) fn context_ref(wave_id: &str, block: &ReportBlock, is_root: bool) -> TaskContextRef {
+    let content = if is_root {
+        task_root_projection(&block.payload)
+    } else {
+        flat_text(block)
+    };
     TaskContextRef {
         wave_id: WaveId::from(wave_id),
         block_id: block.id.clone(),
         rev: i64::from(block.rev),
-        hash: format!("{:x}", Sha256::digest(flat_text(block).as_bytes())),
+        hash: format!("{:x}", Sha256::digest(content.as_bytes())),
+        is_root,
     }
+}
+
+fn task_root_projection(payload: &serde_json::Value) -> String {
+    let mut projected = serde_json::Map::new();
+    if let Some(object) = payload.as_object() {
+        for key in ROOT_HASH_TASK_FIELDS {
+            if let Some(value) = object.get(*key).filter(|value| !value.is_null()) {
+                projected.insert((*key).into(), value.clone());
+            }
+        }
+    }
+    canonical_json(&serde_json::Value::Object(projected))
 }
 
 fn block_links(block: &ReportBlock) -> std::result::Result<Vec<(String, String)>, ResolveError> {
@@ -489,6 +630,7 @@ pub async fn sweep_with_timeout(monitor: &TaskContextMonitor, timeout: Duration)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_types::report_blocks::TASK_FIELDS;
 
     #[test]
     fn health_export_contains_positive_sweep_signals() {
@@ -500,5 +642,71 @@ mod tests {
 
         assert_ne!(exported.last_success_age_seconds, u64::MAX);
         assert_eq!(exported.consecutive_failures, 3);
+    }
+
+    #[test]
+    fn task_root_hash_field_partition_covers_task_fields() {
+        let classified: BTreeSet<_> = ROOT_HASH_TASK_FIELDS
+            .iter()
+            .chain(ROOT_HASH_EXCLUDED_TASK_FIELDS)
+            .copied()
+            .collect();
+        let all: BTreeSet<_> = TASK_FIELDS.iter().copied().collect();
+        assert_eq!(classified, all);
+        assert_eq!(
+            classified.len(),
+            ROOT_HASH_TASK_FIELDS.len() + ROOT_HASH_EXCLUDED_TASK_FIELDS.len()
+        );
+    }
+
+    #[test]
+    fn root_hash_only_tracks_included_fields_while_child_hashes_whole_block() {
+        let block = ReportBlock {
+            id: "b_root".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: serde_json::json!({
+                "key": "build", "kind": "codex", "goal": "old", "priority": 0,
+                "declared_by": "spec", "spawn": null, "released_by_user": false
+            }),
+        };
+        let root = context_ref("w", &block, true);
+        for (field, value) in [
+            ("goal", serde_json::json!("new")),
+            ("kind", serde_json::json!("terminal")),
+            ("gate", serde_json::json!({"cmd": "cargo test"})),
+        ] {
+            let mut changed = block.clone();
+            changed.payload[field] = value;
+            assert_ne!(context_ref("w", &changed, true).hash, root.hash, "{field}");
+        }
+        for (field, value) in [
+            ("priority", serde_json::json!(1)),
+            ("declared_by", serde_json::json!("user")),
+            ("spawn", serde_json::json!({"future": true})),
+            ("released_by_user", serde_json::json!(true)),
+        ] {
+            let mut changed = block.clone();
+            changed.payload[field] = value;
+            assert_eq!(context_ref("w", &changed, true).hash, root.hash, "{field}");
+            assert_ne!(
+                context_ref("w", &changed, false).hash,
+                context_ref("w", &block, false).hash,
+                "child {field} must retain whole-block hashing"
+            );
+        }
+    }
+
+    #[test]
+    fn root_projection_treats_missing_and_null_as_equal() {
+        let mut absent = ReportBlock {
+            id: "b".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: serde_json::json!({"key": "k", "kind": "codex", "goal": "g"}),
+        };
+        let baseline = context_ref("w", &absent, true).hash;
+        absent.payload["context"] = serde_json::Value::Null;
+        assert_eq!(context_ref("w", &absent, true).hash, baseline);
     }
 }

@@ -593,12 +593,18 @@ export const taskContextFrozenSchema = z.object({
   ev: z.literal('task.context_frozen'),
   data: z.object({
     task_id: z.string(),
+    wave_id: z.string(),
+    task_key: z.string(),
+    idempotency_key: z.string(),
     refs: z.array(z.object({
       wave_id: z.string(),
       block_id: z.string(),
       rev: z.number(),
       hash: z.string(),
+      is_root: z.boolean(),
     })),
+    doc_revs: z.record(z.string(), z.number()),
+    truncated: z.boolean(),
   }),
 });
 

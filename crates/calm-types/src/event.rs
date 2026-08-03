@@ -29,6 +29,7 @@ use crate::model::{Card, Cove, Overlay, Wave, WaveLifecycle};
 use crate::proposal::{ProposalDecision, ProposalOp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::ops::Deref;
 use ts_rs::TS;
 
@@ -40,6 +41,8 @@ pub struct TaskContextRef {
     pub block_id: String,
     pub rev: i64,
     pub hash: String,
+    #[serde(default)]
+    pub is_root: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -817,8 +820,18 @@ pub enum Event {
     /// context. Strict Kernel / KernelDispatcher only (plain User is denied).
     #[serde(rename = "task.context_frozen")]
     TaskContextFrozen {
+        #[serde(default)]
+        wave_id: WaveId,
+        #[serde(default)]
+        task_key: String,
+        #[serde(default)]
+        idempotency_key: String,
         task_id: String,
         refs: Vec<TaskContextRef>,
+        #[serde(default)]
+        doc_revs: BTreeMap<String, u64>,
+        #[serde(default)]
+        truncated: bool,
     },
 
     /// Issue #985 PR3a-i — the kernel recorded that a frozen task context

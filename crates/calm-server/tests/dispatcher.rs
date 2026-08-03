@@ -438,9 +438,9 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     let pool = repo.sqlite_pool().expect("dispatcher test uses sqlite");
     let block = serde_json::json!({
         "id": "b_lagged",
-        "kind": "prose",
+        "kind": "task",
         "rev": 1,
-        "payload": {"markdown": "frozen"}
+        "payload": {"key": "lagged-stale", "kind": "terminal", "goal": "frozen"}
     });
     sqlx::query(
         "INSERT INTO cards \
@@ -507,7 +507,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         .await
         .expect("persist frozen context");
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'changed') \
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'changed') \
          WHERE id = 'lagged-context-report'",
     )
     .execute(&pool)

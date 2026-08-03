@@ -68,6 +68,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_types::event::TaskContextRef;
 use serde_json::{Value, json};
 
 struct Boot {
@@ -2730,12 +2731,79 @@ async fn every_dispatch_persists_same_batch_legacy_empty_context_freeze() {
     );
 }
 
+#[tokio::test]
+async fn block_task_production_claim_freezes_nonempty_root_context() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let key = "block-freeze";
+    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+    )
+    .bind(format!("report-{key}"))
+    .bind(boot.wave_id.as_str())
+    .bind(
+        json!({
+            "doc_rev": 7,
+            "blocks": [{
+                "id": "b_task_root",
+                "kind": "task",
+                "rev": 1,
+                "payload": {"key": key, "kind": "terminal", "goal": "echo hi"}
+            }]
+        })
+        .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let context: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let refs: Vec<TaskContextRef> = serde_json::from_str(&context).unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].block_id, "b_task_root");
+    assert!(refs[0].is_root);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM task_ref_index WHERE task_id = ?1 AND block_id = 'b_task_root'",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+}
+
 async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
     let block = json!({
         "id": "b_1000",
-        "kind": "prose",
+        "kind": "task",
         "rev": 1,
-        "payload": {"markdown": "original contract"}
+        "payload": {"key": key, "kind": "terminal", "goal": "original contract"}
     });
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
@@ -2794,7 +2862,7 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
             .await
             .unwrap();
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'replacement') WHERE id = ?1",
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'replacement') WHERE id = ?1",
     )
     .bind(card_id)
     .execute(&pool)
@@ -2915,7 +2983,7 @@ async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
     let monitor = seed_frozen_context_fixture(&boot, "recycled").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'new incarnation') \
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'new incarnation') \
          WHERE wave_id = ?1 AND kind = 'wave-report'",
     )
     .bind(boot.wave_id.as_str())

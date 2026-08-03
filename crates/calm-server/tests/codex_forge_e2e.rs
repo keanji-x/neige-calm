@@ -3060,8 +3060,13 @@ async fn seed_completed_task_pair(fx: &Fixture, key: &str, result: Value, expect
                                 ActorId::KernelDispatcher,
                                 wave_scope,
                                 Event::TaskContextFrozen {
+                                    wave_id: WaveId::default(),
+                                    task_key: String::new(),
+                                    idempotency_key: String::new(),
                                     task_id,
                                     refs: vec![],
+                                    doc_revs: Default::default(),
+                                    truncated: false,
                                 },
                             ),
                         ],
