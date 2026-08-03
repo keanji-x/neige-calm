@@ -14,4 +14,6 @@ export const moduleRuntimeStateAllowlist = [
 
 /** @type {ReadonlyArray<string>} */
 export const createContextAllowlist = [
+  // Reason: issue #997 §4/§6 allow context in a primitive's own directory; consumers remain in ui, so no primitive-to-business reverse dependency is introduced.
+  'web/src/ui/dialog/public.tsx',
 ];

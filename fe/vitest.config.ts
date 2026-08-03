@@ -2,7 +2,22 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'node',
-    include: ['core/**/*.test.ts', 'tools/**/*.test.ts', 'web/src/**/*.test.{ts,tsx}'],
+    projects: [
+      {
+        test: {
+          name: 'platform-independent',
+          environment: 'node',
+          include: ['core/**/*.test.ts', 'tools/**/*.test.ts', 'web/src/**/*.test.{ts,tsx}'],
+          exclude: ['web/src/ui/**/*.test.{ts,tsx}'],
+        },
+      },
+      {
+        test: {
+          name: 'ui-dom',
+          environment: 'jsdom',
+          include: ['web/src/ui/**/*.test.{ts,tsx}'],
+        },
+      },
+    ],
   },
 });
