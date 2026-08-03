@@ -1388,7 +1388,7 @@
     archived_at）表示成 number；(b) schemas.ts 的运行时 zod 用 `z.number()`；
     (c) 时间戳远小于 Number.MAX_SAFE_INTEGER。注释指明：如果未来某个 i64 字段超出这个假设，
     schemas.test.ts 的一致性测试会抓到，届时改回 bigint 并同步 zod 侧。
-  source: .cargo/config.toml:19-26
+  source: .cargo/config.toml:19-25
   authoritative_test: web/src/api/schemas.test.ts:212-224
   owner_slice: none/build/ts-rs
   intentional_omission: false

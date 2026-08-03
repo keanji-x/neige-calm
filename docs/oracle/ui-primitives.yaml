@@ -1353,7 +1353,7 @@
     落地：app 代码必须组合 primitive，让 primitive 独占 role + focus + 键盘契约，
     而不是自己在 div/ul/button 上手糊 ARIA。动态 `role={expr}` 刻意不拦。
   source: web/src/ui/README.md:71-75
-  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts
+  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:61-185
   owner_slice: styles/layer-rules
   intentional_omission: false
   runtime_layer: styles
