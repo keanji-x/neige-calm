@@ -1,0 +1,12 @@
+- path: fe/web/src/styles/README.md
+  reason: P8b2 performs the initial frozen styles contract handoff.
+  issue: "#997"
+- path: fe/web/src/styles/entry.css
+  reason: P8b2 creates the frozen cascade entry and layer order.
+  issue: "#997"
+- path: fe/web/src/styles/global-classes.yaml
+  reason: P8b2 creates the frozen global-class deny-by-default manifest.
+  issue: "#997"
+- path: fe/web/src/styles/unlayered-exceptions.yaml
+  reason: P8b2 creates the frozen unlayered-exception deny-by-default manifest.
+  issue: "#997"

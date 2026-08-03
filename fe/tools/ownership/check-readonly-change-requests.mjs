@@ -1,11 +1,13 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse } from 'yaml';
 
 const validatorPath = './validator.ts';
-const { gitChangedPaths, validateOwnership } = await import(validatorPath);
+const { gitChangedPaths, repositoryFiles, validateOwnership } = await import(validatorPath);
 const { auditStyleRepository } = await import('../styles/repository-check.mjs');
+const { ownershipManifest } = await import('../../ownership-manifest.mjs');
 
 const repository = mkdtempSync(join(tmpdir(), 'ownership-check-'));
 
@@ -15,6 +17,22 @@ function git(...args) {
 }
 
 try {
+  const feRoot = join(import.meta.dirname, '../..');
+  const requests = parse(readFileSync(join(feRoot, 'ownership-change-requests.yaml'), 'utf8'));
+  let repositoryChanges = [];
+  try {
+    repositoryChanges = gitChangedPaths(join(feRoot, '..'));
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('git fetch origin main')) throw error;
+    console.log('ownership repository readonly diff: skipped (origin/main ref absent); isolated fail-closed proof still runs');
+  }
+  const repositoryViolations = validateOwnership(
+    ownershipManifest, repositoryFiles(join(feRoot, '..')), repositoryChanges, requests,
+  );
+  if (repositoryViolations.length) {
+    throw new Error(`repository ownership audit failed:\n${repositoryViolations.map(({ message }) => message).join('\n')}`);
+  }
+  console.log(`ownership manifest: ${ownershipManifest.length} entries, complete coverage, no overlaps`);
   const styleViolations = auditStyleRepository(join(import.meta.dirname, '../..'));
   if (styleViolations.length) throw new Error(`style repository audit failed:\n${styleViolations.join('\n')}`);
   console.log('style manifests, CSS Module layers, and data-* attributes: valid');

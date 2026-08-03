@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
+import { ownershipManifest } from '../../ownership-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
@@ -103,4 +104,22 @@ it('drives coverage against the complete real repository tree', () => {
   expect(violations.every(({ rule }) => rule === 'coverage')).toBe(true);
   const unownedFiles = violations.map(({ message }) => message.replace(/ has 0 owners$/, ''));
   expect(new Set(unownedFiles)).toEqual(new Set(actualFiles));
+});
+
+describe('P8b2 ownership exit', () => {
+  const repoRoot = resolve(import.meta.dirname, '../../..');
+
+  it('covers the real source tree exactly once without prefix overlap', () => {
+    expect(validateOwnership(ownershipManifest, repositoryFiles(repoRoot))).toEqual([]);
+  });
+
+  it('has independent mutation signals for overlap, coverage and readonly changes', () => {
+    expect(validateOwnership([...ownershipManifest, {
+      path: 'fe/core/api/client.ts', type: 'file', owner: 'mutation', readonly: false,
+    }], []).some(({ rule }) => rule === 'exactly-one-owner')).toBe(true);
+    expect(validateOwnership(ownershipManifest, [...repositoryFiles(repoRoot), 'fe/web/src/features/unowned.ts'])
+      .some(({ rule }) => rule === 'coverage')).toBe(true);
+    expect(validateOwnership(ownershipManifest, [], ['fe/core/state/types.ts'])
+      .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
+  });
 });
