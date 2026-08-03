@@ -1030,7 +1030,8 @@
   test_tier: jsdom
   migration: pending
 
-- id: GATE-OVERLAY-005
+- id: INV-OVERLAY-002
+  former_id: GATE-OVERLAY-005
   kind: invariant
   family: overlay-state
   statement: >
