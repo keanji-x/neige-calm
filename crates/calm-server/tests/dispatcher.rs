@@ -539,7 +539,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         4,
     );
     dispatcher.scheduler().mark_boot_sweep_complete();
-    dispatcher.scheduler().mark_context_sweep_boot_complete();
+    dispatcher.scheduler().open_context_sweep_gate().await;
     dispatcher.scheduler().schedule_wave(wave_id.clone()).await;
     let frozen_context: String =
         sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
@@ -563,8 +563,12 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         events.emit(
             ActorId::Kernel,
             Event::TaskContextAdvanced {
+                wave_id: Default::default(),
+                task_key: String::new(),
                 task_id: format!("noise-{index}"),
+                changed_refs: Vec::new(),
                 verdict: "material".into(),
+                rationale: String::new(),
             },
         );
     }

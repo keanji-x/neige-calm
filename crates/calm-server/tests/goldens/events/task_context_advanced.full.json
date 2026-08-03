@@ -1,10 +1,23 @@
 {
-  "description": "task.context_advanced full shape pins the PR3a material-only verdict.",
+  "description": "task.context_advanced full shape carries the changed reference audit trail.",
   "wire": {
     "ev": "task.context_advanced",
     "data": {
+      "wave_id": "wave-01",
+      "task_key": "build-step",
       "task_id": "wave-01:build-step",
-      "verdict": "material"
+      "changed_refs": [
+        {
+          "wave_id": "wave-context",
+          "block_id": "block-01",
+          "from_rev": 7,
+          "to_rev": 8,
+          "from_hash": "sha256:before",
+          "to_hash": "sha256:after"
+        }
+      ],
+      "verdict": "material",
+      "rationale": "referenced acceptance criteria changed"
     }
   }
 }

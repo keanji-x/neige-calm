@@ -1213,14 +1213,24 @@ impl Scheduler {
         self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
 
-    /// Open the context-sweep boot gate after its synchronous boot pass.
+    /// Test-only steady-state seam. Production opens this gate only after a
+    /// successful context sweep via [`Scheduler::open_context_sweep_gate`].
+    #[cfg(any(test, feature = "fixtures"))]
     pub fn mark_context_sweep_boot_complete(&self) {
         self.context_sweep_boot_done.store(true, Ordering::SeqCst);
     }
 
-    /// TEST seam for assertions around the context-sweep boot fence.
-    pub fn context_sweep_boot_completed(&self) -> bool {
-        self.context_sweep_boot_done.load(Ordering::SeqCst)
+    /// A successful full context sweep opens the resume gate exactly once.
+    /// The winner immediately retries dispatched rows in the same turn.
+    pub async fn open_context_sweep_gate(self: &Arc<Self>) -> bool {
+        let opened = self
+            .context_sweep_boot_done
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        if opened {
+            self.sweep_all().await;
+        }
+        opened
     }
 
     /// Shared sweep body: runs the reconcile arms inline and returns

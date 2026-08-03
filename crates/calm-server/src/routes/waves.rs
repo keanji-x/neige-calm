@@ -929,13 +929,8 @@ pub(crate) async fn update_wave(
     let wave_id_for_event = existing.id.clone();
     let projection_policy_changed = p.spec_task_ceiling.is_some() || p.automation_policy.is_some();
     let p_for_tx = p.clone();
-    let (wave, _ids) = write_with_events_typed(
-        s.repo.as_ref(),
-        actor_id,
-        None,
-        &s.events,
-        &s.write,
-        move |tx| {
+    let (wave, _ids) =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p_for_tx).await?;
@@ -944,9 +939,10 @@ pub(crate) async fn update_wave(
                 } else {
                     None
                 };
-                let mut events: Vec<(EventScope, Event)> = Vec::new();
+                let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
                 if let Some((from, to)) = lifecycle_change {
                     events.push((
+                        actor_id.clone(),
                         scope.clone(),
                         Event::WaveLifecycleChanged {
                             id: wave_id_for_event.clone(),
@@ -958,26 +954,28 @@ pub(crate) async fn update_wave(
                     ));
                 }
                 events.push((
+                    actor_id.clone(),
                     scope.clone(),
                     Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
                 ));
-                if let Some(projection) = projection
-                    && !projection.changed_keys.is_empty()
-                {
-                    events.push((
-                        scope,
-                        Event::PlanUpdated {
-                            wave_id: wave_id_for_event,
-                            changed_keys: projection.changed_keys,
-                            agent_message: None,
-                        },
-                    ));
+                if let Some(projection) = projection {
+                    if !projection.changed_keys.is_empty() {
+                        events.push((
+                            actor_id.clone(),
+                            scope,
+                            Event::PlanUpdated {
+                                wave_id: wave_id_for_event,
+                                changed_keys: projection.changed_keys,
+                                agent_message: None,
+                            },
+                        ));
+                    }
+                    events.extend(projection.kernel_events);
                 }
                 Ok((wave, events))
             })
-        },
-    )
-    .await?;
+        })
+        .await?;
     Ok(Json(wave))
 }
 
