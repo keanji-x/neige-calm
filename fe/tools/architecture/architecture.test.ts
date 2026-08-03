@@ -161,7 +161,7 @@ describe('architecture fixtures', () => {
     ['dup-inv-010', 'INV-DUP-010'],
     ['dup-consumer-import', 'INV-DUP-001'],
     ['dup-export-alias', 'INV-DUP-001'],
-    ['dup-import-fence-symbol', 'INV-DUP-004'],
+    ['dup-import-fence-symbol', 'INV-DUP-005'],
     ['core-markdown-node-import', 'node:fs'],
     ['markdown-micromark-import', 'no-restricted-syntax'],
     ['markdown-public-entry-core', 'markdown-public-entry-only'],

@@ -1,2 +1,2 @@
-import ReactMarkdown from 'react-markdown';
-export const render = ReactMarkdown;
+import { extractOutline } from './other/local-outline';
+void extractOutline;

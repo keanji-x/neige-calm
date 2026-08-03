@@ -73,6 +73,8 @@ export function checkDuplicationManifest(root) {
   const entriesBySymbol = new Map(duplicationManifest
     .filter((entry) => entry.type === 'unique-symbol')
     .flatMap((entry) => entry.symbols.map((symbol) => [symbol, entry])));
+  const consumerEntriesBySymbol = new Map(duplicationManifest
+    .flatMap((entry) => entry.symbols.map((symbol) => [symbol, entry])));
   const importFenceEntries = duplicationManifest.filter((entry) => entry.type === 'import-fence');
   for (const file of [...filesUnder(resolve(root, 'core')), ...filesUnder(resolve(root, 'web/src'))]) {
     const path = relative(root, file).replaceAll('\\', '/');
@@ -97,7 +99,7 @@ export function checkDuplicationManifest(root) {
       const imported = clause?.namedBindings && ts.isNamedImports(clause.namedBindings)
         ? clause.namedBindings.elements.map((element) => (element.propertyName ?? element.name).text) : [];
       for (const name of imported) {
-        const entry = entriesBySymbol.get(name);
+        const entry = consumerEntriesBySymbol.get(name);
         if (!entry || !source.startsWith('.')) continue;
         const target = normalized(relative(root, resolve(dirname(file), source)));
         if (target !== normalized(entry.canonicalPath)) errors.push(`${entry.id}: ${name} consumers must import ${entry.canonicalPath}; found ${source} in ${path}`);
