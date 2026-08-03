@@ -25,3 +25,31 @@
   verification_owner: unit
   test_tier: static
   migration: pending
+- id: INV-TEST-004
+  former_id: GATE-TEST-009
+  kind: invariant
+  family: fixture
+  statement: Contract remains true
+  why: Fixture reason
+  source: fixture-source.txt:1
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: unit
+  test_tier: static
+  migration: pending
+- id: INV-TEST-005
+  former_id: GATE-TEST-009
+  kind: invariant
+  family: fixture
+  statement: Contract remains true
+  why: Fixture reason
+  source: fixture-source.txt:1
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: unit
+  test_tier: static
+  migration: pending
