@@ -87,12 +87,14 @@ function consumedSymbols(ast) {
       }
     } else if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)
       && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const source = statement.moduleSpecifier.text;
       consumed.push(...statement.exportClause.elements.map((element) => ({
         name: (element.propertyName ?? element.name).text,
-        source: statement.moduleSpecifier.text,
+        source,
       })));
     }
   }
+  /** @param {ts.Node} node */
   function visit(node) {
     if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
       const source = namespaceSources.get(node.expression.text);
