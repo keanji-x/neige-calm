@@ -1,6 +1,10 @@
 import postcss, { type AtRule, type ChildNode, type Rule } from 'postcss';
 
 export interface CssViolation { rule: string; message: string }
+export const STYLE_RULES = Object.freeze([
+  'rule-in-layer', 'known-layer', 'unlayered-cm-scope', 'global-class-manifest',
+  'runtime-stylesheet-readable', 'runtime-inline-style',
+] as const);
 
 function enclosingLayer(node: ChildNode): string | undefined {
   interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }

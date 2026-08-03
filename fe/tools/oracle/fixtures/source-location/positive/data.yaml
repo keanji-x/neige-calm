@@ -3,7 +3,7 @@
   family: "fixture"
   statement: "Contract remains true"
   why: "Fixture reason"
-  source: "fixture-source.txt:1"
+  source: "fixture-source.txt:1,1; fixture-source.txt:1 + fixture-source.txt:1 fixture-source.txt:1"
   authoritative_test: "NONE"
   owner_slice: "styles/global"
   intentional_omission: false

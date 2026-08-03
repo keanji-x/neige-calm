@@ -15,6 +15,13 @@ export interface ValidateOptions {
   ownerAliasesPath: string;
 }
 
+export const ORACLE_RULES = Object.freeze([
+  'document-shape', 'required-fields', 'enum-kind', 'enum-runtime_layer', 'enum-verification_owner', 'enum-test_tier',
+  'enum-migration', 'id-format', 'id-kind-prefix', 'id-unique', 'owner-slice', 'runtime-owner-layer',
+  'skipped-fields', 'skipped-owner', 'non-skipped-reason', 'non-skipped-owner', 'intentional-omission-boolean',
+  'source-location', 'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
+] as const);
+
 const REQUIRED = ['id', 'kind', 'family', 'statement', 'why', 'source', 'authoritative_test', 'owner_slice',
   'intentional_omission', 'runtime_layer', 'verification_owner', 'test_tier', 'migration'] as const;
 const ENUMS: Record<string, readonly unknown[]> = {

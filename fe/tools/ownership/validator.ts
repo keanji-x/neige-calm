@@ -11,6 +11,9 @@ export interface OwnershipEntry {
 
 export interface ChangeRequest { path: string; reason: string; issue: string }
 export interface OwnershipViolation { rule: string; message: string }
+export const OWNERSHIP_RULES = Object.freeze([
+  'entry-shape', 'exactly-one-owner', 'coverage', 'readonly-change-request',
+] as const);
 
 function clean(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');

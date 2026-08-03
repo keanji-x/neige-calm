@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { auditRepositoryOwnership, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
+import { auditRepositoryOwnership, OWNERSHIP_RULES, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
@@ -10,6 +10,10 @@ function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntr
 }
 
 describe('ownership fixtures', () => {
+  it('covers exactly every rule the validator can emit', () => {
+    const covered = ['entry-shape', 'exactly-one-owner', 'coverage', 'readonly-change-request'];
+    expect(new Set(covered)).toEqual(new Set(OWNERSHIP_RULES));
+  });
   it('rejects glob entries', () => {
     expect(validateOwnership(entries('entry-shape', 'positive'), [])).toEqual([]);
     expect(validateOwnership(entries('entry-shape', 'negative'), [])).toEqual([

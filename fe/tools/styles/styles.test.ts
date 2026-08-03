@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
-import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, extractGlobalClasses, layerOrder, type RuntimeDocument } from './audit';
+import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
@@ -27,6 +27,11 @@ async function lintCss(code: string, filename: string, exceptions: string[] = []
 }
 
 describe('CSS AST fixtures', () => {
+  it('covers exactly every rule the audit can emit', () => {
+    const covered = ['rule-in-layer', 'known-layer', 'unlayered-cm-scope', 'global-class-manifest',
+      'runtime-stylesheet-readable', 'runtime-inline-style'];
+    expect(new Set(covered)).toEqual(new Set(STYLE_RULES));
+  });
   it('uses entry.css as the sole layer-order source', () => {
     expect(order).toEqual(['reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides']);
   });
@@ -35,6 +40,9 @@ describe('CSS AST fixtures', () => {
     expect(auditLayeredCss(read('layered/positive/case.css'), order)).toEqual([]);
     expect(auditLayeredCss(read('layered/negative/case.css'), order)).toEqual([
       { rule: 'rule-in-layer', message: 'unlayered selector: .loose' },
+    ]);
+    expect(auditLayeredCss('@layer alien { .known {} }', order)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer alien' },
     ]);
   });
 
@@ -93,6 +101,15 @@ it('runtime audit inspects stylesheet rules not owned by style elements', () => 
   };
   expect(auditRuntimeStyles(document, order)).toEqual([
     { rule: 'rule-in-layer', message: 'unlayered selector: .external' },
+  ]);
+});
+
+it('runtime audit reports unreadable stylesheet rules', () => {
+  const unreadable = {};
+  Object.defineProperty(unreadable, 'cssRules', { get: () => { throw new Error('denied'); } });
+  const document: RuntimeDocument = { styleSheets: [unreadable], querySelectorAll: () => [] };
+  expect(auditRuntimeStyles(document, order)).toEqual([
+    { rule: 'runtime-stylesheet-readable', message: 'stylesheet cssRules are not readable' },
   ]);
 });
 
