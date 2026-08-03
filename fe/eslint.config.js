@@ -50,6 +50,7 @@ export default tseslint.config(
     rules: {
       'architecture/no-module-runtime-state': 'error',
       'architecture/no-direct-persistence': 'error',
+      'architecture/no-calm-key-outside-core-keys': 'error',
     },
   },
   {

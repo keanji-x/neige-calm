@@ -133,6 +133,19 @@ describe('architecture/no-direct-persistence', () => {
   }
 });
 
+describe('architecture/no-calm-key-outside-core-keys', () => {
+  for (const fixture of ['calm-key/string-literal.ts', 'calm-key/template-head.ts'] as const) {
+    it(`rejects ${fixture}`, async () => {
+      expect(await lintFixture('no-calm-key-outside-core-keys', fixture)).toHaveLength(1);
+    });
+  }
+  for (const fixture of ['core/keys/calm-key.ts', 'calm-key/injected-key.ts', 'calm-key/known-concatenation-escape.ts'] as const) {
+    it(`accepts ${fixture}`, async () => {
+      expect(await lintFixture('no-calm-key-outside-core-keys', fixture)).toHaveLength(0);
+    });
+  }
+});
+
 describe('architecture/no-create-context-outside-allowlist', () => {
   const rejected = [
     ['create-context-named.ts', 'createContext'],
