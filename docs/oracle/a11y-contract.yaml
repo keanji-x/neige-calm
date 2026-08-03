@@ -314,7 +314,7 @@
     每次激活按 `grid → list → report → grid` 循环持久化的视图模式
   why: >
     Slice 9：这是键盘/AT 用户从 grid 进入键盘可用的 list 视图的唯一入口
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:61-95
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -331,7 +331,7 @@
     `"<Current> view — switch to <next> view"`（例 `"Report view — switch to grid view"`）
   why: >
     §2.2：按钮无 checked 状态，当前模式只能靠 name 播报；e2e 用正则精确匹配这个形状
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:73-95
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:835
   owner_slice: features/wave/page
   intentional_omission: false
@@ -347,7 +347,7 @@
     Report 视图必须是新 wave 的默认视图；overlay 缺失时 WavePage 回落到 report
   why: >
     §2.2 与 §2.7 都明示 "Report is the default for new waves" / "Absence defaults to report"
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:252-266
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -364,7 +364,7 @@
     Grid(`WaveGrid`)、List(`WaveList`)
   why: >
     Slice 9 的 Path C 决议：不给 grid 加键盘故事，而是另起一个 list 组件
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:252-273,404-433
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -380,7 +380,7 @@
     从 report 视图添加 worker card 时必须自动切到 grid，使新建的 card 立即可见
   why: >
     §2.2 明示；否则用户在 report 视图下建卡后看不到任何反馈
-  source: web/src/pages/WaveReportPage.tsx
+  source: web/src/pages/Wave.tsx:275-282
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -396,7 +396,7 @@
     Report 视图在 spec agent 尚未产出 report 时必须渲染 report 空态，而不是空白
   why: >
     §2.2 明示 "or the report empty state while the spec agent has not produced one"
-  source: web/src/pages/WaveReportPage.tsx
+  source: web/src/pages/WaveReportPage.tsx:924-945
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -448,7 +448,7 @@
     (`report → grid → list`)；从 grid 出发按一次
   why: >
     §2.2 / §3.1 / §9 三处重复记录这条精确步数——它是键盘用户能否触达 list 的唯一说明
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:61-95
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1037,7 +1037,7 @@
     §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
     无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
     自管内部序列）
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:295-433
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
