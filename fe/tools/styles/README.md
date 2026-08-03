@@ -16,3 +16,5 @@ The runtime page is a harness, not a full-site scan. It deliberately injects one
 ## Stage 2 connection
 
 After a runnable application exists, call `auditRuntimeStyles` from Playwright on every routed page and relevant theme/state combination. Feed real `entry.css`, the named unlayered exception files, and the P8b global-class manifest into the static/build audit in CI.
+
+Stage 2 must also bind `unlayeredExceptions` to the repository's actual unlayered-file set with a bidirectional test when the first exception is introduced.

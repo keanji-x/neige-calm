@@ -98,6 +98,8 @@ it('drives coverage against the complete real repository tree', () => {
   const actualFiles = repositoryFiles(repoRoot);
   const violations = auditRepositoryOwnership(repoRoot, [], []);
   expect(actualFiles.length).toBeGreaterThan(100);
-  expect(violations).toHaveLength(actualFiles.length);
   expect(violations.every(({ rule }) => rule === 'coverage')).toBe(true);
+  const unownedFiles = violations.map(({ message }) => message.replace(/ has 0 owners$/, ''));
+  expect(new Set(unownedFiles)).toEqual(new Set(actualFiles));
+  expect(new Set(actualFiles)).toEqual(new Set(unownedFiles));
 });
