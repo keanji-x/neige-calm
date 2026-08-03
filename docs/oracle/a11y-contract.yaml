@@ -949,9 +949,10 @@
   owner_slice: core/domain/overlay
   intentional_omission: true
   runtime_layer: core
-  verification_owner: review-waiver
+  verification_owner: null
   test_tier: none
-  migration: pending
+  migration: skipped
+  skip_reason: 服务端强制契约，前端无实现责任
 
 # ---------------------------------------------------------------------------
 # §3.1 — Tab order

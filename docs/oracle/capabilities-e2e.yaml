@@ -3014,9 +3014,10 @@
   owner_slice: features/auth/actor
   intentional_omission: false
   runtime_layer: features
-  verification_owner: e2e
+  verification_owner: null
   test_tier: browser
-  migration: pending
+  migration: skipped
+  skip_reason: 服务端强制契约，前端无实现责任
 
 # =============================================================================
 # SECTION 9 — WS event bus, cursor resync, deep-link (#56 slice 5, #290)
@@ -4083,9 +4084,10 @@
   owner_slice: systems/terminal/protocol
   intentional_omission: false
   runtime_layer: systems
-  verification_owner: e2e
+  verification_owner: null
   test_tier: browser
-  migration: pending
+  migration: skipped
+  skip_reason: 服务端强制契约，前端无实现责任
 
 - id: E2E-CAP-TERMINAL-006
   kind: capability
