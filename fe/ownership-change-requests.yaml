@@ -10,3 +10,6 @@
 - path: fe/web/src/styles/unlayered-exceptions.yaml
   reason: P8b2 creates the frozen unlayered-exception deny-by-default manifest.
   issue: "#997"
+- path: fe/web/src/styles/vendor.css
+  reason: P8b2 adds the sole third-party CSS aggregation point and wraps Astryx's astryx-base layer.
+  issue: "#997"

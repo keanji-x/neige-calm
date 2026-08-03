@@ -18,7 +18,7 @@ GATE-TOKENS-009 的故意缺口仅是 `--r` 不进入 radius 形状数组；本�
 
 ## Cascade 与 manifest
 
-`entry.css` 是唯一入口并固定 `reset → vendor → tokens → base → astryx → ui → features → overrides`；`tokens.css` 由入口接入 `tokens`。CSS Modules 不会自动进入 layer：`ui/**.module.css` 必须包 `@layer ui`，`features/**.module.css` 必须包 `@layer features`，机器检查在第一份模块样式出现前已经生效。
+`entry.css` 是唯一入口并固定 `reset → vendor → tokens → base → astryx → ui → features → overrides`；`tokens.css` 由入口接入 `tokens`。Astryx 自带的真实层名是 `astryx-base`，因此由 `vendor.css` 汇入后再由入口包进顶层 `astryx`，而不是企图用同名层声明覆盖它；所有第三方 CSS 只允许在 `vendor.css` import，TS/TSX 禁止直接 import CSS。CSS Modules 不会自动进入 layer：`ui/**.module.css` 必须包 `@layer ui`，`features/**.module.css` 必须包 `@layer features`，机器检查在第一份模块样式出现前已经生效。
 
 `global-classes.yaml` 今天是空数组，因为 `web/src` 尚无组件/业务 CSS，`tokens.css` 也没有 class selector。未来只有经 change request 批准、确需跨模块共享的应用类才会登记；CSS AST 实际集合与 manifest 双向相等，所以空值表达“任何未登记全局类都禁止”，不是未完成占位。负向 fixture 注入 `.escaped` 会触发 `CSS-only class`。
 
