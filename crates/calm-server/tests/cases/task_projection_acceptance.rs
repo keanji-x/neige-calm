@@ -11,6 +11,7 @@ use axum::http::Request;
 use axum::{Extension, Json};
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
+use calm_server::db::sqlite::project_tasks_tx;
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
@@ -958,6 +959,127 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     );
     assert_eq!(keys(&boot).await, vec!["b", "flight"]);
     assert!(!b.is_empty());
+}
+
+#[tokio::test]
+async fn rebuild_matches_incremental_withdrawal_outcomes_and_exactly_once_events() {
+    for released_withdrawal in [false, true] {
+        let boot = new_boot().await;
+        if released_withdrawal {
+            sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
+                .bind(boot.wave_id.as_str())
+                .execute(&boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        }
+        let mut active = task(if released_withdrawal {
+            "released-flight"
+        } else {
+            "ready-flight"
+        });
+        let (id, rev) = upsert(&boot, None, active.clone()).await;
+        if released_withdrawal {
+            active["released_by_user"] = json!(true);
+            user_upsert(&boot, &id, rev, active.clone()).await;
+        }
+        sqlx::query(
+            "UPDATE tasks SET status='dispatched',claim_context_json='[]' WHERE wave_id=?1",
+        )
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+        let mut withdrawn = active;
+        if released_withdrawal {
+            withdrawn["released_by_user"] = json!(false);
+        } else {
+            withdrawn["ready"] = json!(false);
+        }
+        let block = ReportBlock {
+            id: id.clone(),
+            kind: "task".into(),
+            rev: 2,
+            payload: withdrawn.clone(),
+        };
+        let (declarations, diagnostics) =
+            calm_types::report_blocks::tasks::project_task_declarations(&[block]);
+        let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
+        let incremental =
+            project_tasks_tx(&mut tx, boot.wave_id.as_str(), &declarations, &diagnostics)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(
+            incremental.kernel_events.len(),
+            1,
+            "incremental withdrawal event"
+        );
+        let stale: i64 =
+            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1")
+                .bind(boot.wave_id.as_str())
+                .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        let incremental_bytes = task_bytes(&boot).await;
+
+        let (card_id, payload_json, bytes): (String, String, Vec<u8>) = sqlx::query_as(
+            "SELECT id,json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+        )
+        .bind(boot.wave_id.as_str())
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+        let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+        doc.upsert_block(Some(&id), "task", &render_fence("task", &withdrawn))
+            .unwrap();
+        let mut payload: WaveReportPayload = serde_json::from_str(&payload_json).unwrap();
+        payload.body = doc.project().unwrap().1;
+        payload.blocks = Some(doc.blocks_snapshot().unwrap());
+        sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=?2 WHERE id=?3")
+            .bind(serde_json::to_string(&payload).unwrap())
+            .bind(doc.to_bytes())
+            .bind(card_id)
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=NULL WHERE wave_id=?1")
+            .bind(boot.wave_id.as_str())
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+        let rebuilt = rebuild(&boot).await;
+        assert_eq!(rebuilt.kernel_events.len(), 1, "rebuild withdrawal event");
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=?1 WHERE wave_id=?2")
+            .bind(stale)
+            .bind(boot.wave_id.as_str())
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            task_bytes(&boot).await,
+            incremental_bytes,
+            "incremental/rebuild task bytes"
+        );
+        let incremental_payloads: Vec<_> = incremental
+            .kernel_events
+            .iter()
+            .map(|(_, _, event)| serde_json::to_value(event).unwrap())
+            .collect();
+        let rebuilt_payloads: Vec<_> = rebuilt
+            .kernel_events
+            .iter()
+            .map(|(_, _, event)| serde_json::to_value(event).unwrap())
+            .collect();
+        assert_eq!(
+            rebuilt_payloads, incremental_payloads,
+            "kernel event payloads"
+        );
+        assert!(
+            rebuild(&boot).await.kernel_events.is_empty(),
+            "stale rebuild is event-idempotent"
+        );
+    }
 }
 
 #[tokio::test]

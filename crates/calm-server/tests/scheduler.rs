@@ -35,6 +35,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, task_insert_tx,
 };
+use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
@@ -2524,50 +2525,70 @@ async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Terminal, &[]);
     pending.status = TaskStatus::Dispatched;
-    let pending_id = pending.id.clone();
-    let (_, pending_payload) = build_worker_payload(&pending).unwrap();
     seed_task(&boot, pending).await;
     let mut missing = plan_task(&boot.wave_id, "boot-missing-op", TaskKind::Terminal, &[]);
     missing.status = TaskStatus::Dispatched;
     seed_task(&boot, missing).await;
+    sqlx::query("UPDATE tasks SET claim_context_json='[]' WHERE wave_id=?1")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     let spawned = Arc::new(AtomicUsize::new(0));
-    let (runtime, scheduler) = build_scheduler_unbooted(
+    let (runtime, _) = build_scheduler_unbooted(
         &boot,
         vec![context_checked_terminal_adapter(&boot, spawned.clone())],
         Arc::new(tokio::sync::Semaphore::new(8)),
     );
-    let repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
-    repo.insert_operation(
-        "terminal-worker",
-        OperationKey {
-            operation_key: new_id(),
-            idempotency_key: Some(pending_id.clone()),
-            payload_hash: stable_payload_hash(&pending_payload).unwrap(),
-        },
-        pending_payload,
-    )
-    .await
-    .unwrap();
-
-    scheduler.sweep_boot().await;
-    assert_eq!(spawned.load(Ordering::SeqCst), 0);
-    assert_eq!(operation_count(&boot, "terminal-worker").await, 1);
-    let pending_op = runtime
-        .find_by_kind_and_idempotency("terminal-worker", &pending_id)
+    let dispatcher = Dispatcher::spawn_with_terminal_renderer_and_operation_runtime(
+        boot.repo.clone(),
+        boot.events.clone(),
+        boot.write.clone(),
+        Arc::new(CodexClient::new_stub()),
+        Arc::new(DaemonClient::new_stub()),
+        TerminalRendererRegistry::new(),
+        None,
+        boot.shared_codex_appserver.clone(),
+        runtime.clone(),
+        8,
+    );
+    let scheduler = dispatcher.scheduler();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("ALTER TABLE task_ref_index RENAME TO task_ref_index_boot_failure")
+        .execute(&pool)
         .await
-        .unwrap()
         .unwrap();
-    assert_eq!(pending_op.phase.tag(), PhaseTag::Pending);
-
+    assert!(
+        calm_server::task_context::sweep_with_timeout(
+            dispatcher.context_monitor().as_ref(),
+            Duration::from_secs(30),
+        )
+        .await
+        .is_err(),
+        "the real boot context sweep must fail"
+    );
     let plan = runtime.recover_on_boot().await.unwrap();
     runtime.apply_recovery(plan).await.unwrap();
-    scheduler.open_context_sweep_gate().await;
+    scheduler.sweep_boot().await;
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 0);
+
+    sqlx::query("ALTER TABLE task_ref_index_boot_failure RENAME TO task_ref_index")
+        .execute(&pool)
+        .await
+        .unwrap();
+    dispatcher.reconcile_tick_for_test().await;
     for _ in 0..100 {
         if spawned.load(Ordering::SeqCst) == 2 {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert_eq!(
+        operation_count(&boot, "terminal-worker").await,
+        2,
+        "tick operation count"
+    );
     assert_eq!(spawned.load(Ordering::SeqCst), 2);
     assert_eq!(operation_count(&boot, "terminal-worker").await, 2);
     assert_eq!(

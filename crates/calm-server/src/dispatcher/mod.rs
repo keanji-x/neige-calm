@@ -476,6 +476,16 @@ impl Dispatcher {
         Arc::clone(&self.context_monitor)
     }
 
+    #[cfg(any(test, feature = "fixtures"))]
+    #[allow(clippy::if_same_then_else)]
+    pub async fn reconcile_tick_for_test(&self) {
+        if self.context_monitor.sweep().await.is_err() {
+            self.scheduler.sweep_all().await;
+        } else if !self.scheduler.open_context_sweep_gate().await {
+            self.scheduler.sweep_all().await;
+        }
+    }
+
     /// Spawn the dispatcher background task.
     ///
     /// `permits` configures the global concurrent-spawn cap. The
@@ -851,10 +861,10 @@ impl Dispatcher {
                 interval.tick().await;
                 if let Err(error) = tick_context_monitor.sweep().await {
                     tracing::warn!(%error, "periodic task context sweep failed");
-                } else {
-                    tick_scheduler.open_context_sweep_gate().await;
+                    tick_scheduler.sweep_all().await;
+                } else if !tick_scheduler.open_context_sweep_gate().await {
+                    tick_scheduler.sweep_all().await;
                 }
-                tick_scheduler.sweep_all().await;
             }
         });
         let reaper_handle = if reaper_disabled_from_env() {

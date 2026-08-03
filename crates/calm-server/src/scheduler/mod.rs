@@ -1222,14 +1222,15 @@ impl Scheduler {
 
     /// A successful full context sweep opens the resume gate exactly once.
     /// The winner immediately retries dispatched rows in the same turn.
-    pub async fn open_context_sweep_gate(self: &Arc<Self>) {
-        if self
+    pub async fn open_context_sweep_gate(self: &Arc<Self>) -> bool {
+        let opened = self
             .context_sweep_boot_done
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
+            .is_ok();
+        if opened {
             self.sweep_all().await;
         }
+        opened
     }
 
     /// Shared sweep body: runs the reconcile arms inline and returns
