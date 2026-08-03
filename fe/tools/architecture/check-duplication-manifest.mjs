@@ -36,7 +36,9 @@ function declaredNames(statement) {
 /** @param {string} root @returns {string[]} */
 export function checkDuplicationManifest(root) {
   const errors = [];
-  const entriesBySymbol = new Map(duplicationManifest.flatMap((entry) => entry.symbols.map((symbol) => [symbol, entry])));
+  const entriesBySymbol = new Map(duplicationManifest
+    .filter((entry) => entry.type === 'unique-symbol')
+    .flatMap((entry) => entry.symbols.map((symbol) => [symbol, entry])));
   for (const file of [...filesUnder(resolve(root, 'core')), ...filesUnder(resolve(root, 'web/src'))]) {
     const path = relative(root, file).replaceAll('\\', '/');
     const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
