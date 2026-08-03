@@ -1,0 +1,8 @@
+- path: fe/core/model.ts
+  type: file
+  owner: core
+  readonly: false
+- path: fe/web/src
+  type: directory
+  owner: web
+  readonly: false
