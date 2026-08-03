@@ -29,6 +29,10 @@ if [[ ${TAIL_ONLY:-0} != 1 ]]; then
 mutate 'no-direct-persistence' 'fe/tools/architecture/no-direct-persistence.mjs' "node.id.type !== 'ObjectPattern'" "node.id.type === 'ObjectPattern'" 'tools/architecture/architecture-rules.test.ts' 'rejects persistence/destructure-window.ts'
 mutate 'calm-key-literal' 'fe/tools/architecture/no-calm-key-outside-core-keys.mjs' '/^calm[:.]/' '/^calm[:]/' 'tools/architecture/architecture-rules.test.ts' 'rejects calm-key/template-head.ts'
 mutate 'class-dom-query' 'fe/tools/architecture/no-class-dom-query.mjs' "'querySelectorAll', 'closest', 'matches'" "'querySelectorAll', 'matches'" 'tools/architecture/architecture-rules.test.ts' 'rejects dom-selector/closest.ts'
+mutate 'dup-checker-declaration' 'fe/tools/architecture/check-duplication-manifest.mjs' 'for (const name of declaredNames(statement))' 'for (const name of [])' 'tools/architecture/architecture.test.ts' 'dup-inv-001: accepts'
+mutate 'dup-checker-import-fence' 'fe/tools/architecture/check-duplication-manifest.mjs' "item.type === 'import-fence'" "item.type === 'import-fence-disabled'" 'tools/architecture/architecture.test.ts' 'dup-inv-004: accepts'
+mutate 'dup-checker-consumer-import' 'fe/tools/architecture/check-duplication-manifest.mjs' 'if (target !== normalized(entry.canonicalPath))' 'if (false)' 'tools/architecture/architecture.test.ts' 'dup-consumer-import: accepts'
+mutate 'dup-canonical-path' 'fe/tools/architecture/duplication-manifest.mjs' "canonicalPath: 'web/src/ui/schema-form/public.tsx'" "canonicalPath: 'web/src/ui/schema-form/disabled.tsx'" 'tools/architecture/architecture.test.ts' 'dup-inv-001: accepts'
 
 for item in \
   '001 SchemaForm' '002 CalmSelect' '003 FormField' '006 COVE_PALETTE' \
