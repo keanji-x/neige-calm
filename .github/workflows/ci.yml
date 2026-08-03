@@ -393,6 +393,31 @@ jobs:
       - name: npm run test
         run: npm run test
 
+  fe-browser:
+    name: fe-browser (vitest + chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: fe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Install Chromium with system dependencies
+        run: npx playwright install --with-deps chromium
+
+      - name: npm run test:browser
+        run: npm run test:browser
+
   # #903 — the rust-dependent half of the `web (build + test + a11y)` split
   # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).
   # It builds the replay bin the Playwright setup hook needs. Deliberately
