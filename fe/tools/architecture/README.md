@@ -67,6 +67,10 @@ The local mutation harness first runs the named sentinel, then reruns its whole
 Vitest file without `-t`. Its report lists every failed test and the full-suite
 failure count; multiple failures are expected when one shared checker branch
 guards several independently enumerated shapes or contracts.
+The harness publishes its restore target only after the temporary backup copy
+succeeds, so an early signal cannot restore an empty file. Bash may defer a
+SIGTERM trap until the foreground Vitest process exits; restoration then runs
+before the harness terminates.
 
 | Contract | Constraint type | Rule/check | Fixture directory |
 | --- | --- | --- | --- |
