@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import stylelint from 'stylelint';
+import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
 import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, auditUnlayeredExceptions, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
@@ -358,22 +359,25 @@ describe('P8b2 forward style gates', () => {
 
   it('binds each unlayered exception to selector, property, expiry, and actual use', () => {
     const css = read('unlayered-exceptions/exact.css');
+    const negative = parse(read('unlayered-exceptions/negative.yaml')) as Record<string, {
+      selector: string; property: string; expiry: string;
+    }[]>;
     expect(auditUnlayeredExceptions(css, 'case.css', order,
       [{ selector: '.editor > .cm-content', property: 'caret-color', expiry: '2099-01-01' }], '2026-08-03'))
       .toEqual([]);
     expect(auditUnlayeredExceptions(css, 'case.css', order,
-      [{ selector: '.editor > .cm-content', property: 'color', expiry: '2099-01-01' }], '2026-08-03'))
+      negative['wrong-property'] ?? [], '2026-08-03'))
       .toEqual(expect.arrayContaining([
         'case.css: unapproved unlayered declaration .editor > .cm-content { caret-color }',
         'case.css: unused exception .editor > .cm-content { color }',
       ]));
     expect(auditUnlayeredExceptions(css, 'case.css', order,
-      [{ selector: '.editor > .cm-content', property: 'caret-color', expiry: '2020-01-01' }], '2026-08-03'))
+      negative.expired ?? [], '2026-08-03'))
       .toContain('case.css: exception 1 expired on 2020-01-01');
-    expect(auditUnlayeredExceptions(css, 'case.css', order, [
-      { selector: '.editor > .cm-content', property: 'caret-color', expiry: '2099-01-01' },
-      { selector: '.editor > .cm-line', property: 'color', expiry: '2099-01-01' },
-    ], '2026-08-03')).toContain('case.css: unused exception .editor > .cm-line { color }');
+    expect(auditUnlayeredExceptions(css, 'case.css', order, negative.unused ?? [], '2026-08-03'))
+      .toContain('case.css: unused exception .editor > .cm-line { color }');
+    expect(auditUnlayeredExceptions(css, 'case.css', order, negative['wrong-selector'] ?? [], '2026-08-03'))
+      .toContain('case.css: exception 1 selector lacks rightmost .cm- scope: .editor > .not-cm');
   });
 
   it('audits the real repository manifests and forward gates', () => {
