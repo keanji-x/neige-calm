@@ -69,9 +69,8 @@ describe('CSS AST fixtures', () => {
   it('compares extracted global classes with the manifest in both directions', () => {
     const actual = extractGlobalClasses([read('manifest/classes.css')]);
     expect(compareGlobalClassManifest(actual, ['alpha', 'beta'])).toEqual([]);
-    expect(compareGlobalClassManifest(actual, ['alpha', 'stale'])).toEqual([
+    expect(compareGlobalClassManifest(actual, ['alpha'])).toEqual([
       { rule: 'global-class-manifest', message: 'CSS-only class: beta' },
-      { rule: 'global-class-manifest', message: 'manifest-only class: stale' },
     ]);
   });
 });

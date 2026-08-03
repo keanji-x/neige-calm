@@ -26,7 +26,7 @@ export function layerOrder(entryCss: string): string[] {
   return declaration.params.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
-function classes(selector: string): string[] {
+function classes(selector: string, includeFunctionalPseudoClasses = false): string[] {
   const found: string[] = [];
   let square = 0;
   let round = 0;
@@ -35,7 +35,7 @@ function classes(selector: string): string[] {
     if (selector[index] === ']') { square -= 1; continue; }
     if (selector[index] === '(') { round += 1; continue; }
     if (selector[index] === ')') { round -= 1; continue; }
-    if (square !== 0 || round !== 0) continue;
+    if (square !== 0 || (!includeFunctionalPseudoClasses && round !== 0)) continue;
     if (selector[index] !== '.') continue;
     let cursor = index + 1;
     let name = '';
@@ -74,7 +74,7 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
 
 export function extractGlobalClasses(stylesheets: readonly string[]): Set<string> {
   const result = new Set<string>();
-  for (const css of stylesheets) postcss.parse(css).walkRules((rule: Rule) => classes(rule.selector).forEach((name) => result.add(name)));
+  for (const css of stylesheets) postcss.parse(css).walkRules((rule: Rule) => classes(rule.selector, true).forEach((name) => result.add(name)));
   return result;
 }
 
