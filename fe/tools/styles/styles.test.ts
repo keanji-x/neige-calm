@@ -100,19 +100,24 @@ describe('CSS AST fixtures', () => {
   });
 
   it('covers every supported @layer writing form with the effective top-level name', () => {
-    const forms = new Map([
+    const forms = new Map<string, string | readonly string[] | null>([
       ['named.css', 'name'],
       ['dotted.css', 'a'],
       ['nested.css', 'a'],
       ['nested-dotted.css', 'a'],
-      ['order.css', 'none'],
-      ['anonymous.css', 'anonymous'],
+      ['order.css', ['a', 'b']],
+      ['anonymous.css', null],
       ['import.css', 'name'],
     ]);
-    for (const [file] of forms) {
-      const violations = auditLayeredCss(read(`layer-forms/${file}`), ['name', 'a', 'b'] as const);
-      if (file === 'anonymous.css') expect(violations, file).toEqual([{ rule: 'known-layer', message: 'anonymous layer' }]);
-      else expect(violations, file).toEqual([]);
+    for (const [file, expected] of forms) {
+      const css = read(`layer-forms/${file}`);
+      if (expected === null) {
+        expect(auditLayeredCss(css, order), file).toEqual([{ rule: 'known-layer', message: 'anonymous layer' }]);
+      } else {
+        const expectedLayers = typeof expected === 'string' ? [expected] : expected;
+        expect(auditLayeredCss(css, expectedLayers), file).toEqual([]);
+        expect(auditLayeredCss(css, ['zzz']).some(({ rule }) => rule === 'known-layer'), file).toBe(true);
+      }
     }
     const fixtureFiles = new Set(readdirSync(resolve(fixtures, 'layer-forms')));
     expect(fixtureFiles).toEqual(new Set(forms.keys()));
