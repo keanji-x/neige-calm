@@ -101,23 +101,84 @@ fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
     )
 }
 
-async fn wave_projection_policy(
+/// One in-flight `tasks` row, as carried by [`wave_projection_state`]'s
+/// `json_group_array`. Shape mirrors the four columns the predicate needs;
+/// `declared_by` / `origin` are `NOT NULL` since migration 0068.
+#[derive(Deserialize)]
+struct InflightTaskRow {
+    key: String,
+    status: String,
+    declared_by: String,
+    origin: String,
+}
+
+/// Everything the schedulability verdict needs from `waves` + the in-flight
+/// `tasks` rows, read in ONE statement (#1016).
+struct WaveProjectionState {
+    policy: Option<String>,
+    ceiling: i64,
+    require_gates: bool,
+    /// Cove of the wave being projected — the source side of the
+    /// cross-cove reference check.
+    source_cove: String,
+    inflight: Vec<InflightTaskRow>,
+}
+
+#[derive(sqlx::FromRow)]
+struct WaveProjectionStateRow {
+    automation_policy: Option<String>,
+    spec_task_ceiling: Option<i64>,
+    require_task_gates: i64,
+    cove_id: String,
+    inflight_json: String,
+}
+
+/// Reads the wave's projection policy, its cove, and every in-flight task
+/// row in a SINGLE statement.
+///
+/// This used to be four statements — policy/ceiling/gates, the in-flight key
+/// list, the ceiling-occupancy `count(*)`, and `SELECT cove_id` — which is
+/// fine inside the write path's IMMEDIATE transaction but mixes database
+/// versions on the read path, where the caller runs in autocommit. A ceiling
+/// read at t0 against an occupancy counted at t1 can report a capacity that
+/// never existed, and the orphaned-in-flight scan could contradict the
+/// in-flight key list. One statement is one implicit transaction, so all of
+/// it now comes from one version. It also removes the `SELECT cove_id ...
+/// fetch_one` that turned a concurrently deleted wave into a 500 (it is the
+/// `NotFound` below, i.e. a 404, on the same row that carries the policy).
+///
+/// The three subsets the predicate needs are all derivable from the in-flight
+/// rows, so the extra statements bought nothing even before consistency:
+/// every in-flight key, the `declared_by='spec' AND origin='block'` count,
+/// and the `origin='block'` orphan candidates.
+async fn wave_projection_state(
     conn: &mut SqliteConnection,
     wave_id: &str,
-) -> Result<(Option<String>, i64, bool)> {
-    let row: Option<(Option<String>, Option<i64>, i64)> = sqlx::query_as(
-        "SELECT automation_policy, spec_task_ceiling, require_task_gates FROM waves WHERE id=?1",
+) -> Result<WaveProjectionState> {
+    let row: Option<WaveProjectionStateRow> = sqlx::query_as(
+        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
+                  (SELECT json_group_array(json_object(
+                       'key', t.key, 'status', t.status,
+                       'declared_by', t.declared_by, 'origin', t.origin))
+                   FROM tasks t
+                   WHERE t.wave_id = w.id
+                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json
+           FROM waves w WHERE w.id = ?1"#,
     )
     .bind(wave_id)
     .fetch_optional(&mut *conn)
     .await?;
-    let (policy, ceiling, require_gates) =
-        row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
-    Ok((
-        policy,
-        ceiling.unwrap_or(DEFAULT_SPEC_TASK_CEILING).max(0),
-        require_gates != 0,
-    ))
+    let row = row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+    Ok(WaveProjectionState {
+        policy: row.automation_policy,
+        ceiling: row
+            .spec_task_ceiling
+            .unwrap_or(DEFAULT_SPEC_TASK_CEILING)
+            .max(0),
+        require_gates: row.require_task_gates != 0,
+        source_cove: row.cove_id,
+        inflight: serde_json::from_str(&row.inflight_json)?,
+    })
 }
 
 /// The single DB-aware schedulability predicate used by writes, rebuilds and reads.
@@ -125,39 +186,59 @@ async fn wave_projection_policy(
 /// Takes a bare connection rather than a transaction (#1016): the WRITE path
 /// hands it `&mut **tx` so its verdict stays atomic with the projection it
 /// drives, while the read-only path (`read.rs::task_diagnostics`) hands it a
-/// pooled connection in AUTOCOMMIT mode. An autocommit statement that blocks
-/// on a shared-cache table lock unwinds its implicit transaction — releasing
-/// every table lock it had taken — before parking in `unlock_notify`, so it
-/// can never be the lock-HOLDING waiter that closes a deadlock cycle (pinned
-/// by `deadlock_semantics_autocommit_join_*`). An explicit deferred tx here
-/// would hold R locks across statements and could cycle against any IMMEDIATE
-/// writer that touches the same tables in the opposite order.
+/// pooled connection in AUTOCOMMIT mode.
+///
+/// Consistency on the READ path, stated precisely rather than as a blanket
+/// claim. The verdict core — policy, ceiling, in-flight occupancy, in-flight
+/// keys, the wave's cove — is ONE statement ([`wave_projection_state`]), so a
+/// displayed capacity or schedulability decision can no longer be assembled
+/// from two different versions of the database. Two reads remain outside that
+/// statement and are therefore only individually consistent:
+///
+///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
+///     key is already executing"; and
+///   * the per-reference existence/cove lookups, which are questions about
+///     OTHER waves and cards and are inherently point-in-time.
+///
+/// Both are strictly narrower than what the four-statement version mixed, and
+/// on the write path all of it runs inside the caller's IMMEDIATE
+/// transaction, so the verdict that actually admits tasks is fully atomic.
+///
+/// Why not an explicit deferred tx on the read path: it would hold R locks
+/// across statements and could cycle against an IMMEDIATE writer touching the
+/// same tables in the opposite order — the `SQLITE_LOCKED` (6) abort
+/// `deferred_read_tx_deadlock_repro` pins for the sibling reader. That cycle
+/// only exists on a shared-cache database (the in-memory sqlite used by CI
+/// and `make dev-fresh`); the production file database (PRIVATECACHE + WAL)
+/// gives readers a snapshot and never cycles. An autocommit statement that
+/// blocks unwinds its implicit transaction — releasing every table lock it
+/// took — before parking in `unlock_notify`, so it can never be the
+/// lock-HOLDING waiter (pinned by `deadlock_semantics_autocommit_join_*`).
+/// `begin_immediate_tx` would also be cycle-free and fully consistent, but it
+/// takes the writer slot and would serialize this read against every writer
+/// on production too — a real production cost for a non-production gap.
 pub async fn evaluate_schedulability(
     conn: &mut SqliteConnection,
     wave_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<Vec<BlockVerdict>> {
-    let (configured_policy, ceiling, require_gates) =
-        wave_projection_policy(&mut *conn, wave_id).await?;
+    let state = wave_projection_state(&mut *conn, wave_id).await?;
+    let configured_policy = state.policy;
+    let ceiling = state.ceiling;
+    let require_gates = state.require_gates;
+    let source_cove = state.source_cove;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait")
         || (configured_policy.is_none() && declarations.iter().any(|d| d.tombstoned_by_user));
     // unknown_deps knows every in-flight key in the wave, including rows
     // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
-    let inflight: Vec<(String,)> = sqlx::query_as(
-        "SELECT key FROM tasks WHERE wave_id=?1 AND status IN ('dispatched','running','verifying')",
-    )
-    .bind(wave_id)
-    .fetch_all(&mut *conn)
-    .await?;
-    let inflight_keys: Vec<String> = inflight.into_iter().map(|(key,)| key).collect();
+    let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
-    let occupied: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM tasks WHERE wave_id=?1 AND declared_by='spec' AND origin='block' AND status IN ('dispatched','running','verifying')",
-    )
-    .bind(wave_id)
-    .fetch_one(&mut *conn)
-    .await?;
+    let occupied: i64 = state
+        .inflight
+        .iter()
+        .filter(|r| r.declared_by == "spec" && r.origin == "block")
+        .count() as i64;
     let capacity = ceiling.saturating_sub(occupied).max(0) as usize;
 
     let unknown: BTreeSet<_> = unknown_deps(declarations, &inflight_keys)
@@ -166,10 +247,6 @@ pub async fn evaluate_schedulability(
     let gate_bad: BTreeSet<_> = gate_rule_violations(declarations, require_gates)
         .into_iter()
         .collect();
-    let source_cove: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id=?1")
-        .bind(wave_id)
-        .fetch_one(&mut *conn)
-        .await?;
     let mut verdicts = Vec::with_capacity(declarations.len());
     for declaration in declarations {
         let mut diagnostics = block_local_diags
@@ -306,18 +383,14 @@ pub async fn evaluate_schedulability(
     // still-live projection row as a synthetic verdict so both read APIs retain
     // the §6.5 withdrawal diagnostic without changing their response shape.
     let declared_keys: BTreeSet<&str> = declarations.iter().map(|d| d.key.as_str()).collect();
-    let orphaned_inflight: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key,status FROM tasks WHERE wave_id=?1 AND origin='block' AND status IN ('dispatched','running','verifying')",
-    )
-    .bind(wave_id)
-    .fetch_all(&mut *conn)
-    .await?;
-    for (key, status) in orphaned_inflight {
-        if !declared_keys.contains(key.as_str()) {
+    // Same rows the in-flight key list came from (one statement, one
+    // version), narrowed to block-origin projection rows.
+    for row in state.inflight.iter().filter(|r| r.origin == "block") {
+        if !declared_keys.contains(row.key.as_str()) {
             verdicts.push(BlockVerdict {
                 block_id: String::new(),
-                diagnostics: vec![withdrawal_diagnostic(&key, &status)],
-                key,
+                diagnostics: vec![withdrawal_diagnostic(&row.key, &row.status)],
+                key: row.key.clone(),
                 schedulable: false,
             });
         }

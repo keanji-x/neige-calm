@@ -41,10 +41,13 @@
 //!      W(overlays); signals `overlays_locked`, then parks on `go`.
 //!   2. test: spawns the reader `repo.wave_detail(id)`. It takes R(waves),
 //!      R(cards), then MUST park on `overlays` — the writer holds W there.
-//!      The reader is now a lock-holding waiter.
+//!      Under the pre-fix deferred tx the reader is at this point a
+//!      lock-HOLDING waiter; under the fix it has already released
+//!      everything.
 //!   3. test: releases `go`.
 //!   4. writer: `wave_delete_tx` walks down to `DELETE FROM waves`, which
-//!      needs W(waves) — held R by the parked reader. Cycle closed.
+//!      needs W(waves) — held R by the parked reader in the pre-fix shape.
+//!      Cycle closed, code 6.
 //!
 //! The test asserts the invariant the allowlist CLAIMED to hold — that no
 //! such cycle can form. It was RED when written (the writer's
@@ -52,16 +55,51 @@
 //! `SQLITE_LOCKED` "database is deadlocked" — the non-retryable cycle
 //! abort #930 set out to eliminate, not the retryable code 5
 //! `SQLITE_BUSY`). The fix dropped the explicit transaction from
-//! `wave_detail`: its SELECTs now run in AUTOCOMMIT, and an autocommit
-//! statement unwinds its implicit transaction — releasing every table lock
-//! it took — before parking in `unlock_notify`, so it can no longer be the
-//! lock-HOLDING waiter. The reader still PARKS on `overlays` (the
-//! `!reader.is_finished()` assertion below still holds), it just holds
-//! nothing while parked, so the writer walks through.
+//! `wave_detail` and collapsed its three SELECTs into ONE statement: a
+//! single statement is AUTOCOMMIT (a blocked autocommit statement unwinds
+//! its implicit transaction, releasing every table lock it took, before
+//! parking in `unlock_notify` — so it can never be the lock-HOLDING
+//! waiter) and is simultaneously one implicit transaction (so the read
+//! keeps its snapshot). The reader still PARKS on `overlays`, it just
+//! holds nothing while parked, so the writer walks through.
+//!
+//! Non-vacuity. `!reader.is_finished()` alone proves nothing — it holds
+//! for a task the runtime has not polled yet, and the headline assertion
+//! is a NEGATIVE one (`code != 6`) that a never-scheduled reader would
+//! satisfy trivially. Three positive facts pin the reader to its park
+//! point instead:
+//!   1. it signals `entered` from inside the spawned task before calling
+//!      `wave_detail`, and the test awaits that signal BEFORE releasing
+//!      the writer;
+//!   2. it stays unfinished across a fully-yielding grace window while
+//!      HOLDING a checked-out sqlite connection — the pool shows two
+//!      connections in use, writer plus reader. A reader that was polled
+//!      but never reached the database (the exact vacuity case) holds
+//!      none, and that assertion goes red;
+//!   3. it comes back with BOTH overlay rows. The writer had deleted them
+//!      (uncommitted) before the reader started and only restored them by
+//!      rolling back, so observing them is proof the reader's `overlays`
+//!      read landed after the writer released the lock — it queued, it did
+//!      not skip.
+//!
+//! Sibling reader. `read.rs::task_diagnostics` took the same route and has
+//! no dynamic repro of its own, deliberately. What a repro can establish is
+//! the MECHANISM — that a deferred tx really closes a cycle and that
+//! autocommit really does not — and that is call-site independent; it is
+//! pinned here and in `calm_truth::db::sqlite::deadlock_semantics_tests`.
+//! What guards the call sites is
+//! `deferred_write_tx_invariant::production_deferred_transactions_are_read_only_allowlisted`,
+//! whose allowlist is now EMPTY: any `.begin(` reappearing anywhere under
+//! `calm-server/src` or `calm-truth/src` fails it. That is a universal
+//! fail-closed negative over both readers, strictly wider than a
+//! per-call-site test could be.
 //!
 //! Scope note: the app's in-memory sqlite (`db_url=mock`, CI and
 //! `make dev-fresh`) is a shared-cache database with table-granularity
-//! locks, which is exactly where this cycle lives.
+//! locks, which is exactly where this cycle lives. The production file
+//! database (PRIVATECACHE + WAL) hands readers an MVCC snapshot and never
+//! forms this cycle at all — which is why the fix had to be one that costs
+//! production nothing.
 
 #![cfg(unix)]
 
@@ -81,11 +119,12 @@ use calm_server::model::{NewCard, NewCove, NewOverlay, NewWave};
 use serde_json::json;
 use tokio::sync::oneshot;
 
-/// How long the reader is given to reach its park point on `overlays`
-/// before the writer is released. This is a liveness margin only — it
-/// cannot fabricate the result: if the reader had not yet taken R(waves),
-/// `wave_delete_tx` would simply SUCCEED and the assertion below would fail
-/// loudly rather than pass by luck.
+/// How long the reader is given to sit at its park point on `overlays`
+/// before the writer is released. This is a liveness margin only, and it
+/// cannot fabricate a pass: the window is also where the "reader holds a
+/// checked-out sqlite connection" evidence is sampled, so a reader that has
+/// not actually reached the database fails the run instead of sliding
+/// through the negative `code != 6` assertion.
 const PARK_GRACE: Duration = Duration::from_secs(2);
 
 /// Extended sqlite result code carried by a `CalmError::Db`, if any.
@@ -237,16 +276,50 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
 
     let repo_r = Arc::clone(&repo);
     let wave_id_r = wave_id.clone();
-    let reader = tokio::spawn(async move { repo_r.wave_detail(&wave_id_r).await });
+    let (entered_tx, entered_rx) = oneshot::channel::<()>();
+    let reader = tokio::spawn(async move {
+        // Positive evidence #1: the reader task was actually polled and is
+        // inside `wave_detail`. Without this the `!is_finished()` check
+        // below is vacuous — it holds just as well for a task the runtime
+        // has not touched yet.
+        entered_tx.send(()).expect("test task must be listening");
+        let out = repo_r.wave_detail(&wave_id_r).await;
+        (out, std::time::Instant::now())
+    });
+    tokio::time::timeout(Duration::from_secs(30), entered_rx)
+        .await
+        .expect("reader must reach wave_detail")
+        .expect("reader task must not be dropped");
 
-    tokio::time::sleep(PARK_GRACE).await;
+    // The reader must stay parked for the whole grace window despite being
+    // handed plenty of scheduling opportunities — AND it must be parked
+    // INSIDE sqlite, not merely un-polled. Positive evidence #2: a reader
+    // waiting on a table lock is holding a checked-out pool connection, so
+    // the pool shows two connections in use (writer + reader). A reader that
+    // never reached the database holds none, and this goes red.
+    let pool = repo.pool();
+    let deadline = std::time::Instant::now() + PARK_GRACE;
+    let mut peak_in_use = 0usize;
+    while std::time::Instant::now() < deadline {
+        tokio::task::yield_now().await;
+        assert!(
+            !reader.is_finished(),
+            "wave_detail must be PARKED on `overlays` (W-held by the writer). \
+             It entered the read while the writer already held W(overlays), so \
+             finishing early would mean it never took the lock at all"
+        );
+        peak_in_use = peak_in_use.max(pool.size() as usize - pool.num_idle());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert!(
-        !reader.is_finished(),
-        "wave_detail must be PARKED on overlays (W-held by the writer) while \
-         still holding R(waves)+R(cards) — that is the hold-and-wait state \
-         the allowlist claims cannot exist"
+        peak_in_use >= 2,
+        "the reader must hold a checked-out sqlite connection while parked \
+         (writer + reader = 2 in use); peak observed {peak_in_use} means the \
+         reader never got as far as issuing its statement, which would make \
+         the `code != 6` assertion below vacuous"
     );
 
+    let released_at = std::time::Instant::now();
     go_tx.send(()).expect("writer must still be parked on go");
 
     let outcome = tokio::time::timeout(Duration::from_secs(30), outcome_rx)
@@ -281,7 +354,46 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
          Observed: {outcome:?}"
     );
 
-    // Housekeeping: let both sides finish so the runtime shuts down clean.
+    // ---- positive evidence that the reader really went through `overlays`
+    //
+    // The reader entered `wave_detail` while the writer's IMMEDIATE tx held
+    // W(overlays) with all three overlay rows DELETEd but not committed. The
+    // writer then rolls back, restoring them. So a reader that observes both
+    // overlay rows can only have read `overlays` AFTER that rollback — i.e.
+    // it was serialized behind the writer's lock. A reader that was never
+    // scheduled, or that somehow read through the lock, cannot produce this
+    // result: it would have to see 0 overlays (uncommitted delete visible) or
+    // never reach the assertion at all.
+    //
+    // This is what makes the `assert_ne!(code, "6")` above non-vacuous: the
+    // writer succeeded *while a live reader was parked on its lock*, not
+    // because the reader had wandered off.
+    let (detail, finished_at) = tokio::time::timeout(Duration::from_secs(30), reader)
+        .await
+        .expect("reader must not stall forever")
+        .expect("reader task must not panic");
+    let detail = detail
+        .expect("wave_detail must succeed")
+        .expect("wave must still exist — the writer rolled back");
+    assert_eq!(
+        detail.overlays.len(),
+        2,
+        "reader must observe both overlay rows, which only exist again after \
+         the writer's rollback — that is the proof it PARKED on `overlays` \
+         rather than never running. Observed: {:?}",
+        detail.overlays
+    );
+    assert_eq!(
+        detail.cards.len(),
+        1,
+        "reader must observe the wave's card in the same snapshot"
+    );
+    assert!(
+        finished_at > released_at,
+        "reader must have completed only after the writer was released; \
+         completing earlier would mean it never contended for `overlays`"
+    );
+
+    // Housekeeping: let the writer finish so the runtime shuts down clean.
     let _ = tokio::time::timeout(Duration::from_secs(30), writer).await;
-    let _ = tokio::time::timeout(Duration::from_secs(30), reader).await;
 }

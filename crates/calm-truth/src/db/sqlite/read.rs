@@ -14,6 +14,21 @@ use crate::session_projection_repo::WorkerSessionKind;
 use crate::wave_cove_cache::WaveCoveCache;
 use calm_types::worker::{WorkerSession, WorkerSessionId};
 
+/// Row shape of the single-statement `wave_detail` read (#1016).
+///
+/// The wave columns decode through the usual [`crate::db::rows::WaveRow`]
+/// mirror; `cards` and `overlays` ride along as JSON arrays produced by
+/// `json_group_array` so that all three come from ONE implicit transaction
+/// without the row multiplication a join would cause (a wave-scoped overlay
+/// would pair with every card).
+#[derive(sqlx::FromRow)]
+struct WaveDetailRow {
+    #[sqlx(flatten)]
+    wave: crate::db::rows::WaveRow,
+    cards_json: String,
+    overlays_json: String,
+}
+
 #[async_trait]
 impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- coves
@@ -175,56 +190,89 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
-        // No explicit transaction (#1016). These three SELECTs each run in
-        // AUTOCOMMIT: sqlite's shared cache releases an autocommit
-        // statement's table locks when it blocks (the implicit tx unwinds
-        // before sqlx parks in `unlock_notify`), so this reader can never be
-        // the lock-HOLDING waiter that closes a deadlock cycle. A deferred
-        // read tx here did exactly that — it held R(waves)+R(cards) while
-        // parking on `overlays` and cycled with the IMMEDIATE writer of
-        // `DELETE /api/waves/:id`, which walks overlays -> tasks -> waves
-        // (non-retryable `SQLITE_LOCKED` 6; see
-        // `deferred_read_tx_deadlock_repro`). The cost is that the three
-        // reads are no longer one snapshot — acceptable for a display-only
-        // read whose result is already stale by the time it is serialized;
-        // no caller derives a write decision from it.
-        let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
-               FROM waves WHERE id = ?1"#,
+        // ONE statement, no explicit transaction (#1016).
+        //
+        // Why not a deferred (`pool.begin()`) tx, which is what this used to
+        // be: it held R(waves)+R(cards) while parking on `overlays` and
+        // cycled with the IMMEDIATE writer of `DELETE /api/waves/:id`
+        // (overlays -> tasks -> waves), aborting the writer with the
+        // non-retryable `SQLITE_LOCKED` (6) — see
+        // `deferred_read_tx_deadlock_repro`. That gap is real only on a
+        // SHARED-CACHE database with table-granularity locks, i.e. the
+        // in-memory sqlite CI and `make dev-fresh` run on. The production
+        // file database (PRIVATECACHE + WAL) gives readers an MVCC snapshot
+        // that never blocks, so no cycle exists there either way.
+        //
+        // Why not three separate autocommit statements (the first #1016
+        // attempt): autocommit does break the cycle — a blocked autocommit
+        // statement unwinds its implicit transaction, releasing every table
+        // lock it took, before sqlx parks in `unlock_notify` — but splitting
+        // the read into three statements throws away cross-statement
+        // consistency (a card could appear whose overlays were read from an
+        // older version, or vice versa) on EVERY deployment, including the
+        // production one that never had the problem. That is a pure loss.
+        //
+        // A single statement is both: it is autocommit (so it can never be
+        // the lock-HOLDING waiter that closes a cycle) AND it is one
+        // implicit transaction (so wave, cards and overlays all come from
+        // one version of the database). The lock order is unchanged —
+        // waves, then cards, then overlays — so the repro above still parks
+        // on `overlays`, it just holds nothing while parked.
+        //
+        // The rejected third option was `begin_immediate_tx`: also
+        // cycle-free (it parks at BEGIN holding nothing) and snapshot-
+        // consistent, but it takes the writer slot, which would serialize
+        // every wave-detail read against every writer on the production
+        // database too. Paying a real production cost to close a gap that
+        // does not exist in production is the trade this comment exists to
+        // refuse.
+        //
+        // `cards` / `overlays` come back as JSON arrays shaped exactly like
+        // the public `Card` / `Overlay` serde representation, so they decode
+        // without a second row-mirror to keep in sync; the only fixup is
+        // `deletable`, which is INTEGER in sqlite and `bool` in the model.
+        // Adding a column to `cards` / `overlays` means adding it here, the
+        // same audit the previous explicit SELECT lists already required.
+        let row = sqlx::query_as::<_, WaveDetailRow>(
+            r#"SELECT w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle,
+                      w.cwd, w.workflow_id, w.purpose, w.workflow_input, w.terminal_at,
+                      w.created_at, w.updated_at,
+                      (SELECT json_group_array(json_object(
+                           'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind, 'sort', c.sort,
+                           'payload', json(c.payload), 'title', c.title,
+                           'deletable', json(CASE WHEN c.deletable THEN 'true' ELSE 'false' END),
+                           'created_at', c.created_at, 'updated_at', c.updated_at))
+                       FROM cards c WHERE c.wave_id = w.id) AS cards_json,
+                      (SELECT json_group_array(json_object(
+                           'id', o.id, 'plugin_id', o.plugin_id, 'entity_kind', o.entity_kind,
+                           'entity_id', o.entity_id, 'kind', o.kind, 'payload', json(o.payload),
+                           'updated_at', o.updated_at))
+                       FROM overlays o
+                       WHERE (o.entity_kind = 'wave' AND o.entity_id = w.id)
+                          OR (o.entity_kind = 'card'
+                              AND o.entity_id IN
+                                  (SELECT c2.id FROM cards c2 WHERE c2.wave_id = w.id)))
+                          AS overlays_json
+               FROM waves w WHERE w.id = ?1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        let Some(wave) = wave else {
+        let Some(row) = row else {
             return Ok(None);
         };
 
-        let cards = sqlx::query_as::<_, crate::db::rows::CardRow>(
-            r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
-               FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
-        )
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await?;
-
-        // Overlays scoped to this wave or any of its cards. One query: a
-        // wave-scoped row plus an IN-list on card ids built at the SQL level
-        // using a `cards` subquery so we avoid a parameter explosion.
-        let overlays = sqlx::query_as::<_, crate::db::rows::OverlayRow>(
-            r#"SELECT id, plugin_id, entity_kind, entity_id, kind, payload, updated_at
-               FROM overlays
-               WHERE (entity_kind = 'wave' AND entity_id = ?1)
-                  OR (entity_kind = 'card'
-                      AND entity_id IN (SELECT id FROM cards WHERE wave_id = ?1))"#,
-        )
-        .bind(id)
-        .fetch_all(&self.pool)
-        .await?;
+        let mut cards: Vec<Card> = serde_json::from_str(&row.cards_json)?;
+        // `ORDER BY sort ASC` used to sit in the cards SELECT; an aggregate
+        // ORDER BY would pin us to sqlite >= 3.44, and sorting here is
+        // equivalent (stable, so ties keep scan order).
+        cards.sort_by(|a, b| a.sort.total_cmp(&b.sort));
+        let overlays: Vec<Overlay> = serde_json::from_str(&row.overlays_json)?;
 
         Ok(Some(WaveDetail {
-            wave: Wave::from(wave),
-            cards: cards.into_iter().map(Card::from).collect(),
-            overlays: overlays.into_iter().map(Overlay::from).collect(),
+            wave: Wave::from(row.wave),
+            cards,
+            overlays,
         }))
     }
 
@@ -391,15 +439,22 @@ impl RepoRead for SqlxRepo {
         wave_id: &str,
         blocks: &[calm_types::wave_report::ReportBlock],
     ) -> Result<Vec<super::BlockVerdict>> {
-        // No explicit transaction (#1016) — same reasoning as `wave_detail`:
-        // the predicate reads waves/tasks/coves/cards, and holding R locks
-        // across those statements made this reader a lock-HOLDING waiter that
-        // could cycle with any IMMEDIATE writer taking the same tables in the
-        // opposite order. In AUTOCOMMIT each statement releases its locks
-        // before parking, so no cycle can form. The write path still calls
-        // `evaluate_schedulability` inside its IMMEDIATE tx, so the verdict
-        // that actually admits tasks keeps full atomicity; this call site only
-        // renders diagnostics.
+        // No explicit transaction (#1016) — same trade as `wave_detail`, but
+        // this predicate genuinely cannot collapse into one statement: it
+        // loops over each declaration's references issuing a data-dependent
+        // lookup per reference, and it is the SAME function the write path
+        // runs inside its IMMEDIATE transaction. Folding it into one SQL
+        // statement would mean either a giant generated query or forking the
+        // predicate in two — and "one DB-aware schedulability predicate" is
+        // worth more than a snapshot on a diagnostics render.
+        //
+        // What WAS collapsed is the part the verdict is computed from: policy,
+        // ceiling, in-flight occupancy, in-flight keys and the wave's cove now
+        // come from a single statement, so a displayed capacity /
+        // schedulability can no longer be stitched together from two versions
+        // of the database. `evaluate_schedulability`'s doc comment states
+        // exactly which two reads remain outside that snapshot and why they
+        // are inherently point-in-time.
         let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
