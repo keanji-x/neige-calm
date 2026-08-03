@@ -45,3 +45,22 @@ it('runtime fixture proves an injected unlayered style is reported', () => {
     { rule: 'rule-in-layer', message: 'unlayered selector: .injected' },
   ]);
 });
+
+it('runtime audit also reports inline style attributes', () => {
+  const positive = new JSDOM(read('runtime-inline/positive/page.html')).window.document;
+  const negative = new JSDOM(read('runtime-inline/negative/page.html')).window.document;
+  expect(auditRuntimeStyles(positive, order)).toEqual([]);
+  expect(auditRuntimeStyles(negative, order)).toEqual([
+    { rule: 'runtime-inline-style', message: 'inline style attribute found' },
+  ]);
+});
+
+it('runtime audit inspects stylesheet rules not owned by style elements', () => {
+  const document: RuntimeDocument = {
+    styleSheets: [{ cssRules: [{ cssText: '.external { color: red; }' }] }],
+    querySelectorAll: () => [],
+  };
+  expect(auditRuntimeStyles(document, order)).toEqual([
+    { rule: 'rule-in-layer', message: 'unlayered selector: .external' },
+  ]);
+});
