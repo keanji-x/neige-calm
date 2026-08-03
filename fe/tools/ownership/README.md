@@ -17,3 +17,5 @@ Readonly entries freeze interfaces and `styles/`. Every commit that changes a fr
 ## Stage 2 connection
 
 The inventory is a closed reviewed set, not permission to create arbitrary files under a layer: add a new module to the inventory first, then regenerate the ownership view and pass review. Coverage includes `fe/core`, `fe/mock`, all of `fe/web`, and `fe/tools`, so newly added files fail closed.
+
+`fe/mock` and `fe/tools` are deliberately whole-directory owners: new files below those two tooling boundaries inherit that owner and are not subject to per-file fail-closed registration. In contrast, top-level files under `fe/web` remain exact-file entries and therefore fail closed.
