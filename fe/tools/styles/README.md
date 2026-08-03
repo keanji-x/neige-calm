@@ -24,11 +24,16 @@ After a runnable application exists, call `auditRuntimeStyles` from Playwright o
 The repository audit rejects both undeclared unlayered declarations and unused manifest entries, so the exception set remains bidirectional when the first exception is introduced.
 ## CSS source-entry syntax matrix
 
-| Form | Covered syntax |
+| Form axis | Covered syntax |
 | --- | --- |
 | `static-import` | Static side-effect or binding `import` |
 | `re-export` | `export ... from` |
 | `dynamic-import` | Nested, conditional, or awaited `import()` |
 | `commonjs-require` | Nested or top-level `require()` |
+| suffix `plain` | A pathname ending in `.css` |
+| suffix `query` | A `.css?inline` Vite request |
+| suffix `fragment` | A `.css#fragment` request |
+| suffix `query-fragment` | A `.css?inline#fragment` request |
+| suffix `raw` | A `.css?raw` Vite request |
 
-The fixture keys and `CSS_SOURCE_ENTRY_FORMS` are asserted equal in both directions, so adding or dropping a recognized source-entry form requires an explicit table and test update.
+The fixture keys and `CSS_SOURCE_ENTRY_FORMS` are asserted equal in both directions across the full 4 × 5 product, so adding or dropping a recognized source-entry form or suffix requires an explicit table and test update.

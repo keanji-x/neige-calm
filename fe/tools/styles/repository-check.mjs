@@ -11,7 +11,14 @@ export const EXPECTED_LAYER_ORDER = Object.freeze([
   'reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides',
 ]);
 export const CSS_SOURCE_ENTRY_FORMS = Object.freeze([
-  'static-import', 're-export', 'dynamic-import', 'commonjs-require',
+  'static-import-plain', 'static-import-query', 'static-import-fragment',
+  'static-import-query-fragment', 'static-import-raw',
+  're-export-plain', 're-export-query', 're-export-fragment',
+  're-export-query-fragment', 're-export-raw',
+  'dynamic-import-plain', 'dynamic-import-query', 'dynamic-import-fragment',
+  'dynamic-import-query-fragment', 'dynamic-import-raw',
+  'commonjs-require-plain', 'commonjs-require-query', 'commonjs-require-fragment',
+  'commonjs-require-query-fragment', 'commonjs-require-raw',
 ]);
 const LEGACY_DATA_ATTRIBUTES = new Map([
   ['web/src/ui/dialog/public.tsx:data-variant', 'frozen UI interface; visual variant, not a DOM locator'],
@@ -93,7 +100,8 @@ export function auditCssImports(code, file) {
       : ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
         || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
         ? node.arguments[0] : undefined;
-    if (specifier && ts.isStringLiteralLike(specifier) && specifier.text.endsWith('.css')) {
+    const pathname = specifier && ts.isStringLiteralLike(specifier) ? specifier.text.split(/[?#]/, 1)[0] : '';
+    if (pathname.endsWith('.css')) {
       violations.push(`${file}: CSS must enter through styles/entry.css, not a source import`);
     }
     ts.forEachChild(node, visit);
