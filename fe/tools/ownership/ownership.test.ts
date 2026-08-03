@@ -90,6 +90,15 @@ describe('ownership fixtures', () => {
     expect(validateOwnership(manifest, [], [{ ...approved,
       message: 'OWNERSHIP-CHANGE: fe/web/src/styles — broad approval (#997)',
     }]).some(({ rule }) => rule === 'readonly-change-trailer')).toBe(true);
+    for (const message of [
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css approved token update (#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css —',
+      '* OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997)',
+    ]) {
+      expect(validateOwnership(manifest, [], [{ ...approved, message }]), message).toEqual([
+        { rule: 'readonly-change-trailer', message: 'abc123 changes frozen fe/web/src/styles/tokens.css without an OWNERSHIP-CHANGE trailer' },
+      ]);
+    }
     expect(validateOwnership([
       { path: 'fe/core/model.ts', type: 'file', owner: 'core/model', readonly: 'false' },
     ], [], [{ sha: 'def456', message: 'change', paths: ['fe/core/model.ts'] }])).toEqual([
