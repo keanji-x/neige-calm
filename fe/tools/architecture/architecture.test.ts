@@ -144,6 +144,7 @@ describe('architecture fixtures', () => {
     ['dup-inv-009', 'INV-DUP-009'],
     ['dup-inv-010', 'INV-DUP-010'],
     ['dup-consumer-import', 'INV-DUP-001'],
+    ['dup-export-alias', 'INV-DUP-001'],
     ['core-markdown-node-import', 'node:fs'],
     ['markdown-micromark-import', 'micromark-extension-gfm'],
     ['core-no-node-access', 'node:fs'],

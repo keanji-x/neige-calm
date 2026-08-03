@@ -23,6 +23,9 @@ function packageMatches(source, pattern) {
 }
 /** @param {ts.Statement} statement @returns {string[]} */
 function declaredNames(statement) {
+  if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+    return statement.exportClause.elements.map((element) => element.name.text);
+  }
   if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
     return statement.name ? [statement.name.text] : [];
   }

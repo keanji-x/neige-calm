@@ -30,6 +30,10 @@ Eight entries enforce one named implementation and one import source. The two
 markdown entries enforce the sole `core/markdown/public.ts` entry and divide
 renderer tooling from parser/outline tooling so each fence is independently
 testable. Consumers should use the canonical public path, never deep imports.
+An export specifier's public alias is checked (for example,
+`export { Local as SchemaForm }`). Renaming a declaration to an unlisted public
+name such as `SchemaFormV2` remains a known escape: detecting semantic
+replacements would require type/behavior analysis rather than symbol ownership.
 
 | Contract | Constraint type | Rule/check | Fixture directory |
 | --- | --- | --- | --- |
