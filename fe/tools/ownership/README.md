@@ -16,4 +16,4 @@ Readonly entries freeze interfaces and `styles/`. The repository entry point com
 
 ## Stage 2 connection
 
-Load P8b's manifest and change-request file in CI, then call `auditRepositoryOwnership` before parallel implementation starts and on every subsequent change. Keep coverage rooted at both current trees so newly added files fail closed.
+The inventory is a closed reviewed set, not permission to create arbitrary files under a layer: add a new module to the inventory first, then regenerate the ownership view and pass review. Coverage includes `fe/core`, `fe/mock`, all of `fe/web`, and `fe/tools`, so newly added files fail closed.

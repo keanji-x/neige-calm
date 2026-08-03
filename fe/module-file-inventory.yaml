@@ -1,8 +1,9 @@
 # Stage-1 implementation inventory. This is the source for ownership-manifest.yaml;
 # ownership is deliberately generated only after this inventory is frozen.
-# `path` is an exact file or a directory prefix. A directory entry owns every
-# future implementation/test/style file in that module; no unlisted feature
-# domain or top-level web source is permitted.
+# `path` is an exact file or a directory prefix. This is a closed set: a new
+# module must first be added here and reviewed. A directory entry owns every
+# future implementation/test/style file in that listed module; no unlisted
+# feature domain or top-level web source is permitted.
 
 # Architecture-local control files (§2, §14).
 - { path: fe/mock, type: directory, owner: tooling/mock, readonly: false, basis: "architecture §5 repository tree; test-support boundary" }
@@ -21,7 +22,7 @@
 - { path: fe/core/domain, type: directory, owner: core/domain, readonly: false, basis: "architecture §2/§4.9 ReportBlock" }
 - { path: fe/core/events, type: directory, owner: core/events, readonly: true, basis: "frozen interface §6.5a" }
 - { path: fe/core/keys, type: directory, owner: core/keys, readonly: true, basis: "frozen interface §6.2" }
-- { path: fe/core/markdown, type: directory, owner: core/markdown, readonly: true, basis: "frozen interface §6.5c; duplication manifest INV-DUP-004/005" }
+- { path: fe/core/markdown, type: directory, owner: core/markdown, readonly: true, basis: "frozen interface §6.5c; duplication manifest INV-DUP-004 and INV-DUP-005" }
 - { path: fe/core/schemas, type: directory, owner: core/schemas, readonly: false, basis: "architecture §2" }
 - { path: fe/core/state, type: directory, owner: core/state, readonly: true, basis: "frozen interface §6.1a" }
 - { path: fe/core/types, type: directory, owner: core/types, readonly: false, basis: "architecture §8.7" }
@@ -43,7 +44,7 @@
 - { path: fe/web/src/features/cove, type: directory, owner: features/cove, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
 - { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }
-- { path: fe/web/src/features/spec, type: directory, owner: features/spec, readonly: false, basis: "architecture §2/§4" }
+- { path: fe/web/src/features/spec, type: directory, owner: features/spec, readonly: false, basis: "architecture §4 layer graph (authoritative over §5 abbreviated tree)" }
 - { path: fe/web/src/features/settings, type: directory, owner: features/settings, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/auth, type: directory, owner: features/auth, readonly: false, basis: "architecture §2/§4" }
 - { path: fe/web/src/features/.gitkeep, type: file, owner: architecture, readonly: false, basis: "stage-1 placeholder" }
@@ -73,7 +74,7 @@
 - { path: fe/web/src/ui/public-consumer.contract.test.tsx, type: file, owner: ui/contracts, readonly: true, basis: "frozen interfaces §6.7" }
 - { path: fe/web/src/ui/state, type: directory, owner: ui/state, readonly: true, basis: "frozen interface §6.1b" }
 - { path: fe/web/src/ui/directory-browser, type: directory, owner: ui/directory-browser, readonly: true, basis: "frozen interface §6.7a" }
-- { path: fe/web/src/ui/schema-form, type: directory, owner: ui/schema-form, readonly: true, basis: "frozen interface §6.7b; INV-DUP-001/003" }
+- { path: fe/web/src/ui/schema-form, type: directory, owner: ui/schema-form, readonly: true, basis: "frozen interface §6.7b; INV-DUP-001 and INV-DUP-003" }
 - { path: fe/web/src/ui/dialog, type: directory, owner: ui/dialog, readonly: true, basis: "frozen interface §6.7c" }
 - { path: fe/web/src/ui/menu, type: directory, owner: ui/menu, readonly: true, basis: "frozen interface §6.7c" }
 - { path: fe/web/src/ui/focus, type: directory, owner: ui/focus, readonly: true, basis: "frozen interface §6.7c" }

@@ -1,5 +1,5 @@
 // @ts-nocheck -- Reason: executable Node checker imports the TypeScript audit directly; its typed public surface is declared in repository-check.d.mts.
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { parse } from 'yaml';
@@ -16,6 +16,7 @@ const LEGACY_DATA_ATTRIBUTES = new Map([
 
 function filesUnder(directory) {
   const result = [];
+  if (!existsSync(directory)) return result;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) result.push(...filesUnder(path));
@@ -34,14 +35,22 @@ export function auditDataAttributes(code, file) {
   const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true,
     file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const violations = [];
+  const checkName = (rawName) => {
+    const name = rawName.toLowerCase();
+    if (name.startsWith('data-') && name !== 'data-theme' && name !== 'data-testid'
+      && !/^data-nc-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name)
+      && !LEGACY_DATA_ATTRIBUTES.has(`${file}:${name}`)) {
+      violations.push(`${file}: nonconforming ${name}; use data-nc-<kebab-case>`);
+    }
+  };
   const visit = (node) => {
     if (ts.isJsxAttribute(node)) {
-      const name = node.name.getText(source).toLowerCase();
-      if (name.startsWith('data-') && name !== 'data-theme' && name !== 'data-testid'
-        && !/^data-nc-[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(name)
-        && !LEGACY_DATA_ATTRIBUTES.has(`${file}:${name}`)) {
-        violations.push(`${file}: nonconforming ${name}; use data-nc-<kebab-case>`);
-      }
+      checkName(node.name.getText(source));
+    } else if (ts.isPropertyAssignment(node) && (ts.isStringLiteral(node.name) || ts.isNoSubstitutionTemplateLiteral(node.name))) {
+      checkName(node.name.text);
+    } else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === 'setAttribute' && ts.isStringLiteral(node.arguments[0])) {
+      checkName(node.arguments[0].text);
     }
     ts.forEachChild(node, visit);
   };
@@ -128,7 +137,7 @@ export function auditStyleRepository(feRoot) {
   const stylesRoot = resolve(feRoot, 'web/src/styles');
   const webRoot = resolve(feRoot, 'web/src');
   const order = layerOrder(readFileSync(resolve(stylesRoot, 'entry.css'), 'utf8'));
-  const allFiles = filesUnder(webRoot);
+  const allFiles = [...filesUnder(resolve(feRoot, 'core')), ...filesUnder(webRoot)];
   const cssFiles = allFiles.filter((path) => extname(path) === '.css');
   const globalManifest = readYamlArray(resolve(stylesRoot, 'global-classes.yaml'));
   const exceptions = readYamlArray(resolve(stylesRoot, 'unlayered-exceptions.yaml'));

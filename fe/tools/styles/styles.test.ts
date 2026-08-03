@@ -315,6 +315,10 @@ describe('P8b2 forward style gates', () => {
       'fixture.tsx: nonconforming data-card-id; use data-nc-<kebab-case>',
     ]);
     expect(auditDataAttributes('const x = <div data-nc-card-id="42" aria-label="card" />;', 'ok.tsx')).toEqual([]);
+    expect(auditDataAttributes("const x = <div {...{'data-card-id': 1}} />;", 'spread.tsx'))
+      .toContain('spread.tsx: nonconforming data-card-id; use data-nc-<kebab-case>');
+    expect(auditDataAttributes("el.setAttribute('data-card-id', '1');", 'core/dom.ts'))
+      .toContain('core/dom.ts: nonconforming data-card-id; use data-nc-<kebab-case>');
   });
 
   it('requires every CSS Module to declare its owning layer', () => {
