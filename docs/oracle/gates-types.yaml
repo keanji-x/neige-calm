@@ -1435,7 +1435,8 @@
   test_tier: jsdom
   migration: pending
 
-- id: GATE-WIRE-006
+- id: INV-WIRE-001
+  former_id: GATE-WIRE-006
   kind: invariant
   family: wire-runtime
   statement: >
