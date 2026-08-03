@@ -1,0 +1,15 @@
+{
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/compositions": {
+      "post": {
+        "responses": {
+          "200": { "content": { "application/json": { "schema": { "oneOf": [{ "$ref": "#/components/schemas/A" }, { "anyOf": [{ "type": "null" }, { "type": "string" }] }] } } } },
+          "2XX": { "content": { "application/problem+json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/A" }, { "type": "object" }] } } } },
+          "default": { "description": "fallback" }
+        }
+      }
+    }
+  },
+  "components": { "schemas": { "A": { "type": "object", "nullable": true } } }
+}
