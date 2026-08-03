@@ -39,5 +39,6 @@ e2e-artifacts/
 # Local reference checkouts
 external/
 
-# Re-runnable R3 mutation evidence (kept in the worktree, never committed)
+# Local mutation harnesses; they edit tracked files transiently and must not ship.
+/scratchpad/mut-p0c.sh
 /scratchpad/mut-p8a.sh

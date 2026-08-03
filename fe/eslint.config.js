@@ -11,6 +11,11 @@ import { createContextAllowlist, moduleRuntimeStateAllowlist } from './tools/arc
 const typedFiles = ['**/*.{ts,tsx}'];
 const nodeBuiltinImports = [...new Set(builtinModules.map((name) => name.replace(/^node:/, '')))]
   .flatMap((name) => [name, `node:${name}`]);
+const markdownPackagePattern = '^(?:react-markdown(?:\\/|$)|remark-|rehype-|mdast-util-|micromark(?:\\/|-|$)|unified(?:\\/|$))';
+const restrictedDynamicMarkdownImport = [
+  `ImportExpression[source.type="Literal"][source.value=/${markdownPackagePattern}/]`,
+  `ImportExpression[source.type="TemplateLiteral"][source.expressions.length=0][source.quasis.0.value.cooked=/${markdownPackagePattern}/]`,
+].join(', ');
 
 export default tseslint.config(
   { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', '**/fixtures/**', 'tools/architecture/rule-fixtures/**'] },
@@ -37,8 +42,12 @@ export default tseslint.config(
           message: 'Import guarded state hooks from web/src/ui/state/public.ts so the Persistent<T> guard applies.',
         }],
         patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'micromark', 'micromark/**', 'micromark-*', 'micromark-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
+      }],
+      'no-restricted-syntax': ['error', {
+        selector: restrictedDynamicMarkdownImport,
+        message: 'Import markdown tooling only through core/markdown.',
       }],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'error',
@@ -47,7 +56,12 @@ export default tseslint.config(
   {
     files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}', 'web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     ignores: moduleRuntimeStateAllowlist,
-    rules: { 'architecture/no-module-runtime-state': 'error' },
+    rules: {
+      'architecture/no-module-runtime-state': 'error',
+      'architecture/no-direct-persistence': 'error',
+      'architecture/no-calm-key-outside-core-keys': 'error',
+      'architecture/no-class-dom-query': 'error',
+    },
   },
   {
     files: ['web/src/app/router.{ts,tsx}'],
@@ -77,7 +91,7 @@ export default tseslint.config(
       // Reason: this outlet must import the original React hooks that its guarded wrappers forward to.
       'no-restricted-imports': ['error', {
         patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'micromark', 'micromark/**', 'micromark-*', 'micromark-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
       }],
     },
@@ -90,10 +104,11 @@ export default tseslint.config(
     files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     rules: {
       'no-restricted-globals': ['error', 'WebSocket', 'fetch', 'location', 'process', 'require', 'Buffer'],
+      'architecture/no-core-platform-escape': 'error',
       'no-restricted-imports': ['error', {
         paths: nodeBuiltinImports.map((name) => ({ name, message: 'Core must remain platform-independent.' })),
         patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'micromark', 'micromark/**', 'micromark-*', 'micromark-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
       }],
     },
@@ -109,6 +124,7 @@ export default tseslint.config(
     files: ['core/markdown/**'],
     rules: {
       // Reason: core/markdown is the sole public adapter allowed to own markdown tooling.
+      'no-restricted-syntax': 'off',
       'no-restricted-imports': ['error', {
         paths: nodeBuiltinImports.map((name) => ({ name, message: 'Core must remain platform-independent.' })),
       }],
