@@ -1,1 +1,1 @@
-export const load = () => import('./injected.ts');
+export const load = () => import('./injected');

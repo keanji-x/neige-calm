@@ -1,4 +1,5 @@
 /** Catch platform escapes that identifier-only no-restricted-globals cannot see. */
+/** @type {import('eslint').Rule.RuleModule} */
 export const noCorePlatformEscape = {
   meta: { type: 'problem', schema: [], messages: {
     fetch: 'Core must receive fetch through an injected transport; globalThis.fetch is forbidden.',

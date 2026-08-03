@@ -5,6 +5,7 @@ import { duplicationManifest } from './duplication-manifest.mjs';
 
 const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']);
 
+/** @param {string} root @returns {string[]} */
 function filesUnder(root) {
   if (!existsSync(root)) return [];
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -13,11 +14,14 @@ function filesUnder(root) {
   });
 }
 
+/** @param {string} path */
 function normalized(path) { return path.replaceAll('\\', '/').replace(/\.(?:[cm]?[jt]sx?)$/, ''); }
+/** @param {string} source @param {string} pattern */
 function packageMatches(source, pattern) {
   if (pattern.endsWith('*')) return source.startsWith(pattern.slice(0, -1));
   return source === pattern || source.startsWith(`${pattern}/`);
 }
+/** @param {ts.Statement} statement @returns {string[]} */
 function declaredNames(statement) {
   if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
     return statement.name ? [statement.name.text] : [];
@@ -26,6 +30,7 @@ function declaredNames(statement) {
   return statement.declarationList.declarations.flatMap((declaration) => ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
 }
 
+/** @param {string} root @returns {string[]} */
 export function checkDuplicationManifest(root) {
   const errors = [];
   const entriesBySymbol = new Map(duplicationManifest.flatMap((entry) => entry.symbols.map((symbol) => [symbol, entry])));
@@ -40,7 +45,7 @@ export function checkDuplicationManifest(root) {
       if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
       const source = statement.moduleSpecifier.text;
       for (const entry of duplicationManifest.filter((item) => item.type === 'import-fence')) {
-        if (entry.packages.some((pattern) => packageMatches(source, pattern)) && normalized(path) !== normalized(entry.canonicalPath)) {
+        if (entry.packages?.some((pattern) => packageMatches(source, pattern)) && normalized(path) !== normalized(entry.canonicalPath)) {
           errors.push(`${entry.id}: ${source} may only be imported by ${entry.canonicalPath}; found ${path}`);
         }
       }

@@ -63,7 +63,7 @@ export const noClassDomQuery = {
   create(context) {
     const filename = context.filename.replaceAll('\\', '/');
     const allowlist = context.options[0]?.allowlist ?? [];
-    const isAllowed = (selector) => allowlist.some((entry) => {
+    const isAllowed = (/** @type {string} */ selector) => allowlist.some((/** @type {{file:string,selector:string}} */ entry) => {
       if (!filename.endsWith(entry.file) || entry.selector !== selector) return false;
       try { return selectorFacts(entry.selector).hasContainerPrefix; } catch { return false; }
     });

@@ -19,11 +19,18 @@ function staticName(node) {
 }
 
 /** @param {any} node */
+function unwrap(node) {
+  while (node && ['TSAsExpression', 'TSSatisfiesExpression', 'TSNonNullExpression', 'ChainExpression'].includes(node.type)) node = node.expression;
+  return node;
+}
+
+/** @param {any} node */
 function isReferenceIdentifier(node) {
   const parent = node.parent;
   if (!parent) return true;
   if (parent.type === 'MemberExpression' && parent.property === node && !parent.computed) return false;
   if (parent.type === 'Property' && parent.key === node && !parent.computed) return false;
+  if (parent.type === 'TSPropertySignature' && parent.key === node && !parent.computed) return false;
   if (parent.type === 'VariableDeclarator' && parent.id === node) return false;
   return !['ImportSpecifier', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier'].includes(parent.type);
 }
@@ -48,7 +55,7 @@ export const noDirectPersistence = {
     };
     return {
       MemberExpression(/** @type {any} */ node) {
-        const object = node.object;
+        const object = unwrap(node.object);
         const name = staticName(node);
         if (object?.type === 'Identifier' && ['window', 'globalThis'].includes(object.name) && persistenceNames.has(name)) report(node);
       },
