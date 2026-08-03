@@ -15,6 +15,7 @@
 - { path: fe/tools/ownership, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; ownership enforcement infrastructure" }
 - { path: fe/tools/styles, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; styles enforcement infrastructure" }
 - { path: fe/tools/mutation, type: directory, owner: tooling/mutation-evidence, readonly: false, basis: "#997 tracked, replayable mutation evidence" }
+- { path: fe/tools/test-tier, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-tier policy enforcement infrastructure (#997)" }
 - { path: fe/web/index.html, type: file, owner: app/bootstrap, readonly: false, basis: "architecture §5 repository tree; web bootstrap shell" }
 - { path: fe/core/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
 - { path: fe/web/src/main.tsx, type: file, owner: app/bootstrap, readonly: false, basis: "architecture disease 9" }
