@@ -1078,11 +1078,11 @@
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
   source: web/src/shared/components/WaveRow.tsx:44-65
   authoritative_test: NONE
-  owner_slice: ui/activation
+  owner_slice: none/policy/a11y-doc
   intentional_omission: false
-  runtime_layer: ui
-  verification_owner: unit
-  test_tier: jsdom
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
   migration: pending
 
 - id: INV-A11Y-060
