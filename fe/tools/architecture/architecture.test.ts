@@ -34,6 +34,8 @@ const publicSymbolShapes = new Map<string, boolean>([
   ['export-reexport', true], ['export-star-as', true], ['export-default-class', false],
   ['export-equals', false], ['export-declare-variable', true],
   ['export-declare-function', true], ['export-declare-class', true], ['export-as-default', false],
+  ['export-star', false], ['export-default-function', false], ['commonjs-property', false],
+  ['export-nested-namespace', false], ['export-ambient-module', false],
 ]);
 const packageImportShapes = [
   'static-import', 'side-effect-import', 'type-import', 'named-reexport', 'star-reexport',

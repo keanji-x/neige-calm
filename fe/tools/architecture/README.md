@@ -40,7 +40,7 @@ An export specifier's public alias is checked (for example,
 name such as `SchemaFormV2` remains a known escape: detecting semantic
 replacements would require type/behavior analysis rather than symbol ownership.
 
-The public-symbol syntax table is exhaustive at the TypeScript statement level:
+The public-symbol syntax table is exhaustive over the enumerated statement forms:
 
 | Public shape | Decision |
 | --- | --- |
@@ -48,6 +48,11 @@ The public-symbol syntax table is exhaustive at the TypeScript statement level:
 | local export alias, named re-export, `export * as X` | checked by the public export name |
 | `export declare` variable/function/class | checked |
 | `export default class X`, `export = X`, `export { X as default }` | allowed: these publish `default`/the module value, not a named `X` export |
+| `export default function X` | allowed: publishes `default`, not a named `X` export |
+| bare `export * from './module'` | registered escape: the checker does not resolve the re-exported module's names; the consumer-import check catches only named consumption |
+| CommonJS `exports.X = ...` | registered escape: the ownership checker analyzes TypeScript export statements, not CommonJS assignments |
+| nested `export namespace NS { export const X }` | registered escape: `X` is nested under `NS`, not a top-level named export |
+| ambient `declare module` / `declare global` exports | registered escape: declarations augment external/global types rather than publish a runtime module export |
 
 The package-import syntax table is also exhaustive for literal package sources:
 
