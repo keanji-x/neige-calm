@@ -1,0 +1,139 @@
+[
+  {
+    "id": "CAP-A11Y-002",
+    "locations": [
+      "docs/a11y-contract.md:16"
+    ]
+  },
+  {
+    "id": "CAP-A11Y-093",
+    "locations": [
+      "docs/a11y-contract.md:213"
+    ]
+  },
+  {
+    "id": "CAP-UI-CONFIRM-068",
+    "locations": [
+      "web/src/ui/README.md:192-215"
+    ]
+  },
+  {
+    "id": "E2E-GATE-INFRA-035",
+    "locations": [
+      "web/e2e/README.md:84-112"
+    ]
+  },
+  {
+    "id": "E2E-INV-INFRA-036",
+    "locations": [
+      "web/e2e/README.md:105-110"
+    ]
+  },
+  {
+    "id": "GATE-UI-CONFIRM-071",
+    "locations": [
+      "web/src/ui/README.md:185-215"
+    ]
+  },
+  {
+    "id": "GATE-UI-LAYER-076",
+    "locations": [
+      "web/src/ui/README.md:62-64",
+      "web/src/ui/README.md:24-32"
+    ]
+  },
+  {
+    "id": "GATE-UI-LAYER-078",
+    "locations": [
+      "web/src/ui/README.md:48-51"
+    ]
+  },
+  {
+    "id": "GATE-UI-LAYER-079",
+    "locations": [
+      "web/src/ui/README.md:17-55"
+    ]
+  },
+  {
+    "id": "GATE-WIRE-003",
+    "locations": [
+      ".cargo/config.toml:19-25"
+    ]
+  },
+  {
+    "id": "GATE-WIRE-004",
+    "locations": [
+      ".cargo/config.toml:1-18"
+    ]
+  },
+  {
+    "id": "INV-A11Y-052",
+    "locations": [
+      "docs/a11y-contract.md:101"
+    ]
+  },
+  {
+    "id": "INV-A11Y-061",
+    "locations": [
+      "docs/a11y-contract.md:121"
+    ]
+  },
+  {
+    "id": "INV-A11Y-100",
+    "locations": [
+      "docs/a11y-contract.md:237"
+    ]
+  },
+  {
+    "id": "INV-A11Y-101",
+    "locations": [
+      "docs/a11y-contract.md:238"
+    ]
+  },
+  {
+    "id": "INV-A11Y-107",
+    "locations": [
+      "docs/a11y-contract.md:266"
+    ]
+  },
+  {
+    "id": "INV-A11Y-109",
+    "locations": [
+      "docs/a11y-contract.md:285-300"
+    ]
+  },
+  {
+    "id": "INV-A11Y-110",
+    "locations": [
+      "web/src/ui/README.md:217-289"
+    ]
+  },
+  {
+    "id": "INV-EDITOR-002",
+    "locations": [
+      "web/src/editor/README.md:10-17"
+    ]
+  },
+  {
+    "id": "INV-EDITOR-003",
+    "locations": [
+      "web/src/editor/README.md:23-25"
+    ]
+  },
+  {
+    "id": "INV-UI-LAYER-080",
+    "locations": [
+      "web/src/ui/README.md:102-111",
+      "web/src/ui/README.md:253-271"
+    ]
+  },
+  {
+    "id": "INV-UI-LAYER-082",
+    "locations": [
+      "web/src/ui/README.md:53-55",
+      "web/src/ui/README.md:121-124",
+      "web/src/ui/README.md:180-183",
+      "web/src/ui/README.md:286-289"
+    ]
+  }
+]

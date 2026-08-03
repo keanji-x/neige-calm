@@ -16,6 +16,8 @@ export interface ValidateOptions {
   oracleDir: string;
   ownerAliasesPath: string;
   anchorNonePath?: string;
+  anchorBaselinePath?: string;
+  anchorUnsupportedPath?: string;
 }
 
 export const ORACLE_RULES = Object.freeze([
@@ -208,12 +210,22 @@ export function extractStatementIdentifiers(statement: unknown): string[] {
   return [...identifiers];
 }
 
-function sourceAnchorError(source: unknown, statement: unknown, repoRoot: string): string | null {
-  if (typeof source !== 'string') return null;
-  const identifiers = extractStatementIdentifiers(statement);
-  if (identifiers.length === 0) return null;
+type AnchorSubtype = 'not-in-file' | 'range-miss';
+
+interface AnchorResult {
+  error: string | null;
+  subtype: AnchorSubtype | null;
+  unsupported: string[];
+}
+
+function sourceAnchorResult(source: unknown, statement: unknown, repoRoot: string,
+  ignoredIdentifiers: ReadonlySet<string>): AnchorResult {
+  const empty: AnchorResult = { error: null, subtype: null, unsupported: [] };
+  if (typeof source !== 'string') return empty;
+  const identifiers = extractStatementIdentifiers(statement).filter((identifier) => !ignoredIdentifiers.has(identifier));
+  if (identifiers.length === 0) return empty;
   const locations = parseLocations(source);
-  if (locations.some((location) => typeof location === 'string')) return null;
+  if (locations.some((location) => typeof location === 'string')) return empty;
   const sourceFiles = new Map<string, { contents: string; anchors: Map<string, Set<number>> | null }>();
   for (const location of locations) {
     if (typeof location !== 'string' && !sourceFiles.has(location.path)) {
@@ -222,29 +234,70 @@ function sourceAnchorError(source: unknown, statement: unknown, repoRoot: string
     }
   }
   const supportedFiles = [...sourceFiles.values()].filter((file) => file.anchors !== null);
-  if (supportedFiles.length === 0) return null;
+  const unsupported = locations.filter((location): location is SourceLocation =>
+    typeof location !== 'string' && sourceFiles.get(location.path)?.anchors === null)
+    .map((location) => `${location.path}:${location.start}${location.end === location.start ? '' : `-${location.end}`}`);
+  if (supportedFiles.length === 0) return { error: null, subtype: null, unsupported };
   const present = identifiers.filter((identifier) => supportedFiles.some((file) => file.anchors!.get(identifier)!.size > 0));
-  if (present.length === 0) return `statement identifiers do not occur in cited code files: ${identifiers.join(', ')}`;
+  if (present.length === 0) return {
+    error: `statement identifiers do not occur in cited code files: ${identifiers.join(', ')}`,
+    subtype: 'not-in-file', unsupported,
+  };
   const anchored = locations.some((location) => {
     if (typeof location === 'string') return false;
     const lines = sourceFiles.get(location.path)?.anchors;
     return lines !== null && lines !== undefined && present.some((identifier) =>
       [...lines.get(identifier)!].some((line) => line >= location.start && line <= location.end));
   });
-  return anchored ? null : `source ranges contain none of the statement identifiers: ${present.join(', ')}`;
+  return anchored ? { error: null, subtype: null, unsupported } : {
+    error: `source ranges contain none of the statement identifiers: ${present.join(', ')}`,
+    subtype: 'range-miss', unsupported,
+  };
+}
+
+function parseStructuredList(path: string | undefined): unknown[] {
+  if (!path || !existsSync(path)) return [];
+  const value: unknown = parse(readFileSync(path, 'utf8'));
+  return Array.isArray(value) ? value : [];
 }
 
 export function validateOracle(options: ValidateOptions): Violation[] {
   const owners = canonicalOwners(options.ownerAliasesPath);
-  const anchorNoneIds = options.anchorNonePath && existsSync(options.anchorNonePath)
-    ? new Set([...readFileSync(options.anchorNonePath, 'utf8').matchAll(/`((?:E2E-)?(?:INV|CAP|GATE)-(?:[A-Z0-9]+-)+\d{3})`/g)]
-      .map((match) => match[1]))
-    : new Set<string>();
-  const files = readdirSync(options.oracleDir).filter((file) => file.endsWith('.yaml') && file !== 'owner-aliases.yaml').sort();
+  const anchorNone = new Map<string, Set<string>>();
+  for (const raw of parseStructuredList(options.anchorNonePath)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id === 'string' && Array.isArray(entry.identifiers)
+      && entry.identifiers.every((identifier) => typeof identifier === 'string')) {
+      anchorNone.set(entry.id, new Set(entry.identifiers as string[]));
+    }
+  }
+  const baselineRows = parseStructuredList(options.anchorBaselinePath);
+  const baseline = new Map<string, AnchorSubtype>();
+  for (const raw of baselineRows) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')) {
+      baseline.set(entry.id, entry.subtype);
+    }
+  }
+  const registeredUnsupported = new Map<string, string[]>();
+  for (const raw of parseStructuredList(options.anchorUnsupportedPath)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id === 'string' && Array.isArray(entry.locations)
+      && entry.locations.every((location) => typeof location === 'string')) {
+      registeredUnsupported.set(entry.id, entry.locations as string[]);
+    }
+  }
+  const configFiles = new Set(['owner-aliases.yaml', 'anchor-none.yaml', 'anchor-unsupported.yaml']);
+  const files = readdirSync(options.oracleDir).filter((file) => file.endsWith('.yaml') && !configFiles.has(file)).sort();
   const violations: Violation[] = [];
   const seen = new Map<string, string>();
   const retired = new Map<string, string>();
   const currentIds = new Set<string>();
+  const actualBaseline = new Map<string, AnchorSubtype>();
+  const actualUnsupported = new Map<string, string[]>();
   const add = (file: string, id: string, rule: string, message: string): void => { violations.push({ file, id, rule, message }); };
 
   for (const file of files) {
@@ -308,8 +361,9 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       const sourceErrors = locationErrors(entry.source, options.repoRoot);
       if (sourceErrors.length) add(file, id, 'source-location', sourceErrors.join('; '));
       else {
-        const anchorError = sourceAnchorError(entry.source, entry.statement, options.repoRoot);
-        if (anchorError && !anchorNoneIds.has(id)) add(file, id, 'source-anchor', anchorError);
+        const anchor = sourceAnchorResult(entry.source, entry.statement, options.repoRoot, anchorNone.get(id) ?? new Set());
+        if (anchor.unsupported.length) actualUnsupported.set(id, anchor.unsupported);
+        if (anchor.error && anchor.subtype) actualBaseline.set(id, anchor.subtype);
       }
       if (entry.authoritative_test !== 'NONE') {
         const testErrors = locationErrors(entry.authoritative_test, options.repoRoot);
@@ -319,6 +373,25 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       if (typeof entry.statement !== 'string' || entry.statement.trim() === '') add(file, id, 'statement-nonempty', 'statement must be non-empty');
     });
   }
+  for (const [id, subtype] of actualBaseline) {
+    if (baseline.get(id) !== subtype) add('<baseline>', id, 'source-anchor', `unbaselined ${subtype}`);
+  }
+  for (const [id, subtype] of baseline) {
+    if (actualBaseline.get(id) !== subtype) add('<baseline>', id, 'source-anchor', `stale baseline ${subtype}`);
+  }
+  if (options.anchorBaselinePath
+    && (baselineRows.length !== baseline.size || baselineRows.length !== actualBaseline.size)) {
+    add('<baseline>', '<count>', 'source-anchor',
+      `baseline count must equal actual count: declared ${baselineRows.length}, distinct valid ${baseline.size}, actual ${actualBaseline.size}`);
+  }
+  const unsupportedIds = new Set([...actualUnsupported.keys(), ...registeredUnsupported.keys()]);
+  for (const id of unsupportedIds) {
+    const actual = actualUnsupported.get(id) ?? [];
+    const registered = registeredUnsupported.get(id) ?? [];
+    if (JSON.stringify(actual) !== JSON.stringify(registered)) {
+      add('<unsupported>', id, 'source-anchor', `unsupported locations changed: expected [${registered.join(', ')}], actual [${actual.join(', ')}]`);
+    }
+  }
   return violations.sort((a, b) => `${a.id}\0${a.rule}\0${a.file}`.localeCompare(`${b.id}\0${b.rule}\0${b.file}`));
 }
 
@@ -327,6 +400,8 @@ export function defaultOracleOptions(repoRoot: string): ValidateOptions {
     repoRoot,
     oracleDir: resolve(repoRoot, 'docs/oracle'),
     ownerAliasesPath: resolve(repoRoot, 'docs/oracle/owner-aliases.yaml'),
-    anchorNonePath: resolve(repoRoot, 'docs/oracle/ANCHOR-NONE.md'),
+    anchorNonePath: resolve(repoRoot, 'docs/oracle/anchor-none.yaml'),
+    anchorBaselinePath: resolve(repoRoot, 'fe/tools/oracle/anchor-baseline.json'),
+    anchorUnsupportedPath: resolve(repoRoot, 'docs/oracle/anchor-unsupported.yaml'),
   };
 }

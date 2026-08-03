@@ -90,6 +90,42 @@ describe('oracle rule fixtures', () => {
       }
     });
   }
+
+  it('source-anchor baseline is exact in both directions', () => {
+    const root = resolve(fixtures, 'source-anchor/negative');
+    const matched = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor/baseline.json'),
+    });
+    expect(matched).toEqual([]);
+
+    const fixedRoot = resolve(fixtures, 'source-anchor/positive');
+    const stale = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: fixedRoot,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor/fixed-baseline.json'),
+    });
+    expect(stale).toHaveLength(2);
+    expect(stale.map((violation) => violation.message)).toContain('stale baseline range-miss');
+    expect(stale.map((violation) => violation.message)).toContain(
+      'baseline count must equal actual count: declared 1, distinct valid 1, actual 0',
+    );
+  });
+
+  it('does not read ids mentioned in markdown prose as anchor exceptions', () => {
+    const root = resolve(fixtures, 'source-anchor/negative');
+    const violations = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorNonePath: resolve(fixtures, 'source-anchor/prose.md'),
+    });
+    expect(violations).toHaveLength(3);
+    expect(violations.every((violation) => violation.rule === 'source-anchor')).toBe(true);
+  });
 });
 
 it('accepts all real oracle data without exceptions', () => {
