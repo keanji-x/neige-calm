@@ -779,7 +779,7 @@
   migration: pending
 
 - id: GATE-STATE-003
-  kind: invariant
+  kind: gate
   family: persistent-brand
   statement: >
     `Persistent<T>` 是纯编译期虚构（unique symbol 幻影属性），运行时与 T 结构完全相同；
