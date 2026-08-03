@@ -122,7 +122,14 @@ export function repositoryFiles(repoRoot: string): string[] {
 }
 
 export function gitChangedPaths(repoRoot: string, baseRef = 'origin/main', headRef = 'HEAD'): string[] {
-  const mergeBase = execFileSync('git', ['merge-base', baseRef, headRef], { cwd: repoRoot, encoding: 'utf8' }).trim();
+  let mergeBase: string;
+  try {
+    mergeBase = execFileSync('git', ['merge-base', baseRef, headRef], {
+      cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch {
+    throw new Error(`cannot resolve ownership audit base ref ${baseRef}; run: git fetch origin main`);
+  }
   return execFileSync('git', ['diff', '--name-only', mergeBase, headRef, '--'], { cwd: repoRoot, encoding: 'utf8' })
     .split(/\r?\n/).filter(Boolean);
 }

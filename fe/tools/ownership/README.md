@@ -6,6 +6,8 @@ This validator prevents implementation work from falling between slices. Entries
 
 Readonly entries freeze interfaces and `styles/`. The repository entry point computes `git merge-base origin/main HEAD`, audits the resulting changed paths, and requires a corresponding non-empty change-request record for every readonly change.
 
+`npm run lint:js` drives `check-readonly-change-requests.mjs`. This Git-dependent check must not run inside Vitest: its subprocess requirement and its base-ref requirement are two independent environmental constraints. The checker exercises both the readonly alarm and the actionable, fail-closed missing-ref diagnostic in isolated Git repositories, while Vitest tests the pure validator with injected changed paths.
+
 ## Known escapes
 
 - Ownership describes write authority, not whether an owner implemented the right behavior.
