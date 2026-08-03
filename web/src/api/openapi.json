@@ -4107,8 +4107,7 @@
           "blockId",
           "key",
           "diagnostics",
-          "schedulable",
-          "effectiveWait"
+          "schedulable"
         ],
         "properties": {
           "blockId": {
@@ -4120,24 +4119,11 @@
               "$ref": "#/components/schemas/Diagnostic"
             }
           },
-          "effectiveWait": {
-            "type": "boolean"
-          },
           "key": {
             "type": "string"
           },
           "schedulable": {
             "type": "boolean"
-          },
-          "withdrawal": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/WithdrawalEdge"
-              }
-            ]
           }
         }
       },
@@ -6797,13 +6783,6 @@
             "description": "Upper bound (inclusive) in unix milliseconds. Wave is included\nwhen `created_at <= until`. Omitting disables the upper-bound\nfilter."
           }
         }
-      },
-      "WithdrawalEdge": {
-        "type": "string",
-        "enum": [
-          "ready",
-          "releasedByUser"
-        ]
       },
       "WorkerSessionKind": {
         "type": "string",

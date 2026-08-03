@@ -167,7 +167,11 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
         .await
         .expect("apply migrations through 0069");
     sqlx::query(
-        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,created_at_ms,updated_at_ms) VALUES ('flight','w','flight','codex','g','null','[]','running','spec','block','[]',1,1)",
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,created_at_ms,updated_at_ms) VALUES \
+         ('flight','w','flight','codex','g','null','[]','running','spec','block','[]',1,1), \
+         ('pending','w','pending','codex','g','null','[]','pending','spec','block',NULL,1,1), \
+         ('terminal','w','terminal','codex','g','null','[]','done','spec','block','[]',1,1), \
+         ('legacy','w','legacy','codex','g','null','[]','running','spec','legacy','[]',1,1)",
     )
     .execute(&pool)
     .await
@@ -177,11 +181,31 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
         .run(&pool)
         .await
         .expect("run the real 0070 migration");
-    let row: (i64, i64, i64, Option<i64>) = sqlx::query_as(
-        "SELECT decl_ready,decl_released_by_user,context_verify_failures,context_stale_at_ms FROM tasks WHERE id='flight'",
+    let rows: Vec<(String, i64, i64, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT id,decl_ready,decl_released_by_user,context_verify_failures,context_stale_at_ms FROM tasks ORDER BY id",
     )
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await
-    .expect("read upgraded task");
-    assert_eq!(row, (1, 0, 0, None));
+    .expect("read upgraded tasks");
+    assert_eq!(
+        rows,
+        vec![
+            ("flight".into(), 1, 0, 0, None),
+            ("legacy".into(), 0, 0, 0, None),
+            ("pending".into(), 0, 0, 0, None),
+            ("terminal".into(), 0, 0, 0, None),
+        ]
+    );
+
+    let repeated = sqlx::query(
+        "UPDATE tasks SET decl_ready=1 WHERE status IN ('dispatched','running','verifying') AND origin='block' AND decl_ready=0",
+    )
+    .execute(&pool)
+    .await
+    .expect("execute the 0070 backfill statement a second time");
+    assert_eq!(
+        repeated.rows_affected(),
+        0,
+        "the 0070 backfill statement itself must be idempotent"
+    );
 }

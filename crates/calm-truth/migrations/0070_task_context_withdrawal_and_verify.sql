@@ -9,7 +9,7 @@ ALTER TABLE tasks ADD COLUMN decl_released_by_user INTEGER NOT NULL DEFAULT 0
 ALTER TABLE tasks ADD COLUMN context_verify_failures INTEGER NOT NULL DEFAULT 0;
 
 UPDATE tasks SET decl_ready=1
- WHERE status IN ('dispatched','running','verifying') AND origin='block';
+ WHERE status IN ('dispatched','running','verifying') AND origin='block' AND decl_ready=0;
 
 -- decl_released_by_user intentionally remains 0: its frozen value cannot be
 -- reconstructed from a tasks row. context_verify_failures likewise remains 0.

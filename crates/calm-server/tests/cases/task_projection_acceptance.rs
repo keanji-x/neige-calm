@@ -11,19 +11,22 @@ use axum::http::Request;
 use axum::{Extension, Json};
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
-use calm_server::event::{Event, EventBus};
+use calm_server::event::{EditAuthor, Event, EventBus};
+use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::wave_report_blocks::{
     TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_MOVE, TOOL_REPORT_BLOCKS_UPSERT,
+    TOOL_REPORT_WRITE_MARKDOWN,
 };
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::wave_report_blocks::{
     DeleteReportBlockBody, UpdateReportBlockBody, delete_block, update_block,
 };
 use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState};
-use calm_server::wave_report::tasks_rebuild_tx;
+use calm_server::wave_report::{WaveReportPayload, persist_report, tasks_rebuild_tx};
 use calm_server::wave_report_doc::ReportDoc;
 use calm_types::report_blocks::render_fence;
+use calm_types::wave_report::ReportBlock;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -348,6 +351,224 @@ async fn release_edges_obey_current_wait_policy_and_forward_edge_is_safe() {
     .await
     .unwrap();
     assert_eq!(stale, None, "false->true is never a withdrawal");
+
+    sqlx::query("UPDATE tasks SET decl_released_by_user=1 WHERE wave_id=?1 AND key='release-edge'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let latest = read(&boot).await;
+    let rev = latest["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["id"] == id)
+        .unwrap()["rev"]
+        .as_u64()
+        .unwrap();
+    let before = boot.repo.events_since(0, i64::MAX).await.unwrap().len();
+    user_upsert(&boot, &id, rev, task("release-edge")).await;
+    let stale: Option<i64> = sqlx::query_scalar(
+        "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='release-edge'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(stale, None, "auto-declare ignores user-release withdrawal");
+    assert!(
+        !boot.repo.events_since(0, i64::MAX).await.unwrap()[before..]
+            .iter()
+            .any(|event| matches!(event.3, Event::TaskContextAdvanced { .. })),
+        "auto-declare release withdrawal must not emit context advancement"
+    );
+}
+
+#[tokio::test]
+async fn same_write_reference_exists_then_target_deletion_removes_pending_projection() {
+    let boot = new_boot().await;
+    let target = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "prose", "markdown": "old target", "if_doc_rev": read(&boot).await["docRev"]}),
+    )
+    .await
+    .unwrap();
+    let target_id = target["id"].as_str().unwrap().to_string();
+    let target_rev = target["rev"].as_u64().unwrap();
+    user_delete(&boot, &target_id, target_rev).await;
+
+    let declaration = {
+        let mut value = task("same-write-ref");
+        value["refs"] = json!([format!("neige://wave/{}#{target_id}", boot.wave_id)]);
+        value
+    };
+    let before = read(&boot).await;
+    let task_id = "b_abcd";
+    let blocks = vec![
+        ReportBlock {
+            id: target_id.clone(),
+            kind: "prose".into(),
+            rev: 1,
+            payload: json!({"markdown": "target text"}),
+        },
+        ReportBlock {
+            id: task_id.into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: declaration.clone(),
+        },
+    ];
+    let body = format!("target text\n\n{}", render_fence("task", &declaration));
+    let current = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: before["docRev"].as_u64().unwrap(),
+        summary: String::new(),
+        body: body.clone(),
+        blocks: Some(blocks),
+    };
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE wave_id=?2 AND kind='wave-report'",
+    )
+    .bind(serde_json::to_string(&WaveReportPayload::initial()).unwrap())
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let report = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.ctx.events,
+        &boot.ctx.write,
+        ActorId::Kernel,
+        EditAuthor::Kernel,
+        wave,
+        report,
+        current.clone(),
+        current,
+        0,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("same-write target and referring task");
+    let after_write = read(&boot).await;
+    assert!(
+        keys(&boot).await.contains(&"same-write-ref".into()),
+        "same-write projection missing: {after_write}"
+    );
+    assert!(!diagnostic_contains(
+        &read(&boot).await,
+        "same-write-ref",
+        "does not exist"
+    ));
+
+    let snapshot = read(&boot).await;
+    let referring_id = task_id;
+    let body = format!(
+        "<!-- neige:{referring_id} -->\n{}",
+        render_fence("task", &declaration)
+    );
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({"body": body, "if_doc_rev": snapshot["docRev"]}),
+    )
+    .await
+    .expect("delete referenced target");
+    assert_diagnosed_on_both_reads(&boot, "same-write-ref", "does not exist").await;
+}
+
+#[tokio::test]
+async fn user_declared_release_withdrawal_marks_inflight_even_when_schedulable() {
+    let boot = new_boot().await;
+    let mut declared = task("user-release-withdrawal");
+    let (id, _) = upsert(&boot, None, declared.clone()).await;
+    sqlx::query("UPDATE tasks SET status='running',declared_by='user',decl_released_by_user=1 WHERE wave_id=?1 AND key=?2")
+        .bind(boot.wave_id.as_str())
+        .bind("user-release-withdrawal")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    declared["released_by_user"] = json!(false);
+    declared["declared_by"] = json!("user");
+    let (card_id, payload_json, bytes): (String, String, Vec<u8>) = sqlx::query_as(
+        "SELECT id,json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    let mut doc = ReportDoc::from_bytes(&bytes).unwrap();
+    doc.upsert_block(Some(&id), "task", &render_fence("task", &declared))
+        .unwrap();
+    let mut payload: calm_server::wave_report::WaveReportPayload =
+        serde_json::from_str(&payload_json).unwrap();
+    payload.body = doc.project().unwrap().1;
+    payload.blocks = Some(doc.blocks_snapshot().unwrap());
+    sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=?2 WHERE id=?3")
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(doc.to_bytes())
+        .bind(card_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let before_events = boot.repo.events_since(0, i64::MAX).await.unwrap().len();
+    patch_policy(&boot, "declare-and-wait").await;
+    let stale: Option<i64> = sqlx::query_scalar(
+        "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='user-release-withdrawal'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert!(stale.is_some());
+    let persisted_events = boot.repo.events_since(0, i64::MAX).await.unwrap();
+    let advanced: Vec<_> = persisted_events[before_events..]
+        .iter()
+        .filter(|event| matches!(event.3, Event::TaskContextAdvanced { .. }))
+        .collect();
+    assert_eq!(
+        advanced.len(),
+        1,
+        "PATCH must persist exactly one kernel verdict"
+    );
+    let actors: Vec<String> = sqlx::query_scalar(
+        "SELECT actor FROM events WHERE kind='task.context_advanced' ORDER BY id",
+    )
+    .fetch_all(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(actors, [r#"{"kind":"Kernel"}"#]);
+    match &advanced[0].3 {
+        Event::TaskContextAdvanced {
+            changed_refs,
+            rationale,
+            ..
+        } => {
+            assert!(changed_refs.is_empty(), "withdrawal is not a hash change");
+            assert!(rationale.contains("user release"));
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[tokio::test]

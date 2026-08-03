@@ -15,6 +15,19 @@ use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 
 const DEFAULT_SPEC_TASK_CEILING: i64 = 32;
+/// Persisted task columns compared for in-flight declaration drift. `refs` is
+/// resolved through the frozen context/index rather than stored on `tasks`;
+/// `no_gate_reason` is folded into legacy context and otherwise only affects
+/// gate validation, so neither belongs to this direct column comparison.
+pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
+    "kind",
+    "goal",
+    "context",
+    "acceptance",
+    "cwd",
+    "depends_on",
+    "gate",
+];
 type FrozenDeclarationRow = (
     String,
     String,
@@ -95,7 +108,11 @@ pub struct BlockVerdict {
     pub key: String,
     pub diagnostics: Vec<Diagnostic>,
     pub schedulable: bool,
+    #[serde(skip)]
+    #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
+    #[serde(skip)]
+    #[schema(ignore)]
     pub effective_wait: bool,
 }
 
@@ -485,38 +502,20 @@ pub async fn project_tasks_tx(
     let mut changed = BTreeSet::new();
     let mut kernel_events = Vec::new();
     for (id, key, status, claim_context_json) in &existing {
-        if !schedulable_by_key.get(key).is_some_and(|value| *value) {
+        let withdrawal_edge = verdict_index_by_key
+            .get(key)
+            .and_then(|index| verdicts[*index].withdrawal);
+        let withdrawal = withdrawal_edge.is_some();
+        if !schedulable_by_key.get(key).is_some_and(|value| *value) || withdrawal {
             if matches!(status.as_str(), "dispatched" | "running" | "verifying") {
-                let withdrawal = verdict_index_by_key
-                    .get(key)
-                    .and_then(|index| verdicts[*index].withdrawal)
-                    .is_some();
                 let declaration_removed = declaration_by_key
                     .get(key.as_str())
                     .is_none_or(|declaration| declaration.tombstone);
                 if withdrawal || declaration_removed {
-                    let mut changed_refs: Vec<_> = verdict_index_by_key
-                        .get(key)
-                        .and_then(|index| {
-                            let verdict = &verdicts[*index];
-                            verdict.withdrawal.map(|edge| {
-                                let (from, to) = match edge {
-                                    WithdrawalEdge::Ready => ("ready:true", "ready:false"),
-                                    WithdrawalEdge::ReleasedByUser => {
-                                        ("released_by_user:true", "released_by_user:false")
-                                    }
-                                };
-                                TaskContextChangedRef {
-                                    wave_id: WaveId::from(wave_id),
-                                    block_id: verdict.block_id.clone(),
-                                    from_hash: from.into(),
-                                    to_hash: to.into(),
-                                    ..Default::default()
-                                }
-                            })
-                        })
-                        .into_iter()
-                        .collect();
+                    // Withdrawal is a declaration edge, not a content change. Keep
+                    // the hash-typed changed_refs clean and describe the edge in the
+                    // rationale instead.
+                    let mut changed_refs = Vec::new();
                     if declaration_removed && changed_refs.is_empty() {
                         changed_refs.extend(
                             claim_context_json
@@ -542,10 +541,14 @@ pub async fn project_tasks_tx(
                             id,
                             wave_id,
                             changed_refs,
-                            if withdrawal {
-                                "task declaration was withdrawn"
-                            } else {
-                                "task declaration block was removed"
+                            match withdrawal_edge {
+                                Some(WithdrawalEdge::Ready) => {
+                                    "task declaration ready was withdrawn"
+                                }
+                                Some(WithdrawalEdge::ReleasedByUser) => {
+                                    "task declaration user release was withdrawn"
+                                }
+                                None => "task declaration block was removed",
                             },
                         )
                         .await?,

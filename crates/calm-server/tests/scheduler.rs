@@ -3637,7 +3637,7 @@ async fn context_sweep_marks_material_when_closure_was_truncated() {
 }
 
 #[tokio::test]
-async fn retryable_context_verification_counts_resets_and_escalates_on_third_round() {
+async fn malformed_stored_report_is_deterministic_and_marks_material_immediately() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "retryable-verify").await;
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -3648,42 +3648,6 @@ async fn retryable_context_verification_counts_resets_and_escalates_on_third_rou
     .execute(&pool)
     .await
     .unwrap();
-    for expected in [1_i64, 2] {
-        monitor.sweep().await.unwrap();
-        let row: (i64, Option<i64>) = sqlx::query_as(
-            "SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1",
-        )
-        .bind(&task_id)
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(row, (expected, None));
-    }
-    sqlx::query(
-        "UPDATE cards SET payload=json_set(payload,'$.docRev',4) WHERE id='context-report'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    monitor.sweep().await.unwrap();
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT context_verify_failures FROM tasks WHERE id=?1",)
-            .bind(&task_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-        0,
-        "one successful verification resets the per-row streak"
-    );
-    sqlx::query(
-        "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    monitor.sweep().await.unwrap();
-    monitor.sweep().await.unwrap();
-    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
     monitor.sweep().await.unwrap();
     let row: (i64, Option<i64>) =
         sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
@@ -3694,6 +3658,42 @@ async fn retryable_context_verification_counts_resets_and_escalates_on_third_rou
     assert_eq!(row.0, 0);
     assert!(row.1.is_some());
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+}
+
+#[tokio::test]
+async fn storage_unavailable_during_system_cove_lookup_is_retryable() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "storage-retry").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let task_id = format!("{}:storage-retry", boot.wave_id);
+
+    sqlx::query("ALTER TABLE coves RENAME TO coves_unavailable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    sqlx::query("ALTER TABLE coves_unavailable RENAME TO coves")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let row: (i64, Option<i64>) =
+        sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (1, None), "storage failure must remain retryable");
+    monitor.sweep().await.unwrap();
+    let failures: i64 = sqlx::query_scalar("SELECT context_verify_failures FROM tasks WHERE id=?1")
+        .bind(task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        failures, 0,
+        "a successful sweep resets the row-local streak"
+    );
 }
 
 async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {

@@ -420,11 +420,9 @@ impl TaskContextMonitor {
                 .await;
             let (cove, block) = match loaded {
                 Ok(value) => value,
-                Err(
-                    ResolveError::StorageUnavailable(error)
-                    | ResolveError::MalformedStoredReport(error),
-                ) => {
-                    return RefsMatch::Retryable(error);
+                Err(ResolveError::StorageUnavailable(error)) => return RefsMatch::Retryable(error),
+                Err(ResolveError::MalformedStoredReport(_)) => {
+                    return RefsMatch::Mismatch(Vec::new());
                 }
                 Err(_) => {
                     return RefsMatch::Mismatch(vec![TaskContextChangedRef {
@@ -479,22 +477,26 @@ impl TaskContextMonitor {
         .fetch_add(1, Ordering::Relaxed);
         for (index, row) in rows.into_iter().enumerate() {
             self.metrics.detections.fetch_add(1, Ordering::Relaxed);
-            let changed_refs = if index >= MAX_RERESOLVE_FANOUT || row.closure_truncated {
-                Some(Vec::new())
+            let verdict = if index >= MAX_RERESOLVE_FANOUT {
+                Some((Vec::new(), "MAX_RERESOLVE_FANOUT budget exceeded"))
+            } else if row.closure_truncated {
+                Some((Vec::new(), "frozen reference closure was truncated"))
             } else if let Some(refs) = row
                 .claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
             {
                 match self.refs_match(&row.wave_id, &refs).await {
-                    RefsMatch::Mismatch(changed) => Some(changed),
+                    RefsMatch::Mismatch(changed) => {
+                        Some((changed, "frozen task context content changed"))
+                    }
                     RefsMatch::Same | RefsMatch::Retryable(_) => None,
                 }
             } else {
-                Some(Vec::new())
+                Some((Vec::new(), "frozen reference set is missing or malformed"))
             };
-            if let Some(changed_refs) = changed_refs {
-                self.mark_material(row.task_id, row.wave_id, changed_refs)
+            if let Some((changed_refs, rationale)) = verdict {
+                self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
                     .await?;
             }
         }
@@ -552,14 +554,14 @@ impl TaskContextMonitor {
                 .claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok());
-            let changed_refs = if row.closure_truncated {
-                Some(Vec::new())
+            let verdict = if row.closure_truncated {
+                Some((Vec::new(), "frozen reference closure was truncated"))
             } else {
                 match refs {
-                    None => Some(Vec::new()),
+                    None => Some((Vec::new(), "frozen reference set is missing or malformed")),
                     Some(refs) if verified.saturating_add(refs.len()) > MAX_SWEEP_NODES => {
                         capped = true;
-                        Some(Vec::new())
+                        Some((Vec::new(), "MAX_SWEEP_NODES budget exceeded"))
                     }
                     Some(refs) => {
                         verified += refs.len();
@@ -568,7 +570,9 @@ impl TaskContextMonitor {
                                 self.clear_verify_failures(&row.task_id).await?;
                                 None
                             }
-                            RefsMatch::Mismatch(changed) => Some(changed),
+                            RefsMatch::Mismatch(changed) => {
+                                Some((changed, "frozen task context content changed"))
+                            }
                             RefsMatch::Retryable(error) => {
                                 if self
                                     .record_verify_failure(&row.task_id, &row.wave_id)
@@ -583,9 +587,9 @@ impl TaskContextMonitor {
                     }
                 }
             };
-            if let Some(changed_refs) = changed_refs {
+            if let Some((changed_refs, rationale)) = verdict {
                 hits += 1;
-                self.mark_material(row.task_id, row.wave_id, changed_refs)
+                self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
                     .await?;
             }
         }
@@ -644,7 +648,13 @@ impl TaskContextMonitor {
         .await?;
         let escalated = failures.is_some_and(|count| count >= VERIFY_FAILURE_LIMIT);
         if escalated {
-            self.mark_material(task_id, wave_id, Vec::new()).await?;
+            self.mark_material(
+                task_id,
+                wave_id,
+                Vec::new(),
+                "three consecutive context verification failures",
+            )
+            .await?;
         }
         Ok(escalated)
     }
@@ -654,6 +664,7 @@ impl TaskContextMonitor {
         task_id: String,
         wave_id: String,
         changed_refs: Vec<TaskContextChangedRef>,
+        rationale: &'static str,
     ) -> Result<()> {
         let wave = self.repo.wave_get(&wave_id).await?;
         let Some(wave) = wave else {
@@ -683,14 +694,9 @@ impl TaskContextMonitor {
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let events = mark_context_material_tx(
-                        tx,
-                        &task_id,
-                        &wave_id,
-                        changed_refs,
-                        "frozen task context no longer matches",
-                    )
-                    .await?;
+                    let events =
+                        mark_context_material_tx(tx, &task_id, &wave_id, changed_refs, rationale)
+                            .await?;
                     let changed = !events.is_empty();
                     Ok(((changed,), events))
                 })
@@ -793,6 +799,21 @@ mod tests {
         assert_eq!(
             classified.len(),
             ROOT_HASH_TASK_FIELDS.len() + ROOT_HASH_EXCLUDED_TASK_FIELDS.len()
+        );
+    }
+
+    #[test]
+    fn projection_drift_fields_are_a_subset_of_root_hash_fields() {
+        let hashed: BTreeSet<_> = ROOT_HASH_TASK_FIELDS.iter().copied().collect();
+        let drift: BTreeSet<_> = crate::db::sqlite::PROJECTION_DRIFT_TASK_FIELDS
+            .iter()
+            .copied()
+            .collect();
+        assert!(drift.is_subset(&hashed));
+        assert!(!drift.contains("refs"), "tasks has no refs column");
+        assert!(
+            !drift.contains("no_gate_reason"),
+            "no_gate_reason is gate validation/legacy-context input, not a stored drift column"
         );
     }
 
