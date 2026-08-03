@@ -28,8 +28,31 @@ describe('oracle rule fixtures', () => {
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     expect(new Set(typeFixtures)).toEqual(new Set(ORACLE_YAML_FIELDS));
     expect(new Set(ORACLE_YAML_FIELDS)).toEqual(new Set(typeFixtures));
-    for (const field of typeFixtures) expect(run(`field-types/${field}`, 'negative').length, field).toBeGreaterThan(0);
   });
+  const fieldRules: Record<(typeof ORACLE_YAML_FIELDS)[number], string> = {
+    id: 'id-format',
+    kind: 'enum-kind',
+    family: 'required-fields',
+    statement: 'statement-nonempty',
+    why: 'why-nonempty',
+    source: 'source-location',
+    authoritative_test: 'authoritative-test-location',
+    owner_slice: 'owner-slice',
+    intentional_omission: 'intentional-omission-boolean',
+    runtime_layer: 'enum-runtime_layer',
+    verification_owner: 'enum-verification_owner',
+    test_tier: 'enum-test_tier',
+    migration: 'enum-migration',
+    skip_reason: 'skipped-fields',
+  };
+  for (const field of ORACLE_YAML_FIELDS) {
+    it(`field type ${field}: accepts positive and rejects only ${fieldRules[field]}`, () => {
+      expect(run(`field-types/${field}`, 'positive')).toEqual([]);
+      const violations = run(`field-types/${field}`, 'negative');
+      expect(violations, JSON.stringify(violations)).toHaveLength(1);
+      expect(violations[0]?.rule).toBe(fieldRules[field]);
+    });
+  }
   it('covers exactly every rule the validator can emit', () => {
     const fixtureDirectories = readdirSync(fixtures, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name !== 'field-types').map((entry) => entry.name);

@@ -1,2 +1,3 @@
 aliases:
   fixture: styles/global
+  test: ui/test
