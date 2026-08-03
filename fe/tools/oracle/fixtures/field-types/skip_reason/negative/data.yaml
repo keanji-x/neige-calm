@@ -1,0 +1,14 @@
+- id: INV-TEST-001
+  kind: invariant
+  family: fixture
+  statement: fixture
+  why: fixture
+  source: fixture-source.txt:1
+  authoritative_test: NONE
+  owner_slice: ui/test
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: null
+  test_tier: static
+  migration: skipped
+  skip_reason: 1

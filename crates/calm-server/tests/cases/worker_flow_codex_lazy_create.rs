@@ -37,7 +37,7 @@ async fn codex_rollout_source_waits_for_lazy_file_creation() {
         ],
     );
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move {
             repo.worker_flow_item_list_by_card("card-lazy", 0, 100, false)
@@ -73,7 +73,7 @@ async fn codex_rollout_driver_waits_past_lazy_file_retry_budget_until_runtime_te
     );
     driver.start_on_boot().await.unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -84,7 +84,7 @@ async fn codex_rollout_driver_waits_past_lazy_file_retry_budget_until_runtime_te
     repo.session_projection_set_status_for_card(card_id, WorkerSessionState::Exited)
         .await
         .unwrap();
-    wf::wait_until(Duration::from_secs(2), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 0 }
     })

@@ -46,7 +46,7 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
     );
     driver.start_on_boot().await.unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 0 }
     })
@@ -63,7 +63,7 @@ async fn codex_rollout_session_meta_mismatch_exits_without_ingesting_wrong_file(
         },
     );
     tokio::time::sleep(Duration::from_millis(100)).await;
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 0 }
     })

@@ -25,7 +25,7 @@ async fn worker_flow_driver_attaches_codex_runtime_on_card_added() {
 
     events.emit(ActorId::Kernel, Event::CardAdded(seed.card.clone()));
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = state.worker_flow.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -67,7 +67,7 @@ async fn worker_flow_driver_card_added_race_attaches_on_later_status() {
         },
     );
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = state.worker_flow.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })

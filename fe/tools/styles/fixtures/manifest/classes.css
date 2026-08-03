@@ -1,0 +1,3 @@
+@layer base {
+  :is(.alpha, .beta) { color: green; }
+}

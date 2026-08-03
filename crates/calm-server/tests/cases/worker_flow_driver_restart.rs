@@ -58,7 +58,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
     );
     driver.start_on_boot().await.unwrap();
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -111,7 +111,7 @@ async fn worker_flow_driver_replaces_stale_claude_tail_task_when_runtime_id_chan
         },
     );
 
-    wf::wait_until(Duration::from_millis(200), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         let old_stop = old_stop.clone();
         let replacement_id = replacement.id.clone();
