@@ -1,0 +1,2010 @@
+# meta:
+#   source_doc: docs/a11y-contract.md (326 lines, 11 top-level sections)
+#   sections_covered: §1, §2 (2.1-2.7), §3 (3.1-3.4), §4, §5, §6, §7, §8 (8.1-8.5),
+#                     §9, §10, §10a, §11
+#   §11 (References) yields no extractable contract — reference list only; its issue
+#   numbers are folded into the `why` of the entries they anchor.
+#   total_entries: 110
+#   kind_split: invariant 80 / capability 24 / gate 6
+#   intentional_omission_true: 18
+#   authoritative_test_NONE: 74
+#   NOTE: 74/110 entries have NO locking test. This document IS the only record for
+#   those — most notably the entire §3.1 Tab-order stop sequences, the §6
+#   focus-visible inventory, and the §7 motion policy. Losing this file loses them.
+
+# ---------------------------------------------------------------------------
+# §1 — Why this contract exists
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-001
+  kind: invariant
+  family: locator-discipline
+  statement: >
+    每个 UI 元素必须能通过稳定的 role + accessible-name 对被定位；role 必须匹配
+    widget 实际的行为，而不是它的 CSS 外观
+  why: >
+    §1 明示：Neige 的设计目标是「可被 AI agent 驱动」，AT 与 AI agent 是同一条
+    定位通道；accessible name 脆化会同时打断屏幕阅读器与外部 agent
+  source: docs/a11y-contract.md:11-14
+  authoritative_test: web/e2e/a11y-axe.spec.ts:229
+  owner_slice: none/policy/a11y-doc
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-002
+  kind: capability
+  family: event-trace
+  statement: >
+    测试必须能把 UI 断言与针对 `window.__neigeEvents__` 的 event-trace 断言配对，
+    形成「点击 role/name X 之后，事件序列 Y 发生了」的联合契约
+  why: >
+    §1 称这是本文档存在的首要理由（Neige-specific angle）；单独的 UI 断言或单独的
+    事件断言都弱于两者配对。Slice 5 (#66) 落地
+  source: docs/a11y-contract.md:16
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.1 — Cove object semantics
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-003
+  kind: invariant
+  family: cove-semantics
+  statement: >
+    Sidebar 的 cove 导航项必须是 `<button>`，其 accessible name 只能是 cove 名本身；
+    色块与计数是视觉装饰，不得进入 name
+  why: >
+    §2.1 明示：不希望屏幕阅读器把计数读成名字的一部分（读 "Atlas" 而不是 "Atlas 3"）；
+    因此刻意不加 aria-label，让 `<span className="lbl">` 的可见文本成为 name
+  source: web/src/shared/components/Sidebar.tsx:80-102
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-004
+  kind: invariant
+  family: rename-name-split
+  statement: >
+    CovePage 的标题 rename 按钮的 `aria-label` 必须只是 cove 名；「Rename」动词必须由
+    `<h1>` **外部**的 `<span className="sr-only">` 通过 `aria-describedby` 承载
+  why: >
+    §2.1 + §5：sr-only span 若留在 `<h1>` 内会污染 heading 的 accessible-name 计算，
+    heading-nav（屏幕阅读器 H 键）会念成 "Rename cove name: Atlas, heading level 1"。
+    #56 followup 修复
+  source: web/src/pages/Cove.tsx:286-313
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-005
+  kind: invariant
+  family: cove-semantics
+  statement: >
+    CovePage 标题在可 rename 时必须是 `<h1>` 包裹一个真实 `<button>`；只读时是纯 `<h1>`。
+    箭头导航进入可操作元素时必须落在内层 button 上
+  why: >
+    §2.1 与 §5 都指明内建 role 的 `<button>` 是首选范式（intrinsic role，无需手写按键处理）
+  source: web/src/pages/Cove.tsx:286-313
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-006
+  kind: capability
+  family: cove-semantics
+  statement: >
+    Sidebar 在 bootstrap 态必须提供可见文本为 "New cove" 的按钮，位于
+    `<nav aria-label="Coves">` 子 landmark 内
+  why: >
+    §2.1 记录：这是 bootstrap-only 的唯一建 cove 入口
+  source: web/src/shared/components/Sidebar.tsx:161-167
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.2 — Wave object semantics
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-007
+  kind: invariant
+  family: sidebar-landmarks
+  statement: >
+    Sidebar 根必须始终挂载为 `<aside aria-label="Navigation">`；展开时挂载子 landmark：
+    `<nav aria-label="Sidebar navigation">`（Today）、`<section aria-label="Waiting on you">`、
+    `<section aria-label="Pinned">`、`<nav aria-label="Coves">`
+  why: >
+    §2.2（#60 followup）：这些名字必须互不重复，否则 axe 的 `landmark-unique` 规则变红；
+    同时测试要靠 landmark scope 消歧同名 button
+  source: web/src/shared/components/Sidebar.tsx
+  authoritative_test: web/e2e/a11y-axe.spec.ts:229
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-008
+  kind: invariant
+  family: sidebar-landmarks
+  statement: >
+    Sidebar 折叠时子 landmark 必须全部卸载，外层 aside 只剩 `Expand sidebar` 按钮
+  why: >
+    §2.2 + §3.1：折叠态若保留空 landmark 会既污染 landmark 列表又留下多余 tab stop
+  source: web/src/shared/components/Sidebar.tsx
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-009
+  kind: invariant
+  family: sidebar-landmarks
+  statement: >
+    Sidebar 的一级 Today 导航按钮必须是顶层唯一的 Today 入口
+  why: >
+    #175：kernel 默认的 Today terminal 移入隐藏 system cove（默认被 `GET /api/coves` 过滤掉），
+    测试不再需要与 seeded `Scratch` cove 下自动创建的 Today wave 消歧；但用户自己把 wave
+    命名为 "Today" 时 WaveRow 的 landmark scoping 模式仍然必要
+  source: web/src/shared/components/Sidebar.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-010
+  kind: invariant
+  family: wave-semantics
+  statement: >
+    Sidebar "waiting on you" 行的 accessible name 必须只是 wave title；其 `title` 属性
+    （`<cove> · <title>`）纯属信息性，不得进入 name
+  why: >
+    §2.2 明示 title attribute is informational only
+  source: web/src/shared/components/Sidebar.tsx:58-66
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-011
+  kind: invariant
+  family: wave-semantics
+  statement: >
+    WaveRow 的行按钮与每行的 × 删除按钮必须是**兄弟**节点（包在
+    `<div className="wave-row-wrapper">` 内），绝不可嵌套
+  why: >
+    §2.2 明示：嵌套会违反 axe 的 `nested-interactive` 规则。删除按钮 stopPropagation
+    以免触发行导航；hover-reveal 靠 `.wave-row-wrapper:hover` / `:focus-within`
+  source: web/src/shared/components/WaveRow.tsx
+  authoritative_test: web/e2e/a11y-axe.spec.ts:229
+  owner_slice: features/wave/row
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-012
+  kind: invariant
+  family: wave-semantics
+  statement: >
+    每行删除按钮的 accessible name 必须是 `Delete "<title>"` 形式的 `aria-label`
+  why: >
+    §2.2 给出确切形状；e2e 依赖它做 exact/substring 消歧（见 a11y-keyboard 的注释：
+    Delete 按钮的 name 里包含 title 作为子串）
+  source: web/src/shared/components/WaveRow.tsx
+  authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:15
+  owner_slice: features/wave/row
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-013
+  kind: invariant
+  family: wave-semantics
+  statement: >
+    CovePage 必须把它那一份排序后的 wave 列表包进 `<section aria-label="Waves">`
+  why: >
+    §2.2：否则 `getByRole('button', { name: /today/i })` 会与 sidebar 的 Today 导航按钮
+    冲突；测试范式是 `getByRole('region', { name: 'Waves' }).getByRole('button', …)`
+  source: web/src/pages/Cove.tsx
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-014
+  kind: invariant
+  family: wave-semantics
+  statement: >
+    CovePage 只渲染**单个**已排序的 wave 列表（`waiting → running → idle`），
+    不得拆成 per-status 子分区
+  why: >
+    §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
+    §3.1 的 tab 顺序
+  source: web/src/pages/Cove.tsx
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-015
+  kind: invariant
+  family: rename-name-split
+  statement: >
+    WavePage 头部面包屑的 wave 标题在可 rename 时必须是
+    `<span role="button" tabIndex={0} aria-label={wave.title} aria-describedby="<id>">`，
+    配一个兄弟 `<span className="sr-only">Rename wave</span>`；只读时是纯 `<span>`
+  why: >
+    §2.2 + §3.2：这是全项目唯一无法避免 `role="button"` 的地方——必须坐在 `<h1>` 里而
+    不破坏 heading 的 accessible-name 组合
+  source: web/src/pages/Wave.tsx:209-273
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:609
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-016
+  kind: invariant
+  family: status-dot
+  statement: >
+    Wave 状态药丸内的 `<CardStatusDot>` 必须自带 `aria-label="status <state>"`
+  why: >
+    §2.2 + §2.7：FSM 动词文本可能相同（多个 wave 都是 "Working"），点必须独立可播报
+  source: web/src/shared/components/CardStatusDot.tsx:48-79
+  authoritative_test: NONE
+  owner_slice: ui/atoms
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-017
+  kind: capability
+  family: view-mode
+  statement: >
+    Wave 头部必须有一个无 checked 状态的原生 `<button className="view-cycle">`，
+    每次激活按 `grid → list → report → grid` 循环持久化的视图模式
+  why: >
+    Slice 9：这是键盘/AT 用户从 grid 进入键盘可用的 list 视图的唯一入口
+  source: web/src/pages/Wave.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-018
+  kind: invariant
+  family: view-mode
+  statement: >
+    view-cycle 按钮的 `aria-label` 与 `title` 必须同为
+    `"<Current> view — switch to <next> view"`（例 `"Report view — switch to grid view"`）
+  why: >
+    §2.2：按钮无 checked 状态，当前模式只能靠 name 播报；e2e 用正则精确匹配这个形状
+  source: web/src/pages/Wave.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:835
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-019
+  kind: invariant
+  family: view-mode
+  statement: >
+    Report 视图必须是新 wave 的默认视图；overlay 缺失时 WavePage 回落到 report
+  why: >
+    §2.2 与 §2.7 都明示 "Report is the default for new waves" / "Absence defaults to report"
+  source: web/src/pages/Wave.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-020
+  kind: capability
+  family: view-mode
+  statement: >
+    WavePage 必须能按 per-wave view-mode overlay 渲染三种 body：Report(`WaveReportPage`)、
+    Grid(`WaveGrid`)、List(`WaveList`)
+  why: >
+    Slice 9 的 Path C 决议：不给 grid 加键盘故事，而是另起一个 list 组件
+  source: web/src/pages/Wave.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-021
+  kind: capability
+  family: view-mode
+  statement: >
+    从 report 视图添加 worker card 时必须自动切到 grid，使新建的 card 立即可见
+  why: >
+    §2.2 明示；否则用户在 report 视图下建卡后看不到任何反馈
+  source: web/src/pages/WaveReportPage.tsx
+  authoritative_test: NONE
+  owner_slice: features/report/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-022
+  kind: capability
+  family: view-mode
+  statement: >
+    Report 视图在 spec agent 尚未产出 report 时必须渲染 report 空态，而不是空白
+  why: >
+    §2.2 明示 "or the report empty state while the spec agent has not produced one"
+  source: web/src/pages/WaveReportPage.tsx
+  authoritative_test: NONE
+  owner_slice: features/report/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-023
+  kind: invariant
+  family: grid-keyboard
+  statement: >
+    Grid 视图的布局变更（drag via `.card-drag-handle`、SE 角 resize）**故意**只支持鼠标，
+    layout 本身不提供任何键盘故事
+  why: >
+    §2.2 + §3.4 + §9 明示 "by design"：Slice 9 走 Path C，把键盘能力放进独立的 list 视图，
+    而不是给 RGL 补键盘。新写代码的人只会看到「grid 没实现键盘」而误以为是缺陷
+  source: web/src/WaveGrid.tsx:405
+  authoritative_test: NONE
+  owner_slice: features/wave/grid
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-024
+  kind: invariant
+  family: list-keyboard
+  statement: >
+    List 视图是**键盘正典模式**：语义 `<ul>`、按 `card.sort` 排序、全键盘导航。
+    键盘用户 / 屏幕阅读器用户 / 驱动 UI 的 AI agent 都应切到 list 视图操作布局
+  why: >
+    Slice 9 决议；这是 grid 无键盘故事的对价，必须成对保留
+  source: web/src/WaveList.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-025
+  kind: capability
+  family: view-mode
+  statement: >
+    从默认 report 视图到 list 视图的键盘路径必须是：Tab 到 cycle 按钮，按两次 Enter
+    (`report → grid → list`)；从 grid 出发按一次
+  why: >
+    §2.2 / §3.1 / §9 三处重复记录这条精确步数——它是键盘用户能否触达 list 的唯一说明
+  source: web/src/pages/Wave.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-026
+  kind: invariant
+  family: calm-select
+  statement: >
+    `.calm-select` 的下拉美化必须是 `@supports (appearance: base-select)` 内的渐进增强：
+    Chromium 渲染 in-page `::picker(select)` 面板，其它引擎忽略该块并保留 OS 原生弹窗与
+    原生语义
+  why: >
+    #891 slice ③：不得以自定义 aria 替代原生 select 语义；非 Chromium 引擎必须无回归
+  source: web/src/calm.css
+  authoritative_test: NONE
+  owner_slice: ui/calm-select
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: INV-A11Y-027
+  kind: invariant
+  family: calm-select
+  statement: >
+    `.calm-select-trigger` 是「有名字但不可聚焦」的 button，且**故意不加 `aria-hidden`**
+  why: >
+    #891 slice ③：MDN 警告 customizable-select 的 button 内容会影响暴露给 AT 的值，
+    隐藏该子树有剥掉 Chrome 播报的「已选值」的风险。宁可多出一个 inert 节点，也要保证
+    值能被播报。`<select>` 拥有焦点与语义（base-select），trigger 永不成为 tab stop
+    且拒绝程序化聚焦（real-chromium probe 已验证）
+  source: web/src/calm.css
+  authoritative_test: NONE
+  owner_slice: ui/calm-select
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: GATE-A11Y-028
+  kind: gate
+  family: calm-select
+  statement: >
+    对话框内的 `getByRole('button', …)` e2e locator 必须使用 `{ exact: true }` 精确名，
+    不得用子串/正则
+  why: >
+    #891 slice ③ 的 CI 回归：`/browse/i` 同时命中 Browse… 按钮和一个名为
+    "E2E browse cove" 的 select trigger，触发 strict-mode 冲突。已扫过的哨兵 locator：
+    `'Browse…'`(U+2026)、`'Create task'`、`'Use a different cove'`
+  source: web/e2e/wave-create-browse-cwd.spec.ts:57
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:57
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-029
+  kind: invariant
+  family: calm-select
+  statement: >
+    drawer 内的选中态必须只用勾（`option::checkmark`，`--accent` 色）表示，不得用选中填充色
+  why: >
+    §2.2：hover 填充是瞬态的，再加一个持久填充会与 hover 视觉混淆
+  source: web/src/calm.css
+  authoritative_test: NONE
+  owner_slice: ui/calm-select
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: INV-A11Y-030
+  kind: invariant
+  family: calm-select
+  statement: >
+    Workflow select 的选项用 `.calm-select-opt-name` + 空格文本节点 + `.calm-select-opt-desc`
+    两段式，无分隔符字形；其 accessible name 因此展平成 "name + description"
+    （"None plain wave" / "Issue dev issue → PR autoflow"）。Cove 选项为纯文本
+  why: >
+    §2.2：区分靠排印而非分隔符；locator 必须用前缀匹配
+    `getByRole('option', { name: /^None/ })`，因为描述被折进了 name
+  source: web/src/pages/Cove.tsx
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-031
+  kind: invariant
+  family: calm-select
+  statement: >
+    改变 Workflow 值必须 remount `NewTaskForm`（React `key={variant}`）并把焦点移到新变体的
+    第一个字段（None → 任务描述 textarea；Issue dev → GitHub issue URL input）
+  why: >
+    #891 slice ③：per-variant state 必须干净起步；Dialog 自身的 initial-focus 只在 open
+    时跑一次，所以 variant-change effect 必须自己接管切换后的焦点（共用 `initialFocusRef`）
+  source: web/src/shared/components/NewTaskForm.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-032
+  kind: invariant
+  family: calm-select
+  statement: >
+    New wave 对话框没有可见标题行（传 `hideTitleRow`），只靠面板的 `aria-label="New wave"`
+    命名；也没有头部 × 按钮——关闭途径只有表单 Cancel、Esc、遮罩点击。被 push 的子视图
+    （Browse… 目录选择器）仍然渲染自己的标题头
+  why: >
+    §2.2 记录的既定形状；缺了 aria-label 对话框就没有 accessible name
+  source: web/src/ui/Dialog/Dialog.tsx
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: architecture
+  test_tier: none
+  migration: pending
+
+- id: CAP-A11Y-033
+  kind: capability
+  family: wave-create-form
+  statement: >
+    issue-dev 变体必须用原生 `<input type="checkbox">`（label 包裹 input）承载
+    `workflow_input.merge_policy`：未勾选（默认）提交 `"hold-for-ratify"`，勾选提交
+    `"auto-merge"`
+  why: >
+    #891 slice ③ signoff r3：该字段是二元的，且项目没有 switch 原语，原生 checkbox
+    不需要任何自定义 aria。wire shape 与早先的 `<select>` 版本保持不变
+  source: web/src/shared/components/NewTaskForm.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-034
+  kind: invariant
+  family: wave-create-form
+  statement: >
+    Auto-merge checkbox 下方的单行提示必须通过 `aria-describedby` 接成该 checkbox 的
+    accessible description（断言用 `toHaveAccessibleDescription`）
+  why: >
+    §2.2：提示解释的是二元语义的后果，必须随控件一起播报而非当作游离文本
+  source: web/src/shared/components/NewTaskForm.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-035
+  kind: invariant
+  family: wave-create-form
+  statement: >
+    Workflow 与 Cove 两个 select 必须通过 label 关联暴露为
+    `getByRole('combobox', { name: 'Workflow' | 'Cove' })`；断言当前值读 select 的 `value`，
+    切换用 `selectOptions`
+  why: >
+    §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
+  source: web/src/shared/components/NewTaskForm.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.3 — Card (generic)
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-036
+  kind: invariant
+  family: card-semantics
+  statement: >
+    每张 card 必须渲染一个 `className="card-drag-handle"` 的头部元素，且这是 grid
+    唯一视为可拖拽的部分；header 承载 card 的 accessible name
+  why: >
+    §2.3：header 之外的一切因此保持正常键盘可聚焦，pointer-only 交互不会截走按键
+  source: web/src/WaveGrid.tsx:405
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-037
+  kind: invariant
+  family: card-semantics
+  statement: >
+    Card **不得**声明 `role="region"`
+  why: >
+    §2.3 明示：今天加上会让每个 card 标题前都播报 "region"，降低叙述质量。等落地
+    per-card titled landmark 后可重新评估——这是刻意不做，不是遗漏
+  source: docs/a11y-contract.md:67
+  authoritative_test: NONE
+  owner_slice: systems/cards/semantics
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.4 — Terminal card
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-038
+  kind: invariant
+  family: card-head
+  statement: >
+    Terminal / Codex / Plugin-iframe 三种 card 的头部必须统一是 `<CardHead>` 实例，
+    带 `className="card-drag-handle"` 与 `closeAriaLabel="Remove panel"`，
+    渲染 `.card-head-icon` / `.card-head-title` / 可选 `.card-head-status` 槽
+  why: >
+    #178 / #213 / #227 的 head 统一化；三处 accessible-name 组合方式必须一致
+  source: web/src/cards/CardHead.tsx
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-039
+  kind: invariant
+  family: terminal-card
+  statement: >
+    Terminal card 在 kernel 尚未提供 `card.title` 时，fallback 标题必须是字面量
+    `"terminal"`；统一化后不得再有 " · live" 后缀
+  why: >
+    §2.4 明示 "Don't rename — the test suite expects this literal"
+  source: web/src/cards/builtins/terminal.tsx:75-100
+  authoritative_test: web/e2e/new-terminal-card.spec.ts:17
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-040
+  kind: invariant
+  family: terminal-card
+  statement: >
+    xterm.js 的 `<textarea class="xterm-helper-textarea">` 必须在 mount 时被降级为
+    `tabindex="-1"`
+  why: >
+    #236 followup：它出厂带 `tabindex="0"`，会让离屏 textarea 成为页面自然 Tab 序中的一站；
+    又因为 xterm 把 Tab 转发给 PTY，只要 wave 里有任何 xterm-backed card，外层键盘导航就被
+    困住。用户仍可点击进入（xterm 自己的 mousedown 会聚焦 textarea），之后所有按键
+    （含 Tab → tab-completion）流向 PTY
+  source: web/src/XtermView.tsx
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-041
+  kind: invariant
+  family: terminal-card
+  statement: >
+    React 层**不得**拦截 terminal / codex body 内的按键（含方向键）；xterm.js 自己拥有
+    键盘焦点与 a11y 故事（隐藏 textarea + live region）
+  why: >
+    §2.4 / §3.4 / §9 三处一致声明 "Out of scope — the renderer owns its own contract"。
+    新写的人容易误以为「终端没做键盘 a11y」而去补拦截，反而破坏 PTY 转发
+  source: web/src/XtermView.tsx
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.5 — Codex card
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-042
+  kind: invariant
+  family: codex-card
+  statement: >
+    Codex card 的头部标题必须固定为字面量 `"Codex"`
+  why: >
+    §2.5：统一化后（#178/#213/#227）不再有 bespoke head class，标题被钉死以稳定 locator
+  source: web/src/cards/builtins/codex.tsx:158-180
+  authoritative_test: NONE
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-043
+  kind: invariant
+  family: codex-card
+  statement: >
+    Codex 状态点外层的 live region 必须是 `aria-live="polite"`，**不得**用 assertive；
+    作用域必须窄（只包住点）
+  why: >
+    §2.5 明示原因：codex hook 每秒可能触发数次，assertive 会不停打断屏幕阅读器。
+    §2.7 要求新增 overlay 的 live region 照抄这个 polite + 窄作用域范式
+  source: web/src/cards/builtins/codex.tsx:158-180
+  authoritative_test: NONE
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-044
+  kind: capability
+  family: codex-card
+  statement: >
+    当 daemon 给客户端分配 `role === 'Observer'` 时，头部必须在状态点前渲染
+    `<span className="card-head-observing-pill">observing</span>`
+  why: >
+    #213：观察者态必须可见，否则用户不知道自己的输入不会生效
+  source: web/src/cards/builtins/codex.tsx:158-180
+  authoritative_test: NONE
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-045
+  kind: capability
+  family: codex-card
+  statement: >
+    `card.terminalId` 到达前，Codex body 必须显示占位文本
+    "Codex is starting… waiting for PTY."
+  why: >
+    §2.5 + §8.1：这是文档里点名可以用 `getByText` 定位的「无歧义正文」范例
+  source: web/src/cards/builtins/codex.tsx:181-191
+  authoritative_test: NONE
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.6 — Plugin card (iframe)
+# ---------------------------------------------------------------------------
+
+- id: GATE-A11Y-046
+  kind: gate
+  family: plugin-iframe
+  statement: >
+    plugin `<iframe>` 必须携带 `title="plugin <plugin_id>/<view_id>"`
+  why: >
+    §2.6：没有它 `jsx-a11y/iframe-has-title` 直接 fail；该 title 同时兼作测试 locator
+    （`getByTitle`），是 host 侧唯一契约
+  source: web/src/cards/plugin-iframe.tsx:379
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-047
+  kind: invariant
+  family: plugin-iframe
+  statement: >
+    Plugin card 的 `<CardHead>` 标题必须是 `` `${plugin_id}:${view_id}` `` 本身，
+    不得加 "Plugin: " 前缀
+  why: >
+    #213 迁移：去掉前缀后 head 的 accessible-name 组合方式与 Terminal / Codex 一致
+  source: web/src/cards/plugin-iframe.tsx:363-368
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-048
+  kind: invariant
+  family: plugin-iframe
+  statement: >
+    iframe **内部**的 a11y 由插件自己负责，宿主不做任何介入；宿主唯一的契约是
+    frame 必须能从外部经 `getByTitle` 触达。`sandbox="allow-scripts allow-same-origin"`
+  why: >
+    §2.6 明示 out of scope；否则会有人试图给插件内部补 a11y 而破坏 sandbox 边界
+  source: web/src/cards/plugin-iframe.tsx:379
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §2.7 — Overlay / status
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-049
+  kind: invariant
+  family: status-dot
+  statement: >
+    6 态 card FSM 必须经由 `<CardStatusDot>` 以 `aria-label="status <state>"` 暴露；
+    同一个点同时驱动 per-card 状态条与 wave 级字形，两处 accessible-name 格式必须一致
+  why: >
+    §2.7：格式一致才能让 AT / agent 用同一条 locator 覆盖两个表面
+  source: web/src/shared/components/CardStatusDot.tsx:48-79
+  authoritative_test: NONE
+  owner_slice: ui/atoms
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-050
+  kind: invariant
+  family: view-mode
+  statement: >
+    view-mode overlay 必须持久化在
+    `(plugin_id='kernel', entity_kind='view', entity_id=<waveId>, kind='view-mode')`，
+    payload `{ schemaVersion: 1, mode: 'grid' | 'list' | 'report' }`；缺失回落 report
+  why: >
+    Slice 9 定义的确切 key/payload 形状；schema 常量 `OVERLAY_VIEW_MODE_SCHEMA_VERSION`
+    与 layout 的并列放在 `web/src/cards/builtins/schemaVersions.ts`
+  source: web/src/cards/builtins/schemaVersions.ts
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: systems/cards/overlays
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-051
+  kind: invariant
+  family: view-mode
+  statement: >
+    view-mode overlay 必须与既有的 `kind: 'layout'` overlay 分开存放
+  why: >
+    Slice 9 明示：否则 list-mode 用户（从不拖拽）为了翻一下 cycle 按钮就得铸一行 layout
+  source: web/src/cards/builtins/schemaVersions.ts
+  authoritative_test: NONE
+  owner_slice: systems/cards/overlays
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-052
+  kind: invariant
+  family: view-mode
+  statement: >
+    kernel 侧不需要为 view-mode overlay 加 validator 条目——未知 overlay kind 会落到
+    `validate_overlay_payload` 的兜底 `_ => Ok(())`
+  why: >
+    Slice 9 记录的既有事实；重写时若把兜底改成 fail-closed，view-mode 会静默失效
+  source: docs/a11y-contract.md:101
+  authoritative_test: NONE
+  owner_slice: core/domain/overlay
+  intentional_omission: true
+  runtime_layer: core
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §3.1 — Tab order
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-053
+  kind: invariant
+  family: tab-order
+  statement: >
+    Sidebar 展开时，Tab 顺序必须是：Today → Collapse sidebar → waiting-on-you waves（若有）
+    → pinned waves（若有）→ Coves 控件（`New cove`、cove 展开按钮、cove 按钮、展开的内联
+    wave 行）→ 用户菜单 → 主内容
+  why: >
+    §3.1 记录的确切 stop 序列。**全项目唯一记录处，无 lint 无单测**——丢了就没有任何
+    地方说明正确顺序是什么
+  source: web/src/shared/components/Sidebar.tsx
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-054
+  kind: invariant
+  family: tab-order
+  statement: >
+    Sidebar 折叠时，它对主内容之前的 Tab 序**只**贡献 `Expand sidebar` 一个 stop
+  why: >
+    §3.1 明示；与 INV-A11Y-008 的子 landmark 卸载是同一件事的两个面
+  source: web/src/shared/components/Sidebar.tsx
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-055
+  kind: invariant
+  family: tab-order
+  statement: >
+    `<nav>` / `<section>` 子 landmark 本身不得引入 tab stop——只有内部的 `<button>` 才是 stop
+  why: >
+    §3.1 明示；给 landmark 加 tabIndex 会静默拉长 Tab 序并破坏 INV-A11Y-053
+  source: web/src/shared/components/Sidebar.tsx
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-056
+  kind: invariant
+  family: tab-order
+  statement: >
+    CovePage 的 Tab 顺序必须是：标题（可 rename 时为 rename 按钮）→ 各 wave 行
+    （每行是真 `<button className="wave-row">`，其兄弟 `<button className="wave-row-delete">`
+    在下一个 stop）→ `+ New wave` ghost 按钮。分区标题不是 tab stop
+  why: >
+    §3.1 记录的确切序列，无测试覆盖
+  source: web/src/pages/Cove.tsx
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-057
+  kind: invariant
+  family: tab-order
+  statement: >
+    WavePage 的 Tab 顺序必须是：返回按钮 → view-mode cycle 按钮 → cove 面包屑按钮 →
+    wave 标题 rename 按钮 → Add panel → 删除按钮 → 正文（report 视图的 report 内容 /
+    grid 视图的卡片 / list 视图的列表）
+  why: >
+    §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
+    无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
+    自管内部序列）
+  source: web/src/pages/Wave.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-058
+  kind: invariant
+  family: tab-order
+  statement: >
+    项目**故意**没有 skip-to-main 链接
+  why: >
+    §3.1 与 §9 明示：sidebar 足够短，尚未被提出为痛点；若再加一个 sidebar 分区则应重新评估。
+    新写的人只会看到「没有 skip link」而误判为缺陷
+  source: docs/a11y-contract.md:111
+  authoritative_test: NONE
+  owner_slice: app/shell/sidebar
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §3.2 — Activation
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-059
+  kind: invariant
+  family: activation
+  statement: >
+    能用真实 `<button>` 的地方必须用真实 `<button>`（Enter 与 Space 天然激活）；
+    WaveRow 与 CovePage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
+  why: >
+    §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
+  source: web/src/shared/components/WaveRow.tsx
+  authoritative_test: NONE
+  owner_slice: ui/activation
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-060
+  kind: invariant
+  family: activation
+  statement: >
+    任何 `role="button"` 元素必须显式处理 Enter 与 Space；今天唯一不可避免的实例是
+    WavePage 的 rename span
+  why: >
+    §3.2：它必须坐在 `<h1>` 内而不破坏 heading 的 accessible-name 组合，所以不能用真 button
+  source: web/src/pages/Wave.tsx:209-273
+  authoritative_test: NONE
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-061
+  kind: invariant
+  family: activation
+  statement: >
+    导航一律走 `<button>` + `onGo`，不铺开原生 `<a href>` 链接
+  why: >
+    §3.2 记录的既定形状（"We don't have many links today"）；混用会让 Tab/激活语义分叉
+  source: docs/a11y-contract.md:121
+  authoritative_test: NONE
+  owner_slice: app/router/navigation
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §3.3 — Escape
+# ---------------------------------------------------------------------------
+
+- id: CAP-A11Y-062
+  kind: capability
+  family: escape
+  statement: >
+    Esc 在 Dialog 上必须关闭对话框；若有被 push 的子视图，子视图的 `onEscape` 先跑
+    （无 handler 则该视图出栈）
+  why: >
+    §3.3 + §4.5：让 `DirectoryBrowser` 能取消自己的 browse 模式而不关掉整个对话框
+  source: web/src/ui/Dialog/Dialog.tsx:148-169
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-063
+  kind: capability
+  family: escape
+  statement: >
+    Esc 在 AddPanel 弹出菜单上必须关闭菜单并把焦点还给触发按钮
+  why: >
+    §3.3：由 `useRovingTabindex` 的 `onEscape` 回调拥有，AddPanel 把它接到
+    `closeAndRestoreFocus`
+  source: web/src/hooks/useRovingTabindex.ts
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-064
+  kind: capability
+  family: escape
+  statement: >
+    Esc 在 rename 编辑输入框上必须取消编辑并把焦点还给展示元素
+  why: >
+    §3.3 + §5：与 blur-commit 相对，Esc 是唯一的丢弃路径
+  source: web/src/pages/Wave.tsx:138-141
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:162
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-065
+  kind: invariant
+  family: escape
+  statement: >
+    内联 NewWave / NewCove 输入框必须 blur-commit（`onBlur` 调 `submit()`），
+    而 Escape 接到 `close`（丢弃草稿）
+  why: >
+    §3.3 明示这对不对称行为：blur 存、Esc 丢。重写时若把 Esc 也接成 commit 会静默吞掉
+    用户的「我不要了」意图
+  source: web/src/pages/Cove.tsx:226-229
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §3.4 — Arrow keys
+# ---------------------------------------------------------------------------
+
+- id: CAP-A11Y-066
+  kind: capability
+  family: list-keyboard
+  statement: >
+    WaveList 中 ArrowUp / ArrowDown 必须在卡片之间移动焦点，并**环绕**
+  why: >
+    Slice 9 的 roving tabindex 契约（`useRovingTabindex`），与 AddPanel 菜单同一套语义
+  source: web/src/WaveList.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-067
+  kind: capability
+  family: list-keyboard
+  statement: >
+    WaveList 中 Home / End 必须跳到第一 / 最后一张卡片
+  why: >
+    Slice 9 契约条目
+  source: web/src/WaveList.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-068
+  kind: capability
+  family: list-keyboard
+  statement: >
+    WaveList 中 `Alt+ArrowUp` / `Alt+ArrowDown` 必须把聚焦卡片上移 / 下移——通过
+    `useUpdateCardMutation` 交换 `sort` 值（该 mutation 对 `sort` 是乐观的），
+    并产生可被 trace ring buffer 捕获的 `card.updated` 事件
+  why: >
+    Slice 9：这是 grid 无键盘重排的唯一对价路径。带 Alt 是为了不和纯箭头的焦点移动冲突
+  source: web/src/WaveList.tsx
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-069
+  kind: capability
+  family: list-keyboard
+  statement: >
+    WaveList 中 Delete / Backspace 必须删除聚焦的卡片，**无确认弹窗**（与 grid 视图的
+    `×` 按钮行为一致）
+  why: >
+    §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
+    操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型
+  source: web/src/WaveList.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-070
+  kind: capability
+  family: list-keyboard
+  statement: >
+    WaveList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 wave 头部
+  why: >
+    §3.4：roving tabindex 让整个列表只占一个 tab stop，Tab 必须是「出口」而非在卡片间走
+  source: web/src/WaveList.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-071
+  kind: invariant
+  family: list-keyboard
+  statement: >
+    WaveList 的每个 `<li>` 必须携带
+    `aria-keyshortcuts="ArrowUp ArrowDown Alt+ArrowUp Alt+ArrowDown Home End Delete"`
+  why: >
+    §3.4 明示目的：让这套契约**仅凭 AT 就可发现**，不必读文档。字符串内容与顺序即契约
+  source: web/src/WaveList.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-072
+  kind: invariant
+  family: list-keyboard
+  statement: >
+    List 视图**故意**不提供 resize——卡片按内在内容自适应高度
+  why: >
+    §9 明示 "resize is out of scope (cards in list view self-size to intrinsic content)"；
+    Slice 9 只承诺 reorder + remove
+  source: web/src/WaveList.tsx
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-073
+  kind: capability
+  family: menu-keyboard
+  statement: >
+    AddPanel 菜单必须实现完整 WAI-ARIA menu 键盘契约：ArrowDown/Up 环绕循环、Home/End 跳转、
+    单字母 typeahead 跳到首个匹配、Enter/Space 激活、Escape 关闭
+  why: >
+    Slice 7 (#73) 经由 `useRovingTabindex` 落地；§9 记录该 gap 已 Resolved
+  source: web/src/hooks/useRovingTabindex.ts
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-074
+  kind: invariant
+  family: menu-keyboard
+  statement: >
+    Roving `tabIndex` 必须把菜单整体挡在 Tab 序之外——只有当前 active item 在页面序列里。
+    打开时聚焦第一项；关闭时（Escape / 激活 / 外部点击）焦点必须回到触发按钮
+  why: >
+    Slice 7：菜单若每项都是 tab stop，Tab 会在菜单内走而不是离开，破坏 §3.1 的页面级序列
+  source: web/src/hooks/useRovingTabindex.ts
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
+  owner_slice: ui/roving
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §4 — Dialog contract
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-075
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    Dialog 打开后一个 animation frame，焦点必须进入面板；解析顺序为
+    调用方 `initialFocusRef.current` → 面板内第一个 focusable → 面板自身
+    （其 `tabIndex={-1}` 作为兜底）
+  why: >
+    §4.1 定义的确切顺序与时机；缺了兜底会出现焦点留在 inert 背景上的死态
+  source: web/src/ui/Dialog/Dialog.tsx:223-249
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-076
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    Dialog 的 focus trap 必须在**每一次** Tab keydown 时重新查询 focusables 列表
+  why: >
+    §4.2 明示：这样动态子内容（例如 pushed view）会被自动纳入；缓存列表会让新挂载的
+    控件无法被 Tab 到
+  source: web/src/ui/Dialog/Dialog.tsx:285-310
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-077
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    Dialog 打开期间，`document.body` 的每个直接子节点（portal root 除外）必须被加上
+    `inert` + `aria-hidden="true"`；关闭时必须**精确还原**先前的值
+  why: >
+    §4.3：不精确还原会把原本就 aria-hidden 的节点错误地"解隐藏"
+  source: web/src/ui/Dialog/Dialog.tsx:181-213
+  authoritative_test: web/e2e/a11y-axe.spec.ts:382
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-078
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    inert effect 必须声明在 focus-restore effect **之前**
+  why: >
+    §10 的 Slice 7 复盘记录：React 19 StrictMode 双跑 effect 暴露了 Dialog 中 inert 毯子
+    与 focus restore 的 effect 顺序 bug——顺序反了则 restore 目标仍在 inert 子树下，
+    `focus()` 静默失败
+  source: web/src/ui/Dialog/Dialog.tsx:181-213
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-079
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    Dialog 关闭时焦点必须回到 `restoreFocusRef.current`（若提供），否则回到打开时持有焦点的
+    元素；已脱离文档的节点必须被静默跳过
+  why: >
+    §4.4；脱离节点若不跳过，`focus()` 无效且焦点掉回 `<body>`
+  source: web/src/ui/Dialog/Dialog.tsx:250-261
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-080
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    遮罩上的 mousedown（非面板）必须关闭 Dialog——但**子视图在栈上时遮罩点击必须被禁用**
+  why: >
+    §4.6 明示原因：防止用户把填了一半的表单状态丢在后面
+  source: web/src/ui/Dialog/Dialog.tsx:323-330
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-081
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    Dialog 面板必须是 `role="dialog" aria-modal="true"`，并用 `title` prop（若为 string）
+    作为 `aria-label`
+  why: >
+    §4.7 定义的 role + name 契约；locator 依赖 `getByRole('dialog', { name })`
+  source: web/src/ui/Dialog/Dialog.tsx:348-350
+  authoritative_test: web/e2e/a11y-axe.spec.ts:382
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-082
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    **故意不使用**平台原生 `<dialog>` 元素，focus trap 手写
+  why: >
+    §4 结尾 + §10：原生 dialog 的跨主题样式化不可行（UA 默认值压过项目 token）；
+    手写 trap 的代价（~150 行 + 一轮 review）已被接受并记录在文件头
+  source: web/src/ui/Dialog/Dialog.tsx:41-56
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: true
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §5 — Rename contract
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-083
+  kind: invariant
+  family: rename-name-split
+  statement: >
+    rename 的展示元素必须是一等 tab stop（WavePage 用 `<span role="button" tabIndex={0}>`；
+    CovePage 用 `<h1>` 内的真实嵌套 `<button>`——后者是首选）
+  why: >
+    §5：不可聚焦就没有键盘进入 rename 的路径
+  source: web/src/pages/Cove.tsx:188-293
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-084
+  kind: invariant
+  family: rename-name-split
+  statement: >
+    任何新的 rename 表面都必须遵守 name/description 拆分：`aria-label` 承载**值**，
+    `aria-describedby` 指向承载**动词**的 `.sr-only` span；绝不把动词塞进 name
+  why: >
+    §5 称之为 canonical pattern；#56 followup 修的正是「heading-nav 叙述噪音」。
+    `.sr-only` 用项目级类（`web/src/calm.css`）
+  source: web/src/pages/Cove.tsx:188-293
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-A11Y-085
+  kind: capability
+  family: rename-keys
+  statement: >
+    Enter 或 F2 必须进入 rename 编辑模式；F2 是唯一被显式 `preventDefault` 的键
+    （Enter 走原生 button 激活）
+  why: >
+    Slice 3 (#64)：F2 是 Windows 惯例。preventDefault 只给 F2 是因为 Enter 不需要拦截
+  source: web/src/pages/Wave.tsx:197-209
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-086
+  kind: capability
+  family: rename-keys
+  statement: >
+    rename 编辑框中 Enter 提交（调 `onSave`）、Escape 取消、**blur 也提交**
+    （点击别处同样保存）
+  why: >
+    §5 明示三路语义。blur-commit 是最容易在重写中丢失的一条——新写的人通常只实现
+    Enter/Esc
+  source: web/src/pages/Cove.tsx:188-293
+  authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:241
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-087
+  kind: invariant
+  family: rename-keys
+  statement: >
+    rename 输入框必须继承展示元素的视觉 class，使 swap 时不发生视觉位移
+  why: >
+    §5 明示；位移会让点击/焦点目标跳动
+  source: web/src/pages/Cove.tsx:188-293
+  authoritative_test: NONE
+  owner_slice: features/cove/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-088
+  kind: invariant
+  family: rename-keys
+  statement: >
+    退出编辑时必须把焦点还给展示元素；机制必须是 `restoreFocus` **boolean ref**，
+    使 focus 调用发生在 React 卸载 input **之后**
+  why: >
+    §5 明示机制原因：早于卸载调 focus 会被随后的卸载抢走，焦点静默掉到 `<body>`
+  source: web/src/pages/Wave.tsx:115-126
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §6 — Focus-visible policy
+# ---------------------------------------------------------------------------
+
+- id: GATE-A11Y-089
+  kind: gate
+  family: focus-visible
+  statement: >
+    `web/src/calm.css` 中每一条 `outline: none` 必须配一条重建可见焦点指示的
+    `:focus-visible` 规则（**绝不能用裸 `:focus`**）；新增无配对的 `outline: none`
+    是 §6 违规，review 必须打回
+  why: >
+    §6：`jsx-a11y/recommended`（Slice 1 / #61，`web/eslint.config.js:100-105`）
+    抓不到 CSS-only 的 `outline: none` 回归——这条纯靠人工卫生，没有任何机器闸门
+  source: web/eslint.config.js:100-105
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: INV-A11Y-090
+  kind: invariant
+  family: focus-visible
+  statement: >
+    已登记的 `outline: none` / `:focus-visible` 配对清单必须保持完整：
+    `.side .cove-nav-edit input`、`.wave-title[role="button"]`、`.wave-title-input`、
+    `.h-display-rename`、`.login-input`、`.wave-list-item`
+  why: >
+    §6 的表格是这份清单的唯一记录处。另有无 `outline:none` 但有 focus-visible 的表面：
+    `.cove-title-input`、`.new-wave-input`；而 `.wave-back` / `.wave-cove` / `.crumb-link`
+    用实心 `outline` + `outline-offset`，从不剥默认焦点环
+  source: web/src/calm.css:283
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: INV-A11Y-091
+  kind: invariant
+  family: focus-visible
+  statement: >
+    soft ring 用 `var(--accent-soft)`（2px `box-shadow`，用于内联编辑表面）；
+    hard ring 用 `var(--accent)`（2px outline + 2px offset，用于 chrome 按钮）。
+    两种形态都必须在面板背景上可见，不得按主题调暗
+  why: >
+    §6 定义的两种确切形态；"we don't dim them theme-side" 是明确禁令
+  source: web/src/calm.css:291-293
+  authoritative_test: web/e2e/color-system-anchor.spec.ts:26
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: GATE-A11Y-092
+  kind: gate
+  family: focus-visible
+  statement: >
+    全局 `*:focus { outline: none }` **不存在，且禁止新增**（calm reset 是 per-class 的）
+  why: >
+    §6 明示：加了会静默抹掉所有尚未自定义样式的 input 的浏览器默认焦点环——一个不可见的
+    全局回归。这是「必须不存在」型不变量，其可读证据就是 calm.css 里没有该选择器
+  source: web/src/calm.css
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: CAP-A11Y-093
+  kind: capability
+  family: focus-visible
+  statement: >
+    新增可聚焦元素时必须走检查表：(1) 开箱是否有可见焦点指示？有则完成；(2) 否则加一条
+    `:focus-visible` 规则，采用 soft / hard 两种范式之一
+  why: >
+    §6 结尾给出的操作流程；没有它就没有判定「什么时候需要加规则」的标准
+  source: docs/a11y-contract.md:213
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §7 — Motion policy
+# ---------------------------------------------------------------------------
+
+- id: GATE-A11Y-094
+  kind: gate
+  family: motion
+  statement: >
+    `prefers-reduced-motion: reduce` 必须把**每一条** CSS animation/transition 折叠到
+    0.01ms，且必须带 `!important`
+  why: >
+    Slice 4 (#65)：`!important` 是**必需的**——否则赢不过任何内联 `animation:` 简写。
+    这是全局覆盖，新增 `animation:` 因此是免费的
+  source: web/src/calm.css:2483-2492
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: css
+  test_tier: static
+  migration: pending
+
+- id: INV-A11Y-095
+  kind: invariant
+  family: motion
+  statement: >
+    代码库中每一条动画/过渡都必须是装饰性的：不得有任何动效单独承载 load 状态或信息
+  why: >
+    §7 的根前提；GATE-A11Y-094 的全局折叠只有在这条成立时才安全
+  source: docs/a11y-contract.md:219
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-A11Y-096
+  kind: invariant
+  family: motion
+  statement: >
+    "Loading…" 指示必须用**文字**而非 spinner（例
+    `<div className="synth">Loading grid…</div>`）
+  why: >
+    §7 明示 "Don't add a spinner where text would do"——spinner 在 reduced-motion 下会
+    被折叠成静止，从而丢失它承载的信息
+  source: web/src/pages/Wave.tsx:256
+  authoritative_test: NONE
+  owner_slice: features/wave/page
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-A11Y-097
+  kind: invariant
+  family: motion
+  statement: >
+    `web/src/` 中的 JS **不得**监听 `animationend` / `transitionend`
+  why: >
+    §7：契约是「动效仅供装饰」，逻辑不得挂在动效生命周期上。文档同时指出即使误加，
+    0.01ms 折叠后事件仍会足够同步地触发——但这不是许可，是缓冲
+  source: docs/a11y-contract.md:223
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: true
+  runtime_layer: styles
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-A11Y-098
+  kind: invariant
+  family: motion
+  statement: >
+    若新增**功能性**动画（动效承载信息，例如旋转方向编码加载状态），必须在同一个 PR 里
+    记录它的 reduced-motion 替代方案
+  why: >
+    §7 明示的唯一豁免通道；不记录则该动画在 reduced-motion 下静默失去含义
+  source: docs/a11y-contract.md:225
+  authoritative_test: NONE
+  owner_slice: styles/global
+  intentional_omission: false
+  runtime_layer: styles
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §8 — AI agent test contract
+# ---------------------------------------------------------------------------
+
+- id: GATE-A11Y-099
+  kind: gate
+  family: locator-discipline
+  statement: >
+    Playwright 测试必须一律用 `getByRole(role, { name })` 定位；**永不**用
+    `data-testid`——test ID 仅限「元素合法地没有 role/name 故事（如纯装饰 canvas）**且**
+    测试确实必须断言它」的非常情况，迄今没有任何 slice 需要过
+  why: >
+    §8.1：这是屏幕阅读器与 AI agent 走的同一条路径——测试若够不到，它们也够不到。
+    这条既是测试纪律也是产品可驱动性的代理指标
+  source: web/e2e/a11y-keyboard.spec.ts:215
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-100
+  kind: invariant
+  family: locator-discipline
+  statement: >
+    `getByText` 只可用于无歧义的正文（如 `Codex is starting…` 占位符）；当文本位于有
+    role 的元素内时必须改用 `getByRole`
+  why: >
+    §8.1 的例外边界
+  source: docs/a11y-contract.md:237
+  authoritative_test: NONE
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-A11Y-101
+  kind: invariant
+  family: locator-discipline
+  statement: >
+    `getByTitle` 只可用于 plugin iframe（其 accessible name 就是 title）；
+    不得为了可查询而给别处加 `title` 属性——别处的逃生舱是 `aria-label`
+  why: >
+    §8.1 + §2.6
+  source: docs/a11y-contract.md:238
+  authoritative_test: NONE
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: CAP-A11Y-102
+  kind: capability
+  family: event-trace
+  statement: >
+    dev build 下 URL 带 `?trace=1` 时，`EventBridge` 必须在 `window.__neigeEvents__`
+    安装一个 **200 条**的环形缓冲
+  why: >
+    Slice 5 (#66)：容量与开关条件是测试可依赖的确切形状
+  source: web/src/app/eventBridge.tsx:64-146
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
+  owner_slice: app/events-glue/event-bridge
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-A11Y-103
+  kind: capability
+  family: event-trace
+  statement: >
+    `web/e2e/helpers/trace.ts` 必须提供 `getEventTrace(page)`、`clearEventTrace(page)`、
+    `assertEventKinds(page, expected)`（对 `ev` 字段做精确序列断言）、
+    `waitForEvent(page, kind, timeoutMs?)`
+  why: >
+    §8.2 定义的 helper API 面。`clearEventTrace` 必须**原地**清空以保留组件里缓存的引用；
+    `waitForEvent` 用 `page.waitForFunction` 拿亚毫秒粒度
+  source: web/e2e/helpers/trace.ts
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-104
+  kind: invariant
+  family: e2e-projects
+  statement: >
+    `playwright.config.ts` 必须维持两个 project：`chromium` 指向开发者的 `make dev` 栈
+    (`http://localhost:4041/calm/`)，无需 replay 二进制；`a11y` 启动
+    `cargo run --bin replay --features fixtures --serve` 并预载 event-trace fixture
+  why: >
+    Slice 5：任何需要 trace ring buffer 的 spec 都必须挂 `a11y` project
+  source: web/e2e/_setup/replay-server.ts
+  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-105
+  kind: invariant
+  family: e2e-projects
+  statement: >
+    replay 二进制必须**仅**由 `replay-setup` setup project 拉起，而该 setup 只作为 `a11y`
+    的依赖运行
+  why: >
+    §8.3 明示后果：单独跑 `--project=chromium` 因此永远不需要 PATH 上有 cargo
+  source: web/e2e/_setup/replay-server.ts
+  authoritative_test: NONE
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-A11Y-106
+  kind: invariant
+  family: e2e-projects
+  statement: >
+    a11y / role-name 契约测试放在 `web/e2e/` 下；触碰 replay fixture 的测试必须用
+    `a11y` project。约定是**一个表面一个 spec**（dialog 一个、rename 一个），
+    跨表面覆盖可以收在单个 `describe` 里
+  why: >
+    §8.4 的命名与切分约定
+  source: docs/a11y-contract.md:262
+  authoritative_test: NONE
+  owner_slice: none/e2e/infra
+  intentional_omission: false
+  runtime_layer: none
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-A11Y-107
+  kind: invariant
+  family: locator-discipline
+  statement: >
+    **故意不采用** Playwright 的 `toMatchAriaSnapshot()` —— #56 的「ARIA snapshots」
+    验收标准视为已退役；出厂契约是 `getByRole(role,{name})` + axe 扫描 + 键盘 E2E
+  why: >
+    §8.5：role/name 断言只在公共契约（role、accessible name、focus path）变化时才断，
+    而快照会因无关的 DOM 抖动反复卡住 PR。快照路径保持开放（Playwright ≥1.49），
+    若 role tree 开始悄悄漂移可按主要页面状态逐个加回
+  source: docs/a11y-contract.md:266
+  authoritative_test: NONE
+  owner_slice: none/e2e/infra
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §9 — Deferred / known gaps
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-108
+  kind: invariant
+  family: dialog-focus
+  statement: >
+    `Dialog.tsx:111-117` 关于 `:focus-visible` 过滤的注释是**技术上错误的**
+    （它声称 `:focus-visible` 会匹配 `display:none` 元素，实际不会）——它不对应任何
+    今天的行为 bug，但 DOM 顺序变动时是潜在脆弱点
+  why: >
+    Slice 2 review 期间捕获（原写于该原语还叫 `Modal.tsx` 时），由 PR #93 逐字搬过来。
+    记录在案是为了让读者不会把它当作真理去依赖
+  source: web/src/ui/Dialog/Dialog.tsx:111-117
+  authoritative_test: NONE
+  owner_slice: ui/dialog
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ---------------------------------------------------------------------------
+# §10 / §10a — Library policy & primitive layer
+# ---------------------------------------------------------------------------
+
+- id: INV-A11Y-109
+  kind: invariant
+  family: library-policy
+  statement: >
+    立场是**手写到痛为止**，不引入 headless UI 库。重新评估的触发条件有三：
+    (1) 活跃维护的 disclosure widget 超过约 5 个（今天是 Dialog + AddPanel popover）；
+    (2) 落地一个无法合理手写键盘语义的新控件类别（Combobox / 命令面板最可能）；
+    (3) 两个以上手写控件的 focus-management 代码开始分叉
+  why: >
+    §10 的 Slice 7 判词：完整 WAI-ARIA 菜单契约只花了 ~290 LOC hook + ~30 LOC 集成，
+    痛点边缘案例只有 1 个（React 19 StrictMode 暴露的 Dialog inert/focus effect 顺序 bug）。
+    候选评估过 Radix（最可能）/ Headless UI / React Aria / Ark UI
+  source: docs/a11y-contract.md:285-300
+  authoritative_test: NONE
+  owner_slice: none/policy/ui-doc
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-A11Y-110
+  kind: invariant
+  family: doc-boundary
+  statement: >
+    逐原语的契约（视觉 / a11y / 测试）归 `web/src/ui/README.md`；本文档只放跨切面规则
+    （对象语义、键盘契约、locator 规则、motion 政策）。两边**故意不互相复制**
+  why: >
+    #60 引入该 README 作为 `web/src/ui/` 每个原语契约的正典家（今天是 `Dialog`，
+    `Menu` 与 `ConfirmDialog` 后续 slice 跟进）。重复会导致两份说法漂移
+  source: web/src/ui/README.md
+  authoritative_test: NONE
+  owner_slice: none/policy/ui-doc
+  intentional_omission: true
+  runtime_layer: none
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending

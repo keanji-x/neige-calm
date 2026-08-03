@@ -1,0 +1,136 @@
+@layer tokens {
+  :root {
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --font-serif: "New York", "Iowan Old Style", "Charter", "Georgia", serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --font-display: var(--font-sans);
+    --font-numeric: var(--font-sans);
+    --font-code: var(--font-mono);
+
+    --bg: oklch(98.8% 0.003 240);
+    --paper: oklch(99.5% 0.002 240);
+    --hairline: oklch(92% 0.005 240);
+    --hairline-strong: oklch(86% 0.006 240);
+    --text: oklch(20% 0.008 250);
+    --text-2: oklch(45% 0.01 250);
+    --text-3: oklch(52% 0.01 250);
+    --text-4: oklch(76% 0.008 250);
+    --accent: oklch(52% 0.13 245);
+    --accent-soft: oklch(95% 0.025 245);
+    --warn: oklch(58% 0.16 30);
+    --warn-soft: oklch(96% 0.03 30);
+
+    --surface-rail: oklch(98% 0.003 240);
+    --surface-card: oklch(96% 0.004 240);
+    --surface-chip: oklch(95% 0.005 240);
+    --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
+    --surface-panel-head: oklch(98% 0.003 240);
+    --surface-terminal: oklch(99% 0.003 240);
+    --surface-code: oklch(0% 0 0 / 0.04);
+    --overlay-hover-faint: oklch(0% 0 0 / 0.025);
+    --overlay-hover: oklch(0% 0 0 / 0.04);
+    --overlay-hover-strong: oklch(0% 0 0 / 0.055);
+    --overlay-active: oklch(0% 0 0 / 0.05);
+
+    --surface-paper: var(--paper);
+    --surface-bg: var(--bg);
+    --surface-hover-overlay: var(--surface-toggle-overlay);
+    --text-label: var(--text-2);
+    --text-meta: var(--text-3);
+    --text-decorative: var(--text-4);
+
+    --text-xs: 11px;
+    --text-sm: 12.5px;
+    --text-base: 13px;
+    --text-md: 15px;
+    --text-lg: 18px;
+    --text-xl: 22px;
+    --text-display-sm: 26px;
+    --text-display: 36px;
+    --leading-none: 1;
+    --leading-tight: 1.15;
+    --leading-snug: 1.3;
+    --leading-base: 1.5;
+    --leading-loose: 1.65;
+    --tracking-tighter: -0.02em;
+    --tracking-tight: -0.01em;
+    --tracking-normal: 0;
+    --tracking-wide: 0.02em;
+    --tracking-wider: 0.06em;
+    --tracking-widest: 0.08em;
+
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 10px;
+    --radius-pill: 999px;
+
+    --space-0: 0;
+    --space-px: 1px;
+    --space-1: 2px;
+    --space-2: 4px;
+    --space-3: 6px;
+    --space-4: 8px;
+    --space-5: 10px;
+    --space-6: 12px;
+    --space-7: 14px;
+    --space-8: 16px;
+    --space-9: 20px;
+    --space-10: 24px;
+    --space-11: 28px;
+    --space-12: 32px;
+    --motion-instant: 0.06s;
+    --motion-quick: 0.1s;
+    --motion-snappy: 0.15s;
+    --motion-medium: 0.24s;
+    --motion-slow: 1s;
+    --motion-pulse: 2.2s;
+
+    --success: oklch(54% 0.14 145);
+    --error: oklch(56% 0.14 25);
+    --overlay-scrim: rgba(20, 30, 55, 0.32);
+    --cal-event-waiting-bg: oklch(97% 0.018 30);
+    --error-text: oklch(50% 0.18 25);
+    --warn-border: oklch(85% 0.05 30);
+
+    --z-base: 0;
+    --z-raised: 2;
+    --z-sticky: 4;
+    --z-overlay: 10;
+    --z-modal: 100;
+    --z-toast: 1000;
+  }
+
+  [data-theme="dark"] {
+    --bg: oklch(16% 0.008 245);
+    --paper: oklch(19% 0.009 245);
+    --hairline: oklch(28% 0.01 245);
+    --hairline-strong: oklch(36% 0.012 245);
+    --text: oklch(96% 0.005 245);
+    --text-2: oklch(72% 0.012 245);
+    --text-3: oklch(64% 0.012 245);
+    --text-4: oklch(42% 0.012 245);
+    --accent: oklch(72% 0.14 245);
+    --accent-soft: oklch(28% 0.05 245);
+    --warn: oklch(70% 0.16 30);
+    --warn-soft: oklch(28% 0.05 30);
+    --surface-rail: oklch(15% 0.008 245);
+    --surface-card: oklch(21% 0.009 245);
+    --surface-chip: oklch(24% 0.01 245);
+    --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
+    --surface-panel-head: oklch(20% 0.009 245);
+    --surface-terminal: oklch(18% 0.009 245);
+    --surface-code: oklch(100% 0 0 / 0.06);
+    --overlay-hover-faint: oklch(100% 0 0 / 0.035);
+    --overlay-hover: oklch(100% 0 0 / 0.05);
+    --overlay-hover-strong: oklch(100% 0 0 / 0.06);
+    --overlay-active: oklch(100% 0 0 / 0.06);
+    --success: oklch(74% 0.14 145);
+    --error: oklch(74% 0.14 25);
+    --overlay-scrim: rgba(0, 0, 0, 0.55);
+    --cal-event-waiting-bg: oklch(24% 0.03 30);
+    --error-text: oklch(74% 0.14 25);
+    --warn-border: oklch(40% 0.05 30);
+  }
+}

@@ -1,0 +1,5 @@
+vi.mock('x', () => ({ a: vi.fn() }));
+
+const mock = vi.hoisted(() => ({ a: vi.fn() }));
+
+vi.mock('y', () => mock);

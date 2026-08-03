@@ -354,6 +354,37 @@ jobs:
       - name: npm run test
         run: npm run test
 
+  fe-unit:
+    name: fe-unit (lint + build + test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: fe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Validate Node against package engines
+        run: node -e "const semver=require('semver');const range=require('./package.json').engines.node;if(!semver.satisfies(process.version,range))process.exit(1)"
+
+      - name: npm run lint
+        run: npm run lint
+
+      - name: npm run build
+        run: npm run build
+
+      - name: npm run test
+        run: npm run test
+
   # #903 — the rust-dependent half of the `web (build + test + a11y)` split
   # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).
   # It builds the replay bin the Playwright setup hook needs. Deliberately
