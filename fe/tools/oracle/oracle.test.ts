@@ -2,10 +2,24 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import baseline from './baseline.json' with { type: 'json' };
-import { defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
+import { codeAnchorLines, defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
+
+const anchorPositionShapes = [
+  ['css-selector-single.css', ['selectorSingle'], { selectorSingle: [1] }],
+  ['css-selector-multiline.css', ['selectorMultiline'], { selectorMultiline: [2] }],
+  ['css-selector-inline-comment.css', ['fakeAnchor', 'selectorAfterComment'], { fakeAnchor: [], selectorAfterComment: [1] }],
+  ['css-selector-comment-only.css', ['commentOnlyAnchor'], { commentOnlyAnchor: [] }],
+  ['css-declaration-single.css', ['declarationSingle'], { declarationSingle: [1] }],
+  ['css-declaration-multiline-comment.css', ['fakeValueAnchor', 'declarationMultiline'], { fakeValueAnchor: [], declarationMultiline: [3] }],
+  ['css-atrule-single.css', ['atruleSingle'], { atruleSingle: [1] }],
+  ['css-atrule-multiline.css', ['atruleMultiline'], { atruleMultiline: [2] }],
+  ['css-comment-node.css', ['standaloneCommentAnchor'], { standaloneCommentAnchor: [] }],
+  ['ts-single.ts', ['typescriptSingle'], { typescriptSingle: [1] }],
+  ['ts-multiline.ts', ['typescriptMultiline'], { typescriptMultiline: [2] }],
+  ['ts-comment.ts', ['typescriptCommentAnchor'], { typescriptCommentAnchor: [] }],
+] as const;
 
 function run(rule: string, kind: 'positive' | 'negative') {
   const root = resolve(fixtures, rule, kind);
@@ -18,12 +32,27 @@ function run(rule: string, kind: 'positive' | 'negative') {
 
 const cases = [
   'document-shape', 'required-fields', 'enum-kind', 'enum-runtime_layer', 'enum-verification_owner', 'enum-test_tier', 'enum-migration',
-  'id-format', 'id-kind-prefix', 'id-unique', 'owner-slice', 'runtime-owner-layer', 'skipped-fields', 'skipped-owner',
+  'id-format', 'id-kind-prefix', 'id-unique', 'former-id-format', 'former-id-unique', 'owner-slice', 'runtime-owner-layer', 'skipped-fields', 'skipped-owner',
   'non-skipped-reason', 'non-skipped-owner', 'intentional-omission-boolean', 'source-location',
-  'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
+  'source-anchor', 'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
 ] as const;
 
 describe('oracle rule fixtures', () => {
+  it('covers exactly every CSS anchor position shape fixture in both directions', () => {
+    const shapeRoot = resolve(fixtures, 'anchor-position-shapes');
+    const fixtureFiles = readdirSync(shapeRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile()).map((entry) => entry.name);
+    const declaredFiles = anchorPositionShapes.map(([file]) => file);
+    expect(new Set(declaredFiles)).toEqual(new Set(fixtureFiles));
+    expect(new Set(fixtureFiles)).toEqual(new Set(declaredFiles));
+  });
+
+  it.each(anchorPositionShapes)('anchor position shape %s', (file, identifiers, expected) => {
+    const contents = readFileSync(resolve(fixtures, 'anchor-position-shapes', file), 'utf8');
+    const actual = codeAnchorLines(file, contents, identifiers);
+    expect(actual).not.toBeNull();
+    expect(Object.fromEntries([...actual!].map(([identifier, lines]) => [identifier, [...lines]]))).toEqual(expected);
+  });
   it('anchors the guarded YAML fields to the SCHEMA example', () => {
     const schema = readFileSync(resolve(import.meta.dirname, '../../../docs/oracle/SCHEMA.md'), 'utf8');
     const entrySection = /^# Oracle 条目 schema[^\n]*\n([\s\S]*?)(?=^## )/m.exec(schema)?.[1] ?? '';
@@ -49,6 +78,7 @@ describe('oracle rule fixtures', () => {
   });
   const fieldRules: Record<(typeof ORACLE_YAML_FIELDS)[number], string> = {
     id: 'id-format',
+    former_id: 'former-id-format',
     kind: 'enum-kind',
     family: 'required-fields',
     statement: 'statement-nonempty',
@@ -73,26 +103,88 @@ describe('oracle rule fixtures', () => {
   }
   it('covers exactly every rule the validator can emit', () => {
     const fixtureDirectories = readdirSync(fixtures, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name !== 'field-types').map((entry) => entry.name);
+      .filter((entry) => entry.isDirectory() && !['field-types', 'anchor-position-shapes'].includes(entry.name))
+      .map((entry) => entry.name);
     expect(new Set(fixtureDirectories)).toEqual(new Set(ORACLE_RULES));
   });
   for (const rule of cases) {
     it(`${rule}: accepts positive and rejects only the intended negative`, () => {
       expect(run(rule, 'positive')).toEqual([]);
       const violations = run(rule, 'negative');
-      expect(violations, JSON.stringify(violations)).toHaveLength(1);
-      expect(violations[0]?.rule).toBe(rule);
+      expect(violations, JSON.stringify(violations)).toHaveLength(
+        rule === 'source-anchor' ? 3 : rule === 'former-id-unique' ? 2 : 1,
+      );
+      expect(new Set(violations.map((violation) => violation.rule))).toEqual(new Set([rule]));
       if (rule === 'source-location') {
         expect(violations[0]?.message).toContain('path escapes repository: /etc/passwd');
         expect(violations[0]?.message).toContain('path escapes repository: ../FIX-R2.md');
       }
     });
   }
+
+  it('source-anchor baseline is exact in both directions', () => {
+    const root = resolve(fixtures, 'source-anchor/negative');
+    const matched = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor/baseline.json'),
+    });
+    expect(matched).toEqual([]);
+
+    const added = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor/incomplete-baseline.json'),
+    });
+    expect(added).toHaveLength(2);
+    expect(added.map((violation) => violation.message)).toContain('unbaselined not-in-file');
+    expect(added.map((violation) => violation.message)).toContain(
+      'baseline count must equal actual count: declared 2, distinct valid 2, actual 3',
+    );
+
+    const fixedRoot = resolve(fixtures, 'source-anchor/positive');
+    const stale = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: fixedRoot,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor/fixed-baseline.json'),
+    });
+    expect(stale).toHaveLength(2);
+    expect(stale.map((violation) => violation.message)).toContain('stale baseline range-miss');
+    expect(stale.map((violation) => violation.message)).toContain(
+      'baseline count must equal actual count: declared 1, distinct valid 1, actual 0',
+    );
+  });
+
+  it('rejects duplicate ids in the unsupported account', () => {
+    const root = resolve(fixtures, 'source-anchor/positive');
+    const violations = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorUnsupportedPath: resolve(fixtures, 'source-anchor/duplicate-unsupported.yaml'),
+    });
+    expect(violations.map((violation) => violation.message)).toContain(
+      'unsupported count must equal distinct valid count: declared 2, distinct valid 1',
+    );
+  });
+
+  it('does not read ids mentioned in markdown prose as anchor exceptions', () => {
+    const root = resolve(fixtures, 'source-anchor/negative');
+    const violations = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorNonePath: resolve(fixtures, 'source-anchor/prose.md'),
+    });
+    expect(violations).toHaveLength(3);
+    expect(violations.every((violation) => violation.rule === 'source-anchor')).toBe(true);
+  });
 });
 
-it('matches the temporary real-data violation baseline exactly', () => {
+it('accepts all real oracle data without exceptions', () => {
   const repoRoot = resolve(import.meta.dirname, '../../..');
-  const actual = validateOracle(defaultOracleOptions(repoRoot)).map(({ id, rule }) => ({ id, rule }));
-  expect(actual).toHaveLength(baseline.total);
-  expect(actual).toEqual(baseline.violations);
-});
+  expect(validateOracle(defaultOracleOptions(repoRoot))).toEqual([]);
+}, 30_000);

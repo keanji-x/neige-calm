@@ -2,8 +2,8 @@
 
 **范围**：`docs/oracle/*.yaml` 全部 **1127** 条。统计见下方「统计」节（由脚本重算）。
 **动作**：owner_slice 归一化 + 新增 `runtime_layer` / `verification_owner` / `test_tier` + `migration` 枚举化。
-**未改动**：`id` / `statement` / `why` / `source` / `authoritative_test` / `kind` / `family` / `intentional_omission`
-（例外：8 条跨 slice 条目在 `why` 末尾追加了 `【亦涉及: X】`，见 §5）。
+**P8b-1 更新**：补齐 source/test 行号，落盘 §6 裁决，并按语义修正 6 条 id/kind；改名条目以
+`former_id` 保留退休句柄。历史归一化动作仍见下文。
 
 映射表：`docs/oracle/owner-aliases.yaml`（含 `aliases` / `per_entry` / `split_owners` / 需人工裁决）。
 
@@ -49,7 +49,7 @@
 
 ## 统计（由 `docs/oracle/*.yaml` 重算，勿手工编辑）
 
-**总计 1127 条**：invariant 697 / capability 290 / gate 140。
+**总计 1127 条**：invariant 694 / capability 290 / gate 143。
 唯一 id 1127，`owner_slice` 收敛为 114 个规范值。
 
 ### runtime_layer 分布
@@ -59,9 +59,9 @@
 | `features` | 407 | 业务域 |
 | `systems` | 271 | 子系统 |
 | `app` | 138 | 组装层 |
-| `ui` | 132 | 交互原语 |
-| `none` | 96 | 非运行时（lint / CI 闸门 / 构建 / e2e 基础设施） |
-| `styles` | 57 | 全局样式层 |
+| `ui` | 131 | 交互原语 |
+| `none` | 100 | 非运行时（lint / CI 闸门 / 构建 / e2e 基础设施） |
+| `styles` | 54 | 全局样式层 |
 | `core` | 26 | 平台无关逻辑 |
 | **合计** | **1127** | |
 
@@ -89,23 +89,23 @@
 
 | verification_owner | 条数 |
 |---|---|
-| `unit` | 624 |
-| `e2e` | 385 |
+| `unit` | 621 |
+| `e2e` | 383 |
 | `css` | 48 |
-| `review-waiver` | 26 |
-| `lint` | 26 |
+| `review-waiver` | 25 |
+| `lint` | 27 |
 | `architecture` | 9 |
 | `build` | 6 |
-| `null` | 3 |
+| `null` | 8 |
 
 ### migration
 
 | 值 | 条数 |
 |---|---|
-| `pending` | 1122 |
-| `skipped` | 5 |
+| `pending` | 1119 |
+| `skipped` | 8 |
 
-`skipped` 全部 5 条（均带 `skip_reason`）：
+`skipped` 全部 8 条（均带 `skip_reason`）：
 
 | id | 原因 |
 |---|---|
@@ -114,6 +114,9 @@
 | `INV-DEAD-001` | `WaveContext` —— provide 但全仓零消费者 |
 | `INV-DEAD-002` | `useSpecCurrentRun.latestTool` —— 恒为 `{null,null}` 的未接线占位 |
 | `INV-DEAD-003` | `isCompletedMessageItem` 的未用 `itemType` 参数 |
+| `INV-A11Y-052` | 服务端 `validate_overlay_payload` 强制，前端无实现责任 |
+| `E2E-INV-LIFECYCLE-012` | 服务端 actor middleware 强制，前端无实现责任 |
+| `E2E-INV-TERMINAL-005` | upgrade 前服务端关闭语义，前端无实现责任 |
 
 
 ## 6. 需人工裁决（13 条 / 6 项）
@@ -145,4 +148,3 @@
 - **`INV-DUP-004` why 追加架构裁决**（原 statement/why 保留，末尾追加推翻说明）：原"收敛成一个
   markdown 渲染原语"与 `core` 禁 JSX 裁决冲突，裁决改为"收敛内核，不收敛 renderer"。
 - 复验：1127 条全部通过 schema / 枚举 / 唯一 id / 归层 检查；5 条 skipped 全带 `skip_reason`。
-
