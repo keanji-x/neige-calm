@@ -85,6 +85,45 @@ export function auditCssImports(code, file) {
   return violations;
 }
 
+function insideLayer(node) {
+  let parent = node.parent;
+  while (parent) {
+    if (parent.type === 'atrule' && parent.name.toLowerCase() === 'layer') return true;
+    parent = parent.parent;
+  }
+  return false;
+}
+
+export function auditUnlayeredExceptions(css, file, order, entries, today = new Date().toISOString().slice(0, 10)) {
+  const violations = auditLayeredCss(css, order).filter(({ rule }) => rule !== 'rule-in-layer')
+    .map(({ message }) => `${file}: ${message}`);
+  const used = new Set();
+  for (const [index, entry] of entries.entries()) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.expiry) || Number.isNaN(Date.parse(`${entry.expiry}T00:00:00Z`))) {
+      violations.push(`${file}: exception ${index + 1} has invalid expiry ${entry.expiry}`);
+    } else if (entry.expiry < today) {
+      violations.push(`${file}: exception ${index + 1} expired on ${entry.expiry}`);
+    }
+    const scopeViolation = auditLayeredCss(`${entry.selector} { ${entry.property}: initial; }`, order, true)
+      .some(({ rule }) => rule === 'unlayered-cm-scope');
+    if (scopeViolation) violations.push(`${file}: exception ${index + 1} selector lacks rightmost .cm- scope: ${entry.selector}`);
+  }
+  postcss.parse(css).walkRules((rule) => {
+    if (insideLayer(rule)) return;
+    for (const selector of rule.selectors) {
+      rule.walkDecls((declaration) => {
+        const match = entries.findIndex((entry) => entry.selector === selector && entry.property === declaration.prop);
+        if (match < 0) violations.push(`${file}: unapproved unlayered declaration ${selector} { ${declaration.prop} }`);
+        else used.add(match);
+      });
+    }
+  });
+  for (const [index, entry] of entries.entries()) {
+    if (!used.has(index)) violations.push(`${file}: unused exception ${entry.selector} { ${entry.property} }`);
+  }
+  return violations;
+}
+
 export function auditStyleRepository(feRoot) {
   const stylesRoot = resolve(feRoot, 'web/src/styles');
   const webRoot = resolve(feRoot, 'web/src');
@@ -113,10 +152,10 @@ export function auditStyleRepository(feRoot) {
       || typeof entry.expiry !== 'string') throw new Error('unlayered exception requires path, selector, property, expiry');
     return entry.path;
   });
-  for (const path of exceptionPaths) {
+  for (const path of new Set(exceptionPaths)) {
     const absolute = resolve(feRoot, path);
-    violations.push(...auditLayeredCss(readFileSync(absolute, 'utf8'), order, true)
-      .map(({ message }) => `${path}: ${message}`));
+    violations.push(...auditUnlayeredExceptions(readFileSync(absolute, 'utf8'), path, order,
+      exceptions.filter((entry) => entry.path === path)));
   }
 
   for (const path of cssFiles) {
