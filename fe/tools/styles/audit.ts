@@ -1,4 +1,5 @@
 import postcss, { type AtRule, type ChildNode, type Rule } from 'postcss';
+import { rightmostCompound } from './selector.mjs';
 
 export interface CssViolation { rule: string; message: string }
 export const STYLE_RULES = Object.freeze([
@@ -23,21 +24,6 @@ export function layerOrder(entryCss: string): string[] {
   const declaration = root.nodes.find((node): node is AtRule => node.type === 'atrule' && node.name.toLowerCase() === 'layer' && !node.nodes);
   if (!declaration) throw new Error('entry.css must declare the layer order');
   return declaration.params.split(',').map((item) => item.trim()).filter(Boolean);
-}
-
-function rightmostCompound(selector: string): string {
-  let square = 0;
-  let round = 0;
-  let lastBoundary = 0;
-  for (let index = 0; index < selector.length; index += 1) {
-    const char = selector[index];
-    if (char === '[') square += 1;
-    else if (char === ']') square -= 1;
-    else if (char === '(') round += 1;
-    else if (char === ')') round -= 1;
-    else if (square === 0 && round === 0 && (char === '>' || char === '+' || char === '~' || char === ' ')) lastBoundary = index + 1;
-  }
-  return selector.slice(lastBoundary).trim();
 }
 
 function classes(selector: string): string[] {

@@ -1,27 +1,12 @@
 // @ts-check
 import { relative } from 'node:path';
 import stylelint from 'stylelint';
+import { rightmostCompound } from './selector.mjs';
 
 export const ruleName = 'neige-calm/unlayered-cm-scope';
 export const messages = stylelint.utils.ruleMessages(ruleName, {
   rejected: 'rightmost compound selector must contain a .cm-* class',
 });
-
-/** @param {string} selector */
-function rightmostCompound(selector) {
-  let square = 0;
-  let round = 0;
-  let boundary = 0;
-  for (let index = 0; index < selector.length; index += 1) {
-    const char = selector[index];
-    if (char === '[') square += 1;
-    else if (char === ']') square -= 1;
-    else if (char === '(') round += 1;
-    else if (char === ')') round -= 1;
-    else if (square === 0 && round === 0 && ['>', '+', '~', ' '].includes(char)) boundary = index + 1;
-  }
-  return selector.slice(boundary).trim();
-}
 
 /** @param {string} selector */
 function hasCodeMirrorClass(selector) {
