@@ -49,7 +49,6 @@ mod infra;
 mod out_of_domain;
 mod overlay;
 mod read;
-mod read_transaction;
 mod session_mirror;
 mod session_projection;
 mod session_repo_impl;
@@ -109,7 +108,7 @@ pub use task::{
     wave_lifecycle_and_budget_tx, wave_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
-    BlockVerdict, TaskProjectionOutcome, evaluate_schedulability_tx, project_tasks_tx,
+    BlockVerdict, TaskProjectionOutcome, evaluate_schedulability, project_tasks_tx,
     task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_update_tx};

@@ -6,7 +6,7 @@ use calm_types::report_blocks::tasks::{
 };
 use calm_types::report_links::parse_destination;
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
 use crate::error::{CalmError, Result};
@@ -101,15 +101,15 @@ fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
     )
 }
 
-async fn wave_projection_policy_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+async fn wave_projection_policy(
+    conn: &mut SqliteConnection,
     wave_id: &str,
 ) -> Result<(Option<String>, i64, bool)> {
     let row: Option<(Option<String>, Option<i64>, i64)> = sqlx::query_as(
         "SELECT automation_policy, spec_task_ceiling, require_task_gates FROM waves WHERE id=?1",
     )
     .bind(wave_id)
-    .fetch_optional(&mut **tx)
+    .fetch_optional(&mut *conn)
     .await?;
     let (policy, ceiling, require_gates) =
         row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
@@ -121,14 +121,25 @@ async fn wave_projection_policy_tx(
 }
 
 /// The single DB-aware schedulability predicate used by writes, rebuilds and reads.
-pub async fn evaluate_schedulability_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+///
+/// Takes a bare connection rather than a transaction (#1016): the WRITE path
+/// hands it `&mut **tx` so its verdict stays atomic with the projection it
+/// drives, while the read-only path (`read.rs::task_diagnostics`) hands it a
+/// pooled connection in AUTOCOMMIT mode. An autocommit statement that blocks
+/// on a shared-cache table lock unwinds its implicit transaction — releasing
+/// every table lock it had taken — before parking in `unlock_notify`, so it
+/// can never be the lock-HOLDING waiter that closes a deadlock cycle (pinned
+/// by `deadlock_semantics_autocommit_join_*`). An explicit deferred tx here
+/// would hold R locks across statements and could cycle against any IMMEDIATE
+/// writer that touches the same tables in the opposite order.
+pub async fn evaluate_schedulability(
+    conn: &mut SqliteConnection,
     wave_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<Vec<BlockVerdict>> {
     let (configured_policy, ceiling, require_gates) =
-        wave_projection_policy_tx(tx, wave_id).await?;
+        wave_projection_policy(&mut *conn, wave_id).await?;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait")
         || (configured_policy.is_none() && declarations.iter().any(|d| d.tombstoned_by_user));
     // unknown_deps knows every in-flight key in the wave, including rows
@@ -137,7 +148,7 @@ pub async fn evaluate_schedulability_tx(
         "SELECT key FROM tasks WHERE wave_id=?1 AND status IN ('dispatched','running','verifying')",
     )
     .bind(wave_id)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await?;
     let inflight_keys: Vec<String> = inflight.into_iter().map(|(key,)| key).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
@@ -145,7 +156,7 @@ pub async fn evaluate_schedulability_tx(
         "SELECT count(*) FROM tasks WHERE wave_id=?1 AND declared_by='spec' AND origin='block' AND status IN ('dispatched','running','verifying')",
     )
     .bind(wave_id)
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *conn)
     .await?;
     let capacity = ceiling.saturating_sub(occupied).max(0) as usize;
 
@@ -157,7 +168,7 @@ pub async fn evaluate_schedulability_tx(
         .collect();
     let source_cove: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id=?1")
         .bind(wave_id)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut *conn)
         .await?;
     let mut verdicts = Vec::with_capacity(declarations.len());
     for declaration in declarations {
@@ -182,13 +193,13 @@ pub async fn evaluate_schedulability_tx(
                 parse_destination(reference)
             {
                 sqlx::query_as("SELECT w.cove_id,c.kind FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1")
-                    .bind(dst_wave).fetch_optional(&mut **tx).await?
+                    .bind(dst_wave).fetch_optional(&mut *conn).await?
             } else if let Some(card_id) = reference
                 .strip_prefix("neige://card/")
                 .filter(|id| !id.is_empty() && !id.contains('/'))
             {
                 sqlx::query_as("SELECT w.cove_id,c.kind FROM cards card JOIN waves w ON w.id=card.wave_id JOIN coves c ON c.id=w.cove_id WHERE card.id=?1")
-                    .bind(card_id).fetch_optional(&mut **tx).await?
+                    .bind(card_id).fetch_optional(&mut *conn).await?
             } else {
                 continue;
             };
@@ -233,7 +244,7 @@ pub async fn evaluate_schedulability_tx(
         "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,origin FROM tasks WHERE wave_id=?1 AND status!='pending'",
     )
     .bind(wave_id)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await?;
     let frozen_by_key: BTreeMap<_, _> =
         frozen.into_iter().map(|row| (row.1.clone(), row)).collect();
@@ -299,7 +310,7 @@ pub async fn evaluate_schedulability_tx(
         "SELECT key,status FROM tasks WHERE wave_id=?1 AND origin='block' AND status IN ('dispatched','running','verifying')",
     )
     .bind(wave_id)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await?;
     for (key, status) in orphaned_inflight {
         if !declared_keys.contains(key.as_str()) {
@@ -357,7 +368,7 @@ pub async fn project_tasks_tx(
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<TaskProjectionOutcome> {
-    let verdicts = evaluate_schedulability_tx(tx, wave_id, declarations, block_local_diags).await?;
+    let verdicts = evaluate_schedulability(tx, wave_id, declarations, block_local_diags).await?;
     let schedulable_by_key: BTreeMap<_, _> = verdicts
         .iter()
         .filter(|v| !v.key.is_empty())
@@ -381,7 +392,7 @@ pub async fn project_tasks_tx(
             if matches!(status.as_str(), "dispatched" | "running" | "verifying") {
                 let diagnostic = withdrawal_diagnostic(key, status);
                 // Declaration-backed rows already received this diagnostic from
-                // evaluate_schedulability_tx; this branch only covers deleted blocks.
+                // evaluate_schedulability; this branch only covers deleted blocks.
                 if !verdict_index_by_key.contains_key(key) {
                     verdicts.push(BlockVerdict {
                         block_id: String::new(),

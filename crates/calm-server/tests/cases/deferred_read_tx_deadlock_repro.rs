@@ -1,8 +1,9 @@
-//! Issue #1016 — FAILING REPRO for the `READ_ONLY_DEFERRED_ALLOWLIST`
-//! justification in `tests/cases/deferred_write_tx_invariant.rs`.
+//! Issue #1016 — regression guard, originally the FAILING REPRO for the
+//! `READ_ONLY_DEFERRED_ALLOWLIST` justification in
+//! `tests/cases/deferred_write_tx_invariant.rs`.
 //!
-//! That allowlist exempts three deferred (`pool.begin()`) transactions on
-//! the grounds that
+//! That allowlist used to exempt three deferred (`pool.begin()`)
+//! transactions on the grounds that
 //!
 //!   > A deferred transaction that performs no writes never competes for
 //!   > the shared-cache writer slot, so it cannot be a hold-and-wait party.
@@ -45,12 +46,18 @@
 //!   4. writer: `wave_delete_tx` walks down to `DELETE FROM waves`, which
 //!      needs W(waves) — held R by the parked reader. Cycle closed.
 //!
-//! The test asserts the invariant the allowlist CLAIMS to hold — that no
-//! such cycle can form — so it is RED on today's tree and turns green only
-//! when the gap is closed. Observed today: the writer's `wave_delete_tx`
-//! fails with sqlite extended-result code **6** (`SQLITE_LOCKED`,
-//! "database is deadlocked") — the non-retryable cycle abort that #930 set
-//! out to eliminate, not the retryable code 5 (`SQLITE_BUSY`).
+//! The test asserts the invariant the allowlist CLAIMED to hold — that no
+//! such cycle can form. It was RED when written (the writer's
+//! `wave_delete_tx` failed with sqlite extended-result code **6**,
+//! `SQLITE_LOCKED` "database is deadlocked" — the non-retryable cycle
+//! abort #930 set out to eliminate, not the retryable code 5
+//! `SQLITE_BUSY`). The fix dropped the explicit transaction from
+//! `wave_detail`: its SELECTs now run in AUTOCOMMIT, and an autocommit
+//! statement unwinds its implicit transaction — releasing every table lock
+//! it took — before parking in `unlock_notify`, so it can no longer be the
+//! lock-HOLDING waiter. The reader still PARKS on `overlays` (the
+//! `!reader.is_finished()` assertion below still holds), it just holds
+//! nothing while parked, so the writer walks through.
 //!
 //! Scope note: the app's in-memory sqlite (`db_url=mock`, CI and
 //! `make dev-fresh`) is a shared-cache database with table-granularity
@@ -252,10 +259,10 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
         outcome.code, outcome.message
     );
 
-    // THE INVARIANT UNDER TEST (currently violated — this is the failing
-    // repro for #1016). The allowlist in `deferred_write_tx_invariant.rs`
-    // asserts that a read-only deferred tx "cannot be a hold-and-wait
-    // party". If that were true, no interleaving of `wave_detail` with the
+    // THE INVARIANT UNDER TEST (violated when this repro was written; #1016
+    // closed the gap by removing the explicit tx). The allowlist in
+    // `deferred_write_tx_invariant.rs` asserted that a read-only deferred tx
+    // "cannot be a hold-and-wait party". If that were true, no interleaving of `wave_detail` with the
     // wave-delete writer could ever produce sqlite's non-retryable cycle
     // abort, `SQLITE_LOCKED` (6). Code 5 (`SQLITE_BUSY`) would be fine —
     // that one is retryable and is not what #930 set out to kill.

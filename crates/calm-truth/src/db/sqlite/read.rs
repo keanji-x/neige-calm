@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use sqlx::Row;
 
-use super::read_transaction::begin_read_tx;
 use super::task::TASK_COLUMNS;
 use super::{
     SqlxRepo, derive_session_identity, session_get_by_active_token_hash, session_get_by_id,
@@ -176,19 +175,25 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>> {
-        // READ-ONLY deferred transaction (#930 allowlist): groups the
-        // wave/cards/overlays SELECTs into one consistent snapshot and
-        // performs no writes, so it can never hold-and-wait on the shared
-        // cache's writer slot. Writing transactions must use
-        // `begin_immediate_tx` instead (see the deferred_write_tx
-        // invariant test).
-        let mut tx = begin_read_tx(&self.pool).await?;
+        // No explicit transaction (#1016). These three SELECTs each run in
+        // AUTOCOMMIT: sqlite's shared cache releases an autocommit
+        // statement's table locks when it blocks (the implicit tx unwinds
+        // before sqlx parks in `unlock_notify`), so this reader can never be
+        // the lock-HOLDING waiter that closes a deadlock cycle. A deferred
+        // read tx here did exactly that — it held R(waves)+R(cards) while
+        // parking on `overlays` and cycled with the IMMEDIATE writer of
+        // `DELETE /api/waves/:id`, which walks overlays -> tasks -> waves
+        // (non-retryable `SQLITE_LOCKED` 6; see
+        // `deferred_read_tx_deadlock_repro`). The cost is that the three
+        // reads are no longer one snapshot — acceptable for a display-only
+        // read whose result is already stale by the time it is serialized;
+        // no caller derives a write decision from it.
         let wave = sqlx::query_as::<_, crate::db::rows::WaveRow>(
             r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&self.pool)
         .await?;
         let Some(wave) = wave else {
             return Ok(None);
@@ -199,7 +204,7 @@ impl RepoRead for SqlxRepo {
                FROM cards WHERE wave_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&self.pool)
         .await?;
 
         // Overlays scoped to this wave or any of its cards. One query: a
@@ -213,10 +218,9 @@ impl RepoRead for SqlxRepo {
                       AND entity_id IN (SELECT id FROM cards WHERE wave_id = ?1))"#,
         )
         .bind(id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&self.pool)
         .await?;
 
-        tx.commit().await?;
         Ok(Some(WaveDetail {
             wave: Wave::from(wave),
             cards: cards.into_iter().map(Card::from).collect(),
@@ -387,12 +391,20 @@ impl RepoRead for SqlxRepo {
         wave_id: &str,
         blocks: &[calm_types::wave_report::ReportBlock],
     ) -> Result<Vec<super::BlockVerdict>> {
-        let mut tx = begin_read_tx(&self.pool).await?;
+        // No explicit transaction (#1016) — same reasoning as `wave_detail`:
+        // the predicate reads waves/tasks/coves/cards, and holding R locks
+        // across those statements made this reader a lock-HOLDING waiter that
+        // could cycle with any IMMEDIATE writer taking the same tables in the
+        // opposite order. In AUTOCOMMIT each statement releases its locks
+        // before parking, so no cycle can form. The write path still calls
+        // `evaluate_schedulability` inside its IMMEDIATE tx, so the verdict
+        // that actually admits tasks keeps full atomicity; this call site only
+        // renders diagnostics.
+        let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
         let diagnostics =
-            super::evaluate_schedulability_tx(&mut tx, wave_id, &declarations, &local).await?;
-        tx.commit().await?;
+            super::evaluate_schedulability(&mut conn, wave_id, &declarations, &local).await?;
         Ok(diagnostics)
     }
 
