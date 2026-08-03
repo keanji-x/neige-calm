@@ -1,0 +1,5 @@
+diff --git a/tools/mutation/fixtures/empty-hunk/source.ts b/tools/mutation/fixtures/empty-hunk/source.ts
+index 66be2d2..66be2d2 100644
+--- a/tools/mutation/fixtures/empty-hunk/source.ts
++++ b/tools/mutation/fixtures/empty-hunk/source.ts
+@@ -1,0 +1,0 @@

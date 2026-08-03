@@ -12,6 +12,8 @@
     "typecheck": "tsc -b",
     "test": "vitest run --project platform-independent --project ui-dom && npm run test:wire",
     "test:browser": "vitest run --project browser",
+    "test:mutation": "npm run test:mutation:fixtures && node tools/mutation/run.mjs",
+    "test:mutation:fixtures": "node tools/mutation/fixture-e2e.mjs",
     "test:wire": "diff ../web/src/api/generated-events.ts core/api/generated/wire.ts || { echo 'generated wire.ts drifted from the ts-rs output; do not hand-edit — re-run the generator'; exit 1; }",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
     "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
