@@ -1340,7 +1340,8 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
 
 ### 10.4 门
 
-fmt / clippy `--workspace --all-targets -D warnings` / calm-types /
+fmt / clippy `--workspace --all-targets --features calm-server/codex-e2e -- -D warnings` /
+workspace test `--workspace --locked --features calm-server/codex-e2e --profile ci` / calm-types /
 **calm-truth --lib** / **calm-server --lib**（独立 lib target 必须逐格运行，集成套绿不代表它绿）/
 mcp_integration_suite / wave_suite / scheduler / dispatcher /
 OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + test**。
@@ -1348,11 +1349,13 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 > **这份清单必须与 CI 的 job 列表对齐**（`.github/workflows/ci.yml`：
 > `lint` / `rust (test)` / `web-unit (build + test)` / `fe-unit (lint + build + test)` /
 > `openapi drift` / `a11y` / `chromium e2e` / `stack e2e` / `frozen security vectors`）。
-> **本片两次因为清单漏项而报出假绿**：一次漏 `calm-truth --lib`（防复发单测落在那个
+> **本片三次因为清单与 CI 实际命令不一致而报出假绿**：第一次漏 `calm-truth --lib`（防复发单测落在那个
 > crate，实测 `299 passed; 1 failed`），一次漏 `fe` 的 `test:wire`
 > （`fe/core/api/generated/wire.ts` 与 `web/src/api/generated-events.ts` 必须**逐字节相同**，
-> 而 `gen:api` 只写 web 那一份，fe 那份靠手工同步）。
-> **两次都是「跑了没列的那格才发现红」，不是「跑了列上的格子而它绿了」。**
+> 而 `gen:api` 只写 web 那一份，fe 那份靠手工同步）；第三次漏了 clippy 与 workspace test
+> 的 `--features calm-server/codex-e2e`。`codex_forge_e2e.rs` 整个文件被该 feature 门住，
+> 不带 feature 时会编译成空；因此本地不带 feature 跑绿不代表 CI 绿。
+> **三次都是「实际 CI 门没有被完整列出和执行」，必须逐字对照 workflow 命令，不能用近似命令或子集替代。**
 >
 > **两个生成物的行尾空格是真实的门**：`npm run gen:api` 的 ts-rs 输出带行尾空格，
 > 编辑器/格式化器一旦剥掉，`openapi drift` 与 `test:wire` 双双变红。

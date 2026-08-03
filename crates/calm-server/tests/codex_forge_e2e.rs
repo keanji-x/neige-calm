@@ -20,7 +20,7 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{ChannelVerdict, ChannelVerdictKind, Event, EventScope, ReviewSubject};
 use calm_server::harness::{HarnessState, Observation, SpecHarness};
-use calm_server::ids::ActorId;
+use calm_server::ids::{ActorId, WaveId};
 use calm_server::mcp_server::tools::wave_file::TOOL_WAVE_CAT;
 use calm_server::model::{WaveLifecycle, WavePatch};
 use calm_server::plugin_host::Manifest;
