@@ -1,0 +1,6 @@
+- path: fe/core/model.ts
+  type: file
+  owner: core
+- path: fe/web/src
+  type: directory
+  owner: web

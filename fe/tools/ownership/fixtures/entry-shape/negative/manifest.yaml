@@ -1,0 +1,3 @@
+- path: fe/core/**/*.ts
+  type: file
+  owner: core-state

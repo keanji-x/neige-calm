@@ -1,0 +1,6 @@
+- path: fe/web/src/future
+  type: directory
+  owner: future-feature
+- path: fe/web/src/future/view.tsx
+  type: file
+  owner: future-view
