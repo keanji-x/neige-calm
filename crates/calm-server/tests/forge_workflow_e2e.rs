@@ -561,16 +561,12 @@ async fn git_forge_happy_path_persists_ordered_workflow_events() {
         "diff artifact must contain the shim patch body: {artifact}"
     );
 
-    let checks_resp = call_tool(
-        &fx,
-        14,
-        PR_CHECKS_TOOL,
-        json!({ "repo": repo_arg, "pr": pr_number }),
-    )
-    .await;
-    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
-    let checks_rows = wait_for_event_count(&fx.repo, "forge.pr.checks", 1).await;
-    let checks = checks_rows[0].clone();
+    let checks = run_pr_checks(&fx, 14, &repo_arg, pr_number).await;
+    assert_eq!(
+        event_rows(&fx.repo, "forge.pr.checks").await.len(),
+        1,
+        "gh.pr.checks must persist exactly one forge.pr.checks event"
+    );
     assert_wave_event(&checks, &fx.wave_id);
     assert_eq!(checks.payload["pr_number"], pr_number);
     assert_eq!(checks.payload["conclusion"], "success");
@@ -1366,14 +1362,9 @@ async fn fu4_teardown_releases_after_merge_close_and_fences_in_flight_forge_op()
     let state = shim_state_dir(&fx.origin_repo);
     let block = ShimBlock::new(&state, "pr_merge");
 
-    let checks_resp = call_tool(
-        &fx,
-        74,
-        PR_CHECKS_TOOL,
-        json!({ "repo": pr.repo_arg, "pr": pr.pr_number }),
-    )
-    .await;
-    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    // The later `NO_CONTENT` teardown assertion depends on *every* forge op of
+    // this wave being terminal, so the parked checks op must be awaited here.
+    run_pr_checks(&fx, 74, &pr.repo_arg, pr.pr_number).await;
     let merge_resp = call_tool(
         &fx,
         75,
@@ -2422,20 +2413,41 @@ async fn drive_pr_to_diff(
     }
 }
 
+/// Run `gh.pr.checks` and block until its forge op has actually landed.
+///
+/// `gh.pr.checks` lowers to a **parked** forge action: `tools/call` returns
+/// `{op_id, parked: true}` as soon as the op is submitted, long before the op
+/// reaches a terminal phase. Every forge action is targeted at the wave (see
+/// `target_from_payload`), so an un-awaited checks op keeps the wave-global
+/// teardown fence (`any_wave_has_active_forge_action`) armed and makes any
+/// later "teardown succeeds" assertion flaky. Awaiting the `forge.pr.checks`
+/// event is the happens-before edge: the phase flip to `succeeded` and the
+/// event append share one transaction, so a visible event proves the op is
+/// terminal. Call this helper instead of `call_tool(PR_CHECKS_TOOL, ..)` so
+/// the wait cannot be forgotten.
+async fn run_pr_checks(fx: &Fixture, id: i64, repo_arg: &str, pr_number: u64) -> EventRow {
+    let checks_resp = call_tool(
+        fx,
+        id,
+        PR_CHECKS_TOOL,
+        json!({ "repo": repo_arg, "pr": pr_number }),
+    )
+    .await;
+    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    wait_for_event_matching(&fx.repo, "forge.pr.checks", |row| {
+        row.scope_wave.as_deref() == Some(&fx.wave_id)
+            && row.payload["pr_number"] == json!(pr_number)
+    })
+    .await
+}
+
 async fn merge_reviewed_pr(
     fx: &Fixture,
     id_base: i64,
     pr: &ForgePrRun,
     slice_id: &str,
 ) -> EventRow {
-    let checks_resp = call_tool(
-        fx,
-        id_base,
-        PR_CHECKS_TOOL,
-        json!({ "repo": pr.repo_arg, "pr": pr.pr_number }),
-    )
-    .await;
-    assert_tool_succeeded(&checks_resp, "gh.pr.checks");
+    run_pr_checks(fx, id_base, &pr.repo_arg, pr.pr_number).await;
 
     let merge_resp = call_tool(
         fx,
