@@ -50,6 +50,18 @@ describe('CSS AST fixtures', () => {
       ['layer-import-unlayered-top', 'traversal/layer-import-unlayered-top.css'],
     ]);
     expect(new Set(traversalSurface.keys())).toEqual(expected);
+    const auxiliaryFixtures = [
+      'layer-child-anonymous.css',
+      'layer-child-named.css',
+      'runtime-style-cssom.html',
+      'static-anonymous-layer.css',
+      'static-layer-import.css',
+      'static-layer-statement.css',
+    ];
+    expect(new Set(readdirSync(resolve(fixtures, 'traversal')))).toEqual(new Set([
+      ...traversalSurface.values(),
+      ...auxiliaryFixtures,
+    ].map((fixture) => fixture.replace(/^traversal\//, ''))));
     for (const [cell, fixture] of traversalSurface) {
       expect(auditLayeredCss(read(fixture), order), cell).not.toEqual([]);
     }
