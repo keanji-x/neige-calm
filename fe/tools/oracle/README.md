@@ -17,3 +17,5 @@ After accepting the location separators present in the corpus, the exact baselin
 ## Stage 2 connection
 
 Run the real-data test in CI whenever oracle YAML or cited source files change. Stage 2 may add semantic/source-history review, but must retain the structural and line-bound checks here.
+
+P8b must also move the mutation verification into a tracked, CI-runnable location; the current `scratchpad/mut-p8a.sh` evidence is intentionally gitignored and cannot be replayed by CI.

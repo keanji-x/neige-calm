@@ -2,6 +2,8 @@
 
 This validator prevents implementation work from falling between slices. Entries are explicit files or directory prefixes, overlapping entries are rejected even when they describe future files, and every current file below `fe/core` and `fe/web/src` must match exactly once.
 
+`OWNERSHIP_YAML_FIELDS` has no external schema document: the validator is the authoritative source for that field set, and fixtures are its executable coverage evidence.
+
 Readonly entries freeze interfaces and `styles/`. The repository entry point computes `git merge-base origin/main HEAD`, audits the resulting changed paths, and requires a corresponding non-empty change-request record for every readonly change.
 
 ## Known escapes

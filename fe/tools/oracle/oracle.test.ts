@@ -1,5 +1,6 @@
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import baseline from './baseline.json' with { type: 'json' };
 import { defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
@@ -23,6 +24,20 @@ const cases = [
 ] as const;
 
 describe('oracle rule fixtures', () => {
+  it('anchors the guarded YAML fields to the SCHEMA example', () => {
+    const schema = readFileSync(resolve(import.meta.dirname, '../../../docs/oracle/SCHEMA.md'), 'utf8');
+    const example = /```yaml\s*\n([\s\S]*?)```/.exec(schema)?.[1];
+    expect(example, 'SCHEMA.md must contain its fenced YAML entry example').toBeDefined();
+    const parsed: unknown = parse(example ?? '');
+    expect(Array.isArray(parsed) && parsed.length === 1 && parsed[0] && typeof parsed[0] === 'object').toBe(true);
+    const schemaFields = new Set(Object.keys((parsed as Record<string, unknown>[])[0] ?? {}));
+    const documentedElsewhere = new Set(['skip_reason']);
+    const guardedExampleFields = new Set(ORACLE_YAML_FIELDS.filter((field) => !documentedElsewhere.has(field)));
+    expect(schemaFields).toEqual(guardedExampleFields);
+    expect(guardedExampleFields).toEqual(schemaFields);
+    expect(new Set([...schemaFields, ...documentedElsewhere])).toEqual(new Set(ORACLE_YAML_FIELDS));
+  });
+
   it('guards exactly every YAML field in both directions', () => {
     const typeFixtures = readdirSync(resolve(fixtures, 'field-types'), { withFileTypes: true })
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
