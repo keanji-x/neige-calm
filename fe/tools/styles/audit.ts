@@ -72,13 +72,13 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
   });
   root.walkRules((rule) => {
     const layer = enclosingLayer(rule);
+    if (layer.anonymous) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
+    else if (layer.name && !order.includes(layer.name)) {
+      const message = layer.name.includes(',') ? `unknown layer list: ${layer.name}` : `unknown layer ${layer.name}`;
+      violations.push({ rule: 'known-layer', message });
+    }
     if (!unlayeredException) {
       if (!layer.layered) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
-      else if (layer.anonymous) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
-      else if (layer.name && !order.includes(layer.name)) {
-        const message = layer.name.includes(',') ? `unknown layer list: ${layer.name}` : `unknown layer ${layer.name}`;
-        violations.push({ rule: 'known-layer', message });
-      }
       return;
     }
     for (const selector of rule.selectors) {

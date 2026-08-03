@@ -191,6 +191,19 @@ describe('CSS AST fixtures', () => {
     ]);
   });
 
+  it('still rejects unknown and anonymous layer blocks in unlayered exception files', () => {
+    expect(auditLayeredCss(read('unlayered-exception-layers/unknown.css'), order, true)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer alien' },
+    ]);
+    expect(auditLayeredCss(read('unlayered-exception-layers/anonymous.css'), order, true)).toEqual([
+      { rule: 'known-layer', message: 'anonymous layer' },
+    ]);
+    expect(auditLayeredCss('@media print { @layer { .cm-x {} } }', order, true)).toEqual([
+      { rule: 'known-layer', message: 'anonymous layer' },
+    ]);
+    expect(auditLayeredCss('.cm-x {}', order, true)).toEqual([]);
+  });
+
   it('compares extracted global classes with the manifest in both directions', () => {
     const actual = extractGlobalClasses([read('manifest/classes.css')]);
     expect(compareGlobalClassManifest(actual, ['alpha', 'beta'])).toEqual([]);
