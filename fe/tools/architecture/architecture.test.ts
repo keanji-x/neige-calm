@@ -174,6 +174,8 @@ describe('architecture fixtures', () => {
     ['dup-import-fence-symbol', 'INV-DUP-005'],
     ['core-markdown-node-import', 'node:fs'],
     ['markdown-micromark-import', 'no-restricted-syntax'],
+    ['cards-public-entry-dynamic', 'cards-public-entry-only'],
+    ['markdown-public-entry-dynamic', 'markdown-public-entry-only'],
     ['markdown-public-entry-core', 'markdown-public-entry-only'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
