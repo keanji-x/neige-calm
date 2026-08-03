@@ -1,0 +1,13 @@
+- id: "INV-TEST-001"
+  kind: "invariant"
+  family: "fixture"
+  statement: "`useAnchoredValue` 必须保持同步"
+  why: "Fixture reason"
+  source: "anchor-positive.ts:1"
+  authoritative_test: "NONE"
+  owner_slice: "styles/global"
+  intentional_omission: false
+  runtime_layer: "styles"
+  verification_owner: "unit"
+  test_tier: "static"
+  migration: "pending"

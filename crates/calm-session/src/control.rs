@@ -131,6 +131,10 @@ pub enum ControlReply {
     },
     ResizeOk,
     SignalOk,
+    /// #996: "这条 proc 已排期回收"，**不是**"已经从 registry 消失"。
+    /// supervisor 收到 `Cleanup` 时把到期时刻提前到"立刻"并就地扫一次；常态下
+    /// entry 当场消失，但安全闸（sticky exit 已落定 + pty master 已 EOF）尚未
+    /// 满足时移除会推迟到后续某次周期性清扫。客户端不得据此断言 entry 已不在。
     CleanupOk,
     ProbeOk {
         supervisor_version: u32,

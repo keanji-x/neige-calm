@@ -1,0 +1,874 @@
+[
+  {
+    "id": "CAP-A11Y-006",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-A11Y-045",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-A11Y-063",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-A11Y-067",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-A11Y-069",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-A11Y-070",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-A11Y-085",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-A11Y-102",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-APP-036",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-APP-038",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-APP-063",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-APP-097",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-APP-101",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-CARD-034",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-CARD-058",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-CARD-090",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-CHATHIST-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-CRUMBS-021",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-DIRPICK-014",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-SIDEBAR-016",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "CAP-SIDEBAR-018",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "CAP-SPECCONVO-017",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-AXE-005",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-AXE-014",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-CWD-009",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-INFRA-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-INFRA-032",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-INFRA-033",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-INFRA-037",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-KEYBOARD-003",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-RENAME-012",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-RENAME-017",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-REPORT-001",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-REPORT-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-SETTINGS-024",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-SHELL-001",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-SHELL-007",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-SHELL-008",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-SHELL-009",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-SPECCHAT-014",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-SYNC-004",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-SYNC-007",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-SYNC-008",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-TERMTHEME-001",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-TERMTHEME-002",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-THEME-011",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-001",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-002",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-008",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-012",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-015",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-016",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-CAP-WAVEROW-025",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-GATE-TRACE-002",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-AXE-015",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-CWD-010",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-DELETE-023",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-DELETE-024",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-ENV-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-ENV-004",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-ENV-005",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-ENV-006",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-INFRA-009",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-INFRA-019",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-INFRA-030",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-INFRA-031",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-INFRA-034",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-LIFECYCLE-002",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-LIFECYCLE-007",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-MODAL-014",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-RENAME-009",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-SHELL-003",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-SPECCHAT-013",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-SURFACE-015",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-SURFACE-018",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-SYNC-005",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-TERMTHEME-006",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-TERMTHEME-008",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-TRACE-003",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-WAVECREATE-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-WAVECREATE-019",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "E2E-INV-WHEEL-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-WHEEL-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "E2E-INV-WHEEL-006",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-A11Y-028",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-A11Y-046",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-A11Y-089",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-A11Y-094",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-A11Y-099",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-CARD-028",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-CARD-087",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-CARD-111",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-CARD-155",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-CARD-215",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-CARD-222",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-CARDHEAD-002",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-CSS-003",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-CSS-009",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-ISSUEURL-002",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-LINT-004",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-OVERLAY-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-OVERLAY-002",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-STATE-005",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-STATE-006",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-STATE-007",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-STATE-009",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-TOKENS-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-TOKENS-007",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-TOKENS-031",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-TOKENS-033",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-TOKENS-035",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "GATE-WIRE-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-WIRE-002",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-WIRE-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "GATE-WIRE-008",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-004",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-014",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-019",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-024",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-030",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-035",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-039",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-041",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-043",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-047",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-048",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-057",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-059",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-060",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-065",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-079",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-081",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-083",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-084",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-088",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-090",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-091",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-096",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-A11Y-104",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-A11Y-108",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-APP-012",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-013",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-017",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-030",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-APP-031",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-APP-043",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-044",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-053",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-APP-062",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-067",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-069",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-APP-075",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-094",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-095",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-APP-096",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-APP-099",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-012",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-017",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-018",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-029",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-040",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-042",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-043",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-053",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-068",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-088",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-089",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-093",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-102",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-113",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-127",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-134",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-140",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-146",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-154",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-160",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-174",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-201",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CARD-211",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-221",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CARD-228",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-CHATHIST-003",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CHATITEM-005",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-CHATITEM-008",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-COVE-EDITTITLE-011",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-DIRPICK-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-DIRPICK-002",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-DUP-003",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-DUP-010",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-EDITOR-002",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-ISSUEURL-004",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-NEWTASK-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-NEWTASK-002",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-NEWTASK-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-NEWTASK-013",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-REPORT-APP-022",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-REPORT-CHART-009",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-REPORT-SHELL-013",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-REPORT-TABLE-016",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-SCHEMAFORM-001",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-SPECCONVO-012",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-SPECRUN-005",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-TODAY-003",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-TODAYTERM-004",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-TODAYTERM-006",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-UI-CONFIRM-064",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-UI-CONFIRM-065",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-UI-CONFIRM-070",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-UI-DIALOG-006",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-UI-DIALOG-017",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-UI-DIALOG-034",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-UI-LAYER-083",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-UI-MENU-038",
+    "subtype": "range-miss"
+  },
+  {
+    "id": "INV-UI-ROVING-047",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-UI-ROVING-057",
+    "subtype": "not-in-file"
+  },
+  {
+    "id": "INV-WAVEROW-007",
+    "subtype": "range-miss"
+  }
+]

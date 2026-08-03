@@ -141,7 +141,7 @@
   why: >
     §2.2（#60 followup）：这些名字必须互不重复，否则 axe 的 `landmark-unique` 规则变红；
     同时测试要靠 landmark scope 消歧同名 button
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:224-322
   authoritative_test: web/e2e/a11y-axe.spec.ts:229
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -157,7 +157,7 @@
     Sidebar 折叠时子 landmark 必须全部卸载，外层 aside 只剩 `Expand sidebar` 按钮
   why: >
     §2.2 + §3.1：折叠态若保留空 landmark 会既污染 landmark 列表又留下多余 tab stop
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:240-322
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -175,7 +175,7 @@
     #175：kernel 默认的 Today terminal 移入隐藏 system cove（默认被 `GET /api/coves` 过滤掉），
     测试不再需要与 seeded `Scratch` cove 下自动创建的 Today wave 消歧；但用户自己把 wave
     命名为 "Today" 时 WaveRow 的 landmark scoping 模式仍然必要
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:258-267
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -210,7 +210,7 @@
   why: >
     §2.2 明示：嵌套会违反 axe 的 `nested-interactive` 规则。删除按钮 stopPropagation
     以免触发行导航；hover-reveal 靠 `.wave-row-wrapper:hover` / `:focus-within`
-  source: web/src/shared/components/WaveRow.tsx
+  source: web/src/shared/components/WaveRow.tsx:44-119
   authoritative_test: web/e2e/a11y-axe.spec.ts:229
   owner_slice: features/wave/row
   intentional_omission: false
@@ -227,7 +227,7 @@
   why: >
     §2.2 给出确切形状；e2e 依赖它做 exact/substring 消歧（见 a11y-keyboard 的注释：
     Delete 按钮的 name 里包含 title 作为子串）
-  source: web/src/shared/components/WaveRow.tsx
+  source: web/src/shared/components/WaveRow.tsx:106-118
   authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:15
   owner_slice: features/wave/row
   intentional_omission: false
@@ -244,7 +244,7 @@
   why: >
     §2.2：否则 `getByRole('button', { name: /today/i })` 会与 sidebar 的 Today 导航按钮
     冲突；测试范式是 `getByRole('region', { name: 'Waves' }).getByRole('button', …)`
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -262,7 +262,7 @@
   why: >
     §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
     §3.1 的 tab 顺序
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:99,168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: true
@@ -314,7 +314,7 @@
     每次激活按 `grid → list → report → grid` 循环持久化的视图模式
   why: >
     Slice 9：这是键盘/AT 用户从 grid 进入键盘可用的 list 视图的唯一入口
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:61-95
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -331,7 +331,7 @@
     `"<Current> view — switch to <next> view"`（例 `"Report view — switch to grid view"`）
   why: >
     §2.2：按钮无 checked 状态，当前模式只能靠 name 播报；e2e 用正则精确匹配这个形状
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:73-95
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:835
   owner_slice: features/wave/page
   intentional_omission: false
@@ -347,7 +347,7 @@
     Report 视图必须是新 wave 的默认视图；overlay 缺失时 WavePage 回落到 report
   why: >
     §2.2 与 §2.7 都明示 "Report is the default for new waves" / "Absence defaults to report"
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:252-266
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -364,7 +364,7 @@
     Grid(`WaveGrid`)、List(`WaveList`)
   why: >
     Slice 9 的 Path C 决议：不给 grid 加键盘故事，而是另起一个 list 组件
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:252-273,404-433
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -380,7 +380,7 @@
     从 report 视图添加 worker card 时必须自动切到 grid，使新建的 card 立即可见
   why: >
     §2.2 明示；否则用户在 report 视图下建卡后看不到任何反馈
-  source: web/src/pages/WaveReportPage.tsx
+  source: web/src/pages/Wave.tsx:275-282
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -396,7 +396,7 @@
     Report 视图在 spec agent 尚未产出 report 时必须渲染 report 空态，而不是空白
   why: >
     §2.2 明示 "or the report empty state while the spec agent has not produced one"
-  source: web/src/pages/WaveReportPage.tsx
+  source: web/src/pages/WaveReportPage.tsx:924-945
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -414,7 +414,7 @@
   why: >
     §2.2 + §3.4 + §9 明示 "by design"：Slice 9 走 Path C，把键盘能力放进独立的 list 视图，
     而不是给 RGL 补键盘。新写代码的人只会看到「grid 没实现键盘」而误以为是缺陷
-  source: web/src/WaveGrid.tsx:405
+  source: web/src/WaveGrid.tsx:239-254; web/src/WaveList.tsx:1-7
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: true
@@ -431,7 +431,7 @@
     键盘用户 / 屏幕阅读器用户 / 驱动 UI 的 AI agent 都应切到 list 视图操作布局
   why: >
     Slice 9 决议；这是 grid 无键盘故事的对价，必须成对保留
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:1-32,190-269
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/list
   intentional_omission: false
@@ -448,7 +448,7 @@
     (`report → grid → list`)；从 grid 出发按一次
   why: >
     §2.2 / §3.1 / §9 三处重复记录这条精确步数——它是键盘用户能否触达 list 的唯一说明
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:61-95
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -466,7 +466,7 @@
     原生语义
   why: >
     #891 slice ③：不得以自定义 aria 替代原生 select 语义；非 Chromium 引擎必须无回归
-  source: web/src/calm.css
+  source: web/src/calm.css:4176-4306
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: false
@@ -485,7 +485,7 @@
     隐藏该子树有剥掉 Chrome 播报的「已选值」的风险。宁可多出一个 inert 节点，也要保证
     值能被播报。`<select>` 拥有焦点与语义（base-select），trigger 永不成为 tab stop
     且拒绝程序化聚焦（real-chromium probe 已验证）
-  source: web/src/calm.css
+  source: web/src/calm.css:4185-4250
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -520,7 +520,7 @@
     drawer 内的选中态必须只用勾（`option::checkmark`，`--accent` 色）表示，不得用选中填充色
   why: >
     §2.2：hover 填充是瞬态的，再加一个持久填充会与 hover 视觉混淆
-  source: web/src/calm.css
+  source: web/src/calm.css:4283-4305
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -539,7 +539,7 @@
   why: >
     §2.2：区分靠排印而非分隔符；locator 必须用前缀匹配
     `getByRole('option', { name: /^None/ })`，因为描述被折进了 name
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:494-552
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -557,7 +557,7 @@
   why: >
     #891 slice ③：per-variant state 必须干净起步；Dialog 自身的 initial-focus 只在 open
     时跑一次，所以 variant-change effect 必须自己接管切换后的焦点（共用 `initialFocusRef`）
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/pages/Cove.tsx:450-478,554-560
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -575,7 +575,7 @@
     （Browse… 目录选择器）仍然渲染自己的标题头
   why: >
     §2.2 记录的既定形状；缺了 aria-label 对话框就没有 accessible name
-  source: web/src/ui/Dialog/Dialog.tsx
+  source: web/src/pages/Cove.tsx:480-490; web/src/ui/Dialog/Dialog.tsx:342-382
   authoritative_test: NONE
   owner_slice: ui/dialog
   intentional_omission: true
@@ -594,7 +594,7 @@
   why: >
     #891 slice ③ signoff r3：该字段是二元的，且项目没有 switch 原语，原生 checkbox
     不需要任何自定义 aria。wire shape 与早先的 `<select>` 版本保持不变
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/shared/components/NewTaskForm.tsx:621-659
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -611,7 +611,7 @@
     accessible description（断言用 `toHaveAccessibleDescription`）
   why: >
     §2.2：提示解释的是二元语义的后果，必须随控件一起播报而非当作游离文本
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/shared/components/NewTaskForm.tsx:621-659
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -629,7 +629,7 @@
     切换用 `selectOptions`
   why: >
     §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/pages/Cove.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -650,7 +650,7 @@
     唯一视为可拖拽的部分；header 承载 card 的 accessible name
   why: >
     §2.3：header 之外的一切因此保持正常键盘可聚焦，pointer-only 交互不会截走按键
-  source: web/src/WaveGrid.tsx:405
+  source: web/src/WaveGrid.tsx:239-254; web/src/cards/UnknownCard.tsx:30-35; web/src/cards/plugin-iframe.tsx:375-381; web/src/cards/builtins/codex.tsx:171-177,355-362; web/src/cards/builtins/iframe.tsx:118-124; web/src/cards/builtins/terminal.tsx:129-135,148-155; web/src/cards/builtins/file-viewer.tsx:376-382; web/src/cards/CardHead.tsx:146,158,167-172
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
   intentional_omission: false
@@ -689,7 +689,7 @@
     渲染 `.card-head-icon` / `.card-head-title` / 可选 `.card-head-status` 槽
   why: >
     #178 / #213 / #227 的 head 统一化；三处 accessible-name 组合方式必须一致
-  source: web/src/cards/CardHead.tsx
+  source: web/src/cards/CardHead.tsx:146-204; web/src/cards/builtins/terminal.tsx:129-155; web/src/cards/builtins/codex.tsx:355-362; web/src/cards/plugin-iframe.tsx:375-381
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
   intentional_omission: false
@@ -726,7 +726,7 @@
     又因为 xterm 把 Tab 转发给 PTY，只要 wave 里有任何 xterm-backed card，外层键盘导航就被
     困住。用户仍可点击进入（xterm 自己的 mousedown 会聚焦 textarea），之后所有按键
     （含 Tab → tab-completion）流向 PTY
-  source: web/src/XtermView.tsx
+  source: web/src/XtermView.tsx:481-501
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -744,7 +744,7 @@
   why: >
     §2.4 / §3.4 / §9 三处一致声明 "Out of scope — the renderer owns its own contract"。
     新写的人容易误以为「终端没做键盘 a11y」而去补拦截，反而破坏 PTY 转发
-  source: web/src/XtermView.tsx
+  source: web/src/XtermView.tsx:481-501,1082-1110
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: true
@@ -911,7 +911,7 @@
   why: >
     Slice 9 定义的确切 key/payload 形状；schema 常量 `OVERLAY_VIEW_MODE_SCHEMA_VERSION`
     与 layout 的并列放在 `web/src/cards/builtins/schemaVersions.ts`
-  source: web/src/cards/builtins/schemaVersions.ts
+  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Wave.tsx:252-273
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: systems/cards/overlays
   intentional_omission: false
@@ -927,7 +927,7 @@
     view-mode overlay 必须与既有的 `kind: 'layout'` overlay 分开存放
   why: >
     Slice 9 明示：否则 list-mode 用户（从不拖拽）为了翻一下 cycle 按钮就得铸一行 layout
-  source: web/src/cards/builtins/schemaVersions.ts
+  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Wave.tsx:252-257
   authoritative_test: NONE
   owner_slice: systems/cards/overlays
   intentional_omission: false
@@ -949,9 +949,10 @@
   owner_slice: core/domain/overlay
   intentional_omission: true
   runtime_layer: core
-  verification_owner: review-waiver
+  verification_owner: null
   test_tier: none
-  migration: pending
+  migration: skipped
+  skip_reason: 服务端强制契约，前端无实现责任
 
 # ---------------------------------------------------------------------------
 # §3.1 — Tab order
@@ -967,7 +968,7 @@
   why: >
     §3.1 记录的确切 stop 序列。**全项目唯一记录处，无 lint 无单测**——丢了就没有任何
     地方说明正确顺序是什么
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:240-510
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -983,7 +984,7 @@
     Sidebar 折叠时，它对主内容之前的 Tab 序**只**贡献 `Expand sidebar` 一个 stop
   why: >
     §3.1 明示；与 INV-A11Y-008 的子 landmark 卸载是同一件事的两个面
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:240-272
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -999,7 +1000,7 @@
     `<nav>` / `<section>` 子 landmark 本身不得引入 tab stop——只有内部的 `<button>` 才是 stop
   why: >
     §3.1 明示；给 landmark 加 tabIndex 会静默拉长 Tab 序并破坏 INV-A11Y-053
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:253-430
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -1017,7 +1018,7 @@
     在下一个 stop）→ `+ New wave` ghost 按钮。分区标题不是 tab stop
   why: >
     §3.1 记录的确切序列，无测试覆盖
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:99-143,168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -1037,7 +1038,7 @@
     §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
     无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
     自管内部序列）
-  source: web/src/pages/Wave.tsx
+  source: web/src/pages/Wave.tsx:295-433
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1075,13 +1076,13 @@
     WaveRow 与 CovePage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
   why: >
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
-  source: web/src/shared/components/WaveRow.tsx
+  source: web/src/shared/components/WaveRow.tsx:44-65
   authoritative_test: NONE
-  owner_slice: ui/activation
+  owner_slice: none/policy/a11y-doc
   intentional_omission: false
-  runtime_layer: ui
-  verification_owner: unit
-  test_tier: jsdom
+  runtime_layer: none
+  verification_owner: lint
+  test_tier: static
   migration: pending
 
 - id: INV-A11Y-060
@@ -1146,7 +1147,7 @@
   why: >
     §3.3：由 `useRovingTabindex` 的 `onEscape` 回调拥有，AddPanel 把它接到
     `closeAndRestoreFocus`
-  source: web/src/hooks/useRovingTabindex.ts
+  source: web/src/ui/hooks/useRovingTabindex.ts:265-314; web/src/ui/Menu/Menu.tsx:123-148
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
   owner_slice: ui/roving
   intentional_omission: false
@@ -1200,7 +1201,7 @@
     WaveList 中 ArrowUp / ArrowDown 必须在卡片之间移动焦点，并**环绕**
   why: >
     Slice 9 的 roving tabindex 契约（`useRovingTabindex`），与 AddPanel 菜单同一套语义
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:18-22,91,123-125,200-230
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1216,7 +1217,7 @@
     WaveList 中 Home / End 必须跳到第一 / 最后一张卡片
   why: >
     Slice 9 契约条目
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:18-22,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1234,7 +1235,7 @@
     并产生可被 trace ring buffer 捕获的 `card.updated` 事件
   why: >
     Slice 9：这是 grid 无键盘重排的唯一对价路径。带 Alt 是为了不和纯箭头的焦点移动冲突
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:24-28,133-187,205-217
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1252,7 +1253,7 @@
   why: >
     §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
     操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:30-32,205-225
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1268,7 +1269,7 @@
     WaveList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 wave 头部
   why: >
     §3.4：roving tabindex 让整个列表只占一个 tab stop，Tab 必须是「出口」而非在卡片间走
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:18-22,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1285,7 +1286,7 @@
     `aria-keyshortcuts="ArrowUp ArrowDown Alt+ArrowUp Alt+ArrowDown Home End Delete"`
   why: >
     §3.4 明示目的：让这套契约**仅凭 AT 就可发现**，不必读文档。字符串内容与顺序即契约
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:232-267
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1302,7 +1303,7 @@
   why: >
     §9 明示 "resize is out of scope (cards in list view self-size to intrinsic content)"；
     Slice 9 只承诺 reorder + remove
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:1-43,190-275
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: true
@@ -1319,7 +1320,7 @@
     单字母 typeahead 跳到首个匹配、Enter/Space 激活、Escape 关闭
   why: >
     Slice 7 (#73) 经由 `useRovingTabindex` 落地；§9 记录该 gap 已 Resolved
-  source: web/src/hooks/useRovingTabindex.ts
+  source: web/src/ui/hooks/useRovingTabindex.ts:230-340
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
   owner_slice: ui/roving
   intentional_omission: false
@@ -1336,7 +1337,7 @@
     打开时聚焦第一项；关闭时（Escape / 激活 / 外部点击）焦点必须回到触发按钮
   why: >
     Slice 7：菜单若每项都是 tab stop，Tab 会在菜单内走而不是离开，破坏 §3.1 的页面级序列
-  source: web/src/hooks/useRovingTabindex.ts
+  source: web/src/ui/hooks/useRovingTabindex.ts:187-205,265-340; web/src/ui/Menu/Menu.tsx:123-148
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
   owner_slice: ui/roving
   intentional_omission: false
@@ -1662,7 +1663,7 @@
   why: >
     §6 明示：加了会静默抹掉所有尚未自定义样式的 input 的浏览器默认焦点环——一个不可见的
     全局回归。这是「必须不存在」型不变量，其可读证据就是 calm.css 里没有该选择器
-  source: web/src/calm.css
+  source: web/src/calm.css:386-406
   authoritative_test: NONE
   owner_slice: styles/global
   intentional_omission: true
@@ -1862,7 +1863,7 @@
   why: >
     §8.2 定义的 helper API 面。`clearEventTrace` 必须**原地**清空以保留组件里缓存的引用；
     `waitForEvent` 用 `page.waitForFunction` 拿亚毫秒粒度
-  source: web/e2e/helpers/trace.ts
+  source: web/e2e/helpers/trace.ts:36-89
   authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -1880,7 +1881,7 @@
     `cargo run --bin replay --features fixtures --serve` 并预载 event-trace fixture
   why: >
     Slice 5：任何需要 trace ring buffer 的 spec 都必须挂 `a11y` project
-  source: web/e2e/_setup/replay-server.ts
+  source: web/playwright.config.ts:9-32,91-127; web/e2e/_setup/replay-server.setup.ts:1-21,65-168
   authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -1897,7 +1898,7 @@
     的依赖运行
   why: >
     §8.3 明示后果：单独跑 `--project=chromium` 因此永远不需要 PATH 上有 cargo
-  source: web/e2e/_setup/replay-server.ts
+  source: web/playwright.config.ts:28-32,91-127
   authoritative_test: NONE
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -2000,7 +2001,7 @@
   why: >
     #60 引入该 README 作为 `web/src/ui/` 每个原语契约的正典家（今天是 `Dialog`，
     `Menu` 与 `ConfirmDialog` 后续 slice 跟进）。重复会导致两份说法漂移
-  source: web/src/ui/README.md
+  source: web/src/ui/README.md:217-289
   authoritative_test: NONE
   owner_slice: none/policy/ui-doc
   intentional_omission: true

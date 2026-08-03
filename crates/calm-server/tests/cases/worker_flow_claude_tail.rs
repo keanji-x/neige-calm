@@ -1,8 +1,8 @@
 use crate::support;
+use std::time::Duration;
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::{SqlxRepo, session_set_status_tx};
@@ -39,7 +39,7 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
 
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-claude-tail").await == 3 }
     })
@@ -55,7 +55,7 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
         )],
     );
     let second_len = file_len(&path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-claude-tail").await == 4 }
     })
@@ -69,7 +69,7 @@ async fn claude_transcript_tail_records_and_resumes_from_byte_cursor() {
     let third_len = file_len(&path);
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-claude-tail").await == 5 }
     })
@@ -101,7 +101,7 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
 
     let (_token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, card_id).await == 4 }
     })
@@ -127,7 +127,7 @@ async fn claude_tail_drains_records_appended_after_eof_when_runtime_exits_withou
     let final_len = file_len(&path);
     tx.commit().await.unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         let finished = handle.is_finished();
         async move { item_count(&repo, card_id).await == 6 && finished }
@@ -161,7 +161,7 @@ async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
 
     let (_token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, card_id).await == 2 }
     })
@@ -182,7 +182,7 @@ async fn claude_tail_drains_unterminated_final_record_when_runtime_exits() {
     let final_len = file_len(&path);
     tx.commit().await.unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         let finished = handle.is_finished();
         async move { item_count(&repo, card_id).await == 3 && finished }
@@ -212,7 +212,7 @@ async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded(
 
     let (_token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, card_id).await == 2 }
     })
@@ -226,7 +226,7 @@ async fn claude_tail_terminal_drain_leaves_invalid_unterminated_tail_unrecorded(
     append_raw(&path, "{not-json");
     tx.commit().await.unwrap();
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let finished = handle.is_finished();
         async move { finished }
     })

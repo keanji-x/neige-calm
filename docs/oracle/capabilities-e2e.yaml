@@ -3014,9 +3014,10 @@
   owner_slice: features/auth/actor
   intentional_omission: false
   runtime_layer: features
-  verification_owner: e2e
+  verification_owner: null
   test_tier: browser
-  migration: pending
+  migration: skipped
+  skip_reason: 服务端强制契约，前端无实现责任
 
 # =============================================================================
 # SECTION 9 — WS event bus, cursor resync, deep-link (#56 slice 5, #290)
@@ -4083,9 +4084,10 @@
   owner_slice: systems/terminal/protocol
   intentional_omission: false
   runtime_layer: systems
-  verification_owner: e2e
+  verification_owner: null
   test_tier: browser
-  migration: pending
+  migration: skipped
+  skip_reason: 服务端强制契约，前端无实现责任
 
 - id: E2E-CAP-TERMINAL-006
   kind: capability
@@ -4654,9 +4656,9 @@
     colours can be snapshotted without navigating real routes.
   source: web/e2e/color-system-anchor.spec.ts:26-34,67-83
   authoritative_test: web/e2e/color-system-anchor.spec.ts:26
-  owner_slice: styles/color-system
+  owner_slice: none/e2e/color-anchor
   intentional_omission: false
-  runtime_layer: styles
+  runtime_layer: none
   verification_owner: e2e
   test_tier: browser
   migration: pending
@@ -4711,9 +4713,9 @@
     committed drift documentation for humans, not an assertion.
   source: web/e2e/color-system-anchor.spec.ts:85-109
   authoritative_test: web/e2e/color-system-anchor.spec.ts:41
-  owner_slice: styles/color-system
+  owner_slice: none/e2e/color-anchor
   intentional_omission: true
-  runtime_layer: styles
+  runtime_layer: none
   verification_owner: e2e
   test_tier: browser
   migration: pending
@@ -4729,9 +4731,9 @@
     behind the first failure, turning a one-pass audit into N runs.
   source: web/e2e/color-system-anchor.spec.ts:44-54
   authoritative_test: web/e2e/color-system-anchor.spec.ts:45
-  owner_slice: styles/color-system
+  owner_slice: none/e2e/color-anchor
   intentional_omission: false
-  runtime_layer: styles
+  runtime_layer: none
   verification_owner: e2e
   test_tier: browser
   migration: pending

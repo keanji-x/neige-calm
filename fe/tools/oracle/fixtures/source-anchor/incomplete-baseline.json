@@ -1,0 +1,4 @@
+[
+  { "id": "INV-TEST-001", "subtype": "range-miss" },
+  { "id": "INV-TEST-002", "subtype": "not-in-file" }
+]

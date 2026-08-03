@@ -378,7 +378,7 @@
   owner_slice: app/events-glue/event-bridge
   intentional_omission: false
   runtime_layer: app
-  verification_owner: unit
+  verification_owner: null
   test_tier: jsdom
   migration: skipped
   skip_reason: >
@@ -1325,7 +1325,7 @@
     所以这个读取始终是当前值。**这条例外与主规则同等重要** —— 重写时最容易被"统一成
     useTheme()"顺手抹掉，从而复活 #177。
   source: web/src/app/router.tsx:369-397; web/src/hooks/useTodayTerminal.ts:126-133
-  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:106-188
   owner_slice: app/theme
   intentional_omission: true
   runtime_layer: app
@@ -1411,7 +1411,7 @@
     issue #177 的 Playwright 仪器：e2e 需要在**不导航**的前提下翻主题 ——
     导航会卸载被观测的 wave 页 XtermView，整个观测就失效了。生产用户不应看到该全局。
   source: web/src/app/theme.tsx:180-195
-  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts
+  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:117-188
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
@@ -1949,7 +1949,7 @@
   authoritative_test: web/src/api/events.test.ts:303
   owner_slice: systems/events-transport/stream
   runtime_layer: systems
-  verification_owner: unit
+  verification_owner: null
   test_tier: jsdom
   intentional_omission: false
   migration: skipped

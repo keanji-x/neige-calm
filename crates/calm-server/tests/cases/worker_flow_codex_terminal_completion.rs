@@ -50,7 +50,7 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
         .await
         .unwrap();
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, card_id).await == 2 }
     })
@@ -68,7 +68,7 @@ async fn codex_tail_task_exits_after_terminal_completion_without_event() {
         .await
         .unwrap();
 
-    wf::wait_until(poll_interval * 2, || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         let repo = repo.clone();
         async move { item_count(&repo, card_id).await == 4 && driver.tasks_alive_for_test().await == 0 }
@@ -84,7 +84,7 @@ async fn item_count(repo: &SqlxRepo, card_id: &str) -> usize {
 }
 
 async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    wf::wait_until(Duration::from_secs(1), || async {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_cursor_get(
             card_id,
             calm_server::worker_flow::cursor::CODEX_ROLLOUT_SOURCE_KIND,

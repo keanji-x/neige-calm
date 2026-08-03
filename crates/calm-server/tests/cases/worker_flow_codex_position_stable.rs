@@ -29,7 +29,7 @@ async fn codex_rollout_position_survives_idle_poll_before_append() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-position").await == 100 }
     })
@@ -39,7 +39,7 @@ async fn codex_rollout_position_survives_idle_poll_before_append() {
 
     let prior_max_seq = max_seq(&repo, "card-position").await;
     wf::append_rollout(&path, &[wf::assistant_message("a-next", "after idle poll")]);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-position").await == 101 }
     })
