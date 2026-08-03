@@ -12,6 +12,19 @@ describe('Menu behavior', () => {
     expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Create' }));
   });
 
+  it('resets the active item when reopening', async () => {
+    render(<Menu items={['First', 'Second', 'Third'].map((label) => ({ label, onSelect: vi.fn() }))}
+      trigger={(props) => <button {...props}>Actions</button>}/>);
+    const trigger = screen.getByRole('button', { name: 'Actions' });
+    fireEvent.click(trigger); await Promise.resolve();
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'First' }), { key: 'ArrowDown' });
+    fireEvent.keyDown(screen.getByRole('menuitem', { name: 'Second' }), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'Third' }));
+    fireEvent.click(trigger);
+    fireEvent.click(trigger); await Promise.resolve();
+    expect(document.activeElement).toBe(screen.getByRole('menuitem', { name: 'First' }));
+  });
+
   it('restores trigger focus before selection and on Escape', () => {
     let focusedDuringSelection: Element | null = null;
     render(<Menu items={[{ label: 'Create', onSelect: () => { focusedDuringSelection = document.activeElement; } }]} trigger={(props) => <button {...props}>Actions</button>}/>);

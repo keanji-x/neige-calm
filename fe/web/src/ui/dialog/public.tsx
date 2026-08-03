@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useState } from '../state/public.ts';
 
@@ -19,12 +19,21 @@ export function useDialogView(): DialogViewController | null { return useContext
 const focusableSelector = 'a[href],area[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
 function focusables(panel: HTMLElement): HTMLElement[] {
   return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)).filter((element) =>
-    !element.hasAttribute('disabled') && !element.closest('[inert]'));
+    !element.hasAttribute('disabled') && !element.closest('[inert]') && isVisibleWithin(element, panel));
+}
+function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
+  for (let current: HTMLElement | null = element; current; current = current.parentElement) {
+    const style = getComputedStyle(current);
+    if (current.hidden || style.display === 'none' || style.visibility === 'hidden') return false;
+    if (current === panel) break;
+  }
+  return true;
 }
 
 export function Dialog({ open, onClose, title, hideTitleRow, children, wide, initialFocusRef, restoreFocusRef }: DialogProps) {
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
+  const titleId = `${useId()}-title`;
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const popView = useCallback(() => setViews((current) => current.slice(0, -1)), [setViews]);
@@ -101,8 +110,9 @@ export function Dialog({ open, onClose, title, hideTitleRow, children, wide, ini
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the dialog panel owns its required focus trap and click-through guard. */}
     <div ref={panelRef} className={showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'}
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
+      aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
       tabIndex={-1} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onPanelKeyDown}>
-      {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span>{headerTitle}</span><button type="button" aria-label="Close" onClick={onClose}>×</button></header>}
+      {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span id={titleId}>{headerTitle}</span><button type="button" aria-label="Close" onClick={onClose}>×</button></header>}
       <div className="dialog-body" style={showingView ? { display: 'none' } : undefined}>{children}</div>
       {showingView && <div className="dialog-body dialog-child-view">{view.body}</div>}
     </div>

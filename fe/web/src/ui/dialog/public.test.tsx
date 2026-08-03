@@ -62,6 +62,37 @@ describe('Dialog behavior', () => {
     expect(screen.getByRole('dialog', { name: 'Parent' })).toBeTruthy();
   });
 
+  it('allows an earlier child-view owner to dispose without popping the latest view', () => {
+    let controller: DialogViewController | null = null;
+    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    let disposeFirst!: () => void; let disposeSecond!: () => void;
+    act(() => { disposeFirst = controller!.pushView({ title: 'First child', body: 'First body' }); });
+    act(() => { disposeSecond = controller!.pushView({ title: 'Second child', body: 'Second body' }); });
+    act(disposeFirst);
+    expect(screen.getByRole('dialog', { name: 'Second child' })).toBeTruthy();
+    expect(screen.getByText('Second body')).toBeTruthy();
+    act(disposeSecond);
+    expect(screen.getByRole('dialog', { name: 'Parent' })).toBeTruthy();
+  });
+
+  it('traps Tab on the close button when a child view has no focusable controls', () => {
+    let controller: DialogViewController | null = null;
+    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    act(() => { controller!.pushView({ title: 'Child', body: <p>No controls</p> }); });
+    const close = screen.getByRole('button', { name: 'Close' });
+    close.focus();
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    expect(close.dispatchEvent(event)).toBe(false);
+    expect(document.activeElement).toBe(close);
+  });
+
+  it('uses a child view JSX title as the dialog accessible name', () => {
+    let controller: DialogViewController | null = null;
+    render(<Dialog open title="Parent" onClose={vi.fn()}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    act(() => { controller!.pushView({ title: <><strong>Choose</strong> directory</>, body: 'Body' }); });
+    expect(screen.getByRole('dialog', { name: 'Choose directory' })).toBeTruthy();
+  });
+
   it('ignores an already-handled bubbling Escape', () => {
     const onClose = vi.fn();
     render(<Dialog open title="Parent" onClose={onClose}><button onKeyDown={(event) => event.preventDefault()}>Nested control</button></Dialog>);

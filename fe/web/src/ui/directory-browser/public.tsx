@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, type KeyboardEvent } from 'react';
 import { useState } from '../state/public.ts';
 
 export type DirectoryMode = 'directory' | 'file';
@@ -22,6 +22,7 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
   const [loading, setLoading] = useState(false);
   const requestSequence = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const optionsId = `${useId()}-directory-options`;
   const visible = useMemo(() => listing?.entries.filter((entry) => entry.name.toLowerCase().startsWith(pathText.slice(directoryInputValue(listing.path).length).toLowerCase())) ?? [], [listing, pathText]);
   const interactive = (entry: DirectoryEntry) => entry.isDirectory || mode === 'file';
   const load = (path?: string) => {
@@ -31,7 +32,8 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
       if (requestSequence.current !== sequence) return;
       setListing(next);
       setPathText(directoryInputValue(next.path));
-      setActiveIndex(next.entries.findIndex(interactive));
+      const firstInteractive = next.entries.findIndex(interactive);
+      setActiveIndex(firstInteractive === -1 ? null : firstInteractive);
       setLoading(false);
       requestAnimationFrame(() => requestAnimationFrame(() => inputRef.current?.focus()));
     }).catch((reason: unknown) => {
@@ -62,13 +64,13 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
   };
   const matchesListing = listing !== null && pathText === directoryInputValue(listing.path);
   return <section className="directory-browser">
-    <label>Directory path<input ref={inputRef} role="combobox" aria-controls="directory-options" aria-expanded="true"
-      aria-activedescendant={activeIndex === null ? undefined : `directory-option-${activeIndex}`}
+    <label>Directory path<input ref={inputRef} role="combobox" aria-controls={optionsId} aria-expanded="true"
+      aria-activedescendant={activeIndex === null ? undefined : `${optionsId}-option-${activeIndex}`}
       value={pathText} onChange={(event) => { setPathText(event.currentTarget.value); setActiveIndex(null); }} onKeyDown={onKeyDown}/></label>
     {loading && <p role="status">Loading…</p>}
     {error && <p role="alert">{error}</p>}
-    <ul id="directory-options" role="listbox">{visible.map((entry, index) => <li key={entry.path} role="none"><button
-      id={`directory-option-${index}`} role="option" type="button" aria-selected={index === activeIndex}
+    <ul id={optionsId} role="listbox">{visible.map((entry, index) => <li key={entry.path} role="none"><button
+      id={`${optionsId}-option-${index}`} role="option" type="button" aria-selected={index === activeIndex}
       aria-disabled={!interactive(entry) || undefined} onMouseMove={() => { if (interactive(entry)) setActiveIndex(index); }}
       onClick={() => { if (entry.isDirectory) load(entry.path); else if (mode === 'file') onSelect(entry.path); }}>{entry.name}</button></li>)}</ul>
     <button type="button" onClick={onCancel}>Cancel</button>

@@ -40,9 +40,28 @@ describe('DirectoryBrowser behavior', () => {
     expect(screen.getByRole('status').textContent).toContain('Loading');
   });
   it('resets active descendant when filtering changes', async () => {
-    const { input } = await ready(); expect(input.getAttribute('aria-activedescendant')).toBe('directory-option-0');
+    const { input } = await ready(); expect(input.getAttribute('aria-activedescendant')).toBe(screen.getByRole('option', { name: 'src' }).id);
     fireEvent.change(input, { target: { value: '/work/no' } });
     expect(input.hasAttribute('aria-activedescendant')).toBe(false);
+  });
+  it('omits active descendant when a directory listing has no interactive option', async () => {
+    const filesOnly: DirectoryListing = { path: '/work', parent: '/', entries: [{ name: 'notes.txt', path: '/work/notes.txt', isDirectory: false }] };
+    render(<DirectoryBrowser listDirectory={() => Promise.resolve(filesOnly)} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    await screen.findByRole('option', { name: 'notes.txt' });
+    expect(screen.getByRole('combobox').hasAttribute('aria-activedescendant')).toBe(false);
+  });
+  it('uses distinct owned listbox and option ids for multiple instances', async () => {
+    render(<><DirectoryBrowser listDirectory={listing} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/>
+      <DirectoryBrowser listDirectory={listing} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/></>);
+    const inputs = await screen.findAllByRole('combobox');
+    const lists = screen.getAllByRole('listbox');
+    const options = screen.getAllByRole('option', { name: 'src' });
+    expect(lists[0].id).not.toBe(lists[1].id);
+    expect(options[0].id).not.toBe(options[1].id);
+    expect(inputs[0].getAttribute('aria-controls')).toBe(lists[0].id);
+    expect(inputs[1].getAttribute('aria-controls')).toBe(lists[1].id);
+    expect(inputs[0].getAttribute('aria-activedescendant')).toBe(options[0].id);
+    expect(inputs[1].getAttribute('aria-activedescendant')).toBe(options[1].id);
   });
   it('returns focus through two animation frames after loading', async () => {
     const callbacks: FrameRequestCallback[] = [];
