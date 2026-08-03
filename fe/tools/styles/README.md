@@ -15,13 +15,14 @@ The runtime page is a harness, not a full-site scan. It deliberately injects one
 - Runtime text/CSSOM de-duplication canonicalizes comments, whitespace, and trailing semicolons only; other formatting differences can duplicate a report, but cannot hide one.
 - Nested named layers inherit their top-level parent (for example `@layer ui { @layer alien {} }` belongs to `ui`); accepting the parent name is intentional because the entry order governs top-level layers.
 - Unlayered exception files waive only the requirement that rules belong to a layer; layer statements and layered imports must still name a layer from the entry order.
+- ID selectors are rejected only when unlayered. A selector such as `@layer ui { #some-id {} }` is allowed; the DOM-locator gate is concerned with runtime class lookup, not layered CSS specificity.
 
 ## Stage 2 connection
 
 After a runnable application exists, call `auditRuntimeStyles` from Playwright on every routed page and relevant theme/state combination. Feed real `entry.css`, the named unlayered exception files, and the P8b global-class manifest into the static/build audit in CI.
 
 The repository audit rejects both undeclared unlayered declarations and unused manifest entries, so the exception set remains bidirectional when the first exception is introduced.
-# CSS source-entry syntax matrix
+## CSS source-entry syntax matrix
 
 | Form | Covered syntax |
 | --- | --- |

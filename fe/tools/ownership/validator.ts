@@ -125,7 +125,13 @@ export function resolveOwnershipBase(repoRoot: string, injectedBase = process.en
         return injectedBase;
       }
     } catch { /* event base unavailable: use the frozen-vectors fallback below */ }
-    return execFileSync('git', ['rev-parse', `${headRef}~1`], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    try {
+      return execFileSync('git', ['rev-parse', `${headRef}~1`], {
+        cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim();
+    } catch {
+      throw new Error(`cannot fall back to ownership audit base ${headRef}~1; the repository needs at least two commits`);
+    }
   }
   try {
     return execFileSync('git', ['merge-base', 'origin/main', headRef], {

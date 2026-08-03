@@ -12,6 +12,7 @@ Readonly entries freeze interfaces and `styles/`. Every commit that changes a fr
 
 - Ownership describes write authority, not whether an owner implemented the right behavior.
 - Renames appear as changed paths and therefore require a request when either affected path is readonly; rename intent is not inferred.
+- Merge commits are excluded from trailer range inspection. The repository currently uses a rebase workflow before its final squash, so conflict-resolution merges are not expected; changing that workflow requires revisiting this limitation.
 - The tool validates manifest mechanics only. P8b owns the actual future-file manifest and approval trailers.
 
 ## Stage 2 connection

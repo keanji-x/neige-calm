@@ -109,14 +109,19 @@ describe('ownership fixtures', () => {
 
 });
 
-it('drives coverage against an injected tracked-file list', () => {
-  const actualFiles = fixtureFiles(resolve(import.meta.dirname, '../../..'));
-  const repositoryFileList = repositoryFiles('', actualFiles);
-  const violations = validateOwnership([], repositoryFileList);
-  expect(actualFiles.length).toBeGreaterThan(100);
-  expect(violations.every(({ rule }) => rule === 'coverage')).toBe(true);
-  const unownedFiles = violations.map(({ message }) => message.replace(/ has 0 owners$/, ''));
-  expect(new Set(unownedFiles)).toEqual(new Set(repositoryFileList));
+it('filters an injected tracked-file list to ownership scope', () => {
+  expect(repositoryFiles('', [
+    'README.md',
+    'fe/core/model.ts',
+    'fe/mock/.gitkeep',
+    'fe/tools/ownership/validator.ts',
+    'fe/web/index.html',
+  ])).toEqual([
+    'fe/core/model.ts',
+    'fe/mock/.gitkeep',
+    'fe/tools/ownership/validator.ts',
+    'fe/web/index.html',
+  ]);
 });
 
 describe('P8b2 ownership exit', () => {

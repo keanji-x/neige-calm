@@ -39,6 +39,12 @@ try {
   git('add', 'frozen.txt');
   git('commit', '-m', 'base');
   git('branch', 'origin/main');
+  try {
+    resolveOwnershipBase(repository, '0'.repeat(40));
+    throw new Error('ownership checker silently accepted a missing parent');
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes('repository needs at least two commits')) throw error;
+  }
   writeFileSync(join(repository, 'frozen.txt'), 'after\n');
   git('add', 'frozen.txt');
   git('commit', '-m', 'change');
@@ -64,6 +70,7 @@ try {
   }
   console.log(`ownership readonly trailer alarm: ${violations[0].message}`);
   console.log('ownership injected-base fallback: zero or unavailable SHA resolves to HEAD~1');
+  console.log('ownership single-commit fallback: fail-closed with a two-commit diagnostic');
   console.log('ownership missing-ref check: fail-closed with git fetch origin main guidance');
 } finally {
   rmSync(repository, { recursive: true, force: true });
