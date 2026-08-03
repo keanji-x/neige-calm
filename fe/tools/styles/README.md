@@ -12,7 +12,8 @@ The runtime page is a harness, not a full-site scan. It deliberately injects one
 - Cross-origin stylesheets can deny `cssRules`; this is reported but the harness cannot inspect their contents.
 - Dynamic selector construction outside CSS and semantic selector/property exception ownership need separate architecture rules and the P8b manifests.
 - The lightweight selector lexer supports ordinary CSS class identifiers but does not decode escaped identifiers.
-- Nested named layers inherit their top-level parent (for example `@layer ui { @layer alien {} }` belongs to `ui`); accepting the child name is intentional because the entry order governs top-level layers.
+- Runtime text/CSSOM de-duplication canonicalizes comments, whitespace, and trailing semicolons only; other formatting differences can duplicate a report, but cannot hide one.
+- Nested named layers inherit their top-level parent (for example `@layer ui { @layer alien {} }` belongs to `ui`); accepting the parent name is intentional because the entry order governs top-level layers.
 - Unlayered exception files waive only the requirement that rules belong to a layer; layer statements and layered imports must still name a layer from the entry order.
 
 ## Stage 2 connection

@@ -11,8 +11,9 @@ export const CSS_NODE_SOURCES = Object.freeze([
   'runtime-style-text', 'runtime-style-cssom', 'runtime-external-stylesheet', 'runtime-inline-attribute',
 ] as const);
 
+interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
+
 function enclosingLayer(node: ChildNode): { layered: boolean; name?: string; anonymous?: boolean } {
-  interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
   let parent = node.parent as ParentNode | undefined;
   let layered = false;
   let name: string | undefined;
@@ -40,9 +41,9 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
   const root = postcss.parse(css);
   root.walkAtRules((atRule) => {
     const hasLayerAncestor = (): boolean => {
-      let parent = atRule.parent;
+      let parent = atRule.parent as ParentNode | undefined;
       while (parent && parent !== root) {
-        if (parent.type === 'atrule' && parent.name.toLowerCase() === 'layer') return true;
+        if (parent.type === 'atrule' && parent.name?.toLowerCase() === 'layer') return true;
         parent = parent.parent;
       }
       return false;
@@ -70,7 +71,10 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
     if (!unlayeredException) {
       if (!layer.layered) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
       else if (layer.anonymous) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
-      else if (layer.name && !order.includes(layer.name)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer.name}` });
+      else if (layer.name && !order.includes(layer.name)) {
+        const message = layer.name.includes(',') ? `unknown layer list: ${layer.name}` : `unknown layer ${layer.name}`;
+        violations.push({ rule: 'known-layer', message });
+      }
       return;
     }
     for (const selector of rule.selectors) {

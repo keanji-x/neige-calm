@@ -68,7 +68,6 @@ describe('CSS AST fixtures', () => {
       ['runtime-inline-attribute', () => auditRuntimeStyles(new JSDOM(read('runtime-inline/negative/page.html')).window.document, order)],
     ]);
     expect(new Set(traversalSurface.keys())).toEqual(new Set(CSS_NODE_SOURCES));
-    expect(new Set(CSS_NODE_SOURCES)).toEqual(new Set(traversalSurface.keys()));
     for (const [source, evidence] of traversalSurface) expect(evidence(), source).not.toEqual([]);
   });
   it('covers exactly every rule the audit can emit', () => {
@@ -120,6 +119,12 @@ describe('CSS AST fixtures', () => {
     expect(auditLayeredCss(read('traversal/layer-child-named.css'), order)).toEqual([]);
     expect(auditLayeredCss(read('traversal/layer-child-anonymous.css'), order)).toEqual([
       { rule: 'known-layer', message: 'anonymous layer' },
+    ]);
+  });
+
+  it('labels an invalid comma-separated block as a layer list', () => {
+    expect(auditLayeredCss('@layer ui, alien { .a {} }', order)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer list: ui, alien' },
     ]);
   });
 
