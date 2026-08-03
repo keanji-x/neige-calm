@@ -20,6 +20,11 @@ export const CSS_SOURCE_ENTRY_FORMS = Object.freeze([
   'commonjs-require-plain', 'commonjs-require-query', 'commonjs-require-fragment',
   'commonjs-require-query-fragment', 'commonjs-require-raw',
 ]);
+export const DATA_ATTRIBUTE_SOURCE_FORMS = Object.freeze([
+  'jsx-literal-attribute', 'jsx-spread-literal-key', 'object-literal-key',
+  'computed-static-string', 'computed-static-template', 'set-attribute-static-string',
+  'variable-key-known-escape',
+]);
 const LEGACY_DATA_ATTRIBUTES = new Map([
   ['web/src/ui/dialog/public.tsx:data-variant', 'frozen UI interface; visual variant, not a DOM locator'],
 ]);
@@ -55,8 +60,9 @@ export function auditDataAttributes(code, file) {
   const visit = (node) => {
     if (ts.isJsxAttribute(node)) {
       checkName(node.name.getText(source));
-    } else if (ts.isPropertyAssignment(node) && (ts.isStringLiteral(node.name) || ts.isNoSubstitutionTemplateLiteral(node.name))) {
-      checkName(node.name.text);
+    } else if (ts.isPropertyAssignment(node)) {
+      const name = ts.isComputedPropertyName(node.name) ? node.name.expression : node.name;
+      if (ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name)) checkName(name.text);
     } else if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
       && node.expression.name.text === 'setAttribute' && ts.isStringLiteral(node.arguments[0])) {
       checkName(node.arguments[0].text);

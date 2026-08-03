@@ -5,7 +5,7 @@ import stylelint from 'stylelint';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
-import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, auditUnlayeredExceptions, CSS_SOURCE_ENTRY_FORMS, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
+import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, auditUnlayeredExceptions, CSS_SOURCE_ENTRY_FORMS, DATA_ATTRIBUTE_SOURCE_FORMS, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
@@ -325,6 +325,20 @@ describe('P8b2 forward style gates', () => {
     expect(auditDataAttributes('const x = <div data-NC-card="42" />;', 'case.tsx')).toEqual([
       'case.tsx: nonconforming data-NC-card; use data-nc-<kebab-case>',
     ]);
+  });
+
+  it('covers every data-* attribute source form in both directions', () => {
+    const cases = parse(read('data-attributes/source-forms.yaml')) as Record<string, {
+      source: string; outcome: 'violation' | 'known-escape';
+    }>;
+    expect(new Set(Object.keys(cases))).toEqual(new Set(DATA_ATTRIBUTE_SOURCE_FORMS));
+    for (const [form, fixture] of Object.entries(cases)) {
+      const violations = auditDataAttributes(fixture.source, `${form}.tsx`);
+      if (fixture.outcome === 'known-escape') expect(violations, form).toEqual([]);
+      else expect(violations, form).toEqual([
+        `${form}.tsx: nonconforming data-card-id; use data-nc-<kebab-case>`,
+      ]);
+    }
   });
 
   it('requires every CSS Module to declare its owning layer', () => {

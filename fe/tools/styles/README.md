@@ -37,3 +37,17 @@ The repository audit rejects both undeclared unlayered declarations and unused m
 | suffix `raw` | A `.css?raw` Vite request |
 
 The fixture keys and `CSS_SOURCE_ENTRY_FORMS` are asserted equal in both directions across the full 4 × 5 product, so adding or dropping a recognized source-entry form or suffix requires an explicit table and test update.
+
+## data-* attribute source matrix
+
+| Form | Result |
+| --- | --- |
+| JSX literal attribute | Checked |
+| JSX spread with a literal key | Checked |
+| Object literal with a literal key | Checked |
+| Computed static string | Checked |
+| Computed no-substitution template | Checked |
+| `setAttribute` with a static string | Checked |
+| Variable key | Known static-analysis escape |
+
+Every row has one fixture. Its keys and `DATA_ATTRIBUTE_SOURCE_FORMS` are asserted equal in both directions; the variable-key row explicitly locks the static-analysis boundary instead of silently falling outside the table.
