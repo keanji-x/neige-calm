@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build web",
     "typecheck": "tsc -b",
     "test": "vitest run && npm run test:wire",
+    "test:mutation": "node tools/mutation/run.mjs",
     "test:wire": "diff ../web/src/api/generated-events.ts core/api/generated/wire.ts || { echo 'generated wire.ts drifted from the ts-rs output; do not hand-edit — re-run the generator'; exit 1; }",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
     "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/ownership/check-readonly-change-requests.mjs",
