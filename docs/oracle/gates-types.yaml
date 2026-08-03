@@ -990,7 +990,7 @@
   test_tier: static
   migration: pending
 
-- id: INV-OVERLAY-001
+- id: INV-OVERLAY-006
   former_id: GATE-OVERLAY-003
   kind: invariant
   family: overlay-state
@@ -1030,7 +1030,7 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-OVERLAY-002
+- id: INV-OVERLAY-007
   former_id: GATE-OVERLAY-005
   kind: invariant
   family: overlay-state
