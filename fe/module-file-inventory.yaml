@@ -1,0 +1,83 @@
+# Stage-1 implementation inventory. This is the source for ownership-manifest.yaml;
+# ownership is deliberately generated only after this inventory is frozen.
+# `path` is an exact file or a directory prefix. A directory entry owns every
+# future implementation/test/style file in that module; no unlisted feature
+# domain or top-level web source is permitted.
+
+# Architecture-local control files (§2, §14).
+- { path: fe/core/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
+- { path: fe/web/src/main.tsx, type: file, owner: app/bootstrap, readonly: false, basis: "architecture disease 9" }
+- { path: fe/web/src/app/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
+- { path: fe/web/src/features/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
+- { path: fe/web/src/systems/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
+- { path: fe/web/src/ui/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
+
+# Cross-platform core (§2, §4.6–§4.9, frozen interfaces §6).
+- { path: fe/core/platform-independent.ts, type: file, owner: core/platform, readonly: false, basis: "architecture §4.6" }
+- { path: fe/core/api, type: directory, owner: core/api, readonly: true, basis: "frozen interface §6.3" }
+- { path: fe/core/domain, type: directory, owner: core/domain, readonly: false, basis: "architecture §2/§4.9 ReportBlock" }
+- { path: fe/core/events, type: directory, owner: core/events, readonly: true, basis: "frozen interface §6.5a" }
+- { path: fe/core/keys, type: directory, owner: core/keys, readonly: true, basis: "frozen interface §6.2" }
+- { path: fe/core/markdown, type: directory, owner: core/markdown, readonly: true, basis: "frozen interface §6.5c; duplication manifest INV-DUP-004/005" }
+- { path: fe/core/schemas, type: directory, owner: core/schemas, readonly: false, basis: "architecture §2" }
+- { path: fe/core/state, type: directory, owner: core/state, readonly: true, basis: "frozen interface §6.1a" }
+- { path: fe/core/types, type: directory, owner: core/types, readonly: false, basis: "architecture §8.7" }
+
+# App composition (§2: router/providers/theme/shell/DI and §4.7 events).
+- { path: fe/web/src/app/cards.contract.test.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
+- { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
+- { path: fe/web/src/app/markdown-legacy-differential.test.ts, type: file, owner: app/markdown-migration, readonly: false, basis: "architecture §4.9" }
+- { path: fe/web/src/app/router, type: directory, owner: app/router, readonly: false, basis: "architecture §2" }
+- { path: fe/web/src/app/providers, type: directory, owner: app/providers, readonly: false, basis: "architecture §2" }
+- { path: fe/web/src/app/theme, type: directory, owner: app/theme, readonly: false, basis: "architecture §2; INV-DUP-007" }
+- { path: fe/web/src/app/shell, type: directory, owner: app/shell, readonly: false, basis: "architecture §2" }
+- { path: fe/web/src/app/events, type: directory, owner: app/events, readonly: false, basis: "architecture §4.7" }
+- { path: fe/web/src/app/auth, type: directory, owner: app/auth, readonly: false, basis: "architecture §2 DI/providers" }
+
+# Feature domains are the closed §4 set; each prefix contains its public entry,
+# colocated behavior/contract tests, render components, and *.module.css files.
+- { path: fe/web/src/features/wave, type: directory, owner: features/wave, readonly: false, basis: "architecture §2/§4; INV-DUP-009" }
+- { path: fe/web/src/features/cove, type: directory, owner: features/cove, readonly: false, basis: "architecture §2/§4; INV-DUP-006" }
+- { path: fe/web/src/features/today, type: directory, owner: features/today, readonly: false, basis: "architecture §2/§4" }
+- { path: fe/web/src/features/report, type: directory, owner: features/report, readonly: false, basis: "architecture §4.8/§4.9" }
+- { path: fe/web/src/features/spec, type: directory, owner: features/spec, readonly: false, basis: "architecture §2/§4" }
+- { path: fe/web/src/features/settings, type: directory, owner: features/settings, readonly: false, basis: "architecture §2/§4" }
+- { path: fe/web/src/features/auth, type: directory, owner: features/auth, readonly: false, basis: "architecture §2/§4" }
+- { path: fe/web/src/features/.gitkeep, type: file, owner: architecture, readonly: false, basis: "stage-1 placeholder" }
+
+# Resource-owning systems (§2/§2.0). Editor's listed submodules are fixed by §8.3.
+- { path: fe/web/src/systems/.gitkeep, type: file, owner: architecture, readonly: false, basis: "stage-1 placeholder" }
+- { path: fe/web/src/systems/events, type: directory, owner: systems/events, readonly: true, basis: "frozen interface §6.5b" }
+- { path: fe/web/src/systems/terminal, type: directory, owner: systems/terminal, readonly: false, basis: "architecture §2/§2.0" }
+- { path: fe/web/src/systems/wheel, type: directory, owner: systems/wheel, readonly: false, basis: "architecture §2/§2.0" }
+- { path: fe/web/src/systems/fs-viewers, type: directory, owner: systems/fs-viewers, readonly: false, basis: "architecture §2/§4.9" }
+- { path: fe/web/src/systems/editor, type: directory, owner: systems/editor, readonly: false, basis: "architecture §8.3: public/model/adapters/ui/generated" }
+- { path: fe/web/src/systems/cards/public.ts, type: file, owner: systems/cards/interface, readonly: true, basis: "frozen interface §6.6; INV-DUP manifest" }
+- { path: fe/web/src/systems/cards/public.contract.test.ts, type: file, owner: systems/cards/interface, readonly: true, basis: "frozen interface §6.6" }
+- { path: fe/web/src/systems/cards/public.test.ts, type: file, owner: systems/cards/interface, readonly: true, basis: "frozen interface §6.6" }
+- { path: fe/web/src/systems/cards/README.md, type: file, owner: systems/cards/interface, readonly: true, basis: "frozen interface §6.6" }
+- { path: fe/web/src/systems/cards/contracts.ts, type: file, owner: systems/cards/registry, readonly: false, basis: "architecture §2.0/§8.6" }
+- { path: fe/web/src/systems/cards/host.ts, type: file, owner: systems/cards/host, readonly: false, basis: "architecture §2.0" }
+- { path: fe/web/src/systems/cards/lifecycle.ts, type: file, owner: systems/cards/lifecycle, readonly: false, basis: "architecture §2.0" }
+- { path: fe/web/src/systems/cards/registry.ts, type: file, owner: systems/cards/registry, readonly: false, basis: "architecture §2.1" }
+- { path: fe/web/src/systems/cards/resolver.ts, type: file, owner: systems/cards/registry, readonly: false, basis: "architecture §2.1" }
+- { path: fe/web/src/systems/cards/builtins, type: directory, owner: systems/cards/builtins, readonly: false, basis: "architecture §2.0" }
+- { path: fe/web/src/systems/cards/ui, type: directory, owner: systems/cards/ui, readonly: false, basis: "architecture §2.0" }
+
+# Business-free UI primitives (§2, §6.1b/7). Each module prefix includes its
+# README, public entry, contract/behavior tests and colocated CSS Module.
+- { path: fe/web/src/ui/.gitkeep, type: file, owner: architecture, readonly: false, basis: "stage-1 placeholder" }
+- { path: fe/web/src/ui/public-consumer.contract.test.tsx, type: file, owner: ui/contracts, readonly: true, basis: "frozen interfaces §6.7" }
+- { path: fe/web/src/ui/state, type: directory, owner: ui/state, readonly: true, basis: "frozen interface §6.1b" }
+- { path: fe/web/src/ui/directory-browser, type: directory, owner: ui/directory-browser, readonly: true, basis: "frozen interface §6.7a" }
+- { path: fe/web/src/ui/schema-form, type: directory, owner: ui/schema-form, readonly: true, basis: "frozen interface §6.7b; INV-DUP-001/003" }
+- { path: fe/web/src/ui/dialog, type: directory, owner: ui/dialog, readonly: true, basis: "frozen interface §6.7c" }
+- { path: fe/web/src/ui/menu, type: directory, owner: ui/menu, readonly: true, basis: "frozen interface §6.7c" }
+- { path: fe/web/src/ui/focus, type: directory, owner: ui/focus, readonly: true, basis: "frozen interface §6.7c" }
+- { path: fe/web/src/ui/roving, type: directory, owner: ui/roving, readonly: true, basis: "architecture §2 interaction primitive" }
+- { path: fe/web/src/ui/calm-select, type: directory, owner: ui/calm-select, readonly: true, basis: "INV-DUP-002" }
+- { path: fe/web/src/ui/editable-title, type: directory, owner: ui/editable-title, readonly: true, basis: "INV-DUP-008" }
+- { path: fe/web/src/ui/confirm-dialog, type: directory, owner: ui/confirm-dialog, readonly: true, basis: "INV-DUP-010" }
+
+# Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).
+- { path: fe/web/src/styles, type: directory, owner: styles, readonly: true, basis: "frozen interface §6.8" }
