@@ -11,8 +11,9 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Condvar;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::net::{UnixListener, UnixStream};
@@ -36,7 +37,21 @@ struct ProcEntry {
     cursor_tail: AtomicU64,
     cursor_head: AtomicU64,
     exit: StdMutex<Option<ProcExit>>,
+    /// Pty only: set by the waiter the instant `child.wait()` returns, i.e.
+    /// *before* the drain grace and the sticky `exit` write. Liveness probes
+    /// must consult it, otherwise a reaped child looks alive for the whole
+    /// grace window and `EnsureProc` hands out a dead pid (issue #993 R4).
+    pty_reaped: AtomicBool,
     broadcast_tx: broadcast::Sender<DataFrame>,
+}
+
+impl ProcEntry {
+    /// Whether the pty child is still running. `false` as soon as the child is
+    /// reaped, without waiting for the drain grace / sticky `exit` write.
+    fn pty_running(&self) -> bool {
+        !self.pty_reaped.load(Ordering::SeqCst)
+            && self.exit.lock().map(|exit| exit.is_none()).unwrap_or(false)
+    }
 }
 
 enum ProcRuntime {
@@ -67,6 +82,12 @@ struct ByteRing {
     chunks: VecDeque<(u64, Vec<u8>)>,
     cursor_tail: u64,
     cursor_head: u64,
+    /// Set exactly once, by the pty waiter, in the same critical section that
+    /// publishes `DataFrame::Exited` (issue #993). Once sealed the ring is
+    /// immutable: the reader thread must neither append nor broadcast, so
+    /// `Exited` is provably the last frame and `exit.cursor` is provably the
+    /// final `cursor_tail` — on the drain-timeout path too.
+    sealed: bool,
 }
 
 enum ByteRingSlice {
@@ -88,10 +109,24 @@ impl ByteRing {
             chunks: VecDeque::new(),
             cursor_tail: 0,
             cursor_head: 0,
+            sealed: false,
         }
     }
 
+    /// Closes the ring for further writes and returns its final `cursor_tail`.
+    /// Callers must hold the ring mutex and publish `Exited` before releasing
+    /// it — that is what makes the seal and the exit frame atomic.
+    fn seal(&mut self) -> u64 {
+        self.sealed = true;
+        self.cursor_tail
+    }
+
+    fn is_sealed(&self) -> bool {
+        self.sealed
+    }
+
     fn append(&mut self, bytes: Vec<u8>) -> (u64, u64) {
+        debug_assert!(!self.sealed, "append after seal (#993)");
         let start = self.cursor_tail;
         self.cursor_tail = self.cursor_tail.saturating_add(bytes.len() as u64);
         self.chunks.push_back((start, bytes));
@@ -681,7 +716,29 @@ async fn handle_cleanup(
             return Ok(());
         }
     };
-    if entry.exit.lock().map(|exit| exit.is_none()).unwrap_or(true) {
+    // Pty: `pty_running` goes false the moment the child is reaped, so a
+    // cleanup arriving inside the drain grace no longer bounces with
+    // WrongState (issue #993 R4). Pipe: unchanged sticky-exit semantics.
+    //
+    // Known and accepted (issue #993 R2/F6): a cleanup landing inside the
+    // ≤`PTY_DRAIN_GRACE` window removes the entry before the waiter has
+    // stamped the sticky `exit`, so a later `Attach` gets `UnknownProc`
+    // instead of the exit. Left as-is on purpose:
+    //   * no production path sends `ControlMsg::Cleanup` at all (tests only),
+    //     so nothing can reach it today;
+    //   * `Cleanup` means "I am done with this proc" — discarding its sticky
+    //     exit is what the caller asked for, and `UnknownProc` is exactly how
+    //     every other post-cleanup attach already answers;
+    //   * the two alternatives are both worse: bouncing with `WrongState`
+    //     during the grace is the R4 bug this branch exists to fix, and
+    //     blocking the handler until the exit is stamped would pin a control
+    //     connection on a window whose whole purpose is being skippable.
+    // If a production caller is ever added, revisit this first.
+    let still_running = match &entry.runtime {
+        ProcRuntime::Pty { .. } => entry.pty_running(),
+        ProcRuntime::Pipe { .. } => entry.exit.lock().map(|exit| exit.is_none()).unwrap_or(true),
+    };
+    if still_running {
         write_frame(
             stream,
             &ControlReply::Error {
@@ -831,6 +888,7 @@ async fn try_spawn_pipe(
                 cursor_tail: AtomicU64::new(0),
                 cursor_head: AtomicU64::new(0),
                 exit: StdMutex::new(None),
+                pty_reaped: AtomicBool::new(false),
                 broadcast_tx,
             }),
         );
@@ -913,6 +971,7 @@ async fn try_spawn_pty(
         cursor_tail: AtomicU64::new(0),
         cursor_head: AtomicU64::new(0),
         exit: StdMutex::new(None),
+        pty_reaped: AtomicBool::new(false),
         broadcast_tx: broadcast_tx.clone(),
     });
     registry
@@ -923,8 +982,14 @@ async fn try_spawn_pty(
             child_already_reaped: false,
         })?
         .insert(request.proc_id.clone(), entry.clone());
-    spawn_pty_reader_task(request.proc_id.clone(), entry.clone(), reader);
-    spawn_pty_waiter(request.proc_id.clone(), entry, child);
+    let drain_gate = Arc::new(PtyDrainGate::new());
+    spawn_pty_reader_task(
+        request.proc_id.clone(),
+        entry.clone(),
+        reader,
+        drain_gate.clone(),
+    );
+    spawn_pty_waiter(request.proc_id.clone(), entry, child, drain_gate);
 
     Ok(Spawned {
         proc_id: request.proc_id,
@@ -936,29 +1001,142 @@ async fn try_spawn_pty(
     })
 }
 
+/// How long the waiter thread waits for the pty reader to reach EOF after the
+/// child has been reaped, before sealing the ring and publishing `Exited`
+/// anyway.
+///
+/// This window is **not** what makes `Exited` the last frame — the ring seal
+/// is (see `spawn_pty_waiter`). It only decides how much genuinely in-flight
+/// output we are willing to wait for before declaring the stream over.
+///
+/// The happy path never spends it: `portable-pty`'s unix reader maps the
+/// master's `EIO` to `Ok(0)` (`portable-pty-0.9/src/unix.rs`), so the moment
+/// the last slave fd closes the reader sees EOF and signals the gate. The
+/// window only bites when a grandchild inherited the slave fd and outlives its
+/// parent — then the master never EOFs and an unbounded wait would leave the
+/// terminal stuck on "running" forever.
+///
+/// 50ms sizing: at reap time the still-unread bytes are bounded by the kernel
+/// pty buffer (~64 KiB), which the 8 KiB read loop drains in a handful of
+/// syscalls — microseconds of work, and a few scheduler wakeups even on a
+/// contended single CPU. 50ms is ~3 orders of magnitude above that, while
+/// staying well inside the renderer teardown budget on the `calm-server` side
+/// (`terminal_renderer::EXIT_PERSIST_GRACE`, which const-asserts the
+/// relationship) so a teardown cannot abort the attach reader before the exit
+/// is persisted (issue #993 R1).
+pub const PTY_DRAIN_GRACE: Duration = Duration::from_millis(50);
+
+/// Handshake between the pty reader thread and the pty waiter thread.
+///
+/// The waiter is the *single* publisher of `DataFrame::Exited` (see
+/// `spawn_pty_waiter`); this gate is how it learns that the reader has stopped
+/// producing `Output` frames, so `Exited` can be published strictly after the
+/// process' trailing bytes (issue #993).
+struct PtyDrainGate {
+    drained: StdMutex<bool>,
+    signal: Condvar,
+}
+
+impl PtyDrainGate {
+    fn new() -> Self {
+        Self {
+            drained: StdMutex::new(false),
+            signal: Condvar::new(),
+        }
+    }
+
+    /// Marks the reader as finished (EOF, read error, or panic) and wakes the
+    /// waiter.
+    fn mark_drained(&self) {
+        let mut guard = self
+            .drained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = true;
+        drop(guard);
+        self.signal.notify_all();
+    }
+
+    /// Waits for the reader to finish, at most `PTY_DRAIN_GRACE`. Returns
+    /// `true` when the reader really finished (so no further `Output` frame
+    /// can be broadcast), `false` when the grace window expired.
+    fn wait_for_drain(&self) -> bool {
+        let guard = self
+            .drained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (guard, _) = self
+            .signal
+            .wait_timeout_while(guard, PTY_DRAIN_GRACE, |drained| !*drained)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard
+    }
+}
+
+/// Signals the drain gate from `Drop`, so the reader thread cannot leave the
+/// waiter hanging on any exit path — including an early `return`/`break` or a
+/// panic.
+struct DrainGuard(Arc<PtyDrainGate>);
+
+impl Drop for DrainGuard {
+    fn drop(&mut self) {
+        self.0.mark_drained();
+    }
+}
+
 fn spawn_pty_reader_task(
     proc_id: String,
     entry: Arc<ProcEntry>,
     mut reader: Box<dyn io::Read + Send>,
+    gate: Arc<PtyDrainGate>,
 ) {
     std::thread::spawn(move || {
+        let _drain_guard = DrainGuard(gate);
         let mut buf = [0_u8; 8192];
+        // Bytes read after the seal and thrown away. Also the "already warned"
+        // flag: only the first post-seal chunk logs, the rest are counted.
+        let mut discarded_after_seal: u64 = 0;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let bytes = buf[..n].to_vec();
-                    let start = {
-                        let mut ring = match entry.byte_ring.lock() {
-                            Ok(ring) => ring,
-                            Err(_) => break,
-                        };
-                        let (start, tail) = ring.append(bytes.clone());
-                        let (head, _) = ring.window();
-                        entry.cursor_head.store(head, Ordering::SeqCst);
-                        entry.cursor_tail.store(tail, Ordering::SeqCst);
-                        start
+                    // Append AND broadcast inside the ring critical section.
+                    // Doing the broadcast outside would let the waiter's
+                    // seal + `Exited` slip between them, so this `Output`
+                    // frame would land after `Exited` even though the cursor
+                    // it carries was already accounted for (issue #993 R2).
+                    let mut ring = match entry.byte_ring.lock() {
+                        Ok(ring) => ring,
+                        Err(poisoned) => poisoned.into_inner(),
                     };
+                    if ring.is_sealed() {
+                        drop(ring);
+                        // The waiter already published `Exited`; by contract
+                        // nothing may follow it, so this chunk is neither
+                        // appended nor broadcast. But we must KEEP READING
+                        // (issue #993 R3): the surviving grandchild still
+                        // holds the slave fd, the entry still owns the master,
+                        // and nothing in production ever sends
+                        // `ControlMsg::Cleanup`, so an unread master would fill
+                        // the ~64 KiB kernel tty queue and wedge the grandchild
+                        // forever inside `write()`. Draining to EOF keeps it
+                        // running and lets the fd close on its own.
+                        if discarded_after_seal == 0 {
+                            tracing::warn!(
+                                proc_id = %proc_id,
+                                "pty output arrived after the exit seal; draining and \
+                                 discarding until EOF (slave fd still held by a surviving \
+                                 grandchild)"
+                            );
+                        }
+                        discarded_after_seal += n as u64;
+                        continue;
+                    }
+                    let bytes = buf[..n].to_vec();
+                    let (start, tail) = ring.append(bytes.clone());
+                    let (head, _) = ring.window();
+                    entry.cursor_head.store(head, Ordering::SeqCst);
+                    entry.cursor_tail.store(tail, Ordering::SeqCst);
                     let _ = entry.broadcast_tx.send(DataFrame::Output {
                         cursor: start,
                         bytes,
@@ -971,13 +1149,66 @@ fn spawn_pty_reader_task(
                 }
             }
         }
+        if discarded_after_seal > 0 {
+            tracing::info!(
+                proc_id = %proc_id,
+                discarded_bytes = discarded_after_seal,
+                "pty reader finished; discarded post-seal output"
+            );
+        }
     });
 }
 
+/// Publishes `DataFrame::Exited` for a pty process — the **only** place that
+/// does so for a pty (issue #993).
+///
+/// `child.wait()` returning does not mean the pty master is drained: the
+/// reader thread may still be appending the process' trailing output to the
+/// ring. Publishing `Exited` at that moment races the last `Output` frames,
+/// and since every consumer treats `Exited` as terminal, those bytes are lost
+/// and `exit.cursor` under-reports.
+///
+/// Two mechanisms, with different jobs:
+///
+/// 1. **Drain gate** (best effort, bounded by `PTY_DRAIN_GRACE`): wait for the
+///    reader to finish (EOF or read error) so genuinely in-flight bytes make
+///    it into the ring first.
+/// 2. **Ring seal** (the actual invariant): the final `cursor_tail` sample,
+///    the sticky `entry.exit` write and the `Exited` broadcast all happen in
+///    one `byte_ring` critical section that also flips the ring to sealed. The
+///    reader takes the same lock around append+broadcast and bails out when it
+///    finds the ring sealed.
+///
+/// What is guaranteed, exactly:
+///
+/// * **Always** (both paths, seal): `Exited` is the last frame any attacher
+///   can observe, and `exit.cursor` equals the ring's final `cursor_tail`. No
+///   `Output` frame can be broadcast after `Exited`, and no byte can be
+///   appended past `exit.cursor`.
+/// * **Happy path** (reader reached EOF within the grace — every process that
+///   held the slave is gone): additionally, *every byte the process wrote*
+///   is in the ring before `Exited`. Nothing is lost.
+/// * **Degraded path** (grace expired because a surviving grandchild still
+///   holds the slave fd): the ordering guarantee above still holds, but
+///   completeness does not — bytes written to the pty after the seal are
+///   *read and discarded*: never appended, never broadcast, never replayed to
+///   a future attacher. The reader deliberately keeps draining the master to
+///   EOF instead of stopping (issue #993 R3): the entry keeps the master open
+///   for the process' whole lifetime and no production path sends
+///   `ControlMsg::Cleanup`, so an unread master would fill the kernel tty
+///   queue and block the surviving grandchild inside `write()` forever.
+///   Losing that output is a deliberate trade against wedging the terminal on
+///   "running" forever; both the waiter and the reader emit a WARN when it
+///   happens.
+///
+/// The grace is *not* load-bearing for ordering; shortening or lengthening it
+/// only changes how much genuinely in-flight output the degraded path is
+/// willing to wait for.
 fn spawn_pty_waiter(
     proc_id: String,
     entry: Arc<ProcEntry>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    gate: Arc<PtyDrainGate>,
 ) {
     // OS thread, NOT `tokio::task::spawn_blocking`: a long-lived PTY child
     // (shell / codex / claude) keeps `child.wait()` blocked for the
@@ -991,33 +1222,62 @@ fn spawn_pty_waiter(
     // tracing) — no `.await`, no tokio context required.
     std::thread::spawn(move || {
         let status = child.wait().ok();
-        let exit = match status.as_ref() {
-            Some(status) if status.signal().is_some() => ProcExit {
-                status: None,
-                signalled: true,
-                cursor: entry.cursor_tail.load(Ordering::SeqCst),
-            },
-            Some(status) => ProcExit {
-                status: Some(status.exit_code() as i32),
-                signalled: false,
-                cursor: entry.cursor_tail.load(Ordering::SeqCst),
-            },
-            None => ProcExit {
-                status: None,
-                signalled: false,
-                cursor: entry.cursor_tail.load(Ordering::SeqCst),
-            },
-        };
-        if let Ok(mut slot) = entry.exit.lock() {
-            *slot = Some(exit.clone());
+        // Published before the grace window so liveness probes stop reporting
+        // a reaped child as running (issue #993 R4).
+        entry.pty_reaped.store(true, Ordering::SeqCst);
+        if !gate.wait_for_drain() {
+            tracing::warn!(
+                proc_id = %proc_id,
+                grace_ms = PTY_DRAIN_GRACE.as_millis() as u64,
+                "pty master still open after child exit (slave fd likely held by a \
+                 surviving grandchild); sealing the ring and publishing Exited without \
+                 a full drain — any further pty output is dropped"
+            );
         }
+        // One critical section: seal, sample the final cursor, stamp the
+        // sticky slot, broadcast. The reader takes the same lock around
+        // append+broadcast, so this is what makes `Exited` the provably last
+        // frame on both the drained and the timed-out path (issue #993 R2).
+        let exit = {
+            let mut ring = match entry.byte_ring.lock() {
+                Ok(ring) => ring,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let cursor = ring.seal();
+            entry.cursor_tail.store(cursor, Ordering::SeqCst);
+            let exit = match status.as_ref() {
+                Some(status) if status.signal().is_some() => ProcExit {
+                    status: None,
+                    signalled: true,
+                    cursor,
+                },
+                Some(status) => ProcExit {
+                    status: Some(status.exit_code() as i32),
+                    signalled: false,
+                    cursor,
+                },
+                None => ProcExit {
+                    status: None,
+                    signalled: false,
+                    cursor,
+                },
+            };
+            // The sticky slot must hold exactly the broadcast value and must be
+            // visible no later than the frame: `handle_attach`'s fast path decides
+            // correctness with `exit.cursor <= snapshot_tail`. Lock order here
+            // (byte_ring → exit) matches `handle_attach`'s.
+            if let Ok(mut slot) = entry.exit.lock() {
+                *slot = Some(exit.clone());
+            }
+            let _ = entry.broadcast_tx.send(DataFrame::Exited(exit.clone()));
+            exit
+        };
         tracing::info!(
             proc_id = %proc_id,
             status = ?exit.status,
             signalled = exit.signalled,
             "pty child exited"
         );
-        let _ = entry.broadcast_tx.send(DataFrame::Exited(exit));
     });
 }
 
@@ -1084,12 +1344,7 @@ async fn existing_live_pid(registry: &ProcRegistry, proc_id: &str) -> Option<u32
             }
         },
         ProcRuntime::Pty { .. } => {
-            if entry
-                .exit
-                .lock()
-                .map(|exit| exit.is_none())
-                .unwrap_or(false)
-            {
+            if entry.pty_running() {
                 Some(entry.pid)
             } else {
                 None

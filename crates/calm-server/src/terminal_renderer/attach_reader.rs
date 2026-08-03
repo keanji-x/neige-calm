@@ -2,7 +2,7 @@ use calm_session::control::ControlReply;
 use calm_session::terminal_session::Effect;
 use calm_session::{DaemonMsg, read_frame};
 use tokio::net::UnixStream;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::{SharedExitState, SharedRenderPlane, SupervisorControl, TerminalExitInfo};
@@ -24,6 +24,11 @@ pub fn spawn_supervisor_attach_reader(
     repo: Option<Arc<dyn RouteRepo>>,
     terminal_id: String,
     task_hook: Option<Arc<crate::scheduler::TerminalTaskHook>>,
+    // Flipped to `true` once — and only once — the whole `Exited` arm below
+    // has run (#993 R3-A). Teardown waits on *this*, never on the task handle:
+    // the loop also ends on an attach-stream read error, which persists
+    // nothing, so "the task finished" is not evidence that the exit landed.
+    exit_persisted_tx: watch::Sender<bool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut exited_tx = Some(exited_tx);
@@ -108,6 +113,13 @@ pub fn spawn_supervisor_attach_reader(
                         hook.on_terminal_exit(&terminal_id, exit_code, signalled)
                             .await;
                     }
+                    // Sent last, after every persistence step above, so the
+                    // signal means "the exit was written" rather than "Exited
+                    // was seen". When no repo is wired there is nothing to
+                    // write and the signal degenerates to "the exit arm ran to
+                    // completion", which is exactly what teardown needs to
+                    // know before it aborts this task.
+                    let _ = exit_persisted_tx.send(true);
                     break;
                 }
                 Ok(ControlReply::Gap {
