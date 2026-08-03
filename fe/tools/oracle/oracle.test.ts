@@ -2,7 +2,6 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import baseline from './baseline.json' with { type: 'json' };
 import { defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
@@ -91,9 +90,7 @@ describe('oracle rule fixtures', () => {
   }
 });
 
-it('matches the temporary real-data violation baseline exactly', () => {
+it('accepts all real oracle data without exceptions', () => {
   const repoRoot = resolve(import.meta.dirname, '../../..');
-  const actual = validateOracle(defaultOracleOptions(repoRoot)).map(({ id, rule }) => ({ id, rule }));
-  expect(actual).toHaveLength(baseline.total);
-  expect(actual).toEqual(baseline.violations);
+  expect(validateOracle(defaultOracleOptions(repoRoot))).toEqual([]);
 });
