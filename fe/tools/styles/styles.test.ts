@@ -29,10 +29,12 @@ async function lintCss(code: string, filename: string, exceptions: string[] = []
 describe('CSS AST fixtures', () => {
   it('covers the complete layer source x form x position surface in both directions', () => {
     const sources = ['layer-block', 'layer-statement', 'layer-import'] as const;
-    const forms = ['named', 'anonymous'] as const;
+    const forms = ['named', 'anonymous', 'unlayered'] as const;
     const positions = ['top', 'nested'] as const;
     const applicable = (source: typeof sources[number], form: typeof forms[number], position: typeof positions[number]): boolean =>
-      !(source === 'layer-statement' && form === 'anonymous') && !(source === 'layer-import' && position === 'nested');
+      !(source === 'layer-statement' && form !== 'named') &&
+      !(source === 'layer-block' && form === 'unlayered') &&
+      !(source === 'layer-import' && position === 'nested');
     const expected = new Set(sources.flatMap((source) => forms.flatMap((form) => positions
       .filter((position) => applicable(source, form, position))
       .map((position) => `${source}-${form}-${position}`))));
@@ -45,6 +47,7 @@ describe('CSS AST fixtures', () => {
       ['layer-statement-named-nested', 'traversal/layer-statement-named-nested.css'],
       ['layer-import-named-top', 'traversal/layer-import-named-top.css'],
       ['layer-import-anonymous-top', 'traversal/layer-import-anonymous-top.css'],
+      ['layer-import-unlayered-top', 'traversal/layer-import-unlayered-top.css'],
     ]);
     expect(new Set(traversalSurface.keys())).toEqual(expected);
     for (const [cell, fixture] of traversalSurface) {
@@ -111,6 +114,16 @@ describe('CSS AST fixtures', () => {
     ]);
     expect(auditLayeredCss(read('traversal/static-anonymous-layer.css'), order)).toEqual([
       { rule: 'known-layer', message: 'anonymous layer' },
+    ]);
+  });
+
+  it('requires every import to declare a named layer', () => {
+    expect(auditLayeredCss(read('layer-import/positive.css'), order)).toEqual([]);
+    expect(auditLayeredCss(read('layer-import/negative.css'), order)).toEqual([
+      {
+        rule: 'rule-in-layer',
+        message: 'imported rules cannot be statically inspected; @import must explicitly declare layer',
+      },
     ]);
   });
 

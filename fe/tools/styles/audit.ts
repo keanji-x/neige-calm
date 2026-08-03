@@ -62,7 +62,11 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
     if (atRule.name.toLowerCase() === 'import') {
       const layerMatch = /\blayer(?:\(\s*([^\s)]+)\s*\))?(?=\s|;|$)/i.exec(atRule.params);
       const layer = layerMatch?.[1]?.split('.')[0];
-      if (layerMatch && !layer) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
+      if (!layerMatch) violations.push({
+        rule: 'rule-in-layer',
+        message: 'imported rules cannot be statically inspected; @import must explicitly declare layer',
+      });
+      else if (!layer) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
       else if (layer && !order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
     }
   });
