@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, extractGlobalClasses, layerOrder, type RuntimeDocument } from './audit';
 
@@ -9,6 +10,21 @@ const read = (path: string): string => readFileSync(resolve(fixtures, path), 'ut
 const order = layerOrder(read('entry.css'));
 const jsdomModule: unknown = createRequire(import.meta.url)('jsdom');
 const JSDOM = (jsdomModule as { JSDOM: new (html: string) => { window: { document: RuntimeDocument } } }).JSDOM;
+
+async function lintCss(code: string, filename: string, exceptions: string[] = []) {
+  return stylelint.lint({
+    code,
+    codeFilename: resolve(import.meta.dirname, '../..', filename),
+    config: {
+      plugins: ['./tools/styles/stylelint-plugin.mjs'],
+      rules: {
+        'neige-calm/unlayered-cm-scope': [true, {
+          unlayeredExceptions: exceptions,
+        }],
+      },
+    },
+  });
+}
 
 describe('CSS AST fixtures', () => {
   it('uses entry.css as the sole layer-order source', () => {
@@ -36,6 +52,19 @@ describe('CSS AST fixtures', () => {
       { rule: 'global-class-manifest', message: 'CSS-only class: beta' },
       { rule: 'global-class-manifest', message: 'manifest-only class: stale' },
     ]);
+  });
+});
+
+describe('stylelint layer-boundary rule', () => {
+  it('does not treat ordinary files as named unlayered exceptions', async () => {
+    const result = await lintCss('.loose {}', 'ordinary.css');
+    expect(result.errored).toBe(false);
+  });
+
+  it('limits named exception files to real rightmost .cm- classes', async () => {
+    const filename = 'exception.css';
+    expect((await lintCss('.editor > .cm-editor {}', filename, [filename])).errored).toBe(false);
+    expect((await lintCss('.panel:not(.cm-editor) {}', filename, [filename])).errored).toBe(true);
   });
 });
 

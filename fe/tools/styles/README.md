@@ -2,6 +2,9 @@
 
 These checks make cascade boundaries observable: `entry.css` supplies the only layer order, PostCSS AST traversal rejects rules outside known layers, CodeMirror exceptions stay scoped by their rightmost compound selector, and extracted global classes must equal the manifest in both directions.
 
+The `neige-calm/unlayered-cm-scope` stylelint rule runs under `npm run lint:css`. Its
+`unlayeredExceptions` option is the complete, explicit repository-relative file allowlist; it is currently empty.
+
 The runtime page is a harness, not a full-site scan. It deliberately injects one unlayered `<style>` rule so the test proves the audit fails when runtime CSS escapes the layer system. The audit function also checks readable `document.styleSheets` and `[style]` elements.
 
 ## Known escapes
