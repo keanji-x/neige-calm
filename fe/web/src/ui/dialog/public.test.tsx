@@ -93,6 +93,17 @@ describe('Dialog behavior', () => {
     expect(screen.getByRole('dialog', { name: 'Choose directory' })).toBeTruthy();
   });
 
+  it('closes the current child view before closing the parent dialog', () => {
+    const onClose = vi.fn(); let controller: DialogViewController | null = null;
+    render(<Dialog open title="Parent" onClose={onClose}><Capture onController={(value) => { controller = value; }}/></Dialog>);
+    act(() => { controller!.pushView({ title: 'Child', body: 'Child body' }); });
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.getByRole('dialog', { name: 'Parent' })).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
   it('ignores an already-handled bubbling Escape', () => {
     const onClose = vi.fn();
     render(<Dialog open title="Parent" onClose={onClose}><button onKeyDown={(event) => event.preventDefault()}>Nested control</button></Dialog>);

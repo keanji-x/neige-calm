@@ -112,7 +112,10 @@ export function Dialog({ open, onClose, title, hideTitleRow, children, wide, ini
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
       tabIndex={-1} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onPanelKeyDown}>
-      {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span id={titleId}>{headerTitle}</span><button type="button" aria-label="Close" onClick={onClose}>×</button></header>}
+      {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span id={titleId}>{headerTitle}</span><button type="button" aria-label="Close" onClick={() => {
+        if (view) { if (view.onEscape) view.onEscape(); else popView(); }
+        else onClose();
+      }}>×</button></header>}
       <div className="dialog-body" style={showingView ? { display: 'none' } : undefined}>{children}</div>
       {showingView && <div className="dialog-body dialog-child-view">{view.body}</div>}
     </div>

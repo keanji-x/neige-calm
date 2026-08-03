@@ -11,15 +11,16 @@ export interface DirectoryFieldProps {
 export function DirectoryField({ value, onChange, listDirectory, id, placeholder = 'Choose a directory…', mode = 'directory' }: DirectoryFieldProps): ReactNode {
   const [browsing, setBrowsing] = useState(false);
   const dialog = useDialogView();
+  const initialPath = mode === 'file' && value ? value.slice(0, value.lastIndexOf('/')) || '/' : value || null;
   useEffect(() => {
     if (!dialog || !browsing) return;
     const cancel = () => setBrowsing(false);
     return dialog.pushView({ title: mode === 'file' ? 'Choose a file or folder' : 'Choose a directory', onEscape: cancel,
-      body: <DirectoryBrowser listDirectory={listDirectory} initialPath={value || null} mode={mode} onCancel={cancel} onSelect={(path) => { onChange(path); setBrowsing(false); }}/>,
+      body: <DirectoryBrowser listDirectory={listDirectory} initialPath={initialPath} mode={mode} onCancel={cancel} onSelect={(path) => { onChange(path); setBrowsing(false); }}/>,
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- capture value and callbacks only when browsing toggles; value changes must not repush the child view.
   }, [browsing, dialog]);
   return <div className="directory-field"><button type="button" id={id} aria-haspopup="dialog" title={value || placeholder} onClick={() => setBrowsing(true)}>
     <span>{value || placeholder}</span><span>Browse…</span></button>
-    {browsing && !dialog && <DirectoryBrowser listDirectory={listDirectory} initialPath={value || null} mode={mode} onCancel={() => setBrowsing(false)} onSelect={(path) => { onChange(path); setBrowsing(false); }}/>}</div>;
+    {browsing && !dialog && <DirectoryBrowser listDirectory={listDirectory} initialPath={initialPath} mode={mode} onCancel={() => setBrowsing(false)} onSelect={(path) => { onChange(path); setBrowsing(false); }}/>}</div>;
 }
