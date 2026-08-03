@@ -63,6 +63,11 @@ unrelated application behavior. Dependency-cruiser fixtures verify that both
 public-entry rules see dynamic imports. ESLint fixtures lint a dynamic markdown
 import through each of the three markdown-restriction pattern configurations.
 
+The local mutation harness first runs the named sentinel, then reruns its whole
+Vitest file without `-t`. Its report lists every failed test and the full-suite
+failure count; multiple failures are expected when one shared checker branch
+guards several independently enumerated shapes or contracts.
+
 | Contract | Constraint type | Rule/check | Fixture directory |
 | --- | --- | --- | --- |
 | INV-DUP-001 | unique implementation | duplication manifest | `dup-inv-001` |
