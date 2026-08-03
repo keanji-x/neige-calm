@@ -104,8 +104,15 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const results = await Promise.all(lintPaths.map((lintPath) => eslint.lintText(ts.sys.readFile(filePath) ?? '', {
       filePath: resolve(import.meta.dirname, '../..', lintPath),
     })));
-    const messages = results.flatMap(([result]) => result.messages).filter((message) => message.ruleId === 'no-restricted-syntax');
-    return { status: messages.length ? 1 : 0, stdout: messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n'), stderr: '' };
+    const messagesByPath = results.map(([result], index) => ({
+      lintPath: lintPaths[index],
+      messages: result.messages.filter((message) => message.ruleId === 'no-restricted-syntax'),
+    }));
+    const messages = messagesByPath.flatMap(({ lintPath, messages: pathMessages }) => pathMessages
+      .map((message) => `${lintPath}: ${message.ruleId}: ${message.message}`));
+    const rejectedEverywhere = messagesByPath.every(({ messages: pathMessages }) => pathMessages.length > 0);
+    const acceptedEverywhere = messagesByPath.every(({ messages: pathMessages }) => pathMessages.length === 0);
+    return { status: kind === 'negative' ? (rejectedEverywhere ? 1 : 0) : (acceptedEverywhere ? 0 : 1), stdout: messages.join('\n'), stderr: '' };
   }
   if (caseName === 'react-state-hook-import') {
     const filePath = resolve(fixtures, caseName, kind, 'web/src/ui/case.ts');
