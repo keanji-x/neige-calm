@@ -63,8 +63,7 @@ function connectController(
     const delivered = previous;
     previous = current;
     if (current.visible !== delivered.visible && controller.onVisibleChange !== undefined) {
-      const result = controller.onVisibleChange(current.visible);
-      deliver('onVisibleChange', () => result);
+      deliver('onVisibleChange', () => controller.onVisibleChange?.(current.visible));
     }
     if (current.focused !== delivered.focused && controller.onFocusChange !== undefined) {
       deliver('onFocusChange', () => controller.onFocusChange?.(current.focused));
