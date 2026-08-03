@@ -594,7 +594,7 @@
   why: >
     #891 slice ③ signoff r3：该字段是二元的，且项目没有 switch 原语，原生 checkbox
     不需要任何自定义 aria。wire shape 与早先的 `<select>` 版本保持不变
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/shared/components/NewTaskForm.tsx:621-659
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -611,7 +611,7 @@
     accessible description（断言用 `toHaveAccessibleDescription`）
   why: >
     §2.2：提示解释的是二元语义的后果，必须随控件一起播报而非当作游离文本
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/shared/components/NewTaskForm.tsx:621-659
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -629,7 +629,7 @@
     切换用 `selectOptions`
   why: >
     §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/pages/Cove.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
