@@ -3,7 +3,7 @@
   family: "fixture"
   statement: "Contract remains true"
   why: "Fixture reason"
-  source: "fixture-source.txt:2"
+  source: "/etc/passwd:1 + ../FIX-R2.md:1"
   authoritative_test: "NONE"
   owner_slice: "styles/global"
   intentional_omission: false

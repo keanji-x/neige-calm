@@ -28,6 +28,10 @@ describe('oracle rule fixtures', () => {
       const violations = run(rule, 'negative');
       expect(violations, JSON.stringify(violations)).toHaveLength(1);
       expect(violations[0]?.rule).toBe(rule.startsWith('enum-') ? rule : rule);
+      if (rule === 'source-location') {
+        expect(violations[0]?.message).toContain('path escapes repository: /etc/passwd');
+        expect(violations[0]?.message).toContain('path escapes repository: ../FIX-R2.md');
+      }
     });
   }
 });

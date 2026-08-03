@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { parse } from 'yaml';
 
 export interface Violation {
@@ -57,7 +57,12 @@ function locationErrors(value: unknown, repoRoot: string): string[] {
         continue;
       }
       const [, path, startText, endText] = match;
-      const target = isAbsolute(path) ? path : resolve(repoRoot, path);
+      const target = resolve(repoRoot, path);
+      const relativeTarget = relative(repoRoot, target);
+      if (isAbsolute(path) || relativeTarget === '..' || relativeTarget.startsWith(`..${sep}`) || isAbsolute(relativeTarget)) {
+        errors.push(`path escapes repository: ${path}`);
+        continue;
+      }
       if (!existsSync(target)) {
         errors.push(`path does not exist: ${path}`);
         continue;
