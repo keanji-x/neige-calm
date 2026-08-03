@@ -4656,9 +4656,9 @@
     colours can be snapshotted without navigating real routes.
   source: web/e2e/color-system-anchor.spec.ts:26-34,67-83
   authoritative_test: web/e2e/color-system-anchor.spec.ts:26
-  owner_slice: styles/color-system
+  owner_slice: none/e2e/color-anchor
   intentional_omission: false
-  runtime_layer: styles
+  runtime_layer: none
   verification_owner: e2e
   test_tier: browser
   migration: pending
@@ -4713,9 +4713,9 @@
     committed drift documentation for humans, not an assertion.
   source: web/e2e/color-system-anchor.spec.ts:85-109
   authoritative_test: web/e2e/color-system-anchor.spec.ts:41
-  owner_slice: styles/color-system
+  owner_slice: none/e2e/color-anchor
   intentional_omission: true
-  runtime_layer: styles
+  runtime_layer: none
   verification_owner: e2e
   test_tier: browser
   migration: pending
@@ -4731,9 +4731,9 @@
     behind the first failure, turning a one-pass audit into N runs.
   source: web/e2e/color-system-anchor.spec.ts:44-54
   authoritative_test: web/e2e/color-system-anchor.spec.ts:45
-  owner_slice: styles/color-system
+  owner_slice: none/e2e/color-anchor
   intentional_omission: false
-  runtime_layer: styles
+  runtime_layer: none
   verification_owner: e2e
   test_tier: browser
   migration: pending

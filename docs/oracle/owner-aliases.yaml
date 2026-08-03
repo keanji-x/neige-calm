@@ -175,6 +175,7 @@ aliases:
   "web/e2e/wave-create": "none/e2e/infra"
   "a11y/axe": "none/e2e/a11y-axe"
   "a11y/keyboard": "none/e2e/a11y-keyboard"
+  "e2e/color-anchor": "none/e2e/color-anchor"
   "web/a11y-policy": "none/policy/a11y-doc"
   "web/ui": "none/policy/ui-doc"
 
