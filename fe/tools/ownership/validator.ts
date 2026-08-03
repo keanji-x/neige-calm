@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync } from 'node:fs';
-import { posix, relative, resolve } from 'node:path';
+import { posix } from 'node:path';
 
 export interface OwnershipEntry {
   path: string;
@@ -39,20 +38,6 @@ function overlap(left: OwnershipEntry, right: OwnershipEntry): boolean {
   if (clean(left.path) === clean(right.path)) return true;
   if (left.type === 'directory' && entryMatches(left, right.path)) return true;
   return right.type === 'directory' && entryMatches(right, left.path);
-}
-
-function filesUnder(root: string): string[] {
-  const result: string[] = [];
-  if (!existsSync(root)) return result;
-  const visit = (directory: string): void => {
-    for (const item of readdirSync(directory, { withFileTypes: true })) {
-      const path = resolve(directory, item.name);
-      if (item.isDirectory()) visit(path);
-      else if (item.isFile()) result.push(path);
-    }
-  };
-  visit(root);
-  return result;
 }
 
 export function validateOwnership(
@@ -125,9 +110,14 @@ export function validateOwnership(
   return violations;
 }
 
-export function repositoryFiles(repoRoot: string): string[] {
-  return ['fe/core', 'fe/mock', 'fe/web', 'fe/tools'].flatMap((directory) => filesUnder(resolve(repoRoot, directory)))
-    .map((path) => posix.normalize(relative(repoRoot, path).replaceAll('\\', '/')));
+export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
+  const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', 'fe/core', 'fe/mock', 'fe/web', 'fe/tools'], {
+    cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).split(/\r?\n/).filter(Boolean);
+  return files.map((path) => posix.normalize(clean(path)))
+    .filter((path) => ['fe/core', 'fe/mock', 'fe/web', 'fe/tools']
+      .some((directory) => path === directory || path.startsWith(`${directory}/`)))
+    .sort();
 }
 
 export function gitChangedPaths(repoRoot: string, baseRef = 'origin/main', headRef = 'HEAD'): string[] {

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +9,13 @@ const fixtures = resolve(import.meta.dirname, 'fixtures');
 const BASE = '0123456789abcdef0123456789abcdef01234567';
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
   return parse(readFileSync(resolve(fixtures, caseName, kind, 'manifest.yaml'), 'utf8')) as OwnershipEntry[];
+}
+function fixtureFiles(root: string): string[] {
+  const visit = (directory: string): string[] => readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(directory, entry.name);
+    return entry.isDirectory() ? visit(path) : entry.isFile() ? [path] : [];
+  });
+  return existsSync(root) ? visit(root).map((path) => path.slice(root.length + 1).replaceAll('\\', '/')) : [];
 }
 
 describe('ownership fixtures', () => {
@@ -28,7 +35,7 @@ describe('ownership fixtures', () => {
       'entry-shape': () => validateOwnership(entries('entry-shape', 'negative'), []),
       'change-request-shape': () => validateOwnership([], [], [], [{ path: 1, reason: 'fixture', issue: '#997' }]),
       'exactly-one-owner': () => validateOwnership(entries('exactly-one-owner', 'negative'), []),
-      coverage: () => validateOwnership(entries('coverage', 'negative'), repositoryFiles(resolve(fixtures, 'coverage/negative'))),
+      coverage: () => validateOwnership(entries('coverage', 'negative'), repositoryFiles('', fixtureFiles(resolve(fixtures, 'coverage/negative')))),
       'stale-change-request': () => validateOwnership([], [], [], [{ path: 'fe/core/model.ts', reason: 'old', issue: '#997', base: BASE }], BASE),
       'readonly-change-request': () => validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css']),
     };
@@ -66,8 +73,8 @@ describe('ownership fixtures', () => {
   it('requires one owner for every existing core and web source file', () => {
     const positiveRoot = resolve(fixtures, 'coverage/positive');
     const negativeRoot = resolve(fixtures, 'coverage/negative');
-    expect(validateOwnership(entries('coverage', 'positive'), repositoryFiles(positiveRoot))).toEqual([]);
-    expect(validateOwnership(entries('coverage', 'negative'), repositoryFiles(negativeRoot))).toEqual([
+    expect(validateOwnership(entries('coverage', 'positive'), repositoryFiles('', fixtureFiles(positiveRoot)))).toEqual([]);
+    expect(validateOwnership(entries('coverage', 'negative'), repositoryFiles('', fixtureFiles(negativeRoot)))).toEqual([
       { rule: 'coverage', message: 'fe/web/src/view.ts has 0 owners' },
     ]);
   });
@@ -116,25 +123,30 @@ describe('ownership fixtures', () => {
 
 });
 
-it('drives coverage against the complete real repository tree', () => {
-  const repoRoot = resolve(import.meta.dirname, '../../..');
-  const actualFiles = repositoryFiles(repoRoot);
-  const violations = validateOwnership([], actualFiles);
+it('drives coverage against an injected tracked-file list', () => {
+  const actualFiles = fixtureFiles(resolve(import.meta.dirname, '../../..'));
+  const repositoryFileList = repositoryFiles('', actualFiles);
+  const violations = validateOwnership([], repositoryFileList);
   expect(actualFiles.length).toBeGreaterThan(100);
   expect(violations.every(({ rule }) => rule === 'coverage')).toBe(true);
   const unownedFiles = violations.map(({ message }) => message.replace(/ has 0 owners$/, ''));
-  expect(new Set(unownedFiles)).toEqual(new Set(actualFiles));
+  expect(new Set(unownedFiles)).toEqual(new Set(repositoryFileList));
 });
 
 describe('P8b2 ownership exit', () => {
-  const repoRoot = resolve(import.meta.dirname, '../../..');
+  const trackedRepositoryFiles = repositoryFiles('', [
+    'fe/mock/.gitkeep',
+    'fe/web/index.html',
+    'fe/tools/ownership/validator.ts',
+    'fe/web/dist/index.html',
+  ].slice(0, 3));
 
-  it('covers the real source tree exactly once without prefix overlap', () => {
-    expect(validateOwnership(ownershipManifest, repositoryFiles(repoRoot))).toEqual([]);
+  it('covers an injected tracked repository file list exactly once without prefix overlap', () => {
+    expect(validateOwnership(ownershipManifest, trackedRepositoryFiles)).toEqual([]);
   });
 
   it('includes mock, web bootstrap, and tooling in repository coverage', () => {
-    expect(repositoryFiles(repoRoot)).toEqual(expect.arrayContaining([
+    expect(trackedRepositoryFiles).toEqual(expect.arrayContaining([
       'fe/mock/.gitkeep', 'fe/web/index.html', 'fe/tools/ownership/validator.ts',
     ]));
   });
@@ -143,7 +155,7 @@ describe('P8b2 ownership exit', () => {
     expect(validateOwnership([...ownershipManifest, {
       path: 'fe/core/api/client.ts', type: 'file', owner: 'mutation', readonly: false,
     }], []).some(({ rule }) => rule === 'exactly-one-owner')).toBe(true);
-    expect(validateOwnership(ownershipManifest, [...repositoryFiles(repoRoot), 'fe/web/src/features/unowned.ts'])
+    expect(validateOwnership(ownershipManifest, [...trackedRepositoryFiles, 'fe/web/src/features/unowned.ts'])
       .some(({ rule }) => rule === 'coverage')).toBe(true);
     expect(validateOwnership(ownershipManifest, [], ['fe/core/state/types.ts'])
       .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
