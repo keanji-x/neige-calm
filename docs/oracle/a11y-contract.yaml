@@ -141,7 +141,7 @@
   why: >
     §2.2（#60 followup）：这些名字必须互不重复，否则 axe 的 `landmark-unique` 规则变红；
     同时测试要靠 landmark scope 消歧同名 button
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:224-322
   authoritative_test: web/e2e/a11y-axe.spec.ts:229
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -157,7 +157,7 @@
     Sidebar 折叠时子 landmark 必须全部卸载，外层 aside 只剩 `Expand sidebar` 按钮
   why: >
     §2.2 + §3.1：折叠态若保留空 landmark 会既污染 landmark 列表又留下多余 tab stop
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:240-322
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -175,7 +175,7 @@
     #175：kernel 默认的 Today terminal 移入隐藏 system cove（默认被 `GET /api/coves` 过滤掉），
     测试不再需要与 seeded `Scratch` cove 下自动创建的 Today wave 消歧；但用户自己把 wave
     命名为 "Today" 时 WaveRow 的 landmark scoping 模式仍然必要
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:258-267
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -967,7 +967,7 @@
   why: >
     §3.1 记录的确切 stop 序列。**全项目唯一记录处，无 lint 无单测**——丢了就没有任何
     地方说明正确顺序是什么
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:240-510
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -983,7 +983,7 @@
     Sidebar 折叠时，它对主内容之前的 Tab 序**只**贡献 `Expand sidebar` 一个 stop
   why: >
     §3.1 明示；与 INV-A11Y-008 的子 landmark 卸载是同一件事的两个面
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:240-272
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -999,7 +999,7 @@
     `<nav>` / `<section>` 子 landmark 本身不得引入 tab stop——只有内部的 `<button>` 才是 stop
   why: >
     §3.1 明示；给 landmark 加 tabIndex 会静默拉长 Tab 序并破坏 INV-A11Y-053
-  source: web/src/shared/components/Sidebar.tsx
+  source: web/src/shared/components/Sidebar.tsx:253-430
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
