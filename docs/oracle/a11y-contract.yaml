@@ -210,7 +210,7 @@
   why: >
     §2.2 明示：嵌套会违反 axe 的 `nested-interactive` 规则。删除按钮 stopPropagation
     以免触发行导航；hover-reveal 靠 `.wave-row-wrapper:hover` / `:focus-within`
-  source: web/src/shared/components/WaveRow.tsx
+  source: web/src/shared/components/WaveRow.tsx:44-119
   authoritative_test: web/e2e/a11y-axe.spec.ts:229
   owner_slice: features/wave/row
   intentional_omission: false
@@ -227,7 +227,7 @@
   why: >
     §2.2 给出确切形状；e2e 依赖它做 exact/substring 消歧（见 a11y-keyboard 的注释：
     Delete 按钮的 name 里包含 title 作为子串）
-  source: web/src/shared/components/WaveRow.tsx
+  source: web/src/shared/components/WaveRow.tsx:106-118
   authoritative_test: web/e2e/a11y-sidebar-wave-delete.spec.ts:15
   owner_slice: features/wave/row
   intentional_omission: false
@@ -1075,7 +1075,7 @@
     WaveRow 与 CovePage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
   why: >
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
-  source: web/src/shared/components/WaveRow.tsx
+  source: web/src/shared/components/WaveRow.tsx:44-65
   authoritative_test: NONE
   owner_slice: ui/activation
   intentional_omission: false
