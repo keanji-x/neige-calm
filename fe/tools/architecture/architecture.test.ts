@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { extname, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { cruise as dependencyCruise, type IConfiguration } from 'dependency-cruiser';
@@ -245,8 +245,13 @@ describe('duplication manifest on the application tree', () => {
     const fixtureNames = new Set(readdirSync(resolve(shapeFixtures, 'public-symbol')));
     expect(fixtureNames).toEqual(new Set(publicSymbolShapes.keys()));
     for (const [shape, mustReject] of publicSymbolShapes) {
-      const errors = checkDuplicationManifest(resolve(shapeFixtures, 'public-symbol', shape));
+      const fixtureRoot = resolve(shapeFixtures, 'public-symbol', shape);
+      const errors = checkDuplicationManifest(fixtureRoot);
       expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(mustReject);
+      if (!mustReject) {
+        const fixtureSource = sourceFilesUnder(fixtureRoot).map((file) => readFileSync(file, 'utf8')).join('\n');
+        expect(fixtureSource, `${shape} must contain the managed symbol`).toMatch(/\bSchemaForm\b/);
+      }
     }
   });
   it('covers exactly the independently enumerated package-import syntax fixtures', () => {
