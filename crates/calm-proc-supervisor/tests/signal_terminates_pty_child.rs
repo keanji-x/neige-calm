@@ -12,8 +12,10 @@ use tokio::net::UnixStream;
 /// within this budget, so a slow-but-correct run must still pass. Costs
 /// nothing on the happy path (each wait returns as soon as its frame lands).
 /// The 1-2s budgets this replaces are the same shape that flaked on CI's
-/// 2-core runner under `retries = 0`. 120s matches nextest ci's `slow-timeout`,
-/// so past this point nextest's own slow-test warning is the signal.
+/// 2-core runner under `retries = 0`. 120s is the `slow-timeout` of nextest
+/// `profile.ci`; the local `profile.default` warns at 60s. Both are warn-only,
+/// so neither kills the test — past this point nextest's slow-test report is the
+/// signal, not a hand-picked deadline.
 /// To assert promptness, measure elapsed and assert on it instead.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
@@ -23,7 +25,12 @@ async fn signal_terminates_pty_child() {
         .await
         .expect("start supervisor");
     let proc_id = "pty-signal";
-    ensure_pty(supervisor.sock(), proc_id, "/bin/sleep", &["60"]).await;
+    // The sleep must outlast `LIVENESS_BUDGET`. `assert!(signalled)` below keeps
+    // a natural exit from turning into a false green, but a child that reaps
+    // itself inside the budget would make a broken signal path take the full
+    // sleep to report — and the failure would read as a timeout rather than as
+    // "the signal never arrived".
+    ensure_pty(supervisor.sock(), proc_id, "/bin/sleep", &["600"]).await;
 
     let mut attach = UnixStream::connect(supervisor.sock())
         .await

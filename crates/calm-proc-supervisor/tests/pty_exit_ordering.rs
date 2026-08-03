@@ -45,10 +45,39 @@ use tokio::net::UnixStream;
 /// within this budget, so a slow-but-correct run must still pass. Costs
 /// nothing on the happy path (each wait returns as soon as its frame lands).
 /// The 1-2s budgets this replaces are the same shape that flaked on CI's
-/// 2-core runner under `retries = 0`. 120s matches nextest ci's `slow-timeout`,
-/// so past this point nextest's own slow-test warning is the signal.
+/// 2-core runner under `retries = 0`. 120s is the `slow-timeout` of nextest
+/// `profile.ci`; the local `profile.default` warns at 60s. Both are warn-only,
+/// so neither kills the test — past this point nextest's slow-test report is the
+/// signal, not a hand-picked deadline.
 /// To assert promptness, measure elapsed and assert on it instead.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
+
+/// Budget for "the supervisor closes the attach stream **right after** it sent
+/// `Exited`".
+///
+/// Deliberately *not* `LIVENESS_BUDGET`: promptness is the contract here, not
+/// an anti-hang guard. Closing the stream is the last statement of the same
+/// arm that publishes `Exited`, so a correct supervisor closes within
+/// microseconds and this budget is three orders of magnitude of headroom.
+///
+/// Do not widen it back to `LIVENESS_BUDGET`. Mutation-verified by making the
+/// attach handler `continue` instead of returning after it writes `Exited`:
+/// at 2s the failure lands in 2.27s, at 120s the same regression takes the
+/// full 120s to report. (Both budgets do catch that mutation today — the
+/// attach handler parks on `rx.recv()` and the registry keeps a broadcast
+/// sender alive, so the connection does *not* drop by itself when the last
+/// slave holder dies. That is an implementation detail of the current
+/// supervisor, not a property this test may lean on: the moment an idle attach
+/// stream gains any independent way to end — an idle reaper, entry eviction,
+/// a client-side timeout — a budget longer than the fixture's lifetime silently
+/// degrades `after.is_err()` into "we waited for the process to finish", which
+/// a supervisor that never closes the stream also satisfies. In
+/// `exited_is_final_when_a_grandchild_holds_the_pty_open` the slave holder
+/// lives only ~5s while `Exited` lands ~0.25s in.)
+///
+/// If a fixture here ever needs to outlive this budget, keep the budget short
+/// and lengthen the fixture — never the other way round.
+const EXITED_STREAM_CLOSE_BUDGET: Duration = Duration::from_secs(2);
 
 /// Bytes of filler the child bursts out right before exiting.
 const BURST: usize = 200_000;
@@ -136,7 +165,7 @@ async fn exited_is_the_last_frame_for_a_live_attacher() {
     // `Exited` is terminal by construction (the supervisor closes the stream),
     // so nothing may follow it.
     let after: Result<ControlReply, _> =
-        tokio::time::timeout(LIVENESS_BUDGET, read_frame(&mut attach))
+        tokio::time::timeout(EXITED_STREAM_CLOSE_BUDGET, read_frame(&mut attach))
             .await
             .expect("timed out waiting for stream close after Exited");
     assert!(
@@ -268,8 +297,8 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
     write_stdin(supervisor.sock(), proc_id, b"go\n").await;
 
     // Liveness: the master never EOFs, so `Exited` can only arrive because the
-    // grace expires and the waiter publishes anyway. `timeout_read`'s 10s
-    // budget is the whole "does not wedge forever" assertion — deliberately
+    // grace expires and the waiter publishes anyway. `timeout_read`'s
+    // `LIVENESS_BUDGET` is the whole "does not wedge forever" assertion — deliberately
     // the only one (#993 R3-C). A tighter elapsed-time bound derived from when
     // this *task* happened to observe the parent's sentinel is not safe in
     // either direction: a CI pause between reading the sentinel and reading
@@ -328,7 +357,7 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
 
     // `Exited` is terminal: the supervisor closes the stream after it.
     let after: Result<ControlReply, _> =
-        tokio::time::timeout(LIVENESS_BUDGET, read_frame(&mut attach))
+        tokio::time::timeout(EXITED_STREAM_CLOSE_BUDGET, read_frame(&mut attach))
             .await
             .expect("timed out waiting for stream close after Exited");
     assert!(

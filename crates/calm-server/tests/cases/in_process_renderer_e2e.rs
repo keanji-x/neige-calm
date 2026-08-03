@@ -38,9 +38,10 @@ use uuid::Uuid;
 /// is pure CPU contention. The previous 2s budget lost that race twice on CI
 /// (runs 30563715610 / 30627347602, `input ack timeout: Elapsed(())`, with the
 /// pty child provably already reaped) and once locally under a cold build.
-/// The budget is 120s, matching nextest ci's `slow-timeout` — i.e. exactly as
-/// long as the harness is willing to call this test normal; past that point
-/// nextest's own slow-test warning is the signal, not a hand-picked deadline.
+/// The budget is 120s, the `slow-timeout` of nextest `profile.ci`; the local
+/// `profile.default` warns at 60s. Both are warn-only — neither profile kills a
+/// slow test — so past this point nextest's slow-test report is the signal,
+/// not a hand-picked deadline.
 /// Measured: under artificial contention (this test pinned to one core against
 /// 12 busy loops) a 30s budget still failed 2/12 rounds while 120s passed 12/12
 /// and 300s passed 12/12 — the ack arrives, it is only ever starved, so the
@@ -70,7 +71,15 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
-                "echo hello; printf '%085dWIDTH-MARKER\\n' 0; sleep 30".into(),
+                // The trailing sleep MUST outlast `LIVENESS_BUDGET`. It is the
+                // only thing that distinguishes "the Ctrl-C we sent travelled
+                // the whole input path and killed the child" from "the child
+                // finished on its own while we waited": if the sleep could
+                // expire first, `wait_for_terminal_exited` below would be
+                // satisfied by the natural exit and the test would pass with
+                // the input path cut entirely (this case asserts no exit
+                // code/signal, so nothing else would catch it).
+                "echo hello; printf '%085dWIDTH-MARKER\\n' 0; sleep 600".into(),
             ],
             envs: std::env::vars().collect(),
             cwd: workspace_root().display().to_string(),
@@ -713,7 +722,8 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
 /// untested.
 ///
 /// Here the leader dies on SIGTERM immediately while a member of its process
-/// group ignores both TERM and HUP and would otherwise run for 10s. After
+/// group ignores both TERM and HUP and would otherwise run for 600s (long
+/// enough to outlast `LIVENESS_BUDGET`; see the fixture comment below). After
 /// teardown the member must be gone, killed by the group SIGKILL that follows
 /// the (shortened) grace. Deliberately no timing assertion: the shortening is a
 /// latency property, while the invariant worth locking is "no survivor leaks".

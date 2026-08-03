@@ -577,9 +577,10 @@ pub fn append_transcript(path: &Path, lines: &[Value]) {
 /// 20 ms poll interval below. CI is a 2-core runner with nextest saturating
 /// both cores and `retries = 0`, so a single scheduling stall was enough to
 /// turn a correct run red (the sibling renderer e2e lost exactly that race on
-/// CI twice). 120s matches nextest ci's `slow-timeout`, so the budget is
-/// exactly as long as the harness is willing to call the test normal; past that
-/// nextest's own slow-test warning is the signal.
+/// CI twice). 120s is the `slow-timeout` of nextest `profile.ci`; the local
+/// `profile.default` warns at 60s. Both are warn-only — neither profile kills a
+/// slow test — so past this point nextest's slow-test report is the signal
+/// rather than a hand-picked deadline.
 ///
 /// Do NOT narrow this to assert that something happens *quickly*, and do not
 /// use it to assert that something does *not* happen — that needs a deliberate

@@ -13,8 +13,10 @@ use tokio::net::UnixStream;
 /// within this budget, so a slow-but-correct run must still pass. Costs
 /// nothing on the happy path (each wait returns as soon as its frame lands).
 /// The 1-2s budgets this replaces are the same shape that flaked on CI's
-/// 2-core runner under `retries = 0`. 120s matches nextest ci's `slow-timeout`,
-/// so past this point nextest's own slow-test warning is the signal.
+/// 2-core runner under `retries = 0`. 120s is the `slow-timeout` of nextest
+/// `profile.ci`; the local `profile.default` warns at 60s. Both are warn-only,
+/// so neither kills the test — past this point nextest's slow-test report is the
+/// signal, not a hand-picked deadline.
 /// To assert promptness, measure elapsed and assert on it instead.
 const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
 
@@ -30,7 +32,11 @@ async fn attach_race_no_byte_loss() {
         "/bin/sh",
         &[
             "-c",
-            "for i in 1 2 3 4 5 6 7 8 9; do printf \"chunk-%d-\" \"$i\"; done; sleep 30",
+            // The sleep must outlast `LIVENESS_BUDGET`: the loop below treats any
+            // non-`Output` frame as a hard error, so a child that exits inside
+            // the budget turns a lost-bytes failure into a misleading
+            // "unexpected attach frame: Exited" panic.
+            "for i in 1 2 3 4 5 6 7 8 9; do printf \"chunk-%d-\" \"$i\"; done; sleep 600",
         ],
     )
     .await;
