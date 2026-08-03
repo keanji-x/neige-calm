@@ -238,7 +238,7 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   const owners = canonicalOwners(options.ownerAliasesPath);
   const anchorNoneIds = options.anchorNonePath && existsSync(options.anchorNonePath)
     ? new Set([...readFileSync(options.anchorNonePath, 'utf8').matchAll(/`((?:E2E-)?(?:INV|CAP|GATE)-(?:[A-Z0-9]+-)+\d{3})`/g)]
-      .map((match) => match[1]!))
+      .map((match) => match[1]))
     : new Set<string>();
   const files = readdirSync(options.oracleDir).filter((file) => file.endsWith('.yaml') && file !== 'owner-aliases.yaml').sort();
   const violations: Violation[] = [];
