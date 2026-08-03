@@ -61,6 +61,19 @@ try {
   if (resolveOwnershipBase(repository, '0'.repeat(40)) !== headParent) throw new Error('zero base did not fall back to HEAD~1');
   if (resolveOwnershipBase(repository, 'f'.repeat(40)) !== headParent) throw new Error('missing injected base did not fall back to HEAD~1');
 
+  const featureHead = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-b', 'advanced-target', headParent);
+  writeFileSync(join(repository, 'target.txt'), 'target advanced\n');
+  git('add', 'target.txt');
+  git('commit', '-m', 'target advance without ownership trailer');
+  const advancedTarget = git('rev-parse', 'HEAD').trim();
+  const divergentBase = resolveOwnershipBase(repository, advancedTarget, featureHead);
+  if (divergentBase !== headParent) throw new Error('non-ancestor injected base did not resolve through merge-base');
+  const featureCommits = gitOwnershipCommits(repository, divergentBase, featureHead);
+  if (featureCommits.length !== 1 || featureCommits[0]?.sha !== featureHead) {
+    throw new Error('non-ancestor injected base leaked target-branch commits into the ownership range');
+  }
+
   git('branch', '-D', 'origin/main');
   try {
     resolveOwnershipBase(repository, '');
@@ -70,6 +83,7 @@ try {
   }
   console.log(`ownership readonly trailer alarm: ${violations[0].message}`);
   console.log('ownership injected-base fallback: zero or unavailable SHA resolves to HEAD~1');
+  console.log(`ownership non-ancestor base: ${advancedTarget} -> merge-base ${divergentBase}; range contains feature ${featureHead} only`);
   console.log('ownership single-commit fallback: fail-closed with a two-commit diagnostic');
   console.log('ownership missing-ref check: fail-closed with git fetch origin main guidance');
 } finally {

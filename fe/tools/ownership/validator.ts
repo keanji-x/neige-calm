@@ -129,7 +129,9 @@ export function resolveOwnershipBase(repoRoot: string, injectedBase = process.en
     try {
       if (!/^0{40}$/.test(injectedBase)) {
         execFileSync('git', ['cat-file', '-e', `${injectedBase}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
-        return injectedBase;
+        return execFileSync('git', ['merge-base', injectedBase, headRef], {
+          cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
       }
     } catch { /* event base unavailable: use the frozen-vectors fallback below */ }
     try {
