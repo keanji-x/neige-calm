@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { posix, relative, resolve } from 'node:path';
 
 export interface OwnershipEntry {
@@ -43,6 +43,7 @@ function overlap(left: OwnershipEntry, right: OwnershipEntry): boolean {
 
 function filesUnder(root: string): string[] {
   const result: string[] = [];
+  if (!existsSync(root)) return result;
   const visit = (directory: string): void => {
     for (const item of readdirSync(directory, { withFileTypes: true })) {
       const path = resolve(directory, item.name);
@@ -117,7 +118,7 @@ export function validateOwnership(
 }
 
 export function repositoryFiles(repoRoot: string): string[] {
-  return ['fe/core', 'fe/web/src'].flatMap((directory) => filesUnder(resolve(repoRoot, directory)))
+  return ['fe/core', 'fe/mock', 'fe/web', 'fe/tools'].flatMap((directory) => filesUnder(resolve(repoRoot, directory)))
     .map((path) => posix.normalize(relative(repoRoot, path).replaceAll('\\', '/')));
 }
 

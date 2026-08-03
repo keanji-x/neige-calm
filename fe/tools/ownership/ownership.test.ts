@@ -113,6 +113,12 @@ describe('P8b2 ownership exit', () => {
     expect(validateOwnership(ownershipManifest, repositoryFiles(repoRoot))).toEqual([]);
   });
 
+  it('includes mock, web bootstrap, and tooling in repository coverage', () => {
+    expect(repositoryFiles(repoRoot)).toEqual(expect.arrayContaining([
+      'fe/mock/.gitkeep', 'fe/web/index.html', 'fe/tools/ownership/validator.ts',
+    ]));
+  });
+
   it('has independent mutation signals for overlap, coverage and readonly changes', () => {
     expect(validateOwnership([...ownershipManifest, {
       path: 'fe/core/api/client.ts', type: 'file', owner: 'mutation', readonly: false,

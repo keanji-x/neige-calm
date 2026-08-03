@@ -5,6 +5,9 @@
 # domain or top-level web source is permitted.
 
 # Architecture-local control files (§2, §14).
+- { path: fe/mock, type: directory, owner: tooling/mock, readonly: false, basis: "architecture §5 repository tree; test-support boundary" }
+- { path: fe/tools, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; enforcement infrastructure" }
+- { path: fe/web/index.html, type: file, owner: app/bootstrap, readonly: false, basis: "architecture §5 repository tree; web bootstrap shell" }
 - { path: fe/core/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
 - { path: fe/web/src/main.tsx, type: file, owner: app/bootstrap, readonly: false, basis: "architecture disease 9" }
 - { path: fe/web/src/app/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
