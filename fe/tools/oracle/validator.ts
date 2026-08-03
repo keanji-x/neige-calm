@@ -1,5 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import postcss, { type ChildNode } from 'postcss';
+import ts from 'typescript';
 import { parse } from 'yaml';
 
 export interface Violation {
@@ -44,6 +46,90 @@ interface SourceLocation {
   path: string;
   start: number;
   end: number;
+}
+
+const TYPESCRIPT_EXTENSIONS = new Set(['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.ts', '.tsx']);
+const UNSUPPORTED_ANCHOR_EXTENSIONS = new Set([
+  '.html', '.md', '.rs', '.sh', '.toml', '.txt', '.yaml', '.yml',
+]);
+
+function extension(path: string): string {
+  const dot = path.lastIndexOf('.');
+  return dot === -1 ? '' : path.slice(dot).toLowerCase();
+}
+
+function isIdentifierCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_$-]/.test(character);
+}
+
+function hasBoundedOccurrence(text: string, anchor: string): boolean {
+  let offset = text.indexOf(anchor);
+  while (offset !== -1) {
+    const before = text[offset - 1];
+    const after = text[offset + anchor.length];
+    if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) return true;
+    offset = text.indexOf(anchor, offset + 1);
+  }
+  return false;
+}
+
+function typescriptAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
+  const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
+  const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, false, kind);
+  const code = Array.from({ length: contents.length }, () => ' ');
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true,
+    kind === ts.ScriptKind.TSX || kind === ts.ScriptKind.JSX ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard,
+    contents);
+  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
+    for (let offset = scanner.getTokenPos(); offset < scanner.getTextPos(); offset += 1) {
+      code[offset] = contents[offset]!;
+    }
+  }
+  const codeText = code.join('');
+  for (const identifier of identifiers) {
+    let offset = codeText.indexOf(identifier);
+    while (offset !== -1) {
+      const before = codeText[offset - 1];
+      const after = codeText[offset + identifier.length];
+      if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) {
+        result.get(identifier)!.add(sourceFile.getLineAndCharacterOfPosition(offset).line + 1);
+      }
+      offset = codeText.indexOf(identifier, offset + 1);
+    }
+  }
+  return result;
+}
+
+function postcssAnchorLines(contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
+  const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
+  const root = postcss.parse(contents);
+  const visit = (node: ChildNode): void => {
+    if (node.type === 'comment') return;
+    const fields: string[] = [];
+    if (node.type === 'rule') fields.push(node.selector);
+    else if (node.type === 'decl') fields.push(node.prop, node.value);
+    else if (node.type === 'atrule') fields.push(node.name, node.params);
+    const startLine = node.source?.start?.line;
+    if (startLine !== undefined) {
+      for (const identifier of identifiers) {
+        if (fields.some((field) => hasBoundedOccurrence(field, identifier))) result.get(identifier)!.add(startLine);
+      }
+    }
+    if ('nodes' in node) node.nodes?.forEach(visit);
+  };
+  root.nodes.forEach(visit);
+  return result;
+}
+
+function codeAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> | null {
+  const ext = extension(path);
+  if (TYPESCRIPT_EXTENSIONS.has(ext)) return typescriptAnchorLines(path, contents, identifiers);
+  if (ext === '.css') return postcssAnchorLines(contents, identifiers);
+  if (!UNSUPPORTED_ANCHOR_EXTENSIONS.has(ext)) {
+    throw new Error(`source-anchor extension is not registered: ${ext || '<none>'} (${path})`);
+  }
+  return null;
 }
 
 function strings(value: unknown): string[] {
@@ -110,14 +196,14 @@ export function extractStatementIdentifiers(statement: unknown): string[] {
     for (const match of text.matchAll(pattern)) identifiers.add(match[0]);
   };
   for (const code of statement.matchAll(/`([^`]+)`/g)) {
-    for (const match of code[1].matchAll(/aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$-]*/g)) {
+    for (const match of code[1].matchAll(/\[[A-Za-z_][\w-]*(?:=[^\]]+)?\]|aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$-]*/g)) {
       const candidate = match[0];
-      if (/^(?:aria-|[.#])/.test(candidate) || /[-_]/.test(candidate) || /[a-z][A-Z]|[A-Z].*[A-Z]/.test(candidate)) {
+      if (/^(?:aria-|[.#]|\[)/.test(candidate) || /[-_]/.test(candidate) || /[a-z][A-Z]|[A-Z].*[A-Z]/.test(candidate)) {
         identifiers.add(candidate);
       }
     }
   }
-  addMatches(statement, /aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:_[\w$]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g);
+  addMatches(statement, /\[[A-Za-z_][\w-]*(?:=[^\]]+)?\]|aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:_[\w$]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g);
   return [...identifiers];
 }
 
@@ -127,31 +213,24 @@ function sourceAnchorError(source: unknown, statement: unknown, repoRoot: string
   if (identifiers.length === 0) return null;
   const locations = parseLocations(source);
   if (locations.some((location) => typeof location === 'string')) return null;
-  const sourceFiles = new Map<string, string>();
+  const sourceFiles = new Map<string, { contents: string; anchors: Map<string, Set<number>> | null }>();
   for (const location of locations) {
     if (typeof location !== 'string' && !sourceFiles.has(location.path)) {
-      sourceFiles.set(location.path, readFileSync(resolve(repoRoot, location.path), 'utf8'));
+      const contents = readFileSync(resolve(repoRoot, location.path), 'utf8');
+      sourceFiles.set(location.path, { contents, anchors: codeAnchorLines(location.path, contents, identifiers) });
     }
   }
-  const usableIdentifiers = identifiers.filter((identifier) => {
-    const variants = identifier.startsWith('.') || identifier.startsWith('#')
-      ? [identifier, identifier.slice(1)]
-      : [identifier];
-    return [...sourceFiles.values()].some((contents) => variants.some((variant) => contents.includes(variant)));
+  const supportedFiles = [...sourceFiles.values()].filter((file) => file.anchors !== null);
+  if (supportedFiles.length === 0) return null;
+  const present = identifiers.filter((identifier) => supportedFiles.some((file) => file.anchors!.get(identifier)!.size > 0));
+  if (present.length === 0) return `statement identifiers do not occur in cited code files: ${identifiers.join(', ')}`;
+  const anchored = locations.some((location) => {
+    if (typeof location === 'string') return false;
+    const lines = sourceFiles.get(location.path)?.anchors;
+    return lines !== null && lines !== undefined && present.some((identifier) =>
+      [...lines.get(identifier)!].some((line) => line >= location.start && line <= location.end));
   });
-  if (usableIdentifiers.length === 0) return null;
-  const citedText = locations.map((location) => {
-    if (typeof location === 'string') return '';
-    const lines = sourceFiles.get(location.path)!.split(/\r?\n/);
-    return lines.slice(location.start - 1, location.end).join('\n');
-  }).join('\n');
-  if (usableIdentifiers.some((identifier) => {
-    const variants = identifier.startsWith('.') || identifier.startsWith('#')
-      ? [identifier, identifier.slice(1)]
-      : [identifier];
-    return variants.some((variant) => citedText.includes(variant));
-  })) return null;
-  return `source ranges contain none of the statement identifiers: ${usableIdentifiers.join(', ')}`;
+  return anchored ? null : `source ranges contain none of the statement identifiers: ${present.join(', ')}`;
 }
 
 export function validateOracle(options: ValidateOptions): Violation[] {

@@ -3,7 +3,7 @@
   family: "fixture"
   statement: "`useAnchoredValue` 必须保持同步"
   why: "Fixture reason"
-  source: "anchor-positive.txt:1"
+  source: "anchor-positive.ts:1"
   authoritative_test: "NONE"
   owner_slice: "styles/global"
   intentional_omission: false

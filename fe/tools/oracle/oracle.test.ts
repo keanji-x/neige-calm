@@ -80,8 +80,8 @@ describe('oracle rule fixtures', () => {
     it(`${rule}: accepts positive and rejects only the intended negative`, () => {
       expect(run(rule, 'positive')).toEqual([]);
       const violations = run(rule, 'negative');
-      expect(violations, JSON.stringify(violations)).toHaveLength(1);
-      expect(violations[0]?.rule).toBe(rule);
+      expect(violations, JSON.stringify(violations)).toHaveLength(rule === 'source-anchor' ? 3 : 1);
+      expect(new Set(violations.map((violation) => violation.rule))).toEqual(new Set([rule]));
       if (rule === 'source-location') {
         expect(violations[0]?.message).toContain('path escapes repository: /etc/passwd');
         expect(violations[0]?.message).toContain('path escapes repository: ../FIX-R2.md');
