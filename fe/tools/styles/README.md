@@ -3,7 +3,7 @@
 These checks make cascade boundaries observable: `entry.css` supplies the only layer order, PostCSS AST traversal rejects rules outside known layers, CodeMirror exceptions stay scoped by their rightmost compound selector, and extracted global classes must equal the manifest in both directions.
 
 The `neige-calm/unlayered-cm-scope` stylelint rule runs under `npm run lint:css`. Its
-`unlayeredExceptions` option is the complete, explicit repository-relative file allowlist; it is currently empty.
+`unlayeredExceptions` is loaded from `web/src/styles/unlayered-exceptions.yaml`; stylelint enforces the rightmost `.cm-*` selector scope for every listed path, while `repository-check.mjs` is the exact selector/property/expiry/usage gate.
 
 The runtime page is a harness, not a full-site scan. It deliberately injects one unlayered `<style>` rule so the test proves the audit fails when runtime CSS escapes the layer system. The audit function also checks readable `document.styleSheets` and `[style]` elements.
 
@@ -20,4 +20,4 @@ The runtime page is a harness, not a full-site scan. It deliberately injects one
 
 After a runnable application exists, call `auditRuntimeStyles` from Playwright on every routed page and relevant theme/state combination. Feed real `entry.css`, the named unlayered exception files, and the P8b global-class manifest into the static/build audit in CI.
 
-Stage 2 must also bind `unlayeredExceptions` to the repository's actual unlayered-file set with a bidirectional test when the first exception is introduced.
+The repository audit rejects both undeclared unlayered declarations and unused manifest entries, so the exception set remains bidirectional when the first exception is introduced.
