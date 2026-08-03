@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import stylelint from 'stylelint';
@@ -28,9 +28,21 @@ async function lintCss(code: string, filename: string, exceptions: string[] = []
 
 describe('CSS AST fixtures', () => {
   it('covers exactly every rule the audit can emit', () => {
-    const covered = ['rule-in-layer', 'known-layer', 'unlayered-cm-scope', 'global-class-manifest',
-      'runtime-stylesheet-readable', 'runtime-inline-style'];
-    expect(new Set(covered)).toEqual(new Set(STYLE_RULES));
+    const evidence: Record<string, { fixture?: string; test?: string }> = {
+      'rule-in-layer': { fixture: 'layered/negative/case.css' },
+      'known-layer': { test: 'accepts layered rules and rejects an unlayered rule' },
+      'unlayered-cm-scope': { fixture: 'unlayered-cm/negative/case.css' },
+      'global-class-manifest': { fixture: 'manifest/classes.css' },
+      'runtime-stylesheet-readable': { test: 'runtime audit reports unreadable stylesheet rules' },
+      'runtime-inline-style': { fixture: 'runtime-inline/negative/page.html' },
+    };
+    expect(new Set(Object.keys(evidence))).toEqual(new Set(STYLE_RULES));
+    expect(new Set(STYLE_RULES)).toEqual(new Set(Object.keys(evidence)));
+    const thisTest = readFileSync(import.meta.filename, 'utf8');
+    for (const [rule, target] of Object.entries(evidence)) {
+      if (target.fixture) expect(existsSync(resolve(fixtures, target.fixture)), rule).toBe(true);
+      if (target.test) expect(thisTest.includes(`it('${target.test}'`), rule).toBe(true);
+    }
   });
   it('uses entry.css as the sole layer-order source', () => {
     expect(order).toEqual(['reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides']);

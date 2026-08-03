@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -27,8 +27,16 @@ describe('ownership fixtures', () => {
     }
   });
   it('covers exactly every rule the validator can emit', () => {
-    const covered = ['entry-shape', 'change-request-shape', 'exactly-one-owner', 'coverage', 'readonly-change-request'];
-    expect(new Set(covered)).toEqual(new Set(OWNERSHIP_RULES));
+    const evidence: Record<string, string> = {
+      'entry-shape': 'entry-shape/negative/manifest.yaml',
+      'change-request-shape': 'field-types/negative/cases.yaml',
+      'exactly-one-owner': 'exactly-one-owner/negative/manifest.yaml',
+      coverage: 'coverage/negative/manifest.yaml',
+      'readonly-change-request': 'readonly/negative/manifest.yaml',
+    };
+    expect(new Set(Object.keys(evidence))).toEqual(new Set(OWNERSHIP_RULES));
+    expect(new Set(OWNERSHIP_RULES)).toEqual(new Set(Object.keys(evidence)));
+    for (const [rule, target] of Object.entries(evidence)) expect(existsSync(resolve(fixtures, target)), rule).toBe(true);
   });
   it('rejects glob entries', () => {
     expect(validateOwnership(entries('entry-shape', 'positive'), [])).toEqual([]);
