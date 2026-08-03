@@ -258,21 +258,19 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
     write_stdin(supervisor.sock(), proc_id, b"go\n").await;
 
     // Liveness: the master never EOFs, so `Exited` can only arrive because the
-    // grace expires and the waiter publishes anyway. `timeout_read` panics
-    // after 10s, which is the "does not wedge forever" assertion; the explicit
-    // bound below keeps it honest about *how* bounded.
-    //
-    // The clock starts at the parent's sentinel — the last thing it writes
-    // before `exit 0` — not at `write_stdin`, so `waited` measures the gap the
-    // drain gate is responsible for and nothing else.
-    let mut sentinel_at = None;
+    // grace expires and the waiter publishes anyway. `timeout_read`'s 10s
+    // budget is the whole "does not wedge forever" assertion — deliberately
+    // the only one (#993 R3-C). A tighter elapsed-time bound derived from when
+    // this *task* happened to observe the parent's sentinel is not safe in
+    // either direction: a CI pause between reading the sentinel and reading
+    // `Exited` inflates the measured gap without the supervisor doing anything
+    // wrong, which is a false failure in a PR whose whole point is killing
+    // flake. The degradation self-check below is causal and covers what the
+    // bound was reaching for.
     let exit_cursor = loop {
         match timeout_read(&mut attach).await {
             ControlReply::Output { bytes, .. } => {
                 seen.extend(bytes);
-                if sentinel_at.is_none() && contains(&seen, PARENT_SENTINEL.as_bytes()) {
-                    sentinel_at = Some(std::time::Instant::now());
-                }
             }
             ControlReply::Exited { cursor, status, .. } => {
                 assert_eq!(status, Some(0), "parent should exit cleanly");
@@ -295,6 +293,10 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
     // resolved — then it was alive when the gate ran, and the master provably
     // could not have EOFed. No timing assumption at all. (It sleeps ~5s total,
     // and `Exited` lands ~0.25s in.)
+    //
+    // The parent's trailing sentinel must also have arrived before `Exited` —
+    // that is invariant A on the degraded path, and unlike a duration it is
+    // schedule-independent.
     let grandchild_pid = read_pid_file(&pid_file);
     assert!(
         process_is_alive(grandchild_pid),
@@ -303,14 +305,9 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
          pty slave fd open, so the master EOFed and the drain gate never timed out",
     );
 
-    // Liveness bound. Only ever compared in the safe direction: a late-delivered
-    // sentinel makes `waited` SMALLER, so this can never fire spuriously.
-    let waited = sentinel_at
-        .expect("the parent's trailing output must arrive before Exited")
-        .elapsed();
     assert!(
-        waited < Duration::from_secs(5),
-        "Exited took {waited:?}; the drain grace must bound the degraded path",
+        contains(&seen, PARENT_SENTINEL.as_bytes()),
+        "the parent's trailing output must arrive before Exited",
     );
 
     assert_eq!(
@@ -353,15 +350,33 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
 /// writer instead of merely buffering it.
 const POST_SEAL_BURST: usize = 300_000;
 
+/// The kernel's tty queue is ~64 KiB, so anything at or above this really did
+/// have to be *drained* by the reader rather than merely buffered.
+const KERNEL_TTY_QUEUE: usize = 64 * 1024;
+
 /// Same shape as `grandchild_script`, but the grandchild stays quiet until well
 /// past the seal and then bursts `POST_SEAL_BURST` bytes into the slave before
 /// touching `done_file`.
+///
+/// The marker is the *actual* byte count it managed to push (`${#blob}`), not a
+/// fixed `done` string (#993 R3-E): a shell whose `printf '%0Nd'` truncates or
+/// fails would still have created a constant marker and turned this test green
+/// without ever filling the kernel queue. The count is built first and written
+/// after the burst, so it can only appear once the tty accepted every byte.
 fn post_seal_writer_script(done_file: &Path) -> String {
     format!(
-        "read x; (trap '' HUP; sleep 0.6; printf '%0{POST_SEAL_BURST}d' 0; \
-         printf 'done' > {}) & sleep 0.2; printf '\\n{PARENT_SENTINEL}\\n'; exit 0",
+        "read x; (trap '' HUP; sleep 0.6; blob=$(printf '%0{POST_SEAL_BURST}d' 0); \
+         printf '%s' \"$blob\"; printf '%s' ${{#blob}} > {}) & sleep 0.2; \
+         printf '\\n{PARENT_SENTINEL}\\n'; exit 0",
         done_file.display(),
     )
+}
+
+/// Reads the byte count the post-seal grandchild published, or `None` while the
+/// file is still absent/partial.
+fn read_written_bytes(done_file: &Path) -> Option<usize> {
+    let raw = std::fs::read_to_string(done_file).ok()?;
+    raw.trim().parse().ok()
 }
 
 /// Invariant D (#993 R3): sealing the ring must stop *publishing*, not
@@ -375,9 +390,11 @@ fn post_seal_writer_script(done_file: &Path) -> String {
 /// exist before the seal was introduced.
 ///
 /// The grandchild here bursts 300 KiB well after the seal and only then writes
-/// its done-marker. The marker appearing proves the master is still being
-/// drained; the frozen ring tail proves those bytes were discarded rather than
-/// published, i.e. that the burst really landed on the post-seal path.
+/// its done-marker — which carries the *number of bytes it actually pushed*, so
+/// a truncated burst fails the test instead of silently passing it. The marker
+/// appearing proves the master is still being drained; the frozen ring tail
+/// proves those bytes were discarded rather than published, i.e. that the burst
+/// really landed on the post-seal path.
 #[tokio::test]
 async fn the_reader_keeps_draining_the_master_after_the_seal() {
     let supervisor = InProcessProcSupervisor::start()
@@ -423,7 +440,10 @@ async fn the_reader_keeps_draining_the_master_after_the_seal() {
     // accepted by the tty. With a reader that stops at the seal, the grandchild
     // wedges in `write()` after ~64 KiB and this never appears.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while !done_file.exists() {
+    let written = loop {
+        if let Some(written) = read_written_bytes(&done_file) {
+            break written;
+        }
         assert!(
             tokio::time::Instant::now() < deadline,
             "issue #993 R3: the grandchild never finished writing {POST_SEAL_BURST} bytes \
@@ -431,7 +451,16 @@ async fn the_reader_keeps_draining_the_master_after_the_seal() {
              surviving grandchild is blocked in write() on a full tty queue",
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    };
+    // ...and it really was a burst: a marker written after a truncated or
+    // failed `printf` would prove nothing, because anything below the kernel's
+    // tty queue fits in the buffer whether or not the reader kept draining.
+    assert!(
+        written >= KERNEL_TTY_QUEUE,
+        "the post-seal burst must exceed the kernel tty queue ({KERNEL_TTY_QUEUE} bytes) \
+         for this test to prove anything about draining, but the grandchild only wrote \
+         {written} bytes (expected {POST_SEAL_BURST})",
+    );
 
     // ...and the drained bytes were discarded, not published: had they been
     // appended, the tail would have grown by ~300 KiB. This is also the proof

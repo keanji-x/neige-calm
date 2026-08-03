@@ -13,7 +13,7 @@ use calm_session::{DaemonMsg, read_frame, write_frame};
 use thiserror::Error;
 use tokio::io::AsyncRead;
 use tokio::net::UnixStream;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -39,9 +39,24 @@ const SPAWN_CONTROL_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Teardown grace between SIGTERM and SIGKILL for a renderer's pty child.
 ///
-/// An upper bound, not a fixed sleep: teardown waits on the attach reader and
-/// proceeds to the SIGKILL as soon as the child's exit has been observed (#993
-/// F3).
+/// An upper bound rather than a fixed sleep — but the event it is cut short by
+/// is scoped to the **pty leader**, not to the whole process group (#993 F3,
+/// R3-B): teardown escalates to SIGKILL as soon as the leader's exit has been
+/// *persisted*, so a group member that is still winding down loses whatever is
+/// left of the window. That is deliberate, and it is a real (accepted) change
+/// from the old unconditional `sleep`:
+///
+/// * every member already received the SIGTERM at t=0 — the window only ever
+///   bought them time, it never delivered anything extra later;
+/// * the leader is the pty session leader, so its exit SIGHUPs the foreground
+///   group anyway; a member still alive after that has ignored both TERM and
+///   HUP and would not have used the remaining ~195 ms either;
+/// * keeping the common case at single-digit ms is what makes the serial batch
+///   teardown loops (wave delete, sweeper, cove delete) cheap.
+///
+/// The unconditional SIGKILL to the *group* after this window is what
+/// guarantees those survivors are still reaped
+/// (`drop_entry_kills_process_group_members_that_outlive_the_leader`).
 const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
 
 /// Bounded wait, after SIGKILL, for the supervisor attach reader to observe
@@ -147,10 +162,29 @@ pub struct RendererEntry {
     pub exit: SharedExitState,
     initial_event_rx: StdMutex<Option<broadcast::Receiver<DaemonMsg>>>,
     exited_rx: StdMutex<Option<oneshot::Receiver<Option<i32>>>>,
-    /// Held apart from `tasks` because teardown must *wait* for it rather than
-    /// abort it: this is the task that persists the terminal exit (#993 R1).
+    /// Held apart from `tasks` because teardown must let it *finish its exit
+    /// arm* rather than abort it: this is the task that persists the terminal
+    /// exit (#993 R1). Teardown never awaits this handle — see
+    /// `exit_persisted`.
     attach_task: StdMutex<Option<JoinHandle<()>>>,
+    /// Flipped by the attach reader once it has run the whole `Exited` arm
+    /// (persist + projection + task hook). A closed channel means the reader
+    /// ended *without* persisting — an attach-stream read error breaks its
+    /// loop exactly like a clean exit does (#993 R3-A).
+    exit_persisted: watch::Receiver<bool>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
+}
+
+/// Outcome of waiting for the attach reader to persist the terminal exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExitPersistWait {
+    /// The reader signalled that the exit reached the database.
+    Persisted,
+    /// The reader is gone and never signalled: nothing can persist the exit
+    /// any more, the terminal-exit sweep is the only remaining backstop.
+    ReaderGone,
+    /// The reader is still running; the budget expired first.
+    Timeout,
 }
 
 impl RendererEntry {
@@ -188,31 +222,35 @@ impl RendererEntry {
         signal_child_direct(&self.supervisor_sock, &self.proc_id, sig).await;
     }
 
-    /// Waits (bounded) for the supervisor attach reader to finish on its own.
+    /// Waits (bounded) for the supervisor attach reader to *persist* the
+    /// terminal exit.
     ///
-    /// It breaks out of its loop right after handling `Exited` — which is also
-    /// where it persists the terminal's exit — so completing normally is the
-    /// signal that the exit landed. Returns `true` in that case.
+    /// #993 R3-A: this deliberately does **not** await the reader's join
+    /// handle. That handle completes on any loop exit, including the
+    /// `Err(_) => break` arm taken when the attach stream dies (supervisor
+    /// gone, connection reset) — a path that writes nothing to the database.
+    /// Treating it as success made a degraded teardown indistinguishable from
+    /// a healthy one, silently collapsed the SIGTERM→SIGKILL grace to zero and
+    /// suppressed the WARN that is supposed to make the degradation visible.
     ///
-    /// On timeout the handle is put back (so a later stage can keep waiting and
-    /// `abort_tasks` can still abort it) and `false` is returned; the caller
-    /// decides whether to escalate. Never aborts on its own.
-    async fn await_exit_persisted(&self, budget: Duration) -> bool {
-        let handle = self
-            .attach_task
-            .lock()
-            .ok()
-            .and_then(|mut guard| guard.take());
-        let Some(mut handle) = handle else {
-            return true;
+    /// Never aborts anything; `abort_tasks` stays the only abort site.
+    async fn await_exit_persisted(&self, budget: Duration) -> ExitPersistWait {
+        let mut rx = self.exit_persisted.clone();
+        if *rx.borrow_and_update() {
+            return ExitPersistWait::Persisted;
+        }
+        let wait = async {
+            while rx.changed().await.is_ok() {
+                if *rx.borrow_and_update() {
+                    return ExitPersistWait::Persisted;
+                }
+            }
+            // Sender dropped: the reader task is gone and never signalled.
+            ExitPersistWait::ReaderGone
         };
-        if tokio::time::timeout(budget, &mut handle).await.is_ok() {
-            return true;
-        }
-        if let Ok(mut guard) = self.attach_task.lock() {
-            *guard = Some(handle);
-        }
-        false
+        tokio::time::timeout(budget, wait)
+            .await
+            .unwrap_or(ExitPersistWait::Timeout)
     }
 
     fn abort_tasks(&self) {
@@ -327,6 +365,10 @@ impl TerminalRendererRegistry {
         let event_rx = event_tx.subscribe();
         let (supervisor_tx, _supervisor_rx) = mpsc::unbounded_channel::<SupervisorControl>();
         let (_exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
+        // No attach reader in a fixture entry: drop the sender right away so a
+        // teardown sees `ReaderGone` (honest) instead of waiting out a budget
+        // for a reader that does not exist.
+        let exit_persisted = watch::channel(false).1;
         let entry = Arc::new(RendererEntry {
             terminal_id: cfg.terminal_id.clone(),
             proc_id: format!("term:{}", cfg.terminal_id),
@@ -344,6 +386,7 @@ impl TerminalRendererRegistry {
             initial_event_rx: StdMutex::new(Some(initial_event_rx)),
             exited_rx: StdMutex::new(Some(exited_rx)),
             attach_task: StdMutex::new(None),
+            exit_persisted,
             tasks: StdMutex::new(Vec::new()),
         });
         let mut entries = self
@@ -368,7 +411,9 @@ impl TerminalRendererRegistry {
     ///
     /// * Common case (child dies on SIGTERM): returns as soon as the attach
     ///   reader has persisted `Exited`, typically single-digit ms. The old
-    ///   unconditional `sleep(TERM_TO_KILL_GRACE)` is gone.
+    ///   unconditional `sleep(TERM_TO_KILL_GRACE)` is gone — note that this
+    ///   shortens the TERM→KILL window for *other members* of the child's
+    ///   process group too; see `TERM_TO_KILL_GRACE` for why that is accepted.
     /// * Worst case (child ignores SIGTERM *and* a grandchild holds the pty
     ///   slave past the supervisor's drain grace):
     ///   `TERM_TO_KILL_GRACE + EXIT_PERSIST_GRACE` = **1.2 s**.
@@ -394,25 +439,39 @@ impl TerminalRendererRegistry {
         };
 
         tracing::info!(terminal_id, "terminal renderer registry dropping entry");
+        let term_at = tokio::time::Instant::now();
         entry.shutdown_signal(ProcSignal::Term).await;
-        // Wait on the attach reader instead of sleeping the full grace: a child
-        // that dies on SIGTERM cuts the teardown from a fixed 200ms to
-        // single-digit ms, which is what keeps the serial batch paths cheap
-        // (#993 F3). A child that ignores SIGTERM costs exactly the old 200ms.
-        let persisted = entry.await_exit_persisted(TERM_TO_KILL_GRACE).await;
+        // Wait for the exit to be *persisted* instead of sleeping the full
+        // grace: a child that dies on SIGTERM cuts the teardown from a fixed
+        // 200ms to single-digit ms, which is what keeps the serial batch paths
+        // cheap (#993 F3). A child that ignores SIGTERM costs exactly the old
+        // 200ms.
+        let mut outcome = entry.await_exit_persisted(TERM_TO_KILL_GRACE).await;
+        if outcome == ExitPersistWait::ReaderGone {
+            // #993 R3-A: the reader died early (attach stream error), so
+            // nothing will ever persist this exit — but the SIGTERM→SIGKILL
+            // window belongs to the *child*, not to our bookkeeping. Burn what
+            // is left of it instead of escalating instantly; only the reader
+            // is degraded here, the child may still be exiting cleanly.
+            tokio::time::sleep_until(term_at + TERM_TO_KILL_GRACE).await;
+        }
         // Unconditional, even when the child is already gone: this signals the
         // whole *process group*, so it is also what reaps group members that
         // outlived the SIGTERM. Skipping it would leak them.
         entry.shutdown_signal(ProcSignal::Kill).await;
         // #993 R1: `Exited` can lag the kill by up to the supervisor's pty
         // drain grace, and the attach reader is what persists it. Let it
-        // finish before the abort.
-        if !persisted && !entry.await_exit_persisted(EXIT_PERSIST_GRACE).await {
+        // finish before the abort — but only while it is still alive.
+        if outcome == ExitPersistWait::Timeout {
+            outcome = entry.await_exit_persisted(EXIT_PERSIST_GRACE).await;
+        }
+        if outcome != ExitPersistWait::Persisted {
             tracing::warn!(
                 terminal_id,
+                reason = ?outcome,
                 budget_ms = EXIT_PERSIST_GRACE.as_millis() as u64,
-                "supervisor attach reader did not observe Exited before teardown; \
-                 aborting it (terminal exit persistence falls back to the sweep)"
+                "supervisor attach reader did not persist the terminal exit before \
+                 teardown; aborting it (terminal exit persistence falls back to the sweep)"
             );
         }
         entry.abort_tasks();
@@ -538,6 +597,11 @@ async fn ensure_entry(
     }
 
     let (exited_tx, exited_rx) = oneshot::channel::<Option<i32>>();
+    // Teardown's persistence signal. The sender lives inside the attach reader
+    // task, so it is dropped the moment that task ends — which is how
+    // `await_exit_persisted` tells "ended without persisting" apart from
+    // "still working" (#993 R3-A).
+    let (exit_persisted_tx, exit_persisted) = watch::channel(false);
     let attach_task = attach_reader::spawn_supervisor_attach_reader(
         attach_conn,
         proc_id.clone(),
@@ -549,6 +613,7 @@ async fn ensure_entry(
         repo,
         cfg.terminal_id.clone(),
         task_hook,
+        exit_persisted_tx,
     );
     let ready_task = child_ready::spawn_child_ready_poller(render_plane.clone(), event_tx.clone());
 
@@ -569,6 +634,7 @@ async fn ensure_entry(
         initial_event_rx: StdMutex::new(Some(initial_event_rx)),
         exited_rx: StdMutex::new(Some(exited_rx)),
         attach_task: StdMutex::new(Some(attach_task)),
+        exit_persisted,
         tasks: StdMutex::new(vec![control_task, ready_task]),
     })
 }

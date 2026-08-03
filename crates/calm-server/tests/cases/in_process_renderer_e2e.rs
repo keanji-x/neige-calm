@@ -524,7 +524,7 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
 
     registry.drop_entry(&terminal_id).await;
 
-    // Degradation self-check #1: the pty slave holder outlived the teardown, so
+    // Degradation self-check: the pty slave holder outlived the teardown, so
     // the master could not EOF and the supervisor really took the drain-grace
     // path that R1 is about.
     assert!(
@@ -545,17 +545,229 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
         "issue #993 R1: terminal exit was not persisted (signal_killed still false) — \
          drop_entry cut the attach reader off before `terminal_set_exit` ran; row = {row:?}"
     );
-    // Degradation self-check #2: signalled, not a self-inflicted clean exit.
-    assert!(
-        row.exit_code.is_none(),
-        "a signal-killed child must persist no exit code; row = {row:?}"
-    );
+    // (`row.exit_code.is_none()` used to be asserted here; #993 R3-D removed it
+    // as vacuous — the writer computes `exit_code = if signalled { None } else
+    // { .. }`, so once `signal_killed` above holds it is true by construction
+    // and can falsify nothing.)
     // Cheap locator: `entry.exit` is stamped inside the same `Exited` arm, a few
     // statements before the persistence calls above.
     assert!(
         entry.exit.lock().expect("exit mutex").is_some(),
         "issue #993 R1: drop_entry aborted the supervisor attach reader before it saw \
          Exited"
+    );
+
+    let _ = supervisor.kill().await;
+    let _ = supervisor.wait().await;
+}
+
+/// `TERM_TO_KILL_GRACE` in `terminal_renderer` — private there, mirrored here.
+const TERM_TO_KILL_GRACE: Duration = Duration::from_millis(200);
+
+/// Issue #993 R3-A: teardown must key on the exit being *persisted*, not on the
+/// attach reader's task handle completing.
+///
+/// The reader's loop breaks on `Err(_)` too — a read error on the attach stream
+/// (supervisor gone, connection reset) — and that arm writes nothing. Awaiting
+/// the join handle therefore reported "persisted" for a reader that had already
+/// died, with two consequences: the SIGTERM→SIGKILL grace collapsed to ~0 (the
+/// wait returned instantly), and the WARN that is supposed to make the
+/// degradation visible never fired.
+///
+/// The scenario: kill the supervisor out from under a live renderer, so the
+/// attach reader hits a stream error and ends *without* persisting. Then tear
+/// the entry down.
+///
+/// The assertion is the grace itself — `drop_entry` must still take at least
+/// `TERM_TO_KILL_GRACE` before escalating — because that is the observable the
+/// regression destroyed, and it is only ever compared in the safe direction (a
+/// slow/loaded box makes the measured elapsed time *larger*, never smaller, so
+/// this cannot flake). With the old handle-await it measured ~0.
+///
+/// Self-checks keep it honest: the supervisor must really be unreachable, and
+/// nothing may have been persisted (the sweep is the backstop for this row).
+#[tokio::test]
+async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let control_sock = temp.path().join("proc-supervisor.sock");
+    let mut supervisor = spawn_proc_supervisor(&control_sock).await;
+
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+    let term = seed_terminal_row(repo.as_ref()).await;
+    let terminal_id = term.id.clone();
+
+    let registry = TerminalRendererRegistry::new_with_repo(route_repo);
+    let entry = registry
+        .ensure(RendererConfig {
+            terminal_id: terminal_id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (216, 219, 226),
+            terminal_bg: (15, 20, 24),
+            program: "/bin/sh".into(),
+            // Short-lived: killing the supervisor orphans this child, so it
+            // must reap itself rather than linger for the test's benefit.
+            args: vec!["-c".into(), "echo up; sleep 3".into()],
+            envs: std::env::vars().collect(),
+            cwd: workspace_root().display().to_string(),
+            supervisor_sock: control_sock.clone(),
+        })
+        .await
+        .expect("ensure renderer");
+
+    let mut events = entry
+        .take_initial_event_rx()
+        .expect("initial renderer event receiver");
+    wait_for_child_ready(&mut events).await;
+
+    // Break the attach stream: the supervisor dies, the reader's next
+    // `read_frame` errors out and it leaves the loop having persisted nothing.
+    supervisor.kill().await.expect("kill supervisor");
+    let _ = supervisor.wait().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while UnixStream::connect(&control_sock).await.is_ok() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the supervisor kept accepting connections after being killed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The reader observes the peer close within microseconds; this only has to
+    // cover the wakeup so the teardown below really faces a *finished* reader
+    // rather than a still-blocked one.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let started = std::time::Instant::now();
+    registry.drop_entry(&terminal_id).await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= TERM_TO_KILL_GRACE,
+        "issue #993 R3-A: drop_entry escalated to SIGKILL after only {elapsed:?} — it \
+         treated the attach reader's *death* as a persisted exit, so the child's \
+         {TERM_TO_KILL_GRACE:?} SIGTERM grace disappeared",
+    );
+
+    // Self-check: nothing was persisted, i.e. this really is the degraded path
+    // the grace-vs-handle distinction is about.
+    let row = repo
+        .terminal_get(&terminal_id)
+        .await
+        .expect("terminal_get")
+        .expect("terminal row");
+    assert!(
+        !row.signal_killed && row.exit_code.is_none(),
+        "this test must exercise the DEGRADED path: the attach reader was supposed to die \
+         before persisting anything, but the row already carries an exit; row = {row:?}"
+    );
+    assert!(
+        entry.exit.lock().expect("exit mutex").is_none(),
+        "sanity: the attach reader never saw Exited on a dead stream"
+    );
+}
+
+/// Issue #993 R3-B: the TERM→KILL grace is now cut short by the *leader's*
+/// exit, so process-group members that outlive it are SIGKILLed earlier than
+/// under the old fixed `sleep(TERM_TO_KILL_GRACE)`. That is accepted (see the
+/// `TERM_TO_KILL_GRACE` doc), but it makes the unconditional group SIGKILL the
+/// only thing standing between a stubborn member and a leak — and that was
+/// untested.
+///
+/// Here the leader dies on SIGTERM immediately while a member of its process
+/// group ignores both TERM and HUP and would otherwise run for 10s. After
+/// teardown the member must be gone, killed by the group SIGKILL that follows
+/// the (shortened) grace. Deliberately no timing assertion: the shortening is a
+/// latency property, while the invariant worth locking is "no survivor leaks".
+///
+/// Self-checks: the member must be alive right before teardown (otherwise the
+/// kill proves nothing) and the leader's exit must reach the database (which is
+/// what shortens the grace in the first place).
+#[tokio::test]
+async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let control_sock = temp.path().join("proc-supervisor.sock");
+    let mut supervisor = spawn_proc_supervisor(&control_sock).await;
+
+    let repo = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let route_repo: Arc<dyn RouteRepo> = repo.clone();
+    let term = seed_terminal_row(repo.as_ref()).await;
+    let terminal_id = term.id.clone();
+
+    let registry = TerminalRendererRegistry::new_with_repo(route_repo);
+    let member_pid_file = temp.path().join("group-member.pid");
+    let entry = registry
+        .ensure(RendererConfig {
+            terminal_id: terminal_id.clone(),
+            cols: 80,
+            rows: 24,
+            buffer_bytes: 1 << 20,
+            terminal_fg: (216, 219, 226),
+            terminal_bg: (15, 20, 24),
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                format!(
+                    // No `setsid`: the member stays in the leader's process
+                    // group, which is exactly what the group SIGKILL must
+                    // reach. `exec` makes the `sleep` itself the leader, so it
+                    // dies on SIGTERM with no shell in the way.
+                    "sh -c 'trap \"\" TERM HUP; echo $$ > {}; sleep 10' & echo up; exec sleep 30",
+                    member_pid_file.display()
+                ),
+            ],
+            envs: std::env::vars().collect(),
+            cwd: workspace_root().display().to_string(),
+            supervisor_sock: control_sock.clone(),
+        })
+        .await
+        .expect("ensure renderer");
+
+    let mut events = entry
+        .take_initial_event_rx()
+        .expect("initial renderer event receiver");
+    wait_for_child_ready(&mut events).await;
+    let member_pid = wait_for_pid_file(&member_pid_file).await;
+    assert!(
+        process_is_alive(member_pid),
+        "sanity: the group member (pid {member_pid}) must be running before teardown"
+    );
+
+    registry.drop_entry(&terminal_id).await;
+
+    // The member ignores TERM and HUP, so only the group SIGKILL can end it.
+    // Polling (rather than asserting once) covers signal delivery and reaping;
+    // a leaked member stays alive for its full 10s and blows the deadline.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while process_is_alive(member_pid) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "issue #993 R3-B: the process-group member (pid {member_pid}) survived \
+             drop_entry — cutting the TERM grace short at the leader's exit must not \
+             cost the unconditional SIGKILL that reaps the rest of the group"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // Self-check: the leader's exit really was persisted — that is the event
+    // that ends the grace early.
+    let row = repo
+        .terminal_get(&terminal_id)
+        .await
+        .expect("terminal_get")
+        .expect("terminal row");
+    assert!(
+        row.signal_killed,
+        "the leader's signalled exit must be persisted by the attach reader; row = {row:?}"
     );
 
     let _ = supervisor.kill().await;
