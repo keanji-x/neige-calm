@@ -19,13 +19,7 @@ function git(...args) {
 try {
   const feRoot = join(import.meta.dirname, '../..');
   const requests = parse(readFileSync(join(feRoot, 'ownership-change-requests.yaml'), 'utf8'));
-  let repositoryChanges = [];
-  try {
-    repositoryChanges = gitChangedPaths(join(feRoot, '..'));
-  } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('git fetch origin main')) throw error;
-    console.log('ownership repository readonly diff: skipped (origin/main ref absent); isolated fail-closed proof still runs');
-  }
+  const repositoryChanges = gitChangedPaths(join(feRoot, '..'));
   const repositoryViolations = validateOwnership(
     ownershipManifest, repositoryFiles(join(feRoot, '..')), repositoryChanges, requests,
   );
