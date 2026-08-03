@@ -44,6 +44,7 @@ describe('CSS AST fixtures', () => {
     expect(auditLayeredCss('@layer alien { .known {} }', order)).toEqual([
       { rule: 'known-layer', message: 'unknown layer alien' },
     ]);
+    expect(auditLayeredCss('@layer ui.card { .nested {} }', order)).toEqual([]);
   });
 
   it('limits each exception selector by its rightmost compound', () => {

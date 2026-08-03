@@ -10,7 +10,9 @@ function enclosingLayer(node: ChildNode): string | undefined {
   interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
   let parent = node.parent as ParentNode | undefined;
   while (parent) {
-    if (parent.type === 'atrule' && parent.name?.toLowerCase() === 'layer' && parent.nodes) return parent.params?.trim();
+    if (parent.type === 'atrule' && parent.name?.toLowerCase() === 'layer' && parent.nodes) {
+      return parent.params?.trim().split('.')[0];
+    }
     parent = parent.parent;
   }
   return undefined;

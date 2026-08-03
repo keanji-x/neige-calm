@@ -143,7 +143,3 @@ export function defaultOracleOptions(repoRoot: string): ValidateOptions {
     ownerAliasesPath: resolve(repoRoot, 'docs/oracle/owner-aliases.yaml'),
   };
 }
-
-export function relativeViolation(violation: Violation, repoRoot: string): Violation {
-  return { ...violation, file: relative(repoRoot, resolve(repoRoot, 'docs/oracle', violation.file)) };
-}
