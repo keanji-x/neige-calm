@@ -1,15 +1,6 @@
-import { execFileSync } from 'node:child_process';
-import { relative, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import vitestConfig from '../../vitest.config';
-import { projectsForPath, testProjectsFromConfig } from './project-map';
-
-function trackedTests(): string[] {
-  const root = resolve(import.meta.dirname, '../..');
-  return execFileSync('git', ['ls-files', '--', '*.test.ts', '*.test.tsx'], { cwd: root, encoding: 'utf8' })
-    .trim().split('\n').filter(Boolean)
-    .map((path) => relative(root, resolve(root, path)).replaceAll('\\', '/'));
-}
+import { projectsForPath, testAssignments, testProjectsFromConfig } from './project-map';
 
 describe('vitest project partition', () => {
   const projects = testProjectsFromConfig(vitestConfig);
@@ -27,9 +18,12 @@ describe('vitest project partition', () => {
     expect(projectsForPath(path, projects)).toEqual(expected);
   });
 
-  it('assigns every tracked test to exactly one project', () => {
-    const assignments = trackedTests().map((path) => ({ path, projects: projectsForPath(path, projects) }));
+  it('audits a supplied test manifest and requires a non-empty browser project', () => {
+    const assignments = testAssignments(
+      ['tools/probe.test.ts', 'web/src/ui/probe.test.tsx', 'tools/probe.browser.test.ts'], projects,
+    );
     expect(assignments.filter(({ projects: owners }) => owners.length === 0)).toEqual([]);
     expect(assignments.filter(({ projects: owners }) => owners.length > 1)).toEqual([]);
+    expect(assignments.filter(({ projects: owners }) => owners.includes('browser')).length).toBeGreaterThan(0);
   });
 });

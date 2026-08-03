@@ -20,6 +20,7 @@ run_mutation() {
   local label=$1 target=$2 before=$3 after=$4 pattern=$5 backup
   backup=$(mktemp)
   cp "$target" "$backup"
+  trap 'cp "$backup" "$target"; rm -f "$backup"' EXIT INT TERM
   mutate "$target" "$before" "$after"
   echo "mutation: $label"
   set +e
@@ -29,6 +30,7 @@ run_mutation() {
   set -e
   cp "$backup" "$target"
   rm -f "$backup"
+  trap - EXIT INT TERM
   return "$status"
 }
 
@@ -62,12 +64,13 @@ case "${1:-}" in
     ;;
   ignore-tier)
     run_mutation "$1" "$repo_dir/fe/tools/test-tier/checker.ts" \
-      "actual.length !== 1 || actual[0] !== expected" "actual.length !== 1" \
+      "actual.length !== 1 || !expected.some((project) => project === actual[0])" "actual.length !== 1" \
       "rejects every negative|wrong tier even"
     ;;
   allow-overlap)
     run_mutation "$1" "$repo_dir/fe/tools/test-tier/checker.ts" \
-      "actual.length !== 1 || actual[0] !== expected" "actual[0] !== expected" \
+      "actual.length !== 1 || !expected.some((project) => project === actual[0])" \
+      "!expected.some((project) => project === actual[0])" \
       "extra project|overlap for jsdom"
     ;;
   *)

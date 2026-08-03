@@ -6,6 +6,8 @@ export interface TestProject {
   exclude: readonly string[];
 }
 
+export interface TestAssignment { path: string; projects: string[] }
+
 interface VitestProjectShape {
   test?: {
     name?: unknown;
@@ -39,8 +41,27 @@ export function testProjectsFromConfig(config: unknown): TestProject[] {
 }
 
 export function projectsForPath(path: string, projects: readonly TestProject[]): string[] {
+  // node:path matchesGlob only approximates Vitest/tinyglobby (notably defaults and dot directories);
+  // callers therefore feed it tracked repository paths and model default exclusions explicitly.
   return projects
     .filter((project) => project.include.some((glob) => matchesGlob(path, glob))
       && !project.exclude.some((glob) => matchesGlob(path, glob)))
     .map((project) => project.name);
+}
+
+export function testAssignments(paths: readonly string[], projects: readonly TestProject[]): TestAssignment[] {
+  return paths.map((path) => ({ path, projects: projectsForPath(path, projects) }));
+}
+
+export function playwrightProjectFromConfig(config: unknown): TestProject {
+  const testDir = (config as { testDir?: unknown } | undefined)?.testDir;
+  const directory = (typeof testDir === 'string' ? testDir : './e2e').replace(/^\.\//, '').replace(/\/$/, '');
+  return Object.freeze({
+    name: 'playwright',
+    include: Object.freeze([
+      `${directory}/**/*.spec.{js,jsx,ts,tsx,mjs,mts,cjs,cts}`,
+      `${directory}/**/*.test.{js,jsx,ts,tsx,mjs,mts,cjs,cts}`,
+    ]),
+    exclude: Object.freeze([]),
+  });
 }

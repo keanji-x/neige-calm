@@ -6,14 +6,35 @@ export interface TierEntry { id?: unknown; migration?: unknown; test_tier?: unkn
 export interface TierViolation { id: string; rule: 'test-tier-project'; source: string; message: string }
 
 const LOCATION = /^([^\s:]+):(\d+)(?:-(\d+))?$/;
-const EXPECTED_PROJECT = Object.freeze({ browser: 'browser', jsdom: 'ui-dom', static: 'platform-independent' } as const);
+const EXPECTED_PROJECTS = Object.freeze({
+  browser: Object.freeze(['browser', 'playwright']),
+  jsdom: Object.freeze(['ui-dom']),
+  static: Object.freeze(['platform-independent']),
+} as const);
+const MIGRATIONS = new Set(['pending', 'skipped', 'migrated']);
+const TEST_TIERS = new Set(['browser', 'jsdom', 'static', 'none']);
 
-function referencedPaths(value: string): string[] {
-  return value.trim().split(/\s*;\s*|\s+\+\s+|\s+/).flatMap((group) => {
+export function referencedPaths(value: string): string[] {
+  if (value === 'NONE') return [];
+  const groups = value.trim().split(/\s*;\s*|\s+\+\s+|\s+/).filter(Boolean);
+  if (groups.length === 0) throw new Error('authoritative_test must be NONE or one or more source locations');
+  return groups.flatMap((group) => {
     const [first, ...ranges] = group.split(',');
     const match = LOCATION.exec(first);
-    return match ? [match[1], ...ranges.map(() => match[1])] : [];
+    if (!match || ranges.some((range) => !/^\d+(?:-\d+)?$/.test(range))) {
+      throw new Error(`authoritative_test location is invalid: ${group}`);
+    }
+    return [match[1], ...ranges.map(() => match[1])];
   });
+}
+
+export function validateTierEntries(entries: readonly TierEntry[]): void {
+  for (const [index, entry] of entries.entries()) {
+    if (!MIGRATIONS.has(String(entry.migration))) throw new Error(`entry ${index} has invalid migration: ${String(entry.migration)}`);
+    if (!TEST_TIERS.has(String(entry.test_tier))) throw new Error(`entry ${index} has invalid test_tier: ${String(entry.test_tier)}`);
+    if (typeof entry.authoritative_test !== 'string') throw new Error(`entry ${index} authoritative_test must be a string`);
+    referencedPaths(entry.authoritative_test);
+  }
 }
 
 function configRelativePath(repoRoot: string, configRoot: string, path: string): string | null {
@@ -27,14 +48,14 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly 
   const violations: TierViolation[] = [];
   for (const entry of entries) {
     if (entry.migration !== 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;
-    const expected = EXPECTED_PROJECT[entry.test_tier as keyof typeof EXPECTED_PROJECT];
+    const expected = EXPECTED_PROJECTS[entry.test_tier as keyof typeof EXPECTED_PROJECTS];
     if (!expected || entry.authoritative_test === 'NONE') continue;
     for (const source of new Set(referencedPaths(entry.authoritative_test))) {
       const testPath = configRelativePath(repoRoot, configRoot, source);
       const actual = testPath === null ? [] : projectsForPath(testPath, projects);
-      if (actual.length !== 1 || actual[0] !== expected) violations.push({
+      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({
         id: entry.id, rule: 'test-tier-project', source,
-        message: `test_tier ${String(entry.test_tier)} requires ${expected}; ${source} belongs to ${actual.length ? actual.join(', ') : 'no vitest project'}`,
+        message: `test_tier ${String(entry.test_tier)} requires ${expected.join(' or ')}; ${source} belongs to ${actual.length ? actual.join(', ') : 'no test project'}`,
       });
     }
   }
