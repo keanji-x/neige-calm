@@ -4,6 +4,8 @@ wrong-selector:
   - { selector: ".editor > .not-cm", property: caret-color, expiry: "2099-01-01" }
 expired:
   - { selector: ".editor > .cm-content", property: caret-color, expiry: "2020-01-01" }
+invalid-calendar-date:
+  - { selector: ".editor > .cm-content", property: caret-color, expiry: "2026-02-30" }
 unused:
   - { selector: ".editor > .cm-content", property: caret-color, expiry: "2099-01-01" }
   - { selector: ".editor > .cm-line", property: color, expiry: "2099-01-01" }

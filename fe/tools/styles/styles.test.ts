@@ -403,6 +403,9 @@ describe('P8b2 forward style gates', () => {
     expect(auditUnlayeredExceptions(css, 'case.css', order,
       negative.expired ?? [], '2026-08-03'))
       .toContain('case.css: exception 1 expired on 2020-01-01');
+    expect(auditUnlayeredExceptions(css, 'case.css', order,
+      negative['invalid-calendar-date'] ?? [], '2026-08-03'))
+      .toContain('case.css: exception 1 has invalid expiry 2026-02-30');
     expect(auditUnlayeredExceptions(css, 'case.css', order, negative.unused ?? [], '2026-08-03'))
       .toContain('case.css: unused exception .editor > .cm-line { color }');
     expect(auditUnlayeredExceptions(css, 'case.css', order, negative['wrong-selector'] ?? [], '2026-08-03'))

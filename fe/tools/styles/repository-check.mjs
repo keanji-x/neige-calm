@@ -130,7 +130,9 @@ export function auditUnlayeredExceptions(css, file, order, entries, today = new 
     .map(({ message }) => `${file}: ${message}`);
   const used = new Set();
   for (const [index, entry] of entries.entries()) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.expiry) || Number.isNaN(Date.parse(`${entry.expiry}T00:00:00Z`))) {
+    const expiryDate = new Date(`${entry.expiry}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.expiry) || Number.isNaN(expiryDate.valueOf())
+      || expiryDate.toISOString().slice(0, 10) !== entry.expiry) {
       violations.push(`${file}: exception ${index + 1} has invalid expiry ${entry.expiry}`);
     } else if (entry.expiry < today) {
       violations.push(`${file}: exception ${index + 1} expired on ${entry.expiry}`);
