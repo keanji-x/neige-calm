@@ -17,8 +17,8 @@ use calm_types::worker::{WorkerSession, WorkerSessionId};
 /// Row shape of the single-statement `wave_detail` read (#1016).
 ///
 /// The wave columns decode through the usual [`crate::db::rows::WaveRow`]
-/// mirror; `cards` and `overlays` ride along as JSON arrays produced by
-/// `json_group_array` so that all three come from ONE implicit transaction
+/// mirror; `cards` and `overlays` ride along as JSON arrays built by
+/// `group_concat` so that all three come from ONE implicit transaction
 /// without the row multiplication a join would cause (a wave-scoped overlay
 /// would pair with every card).
 #[derive(sqlx::FromRow)]
@@ -229,70 +229,101 @@ impl RepoRead for SqlxRepo {
         //
         // COST, measured rather than asserted (#1016 review). Aggregating
         // every card and overlay into one JSON string and parsing it whole is
-        // NOT free on big waves. Release build, in-memory sqlite, 30 calls
-        // per point, one-statement vs. the old three-SELECT deferred tx:
+        // not free on big waves, and the first cut of this statement built
+        // the array with `json_group_array(json_object(…))`, which made
+        // sqlite parse every `payload` into JSONB and render it back to text
+        // before the row even left the database. Release build, in-memory
+        // sqlite, 30 calls per point:
         //
-        //     8 cards × 2 KB payload   0.47 ms vs 0.63 ms   (0.13 vs 0.09 MiB)
-        //    60 cards × 20 KB payload 15.2  ms vs 4.44 ms   (5.04 vs 2.64 MiB)
-        //   200 cards × 8 KB payload  21.9  ms vs 10.6  ms  (7.67 vs 4.21 MiB)
+        //                          json_object   printf   3 SELECTs
+        //     8 cards × 2 KB           0.62 ms   0.51 ms    0.79 ms
+        //    60 cards × 20 KB         28.3  ms  16.8  ms   11.2  ms
+        //   200 cards × 8 KB          41.1  ms  24.1  ms   17.0  ms
         //
-        // Small waves — the overwhelmingly common shape — get FASTER: one
-        // round trip beats three. Waves carrying large payloads (report /
-        // spec cards) get 2–3.5× slower and allocate ~1.8× more, peak live
-        // included, because the row is materialized as text and then parsed
-        // into the same values a second time. That is a real regression on
-        // the tail, and the reason it is accepted here is that the
-        // alternative shapes are worse in kind, not in degree: three
-        // autocommit statements drop cross-statement consistency on every
-        // deployment, and the deferred tx is the deadlock this issue exists
-        // to remove. If the tail ever matters, the fix is to stop shipping
-        // `payload` through the aggregate (fetch card bodies separately)
-        // rather than to reopen the transaction question.
+        // (Allocation is unchanged by the switch — 8.8 / 11.8 MiB per call on
+        // the two big fixtures either way, against 7.6 / 10.2 for three
+        // SELECTs: the extra copy is the aggregate blob itself.)
         //
-        // `cards` / `overlays` come back as JSON arrays shaped exactly like
-        // the public `Card` / `Overlay` serde representation, so they decode
-        // without a second row-mirror to keep in sync. Adding a column to
-        // `cards` / `overlays` means adding it here, the same audit the
-        // previous explicit SELECT lists already required. Two columns need
-        // an explicit fixup on the way into JSON:
+        // Assembling each element with ONE `printf` and splicing the stored
+        // `payload` TEXT in verbatim takes ~40% off the tail: sqlite copies
+        // the bytes instead of parsing and re-rendering them, and the
+        // left-associative `||` chain that would copy the growing element
+        // string once per operand never happens. Two shapes that look like
+        // they should help were measured and do NOT, so don't re-try them:
+        // shipping `payload` as an escaped JSON *string* (`json_quote`, or
+        // `json_object` with a bare TEXT argument) only moves the parse to
+        // Rust and pays an escape + unescape round trip on top — 21.5 /
+        // 32.6 ms on the two big fixtures; and joining `cards` as rows
+        // instead of aggregating re-evaluates the correlated `overlays`
+        // subquery once per card — 37.8 / 157.4 ms.
         //
-        //   * `deletable` — INTEGER in sqlite, `bool` in the model.
+        // What remains is ~1.6× the three-SELECT shape, whose fetch is
+        // cheaper only because each `payload` crosses the boundary on its
+        // own instead of inside one big blob. That is the price of the
+        // snapshot this statement exists to provide, and small waves — the
+        // overwhelmingly common shape — are still FASTER than three round
+        // trips.
         //
-        //   * `sort` — REAL in sqlite, `f64` in the model. `json_object`
-        //     renders a FLOAT argument with `%!0.15g` (`jsonAppendSqlValue`
-        //     in the bundled sqlite 3.46.0) and, unlike `sqlite3QuoteValue`,
-        //     has NO "reparse and fall back to `%!0.20e` if it does not
-        //     round-trip" branch. 15 significant digits is not enough for
-        //     f64: `json_object('s', 1.0000000000000002)` yields `1.0`.
-        //     Rendering through `printf('%!.17g', …)` instead — 17
-        //     significant digits, the round-trip width for binary64 — and
-        //     splicing the result in as a JSON number via `json()` keeps the
-        //     value bit-exact. Pinned by
-        //     `wave_detail_sort_precision_tests`.
+        // `cards` / `overlays` are built to be exactly the public `Card` /
+        // `Overlay` serde representation, so they decode without a second
+        // row-mirror to keep in sync. Adding a column to `cards` /
+        // `overlays` means adding a field to the format string AND its
+        // argument here, the same audit the explicit SELECT lists already
+        // required. What each conversion depends on (all pinned by
+        // `wave_detail_json_shape_tests`, on the bundled sqlite 3.46.0):
         //
-        //     This matters beyond a cosmetic digit: two adjacent f64s could
-        //     render to the same decimal, `total_cmp` below would then order
-        //     them wrong, and the web client writes the value it read back
-        //     to the DB when reordering cards (`WaveList.tsx`) — a silent,
-        //     unlogged rewrite of persisted data.
+        //   * every TEXT column goes through `json_quote`, which emits a
+        //     JSON string literal with quotes, backslashes, newlines and
+        //     control characters escaped, and `null` for a NULL column
+        //     (`title`). It is a no-op only on values carrying sqlite's JSON
+        //     subtype, which a plain column reference never does.
         //
-        //     (`payload` needs no such care: `json(c.payload)` splices the
-        //     stored TEXT through verbatim without reparsing its numbers.)
+        //   * `deletable` — INTEGER in sqlite, `bool` in the model, so a
+        //     `CASE` renders the JSON keyword.
+        //
+        //   * `sort` — REAL in sqlite, `f64` in the model, rendered with
+        //     `%!.17g`: 17 significant digits, the round-trip width for
+        //     binary64. `json_object` would have rendered it `%!0.15g`
+        //     (`jsonAppendSqlValue`) with no round-trip fallback, silently
+        //     turning `1.0000000000000002` into `1.0`. Nothing errors when
+        //     that happens: `total_cmp` below then orders two neighbouring
+        //     cards wrong, and the web client writes back what it read on
+        //     the next reorder (`WaveList.tsx`) — an unlogged rewrite of
+        //     persisted data. Pinned by `wave_detail_sort_precision_tests`.
+        //
+        //   * `payload` is spliced RAW, which requires the column to hold
+        //     valid JSON text — and unlike the `json(c.payload)` this
+        //     replaced, the read no longer checks. Text that is not a single
+        //     JSON value would not merely garble the array: `{}},{"id":…`
+        //     closes the card object and opens another one, i.e. it could
+        //     fabricate a card. Gating the splice on `json_valid` in the
+        //     query gives most of the win back (24.8 / 34.8 ms — barely
+        //     better than `json_object`), so the check lives on the write
+        //     side instead: migration 0070 adds BEFORE INSERT / UPDATE
+        //     triggers that ABORT a payload `json_valid` rejects, on both
+        //     tables, the same defense-in-depth shape as
+        //     `cards_role_validate_*`. Pinned by
+        //     `wave_detail_json_shape_tests::payload_write_of_invalid_json_is_refused`.
+        //
+        //   * `printf('[%s]', …)` over an empty group renders `[]`, because
+        //     `group_concat` of no rows is NULL and `%s` renders NULL as the
+        //     empty string. Pinned by the empty-wave case.
         let row = sqlx::query_as::<_, WaveDetailRow>(
             r#"SELECT w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle,
                       w.cwd, w.workflow_id, w.purpose, w.workflow_input, w.terminal_at,
                       w.created_at, w.updated_at,
-                      (SELECT json_group_array(json_object(
-                           'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind,
-                           'sort', json(printf('%!.17g', c.sort)),
-                           'payload', json(c.payload), 'title', c.title,
-                           'deletable', json(CASE WHEN c.deletable THEN 'true' ELSE 'false' END),
-                           'created_at', c.created_at, 'updated_at', c.updated_at))
+                      (SELECT printf('[%s]', group_concat(printf(
+                           '{"id":%s,"wave_id":%s,"kind":%s,"sort":%!.17g,"payload":%s,"title":%s,"deletable":%s,"created_at":%d,"updated_at":%d}',
+                           json_quote(c.id), json_quote(c.wave_id), json_quote(c.kind), c.sort,
+                           c.payload, json_quote(c.title),
+                           CASE WHEN c.deletable THEN 'true' ELSE 'false' END,
+                           c.created_at, c.updated_at)))
                        FROM cards c WHERE c.wave_id = w.id) AS cards_json,
-                      (SELECT json_group_array(json_object(
-                           'id', o.id, 'plugin_id', o.plugin_id, 'entity_kind', o.entity_kind,
-                           'entity_id', o.entity_id, 'kind', o.kind, 'payload', json(o.payload),
-                           'updated_at', o.updated_at))
+                      (SELECT printf('[%s]', group_concat(printf(
+                           '{"id":%s,"plugin_id":%s,"entity_kind":%s,"entity_id":%s,"kind":%s,"payload":%s,"updated_at":%d}',
+                           json_quote(o.id), json_quote(o.plugin_id), json_quote(o.entity_kind),
+                           json_quote(o.entity_id), json_quote(o.kind), o.payload,
+                           o.updated_at)))
                        FROM overlays o
                        WHERE (o.entity_kind = 'wave' AND o.entity_id = w.id)
                           OR (o.entity_kind = 'card'

@@ -444,8 +444,13 @@ mod pool_memory_anchor_tests;
 #[cfg(test)]
 mod proposal_withdraw_upgrade_tests;
 
-// #1016 — `wave_detail` ships `cards` as JSON; `cards.sort` is a REAL that
-// `json_object` would render with only 15 significant digits. Pins the
-// bit-exact round-trip.
+// #1016 — `wave_detail` ships `cards` / `overlays` as hand-assembled JSON
+// (`printf` + `json_quote` + a raw `payload` splice). The shape file pins the
+// guarantees that assembly took over from `json_object` (escaping, NULL,
+// bool, empty group, and the write-side validity fence); the precision file
+// pins `cards.sort`, a REAL that `json_object` would have rendered with only
+// 15 significant digits.
+#[cfg(test)]
+mod wave_detail_json_shape_tests;
 #[cfg(test)]
 mod wave_detail_sort_precision_tests;
