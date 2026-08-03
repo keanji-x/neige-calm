@@ -556,10 +556,13 @@ pending），该谓词因而是会诱导后来者补写者的空洞不变量。m
 > 更糟的是单块反序列化失败被 `.ok()?` **静默吞掉**，最终伪装成「块不存在」
 > ⇒ 一个本该按存储损坏观测的情形会被错分到确定性计数桶。
 >
-> **拆成**：retryable = `StorageUnavailable` / `MalformedStoredReport`；
+> **拆成**：retryable = `StorageUnavailable`；
 > deterministic = `RootAbsent` / `RootTombstoned` / `DuplicateLiveKey` /
 > **`ReferencedWaveAbsent` / `ReferencedBlockAbsent` / `ReportAbsent`** /
-> `CrossCove` / `InvalidReference`。**非根引用的缺失必须有自己的变体**，
+> `MalformedStoredReport` / `CrossCove` / `InvalidReference`。损坏的持久报告不会
+> 自行恢复；按 retryable 处理只会把同一个判决推迟 3 轮，期间该行仍占用
+> in-flight 名额。§5.5 的「瞬时失败」专指**存储/IO 不可用**，反序列化失败
+> 不属于它。**非根引用的缺失必须有自己的变体**，
 > 否则实现者会把所有 missing 塞回 `RootAbsent`，只是换个名字。
 > **分类按变体匹配，禁止按错误字符串推断。** 这项分类在 claim 前**只影响计数器
 > 分桶**，所有变体仍一律 race-lost；per-row 连续失败升级只属于 3b′-ii 的
@@ -1755,6 +1758,7 @@ r8 系列的形状很清晰，值得记下来作为方法论：
 | `bbaa62b5` 把 `ReportDocOp::MoveBlock` 的前置从 `Option<u32> if_rev` 改成 `u64 if_doc_rev` —— 这是**内核 op 层**变更、影响所有块 kind，设计只把它描述成 MCP 工具契约迁移 | 契约迁移要区分「工具面」与「内核 op 层」 |
 | `e4696f7a` 的 `refuse_if_context_stale` 对**查不到 task 行**也 fail-closed，而三个 worker adapter 此前根本不查 task 行 ⇒ wave 中途被删的 in-flight worker op 现在会在 `prepare_tx` 终结失败 | 新增 fail-closed 分支要枚举「此前不走这条路的调用者」 |
 | 未合并开发提交 `1915601f` 曾让 claim 前确定性定位失败把 `pending` 行写成 stale；该状态在已发布版本中从未可达，但若合入就会叠加 claim stale 谓词与 ready `.take(capacity)`，形成僵尸行 | 分支内同样要核对载体、枚举源与复活路径；capacity 按成功 claim 记账。实现期测试必须经生产 claim 路径构造失败，禁止 SQL 预置 |
+| `MalformedStoredReport` 在实现中被归为确定性，但 §5.2 仍把它列为 retryable；损坏的持久报告不会自愈，等待 3 轮只会延迟同一判决并持续占用 in-flight 名额 | 实现期裁决必须按 §6 同步回写设计正文，并横扫章节、交付清单与附录，不能只改单个实现分支 |
 
 ### B.5 方法论：四格纪律的来历
 
