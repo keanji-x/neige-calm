@@ -62,6 +62,18 @@
 
 `npm test -- <paths>` 会把参数传给后续 wire diff：不改 package script；阶段 2 文档和自动化统一使用 `npx vitest run <path>`，全量仍跑 `npm test`。
 
+## P8b-1 source-anchor 递减基线（阶段 2）
+
+以下五批由 `fe/tools/oracle/anchor-baseline.json` 的 218 条已知欠债驱动。每修正一条，必须在同一提交删除对应基线行；基线只能下降，不能新增或换子类。
+
+1. a11y-contract + ui-primitives：逐条对拍并纠正 source；不能定案的条目保留在递减基线，记录 A/B 搜索证据。
+2. app-dataflow + gates-types：同一标准。
+3. cards-terminal + pages-shared：同一标准。
+4. capabilities-e2e：同一标准。
+5. 收口结构化标识符配置与不支持格式登记，更新鉴别力并复跑完整变异与三门。
+
+每批验收均须提交逐条对拍表、该批红项前后计数，以及随机把 source 改为首个引用文件 `:1-3` 的鉴别力结果。只有提取器误提取的普通词可按 `(id, identifier)` 登记；同一误提取词累计三次时改进 `extractStatementIdentifiers`，不得继续登记。混合引用须逐项说明哪些不支持格式的位置未受机器检查。
+
 ## P0c / P8a 合入后新增（4）
 
 ### 变异证据未入库（阶段 2 验收阻断风险）
