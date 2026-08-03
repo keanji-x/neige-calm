@@ -269,7 +269,7 @@ export function validateOracle(options: ValidateOptions): Violation[] {
     const entry = raw as Record<string, unknown>;
     if (typeof entry.id === 'string' && Array.isArray(entry.identifiers)
       && entry.identifiers.every((identifier) => typeof identifier === 'string')) {
-      anchorNone.set(entry.id, new Set(entry.identifiers as string[]));
+      anchorNone.set(entry.id, new Set(entry.identifiers));
     }
   }
   const baselineRows = parseStructuredList(options.anchorBaselinePath);
@@ -287,7 +287,7 @@ export function validateOracle(options: ValidateOptions): Violation[] {
     const entry = raw as Record<string, unknown>;
     if (typeof entry.id === 'string' && Array.isArray(entry.locations)
       && entry.locations.every((location) => typeof location === 'string')) {
-      registeredUnsupported.set(entry.id, entry.locations as string[]);
+      registeredUnsupported.set(entry.id, entry.locations);
     }
   }
   const configFiles = new Set(['owner-aliases.yaml', 'anchor-none.yaml', 'anchor-unsupported.yaml']);
