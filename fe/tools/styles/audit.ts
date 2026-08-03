@@ -7,16 +7,20 @@ export const STYLE_RULES = Object.freeze([
   'runtime-stylesheet-readable', 'runtime-inline-style',
 ] as const);
 
-function enclosingLayer(node: ChildNode): string | undefined {
+function enclosingLayer(node: ChildNode): { layered: boolean; name?: string } {
   interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
   let parent = node.parent as ParentNode | undefined;
+  let layered = false;
+  let name: string | undefined;
   while (parent) {
     if (parent.type === 'atrule' && parent.name?.toLowerCase() === 'layer' && parent.nodes) {
-      return parent.params?.trim().split('.')[0];
+      layered = true;
+      const candidate = parent.params?.trim().split('.')[0];
+      if (candidate) name = candidate;
     }
     parent = parent.parent;
   }
-  return undefined;
+  return { layered, name };
 }
 
 export function layerOrder(entryCss: string): string[] {
@@ -59,8 +63,8 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
   root.walkRules((rule) => {
     const layer = enclosingLayer(rule);
     if (!unlayeredException) {
-      if (!layer) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
-      else if (!order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
+      if (!layer.layered) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
+      else if (layer.name && !order.includes(layer.name)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer.name}` });
       return;
     }
     for (const selector of rule.selectors) {

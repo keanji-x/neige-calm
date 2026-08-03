@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import stylelint from 'stylelint';
@@ -57,6 +57,24 @@ describe('CSS AST fixtures', () => {
       { rule: 'known-layer', message: 'unknown layer alien' },
     ]);
     expect(auditLayeredCss('@layer ui.card { .nested {} }', order)).toEqual([]);
+  });
+
+  it('covers every supported @layer writing form with the effective top-level name', () => {
+    const forms = new Map([
+      ['named.css', 'name'],
+      ['dotted.css', 'a'],
+      ['nested.css', 'a'],
+      ['nested-dotted.css', 'a'],
+      ['order.css', 'none'],
+      ['anonymous.css', 'anonymous'],
+      ['import.css', 'name'],
+    ]);
+    for (const [file] of forms) {
+      expect(auditLayeredCss(read(`layer-forms/${file}`), ['name', 'a'] as const), file).toEqual([]);
+    }
+    const fixtureFiles = new Set(readdirSync(resolve(fixtures, 'layer-forms')));
+    expect(fixtureFiles).toEqual(new Set(forms.keys()));
+    expect(new Set(forms.keys())).toEqual(fixtureFiles);
   });
 
   it('limits each exception selector by its rightmost compound', () => {
