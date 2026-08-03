@@ -26,4 +26,4 @@ These figures measure lexical discrimination, not semantic proof of every line n
 
 Run the real-data test in CI whenever oracle YAML or cited source files change. Stage 2 pays down the 218-item baseline through the batches in `docs/oracle/FOLLOWUPS.md`; each correction must remove its baseline row in the same change.
 
-P8b must also move the mutation verification into a tracked, CI-runnable location; the current `scratchpad/mut-p8b1.sh` evidence is intentionally gitignored and cannot be replayed by CI.
+The mutation verification is tracked at `scratchpad/mut-p8b1.sh`; wiring it into a normal CI target remains follow-up work.
