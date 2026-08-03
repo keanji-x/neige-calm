@@ -15,7 +15,7 @@ function filesUnder(root) {
 }
 
 /** @param {string} path */
-function normalized(path) { return path.replaceAll('\\', '/').replace(/\.(?:[cm]?[jt]sx?)$/, ''); }
+function withoutSourceExtension(path) { return path.replaceAll('\\', '/').replace(/\.(?:[cm]?[jt]sx?)$/, ''); }
 /** @param {string} source @param {string} pattern */
 function packageMatches(source, pattern) {
   if (pattern.endsWith('*')) return source.startsWith(pattern.slice(0, -1));
@@ -132,12 +132,12 @@ export function checkDuplicationManifest(root) {
     for (const statement of ast.statements) {
       for (const name of exportedNames(statement)) {
         const entry = entriesBySymbol.get(name);
-        if (entry && normalized(path) !== normalized(entry.canonicalPath)) errors.push(`${entry.id}: ${name} must be defined only in ${entry.canonicalPath}; found ${path}`);
+        if (entry && path !== entry.canonicalPath) errors.push(`${entry.id}: ${name} must be defined only in ${entry.canonicalPath}; found ${path}`);
       }
     }
     for (const source of packageSources(ast)) {
       for (const entry of importFenceEntries) {
-        if (entry.packages?.some((pattern) => packageMatches(source, pattern)) && normalized(path) !== normalized(entry.canonicalPath)) {
+        if (entry.packages?.some((pattern) => packageMatches(source, pattern)) && path !== entry.canonicalPath) {
           errors.push(`${entry.id}: ${source} may only be imported by ${entry.canonicalPath}; found ${path}`);
         }
       }
@@ -145,8 +145,8 @@ export function checkDuplicationManifest(root) {
     for (const { name, source } of consumedSymbols(ast)) {
       const entry = consumerEntriesBySymbol.get(name);
       if (!entry || !source.startsWith('.')) continue;
-      const target = normalized(relative(root, resolve(dirname(file), source)));
-      if (target !== normalized(entry.canonicalPath)) errors.push(`${entry.id}: ${name} consumers must import ${entry.canonicalPath}; found ${source} in ${path}`);
+      const target = withoutSourceExtension(relative(root, resolve(dirname(file), source)));
+      if (target !== withoutSourceExtension(entry.canonicalPath)) errors.push(`${entry.id}: ${name} consumers must import ${entry.canonicalPath}; found ${source} in ${path}`);
     }
   }
   return errors;

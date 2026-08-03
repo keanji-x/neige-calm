@@ -40,6 +40,12 @@ An export specifier's public alias is checked (for example,
 name such as `SchemaFormV2` remains a known escape: detecting semantic
 replacements would require type/behavior analysis rather than symbol ownership.
 
+共用解析、不共用策略：抽公共 helper 时，把“怎么解析”和“解析结果怎么判定”分开，
+策略通过参数传入或留在调用方。这里 consumer 的无扩展名 import 需要去扩展名后解析，
+而 owner 文件必须与 manifest 的真实路径精确相等。已审计本 checker 的其余共用 helper：
+`staticString()` 只解析受支持的静态模块源，`packageMatches()` 只执行包围栏匹配，
+`exportedNames()` 只提取 ownership 所需的公开名，均没有被语义相反的策略消费者共用。
+
 The public-symbol syntax table is exhaustive over the enumerated statement forms:
 
 | Public shape | Decision |
