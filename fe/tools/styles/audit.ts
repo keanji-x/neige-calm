@@ -86,3 +86,29 @@ export function compareGlobalClassManifest(cssClasses: ReadonlySet<string>, mani
   for (const name of [...declared].sort()) if (!cssClasses.has(name)) violations.push({ rule: 'global-class-manifest', message: `manifest-only class: ${name}` });
   return violations;
 }
+
+interface RuntimeElement { textContent: string | null; getAttribute(name: string): string | null }
+interface RuntimeSheet { ownerNode?: unknown; cssRules?: ArrayLike<{ cssText: string }> }
+export interface RuntimeDocument {
+  styleSheets: ArrayLike<RuntimeSheet>;
+  querySelectorAll(selector: string): ArrayLike<RuntimeElement>;
+}
+
+export function auditRuntimeStyles(document: RuntimeDocument, order: readonly string[]): CssViolation[] {
+  const violations: CssViolation[] = [];
+  const styleNodes = Array.from(document.querySelectorAll('style'));
+  for (const style of styleNodes) violations.push(...auditLayeredCss(style.textContent ?? '', order));
+  for (const sheet of Array.from(document.styleSheets)) {
+    if (styleNodes.includes(sheet.ownerNode as RuntimeElement)) continue;
+    try {
+      const css = Array.from(sheet.cssRules ?? []).map((rule) => rule.cssText).join('\n');
+      violations.push(...auditLayeredCss(css, order));
+    } catch {
+      violations.push({ rule: 'runtime-stylesheet-readable', message: 'stylesheet cssRules are not readable' });
+    }
+  }
+  for (const element of Array.from(document.querySelectorAll('[style]'))) {
+    if ((element.getAttribute('style') ?? '').trim()) violations.push({ rule: 'runtime-inline-style', message: 'inline style attribute found' });
+  }
+  return violations;
+}
