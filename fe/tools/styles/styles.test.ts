@@ -97,7 +97,6 @@ describe('CSS AST fixtures', () => {
       'runtime-inline-style': () => auditRuntimeStyles(new JSDOM(read('runtime-inline/negative/page.html')).window.document, order),
     };
     expect(new Set(Object.keys(evidence))).toEqual(new Set(STYLE_RULES));
-    expect(new Set(STYLE_RULES)).toEqual(new Set(Object.keys(evidence)));
     for (const [rule, runEvidence] of Object.entries(evidence)) {
       expect(runEvidence().some((violation) => violation.rule === rule), rule).toBe(true);
     }
@@ -184,7 +183,6 @@ describe('CSS AST fixtures', () => {
     }
     const fixtureFiles = new Set(readdirSync(resolve(fixtures, 'layer-forms')));
     expect(fixtureFiles).toEqual(new Set(forms.keys()));
-    expect(new Set(forms.keys())).toEqual(fixtureFiles);
   });
 
   it('limits each exception selector by its rightmost compound', () => {

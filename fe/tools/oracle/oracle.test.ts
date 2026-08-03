@@ -46,7 +46,6 @@ describe('oracle rule fixtures', () => {
     const typeFixtures = readdirSync(resolve(fixtures, 'field-types'), { withFileTypes: true })
       .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
     expect(new Set(typeFixtures)).toEqual(new Set(ORACLE_YAML_FIELDS));
-    expect(new Set(ORACLE_YAML_FIELDS)).toEqual(new Set(typeFixtures));
   });
   const fieldRules: Record<(typeof ORACLE_YAML_FIELDS)[number], string> = {
     id: 'id-format',

@@ -15,7 +15,6 @@ describe('ownership fixtures', () => {
       entries: unknown[]; requests?: unknown[]; changed?: string[];
     }>;
     expect(new Set(Object.keys(fixture))).toEqual(new Set(OWNERSHIP_YAML_FIELDS));
-    expect(new Set(OWNERSHIP_YAML_FIELDS)).toEqual(new Set(Object.keys(fixture)));
     for (const [field, testCase] of Object.entries(fixture)) {
       const violations = validateOwnership(testCase.entries, [], testCase.changed ?? [], testCase.requests ?? []);
       expect(violations, field).toHaveLength(1);
@@ -31,7 +30,6 @@ describe('ownership fixtures', () => {
       'readonly-change-request': () => validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css']),
     };
     expect(new Set(Object.keys(evidence))).toEqual(new Set(OWNERSHIP_RULES));
-    expect(new Set(OWNERSHIP_RULES)).toEqual(new Set(Object.keys(evidence)));
     for (const [rule, runEvidence] of Object.entries(evidence)) {
       expect(runEvidence().some((violation) => violation.rule === rule), rule).toBe(true);
     }
@@ -105,5 +103,4 @@ it('drives coverage against the complete real repository tree', () => {
   expect(violations.every(({ rule }) => rule === 'coverage')).toBe(true);
   const unownedFiles = violations.map(({ message }) => message.replace(/ has 0 owners$/, ''));
   expect(new Set(unownedFiles)).toEqual(new Set(actualFiles));
-  expect(new Set(actualFiles)).toEqual(new Set(unownedFiles));
 });
