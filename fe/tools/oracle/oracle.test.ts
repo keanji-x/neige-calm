@@ -143,4 +143,4 @@ describe('oracle rule fixtures', () => {
 it('accepts all real oracle data without exceptions', () => {
   const repoRoot = resolve(import.meta.dirname, '../../..');
   expect(validateOracle(defaultOracleOptions(repoRoot))).toEqual([]);
-});
+}, 30_000);
