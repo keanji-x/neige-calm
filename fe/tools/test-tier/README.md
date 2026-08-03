@@ -9,3 +9,6 @@ The tier/project agreement is intentionally enforced only after an entry changes
 At the start of phase 2 the oracle contains 1119 `pending`, 8 `skipped`, and zero `migrated` entries,
 so this agreement check has no teeth until entries are flipped to `migrated`; schema and partition
 checks remain active throughout.
+
+For the retained manual mutation proofs, run `tools/test-tier/p0b-tier-mutations.sh <case>` from
+`fe` (run it without an argument to list the available cases).

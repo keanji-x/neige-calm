@@ -1,4 +1,4 @@
-import { matchesGlob } from 'node:path';
+import { isAbsolute, matchesGlob, relative, resolve, sep } from 'node:path';
 
 export interface TestProject {
   name: string;
@@ -53,9 +53,20 @@ export function testAssignments(paths: readonly string[], projects: readonly Tes
   return paths.map((path) => ({ path, projects: projectsForPath(path, projects) }));
 }
 
-export function playwrightProjectFromConfig(config: unknown): TestProject {
-  const testDir = (config as { testDir?: unknown } | undefined)?.testDir;
-  const directory = (typeof testDir === 'string' ? testDir : './e2e').replace(/^\.\//, '').replace(/\/$/, '');
+export function playwrightProjectFromConfig(config: unknown, configRoot: string): TestProject {
+  if (typeof config !== 'object' || config === null) throw new Error('playwright config must be an object');
+  const shape = config as Record<string, unknown>;
+  for (const unsupported of ['projects', 'testMatch', 'testIgnore']) {
+    if (unsupported in shape) throw new Error(`playwright config ${unsupported} is not supported by the test-tier gate`);
+  }
+  if (typeof shape.testDir !== 'string' || shape.testDir.length === 0) {
+    throw new Error('playwright config must have a non-empty string testDir');
+  }
+  const absoluteDirectory = resolve(configRoot, shape.testDir);
+  const directory = relative(configRoot, absoluteDirectory).replaceAll('\\', '/').replace(/\/$/, '');
+  if (isAbsolute(directory) || directory === '..' || directory.startsWith(`..${sep}`)) {
+    throw new Error('playwright config testDir must resolve inside the config root');
+  }
   return Object.freeze({
     name: 'playwright',
     include: Object.freeze([
@@ -64,4 +75,12 @@ export function playwrightProjectFromConfig(config: unknown): TestProject {
     ]),
     exclude: Object.freeze([]),
   });
+}
+
+export function projectNamesFromScript(script: unknown): string[] {
+  if (typeof script !== 'string') throw new Error('test script must be a string');
+  const names: string[] = [];
+  const pattern = /(?:^|\s)--project(?:=|\s+)([^\s&|;]+)/g;
+  for (const match of script.matchAll(pattern)) names.push(match[1]);
+  return names;
 }

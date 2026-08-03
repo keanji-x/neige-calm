@@ -4,6 +4,12 @@ import { projectsForPath } from './project-map.ts';
 
 export interface TierEntry { id?: unknown; migration?: unknown; test_tier?: unknown; authoritative_test?: unknown }
 export interface TierViolation { id: string; rule: 'test-tier-project'; source: string; message: string }
+export interface TierGateInput {
+  oracleEntries: readonly TierEntry[];
+  trackedFixtures: readonly string[];
+  trackedTests: readonly string[];
+  projects: readonly TestProject[];
+}
 
 const LOCATION = /^([^\s:]+):(\d+)(?:-(\d+))?$/;
 const EXPECTED_PROJECTS = Object.freeze({
@@ -30,11 +36,47 @@ export function referencedPaths(value: string): string[] {
 
 export function validateTierEntries(entries: readonly TierEntry[]): void {
   for (const [index, entry] of entries.entries()) {
-    if (!MIGRATIONS.has(String(entry.migration))) throw new Error(`entry ${index} has invalid migration: ${String(entry.migration)}`);
-    if (!TEST_TIERS.has(String(entry.test_tier))) throw new Error(`entry ${index} has invalid test_tier: ${String(entry.test_tier)}`);
+    if (typeof entry.migration !== 'string' || !MIGRATIONS.has(entry.migration)) throw new Error(`entry ${index} has invalid migration: ${String(entry.migration)}`);
+    if (typeof entry.test_tier !== 'string' || !TEST_TIERS.has(entry.test_tier)) throw new Error(`entry ${index} has invalid test_tier: ${String(entry.test_tier)}`);
     if (typeof entry.authoritative_test !== 'string') throw new Error(`entry ${index} authoritative_test must be a string`);
     referencedPaths(entry.authoritative_test);
   }
+}
+
+const FIXTURE_MANIFEST = Object.freeze([
+  'tools/test-tier/fixtures/negative/data.yaml',
+  'tools/test-tier/fixtures/negative/orphan.spec.ts',
+  'tools/test-tier/fixtures/negative/wrong-browser.test.ts',
+  'tools/test-tier/fixtures/positive/browser.browser.test.ts',
+  'tools/test-tier/fixtures/positive/data.yaml',
+  'tools/test-tier/fixtures/positive/static.test.ts',
+]);
+const BROWSER_PROBE = 'tools/test-tier/layout.browser.test.ts';
+
+export function tierGateViolations(input: TierGateInput): string[] {
+  validateTierEntries(input.oracleEntries);
+  const violations: string[] = [];
+  const expectedFixtures = new Set(FIXTURE_MANIFEST);
+  const actualFixtures = new Set(input.trackedFixtures);
+  const missingFixtures = FIXTURE_MANIFEST.filter((path) => !actualFixtures.has(path));
+  const extraFixtures = input.trackedFixtures.filter((path) => !expectedFixtures.has(path));
+  if (missingFixtures.length || extraFixtures.length) {
+    violations.push(`tracked fixture set differs from its manifest: missing ${missingFixtures.join(', ') || 'none'}; extra ${extraFixtures.join(', ') || 'none'}`);
+  }
+  const vitestProjects = input.projects.filter(({ name }) => name !== 'playwright');
+  const assignments = input.trackedTests
+    .filter((path) => !expectedFixtures.has(path))
+    .map((path) => ({ path, projects: projectsForPath(path, vitestProjects) }));
+  const unassigned = assignments.filter(({ projects }) => projects.length === 0);
+  if (unassigned.length) violations.push(`tracked tests outside every vitest project: ${unassigned.map(({ path }) => path).join(', ')}`);
+  const overlapping = assignments.filter(({ projects }) => projects.length > 1);
+  if (overlapping.length) violations.push(`tracked tests in multiple vitest projects: ${overlapping.map(({ path }) => path).join(', ')}`);
+  const browserProbe = assignments.find(({ path }) => path === BROWSER_PROBE);
+  if (!browserProbe || !browserProbe.projects.includes('browser')) {
+    violations.push(`${BROWSER_PROBE} must be tracked and mapped to the browser project`);
+  }
+  return [...violations, ...checkTestTier(input.oracleEntries, input.projects, '/repo', '/repo/fe')
+    .map(({ id, message }) => `test-tier-project: ${id}: ${message}`)];
 }
 
 function configRelativePath(repoRoot: string, configRoot: string, path: string): string | null {

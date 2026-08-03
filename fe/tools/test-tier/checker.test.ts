@@ -4,7 +4,7 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import vitestConfig from '../../vitest.config';
 import playwrightConfig from '../../playwright.config';
-import { checkTestTier, type TierEntry, validateTierEntries } from './checker';
+import { checkTestTier, type TierEntry, tierGateViolations, validateTierEntries } from './checker';
 import { playwrightProjectFromConfig, testProjectsFromConfig } from './project-map';
 
 const configRoot = resolve(import.meta.dirname, '../..');
@@ -61,7 +61,7 @@ describe('test-tier-project fixtures', () => {
 
   it('accepts a browser-tier test collected by the Playwright testDir', () => {
     const entry = { id: 'GATE-TIER-PLAYWRIGHT', migration: 'migrated', test_tier: 'browser', authoritative_test: 'fe/e2e/probe.spec.ts:1' };
-    expect(checkTestTier([entry], [playwrightProjectFromConfig(playwrightConfig)], '/repo', '/repo/fe')).toEqual([]);
+    expect(checkTestTier([entry], [playwrightProjectFromConfig(playwrightConfig, configRoot)], '/repo', '/repo/fe')).toEqual([]);
   });
 
   it('enforces tier mismatch only after migration', () => {
@@ -92,6 +92,13 @@ describe('test-tier-project fixtures', () => {
     expect(() => validateTierEntries([entry])).toThrow();
   });
 
+  it.each([
+    ['sequence migration', { migration: ['pending'], test_tier: 'static', authoritative_test: 'fe/probe.test.ts:1' }],
+    ['sequence test tier', { migration: 'pending', test_tier: ['static'], authoritative_test: 'fe/probe.test.ts:1' }],
+  ])('rejects a YAML %s instead of coercing it to a scalar', (_label, entry) => {
+    expect(() => validateTierEntries([entry])).toThrow();
+  });
+
   it('parses every authoritative location composition without textual path heuristics', () => {
     const entry = {
       id: 'GATE-TIER-MAP-003', migration: 'migrated', test_tier: 'browser',
@@ -99,5 +106,41 @@ describe('test-tier-project fixtures', () => {
     };
     const violations = checkTestTier([entry], [], '/repo', '/repo/fe');
     expect(new Set(violations.map(({ source }) => source))).toEqual(new Set(['fe/a.test.ts', 'fe/b.test.ts', 'fe/c.test.ts']));
+  });
+});
+
+describe('tier gate decisions', () => {
+  const manifest = [
+    'tools/test-tier/fixtures/negative/data.yaml', 'tools/test-tier/fixtures/negative/orphan.spec.ts',
+    'tools/test-tier/fixtures/negative/wrong-browser.test.ts', 'tools/test-tier/fixtures/positive/browser.browser.test.ts',
+    'tools/test-tier/fixtures/positive/data.yaml', 'tools/test-tier/fixtures/positive/static.test.ts',
+  ];
+  const projects = [
+    { name: 'platform-independent', include: ['**/*.test.{js,ts,mts}'], exclude: ['**/*.browser.test.ts'] },
+    { name: 'browser', include: ['**/*.browser.test.ts'], exclude: [] },
+  ];
+  const valid = {
+    oracleEntries: [], trackedFixtures: manifest,
+    trackedTests: ['tools/test-tier/layout.browser.test.ts', 'tools/test-tier/fixtures/negative/orphan.spec.ts'], projects,
+  };
+
+  it('excludes the declared fixtures from project coverage', () => {
+    expect(tierGateViolations(valid)).toEqual([]);
+  });
+
+  it.each([
+    ['missing fixture', { trackedFixtures: manifest.slice(1) }, 'tracked fixture set differs'],
+    ['extra fixture', { trackedFixtures: [...manifest, 'tools/test-tier/fixtures/positive/extra.ts'] }, 'tracked fixture set differs'],
+    ['unassigned test suffix', { trackedTests: [...valid.trackedTests, 'probe.test.mts'], projects: projects.slice(1) }, 'outside every vitest project'],
+    ['overlapping test', { trackedTests: [...valid.trackedTests, 'probe.test.ts'], projects: [...projects, { name: 'other', include: ['probe.test.ts'], exclude: [] }] }, 'multiple vitest projects'],
+    ['missing browser probe', { trackedTests: ['other.browser.test.ts'] }, 'must be tracked and mapped'],
+    ['misassigned browser probe', { projects: projects.slice(0, 1) }, 'must be tracked and mapped'],
+  ])('reports %s', (_label, change, message) => {
+    expect(tierGateViolations({ ...valid, ...change })).toEqual(expect.arrayContaining([expect.stringContaining(message)]));
+  });
+
+  it('reports an oracle tier/project mismatch', () => {
+    const oracleEntries = [{ id: 'GATE', migration: 'migrated', test_tier: 'browser', authoritative_test: 'fe/probe.test.ts:1' }];
+    expect(tierGateViolations({ ...valid, oracleEntries })).toEqual(expect.arrayContaining([expect.stringContaining('test-tier-project')]));
   });
 });
