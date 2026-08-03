@@ -1,2 +1,1 @@
-import { gfm } from 'micromark-extension-gfm';
-void gfm;
+export const gfm = import('micromark-extension-gfm');

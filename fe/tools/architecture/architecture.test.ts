@@ -12,8 +12,23 @@ import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
 import { duplicationManifest } from './duplication-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
+const shapeFixtures = resolve(fixtures, '_syntax-shapes');
 const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfiguration;
 const cruiseOptions = config.options ?? {};
+
+// Independent contract tables: never derive these shapes from checker implementation.
+const publicSymbolShapes = new Map<string, boolean>([
+  ['export-variable', true], ['export-destructuring', true], ['export-function', true],
+  ['export-class', true], ['export-interface', true], ['export-type', true],
+  ['export-enum', true], ['export-namespace', true], ['export-local-alias', true],
+  ['export-reexport', true], ['export-star-as', true], ['export-default-class', false],
+  ['export-equals', false], ['export-declare-variable', true],
+  ['export-declare-function', true], ['export-declare-class', true], ['export-as-default', false],
+]);
+const packageImportShapes = [
+  'static-import', 'side-effect-import', 'type-import', 'named-reexport', 'star-reexport',
+  'namespace-reexport', 'dynamic-import', 'require-call', 'import-equals-require',
+] as const;
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
   if (caseName.startsWith('dup-')) {
@@ -68,10 +83,11 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
   if (caseName === 'markdown-micromark-import') {
     const filePath = resolve(fixtures, caseName, kind, 'web/src/case.ts');
     const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
-    const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
-      filePath: resolve(import.meta.dirname, '../../web/src/main.tsx'),
-    });
-    const messages = result.messages.filter((message) => message.ruleId === 'no-restricted-imports');
+    const lintPaths = ['web/src/main.tsx', 'web/src/ui/state/public.ts', 'core/platform-independent.ts'];
+    const results = await Promise.all(lintPaths.map((lintPath) => eslint.lintText(ts.sys.readFile(filePath) ?? '', {
+      filePath: resolve(import.meta.dirname, '../..', lintPath),
+    })));
+    const messages = results.flatMap(([result]) => result.messages).filter((message) => message.ruleId === 'no-restricted-syntax');
     return { status: messages.length ? 1 : 0, stdout: messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n'), stderr: '' };
   }
   if (caseName === 'react-state-hook-import') {
@@ -147,7 +163,7 @@ describe('architecture fixtures', () => {
     ['dup-export-alias', 'INV-DUP-001'],
     ['dup-import-fence-symbol', 'INV-DUP-004'],
     ['core-markdown-node-import', 'node:fs'],
-    ['markdown-micromark-import', 'micromark-extension-gfm'],
+    ['markdown-micromark-import', 'no-restricted-syntax'],
     ['markdown-public-entry-core', 'markdown-public-entry-only'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
@@ -171,6 +187,7 @@ describe('architecture fixtures', () => {
   ]);
 
   for (const caseName of readdirSync(fixtures)) {
+    if (caseName === '_syntax-shapes') continue;
     it(`${caseName}: accepts the positive and rejects the negative fixture`, async () => {
       const positive = await cruise(caseName, 'positive');
       const negative = await cruise(caseName, 'negative');
@@ -183,6 +200,22 @@ describe('architecture fixtures', () => {
 });
 
 describe('duplication manifest on the application tree', () => {
+  it('covers exactly the independently enumerated public-symbol syntax fixtures', () => {
+    const fixtureNames = new Set(readdirSync(resolve(shapeFixtures, 'public-symbol')));
+    expect(fixtureNames).toEqual(new Set(publicSymbolShapes.keys()));
+    for (const [shape, mustReject] of publicSymbolShapes) {
+      const errors = checkDuplicationManifest(resolve(shapeFixtures, 'public-symbol', shape));
+      expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(mustReject);
+    }
+  });
+  it('covers exactly the independently enumerated package-import syntax fixtures', () => {
+    const fixtureNames = new Set(readdirSync(resolve(shapeFixtures, 'package-import')));
+    expect(fixtureNames).toEqual(new Set(packageImportShapes));
+    for (const shape of packageImportShapes) {
+      const errors = checkDuplicationManifest(resolve(shapeFixtures, 'package-import', shape));
+      expect(errors.some((error) => error.includes('INV-DUP-005')), shape).toBe(true);
+    }
+  });
   it('deep-freezes manifest entries and nested arrays', () => {
     expect(Object.isFrozen(duplicationManifest)).toBe(true);
     for (const entry of duplicationManifest) {

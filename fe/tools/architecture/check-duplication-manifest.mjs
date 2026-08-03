@@ -21,16 +21,50 @@ function packageMatches(source, pattern) {
   if (pattern.endsWith('*')) return source.startsWith(pattern.slice(0, -1));
   return source === pattern || source.startsWith(`${pattern}/`);
 }
+/** @param {ts.Node} node @param {ts.SyntaxKind} kind */
+function hasModifier(node, kind) { return ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === kind); }
+/** @param {ts.BindingName} name @returns {string[]} */
+function bindingNames(name) {
+  if (ts.isIdentifier(name)) return [name.text];
+  return name.elements.flatMap((element) => ts.isOmittedExpression(element) ? [] : bindingNames(element.name));
+}
 /** @param {ts.Statement} statement @returns {string[]} */
-function declaredNames(statement) {
+function exportedNames(statement) {
   if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
     return statement.exportClause.elements.map((element) => element.name.text);
   }
-  if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement)) {
-    return statement.name ? [statement.name.text] : [];
+  if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamespaceExport(statement.exportClause)) {
+    return [statement.exportClause.name.text];
   }
-  if (!ts.isVariableStatement(statement)) return [];
-  return statement.declarationList.declarations.flatMap((declaration) => ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
+  if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isInterfaceDeclaration(statement)
+    || ts.isTypeAliasDeclaration(statement) || ts.isEnumDeclaration(statement) || ts.isModuleDeclaration(statement)) {
+    return statement.name && hasModifier(statement, ts.SyntaxKind.ExportKeyword) && !hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
+      ? [statement.name.text] : [];
+  }
+  if (!ts.isVariableStatement(statement) || !hasModifier(statement, ts.SyntaxKind.ExportKeyword)) return [];
+  return statement.declarationList.declarations.flatMap((declaration) => bindingNames(declaration.name));
+}
+
+/** @param {ts.SourceFile} ast @returns {string[]} */
+function packageSources(ast) {
+  /** @type {string[]} */
+  const sources = [];
+  /** @param {ts.Node} node */
+  function visit(node) {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+      sources.push(node.moduleSpecifier.text);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)
+      && node.moduleReference.expression && ts.isStringLiteral(node.moduleReference.expression)) {
+      sources.push(node.moduleReference.expression.text);
+    } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+      || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+      && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) {
+      sources.push(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  return sources;
 }
 
 /** @param {string} root @returns {string[]} */
@@ -39,21 +73,26 @@ export function checkDuplicationManifest(root) {
   const entriesBySymbol = new Map(duplicationManifest
     .filter((entry) => entry.type === 'unique-symbol')
     .flatMap((entry) => entry.symbols.map((symbol) => [symbol, entry])));
+  const importFenceEntries = duplicationManifest.filter((entry) => entry.type === 'import-fence');
   for (const file of [...filesUnder(resolve(root, 'core')), ...filesUnder(resolve(root, 'web/src'))]) {
     const path = relative(root, file).replaceAll('\\', '/');
     const ast = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
     for (const statement of ast.statements) {
-      for (const name of declaredNames(statement)) {
+      for (const name of exportedNames(statement)) {
         const entry = entriesBySymbol.get(name);
         if (entry && normalized(path) !== normalized(entry.canonicalPath)) errors.push(`${entry.id}: ${name} must be defined only in ${entry.canonicalPath}; found ${path}`);
       }
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-      const source = statement.moduleSpecifier.text;
-      for (const entry of duplicationManifest.filter((item) => item.type === 'import-fence')) {
+    }
+    for (const source of packageSources(ast)) {
+      for (const entry of importFenceEntries) {
         if (entry.packages?.some((pattern) => packageMatches(source, pattern)) && normalized(path) !== normalized(entry.canonicalPath)) {
           errors.push(`${entry.id}: ${source} may only be imported by ${entry.canonicalPath}; found ${path}`);
         }
       }
+    }
+    for (const statement of ast.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const source = statement.moduleSpecifier.text;
       const clause = statement.importClause;
       const imported = clause?.namedBindings && ts.isNamedImports(clause.namedBindings)
         ? clause.namedBindings.elements.map((element) => (element.propertyName ?? element.name).text) : [];

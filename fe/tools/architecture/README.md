@@ -40,6 +40,29 @@ An export specifier's public alias is checked (for example,
 name such as `SchemaFormV2` remains a known escape: detecting semantic
 replacements would require type/behavior analysis rather than symbol ownership.
 
+The public-symbol syntax table is exhaustive at the TypeScript statement level:
+
+| Public shape | Decision |
+| --- | --- |
+| exported variable (including destructuring), function, class, interface, type, enum, namespace | checked |
+| local export alias, named re-export, `export * as X` | checked by the public export name |
+| `export declare` variable/function/class | checked |
+| `export default class X`, `export = X`, `export { X as default }` | allowed: these publish `default`/the module value, not a named `X` export |
+
+The package-import syntax table is also exhaustive for literal package sources:
+
+| Package shape | Decision |
+| --- | --- |
+| static, side-effect, and type-only import | checked |
+| named, star, and namespace re-export | checked |
+| dynamic `import()`, `require()`, and TypeScript `import = require()` | checked |
+
+Non-literal computed package names are a registered escape: resolving them would
+require constant folding/data-flow, while rejecting every computed load would ban
+unrelated application behavior. Dependency-cruiser fixtures verify that both
+public-entry rules see dynamic imports. ESLint fixtures lint a dynamic markdown
+import through each of the three markdown-restriction pattern configurations.
+
 | Contract | Constraint type | Rule/check | Fixture directory |
 | --- | --- | --- | --- |
 | INV-DUP-001 | unique implementation | duplication manifest | `dup-inv-001` |
