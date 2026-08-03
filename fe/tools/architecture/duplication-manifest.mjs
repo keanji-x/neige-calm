@@ -7,6 +7,15 @@
  * additionally owns disjoint third-party import families so each fence has an
  * independent mutation signal while sharing core/markdown/public.ts.
  */
+function freezeEntry(entry) {
+  return Object.freeze({
+    ...entry,
+    symbols: Object.freeze(entry.symbols),
+    ...(entry.packages ? { packages: Object.freeze(entry.packages) } : {}),
+    ...(entry.mergeObligations ? { mergeObligations: Object.freeze(entry.mergeObligations) } : {}),
+  });
+}
+
 export const duplicationManifest = Object.freeze([
   { id: 'INV-DUP-001', type: 'unique-symbol', canonicalPath: 'web/src/ui/schema-form/public.tsx', symbols: ['SchemaForm'] },
   { id: 'INV-DUP-002', type: 'unique-symbol', canonicalPath: 'web/src/ui/calm-select/public.tsx', symbols: ['CalmSelect'] },
@@ -18,4 +27,4 @@ export const duplicationManifest = Object.freeze([
   { id: 'INV-DUP-008', type: 'unique-symbol', canonicalPath: 'web/src/ui/editable-title/public.tsx', symbols: ['EditableTitle'], mergeObligations: ['Cove 版有 #288 的合成 click 抑制器；合并时必须把抑制器带进统一实现，而不是删掉。'] },
   { id: 'INV-DUP-009', type: 'unique-symbol', canonicalPath: 'web/src/features/wave/row/public.tsx', symbols: ['WaveRow'] },
   { id: 'INV-DUP-010', type: 'unique-symbol', canonicalPath: 'web/src/ui/confirm-dialog/copy.ts', symbols: ['DELETE_WAVE_COPY'] },
-]);
+].map(freezeEntry));

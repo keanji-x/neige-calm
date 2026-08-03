@@ -182,6 +182,15 @@ describe('architecture fixtures', () => {
 });
 
 describe('duplication manifest on the application tree', () => {
+  it('deep-freezes manifest entries and nested arrays', () => {
+    expect(Object.isFrozen(duplicationManifest)).toBe(true);
+    for (const entry of duplicationManifest) {
+      expect(Object.isFrozen(entry), entry.id).toBe(true);
+      expect(Object.isFrozen(entry.symbols), `${entry.id} symbols`).toBe(true);
+      if (entry.packages) expect(Object.isFrozen(entry.packages), `${entry.id} packages`).toBe(true);
+      if (entry.mergeObligations) expect(Object.isFrozen(entry.mergeObligations), `${entry.id} mergeObligations`).toBe(true);
+    }
+  });
   it('retains every oracle contract with an explicit merge obligation', () => {
     const idsWithOracleMergeObligations = ['INV-DUP-004', 'INV-DUP-005', 'INV-DUP-006', 'INV-DUP-008'];
     const idsWithManifestObligations = duplicationManifest
