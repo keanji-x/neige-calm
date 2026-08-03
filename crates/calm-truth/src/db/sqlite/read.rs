@@ -227,18 +227,64 @@ impl RepoRead for SqlxRepo {
         // does not exist in production is the trade this comment exists to
         // refuse.
         //
+        // COST, measured rather than asserted (#1016 review). Aggregating
+        // every card and overlay into one JSON string and parsing it whole is
+        // NOT free on big waves. Release build, in-memory sqlite, 30 calls
+        // per point, one-statement vs. the old three-SELECT deferred tx:
+        //
+        //     8 cards × 2 KB payload   0.47 ms vs 0.63 ms   (0.13 vs 0.09 MiB)
+        //    60 cards × 20 KB payload 15.2  ms vs 4.44 ms   (5.04 vs 2.64 MiB)
+        //   200 cards × 8 KB payload  21.9  ms vs 10.6  ms  (7.67 vs 4.21 MiB)
+        //
+        // Small waves — the overwhelmingly common shape — get FASTER: one
+        // round trip beats three. Waves carrying large payloads (report /
+        // spec cards) get 2–3.5× slower and allocate ~1.8× more, peak live
+        // included, because the row is materialized as text and then parsed
+        // into the same values a second time. That is a real regression on
+        // the tail, and the reason it is accepted here is that the
+        // alternative shapes are worse in kind, not in degree: three
+        // autocommit statements drop cross-statement consistency on every
+        // deployment, and the deferred tx is the deadlock this issue exists
+        // to remove. If the tail ever matters, the fix is to stop shipping
+        // `payload` through the aggregate (fetch card bodies separately)
+        // rather than to reopen the transaction question.
+        //
         // `cards` / `overlays` come back as JSON arrays shaped exactly like
         // the public `Card` / `Overlay` serde representation, so they decode
-        // without a second row-mirror to keep in sync; the only fixup is
-        // `deletable`, which is INTEGER in sqlite and `bool` in the model.
-        // Adding a column to `cards` / `overlays` means adding it here, the
-        // same audit the previous explicit SELECT lists already required.
+        // without a second row-mirror to keep in sync. Adding a column to
+        // `cards` / `overlays` means adding it here, the same audit the
+        // previous explicit SELECT lists already required. Two columns need
+        // an explicit fixup on the way into JSON:
+        //
+        //   * `deletable` — INTEGER in sqlite, `bool` in the model.
+        //
+        //   * `sort` — REAL in sqlite, `f64` in the model. `json_object`
+        //     renders a FLOAT argument with `%!0.15g` (`jsonAppendSqlValue`
+        //     in the bundled sqlite 3.46.0) and, unlike `sqlite3QuoteValue`,
+        //     has NO "reparse and fall back to `%!0.20e` if it does not
+        //     round-trip" branch. 15 significant digits is not enough for
+        //     f64: `json_object('s', 1.0000000000000002)` yields `1.0`.
+        //     Rendering through `printf('%!.17g', …)` instead — 17
+        //     significant digits, the round-trip width for binary64 — and
+        //     splicing the result in as a JSON number via `json()` keeps the
+        //     value bit-exact. Pinned by
+        //     `wave_detail_sort_precision_tests`.
+        //
+        //     This matters beyond a cosmetic digit: two adjacent f64s could
+        //     render to the same decimal, `total_cmp` below would then order
+        //     them wrong, and the web client writes the value it read back
+        //     to the DB when reordering cards (`WaveList.tsx`) — a silent,
+        //     unlogged rewrite of persisted data.
+        //
+        //     (`payload` needs no such care: `json(c.payload)` splices the
+        //     stored TEXT through verbatim without reparsing its numbers.)
         let row = sqlx::query_as::<_, WaveDetailRow>(
             r#"SELECT w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle,
                       w.cwd, w.workflow_id, w.purpose, w.workflow_input, w.terminal_at,
                       w.created_at, w.updated_at,
                       (SELECT json_group_array(json_object(
-                           'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind, 'sort', c.sort,
+                           'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind,
+                           'sort', json(printf('%!.17g', c.sort)),
                            'payload', json(c.payload), 'title', c.title,
                            'deletable', json(CASE WHEN c.deletable THEN 'true' ELSE 'false' END),
                            'created_at', c.created_at, 'updated_at', c.updated_at))
@@ -451,10 +497,15 @@ impl RepoRead for SqlxRepo {
         // What WAS collapsed is the part the verdict is computed from: policy,
         // ceiling, in-flight occupancy, in-flight keys and the wave's cove now
         // come from a single statement, so a displayed capacity /
-        // schedulability can no longer be stitched together from two versions
-        // of the database. `evaluate_schedulability`'s doc comment states
-        // exactly which two reads remain outside that snapshot and why they
-        // are inherently point-in-time.
+        // schedulability can no longer be stitched together from four versions
+        // of the database. Two remain — the frozen-declaration scan and the
+        // per-reference lookups. Not just "stale": a task deleted or driven
+        // terminal between the core snapshot and the frozen scan can yield a
+        // verdict set that contradicts itself (`schedulable = true` for a key
+        // whose slot the same call counted as occupied). That skew predates
+        // #1016 and survives it; `evaluate_schedulability`'s doc comment spells
+        // out the exact interleaving and why this diagnostics-only surface
+        // tolerates it while the write path does not.
         let mut conn = self.pool.acquire().await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);

@@ -188,21 +188,44 @@ async fn wave_projection_state(
 /// drives, while the read-only path (`read.rs::task_diagnostics`) hands it a
 /// pooled connection in AUTOCOMMIT mode.
 ///
-/// Consistency on the READ path, stated precisely rather than as a blanket
-/// claim. The verdict core — policy, ceiling, in-flight occupancy, in-flight
+/// Consistency on the READ path, stated precisely — including what is still
+/// broken. The verdict core — policy, ceiling, in-flight occupancy, in-flight
 /// keys, the wave's cove — is ONE statement ([`wave_projection_state`]), so a
 /// displayed capacity or schedulability decision can no longer be assembled
 /// from two different versions of the database. Two reads remain outside that
-/// statement and are therefore only individually consistent:
+/// statement, each its own autocommit version:
 ///
 ///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
 ///     key is already executing"; and
 ///   * the per-reference existence/cove lookups, which are questions about
 ///     OTHER waves and cards and are inherently point-in-time.
 ///
-/// Both are strictly narrower than what the four-statement version mixed, and
-/// on the write path all of it runs inside the caller's IMMEDIATE
-/// transaction, so the verdict that actually admits tasks is fully atomic.
+/// The per-reference lookups really are only "possibly stale": they ask about
+/// unrelated entities and a stale answer is a stale answer.
+///
+/// The frozen scan is NOT merely stale — it can make the returned verdict set
+/// SELF-CONTRADICTORY, and this doc says so rather than rounding it down to
+/// "pointwise consistent". The core snapshot at t0 and the frozen scan at t1
+/// disagree about any task whose row changed in between. Concretely: a task
+/// that is in-flight at t0 and deleted (or driven terminal) before t1 still
+/// occupies a ceiling slot in `capacity`, yet no longer appears in
+/// `frozen_by_key`. The result can be a verdict carrying `schedulable = true`
+/// for a key whose slot the same call already counted as taken — a decision
+/// that no single database version would have produced. The reverse skew
+/// (row becomes frozen after t0) is the same shape.
+///
+/// This is not a #1016 regression: the pre-#1016 four-statement version had
+/// the identical split — #1016 only shrank the number of versions that can be
+/// mixed, from four to two. Collapsing the remainder is a separate job:
+/// `evaluate_schedulability` fans out one data-dependent query per declared
+/// ref, so it cannot become a single statement without restructuring the
+/// predicate that the write path shares.
+///
+/// What keeps the skew off the correctness path: on the WRITE path all of
+/// this runs inside the caller's IMMEDIATE transaction, so the verdict that
+/// actually ADMITS tasks is fully atomic. The read path
+/// (`read.rs::task_diagnostics`) is a diagnostics surface — a contradictory
+/// verdict there is displayed, never acted on.
 ///
 /// Why not an explicit deferred tx on the read path: it would hold R locks
 /// across statements and could cycle against an IMMEDIATE writer touching the

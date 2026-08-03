@@ -443,3 +443,9 @@ mod pool_memory_anchor_tests;
 
 #[cfg(test)]
 mod proposal_withdraw_upgrade_tests;
+
+// #1016 — `wave_detail` ships `cards` as JSON; `cards.sort` is a REAL that
+// `json_object` would render with only 15 significant digits. Pins the
+// bit-exact round-trip.
+#[cfg(test)]
+mod wave_detail_sort_precision_tests;
