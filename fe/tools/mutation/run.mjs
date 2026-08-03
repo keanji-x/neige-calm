@@ -3,12 +3,13 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { parse } from 'yaml';
 import { architecturePlugin } from '../architecture/plugin.mjs';
 // @ts-ignore Node 22+ strips erasable TypeScript syntax; the build intentionally does not emit tools.
 const mutationRunner = await import('./runner.ts');
 const {
-  byteSequencesEqual, gitApplyDirectory, judgeMutation, parseVitestReport, selectedEntries, trackedFixtureSetMatches,
-  validateManifest, verdictExitCode,
+  byteSequencesEqual, gitApplyDirectory, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
+  parseVitestReport, selectedEntries, trackedFixtureSetMatches, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
@@ -28,7 +29,7 @@ function checkedGit(args) {
 }
 
 function validateTrackedFixtures() {
-  const tracked = checkedGit(['ls-files', '--cached', '--others', '--exclude-standard', 'tools/mutation/fixtures/']);
+  const tracked = checkedGit(['ls-files', '--cached', 'tools/mutation/fixtures/']);
   if (!trackedFixtureSetMatches(tracked)) throw new Error('tracked fixture source set differs from the independent fixture catalog');
 }
 
@@ -38,16 +39,17 @@ function changedPaths() {
   return checkedGit(['diff', '--no-renames', '--name-only', `${mergeBase}...HEAD`, '--']).split('\n').filter(Boolean);
 }
 
-const oracleIds = new Set(readdirSync(resolve(feRoot, '../docs/oracle')).filter((name) => name.endsWith('.yaml')).flatMap((name) =>
-  [...readFileSync(resolve(feRoot, '../docs/oracle', name), 'utf8').matchAll(/^- id:\s*(\S+)\s*$/gm)].map((match) => match[1])));
+const oracleRoot = resolve(feRoot, '../docs/oracle');
+const oracleIds = oracleIdsFromDocuments(readdirSync(oracleRoot).filter((name) => name.endsWith('.yaml'))
+  .map((name) => parse(readFileSync(resolve(oracleRoot, name), 'utf8'))));
 const architectureRuleNames = new Set(Object.keys(architecturePlugin.rules ?? {}));
-validateManifest(manifest, { oracle: oracleIds, 'arch-rule': architectureRuleNames });
+const trackedPaths = new Set(checkedGit(['ls-files', '--cached']).split('\n').filter(Boolean));
+validateManifest(manifest, { oracle: oracleIds, 'arch-rule': architectureRuleNames }, trackedPaths);
 validateTrackedFixtures();
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner requires a clean worktree');
 const changed = values.base ? changedPaths() : [];
 const selected = values.base ? selectedEntries(manifest, changed) : manifest;
 const infrastructureChanged = changed.some((path) => path.startsWith('fe/tools/mutation/'));
-if (selected.length === 0 && infrastructureChanged) throw new Error('selected 0 mutations after mutation infrastructure changed');
 const report = [];
 const temporary = mkdtempSync(resolve(tmpdir(), 'neige-mutation-'));
 try {
@@ -103,4 +105,4 @@ if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runn
 const output = JSON.stringify({ selected: selected.length, total: manifest.length, mutations: report }, null, 2);
 if (values.report) writeFileSync(resolve(feRoot, values.report), `${output}\n`);
 console.log(output);
-process.exitCode = report.length === 0 ? 1 : Math.max(...report.map(({ verdict }) => verdictExitCode(verdict)));
+process.exitCode = mutationRunExitCode(report.map(({ verdict }) => verdict), infrastructureChanged, Boolean(values.base));

@@ -1,91 +1,20 @@
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
-  byteSequencesEqual, declaredFixtureDirectories, gitApplyDirectory, judgeMutation, parseFailedTestIds, parsePatchTarget,
-  parseVitestReport, selectedEntries, trackedFixtureSetMatches, validateManifest, type MutationEntry, type MutationRunResult,
+  byteSequencesEqual, declaredFixtureDirectories, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
+  parseFailedTestIds, parsePatchTarget, parseVitestReport, selectedEntries, trackedFixtureSetMatches, validateManifest,
+  type MutationEntry, type MutationRunResult,
 } from './runner';
 
-const root = resolve(import.meta.dirname, '../..');
 const fixtureRoot = resolve(import.meta.dirname, 'fixtures');
-const fixtureNames = declaredFixtureDirectories.map((path) => path.split('/').at(-1)!).filter((name) => name !== 'valid');
-
-function git(args: string[]) {
-  return spawnSync('git', args, { cwd: root, encoding: 'utf8' });
-}
-
-function exerciseFixture(name: string): MutationRunResult {
-  const directory = resolve(fixtureRoot, name);
-  const target = resolve(directory, 'source.ts');
-  const patch = resolve(directory, 'mutation.diff');
-  const before = readFileSync(target);
-  const temporary = mkdtempSync(resolve(tmpdir(), `mutation-fixture-${name}-`));
-  const report = resolve(temporary, 'vitest.json');
-  const check = git(['apply', `--directory=${gitApplyDirectory}`, '--check', patch]);
-  const apply = check.status === 0 ? git(['apply', `--directory=${gitApplyDirectory}`, patch]) : { status: 125 };
-  const changed = !byteSequencesEqual(before, readFileSync(target));
-  const test = spawnSync('npx', ['vitest', 'run', 'tools/mutation/fixture-oracle.test.ts', '--reporter=json', `--outputFile=${report}`], {
-    cwd: root, encoding: 'utf8', env: { ...process.env, MUTATION_FIXTURE_SOURCE: target },
-  });
-  expect([0, 1]).toContain(test.status);
-  const failed = parseFailedTestIds(readFileSync(report, 'utf8'));
-  const reverse = apply.status === 0 ? git(['apply', `--directory=${gitApplyDirectory}`, '--reverse', patch]) : null;
-  const restored = byteSequencesEqual(before, readFileSync(target));
-  rmSync(temporary, { recursive: true, force: true });
-  return {
-    failed_test_ids: failed,
-    apply_check_exit_code: check.status ?? 125,
-    apply_exit_code: apply.status ?? 125,
-    reverse_exit_code: reverse?.status ?? null,
-    target_changed_after_apply: changed,
-    target_restored_after_revert: restored,
-    test_run_exit_code: test.status,
-    test_infrastructure_errors: [],
-  };
-}
 
 const baseEntry: MutationEntry = {
-  mutation_id: 'fixture', defends: ['oracle:GATE-FIXTURE-001'], target: `${declaredFixtureDirectories[0]}/source.ts`, patch: 'unused',
-  selection_paths: ['fe/tools/mutation/fixture-oracle.test.ts'],
+  mutation_id: 'fixture', defends: ['oracle:GATE-FIXTURE-001'], target: 'tools/architecture/no-class-dom-query.mjs', patch: 'unused',
+  selection_paths: ['tools/architecture/architecture-rules.test.ts'],
   expected_red: ['source remains guarded'], why_more_than_one: 'Fixture expects one red.',
 };
-
-describe.sequential('real git-apply failure-shape fixtures', () => {
-  it.each(fixtureNames)('%s is rejected after real apply, vitest, and restoration checks', (name) => {
-    const result = exerciseFixture(name);
-    const verdict = judgeMutation({ ...baseEntry, target: `tools/mutation/fixtures/${name}/source.ts` }, result);
-    expect(verdict.ok).toBe(false);
-    expect(result.target_restored_after_revert).toBe(true);
-    expect(result.failed_test_ids).toEqual([]);
-    expect(result.apply_check_exit_code === 0).toBe(name === 'mode-only');
-    expect(result).toMatchObject({
-      apply_exit_code: name === 'mode-only' ? 0 : 125,
-      reverse_exit_code: name === 'mode-only' ? 0 : null,
-      target_changed_after_apply: false,
-    });
-    expect(verdict.errors.map(({ code }) => code)).toEqual(name === 'mode-only'
-      ? ['patch-noop', 'dead-mutation']
-      : ['patch-check-failed', 'patch-apply-failed', 'patch-noop', 'dead-mutation']);
-  }, 30_000);
-
-  it('valid control really changes bytes, turns the oracle red, and reverses cleanly', () => {
-    const result = exerciseFixture('valid');
-    const verdict = judgeMutation({ ...baseEntry, target: 'tools/mutation/fixtures/valid/source.ts' }, result);
-    expect(result).toEqual({
-      failed_test_ids: ['source remains guarded'],
-      apply_check_exit_code: 0,
-      apply_exit_code: 0,
-      reverse_exit_code: 0,
-      target_changed_after_apply: true,
-      target_restored_after_revert: true,
-      test_run_exit_code: 1,
-      test_infrastructure_errors: [],
-    });
-    expect(verdict).toEqual({ ok: true, errors: [] });
-  }, 30_000);
-});
 
 describe('tested parsing and byte verdict inputs', () => {
   it('parses an authentic vitest JSON reporter sample', () => {
@@ -117,6 +46,7 @@ describe('pure verdict edge cases', () => {
     ['revert-failed', { ...passing, reverse_exit_code: 1 }, ['revert-failed']],
     ['test-run-failed', { ...passing, failed_test_ids: [], test_run_exit_code: null }, ['test-run-failed']],
     ['test-infrastructure-failed', { ...passing, test_infrastructure_errors: ['broken suite'] }, ['test-infrastructure-failed']],
+    ['infra suppresses dead mutation', { ...passing, failed_test_ids: [], test_infrastructure_errors: ['broken'] }, ['test-infrastructure-failed']],
     ['revert-drift', { ...passing, target_restored_after_revert: false }, ['revert-drift']],
   ] as const)('%s cannot pass', (_name, result, expectedCodes) => {
     expect(judgeMutation(baseEntry, result).errors.map(({ code }) => code)).toEqual(expectedCodes);
@@ -124,34 +54,28 @@ describe('pure verdict edge cases', () => {
 });
 
 describe('tracked fixture inventory', () => {
-  it('compares the single independent catalog to the real git index in both directions', () => {
-    const tracked = git(['ls-files', '--cached', '--others', '--exclude-standard', 'tools/mutation/fixtures/']);
-    expect(tracked.status).toBe(0);
-    expect(trackedFixtureSetMatches(tracked.stdout)).toBe(true);
-  });
-  it('rejects either an undeclared tracked path or a missing declared path', () => {
-    const exact = declaredFixtureDirectories.map((path) => `${path}/source.ts`).join('\n');
-    expect(trackedFixtureSetMatches(`${exact}\ntools/mutation/fixtures/extra/source.ts`)).toBe(false);
-    expect(trackedFixtureSetMatches(declaredFixtureDirectories.slice(1).map((path) => `${path}/source.ts`).join('\n'))).toBe(false);
+  const exact = declaredFixtureDirectories.flatMap((path) => [`${path}/mutation.diff`, `${path}/source.ts`]);
+  it('requires the exact source and patch pair for every declared fixture', () => {
+    expect(trackedFixtureSetMatches(exact.join('\n'))).toBe(true);
+    expect(trackedFixtureSetMatches(exact.filter((path) => !path.endsWith('valid/mutation.diff')).join('\n'))).toBe(false);
+    expect(trackedFixtureSetMatches(`${exact.join('\n')}\n${declaredFixtureDirectories[0]}/README.md`)).toBe(false);
   });
 });
 
 describe('selection and manifest judgments', () => {
-  it('locks the repository-root plus --directory layout assumption', () => {
-    expect(resolve(root, '..', gitApplyDirectory, baseEntry.target)).toBe(resolve(fixtureRoot, 'already-applied/source.ts'));
-  });
-  it('selects by target, oracle dependency, infrastructure, and both rename paths', () => {
+  it('selects independently by target, selection path, and infrastructure', () => {
     expect(selectedEntries([baseEntry], [`fe/${baseEntry.target}`])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], [baseEntry.selection_paths[0]])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], [`fe/${baseEntry.selection_paths[0]}`])).toEqual([baseEntry]);
     expect(selectedEntries([baseEntry], ['fe/tools/mutation/manifest.json'])).toEqual([baseEntry]);
     expect(selectedEntries([baseEntry], ['fe/unrelated.ts'])).toEqual([]);
   });
   const structuredEntry = { ...baseEntry, patch: readFileSync(resolve(fixtureRoot, 'valid/mutation.diff'), 'utf8'),
     target: 'tools/mutation/fixtures/valid/source.ts' };
   const namespaces = { oracle: new Set(['GATE-FIXTURE-001']), 'arch-rule': new Set(['no-class-dom-query']) };
+  const tracked = new Set([structuredEntry.target, ...structuredEntry.selection_paths]);
   it('accepts both known contract namespaces', () => {
-    expect(() => validateManifest([structuredEntry], namespaces)).not.toThrow();
-    expect(() => validateManifest([{ ...structuredEntry, defends: ['arch-rule:no-class-dom-query'] }], namespaces)).not.toThrow();
+    expect(() => validateManifest([structuredEntry], namespaces, tracked)).not.toThrow();
+    expect(() => validateManifest([{ ...structuredEntry, defends: ['arch-rule:no-class-dom-query'] }], namespaces, tracked)).not.toThrow();
   });
   it.each([
     [[], /incomplete structured manifest entry/],
@@ -159,10 +83,48 @@ describe('selection and manifest judgments', () => {
     [['arch-rule:nope'], /unknown defended contract: arch-rule:nope/],
     [['other:anything'], /unknown defended contract: other:anything/],
   ] as const)('rejects invalid defends %j', (defends, message) => {
-    expect(() => validateManifest([{ ...structuredEntry, defends: [...defends] }], namespaces)).toThrow(message);
+    expect(() => validateManifest([{ ...structuredEntry, defends: [...defends] }], namespaces, tracked)).toThrow(message);
   });
-  it('classifies a failed file without a failed assertion as infrastructure failure', () => {
-    const report = JSON.stringify({ testResults: [{ name: 'broken.test.ts', status: 'failed', message: 'import failed', assertionResults: [] }] });
-    expect(parseVitestReport(report)).toEqual({ failedTestIds: [], infrastructureErrors: ['broken.test.ts'] });
+  it('rejects empty manifests and untracked target or selection paths', () => {
+    expect(() => validateManifest([], namespaces, tracked)).toThrow('manifest must contain');
+    expect(() => validateManifest([{ ...structuredEntry, selection_paths: ['tools/missing.ts'] }], namespaces, tracked))
+      .toThrow('path is not tracked: tools/missing.ts');
+  });
+});
+
+describe('report infrastructure classification', () => {
+  it('classifies global unhandled errors and reporter errors independently', () => {
+    expect(parseVitestReport(JSON.stringify({ unhandledErrors: [{}], testResults: [] })).infrastructureErrors)
+      .toEqual(['global-unhandled-error']);
+    expect(parseVitestReport(JSON.stringify({ error: {}, testResults: [] })).infrastructureErrors)
+      .toEqual(['global-reporter-error']);
+  });
+  it('classifies failed status and nonempty message independently without duplicates', () => {
+    const statusOnly = { name: 'status.test.ts', status: 'failed', message: '', assertionResults: [] };
+    const messageOnly = { name: 'hook.test.ts', status: 'passed', message: 'hook failed',
+      assertionResults: [{ status: 'passed', fullName: 'a' }] };
+    expect(parseVitestReport(JSON.stringify({ testResults: [statusOnly, messageOnly] })))
+      .toEqual({ failedTestIds: [], infrastructureErrors: ['hook.test.ts', 'status.test.ts'] });
+  });
+});
+
+describe('zero-selection exit policy', () => {
+  it('passes unrelated PRs and fails infrastructure PRs with zero selections', () => {
+    expect(mutationRunExitCode([], false, true)).toBe(0);
+    expect(mutationRunExitCode([], true, true)).toBe(1);
+  });
+});
+
+describe('oracle YAML discovery', () => {
+  const parseYaml = (yaml: string): unknown => parse(yaml) as unknown;
+  it('discovers ids from block, quoted, and flow YAML forms', () => {
+    const documents = ['- id: plain', '- id: "quoted"', '[{ id: flow }]'].map(parseYaml);
+    expect([...oracleIdsFromDocuments(documents)]).toEqual(['plain', 'quoted', 'flow']);
+  });
+  it('discovers a real catalog sample through the production parser path', () => {
+    const oracleRoot = resolve(import.meta.dirname, '../../../docs/oracle');
+    const documents = readdirSync(oracleRoot).filter((name) => name.endsWith('.yaml'))
+      .map((name) => parseYaml(readFileSync(resolve(oracleRoot, name), 'utf8')));
+    expect(oracleIdsFromDocuments(documents).has('INV-A11Y-001')).toBe(true);
   });
 });

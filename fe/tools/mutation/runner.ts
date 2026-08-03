@@ -120,7 +120,9 @@ export function parseFailedTestIds(json: string): string[] {
 export function validateManifest(
   entries: MutationEntry[],
   namespaces: { oracle: ReadonlySet<string>; 'arch-rule': ReadonlySet<string> },
+  trackedPaths: ReadonlySet<string>,
 ): void {
+  if (entries.length === 0) throw new Error('manifest must contain at least one mutation');
   const ids = new Set<string>();
   for (const entry of entries) {
     if (ids.has(entry.mutation_id)) throw new Error(`duplicate mutation_id: ${entry.mutation_id}`);
@@ -130,6 +132,9 @@ export function validateManifest(
       || !Array.isArray(entry.selection_paths) || entry.selection_paths.length === 0
       || typeof entry.why_more_than_one !== 'string' || entry.why_more_than_one.trim() === '') {
       throw new Error(`${entry.mutation_id}: incomplete structured manifest entry`);
+    }
+    for (const path of [entry.target, ...entry.selection_paths]) {
+      if (!trackedPaths.has(path)) throw new Error(`${entry.mutation_id}: path is not tracked: ${path}`);
     }
     for (const defended of entry.defends) {
       if (typeof defended !== 'string') throw new Error(`${entry.mutation_id}: invalid defends item`);
@@ -144,9 +149,10 @@ export function validateManifest(
 }
 
 export function selectedEntries(entries: MutationEntry[], changedPaths: readonly string[]): MutationEntry[] {
-  const changed = new Set(changedPaths);
-  if (changedPaths.some((path) => path.startsWith('fe/tools/mutation/'))) return [...entries];
-  return entries.filter((entry) => [`fe/${entry.target}`, ...entry.selection_paths].some((path) => changed.has(path)));
+  const fePaths = changedPaths.filter((path) => path.startsWith('fe/')).map((path) => path.slice(3));
+  const changed = new Set(fePaths);
+  if (fePaths.some((path) => path.startsWith('tools/mutation/'))) return [...entries];
+  return entries.filter((entry) => [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
 }
 
 export function equalPathSets(declared: readonly string[], tracked: readonly string[]): boolean {
@@ -156,9 +162,31 @@ export function equalPathSets(declared: readonly string[], tracked: readonly str
 }
 
 export function trackedFixtureSetMatches(gitLsFilesOutput: string): boolean {
-  const trackedDirectories = [...new Set(gitLsFilesOutput.split('\n').filter((path) => path.split('/').length > 4)
-    .map((path) => path.split('/').slice(0, 4).join('/')))];
-  return equalPathSets(declaredFixtureDirectories, trackedDirectories);
+  const fixtureFiles = gitLsFilesOutput.split('\n').filter((path) =>
+    declaredFixtureDirectories.some((directory) => path.startsWith(`${directory}/`)));
+  const expected = declaredFixtureDirectories.flatMap((directory) => [`${directory}/mutation.diff`, `${directory}/source.ts`]);
+  return equalPathSets(expected, fixtureFiles);
+}
+
+export function oracleIdsFromDocuments(documents: readonly unknown[]): Set<string> {
+  const ids = new Set<string>();
+  for (const document of documents) {
+    if (!Array.isArray(document)) continue;
+    for (const entry of document) {
+      if (typeof entry !== 'object' || entry === null || typeof (entry as { id?: unknown }).id !== 'string') {
+        throw new Error('oracle catalog entry lacks a string id');
+      }
+      ids.add((entry as { id: string }).id);
+    }
+  }
+  return ids;
+}
+
+export function mutationRunExitCode(
+  report: readonly MutationVerdict[], infrastructureChanged: boolean, baseMode: boolean,
+): 0 | 1 {
+  if (report.length === 0) return baseMode && infrastructureChanged ? 1 : 0;
+  return report.some((verdict) => verdictExitCode(verdict) === 1) ? 1 : 0;
 }
 
 export function judgeMutation(entry: MutationEntry, result: MutationRunResult): MutationVerdict {

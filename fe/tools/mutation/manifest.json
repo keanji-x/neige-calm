@@ -5,7 +5,7 @@
     "target": "tools/architecture/no-class-dom-query.mjs",
     "patch": "diff --git a/tools/architecture/no-class-dom-query.mjs b/tools/architecture/no-class-dom-query.mjs\nindex e3debb4d..e84dad83 100644\n--- a/tools/architecture/no-class-dom-query.mjs\n+++ b/tools/architecture/no-class-dom-query.mjs\n@@ -8,7 +8,7 @@ import selectorParser from 'postcss-selector-parser';\n  * application container prefix to limit their blast radius.\n  */\n \n-const selectorMethods = new Set(['querySelector', 'querySelectorAll', 'closest', 'matches']);\n+const selectorMethods = new Set(['querySelector', 'querySelectorAll', 'matches']);\n \n /** @param {any} member */\n function memberName(member) {\n",
     "expected_red": ["architecture/no-class-dom-query rejects dom-selector/closest.ts"],
-    "selection_paths": ["fe/tools/architecture/architecture-rules.test.ts", "fe/tools/architecture/rule-fixtures/dom-selector/closest.ts"],
+    "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/closest.ts"],
     "why_more_than_one": "Only closest.ts should turn red; more than one means selector-method dispatch is coupled across syntax forms."
   },
   {
@@ -14,7 +14,7 @@
     "target": "tools/architecture/no-class-dom-query.mjs",
     "patch": "diff --git a/tools/architecture/no-class-dom-query.mjs b/tools/architecture/no-class-dom-query.mjs\nindex e3debb4d..693f25ea 100644\n--- a/tools/architecture/no-class-dom-query.mjs\n+++ b/tools/architecture/no-class-dom-query.mjs\n@@ -84,7 +84,7 @@ export const noClassDomQuery = {\n       CallExpression(/** @type {any} */ node) {\n         if (node.callee.type !== 'MemberExpression') return;\n         const method = memberName(node.callee);\n-        if (method === 'getElementsByClassName') {\n+        if (method === 'getElementsByClassNames') {\n           context.report({ node, messageId: 'classNameApi' });\n           return;\n         }\n",
     "expected_red": ["architecture/no-class-dom-query rejects dom-selector/get-elements-by-class-name.ts"],
-    "selection_paths": ["fe/tools/architecture/architecture-rules.test.ts", "fe/tools/architecture/rule-fixtures/dom-selector/get-elements-by-class-name.ts"],
+    "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/get-elements-by-class-name.ts"],
     "why_more_than_one": "Only the dedicated DOM API fixture should turn red; extra reds expose coupling to CSS selector parsing."
   },
   {
@@ -26,7 +26,7 @@
       "architecture/no-class-dom-query accepts a module-scope single-assignment const string without a class",
       "architecture/no-class-dom-query rejects a class in a module-scope single-assignment const as a class selector"
     ],
-    "selection_paths": ["fe/tools/architecture/architecture-rules.test.ts", "fe/tools/architecture/rule-fixtures/dom-selector/module-const-data.ts", "fe/tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"],
+    "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-data.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"],
     "why_more_than_one": "Both safe and unsafe module-const syntax forms must turn red because resolution is shared; any third red is coupling leakage."
   }
 ]
