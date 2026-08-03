@@ -778,11 +778,16 @@ mod tests {
         let metrics = ContextMetrics::default();
         metrics.last_success_ms.store(now_ms(), Ordering::Relaxed);
         metrics.consecutive_failures.store(3, Ordering::Relaxed);
+        metrics.record_context_resolve_failure("malformed_stored_report");
 
         let exported = metrics.export();
 
         assert_ne!(exported.last_success_age_seconds, u64::MAX);
         assert_eq!(exported.consecutive_failures, 3);
+        assert_eq!(
+            exported.context_resolve_failures["malformed_stored_report"], 1,
+            "the irreversible malformed-report verdict must have a named health bucket"
+        );
     }
 
     #[test]
@@ -801,18 +806,27 @@ mod tests {
     }
 
     #[test]
-    fn projection_drift_fields_are_a_subset_of_root_hash_fields() {
+    fn projection_drift_fields_equal_hashed_stored_fields() {
         let hashed: BTreeSet<_> = ROOT_HASH_TASK_FIELDS.iter().copied().collect();
         let drift: BTreeSet<_> = crate::db::sqlite::PROJECTION_DRIFT_TASK_FIELDS
             .iter()
             .copied()
             .collect();
-        assert!(drift.is_subset(&hashed));
-        assert!(!drift.contains("refs"), "tasks has no refs column");
-        assert!(
-            !drift.contains("no_gate_reason"),
-            "no_gate_reason is gate validation/legacy-context input, not a stored drift column"
-        );
+        let expected = hashed
+            .difference(&BTreeSet::from(["refs", "no_gate_reason"]))
+            .copied()
+            .collect();
+        assert_eq!(drift, expected);
+    }
+
+    #[test]
+    fn withdrawal_diagnostic_paths_match_the_exhaustive_task_set() {
+        let actual: BTreeSet<_> = calm_types::report_blocks::tasks::TASK_BLOCKING_DIAGNOSTIC_PATHS
+            .iter()
+            .copied()
+            .collect();
+        let expected = BTreeSet::from(["depends_on", "gate", "key", "payload", "refs"]);
+        assert_eq!(actual, expected);
     }
 
     #[test]

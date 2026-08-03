@@ -448,7 +448,7 @@ async fn release_edges_obey_current_wait_policy_and_forward_edge_is_safe() {
 }
 
 #[tokio::test]
-async fn same_write_reference_exists_then_target_deletion_removes_pending_projection() {
+async fn in_flight_reference_target_deletion_warns_on_both_reads_without_declaration_edit() {
     let boot = new_boot().await;
     let target = call_tool(
         &boot,
@@ -542,6 +542,12 @@ async fn same_write_reference_exists_then_target_deletion_removes_pending_projec
         "does not exist"
     ));
 
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='same-write-ref'")
+        .bind(boot.wave_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
     let snapshot = read(&boot).await;
     let referring_id = task_id;
     let body = format!(
@@ -556,7 +562,20 @@ async fn same_write_reference_exists_then_target_deletion_removes_pending_projec
     )
     .await
     .expect("delete referenced target");
-    assert_diagnosed_on_both_reads(&boot, "same-write-ref", "does not exist").await;
+    let mcp = read(&boot).await;
+    let rest = rest_read(&boot).await;
+    for snapshot in [&mcp, &rest] {
+        assert!(diagnostic_contains(
+            snapshot,
+            "same-write-ref",
+            "does not exist"
+        ));
+        assert!(diagnostic_contains(
+            snapshot,
+            "same-write-ref",
+            "is in flight (running) and cannot be withdrawn immediately"
+        ));
+    }
     let error = TaskContextMonitor::new(
         boot.repo.clone(),
         boot.ctx.events.clone(),

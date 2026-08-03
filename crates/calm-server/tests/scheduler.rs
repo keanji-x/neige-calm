@@ -2094,6 +2094,39 @@ async fn sweep_running_terminal_past_liveness_deadline_is_not_timed_out() {
 }
 
 #[tokio::test]
+async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material() {
+    let boot = boot().await;
+    let mut task = plan_task(&boot.wave_id, "upgraded-inflight", TaskKind::Terminal, &[]);
+    task.status = TaskStatus::Running;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE tasks SET origin='block',claim_context_json='[]',decl_ready=1,decl_released_by_user=0,context_verify_failures=0 WHERE id=?1",
+    )
+    .bind(&task_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    monitor.sweep().await.unwrap();
+
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stale, None,
+        "the first production sweep must accept the migration's explicit empty frozen set"
+    );
+    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+}
+
+#[tokio::test]
 async fn sweep_stamps_null_running_codex_liveness_deadline_before_timing_out() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
@@ -3250,7 +3283,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
 }
 
 #[tokio::test]
-async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
+async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next_claim() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     insert_report_payload(
@@ -3269,8 +3302,14 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
                     payload: json!({
                         "key": "blocked-head", "kind": "terminal", "goal": "true",
                         "declared_by": "spec", "ready": true,
-                        "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
+                        "refs": [format!("neige://wave/{}#b_cafe", boot.wave_id)]
                     }),
+                },
+                ReportBlock {
+                    id: "b_cafe".into(),
+                    kind: "prose".into(),
+                    rev: 1,
+                    payload: json!({"markdown": format!("[leaf](neige://wave/{}#b_dead)", boot.wave_id)}),
                 },
                 ReportBlock {
                     id: "b_dead".into(),
@@ -3300,30 +3339,13 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    edit_report_blocks(
-        &boot,
-        &[
-            (
-                "b_head_1",
-                "task",
-                json!({
-                    "key": "blocked-head", "kind": "terminal", "goal": "true",
-                    "declared_by": "spec", "ready": true,
-                    "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
-                }),
-            ),
-            (
-                "b_tail",
-                "task",
-                json!({
-                    "key": "healthy-tail", "kind": "terminal", "goal": "true",
-                    "declared_by": "spec", "ready": true
-                }),
-            ),
-        ],
-        0,
+    sqlx::query(
+        "UPDATE cards SET payload=json_remove(json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1),'$.blocks[2]') WHERE wave_id=?1 AND kind='wave-report'",
     )
-    .await;
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
     sqlx::query("UPDATE waves SET task_budget = 1 WHERE id = ?1")
         .bind(boot.wave_id.as_str())
         .execute(&pool)
@@ -3361,6 +3383,45 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
     assert_eq!(
         scheduler.context_resolve_failure_count("referenced_block_absent"),
         1
+    );
+    assert_eq!(
+        scheduler
+            .context_metrics()
+            .snapshot()
+            .context_resolve_failures["referenced_block_absent"],
+        1,
+        "the depth-two claim failure must be visible in the production health snapshot"
+    );
+
+    sqlx::query("UPDATE tasks SET status='done' WHERE id=?1")
+        .bind(&healthy_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restored = json!({
+        "id": "b_dead", "kind": "prose", "rev": 2,
+        "payload": {"markdown": "restored"}
+    });
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,'$.docRev',json_extract(payload,'$.docRev')+1,'$.blocks',json_insert(json_extract(payload,'$.blocks'),'$[#]',json(?1))) WHERE wave_id=?2 AND kind='wave-report'",
+    )
+    .bind(restored.to_string())
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+    TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+        .resolve_task_closure(boot.wave_id.as_str(), "blocked-head")
+        .await
+        .expect("the repaired depth-two closure resolves");
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    assert!(
+        event_rows(&boot, "task.context_frozen")
+            .await
+            .iter()
+            .any(|(_, payload)| payload["task_id"] == blocked_id.as_str()),
+        "restoring the depth-two target must let the next claim freeze context"
     );
 }
 

@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
 use calm_types::ids::{ActorId, WaveId};
 use calm_types::report_blocks::tasks::{
-    Diagnostic, GateInput, TaskDeclaration, gate_rule_violations, json_eq, opt_json_eq,
-    unknown_deps,
+    Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, gate_rule_violations,
+    json_eq, opt_json_eq, unknown_deps,
 };
 use calm_types::report_links::{parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
@@ -143,9 +143,6 @@ pub struct BlockVerdict {
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
-    #[serde(skip)]
-    #[schema(ignore)]
-    pub effective_wait: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -172,6 +169,11 @@ pub async fn mark_context_material_tx(
     .fetch_optional(&mut **tx)
     .await?;
     let Some((task_key, cove_id)) = row else {
+        tracing::warn!(
+            task_id,
+            wave_id,
+            "context material verdict lost because its task row disappeared"
+        );
         return Ok(Vec::new());
     };
     let changed = sqlx::query(
@@ -363,7 +365,6 @@ pub async fn evaluate_schedulability_tx(
             schedulable: declaration.ready && !declaration.tombstone && diagnostics.is_empty(),
             diagnostics,
             withdrawal: None,
-            effective_wait,
         });
     }
 
@@ -436,7 +437,7 @@ pub async fn evaluate_schedulability_tx(
         let stale_causing_diagnostic = changed
             || verdict.withdrawal.is_some()
             || verdict.diagnostics.iter().any(|diagnostic| {
-                matches!(diagnostic.path.as_str(), "refs" | "depends_on" | "gate")
+                TASK_BLOCKING_DIAGNOSTIC_PATHS.contains(&diagnostic.path.as_str())
             });
         if stale_causing_diagnostic
             && matches!(status.as_str(), "dispatched" | "running" | "verifying")
@@ -465,7 +466,6 @@ pub async fn evaluate_schedulability_tx(
                 key,
                 schedulable: false,
                 withdrawal: None,
-                effective_wait,
             });
         }
     }
@@ -603,7 +603,6 @@ pub async fn project_tasks_tx(
                         diagnostics: vec![diagnostic],
                         schedulable: false,
                         withdrawal: None,
-                        effective_wait: false,
                     });
                 }
             } else if task_delete_pending_tx(tx, id).await? != 0 {
@@ -757,5 +756,36 @@ mod tests {
                     .unwrap();
             assert_eq!(keys, vec![("k2".into(),)]);
         }
+    }
+
+    #[tokio::test]
+    async fn rolled_back_material_verdict_leaves_no_row_change_or_event() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "rollback", "running").await;
+        let mut tx = repo.pool.begin().await.unwrap();
+        let events = mark_context_material_tx(
+            &mut tx,
+            &format!("{wave}:rollback"),
+            &wave,
+            Vec::new(),
+            "rollback proof",
+        )
+        .await
+        .unwrap();
+        assert_eq!(events.len(), 1, "the transaction produced one kernel event");
+        tx.rollback().await.unwrap();
+
+        let stale: Option<i64> =
+            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+                .bind(format!("{wave}:rollback"))
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        let persisted_events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+        assert_eq!(stale, None);
+        assert_eq!(persisted_events, 0);
     }
 }

@@ -477,13 +477,8 @@ impl Dispatcher {
     }
 
     #[cfg(any(test, feature = "fixtures"))]
-    #[allow(clippy::if_same_then_else)]
     pub async fn reconcile_tick_for_test(&self) {
-        if self.context_monitor.sweep().await.is_err() {
-            self.scheduler.sweep_all().await;
-        } else if !self.scheduler.open_context_sweep_gate().await {
-            self.scheduler.sweep_all().await;
-        }
+        self.inner.reconcile_once().await;
     }
 
     /// Spawn the dispatcher background task.
@@ -843,8 +838,7 @@ impl Dispatcher {
         // §5.1 backstop b — slow reconcile tick running the same sweep
         // as boot. Correctness never depends on it (every arm is
         // guarded); it restores liveness after a lost envelope.
-        let tick_scheduler = Arc::clone(&scheduler);
-        let tick_context_monitor = Arc::clone(&context_monitor);
+        let tick_inner = Arc::clone(&inner);
         let reconcile_handle = tokio::spawn(async move {
             let period = std::time::Duration::from_secs(Scheduler::reconcile_secs_from_env(
                 DEFAULT_RECONCILE_SECS,
@@ -859,12 +853,7 @@ impl Dispatcher {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                if let Err(error) = tick_context_monitor.sweep().await {
-                    tracing::warn!(%error, "periodic task context sweep failed");
-                    tick_scheduler.sweep_all().await;
-                } else if !tick_scheduler.open_context_sweep_gate().await {
-                    tick_scheduler.sweep_all().await;
-                }
+                tick_inner.reconcile_once().await;
             }
         });
         let reaper_handle = if reaper_disabled_from_env() {
@@ -952,6 +941,18 @@ struct Inner {
 }
 
 impl Inner {
+    /// Run one production reconcile cycle. The periodic loop and focused
+    /// scheduler tests share this exact body so ordering changes are exercised,
+    /// not inferred from a copied test helper.
+    async fn reconcile_once(&self) {
+        if let Err(error) = self.context_monitor.sweep().await {
+            tracing::warn!(%error, "periodic task context sweep failed");
+            self.scheduler.sweep_all().await;
+        } else if !self.scheduler.open_context_sweep_gate().await {
+            self.scheduler.sweep_all().await;
+        }
+    }
+
     async fn handle_envelope(self: Arc<Self>, envelope: BroadcastEnvelope) {
         // Acquire a permit before doing any per-spawn work. Dropped on
         // task end (the `_permit` binding holds it across the function).

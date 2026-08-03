@@ -3,12 +3,15 @@ use super::*;
 #[test]
 fn periodic_reconcile_sweeps_context_before_scheduler() {
     let source = include_str!("mod.rs");
-    let loop_start = source
-        .find("loop {\n                interval.tick().await;\n                if let Err(error) = tick_context_monitor.sweep().await")
-        .expect("periodic loop starts with context sweep");
-    let body = &source[loop_start..];
-    let context = body.find("tick_context_monitor.sweep().await").unwrap();
-    let scheduler = body.find("tick_scheduler.sweep_all().await").unwrap();
+    source
+        .find("interval.tick().await;\n                tick_inner.reconcile_once().await;")
+        .expect("the production periodic loop drives the shared reconcile body");
+    let method_start = source
+        .find("async fn reconcile_once(&self)")
+        .expect("shared production reconcile body");
+    let body = &source[method_start..];
+    let context = body.find("self.context_monitor.sweep().await").unwrap();
+    let scheduler = body.find("self.scheduler.sweep_all().await").unwrap();
     assert!(context < scheduler);
 }
 use calm_types::worker::WorkerSessionId;

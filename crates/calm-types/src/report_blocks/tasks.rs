@@ -9,6 +9,13 @@ use utoipa::ToSchema;
 pub const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
 pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 
+/// Diagnostic paths that make a keyed task declaration unschedulable.
+///
+/// Keep this exhaustive: the projection layer uses equality against this set
+/// when deciding whether an in-flight declaration needs a withdrawal warning.
+pub const TASK_BLOCKING_DIAGNOSTIC_PATHS: &[&str] =
+    &["depends_on", "gate", "key", "payload", "refs"];
+
 pub fn json_eq(a: &str, b: &str) -> bool {
     match (
         serde_json::from_str::<Value>(a),

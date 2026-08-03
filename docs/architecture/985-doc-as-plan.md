@@ -644,6 +644,10 @@ pending），该谓词因而是会诱导后来者补写者的空洞不变量。m
 
 **四格**：
 
+`context_resolve_failures{variant="malformed_stored_report"}` 必须进入生产 health
+snapshot；该桶任一非零增量立即告警（验收：注入一份损坏持久报告，首次解析后桶值
+从 0 变 1 且触发阈值），因为该确定性判决不可用原 key 逆转。
+
 | 载体 | 谁写 | rebuild 怎么重放 | migration |
 |---|---|---|---|
 | `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不改声明内容**，但收养初始化 `decl_ready=1` | 撤回退化为**当前状态的纯函数**；收养与 `0070_` backfill 初始化影子位不改变 worker 可见规格 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
@@ -662,8 +666,8 @@ pending），该谓词因而是会诱导后来者补写者的空洞不变量。m
 - **读点与判点之间必须有回传通道。** `decl_*` 的定向 SELECT 在
   `evaluate_schedulability_tx` 的 `FrozenDeclarationRow` 里，`effective_policy`
   也是它的内部量，而判决只在 `project_tasks_tx` 写。
-  **裁决：`BlockVerdict` 增 `withdrawal: Option<WithdrawalEdge>` 与
-  `effective_wait: bool`；判定在 evaluate 里算，写只在 project 里做。**
+  **裁决：`BlockVerdict` 增 `withdrawal: Option<WithdrawalEdge>`；判定在
+  evaluate 里算，写只在 project 里做。**
 
 **§4.2 规则 1 的第四种情形（「块新产生了诊断」）明确不纳入撤回**：诊断可以由
 **第三方块**的变化引发（未知依赖、越 cove 的 `refs`、gate 规则违反），
@@ -1395,15 +1399,15 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 | 1a | **ready capacity 按成功 claim 记账**：不得在候选集上预先 `.take(capacity)`；逐个尝试 ready 行，仅成功 claim 才消耗一个名额，直到成功数达到 capacity，保证普通 race-lost 与定位失败都不队头阻塞 |
 | 2 | **相等式去 `rev`**：只比 `(wave_id, block_id, content_hash)`，**恒比哈希、不得以 rev 短路** |
 | 3 | **根块哈希收窄到 9 字段**；深度 ≥ 1 不收窄。**先把 `TASK_FIELDS` 从函数内局部常量提升为模块级 `pub`**（集合相等元测试位于 `calm-server`，而常量位于 `calm-types`，跨 crate 的 `pub(crate)` 不可见），再配集合相等元测试（否则测试只能复制一份「期望全集」，是一条自证自明的空洞断言）。写死 canonical 投影函数 + 冻结集加**显式 root 标记** |
-| 4 | **3b′-ii：撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` / `effective_wait` 作回传通道；本片不实现 |
-| 5 | **3b′-ii：单赢家原语 + 事件管线**：提取 `mark_context_material_tx`，三条路径共用，归因 `ActorId::Kernel`；`TaskProjectionOutcome` 增 `kernel_events`；`tasks_rebuild_tx` 透传；**wave PATCH 从 `write_with_events_typed` 迁到 `write_with_actor_events_typed`**（不迁则 403）；禁止 `_tx` 内 `event_append_in_tx`；本片不实现 |
+| 4 | **3b′-ii（已做）：撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` 作回传通道 |
+| 5 | **3b′-ii（已做）：单赢家原语 + 事件管线**：提取 `mark_context_material_tx`，三条路径共用，归因 `ActorId::Kernel`；`TaskProjectionOutcome` 增 `kernel_events`；`tasks_rebuild_tx` 透传；**wave PATCH 从 `write_with_events_typed` 迁到 `write_with_actor_events_typed`**（不迁则 403）；禁止 `_tx` 内 `event_append_in_tx` |
 | 6 | **`closure_truncated` 进 sweep**：与事件路径同形；改掉钉住反向行为的那条测试断言 |
 | 7 | **3b′-ii：in-flight 瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级。claim 前 pending 路径不升级，始终遵守交付项 1。**同片补腿 2**：把 `task_projection.rs` 的 refs 检查由目标 wave/card 存在下沉到目标**块**存在，并对 `goal` / `acceptance` 的 `scan_links` 结果施加同一判定，只做深度 ≤ 1；这是 `evaluate_schedulability_tx` 既有跨表读的同构扩展，不新增 §3.8 的读时数据源抽象。可推迟到此项，因为它只缩小残余集合并给 3c 诊断供料，而 3c 与 3b′ 本就必须同一次发布，不产生对人可见窗口。 |
 | 8 | **tick 顺序 + boot 门**：周期 tick 的上下文 sweep 排在 `sweep_all` **之前**并补源码序断言；**任何一次成功 sweep 即原子开门，仅在翻转时补跑 `sweep_all`** |
 | 9a | **3b′-i（已做）：冻结事件补齐 + 向后兼容**：`TaskContextFrozen` 补 `truncated` / `doc_revs` / root 标记。字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程 |
-| 9b | **3b′-ii：裁决事件补齐 + 向后兼容**：`TaskContextAdvanced` 补 `changed_refs` / `wave_id` / `task_key` / `rationale`。字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程；本片不实现 |
+| 9b | **3b′-ii（已做）：裁决事件补齐 + 向后兼容**：`TaskContextAdvanced` 补 `changed_refs` / `wave_id` / `task_key` / `rationale`。字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程 |
 | 10 | **migration `0070_`**：§9.2 的三列，连类型、backfill SQL、reader 分工、「三列刻意不进 `TASK_COLUMNS`」的旁注一起写在同一个文件里。`0069_` 是防御性清理；目标状态在已发布版本不可达，仅给曾含 claim 侧误写的开发分支兜底 |
-| 11 | **3b′-ii：诊断对齐**：生产里已有第二份 in-flight 比较集，其 `withdrawal_diagnostic` 逐字承诺「any gate operation that has not started will be rejected」——收窄之后改 `priority` 会看到这句话而 gate 不会被拒，**诊断在说谎**。显式对齐两个字段集，并断言诊断承诺与 `context_stale_at_ms` 一致；本片不实现 |
+| 11 | **3b′-ii（已做）：诊断对齐**：生产里已有第二份 in-flight 比较集，其 `withdrawal_diagnostic` 逐字承诺「any gate operation that has not started will be rejected」——收窄之后改 `priority` 会看到这句话而 gate 不会被拒，**诊断在说谎**。显式对齐两个字段集，并断言诊断承诺与 `context_stale_at_ms` 一致 |
 
 **验收**：§10.3 + **附录 D.2 的 3b′ 四条补充项**（㉒ 元测试的常量引用、
 ㉓ 两条路同结论、㉕ 开门后当轮完成 `resume_dispatched`、㉖ SQL / migration 回归）。
@@ -1813,7 +1817,7 @@ backfill**」四格。这四个问题只要有一个空着，就是下一轮的 
 | `context_closure_truncated` | `INTEGER NOT NULL DEFAULT 0` | claim 事务 | `detect_wave_edit` **与 `sweep_inner`（两处必须同形）** | `TaskContextFrozen.truncated` 的投影 | `0` | 3a |
 | `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；收养路径初始化为 1 | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′-ii |
 | `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；存量 legacy 收养不初始化 | 同上 | 同上 | **保持 `0`，显式例外；升级时已在飞 legacy 行永久缺少该位的撤回前值，新 claim 不受影响** | 3b′-ii |
-| `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′ |
+| `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′-ii |
 
 **三列（`decl_*` / `context_verify_failures`）刻意不进 `TASK_COLUMNS` / 公共 `Task`**
 ——`TASK_COLUMNS` 服务通用 `Task` 查询，塞进去会扩大 model / 序列化 / OpenAPI /
@@ -1832,7 +1836,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 载体 | 住哪 | 为什么不落列 |
 |---|---|---|
 | `doc_revs`（栅栏基线）| **只进 `TaskContextFrozen` 事件 payload** | 栅栏判据来自本轮内存中的 map，且硬裁永不进 sweep/detect ⇒ 落列即一列纯写不读的持久状态，连带一条结构性不可达的「NULL 不可解释成不一致」规则 |
-| `withdrawal` / `effective_wait` | **`BlockVerdict` 的字段**（进程内回传）| 判点与读点分离，需要通道而非持久状态 |
+| `withdrawal` | **`BlockVerdict` 的字段**（进程内回传）| 判点与读点分离，需要通道而非持久状态 |
 | `kernel_events` | **`TaskProjectionOutcome` 的字段** | 事件必须由外层 eventized write 统一过闸 |
 
 ### C.4 常数总表（**全部是猜的，校准装置见 §8**）
@@ -1862,6 +1866,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 检测次数 / 送裁决次数 / `material` 次数 / `closure_truncated` 比例 | 计数器 | 「编辑稀疏」是个假设，让它可被数据推翻 |
 | 栅栏 race-lost 频率 | 计数器 | 若高到影响吞吐，说明报告写与 claim 争用超预期 |
 | `context_resolve_failures{variant}` | 按 `ResolveError` 变体分桶、进入 health 快照与周期 tracing 的计数器 | claim 前 race-lost 不落持久诊断；定位失败不能只剩一条 `warn!` |
+| `context_resolve_failures{variant="malformed_stored_report"}` | 上述计数器的点名桶；任一增量立即告警 | 撕裂写 / schema 回滚会触发不可逆 material 判决，必须能立即证伪 |
 | `claim_fence_race_lost` | claim 栅栏失败计数器，进入同一 health 快照与周期 tracing | 衡量报告写与 claim 的争用及存储错误导致的 fail-closed |
 | 每 wave 的 spec 声明速率 | 计数器 | §8 未结存量上限的证伪装置 |
 
