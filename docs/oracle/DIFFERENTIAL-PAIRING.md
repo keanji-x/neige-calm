@@ -5,49 +5,49 @@
 | # | id / 字段 | 路径 A 结论 | 路径 B 结论 | 交集 |
 |---:|---|---|---|---|
 | 1 | INV-A11Y-007 source | `Sidebar.tsx:224-322` landmark 声明与 JSX | axe landmark scope → `224-322` | 是 |
-| 2 | INV-A11Y-008 source | `Sidebar.tsx:240-322` collapse 条件 | 同族 007/054 → `240-322` | 是 |
+| 2 | INV-A11Y-008 source | `Sidebar.tsx:240-322` collapse 条件 | 从 `Expand sidebar` 文案反查条件分支 → `240-322` | 是 |
 | 3 | INV-A11Y-009 source | `Sidebar.tsx:258-267` Today button | keyboard Today locator → `258-267` | 是 |
 | 4 | INV-A11Y-011 source | `WaveRow.tsx:44-119` sibling buttons | axe nested-interactive → `58-119` | 是 |
 | 5 | INV-A11Y-012 source | `WaveRow.tsx:106-118` delete label | delete e2e locator → `106-118` | 是 |
-| 6 | INV-A11Y-013 source | `Cove.tsx:168-189` Waves region | 同族 014/056 → `168-189` | 是 |
-| 7 | INV-A11Y-014 source | `Cove.tsx:99,168-189` single sorted list | 同族 013 → `99,173-188` | 是 |
+| 6 | INV-A11Y-013 source | `Cove.tsx:168-189` Waves region | 从 `aria-label="Waves"` 反查 JSX → `168-189` | 是 |
+| 7 | INV-A11Y-014 source | `Cove.tsx:99,168-189` single sorted list | 从 waiting/running/idle 排序键反查 → `99,173-188` | 是 |
 | 8 | CAP-A11Y-017 source | `Wave.tsx:61-95` cycle order/button | keyboard cycle test → `73-95` | 是 |
 | 9 | INV-A11Y-018 source | `Wave.tsx:73-95` label/title | e2e exact label → `80-94` | 是 |
-| 10 | INV-A11Y-019 source | `Wave.tsx:252-266` overlay default | 同族 020/050 → `252-266` | 是 |
+| 10 | INV-A11Y-019 source | `Wave.tsx:252-266` overlay default | 从 overlay 缺失时的 report fallback 反查 → `252-266` | 是 |
 | 11 | CAP-A11Y-020 source | `Wave.tsx:252-273,404-433` 三分支 | keyboard view test → `404-433` | 是 |
-| 12 | CAP-A11Y-021 source | `Wave.tsx:275-282` add 后切 grid | 同族 020 调用链 → `275-282` | 是 |
-| 13 | CAP-A11Y-022 source | `WaveReportPage.tsx:924-945` empty branch | 同族 report 条目 → `930-944` | 是 |
+| 12 | CAP-A11Y-021 source | `Wave.tsx:275-282` add 后切 grid | 从 worker card 创建回调反查 view 切换 → `275-282` | 是 |
+| 13 | CAP-A11Y-022 source | `WaveReportPage.tsx:924-945` empty branch | 从 report 空态文案反查渲染分支 → `930-944` | 是 |
 | 14 | INV-A11Y-023 source | `WaveGrid.tsx:239-254` mouse layout | 对价条目 024 → `WaveGrid.tsx:239-254` | 是 |
 | 15 | INV-A11Y-024 source | `WaveList.tsx:1-32,190-269` canonical list | keyboard list test → `190-269` | 是 |
 | 16 | CAP-A11Y-025 source | `Wave.tsx:61-95` report→grid→list | keyboard cycle test → `61-95` | 是 |
-| 17 | INV-A11Y-026 source | `calm.css:4176-4306` supports/picker | 同族 027/029 → `4205-4306` | 是 |
+| 17 | INV-A11Y-026 source | `calm.css:4176-4306` supports/picker | 从 `@supports (appearance: base-select)` 反查 → `4205-4306` | 是 |
 | 18 | INV-A11Y-027 source | `calm.css:4185-4250` trigger | Cove/NewTaskForm markup → `4185-4250` | 是 |
-| 19 | INV-A11Y-029 source | `calm.css:4283-4305` checkmark/no fill | 同族 picker rules → `4283-4305` | 是 |
-| 20 | INV-A11Y-030 source | `Cove.tsx:494-552` option spans | 同族 select contract → `540-552` | 是 |
-| 21 | INV-A11Y-031 source | `Cove.tsx:450-478,554-560` key/focus | 同族 workflow switch → `466-478,554-560` | 是 |
+| 19 | INV-A11Y-029 source | `calm.css:4283-4305` checkmark/no fill | 从 `option::checkmark` 选择器反查 → `4283-4305` | 是 |
+| 20 | INV-A11Y-030 source | `Cove.tsx:494-552` option spans | 从 `calm-select-opt-desc` 反查 JSX → `540-552` | 是 |
+| 21 | INV-A11Y-031 source | `Cove.tsx:450-478,554-560` key/focus | 从 `key={variant}` 与首字段 focus 反查 → `466-478,554-560` | 是 |
 | 22 | INV-A11Y-032 source | Cove `480-490` + Dialog `342-382` | 相邻 caller/API 反查 → 两区间相同 | 是 |
-| 23 | CAP-A11Y-033 source | `NewTaskForm.tsx:621-659` checkbox | 同族 034 → `633-659` | 是 |
-| 24 | INV-A11Y-034 source | `NewTaskForm.tsx:621-659` description | 同族 033 → `639-657` | 是 |
+| 23 | CAP-A11Y-033 source | `NewTaskForm.tsx:621-659` checkbox | 从 `merge_policy` 提交值反查 checkbox → `633-659` | 是 |
+| 24 | INV-A11Y-034 source | `NewTaskForm.tsx:621-659` description | 从 `aria-describedby` 反查提示节点 → `639-657` | 是 |
 | 25 | INV-A11Y-035 source | Cove `507-552` + NewTaskForm `913-998` | 两个 label/combobox 调用链反查 → 同区间 | 是 |
 | 26 | INV-A11Y-036 source | WaveGrid `239-254` + 三个 CardHead 调用点 | drag selector与消费者反查 → 同四区间 | 是 |
 | 27 | INV-A11Y-038 source | CardHead `146-204` + 三个调用点 | 三种 card 反查共享组件 → 同四区间 | 是 |
-| 28 | INV-A11Y-040 source | `XtermView.tsx:481-501` tabindex 降级 | 同族 041 → `481-501` | 是 |
-| 29 | INV-A11Y-041 source | `XtermView.tsx:481-501,1082-1110` ownership | 同族 040 与容器注释 → 相同 | 是 |
+| 28 | INV-A11Y-040 source | `XtermView.tsx:481-501` tabindex 降级 | 从 `xterm-helper-textarea` 后的 tabIndex 写入反查 → `481-501` | 是 |
+| 29 | INV-A11Y-041 source | `XtermView.tsx:481-501,1082-1110` ownership | 从 terminal body 键盘 handler 反向排查 → 相同 | 是 |
 | 30 | INV-A11Y-050 source | schema `39-44` + Wave `252-273` | keyboard overlay test → Wave `252-273` | 是 |
-| 31 | INV-A11Y-051 source | layout/view-mode schema `39-44` | 同族 050 → Wave `252-257` | 是 |
-| 32 | INV-A11Y-053 source | `Sidebar.tsx:240-510` DOM stop 顺序 | 同族 007/054/055 → `240-510` | 是 |
-| 33 | INV-A11Y-054 source | `Sidebar.tsx:240-272` collapsed stop | 同族 008 → `240-272` | 是 |
-| 34 | INV-A11Y-055 source | `Sidebar.tsx:253-430` landmarks/buttons | 同族 007/053 → `253-430` | 是 |
-| 35 | INV-A11Y-056 source | `Cove.tsx:99-143,168-189` DOM 顺序 | 同族 013/014 → `99-143,168-189` | 是 |
-| 36 | INV-A11Y-057 source | `Wave.tsx:295-433` DOM 顺序 | 同族 view-mode 条目 → `295-433` | 是 |
-| 37 | INV-A11Y-059 source | `WaveRow.tsx:44-65` native button | Cove EditableTitle 同族范式 → `44-65` | 是 |
+| 31 | INV-A11Y-051 source | layout/view-mode schema `39-44` | 从 overlay kind 判别分支反查 Wave → `252-257` | 是 |
+| 32 | INV-A11Y-053 source | `Sidebar.tsx:240-510` DOM stop 顺序 | 从 Today 到用户菜单的 JSX DOM 顺序扫描 → `240-510` | 是 |
+| 33 | INV-A11Y-054 source | `Sidebar.tsx:240-272` collapsed stop | 从 collapsed 条件及唯一 button 反查 → `240-272` | 是 |
+| 34 | INV-A11Y-055 source | `Sidebar.tsx:253-430` landmarks/buttons | 从 nav/section 节点逐个反查 tabIndex → `253-430` | 是 |
+| 35 | INV-A11Y-056 source | `Cove.tsx:99-143,168-189` DOM 顺序 | 从 rename、wave-row、New wave 文案反查 → `99-143,168-189` | 是 |
+| 36 | INV-A11Y-057 source | `Wave.tsx:295-433` DOM 顺序 | 从返回按钮到三种正文分支顺序扫描 → `295-433` | 是 |
+| 37 | INV-A11Y-059 source | `WaveRow.tsx:44-65` native button | 从 `wave-row` class 反查原生 button → `44-65` | 是 |
 | 38 | CAP-A11Y-063 source | hook `265-314` + Menu `123-148` | e2e 反查 hook/Menu → 同两区间 | 是 |
 | 39 | CAP-A11Y-066 source | `WaveList.tsx:18-22,123-125,200-230` | keyboard test → 同区间 | 是 |
-| 40 | CAP-A11Y-067 source | `WaveList.tsx:18-22,123-125,200-230` | 同族 066 → 同区间 | 是 |
+| 40 | CAP-A11Y-067 source | `WaveList.tsx:18-22,123-125,200-230` | 从 Home/End key 分支反查 → 同区间 | 是 |
 | 41 | CAP-A11Y-068 source | `WaveList.tsx:24-28,133-187,205-217` | keyboard/trace test → 同区间 | 是 |
-| 42 | CAP-A11Y-069 source | `WaveList.tsx:30-32,205-225` | 同族 068/070 → `205-225` | 是 |
+| 42 | CAP-A11Y-069 source | `WaveList.tsx:30-32,205-225` | 从 Delete/Backspace key 分支反查 → `205-225` | 是 |
 | 43 | CAP-A11Y-070 source | `WaveList.tsx:18-22,123-125,200-230` | roving hook Tab 不消费 → 同区间 | 是 |
-| 44 | INV-A11Y-071 source | `WaveList.tsx:232-267` aria-keyshortcuts | 同族 keyboard 条目 → `232-267` | 是 |
+| 44 | INV-A11Y-071 source | `WaveList.tsx:232-267` aria-keyshortcuts | 从完整 `aria-keyshortcuts` 字符串反查 → `232-267` | 是 |
 | 45 | INV-A11Y-072 source | `WaveList.tsx:1-43,190-275` 无 resize | 对价 023 → `1-43,190-275` | 是 |
 | 46 | CAP-A11Y-073 source | roving hook `230-340` 全键盘 | keyboard menu test → `265-340` | 是 |
 | 47 | INV-A11Y-074 source | hook `187-205,265-340` + Menu `123-148` | menu test 反查 → 同三段 | 是 |
