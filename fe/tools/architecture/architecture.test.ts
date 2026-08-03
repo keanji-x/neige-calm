@@ -242,7 +242,6 @@ describe('architecture fixtures', () => {
         }
       })();
       if (dependencyViolations.length) {
-        expect(dependencyViolations.length, `${caseName} must produce a violation`).toBeGreaterThan(0);
         expect(new Set(dependencyViolations.map((violation) => violation.rule?.name)), caseName)
           .toEqual(new Set([expected]));
         const participants = new Set(dependencyViolations.flatMap((violation) => [violation.from, violation.to]));
