@@ -172,8 +172,7 @@ export function auditStyleRepository(feRoot) {
     const css = readFileSync(path, 'utf8');
     violations.push(...auditCssImports(css, file));
     if (path.endsWith('.module.css')) violations.push(...auditModuleLayer(css, file));
-    if (file !== 'web/src/styles/tokens.css'
-      && !exceptionPaths.includes(file)) {
+    if (!exceptionPaths.includes(file)) {
       violations.push(...auditLayeredCss(css, order).map(({ message }) => `${file}: ${message}`));
     }
   }

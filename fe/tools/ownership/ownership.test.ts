@@ -100,7 +100,9 @@ describe('ownership fixtures', () => {
 
   it('rejects an old request reused for a new revision and consumed requests', () => {
     const manifest = entries('readonly', 'positive');
-    const old = parse(readFileSync(resolve(fixtures, 'change-request-lifecycle/negative/requests.yaml'), 'utf8'));
+    const old = parse(readFileSync(
+      resolve(fixtures, 'change-request-lifecycle/negative/requests.yaml'), 'utf8',
+    )) as ChangeRequest[];
     const nextBase = 'abcdef0123456789abcdef0123456789abcdef01';
     expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], old, nextBase))
       .toEqual(expect.arrayContaining([
