@@ -262,16 +262,6 @@ pub async fn task_claim_pending_tx(
     Ok(res.rows_affected())
 }
 
-/// Compatibility claim for pre-projection plan rows. Its explicit empty
-/// closure still uses the same atomic freeze/index primitive.
-pub async fn task_claim_legacy_pending_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    now: i64,
-) -> Result<u64> {
-    task_claim_pending_tx(tx, id, now, &[], false).await
-}
-
 /// Issue #644 PR-B — the scheduler's post-spawn running stamp (design
 /// §3/§5.4). Guarded `WHERE status = 'dispatched'`: a fast worker that
 /// already reported (`done`/`failed`, or `verifying` once gates land)

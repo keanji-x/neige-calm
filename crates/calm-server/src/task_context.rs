@@ -23,7 +23,7 @@ pub const MAX_REF_NODES: usize = 64;
 pub const MAX_RERESOLVE_FANOUT: usize = 64;
 pub const MAX_SWEEP_NODES: usize = 4096;
 
-const ROOT_HASH_TASK_FIELDS: &[&str] = &[
+pub const ROOT_HASH_TASK_FIELDS: &[&str] = &[
     "kind",
     "goal",
     "acceptance",
@@ -34,8 +34,7 @@ const ROOT_HASH_TASK_FIELDS: &[&str] = &[
     "cwd",
     "context",
 ];
-#[cfg(test)]
-const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
+pub const ROOT_HASH_EXCLUDED_TASK_FIELDS: &[&str] = &[
     "key",
     "priority",
     "declared_by",
@@ -183,10 +182,16 @@ impl TaskContextMonitor {
         let (_, blocks) = self.report_snapshot(task_wave_id, &mut doc_revs).await?;
         let mut live = Vec::new();
         let mut tombstoned = false;
-        for block in blocks {
-            if block.kind == "task"
-                && block.payload.get("key").and_then(serde_json::Value::as_str) == Some(task_key)
+        for value in blocks {
+            if value.get("kind").and_then(serde_json::Value::as_str) == Some("task")
+                && value
+                    .get("payload")
+                    .and_then(|payload| payload.get("key"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(task_key)
             {
+                let block: ReportBlock = serde_json::from_value(value)
+                    .map_err(|_| ResolveError::MalformedStoredReport(task_wave_id.into()))?;
                 if block
                     .payload
                     .get("tombstone")
@@ -282,7 +287,7 @@ impl TaskContextMonitor {
         &self,
         wave_id: &str,
         doc_revs: &mut BTreeMap<String, u64>,
-    ) -> std::result::Result<(String, Vec<ReportBlock>), ResolveError> {
+    ) -> std::result::Result<(String, Vec<serde_json::Value>), ResolveError> {
         let wave = self
             .repo
             .wave_get(wave_id)
@@ -300,24 +305,18 @@ impl TaskContextMonitor {
             .ok_or_else(|| ResolveError::ReportAbsent(wave_id.into()))?;
         let doc_rev = report
             .payload
-            .get("doc_rev")
+            .get("docRev")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or_default();
+            .ok_or_else(|| ResolveError::MalformedStoredReport(wave_id.into()))?;
         // Fence baseline is captured before the first block in this wave is decoded.
         doc_revs.entry(wave_id.into()).or_insert(doc_rev);
         let values = report
             .payload
             .get("blocks")
             .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| ResolveError::MalformedStoredReport(wave_id.into()))?;
-        let blocks = values
-            .iter()
-            .map(|value| {
-                serde_json::from_value(value.clone())
-                    .map_err(|_| ResolveError::MalformedStoredReport(wave_id.into()))
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok((wave.cove_id.to_string(), blocks))
+            .cloned()
+            .unwrap_or_default();
+        Ok((wave.cove_id.to_string(), values))
     }
 
     async fn load_block(
@@ -328,9 +327,9 @@ impl TaskContextMonitor {
         doc_revs: &mut BTreeMap<String, u64>,
     ) -> std::result::Result<(String, ReportBlock), ResolveError> {
         let (cove, blocks) = self.report_snapshot(wave_id, doc_revs).await?;
-        let block = blocks
+        let value = blocks
             .into_iter()
-            .find(|block| block.id == block_id)
+            .find(|value| value.get("id").and_then(serde_json::Value::as_str) == Some(block_id))
             .ok_or_else(|| {
                 if is_root {
                     ResolveError::RootAbsent
@@ -338,6 +337,8 @@ impl TaskContextMonitor {
                     ResolveError::ReferencedBlockAbsent(format!("{wave_id}#{block_id}"))
                 }
             })?;
+        let block = serde_json::from_value(value)
+            .map_err(|_| ResolveError::MalformedStoredReport(wave_id.into()))?;
         Ok((cove, block))
     }
 

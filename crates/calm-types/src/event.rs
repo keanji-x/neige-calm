@@ -1649,6 +1649,19 @@ mod scope_tests {
     use super::*;
 
     #[test]
+    fn task_context_ref_from_3a_defaults_missing_root_marker_with_nonempty_refs() {
+        let refs: Vec<TaskContextRef> = serde_json::from_value(serde_json::json!([{
+            "wave_id": "w-old",
+            "block_id": "b_old",
+            "rev": 3,
+            "hash": "abc123"
+        }]))
+        .expect("3a context refs remain readable");
+        assert_eq!(refs.len(), 1);
+        assert!(!refs[0].is_root);
+    }
+
+    #[test]
     fn scope_kind_strings_pinned() {
         // These strings are persisted to `events.scope_kind` — changing
         // them is a wire break. Pin against accidental rename.

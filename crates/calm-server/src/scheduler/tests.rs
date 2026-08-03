@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
+    assert!(fence_revision_matches(Some(Some(7)), 7));
+    assert!(!fence_revision_matches(None, 7), "missing row");
+    assert!(!fence_revision_matches(Some(None), 7), "SQL NULL");
+    assert!(
+        !fence_revision_matches(Some(Some(-1)), 7),
+        "negative revision"
+    );
+    assert!(
+        !fence_revision_matches(Some(Some(8)), 7),
+        "changed revision"
+    );
+}
+
 fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
     Task {
         id: format!("w:{key}"),

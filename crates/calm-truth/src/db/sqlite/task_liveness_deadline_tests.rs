@@ -107,6 +107,29 @@ async fn mark_running_stamps_running_liveness_deadline() {
 }
 
 #[tokio::test]
+async fn stale_pending_task_cannot_be_claimed() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open in-memory sqlite repo");
+    let row = task("stale-pending", TaskStatus::Pending);
+    let id = row.id.clone();
+    let mut tx = repo.pool().begin().await.expect("begin insert tx");
+    task_insert_tx(&mut tx, &row).await.expect("insert task");
+    sqlx::query("UPDATE tasks SET context_stale_at_ms = 99 WHERE id = ?1")
+        .bind(&id)
+        .execute(&mut *tx)
+        .await
+        .expect("mark stale");
+    let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
+        .await
+        .expect("stale guard is a clean lost claim");
+    assert_eq!(rows, 0);
+    let unchanged = task_get_tx(&mut tx, &id).await.unwrap().unwrap();
+    assert_eq!(unchanged.status, TaskStatus::Pending);
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
 async fn stamp_missing_running_liveness_deadline_includes_claude_and_excludes_terminal() {
     let repo = SqlxRepo::open("sqlite::memory:")
         .await

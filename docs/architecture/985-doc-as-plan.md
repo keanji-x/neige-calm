@@ -1351,11 +1351,11 @@ OpenAPI 重生成无 diff / web build + vitest。
 |---|---|
 | 1 | **冻结根接线 + claim 栅栏**：按 `(wave_id, key)` 定位根块 → `resolve_closure` → 传进 `task_claim_pending_tx`。**栅栏的正面表述：claim 事务内、状态翻转之前，复核 (a) 根块 `(block_id, content_hash)` 与 (b) 闭包涉及的每个不同 `wave_id` 的报告 `doc_rev`；任一不一致 ⇒ 回滚 claim、race-lost 重来。** `doc_rev` 已镜像进 `cards.payload`，同事务普通 `SELECT` 可读，**不需要加载 automerge 文档**。**`doc_revs` 只进 `TaskContextFrozen` 事件，不落任何 `tasks` 列，严禁写进 `claim_context_json`**（该列是纯数组、解析失败即判 material，`0067` 已在生产 backfill `'[]'`）。**每个 wave 的 `doc_rev` 先于该 wave 首个块读取**；wave / 报告卡缺失即视为不一致；**栅栏判据只来自本轮内存中的 map**（§5.2「三件事必须写死」）。定位失败分瞬时 / 确定性两类。**拆 `ResolveError` 变体**，`.ok()?` 改显式冒泡，**禁止按错误字符串推断** |
 | 2 | **相等式去 `rev`**：只比 `(wave_id, block_id, content_hash)`，**恒比哈希、不得以 rev 短路** |
-| 3 | **根块哈希收窄到 9 字段**；深度 ≥ 1 不收窄。**先把 `TASK_FIELDS` 从函数内局部常量提升为模块级 `pub(crate)`**，再配集合相等元测试（否则测试只能复制一份「期望全集」，是一条自证自明的空洞断言）。写死 canonical 投影函数 + 冻结集加**显式 root 标记** |
+| 3 | **根块哈希收窄到 9 字段**；深度 ≥ 1 不收窄。**先把 `TASK_FIELDS` 从函数内局部常量提升为模块级 `pub`**（集合相等元测试位于 `calm-server`，而常量位于 `calm-types`，跨 crate 的 `pub(crate)` 不可见），再配集合相等元测试（否则测试只能复制一份「期望全集」，是一条自证自明的空洞断言）。写死 canonical 投影函数 + 冻结集加**显式 root 标记** |
 | 4 | **撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` / `effective_wait` 作回传通道 |
 | 5 | **单赢家原语 + 事件管线**：提取 `mark_context_material_tx`，三条路径共用，归因 `ActorId::Kernel`；`TaskProjectionOutcome` 增 `kernel_events`；`tasks_rebuild_tx` 透传；**wave PATCH 从 `write_with_events_typed` 迁到 `write_with_actor_events_typed`**（不迁则 403）；禁止 `_tx` 内 `event_append_in_tx` |
 | 6 | **`closure_truncated` 进 sweep**：与事件路径同形；改掉钉住反向行为的那条测试断言 |
-| 7 | **瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级。**必须与交付项 1 用同一套 `ResolveError` 变体** —— 只修 claim 侧会让文档里同时存在两条互斥处置，那正是被判为 root-cause 的病灶 |
+| 7 | **瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级。**必须与交付项 1 用同一套 `ResolveError` 变体** —— 只修 claim 侧会让文档里同时存在两条互斥处置，那正是被判为 root-cause 的病灶。**跨片依赖**：3b′-i 的 claim 侧先把 `MalformedStoredReport` 保持为 retryable；这里必须补齐 per-row 计数与连续 3 轮升级，避免损坏的持久报告让 pending 行无限重试。 |
 | 8 | **tick 顺序 + boot 门**：周期 tick 的上下文 sweep 排在 `sweep_all` **之前**并补源码序断言；**任何一次成功 sweep 即原子开门，仅在翻转时补跑 `sweep_all`** |
 | 9 | **事件补齐 + 向后兼容**：`TaskContextFrozen` 补 `truncated` / `doc_revs` / root 标记；`TaskContextAdvanced` 补 `changed_refs` / `wave_id` / `task_key` / `rationale`。新字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程 |
 | 10 | **migration `0069_`**：§9.2 的三列，连类型、backfill SQL、reader 分工、「三列刻意不进 `TASK_COLUMNS`」的旁注一起写在同一个文件里 |
@@ -1852,7 +1852,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 **切片 3b′**（见 §10.3，此处补齐三条无落点的）：
 
 - **㉒ 元测试**：纳入集 ∪ 排除集 == `TASK_FIELDS`，且**引用同一个常量而非复制品**
-  （`TASK_FIELDS` 必须先提升为模块级 `pub(crate)`）；
+  （`TASK_FIELDS` 必须先提升为模块级 `pub`，供跨 crate 的元测试引用）；
 - **㉓ 回归**：`closure_truncated = true` 的任务，**事件路径与 sweep 两条路给出同一结论**；
 - **㉕ 回归**：boot sweep 失败后，**一次周期 tick 成功即开门并当轮完成
   `resume_dispatched`**（注意：boot 路径上的补跑必然 no-op，不得把那一格写成断言，
