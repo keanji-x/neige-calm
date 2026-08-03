@@ -315,7 +315,7 @@ gate_result / worker_card_id）贴在块上。这是**读时**行为，不产生
 | # | 规则 |
 |---|---|
 | 1 | **声明消失 ⇒ 守卫式删除**（`DELETE … AND status='pending'`）。四种触发：块被删除 / 被墓碑覆盖 / `ready` 从 true 撤回 / 该块新产生了诊断 |
-| 2 | **非 `pending` 行的声明列不再更新**，只产出诊断。**已派发过的 `key` 不复活** —— `tasks.id = "{wave}:{key}"` 就是 operation 幂等键（§3.3）|
+| 2 | **非 `pending` 行的声明内容不再更新**，只产出诊断；例外是收养与 `0070_` backfill 对 `decl_*` 影子位的**初始化**，它不改变 worker 可见规格。**已派发过的 `key` 不复活** —— `tasks.id = "{wave}:{key}"` 就是 operation 幂等键（§3.3）|
 | 3 | **可调度谓词是唯一的**：`schedulable = ready ∧ ¬tombstone ∧ diagnostics.is_empty() ∧ 准入`（§8 的 ceiling）|
 | 4 | **诊断零存储、零缓存、零事件** —— 读端在读事务内派生的标注 |
 | 5 | **`kernel_events` 必须被调用者消费**（§5.4）|
@@ -554,7 +554,7 @@ pending），该谓词因而是会诱导后来者补写者的空洞不变量。m
 > `Missing / CrossCove / InvalidReference / Storage`，而 **`Missing` 一个变体同时
 > 承载两类** —— wave 不存在、报告卡不存在、`blocks` 字段缺失、块不存在；
 > 更糟的是单块反序列化失败被 `.ok()?` **静默吞掉**，最终伪装成「块不存在」
-> ⇒ 一个本该按存储损坏观测的情形会被错分到确定性计数桶。
+> ⇒ 损坏被静默伪装为块缺失，导致失去独立的损坏分桶。
 >
 > **拆成**：retryable = `StorageUnavailable`；
 > deterministic = `RootAbsent` / `RootTombstoned` / `DuplicateLiveKey` /
@@ -562,7 +562,9 @@ pending），该谓词因而是会诱导后来者补写者的空洞不变量。m
 > `MalformedStoredReport` / `CrossCove` / `InvalidReference`。损坏的持久报告不会
 > 自行恢复；按 retryable 处理只会把同一个判决推迟 3 轮，期间该行仍占用
 > in-flight 名额。§5.5 的「瞬时失败」专指**存储/IO 不可用**，反序列化失败
-> 不属于它。**非根引用的缺失必须有自己的变体**，
+> 不属于它。反向代价是：一次瞬时不可解析（例如撕裂写入，或 schema 回滚后旧
+> 二进制读取新 payload）会立即且不可逆地把受影响的 in-flight 行判为 material。
+> **非根引用的缺失必须有自己的变体**，
 > 否则实现者会把所有 missing 塞回 `RootAbsent`，只是换个名字。
 > **分类按变体匹配，禁止按错误字符串推断。** 这项分类在 claim 前**只影响计数器
 > 分桶**，所有变体仍一律 race-lost；per-row 连续失败升级只属于 3b′-ii 的
@@ -644,7 +646,7 @@ pending），该谓词因而是会诱导后来者补写者的空洞不变量。m
 
 | 载体 | 谁写 | rebuild 怎么重放 | migration |
 |---|---|---|---|
-| `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不再更新** | 撤回退化为**当前状态的纯函数**（`row.decl_* == 1 ∧ decl.* == false`），rebuild 与增量都不动非 pending 行的声明列 ⇒ 两边读到同一前值 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
+| `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不改声明内容**，但收养初始化 `decl_ready=1` | 撤回退化为**当前状态的纯函数**；收养与 `0070_` backfill 初始化影子位不改变 worker 可见规格 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
 
 **三条边界**：
 
@@ -1182,7 +1184,9 @@ plan 表降为投影后，一次 `tasks_rebuild_tx` 会把它们全部抹掉。
 3. **同 key 收编**（自动且幂等，因此物化工具只是便利工具、不是迁移必需品）：
    - **pending 行** ⇒ 原地收编：`origin` 翻 `'block'`、**声明列全量覆盖**、
      状态列一字不动，同一条 UPDATE 同一事务；
-   - **非 pending 行** ⇒ 同样翻 `origin`，但**声明列不动**；不一致则出 stale 诊断。
+   - **非 pending 行** ⇒ 同样翻 `origin`，声明内容不动；但收养只发生在
+     `schedulable`（当前 `ready=true`）时，必须初始化影子位 `decl_ready=1`。
+     `decl_released_by_user` 保持 0，因为旧值不可重建；不一致则出 stale 诊断。
    - **任何情况下都不 INSERT**，所以 `UNIQUE(wave_id, key)` 永远不会被撞到。
 4. **物化工具（可选、人触发）**：admin CLI 把某个 wave 的 `tasks` 行写成 `task` 块。
    **它与 fork 一样需要规则 1 的豁免**（写入的 `declared_by` 来自存量行的归因，
@@ -1807,8 +1811,8 @@ backfill**」四格。这四个问题只要有一个空着，就是下一轮的 
 | `claim_context_json` | `TEXT NULL`（**纯 JSON 数组**）| claim 事务 | `detect_wave_edit` / `sweep_inner`（**解析失败即判 material**）| `TaskContextFrozen` 的投影 | **`'[]'`**（`NULL` = 缺失 ≠ 空）| 3a |
 | `context_stale_at_ms` | `INTEGER NULL` | `mark_context_material_tx`（**单赢家，且只写 in-flight 行；claim 路径与任何 `pending` 行一律不写**）| `refuse_if_context_stale` | `TaskContextAdvanced` 的投影 | `0069_` 防御性幂等清理不可达的 pending stale 状态（`NULL` = 从未判 material）| 3a / 3b′-i 修复 |
 | `context_closure_truncated` | `INTEGER NOT NULL DEFAULT 0` | claim 事务 | `detect_wave_edit` **与 `sweep_inner`（两处必须同形）** | `TaskContextFrozen.truncated` 的投影 | `0` | 3a |
-| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | 投影，**非 `pending` 行不再更新** | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′-ii |
-| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | 同上 | 同上 | 同上 | **保持 `0`，显式例外** | 3b′-ii |
+| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；收养路径初始化为 1 | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′-ii |
+| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；存量 legacy 收养不初始化 | 同上 | 同上 | **保持 `0`，显式例外；升级时已在飞 legacy 行永久缺少该位的撤回前值，新 claim 不受影响** | 3b′-ii |
 | `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′ |
 
 **三列（`decl_*` / `context_verify_failures`）刻意不进 `TASK_COLUMNS` / 公共 `Task`**
@@ -1963,7 +1967,8 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
    `status='pending'`。**「可调度」谓词的完整形式**：
    非墓碑 ∧ `ready` ∧ 诊断集合为空 ∧（`declare-and-wait` 时 `released_by_user`
    已置）∧（`declared_by='spec'` 时通过 ceiling 准入）。
-2. **非 `pending` 行的声明列一字不动**。
+2. **非 `pending` 行的声明内容一字不动**；收养与 `0070_` backfill 对 `decl_*`
+   影子位的初始化不受此限，因为它不改变 worker 可见规格。
 3. **所有存活行的状态列逐字节不变**。
 4. **`origin='legacy'` 行逐字节不变**。
 5. **`declared_by` 从块 payload 重建**，不依赖行内残留值。

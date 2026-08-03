@@ -1213,7 +1213,9 @@ impl Scheduler {
         self.boot_sweep_done.store(true, Ordering::SeqCst);
     }
 
-    /// Open the context-sweep boot gate after its synchronous boot pass.
+    /// Test-only steady-state seam. Production opens this gate only after a
+    /// successful context sweep via [`Scheduler::open_context_sweep_gate`].
+    #[cfg(any(test, feature = "fixtures"))]
     pub fn mark_context_sweep_boot_complete(&self) {
         self.context_sweep_boot_done.store(true, Ordering::SeqCst);
     }
@@ -1228,11 +1230,6 @@ impl Scheduler {
         {
             self.sweep_all().await;
         }
-    }
-
-    /// TEST seam for assertions around the context-sweep boot fence.
-    pub fn context_sweep_boot_completed(&self) -> bool {
-        self.context_sweep_boot_done.load(Ordering::SeqCst)
     }
 
     /// Shared sweep body: runs the reconcile arms inline and returns

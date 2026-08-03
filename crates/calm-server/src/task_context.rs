@@ -29,7 +29,7 @@ const VERIFY_FAILURE_LIMIT: i64 = 3;
 #[derive(Debug, PartialEq, Eq)]
 enum RefsMatch {
     Same,
-    Mismatch(Vec<TaskContextChangedRef>),
+    Mismatch(Vec<TaskContextChangedRef>, &'static str),
     Retryable(String),
 }
 
@@ -401,7 +401,7 @@ impl TaskContextMonitor {
     async fn refs_match(&self, task_wave_id: &str, refs: &[TaskContextRef]) -> RefsMatch {
         let task_wave = match self.repo.wave_get(task_wave_id).await {
             Ok(Some(wave)) => wave,
-            Ok(None) => return RefsMatch::Mismatch(Vec::new()),
+            Ok(None) => return RefsMatch::Mismatch(Vec::new(), "referenced_wave_absent"),
             Err(error) => return RefsMatch::Retryable(error.to_string()),
         };
         let system = match self.repo.cove_get_system().await {
@@ -422,42 +422,51 @@ impl TaskContextMonitor {
                 Ok(value) => value,
                 Err(ResolveError::StorageUnavailable(error)) => return RefsMatch::Retryable(error),
                 Err(ResolveError::MalformedStoredReport(_)) => {
-                    return RefsMatch::Mismatch(Vec::new());
+                    return RefsMatch::Mismatch(Vec::new(), "malformed_stored_report");
                 }
-                Err(_) => {
-                    return RefsMatch::Mismatch(vec![TaskContextChangedRef {
-                        wave_id: frozen.wave_id.clone(),
-                        block_id: frozen.block_id.clone(),
-                        from_rev: frozen.rev,
-                        from_hash: frozen.hash.clone(),
-                        ..Default::default()
-                    }]);
+                Err(error) => {
+                    return RefsMatch::Mismatch(
+                        vec![TaskContextChangedRef {
+                            wave_id: frozen.wave_id.clone(),
+                            block_id: frozen.block_id.clone(),
+                            from_rev: frozen.rev,
+                            from_hash: frozen.hash.clone(),
+                            ..Default::default()
+                        }],
+                        error.variant(),
+                    );
                 }
             };
             if cove != task_wave.cove_id.as_str()
                 && system.as_ref().map(|c| c.id.as_str()) != Some(cove.as_str())
             {
-                return RefsMatch::Mismatch(vec![TaskContextChangedRef {
-                    wave_id: frozen.wave_id.clone(),
-                    block_id: frozen.block_id.clone(),
-                    from_rev: frozen.rev,
-                    from_hash: frozen.hash.clone(),
-                    ..Default::default()
-                }]);
+                return RefsMatch::Mismatch(
+                    vec![TaskContextChangedRef {
+                        wave_id: frozen.wave_id.clone(),
+                        block_id: frozen.block_id.clone(),
+                        from_rev: frozen.rev,
+                        from_hash: frozen.hash.clone(),
+                        ..Default::default()
+                    }],
+                    "cross_cove",
+                );
             }
             let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
             if current.wave_id != frozen.wave_id
                 || current.block_id != frozen.block_id
                 || current.hash != frozen.hash
             {
-                return RefsMatch::Mismatch(vec![TaskContextChangedRef {
-                    wave_id: frozen.wave_id.clone(),
-                    block_id: frozen.block_id.clone(),
-                    from_rev: frozen.rev,
-                    to_rev: current.rev,
-                    from_hash: frozen.hash.clone(),
-                    to_hash: current.hash,
-                }]);
+                return RefsMatch::Mismatch(
+                    vec![TaskContextChangedRef {
+                        wave_id: frozen.wave_id.clone(),
+                        block_id: frozen.block_id.clone(),
+                        from_rev: frozen.rev,
+                        to_rev: current.rev,
+                        from_hash: frozen.hash.clone(),
+                        to_hash: current.hash,
+                    }],
+                    "content_changed",
+                );
             }
         }
         RefsMatch::Same
@@ -487,10 +496,17 @@ impl TaskContextMonitor {
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
             {
                 match self.refs_match(&row.wave_id, &refs).await {
-                    RefsMatch::Mismatch(changed) => {
-                        Some((changed, "frozen task context content changed"))
+                    RefsMatch::Mismatch(changed, variant) => {
+                        self.metrics.record_context_resolve_failure(variant);
+                        Some((changed, variant))
                     }
-                    RefsMatch::Same | RefsMatch::Retryable(_) => None,
+                    RefsMatch::Same => None,
+                    RefsMatch::Retryable(error) => {
+                        self.metrics
+                            .record_context_resolve_failure("storage_unavailable");
+                        tracing::warn!(task_id=%row.task_id, %error, "task context edit detection deferred after retryable resolution failure");
+                        None
+                    }
                 }
             } else {
                 Some((Vec::new(), "frozen reference set is missing or malformed"))
@@ -570,10 +586,13 @@ impl TaskContextMonitor {
                                 self.clear_verify_failures(&row.task_id).await?;
                                 None
                             }
-                            RefsMatch::Mismatch(changed) => {
-                                Some((changed, "frozen task context content changed"))
+                            RefsMatch::Mismatch(changed, variant) => {
+                                self.metrics.record_context_resolve_failure(variant);
+                                Some((changed, variant))
                             }
                             RefsMatch::Retryable(error) => {
+                                self.metrics
+                                    .record_context_resolve_failure("storage_unavailable");
                                 if self
                                     .record_verify_failure(&row.task_id, &row.wave_id)
                                     .await?
@@ -666,27 +685,6 @@ impl TaskContextMonitor {
         changed_refs: Vec<TaskContextChangedRef>,
         rationale: &'static str,
     ) -> Result<()> {
-        let wave = self.repo.wave_get(&wave_id).await?;
-        let Some(wave) = wave else {
-            // Wave/cove deletion removes its tasks in the same transaction. A
-            // missing wave is therefore safe only because the task row is
-            // already gone; keep this coupling loud if either delete path changes.
-            let Some(pool) = self.repo.sqlite_pool() else {
-                tracing::warn!(%task_id, %wave_id, "task context monitor requires sqlite");
-                return Ok(());
-            };
-            let task_exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)")
-                    .bind(&task_id)
-                    .fetch_one(&pool)
-                    .await?;
-            debug_assert!(!task_exists, "task survived deletion of its owning wave");
-            if task_exists {
-                tracing::warn!(%task_id, %wave_id, "task survived deletion of its owning wave");
-            }
-            return Ok(());
-        };
-        let _ = wave;
         let ((changed,), _) = write_with_actor_events_typed(
             self.repo.as_ref(),
             None,
@@ -833,6 +831,8 @@ mod tests {
             ("goal", serde_json::json!("new")),
             ("kind", serde_json::json!("terminal")),
             ("gate", serde_json::json!({"cmd": "cargo test"})),
+            ("refs", serde_json::json!(["neige://wave/w#b_child"])),
+            ("no_gate_reason", serde_json::json!("not required")),
         ] {
             let mut changed = block.clone();
             changed.payload[field] = value;

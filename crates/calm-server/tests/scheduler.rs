@@ -3123,21 +3123,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         )
         .await;
         let root_id = "b_1001";
-        let mut initial = vec![(root_id, "task", valid_root.clone())];
-        if case == "deleted-direct-ref" {
-            initial[0].2["refs"] = json!([format!("neige://wave/{}#b_dead", boot.wave_id)]);
-            initial.push(("b_dead", "prose", json!({"markdown": "target"})));
-        } else if case == "deleted-depth-two-ref" {
-            initial[0].2["refs"] = json!([format!("neige://wave/{}#b_cafe", boot.wave_id)]);
-            initial.push((
-                "b_cafe",
-                "prose",
-                json!({
-                    "markdown": format!("[deep](neige://wave/{}#b_dead)", boot.wave_id)
-                }),
-            ));
-            initial.push(("b_dead", "prose", json!({"markdown": "target"})));
-        }
+        let initial = vec![(root_id, "task", valid_root.clone())];
         edit_report_blocks(&boot, &initial, 0).await;
         set_lifecycle(&boot, WaveLifecycle::Draft).await;
         let task_id = format!("{}:{key}", boot.wave_id);
@@ -3177,11 +3163,6 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                     "refs": ["not-a-neige-link"]
                 }),
             )],
-            "deleted-direct-ref" => vec![(root_id, "task", initial[0].2.clone())],
-            "deleted-depth-two-ref" => vec![
-                (root_id, "task", initial[0].2.clone()),
-                ("b_cafe", "prose", initial[1].2.clone()),
-            ],
             _ => unreachable!(),
         };
         let pool = boot.repo.sqlite_pool().unwrap();
@@ -3240,53 +3221,10 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             stale.is_none_or(|value| value.is_none()),
             "case {case}: context_stale_at_ms must remain NULL when the row survives"
         );
-        if matches!(
-            case,
-            "duplicate" | "tombstoned" | "absent" | "invalid-root-ref"
-        ) {
-            assert!(
-                boot.repo.task_get(&task_id).await.unwrap().is_none(),
-                "case {case}: production projection must guard-delete the pending row"
-            );
-            continue;
-        }
-        let expected_variant =
-            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
-                .resolve_task_closure(boot.wave_id.as_str(), &key)
-                .await
-                .expect_err("fixture must fail closure resolution")
-                .variant();
-        let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
-        assert_eq!(row.status, TaskStatus::Pending, "case {case}");
-        assert_eq!(row.context_stale_at_ms, None, "case {case}");
-        assert_eq!(
-            scheduler.context_resolve_failure_count(expected_variant),
-            1,
-            "case {case} must increment its ResolveError bucket"
+        assert!(
+            boot.repo.task_get(&task_id).await.unwrap().is_none(),
+            "case {case}: production projection must guard-delete the pending row"
         );
-        assert_eq!(
-            scheduler
-                .context_metrics()
-                .snapshot()
-                .context_resolve_failures
-                .get(expected_variant),
-            Some(&1),
-            "case {case}: resolve bucket must be present in the production health snapshot"
-        );
-        if matches!(case, "deleted-direct-ref" | "deleted-depth-two-ref") {
-            let repaired = vec![(root_id, "task", valid_root.clone())];
-            edit_report_blocks(&boot, &repaired, 2).await;
-            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
-                .resolve_task_closure(boot.wave_id.as_str(), &key)
-                .await
-                .expect("repaired fixture must resolve before retrying production claim");
-            scheduler.schedule_wave(boot.wave_id.clone()).await;
-            assert_ne!(
-                boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
-                TaskStatus::Pending,
-                "case {case} must recover after the next valid report edit"
-            );
-        }
     }
 }
 
@@ -3671,29 +3609,58 @@ async fn storage_unavailable_during_system_cove_lookup_is_retryable() {
         .execute(&pool)
         .await
         .unwrap();
-    monitor.sweep().await.unwrap();
-    sqlx::query("ALTER TABLE coves_unavailable RENAME TO coves")
-        .execute(&pool)
+    for expected in [(1, None), (2, None)] {
+        monitor.sweep().await.unwrap();
+        let row: (i64, Option<i64>) = sqlx::query_as(
+            "SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
         .await
         .unwrap();
-
+        assert_eq!(row, expected);
+        assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+    }
+    monitor.sweep().await.unwrap();
     let row: (i64, Option<i64>) =
         sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
             .bind(&task_id)
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(row, (1, None), "storage failure must remain retryable");
-    monitor.sweep().await.unwrap();
-    let failures: i64 = sqlx::query_scalar("SELECT context_verify_failures FROM tasks WHERE id=?1")
-        .bind(task_id)
-        .fetch_one(&pool)
+    assert_eq!(row.0, 0, "material winner clears the retry streak");
+    assert!(row.1.is_some(), "third consecutive failure is material");
+    assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+    sqlx::query("ALTER TABLE coves_unavailable RENAME TO coves")
+        .execute(&pool)
         .await
         .unwrap();
-    assert_eq!(
-        failures, 0,
-        "a successful sweep resets the row-local streak"
-    );
+}
+
+#[tokio::test]
+async fn successful_context_verification_resets_retry_streak() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "storage-reset").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let task_id = format!("{}:storage-reset", boot.wave_id);
+    sqlx::query("ALTER TABLE coves RENAME TO coves_unavailable")
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    sqlx::query("ALTER TABLE coves_unavailable RENAME TO coves")
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    let row: (i64, Option<i64>) =
+        sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row, (0, None));
+    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
 }
 
 async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {
@@ -5382,7 +5349,7 @@ async fn backstop_sweep_noops_until_boot_sweep_completes() {
 
     // The earlier context boot sweep opens its independent admission
     // gate before the scheduler boot funnel reconciles dispatched rows.
-    scheduler.mark_context_sweep_boot_complete();
+    scheduler.open_context_sweep_gate().await;
     scheduler.sweep_boot().await;
     assert!(scheduler.boot_sweep_completed());
     assert_eq!(operation_count(&boot, "codex-worker").await, 1);

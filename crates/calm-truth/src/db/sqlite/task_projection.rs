@@ -28,6 +28,38 @@ pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
     "depends_on",
     "gate",
 ];
+
+fn declaration_field_changed(
+    field: &str,
+    row: &FrozenDeclarationRow,
+    declaration: &TaskDeclaration,
+    expected_context: &str,
+    legacy: bool,
+) -> Result<bool> {
+    let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _, _) = row;
+    Ok(match field {
+        "kind" => kind != &declaration.kind,
+        "goal" => goal != &declaration.goal,
+        "context" => !context_eq(context, expected_context, declaration, legacy),
+        "acceptance" => acceptance != &declaration.acceptance,
+        "cwd" => cwd != &declaration.cwd,
+        "depends_on" => {
+            let mut actual: Vec<String> = serde_json::from_str(depends).unwrap_or_default();
+            actual.sort();
+            actual.dedup();
+            let mut expected = declaration.depends_on.clone();
+            expected.sort();
+            expected.dedup();
+            actual != expected
+        }
+        "gate" => !gate_eq(gate, &declaration.gate)?,
+        unknown => {
+            return Err(CalmError::Internal(format!(
+                "unknown projection drift field: {unknown}"
+            )));
+        }
+    })
+}
 type FrozenDeclarationRow = (
     String,
     String,
@@ -350,14 +382,14 @@ pub async fn evaluate_schedulability_tx(
         let Some((
             status,
             _key,
-            kind,
-            goal,
-            context,
-            acceptance,
-            cwd,
-            depends,
+            _kind,
+            _goal,
+            _context,
+            _acceptance,
+            _cwd,
+            _depends,
             _priority,
-            gate,
+            _gate,
             _declared_by,
             origin,
             decl_ready,
@@ -368,19 +400,21 @@ pub async fn evaluate_schedulability_tx(
         };
         let legacy = origin == "legacy";
         let expected_context = declaration_context_json(declaration, legacy)?;
-        let mut actual_depends: Vec<String> = serde_json::from_str(depends).unwrap_or_default();
-        actual_depends.sort();
-        actual_depends.dedup();
-        let mut expected_depends = declaration.depends_on.clone();
-        expected_depends.sort();
-        expected_depends.dedup();
-        let changed = kind != &declaration.kind
-            || goal != &declaration.goal
-            || !context_eq(context, &expected_context, declaration, legacy)
-            || acceptance != &declaration.acceptance
-            || cwd != &declaration.cwd
-            || actual_depends != expected_depends
-            || !gate_eq(gate, &declaration.gate)?;
+        let row = frozen_by_key.get(&declaration.key).expect("frozen row");
+        let changed = PROJECTION_DRIFT_TASK_FIELDS
+            .iter()
+            .try_fold(false, |changed, field| {
+                Ok::<_, CalmError>(
+                    changed
+                        || declaration_field_changed(
+                            field,
+                            row,
+                            declaration,
+                            &expected_context,
+                            legacy,
+                        )?,
+                )
+            })?;
         verdict.withdrawal = if *decl_ready == 1 && !declaration.ready {
             Some(WithdrawalEdge::Ready)
         } else if *decl_released_by_user == 1 && !declaration.released_by_user && effective_wait {
@@ -399,7 +433,12 @@ pub async fn evaluate_schedulability_tx(
             ));
             verdict.schedulable = false;
         }
-        if verdict.withdrawal.is_some()
+        let stale_causing_diagnostic = changed
+            || verdict.withdrawal.is_some()
+            || verdict.diagnostics.iter().any(|diagnostic| {
+                matches!(diagnostic.path.as_str(), "refs" | "depends_on" | "gate")
+            });
+        if stale_causing_diagnostic
             && matches!(status.as_str(), "dispatched" | "running" | "verifying")
         {
             verdict
@@ -516,7 +555,7 @@ pub async fn project_tasks_tx(
                     // the hash-typed changed_refs clean and describe the edge in the
                     // rationale instead.
                     let mut changed_refs = Vec::new();
-                    if declaration_removed && changed_refs.is_empty() {
+                    if declaration_removed {
                         changed_refs.extend(
                             claim_context_json
                                 .as_deref()
@@ -579,7 +618,7 @@ pub async fn project_tasks_tx(
     for (declaration, verdict) in declarations.iter().zip(&verdicts) {
         if verdict.schedulable && !declaration.tombstone {
             let adopted = sqlx::query(
-                "UPDATE tasks SET origin='block',updated_at_ms=?1 WHERE wave_id=?2 AND key=?3 AND origin='legacy' AND status!='pending'",
+                "UPDATE tasks SET origin='block',decl_ready=1,updated_at_ms=?1 WHERE wave_id=?2 AND key=?3 AND origin='legacy' AND status!='pending'",
             )
             .bind(now)
             .bind(wave_id)

@@ -23,6 +23,7 @@ use calm_server::routes::wave_report_blocks::{
     DeleteReportBlockBody, UpdateReportBlockBody, delete_block, update_block,
 };
 use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState};
+use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::wave_report::{WaveReportPayload, persist_report, tasks_rebuild_tx};
 use calm_server::wave_report_doc::ReportDoc;
 use calm_types::report_blocks::render_fence;
@@ -332,6 +333,66 @@ async fn ready_withdrawal_marks_inflight_material_under_both_policies() {
 }
 
 #[tokio::test]
+async fn adopted_legacy_inflight_initializes_ready_shadow_before_withdrawal() {
+    let boot = new_boot().await;
+    let declaration = task("adopted-ready");
+    let (id, rev) = upsert(&boot, None, declaration.clone()).await;
+    sqlx::query("UPDATE tasks SET status='running',origin='legacy',decl_ready=0 WHERE wave_id=?1 AND key='adopted-ready'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    upsert(&boot, Some((&id, rev)), declaration.clone()).await;
+    let adopted: (String, i64) = sqlx::query_as(
+        "SELECT origin,decl_ready FROM tasks WHERE wave_id=?1 AND key='adopted-ready'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(adopted, ("block".into(), 1));
+
+    let latest = read(&boot).await;
+    let rev = latest["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["id"] == id)
+        .unwrap()["rev"]
+        .as_u64()
+        .unwrap();
+    let before_events = boot.repo.events_since(0, i64::MAX).await.unwrap().len();
+    let mut withdrawn = declaration;
+    withdrawn["ready"] = json!(false);
+    upsert(&boot, Some((&id, rev)), withdrawn).await;
+
+    let stale: Option<i64> = sqlx::query_scalar(
+        "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='adopted-ready'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert!(stale.is_some());
+    let events = boot.repo.events_since(0, i64::MAX).await.unwrap();
+    assert_eq!(
+        events[before_events..]
+            .iter()
+            .filter(|event| matches!(event.3, Event::TaskContextAdvanced { .. }))
+            .count(),
+        1
+    );
+    for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+        assert!(diagnostic_contains(
+            snapshot,
+            "adopted-ready",
+            "cannot be withdrawn"
+        ));
+    }
+}
+
+#[tokio::test]
 async fn release_edges_obey_current_wait_policy_and_forward_edge_is_safe() {
     let boot = new_boot().await;
     let (id, rev) = upsert(&boot, None, task("release-edge")).await;
@@ -495,6 +556,52 @@ async fn same_write_reference_exists_then_target_deletion_removes_pending_projec
     .await
     .expect("delete referenced target");
     assert_diagnosed_on_both_reads(&boot, "same-write-ref", "does not exist").await;
+    let error = TaskContextMonitor::new(
+        boot.repo.clone(),
+        boot.ctx.events.clone(),
+        boot.ctx.write.clone(),
+    )
+    .resolve_task_closure(boot.wave_id.as_str(), "same-write-ref")
+    .await
+    .expect_err("deleted production block id must be classified");
+    assert!(matches!(error, ResolveError::ReferencedBlockAbsent(_)));
+}
+
+#[tokio::test]
+async fn production_ids_cover_depth_two_referenced_block_absence() {
+    let boot = new_boot().await;
+    let target = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind":"prose","markdown":"leaf","if_doc_rev":read(&boot).await["docRev"]}),
+    )
+    .await
+    .unwrap();
+    let target_id = target["id"].as_str().unwrap().to_string();
+    let target_rev = target["rev"].as_u64().unwrap();
+    let middle = call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind":"prose","markdown":format!("[leaf](neige://wave/{}#{target_id})",boot.wave_id),"if_doc_rev":read(&boot).await["docRev"]}),
+    )
+    .await
+    .unwrap();
+    let middle_id = middle["id"].as_str().unwrap().to_string();
+    let mut declaration = task("depth-two-absent");
+    declaration["refs"] = json!([format!("neige://wave/{}#{middle_id}", boot.wave_id)]);
+    upsert(&boot, None, declaration).await;
+    user_delete(&boot, &target_id, target_rev).await;
+    let error = TaskContextMonitor::new(
+        boot.repo.clone(),
+        boot.ctx.events.clone(),
+        boot.ctx.write.clone(),
+    )
+    .resolve_task_closure(boot.wave_id.as_str(), "depth-two-absent")
+    .await
+    .expect_err("deleted depth-two production block id must be classified");
+    assert!(matches!(error, ResolveError::ReferencedBlockAbsent(_)));
 }
 
 #[tokio::test]
@@ -899,6 +1006,49 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
             "{field}"
         );
+    }
+}
+
+#[tokio::test]
+async fn inflight_priority_and_declared_by_changes_do_not_promise_context_rejection() {
+    for (field, value) in [("priority", json!(99)), ("declared_by", json!("user"))] {
+        let boot = new_boot().await;
+        let (id, rev) = upsert(&boot, None, task("non-context-drift")).await;
+        sqlx::query(
+            "UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='non-context-drift'",
+        )
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+        if field == "declared_by" {
+            sqlx::query(
+                "UPDATE tasks SET declared_by='user' WHERE wave_id=?1 AND key='non-context-drift'",
+            )
+            .bind(boot.wave_id.as_str())
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+            rebuild(&boot).await;
+        } else {
+            let mut changed = task("non-context-drift");
+            changed[field] = value;
+            upsert(&boot, Some((&id, rev)), changed).await;
+        }
+        let stale: Option<i64> = sqlx::query_scalar(
+            "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='non-context-drift'",
+        )
+        .bind(boot.wave_id.as_str())
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+        assert_eq!(stale, None, "{field}");
+        for snapshot in [&read(&boot).await, &rest_read(&boot).await] {
+            assert!(
+                !diagnostic_contains(snapshot, "non-context-drift", "gate operation"),
+                "{field} must not promise a stale-context rejection"
+            );
+        }
     }
 }
 
