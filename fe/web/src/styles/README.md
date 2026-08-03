@@ -20,6 +20,8 @@ GATE-TOKENS-009 的故意缺口仅是 `--r` 不进入 radius 形状数组；本�
 
 `entry.css` 是唯一入口并固定 `reset → vendor → tokens → base → astryx → ui → features → overrides`；`tokens.css` 由入口接入 `tokens`。Astryx 自带的真实层名是 `astryx-base`，因此由 `vendor.css` 汇入后再由入口包进顶层 `astryx`，而不是企图用同名层声明覆盖它；所有第三方 CSS 只允许在 `vendor.css` import，TS/TSX 禁止直接 import CSS。CSS Modules 不会自动进入 layer：`ui/**.module.css` 必须包 `@layer ui`，`features/**.module.css` 必须包 `@layer features`，机器检查在第一份模块样式出现前已经生效。
 
+当前仓库尚无 `main.tsx`，因此 `entry.css` 还没有运行时消费方；这里冻结的是阶段 1 的声明性 cascade 契约，实际入口接线属于阶段 2。
+
 `global-classes.yaml` 今天是空数组，因为 `web/src` 尚无组件/业务 CSS，`tokens.css` 也没有 class selector。未来只有经 change request 批准、确需跨模块共享的应用类才会登记；CSS AST 实际集合与 manifest 双向相等，所以空值表达“任何未登记全局类都禁止”，不是未完成占位。负向 fixture 注入 `.escaped` 会触发 `CSS-only class`。
 
 `unlayered-exceptions.yaml` 今天也是空数组，因为尚无 CodeMirror 组件 CSS，所有当前规则均可分层。未来仅可登记无法进入 layer 的第三方 CodeMirror 覆盖，条目必须精确到 `path + selector + property + expiry`，且 selector 最右复合必须含 `.cm-*`；负向 fixture/变异用 `.panel .not-cm` 证明非 CodeMirror 规则会红。因此空数组是“零已批准例外”的可执行策略，不是空洞。
