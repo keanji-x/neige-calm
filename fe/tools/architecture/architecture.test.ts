@@ -42,10 +42,11 @@ const packageImportShapes = [
   'namespace-reexport', 'dynamic-import', 'require-call', 'import-equals-require',
   'dynamic-import-template-literal', 'dynamic-import-with-attributes',
 ] as const;
-const consumerImportShapes = [
-  'named-import', 'default-import', 'namespace-member', 'named-reexport',
-  'dynamic-import-destructure', 'require-member',
-] as const;
+const consumerImportShapes = new Map<string, boolean>([
+  ['named-import', true], ['default-import', true], ['namespace-member', true],
+  ['named-reexport', true], ['dynamic-import-destructure', true], ['require-member', true],
+  ['computed-module-source', false], ['computed-namespace-property', false],
+]);
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
   if (caseName.startsWith('dup-')) {
@@ -288,10 +289,15 @@ describe('duplication manifest on the application tree', () => {
   });
   it('covers exactly the independently enumerated consumer-import syntax fixtures', () => {
     const fixtureNames = new Set(readdirSync(resolve(shapeFixtures, 'consumer-import')));
-    expect(fixtureNames).toEqual(new Set(consumerImportShapes));
-    for (const shape of consumerImportShapes) {
-      const errors = checkDuplicationManifest(resolve(shapeFixtures, 'consumer-import', shape));
-      expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(true);
+    expect(fixtureNames).toEqual(new Set(consumerImportShapes.keys()));
+    for (const [shape, mustReject] of consumerImportShapes) {
+      const fixtureRoot = resolve(shapeFixtures, 'consumer-import', shape);
+      const errors = checkDuplicationManifest(fixtureRoot);
+      expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(mustReject);
+      if (!mustReject) {
+        const fixtureSource = sourceFilesUnder(fixtureRoot).map((file) => readFileSync(file, 'utf8')).join('\n');
+        expect(fixtureSource, `${shape} must contain the managed symbol`).toMatch(/\bSchemaForm\b/);
+      }
     }
   });
   it('deep-freezes manifest entries and nested arrays', () => {
