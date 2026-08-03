@@ -23,24 +23,27 @@ use tokio::sync::{Mutex, broadcast, oneshot};
 const DAEMON_READY_SIGNAL: &[u8] = b"ready\n";
 const DAEMON_READY_MAX_BYTES: usize = 64;
 
-/// #996: 一个 pty 进程退出后，其 `ByteRing`（默认 1 MiB/终端）与 pty master fd
-/// 还要保留这么久，给"退出后立刻重连并看最后一屏"留窗口。窗口过后 entry 被
-/// 降级为墓碑：大头内存与 fd 释放，`ProcExit` 保留，晚到的 attach 依旧拿得到
-/// sticky exit（配 `Gap` 告知 replay 已不可用）。
+/// #996: 一个 pty 进程退出后，整条 entry（`ByteRing`，默认 1 MiB/终端；pty
+/// master/writer fd；broadcast 通道）还要在 registry 里保留这么久，给"退出后
+/// 立刻重连、拿 sticky exit 与最后一屏 replay"留窗口。窗口内 entry **完整**
+/// 保留，不降级、不半死；窗口过后整条移除，资源由 Rust 所有权一次性释放。
+///
+/// 期满后晚到的 attach 拿到 `UnknownProc`。这不丢信息：终端的退出状态由
+/// `calm-server` 在退出当时落库（`terminal_set_exit`），数据库才是权威记录，
+/// registry 只是"活着的进程 + 短暂的 replay 缓存"。
 const PTY_RECLAIM_GRACE: Duration = Duration::from_secs(60);
 
-/// #996: 墓碑本身很小（pid + 退出码 + 游标），但不能无界增长。超过这个数量后
-/// 按 FIFO 丢弃最老的墓碑，此后对它们的 attach 退化为 `UnknownProc`。
-const MAX_PTY_TOMBSTONES: usize = 128;
+/// #996: 清扫周期。由宽限期推导，避免多一个旋钮：默认 60s 宽限 → 1s 一扫，
+/// 测试把宽限期调到毫秒级时也能及时清扫。一次扫描只是对 registry 的
+/// `HashMap::retain`，锁本来就有。
+const PTY_SWEEP_MIN: Duration = Duration::from_millis(10);
+const PTY_SWEEP_MAX: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct ProcRegistry {
     inner: Arc<StdMutex<HashMap<String, Arc<ProcEntry>>>>,
-    /// #996: 已降级为墓碑的 proc_id，FIFO 顺序，用于给墓碑总量封顶。
-    tombstones: Arc<StdMutex<VecDeque<String>>>,
     reap_children: bool,
     pty_reclaim_grace: Duration,
-    max_tombstones: usize,
 }
 
 struct ProcEntry {
@@ -56,6 +59,9 @@ struct ProcEntry {
     /// must consult it, otherwise a reaped child looks alive for the whole
     /// grace window and `EnsureProc` hands out a dead pid (issue #993 R4).
     pty_reaped: AtomicBool,
+    /// #996: 这条 entry 最早可以在什么时刻被清扫掉。`None` = 尚未退出。
+    /// 唯一的回收簿记 —— 没有墓碑位、没有字段级降级开关。
+    remove_after: StdMutex<Option<std::time::Instant>>,
     broadcast_tx: broadcast::Sender<DataFrame>,
 }
 
@@ -66,6 +72,67 @@ impl ProcEntry {
         !self.pty_reaped.load(Ordering::SeqCst)
             && self.exit.lock().map(|exit| exit.is_none()).unwrap_or(false)
     }
+
+    /// #996: 安排回收时刻。只会前移不会后退 —— `Cleanup`（"我不要这条了"）可以
+    /// 把它提前到"立刻"，而随后到达的 waiter 不得再把宽限期加回去。
+    fn schedule_removal(&self, at: std::time::Instant) {
+        let mut slot = self
+            .remove_after
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(match *slot {
+            Some(prev) => prev.min(at),
+            None => at,
+        });
+    }
+
+    /// #996: 这条 entry 现在可以整条从 registry 移除吗？三个条件缺一不可：
+    ///
+    /// 1. **已安排回收**且宽限期已过 —— 宽限期内 entry 完整保留，刚断开的
+    ///    客户端重连仍拿得到 sticky exit 与最后一屏 replay。
+    /// 2. **sticky exit 已落定** —— 否则移除会连"进程怎么死的"一起丢掉。
+    /// 3. **reader 线程已结束** —— "没人持有 pty slave"的可判定形式：
+    ///    没人持有 slave ⟺ master 已 EOF ⟺ reader 线程已结束，而 #993 的
+    ///    `PtyDrainGate` 已经在跟踪这件事。
+    ///
+    ///    为什么要这一条：`portable-pty` 的 `UnixMasterWriter::drop` 会往
+    ///    master 写 `['\n', VEOF]`（portable-pty-0.9/src/unix.rs:393-405）。
+    ///    还有人攥着 slave 时，那两个字节就是孙子进程 stdin 上的换行 +
+    ///    Ctrl-D，足以把它直接踢死 —— 正是 #993 花一整轮保护的对象。等到
+    ///    reader 结束之后再 drop，写 master 只会拿到 EIO，无害。
+    ///
+    ///    注意这里有两层保护，互相独立：这个谓词管住"registry 什么时候撒手"，
+    ///    而 writer 真正被 drop 的时机由所有权决定 —— reader 线程自己也持一份
+    ///    `Arc<ProcEntry>`，所以即便 registry 提前撒手，writer 也要等 reader
+    ///    退出（= 无人持有 slave）之后才可能归零。旧的墓碑方案两层都没有：
+    ///    它绕过所有权，直接把 `runtime` 里的 writer 置 `None`。
+    ///
+    /// 推论：**孙子进程持有 pty 时这条 entry 不会被移除**。这不是泄漏，是正确的
+    /// 资源追踪 —— 有东西还攥着这个终端，它就该留着（reader 也还在把 master
+    /// 排空，见 #993 R3）。孙子进程一走，reader EOF，下一次清扫就收掉。
+    fn removable(&self, now: std::time::Instant) -> bool {
+        let due = self
+            .remove_after
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some_and(|at| at <= now);
+        if !due {
+            return false;
+        }
+        match &self.runtime {
+            // pipe entry 没有 sticky exit 语义（`exit` 从不被写入，回收走
+            // `await_ready_phase` 的 waitpid 任务），到期即移除。
+            ProcRuntime::Pipe { .. } => true,
+            ProcRuntime::Pty { drain_gate, .. } => {
+                let exit_recorded = self
+                    .exit
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_some();
+                exit_recorded && drain_gate.is_drained()
+            }
+        }
+    }
 }
 
 enum ProcRuntime {
@@ -73,10 +140,10 @@ enum ProcRuntime {
         child: Arc<Mutex<Child>>,
     },
     Pty {
-        // #996: `Option` 是墓碑化的开关 —— 回收时置 None 即关闭 pty master fd
-        // 与 writer fd，entry 本身留在 registry 里继续提供 sticky exit。
-        master: Arc<StdMutex<Option<Box<dyn MasterPty + Send>>>>,
-        writer: Arc<StdMutex<Option<Box<dyn io::Write + Send>>>>,
+        master: Arc<StdMutex<Box<dyn MasterPty + Send>>>,
+        writer: Arc<StdMutex<Box<dyn io::Write + Send>>>,
+        /// #996: 清扫谓词的安全闸 —— 见 `ProcEntry::removable`。
+        drain_gate: Arc<PtyDrainGate>,
     },
 }
 
@@ -184,16 +251,6 @@ impl ByteRing {
         (self.cursor_head, self.cursor_tail)
     }
 
-    /// #996: 释放全部缓冲字节并把容量降到 0，游标窗口塌缩为 `[tail, tail]`。
-    /// 之后 `slice_from` 对任何早于 tail 的游标返回 `Gap`，attach 端因此知道
-    /// replay 已不可用，而不是误以为终端没输出过。
-    fn reclaim(&mut self) {
-        self.chunks.clear();
-        self.chunks.shrink_to_fit();
-        self.capacity = 0;
-        self.cursor_head = self.cursor_tail;
-    }
-
     fn buffered_len(&self) -> usize {
         self.chunks.iter().map(|(_, chunk)| chunk.len()).sum()
     }
@@ -204,40 +261,7 @@ impl ByteRing {
 #[derive(Debug, Clone, Copy)]
 pub struct EntryDebugStats {
     pub buffered_bytes: usize,
-    pub pty_master_open: bool,
     pub exited: bool,
-}
-
-impl ProcEntry {
-    /// #996: 墓碑 = pty entry 的 master 已被释放。
-    fn is_tombstoned(&self) -> bool {
-        match &self.runtime {
-            ProcRuntime::Pipe { .. } => false,
-            ProcRuntime::Pty { master, .. } => master
-                .lock()
-                .map(|master| master.is_none())
-                .unwrap_or(false),
-        }
-    }
-}
-
-/// #996: 把一个已退出的 pty entry 降级为墓碑 —— 释放 `ByteRing` 与 pty
-/// master/writer fd，保留 `ProcExit` 让晚到的 attach 仍能得知进程如何结束。
-/// 幂等：重复调用无副作用。
-fn reclaim_pty_entry(registry: &ProcRegistry, proc_id: &str, entry: &ProcEntry) {
-    if let ProcRuntime::Pty { master, writer } = &entry.runtime {
-        if let Ok(mut writer) = writer.lock() {
-            *writer = None;
-        }
-        if let Ok(mut master) = master.lock() {
-            *master = None;
-        }
-    }
-    if let Ok(mut ring) = entry.byte_ring.lock() {
-        ring.reclaim();
-        entry.cursor_head.store(ring.window().0, Ordering::SeqCst);
-    }
-    registry.record_tombstone(proc_id);
 }
 
 #[derive(Debug)]
@@ -250,10 +274,8 @@ impl ProcRegistry {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(StdMutex::new(HashMap::new())),
-            tombstones: Arc::new(StdMutex::new(VecDeque::new())),
             reap_children: true,
             pty_reclaim_grace: PTY_RECLAIM_GRACE,
-            max_tombstones: MAX_PTY_TOMBSTONES,
         }
     }
 
@@ -264,27 +286,21 @@ impl ProcRegistry {
         }
     }
 
-    /// #996: 测试用 —— 缩短退出到回收之间的宽限期。
+    /// #996: 测试用 —— 缩短退出到移除之间的宽限期。
     #[doc(hidden)]
     pub fn with_pty_reclaim_grace(mut self, grace: Duration) -> Self {
         self.pty_reclaim_grace = grace;
         self
     }
 
-    /// #996: 测试用 —— 缩小墓碑上限，便于验证 registry 有界。
-    #[doc(hidden)]
-    pub fn with_max_tombstones(mut self, max: usize) -> Self {
-        self.max_tombstones = max;
-        self
-    }
-
-    /// #996: registry 当前持有的 entry 数（含墓碑）。
+    /// #996: registry 当前持有的 entry 数。
     #[doc(hidden)]
     pub fn debug_entry_count(&self) -> usize {
         self.inner.lock().map(|entries| entries.len()).unwrap_or(0)
     }
 
-    /// #996: 供测试断言"ring 已释放 / pty fd 已关闭 / 退出状态仍在"。
+    /// #996: 供测试断言"宽限期内 replay 仍完好 / 退出状态已落定"。entry 一旦
+    /// 到期就整条消失，所以返回 `None` 本身就是"已回收"的断言。
     #[doc(hidden)]
     pub fn debug_entry_stats(&self, proc_id: &str) -> Option<EntryDebugStats> {
         let entry = self.inner.lock().ok()?.get(proc_id).cloned()?;
@@ -294,8 +310,6 @@ impl ProcRegistry {
                 .lock()
                 .map(|ring| ring.buffered_len())
                 .unwrap_or(0),
-            pty_master_open: matches!(&entry.runtime, ProcRuntime::Pty { master, .. }
-                if master.lock().map(|m| m.is_some()).unwrap_or(false)),
             exited: entry
                 .exit
                 .lock()
@@ -304,39 +318,33 @@ impl ProcRegistry {
         })
     }
 
-    /// #996: 登记一个墓碑，并对墓碑总量封顶（FIFO 淘汰）。只有仍是墓碑的
-    /// entry 才会被真正移除 —— 同名 proc_id 被重新拉起时新 entry 必须留下。
-    fn record_tombstone(&self, proc_id: &str) {
-        let evicted: Vec<String> = {
-            let Ok(mut tombstones) = self.tombstones.lock() else {
-                return;
-            };
-            if tombstones.iter().any(|id| id == proc_id) {
-                return;
-            }
-            tombstones.push_back(proc_id.to_string());
-            let mut evicted = Vec::new();
-            while tombstones.len() > self.max_tombstones {
-                if let Some(id) = tombstones.pop_front() {
-                    evicted.push(id);
-                }
-            }
-            evicted
+    /// #996: 清扫周期 —— 由宽限期推导，不额外开旋钮。
+    fn sweep_interval(&self) -> Duration {
+        (self.pty_reclaim_grace / 4).clamp(PTY_SWEEP_MIN, PTY_SWEEP_MAX)
+    }
+
+    /// #996: 唯一的回收路径 —— 把所有满足 `ProcEntry::removable` 的 entry 整条
+    /// 从 registry 移除。没有字段级降级、没有墓碑：最后一个 `Arc<ProcEntry>`
+    /// 归零时，ring、broadcast 通道、pty master 与 writer 由 Rust 所有权一次性
+    /// 释放。返回本轮移除的条数（供日志/测试）。
+    ///
+    /// 一个周期性任务扫全表，而不是每条退出记录起一个定时线程：零件从 N 降到
+    /// 1，且 registry 的锁本来就有。
+    fn sweep_expired_entries(&self) -> usize {
+        let now = std::time::Instant::now();
+        let mut entries = match self.inner.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
         };
-        if evicted.is_empty() {
-            return;
-        }
-        if let Ok(mut entries) = self.inner.lock() {
-            for id in evicted {
-                let still_tombstone = entries
-                    .get(&id)
-                    .map(|entry| entry.is_tombstoned())
-                    .unwrap_or(false);
-                if still_tombstone {
-                    entries.remove(&id);
-                }
+        let before = entries.len();
+        entries.retain(|proc_id, entry| {
+            let keep = !entry.removable(now);
+            if !keep {
+                tracing::debug!(proc_id = %proc_id, "pty entry expired; removing from registry");
             }
-        }
+            keep
+        });
+        before - entries.len()
     }
 
     pub async fn live_pids(&self) -> Vec<u32> {
@@ -415,10 +423,17 @@ pub async fn serve_with_listener(
         control_sock = %control_sock.display(),
         "calm-proc-supervisor listening"
     );
+    // #996: 回收器就是这个 accept 循环里的一根定时器分支 —— 不新造监督结构，
+    // 生命周期与关停跟着 `shutdown` 走，进程退出时它自然消失。
+    let mut sweep = tokio::time::interval(registry.sweep_interval());
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = &mut shutdown => {
                 break;
+            }
+            _ = sweep.tick() => {
+                registry.sweep_expired_entries();
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
@@ -726,10 +741,6 @@ async fn handle_write_stdin(
         let mut writer = writer
             .lock()
             .map_err(|_| io::Error::other("pty writer mutex poisoned"))?;
-        // #996: 墓碑（已退出且已回收）没有可写的 pty。
-        let writer = writer
-            .as_mut()
-            .ok_or_else(|| io::Error::other("pty has exited and been reclaimed"))?;
         writer.write_all(&bytes)?;
         writer.flush()
     })
@@ -775,30 +786,16 @@ async fn handle_resize_pty(
         .await?;
         return Ok(());
     };
-    // #996: 墓碑（已退出并回收）没有 master fd 可 resize。
     let res = {
-        let mut master = master
+        let master = master
             .lock()
             .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?;
-        master.as_mut().map(|master| {
-            master.resize(PtPtySize {
-                cols: request.cols,
-                rows: request.rows,
-                pixel_width: request.pixel_w,
-                pixel_height: request.pixel_h,
-            })
+        master.resize(PtPtySize {
+            cols: request.cols,
+            rows: request.rows,
+            pixel_width: request.pixel_w,
+            pixel_height: request.pixel_h,
         })
-    };
-    let Some(res) = res else {
-        write_frame(
-            stream,
-            &ControlReply::Error {
-                kind: ControlErrorKind::WrongState,
-                message: format!("proc {} has exited and been reclaimed", request.proc_id),
-            },
-        )
-        .await?;
-        return Ok(());
     };
     match res {
         Ok(()) => write_frame(stream, &ControlReply::ResizeOk).await?,
@@ -862,10 +859,8 @@ fn current_process_group(entry: &ProcEntry) -> anyhow::Result<i32> {
             let master = master
                 .lock()
                 .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?;
-            // #996: 墓碑已释放 master fd，退回记录的 pid。
             Ok(master
-                .as_ref()
-                .and_then(|master| master.process_group_leader())
+                .process_group_leader()
                 .unwrap_or(entry.pid as libc::pid_t))
         }
     }
@@ -886,21 +881,6 @@ async fn handle_cleanup(
     // Pty: `pty_running` goes false the moment the child is reaped, so a
     // cleanup arriving inside the drain grace no longer bounces with
     // WrongState (issue #993 R4). Pipe: unchanged sticky-exit semantics.
-    //
-    // Known and accepted (issue #993 R2/F6): a cleanup landing inside the
-    // ≤`PTY_DRAIN_GRACE` window removes the entry before the waiter has
-    // stamped the sticky `exit`, so a later `Attach` gets `UnknownProc`
-    // instead of the exit. Left as-is on purpose:
-    //   * no production path sends `ControlMsg::Cleanup` at all (tests only),
-    //     so nothing can reach it today;
-    //   * `Cleanup` means "I am done with this proc" — discarding its sticky
-    //     exit is what the caller asked for, and `UnknownProc` is exactly how
-    //     every other post-cleanup attach already answers;
-    //   * the two alternatives are both worse: bouncing with `WrongState`
-    //     during the grace is the R4 bug this branch exists to fix, and
-    //     blocking the handler until the exit is stamped would pin a control
-    //     connection on a window whose whole purpose is being skippable.
-    // If a production caller is ever added, revisit this first.
     let still_running = match &entry.runtime {
         ProcRuntime::Pty { .. } => entry.pty_running(),
         ProcRuntime::Pipe { .. } => entry.exit.lock().map(|exit| exit.is_none()).unwrap_or(true),
@@ -916,19 +896,14 @@ async fn handle_cleanup(
         .await?;
         return Ok(());
     }
-    // #996: pty entry 不整个移除 —— 移除会让之后的 attach 拿到 `UnknownProc`，
-    // 客户端就无从得知进程如何结束（reader 仍在 drain 时尤其致命）。改为立即
-    // 墓碑化：ring 与 pty fd 当场释放，`ProcExit` 保留。pipe entry 没有 sticky
-    // exit 语义，仍然直接移除。
-    if matches!(entry.runtime, ProcRuntime::Pty { .. }) {
-        reclaim_pty_entry(&registry, &request.proc_id, &entry);
-    } else {
-        registry
-            .inner
-            .lock()
-            .map(|mut entries| entries.remove(&request.proc_id))
-            .ok();
-    }
+    // #996: `Cleanup` = "我不要这条了"，于是把回收时刻提前到"立刻"，然后就地
+    // 扫一次。跳过的是宽限期，**不是**安全闸：`ProcEntry::removable` 依然要求
+    // sticky exit 已落定、reader 已结束，所以
+    //   * 一个落在 `pty_reaped=true` 与 seal 之间的 cleanup 不会把退出状态提前
+    //     丢掉（#993 R2/F6 的老坑）——它只会在下一轮清扫时生效；
+    //   * 孙子进程还攥着 slave 时不会 drop writer，也就不会注入 `\n`+VEOF。
+    entry.schedule_removal(std::time::Instant::now());
+    registry.sweep_expired_entries();
     write_frame(stream, &ControlReply::CleanupOk).await?;
     Ok(())
 }
@@ -1064,6 +1039,7 @@ async fn try_spawn_pipe(
                 cursor_head: AtomicU64::new(0),
                 exit: StdMutex::new(None),
                 pty_reaped: AtomicBool::new(false),
+                remove_after: StdMutex::new(None),
                 broadcast_tx,
             }),
         );
@@ -1127,8 +1103,9 @@ async fn try_spawn_pty(
     drop(pair.slave);
 
     let pid = child.process_id().unwrap_or_default();
-    let master = Arc::new(StdMutex::new(Some(pair.master)));
-    let writer = Arc::new(StdMutex::new(Some(writer)));
+    let master = Arc::new(StdMutex::new(pair.master));
+    let writer = Arc::new(StdMutex::new(writer));
+    let drain_gate = Arc::new(PtyDrainGate::new());
     let (broadcast_tx, _) = broadcast::channel(2048);
     let replay_bytes = if request.replay_bytes == 0 {
         1024 * 1024
@@ -1141,12 +1118,14 @@ async fn try_spawn_pty(
         runtime: ProcRuntime::Pty {
             master: master.clone(),
             writer,
+            drain_gate: drain_gate.clone(),
         },
         byte_ring: StdMutex::new(ByteRing::new(replay_bytes)),
         cursor_tail: AtomicU64::new(0),
         cursor_head: AtomicU64::new(0),
         exit: StdMutex::new(None),
         pty_reaped: AtomicBool::new(false),
+        remove_after: StdMutex::new(None),
         broadcast_tx: broadcast_tx.clone(),
     });
     registry
@@ -1157,7 +1136,6 @@ async fn try_spawn_pty(
             child_already_reaped: false,
         })?
         .insert(request.proc_id.clone(), entry.clone());
-    let drain_gate = Arc::new(PtyDrainGate::new());
     spawn_pty_reader_task(
         request.proc_id.clone(),
         entry.clone(),
@@ -1169,7 +1147,7 @@ async fn try_spawn_pty(
         entry,
         child,
         drain_gate,
-        registry.clone(),
+        registry.pty_reclaim_grace,
     );
 
     Ok(Spawned {
@@ -1236,6 +1214,16 @@ impl PtyDrainGate {
         *guard = true;
         drop(guard);
         self.signal.notify_all();
+    }
+
+    /// Whether the reader thread has finished. #996 reads it as "nobody holds
+    /// the pty slave any more", which is the precondition for dropping the
+    /// entry (and with it the writer, whose `Drop` injects `\n`+VEOF).
+    fn is_drained(&self) -> bool {
+        *self
+            .drained
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Waits for the reader to finish, at most `PTY_DRAIN_GRACE`. Returns
@@ -1390,7 +1378,7 @@ fn spawn_pty_waiter(
     entry: Arc<ProcEntry>,
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     gate: Arc<PtyDrainGate>,
-    registry: ProcRegistry,
+    reclaim_grace: Duration,
 ) {
     // OS thread, NOT `tokio::task::spawn_blocking`: a long-lived PTY child
     // (shell / codex / claude) keeps `child.wait()` blocked for the
@@ -1461,20 +1449,13 @@ fn spawn_pty_waiter(
             "pty child exited"
         );
 
-        // #996: 退出后按宽限期回收。宽限期内 replay 完好（刚断开的客户端可以
-        // 重连看最后一屏）；到期后降级为墓碑 —— ring 与 pty fd 释放，
-        // `ProcExit` 保留，晚到的 attach 仍拿得到 sticky exit。
-        // 这里睡在 waiter 线程上：它本来就要退出了，且不受 tokio blocking pool
-        // 跟踪（见上方注释），不会阻塞 runtime drop。
+        // #996: 只登记一个到期时刻，然后线程就结束 —— 不睡、不定时器、不每条
+        // 退出记录起一根线程。真正的移除由 serve 循环里那一个周期性清扫器做
+        // （`ProcRegistry::sweep_expired_entries`），且要额外等 reader 结束。
         //
-        // #993 交互：这一段严格排在上面 seal 临界区之后 —— 回收既不能挤进
-        // seal / sticky / broadcast 之间（否则 `Exited` 不再是最后一帧），也
-        // 不影响 seal 之后 reader 继续把 master 排空到 EOF：reader 持有的是
-        // `try_clone_reader()` 复制出来的独立 fd，把 `runtime` 里的 master /
-        // writer 置 None 不会关掉它。
-        std::thread::sleep(registry.pty_reclaim_grace);
-        reclaim_pty_entry(&registry, &proc_id, &entry);
-        tracing::debug!(proc_id = %proc_id, "pty entry reclaimed to tombstone");
+        // 严格排在上面 seal 临界区之后：登记不能挤进 seal / sticky / broadcast
+        // 之间，否则 `Exited` 不再是最后一帧（#993）。
+        entry.schedule_removal(std::time::Instant::now() + reclaim_grace);
     });
 }
 
@@ -1541,10 +1522,11 @@ async fn existing_live_pid(registry: &ProcRegistry, proc_id: &str) -> Option<u32
             }
         },
         ProcRuntime::Pty { .. } => {
-            // #996: 与 Pipe 分支不同，这里**故意不**移除已退出的 entry ——
-            // 移除会连 sticky exit 一起丢掉。资源由退出后的宽限期回收路径
-            // （`reclaim_pty_entry`）释放；同名 proc_id 被重新拉起时
-            // `try_spawn_pty` 的 insert 会直接覆盖这条墓碑。
+            // #996: 与 Pipe 分支不同，这里**故意不**就地移除已退出的 entry ——
+            // 那会在宽限期内把 sticky exit 与最后一屏 replay 一起丢掉。移除是
+            // 清扫器的事（`sweep_expired_entries`）；同名 proc_id 在宽限期内被
+            // 重新拉起时，`try_spawn_pty` 的 insert 直接覆盖旧 entry，旧 entry
+            // 的 `remove_after` 随之一起消失，不会污染任何淘汰顺序。
             if entry.pty_running() {
                 Some(entry.pid)
             } else {
@@ -1820,15 +1802,10 @@ pub mod test_support {
             Self::start_with_registry(ProcRegistry::without_reaper()).await
         }
 
-        /// #996: 让测试可以缩短退出→回收的宽限期、缩小墓碑上限。
-        pub async fn start_with(
-            pty_reclaim_grace: Duration,
-            max_tombstones: usize,
-        ) -> anyhow::Result<Self> {
+        /// #996: 让测试可以缩短"退出 → 整条移除"的宽限期。
+        pub async fn start_with_grace(pty_reclaim_grace: Duration) -> anyhow::Result<Self> {
             Self::start_with_registry(
-                ProcRegistry::without_reaper()
-                    .with_pty_reclaim_grace(pty_reclaim_grace)
-                    .with_max_tombstones(max_tombstones),
+                ProcRegistry::without_reaper().with_pty_reclaim_grace(pty_reclaim_grace),
             )
             .await
         }

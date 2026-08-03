@@ -1,10 +1,23 @@
-//! #996: 已退出的 pty `ProcEntry` 必须被回收 —— `ByteRing` 与 pty master fd
-//! 不能随终端创建次数线性泄漏 —— 同时不能牺牲 sticky exit 语义：晚到的 attach
-//! 仍须得知进程如何结束。
+//! #996: 已退出的 pty `ProcEntry` 必须被回收 —— `ByteRing`（默认 1 MiB/终端）、
+//! broadcast 通道与 pty master/writer fd 不能随终端创建次数线性泄漏。
+//!
+//! 方案是"到期整条移除"，不是墓碑：
+//!
+//! * **宽限期内**，entry 完整保留 —— 刚断开的客户端重连仍拿得到最后一屏 replay
+//!   与 sticky exit（`replay_and_sticky_exit_survive_within_grace`）。
+//! * **宽限期后**，整条 entry 从 registry 移除，资源由 Rust 所有权一次性释放；
+//!   证据是 `/proc/self/fd` 的真实计数，不是查某个 `Option`
+//!   （`expired_pty_entries_are_removed_and_release_ring_and_fds`）。
+//!   此后 attach 得到 `UnknownProc` —— 不丢信息：终端退出状态由 `calm-server`
+//!   在退出当时落库（`terminal_set_exit`），数据库才是权威记录。
+//! * **孙子进程仍持有 pty 时不移除**，因此也绝不会把 `portable-pty`
+//!   `UnixMasterWriter::drop` 注入的 `\n`+VEOF 打到它的 stdin 上
+//!   （`entry_survives_and_no_eof_is_injected_while_a_grandchild_holds_the_pty`）。
 
 use calm_proc_supervisor::test_support::InProcessProcSupervisor;
 use calm_session::control::{
-    AttachRequest, CleanupRequest, ControlMsg, ControlReply, EnsureProcRequest, IoMode,
+    AttachRequest, CleanupRequest, ControlErrorKind, ControlMsg, ControlReply, EnsureProcRequest,
+    IoMode,
 };
 use calm_session::{read_frame, write_frame};
 use std::path::Path;
@@ -15,77 +28,14 @@ use tokio::net::UnixStream;
 const NOISY_BYTES: usize = 200_000;
 const REPLAY_BYTES: usize = 1024 * 1024;
 
-/// 复现：N 个 pty 全部退出后，registry 里的 entry 必须交还 ring 内存与
-/// pty master fd。当前 main 上没有任何常规回收路径，于是 8 个终端留下
-/// 8 份 1 MiB 级 ring + 8 个常开的 master fd。
+/// 宽限期内 entry **完整**保留：新 attach 既拿得到最后一屏 replay，也拿得到
+/// sticky exit。这条锁住"不降级、不半死"——回收只有"还在"和"整条没了"两态。
 #[tokio::test]
-async fn exited_pty_entries_release_ring_and_master_fd() {
-    let grace = Duration::from_secs(3);
-    let supervisor = InProcessProcSupervisor::start_with(grace, 128)
+async fn replay_and_sticky_exit_survive_within_grace() {
+    let supervisor = InProcessProcSupervisor::start_with_grace(Duration::from_secs(30))
         .await
         .expect("start supervisor");
-    let registry = supervisor.registry();
-
-    // 预热一轮，让 tokio / 临时目录相关的 fd 先稳定下来。
-    let warm = "pty-reclaim-warmup";
-    ensure_noisy_pty(supervisor.sock(), warm).await;
-    await_exit(supervisor.sock(), warm).await;
-
-    let fds_before = open_fd_count();
-
-    let procs: Vec<String> = (0..8).map(|i| format!("pty-reclaim-{i}")).collect();
-    for proc_id in &procs {
-        ensure_noisy_pty(supervisor.sock(), proc_id).await;
-    }
-    for proc_id in &procs {
-        await_exit(supervisor.sock(), proc_id).await;
-    }
-
-    // 宽限期内 replay 仍然完整 —— 回收不能早于宽限期。
-    let buffered_in_grace: usize = procs
-        .iter()
-        .map(|proc_id| {
-            registry
-                .debug_entry_stats(proc_id)
-                .expect("entry present during grace")
-                .buffered_bytes
-        })
-        .sum();
-    assert!(
-        buffered_in_grace > NOISY_BYTES,
-        "宽限期内应仍持有 replay 字节，实际 {buffered_in_grace}"
-    );
-
-    tokio::time::sleep(grace + Duration::from_secs(2)).await;
-
-    for proc_id in &procs {
-        let stats = registry
-            .debug_entry_stats(proc_id)
-            .expect("tombstone must remain for sticky exit");
-        assert_eq!(
-            stats.buffered_bytes, 0,
-            "{proc_id}: ByteRing 未释放（仍持有 {} 字节）",
-            stats.buffered_bytes
-        );
-        assert!(!stats.pty_master_open, "{proc_id}: pty master fd 未关闭");
-        assert!(stats.exited, "{proc_id}: 退出状态应保留");
-    }
-
-    let fds_after = open_fd_count();
-    assert!(
-        fds_after <= fds_before + 3,
-        "pty master fd 随终端数线性泄漏：before={fds_before} after={fds_after}（8 个已退出终端）"
-    );
-}
-
-/// 回收不得破坏 sticky exit：进程退出很久（远超宽限期）之后新 attach
-/// 仍能得知退出状态，并通过 `Gap` 知晓 replay 已不可用。
-#[tokio::test]
-async fn sticky_exit_survives_entry_reclaim() {
-    let supervisor = InProcessProcSupervisor::start_with(Duration::from_millis(200), 128)
-        .await
-        .expect("start supervisor");
-    let proc_id = "pty-sticky-after-reclaim";
+    let proc_id = "pty-replay-in-grace";
     ensure_pty(
         supervisor.sock(),
         proc_id,
@@ -93,25 +43,31 @@ async fn sticky_exit_survives_entry_reclaim() {
         REPLAY_BYTES,
     )
     .await;
-    let exit = await_exit(supervisor.sock(), proc_id).await;
-    assert_eq!(exit, (Some(7), false));
+    assert_eq!(
+        await_exit(supervisor.sock(), proc_id).await,
+        (Some(7), false)
+    );
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // 进程早就没了，但 entry 在宽限期内必须还在，且 ring 未被动过。
     let stats = supervisor
         .registry()
         .debug_entry_stats(proc_id)
-        .expect("tombstone retained");
-    assert!(!stats.pty_master_open, "回收后 master fd 应已关闭");
-    assert_eq!(stats.buffered_bytes, 0, "回收后 ring 应已释放");
+        .expect("宽限期内 entry 必须仍在 registry");
+    assert!(stats.exited, "退出状态应已落定");
+    assert!(stats.buffered_bytes > 0, "宽限期内 replay 字节不得被释放");
 
     let (attached, frames) = attach_and_drain(supervisor.sock(), proc_id).await;
     assert!(!attached.running);
-    assert!(attached.replay.is_empty(), "回收后 replay 不再可用，应为空");
     assert!(
-        frames
+        contains(&attached.replay, b"abc"),
+        "宽限期内 replay 应完好，实际 {:?}",
+        attached.replay
+    );
+    assert!(
+        !frames
             .iter()
             .any(|frame| matches!(frame, ControlReply::Gap { .. })),
-        "回收后 attach 应带 Gap 告知 replay 不可用，实际 {frames:?}"
+        "宽限期内不应有 Gap（replay 完整），实际 {frames:?}"
     );
     let exited = frames
         .iter()
@@ -121,48 +77,154 @@ async fn sticky_exit_survives_entry_reclaim() {
             } => Some((*status, *signalled)),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("退出很久后 attach 仍须拿到 sticky exit，实际 {frames:?}"));
+        .unwrap_or_else(|| panic!("宽限期内 attach 必须拿到 sticky exit，实际 {frames:?}"));
     assert_eq!(exited, (Some(7), false));
 }
 
-/// 宽限期内回收不得提前发生：刚断开的客户端重连必须还能看到最后一屏。
+/// 宽限期后整条 entry 被移除，ring 与 fd **真的**回到基线。
+///
+/// fd 的证据是 `/proc/self/fd` 的计数：supervisor 与测试同进程，8 个 pty 各自
+/// 持有 master + reader dup + writer dup，泄漏会直接体现在这个数字上。墓碑方案
+/// 下"查 `Option` 是否为 None"是假绿 —— entry 还在，broadcast 通道也还在。
 #[tokio::test]
-async fn replay_survives_within_reclaim_grace() {
-    let supervisor = InProcessProcSupervisor::start_with(Duration::from_secs(30), 128)
+async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
+    let grace = Duration::from_millis(300);
+    let supervisor = InProcessProcSupervisor::start_with_grace(grace)
         .await
         .expect("start supervisor");
-    let proc_id = "pty-replay-in-grace";
-    ensure_pty(
-        supervisor.sock(),
-        proc_id,
-        &["-c", "printf abc"],
-        REPLAY_BYTES,
-    )
-    .await;
-    await_exit(supervisor.sock(), proc_id).await;
+    let registry = supervisor.registry();
 
-    let (attached, frames) = attach_and_drain(supervisor.sock(), proc_id).await;
+    // 预热一轮，让 tokio / 临时目录相关的 fd 先稳定下来。
+    let warm = "pty-reclaim-warmup";
+    ensure_noisy_pty(supervisor.sock(), warm).await;
+    await_exit(supervisor.sock(), warm).await;
+    await_entry_gone(registry, warm).await;
+
+    let fds_before = open_fd_count();
+    let entries_before = registry.debug_entry_count();
+
+    let procs: Vec<String> = (0..8).map(|i| format!("pty-reclaim-{i}")).collect();
+    for proc_id in &procs {
+        ensure_noisy_pty(supervisor.sock(), proc_id).await;
+    }
+    for proc_id in &procs {
+        await_exit(supervisor.sock(), proc_id).await;
+    }
+
+    // 宽限期内 ring 仍完好 —— 移除不能早于宽限期。
+    let buffered_in_grace: usize = procs
+        .iter()
+        .map(|proc_id| {
+            registry
+                .debug_entry_stats(proc_id)
+                .expect("宽限期内 entry 必须仍在")
+                .buffered_bytes
+        })
+        .sum();
     assert!(
-        contains(&attached.replay, b"abc"),
-        "宽限期内 replay 应完好，实际 {:?}",
-        attached.replay
+        buffered_in_grace > NOISY_BYTES,
+        "宽限期内应仍持有 replay 字节，实际 {buffered_in_grace}"
     );
+
+    for proc_id in &procs {
+        await_entry_gone(registry, proc_id).await;
+    }
+    assert_eq!(
+        registry.debug_entry_count(),
+        entries_before,
+        "8 条已退出 entry 应全部离开 registry"
+    );
+
+    let fds_after = open_fd_count();
     assert!(
-        frames
-            .iter()
-            .any(|frame| matches!(frame, ControlReply::Exited { .. })),
-        "应仍收到 sticky exit，实际 {frames:?}"
+        fds_after <= fds_before + 2,
+        "pty fd 随终端数线性泄漏：before={fds_before} after={fds_after}（8 个已退出终端）"
     );
+
+    // 移除之后 attach 得到 UnknownProc —— 新契约，退出状态改由 calm-server 侧
+    // 的终端行（`terminal_set_exit`）负责，registry 只缓存活着的进程。
+    let mut stream = UnixStream::connect(supervisor.sock())
+        .await
+        .expect("connect attach");
+    write_frame(
+        &mut stream,
+        &ControlMsg::Attach(AttachRequest {
+            proc_id: procs[0].clone(),
+            from_cursor: Some(0),
+            reader_id: "reclaim-test".into(),
+        }),
+    )
+    .await
+    .expect("write attach");
+    match timeout_read(&mut stream).await {
+        ControlReply::Error { kind, .. } => assert_eq!(kind, ControlErrorKind::UnknownProc),
+        other => panic!("移除后 attach 应得到 UnknownProc，实际 {other:?}"),
+    }
 }
 
-/// `Cleanup` 对 pty 不再整个移除 entry —— 那会让之后的 attach 拿到
-/// `UnknownProc`，客户端无从得知进程如何结束。改为立即墓碑化。
+/// 直面 review 第 1 条：`*writer = None` / drop writer 会触发
+/// `UnixMasterWriter::drop`，它往 master 写 `['\n', VEOF]`
+/// （portable-pty-0.9/src/unix.rs:393-405）。只要还有孙子进程攥着 slave，那两个
+/// 字节就是它 stdin 上的换行 + Ctrl-D，足以直接把它踢死。
+///
+/// 新方案的移除谓词把"reader 线程已结束"作为硬闸：reader 结束 ⟺ master EOF
+/// ⟺ 无人持有 slave。所以孙子进程还在时 entry 根本不会被移除，writer 也就不会
+/// 被 drop —— 这不是泄漏，是正确的资源追踪。
+///
+/// 断言分两段：
+/// 1. 远超宽限期后，entry 仍在 **且** 孙子进程仍活着（没有 EOF 注入）；
+/// 2. 杀掉孙子进程后 entry 随即被清扫掉 —— 证明第 1 段不是永久泄漏。
 #[tokio::test]
-async fn cleanup_pty_reclaims_but_keeps_sticky_exit() {
-    let supervisor = InProcessProcSupervisor::start_with(Duration::from_secs(60), 128)
+async fn entry_survives_and_no_eof_is_injected_while_a_grandchild_holds_the_pty() {
+    let grace = Duration::from_millis(300);
+    let supervisor = InProcessProcSupervisor::start_with_grace(grace)
         .await
         .expect("start supervisor");
-    let proc_id = "pty-cleanup-tombstone";
+    let temp = tempfile::tempdir().expect("tempdir");
+    let pid_file = temp.path().join("grandchild.pid");
+    let proc_id = "pty-grandchild-holds-slave";
+
+    ensure_pty(
+        supervisor.sock(),
+        proc_id,
+        &["-c", &grandchild_script(&pid_file)],
+        REPLAY_BYTES,
+    )
+    .await;
+    write_stdin(supervisor.sock(), proc_id, b"go\n").await;
+    await_exit(supervisor.sock(), proc_id).await;
+
+    let grandchild = read_pid_file(&pid_file);
+    assert!(
+        process_is_alive(grandchild),
+        "这条测试必须走「孙子进程持有 slave」的路径，但 pid {grandchild} 在父进程退出时就没了"
+    );
+
+    // 远超宽限期（>10 个清扫周期）。
+    tokio::time::sleep(grace * 10).await;
+
+    assert!(
+        supervisor.registry().debug_entry_stats(proc_id).is_some(),
+        "孙子进程仍持有 pty 时 entry 不得被移除（移除会 drop writer 并注入 \\n+VEOF）"
+    );
+    assert!(
+        process_is_alive(grandchild),
+        "孙子进程被 EOF 注入杀死了 —— 回收路径 drop 了 pty writer（review #1）"
+    );
+
+    // 孙子进程一走，master EOF，reader 结束，下一次清扫收掉 entry：不是泄漏。
+    kill_pid(grandchild);
+    await_entry_gone(supervisor.registry(), proc_id).await;
+}
+
+/// `Cleanup` 跳过的是宽限期，不是安全闸：entry 立刻被移除，但走的仍是同一个
+/// 谓词（sticky exit 已落定、reader 已结束）。
+#[tokio::test]
+async fn cleanup_removes_the_entry_immediately() {
+    let supervisor = InProcessProcSupervisor::start_with_grace(Duration::from_secs(600))
+        .await
+        .expect("start supervisor");
+    let proc_id = "pty-cleanup-removes";
     ensure_pty(
         supervisor.sock(),
         proc_id,
@@ -171,6 +233,10 @@ async fn cleanup_pty_reclaims_but_keeps_sticky_exit() {
     )
     .await;
     await_exit(supervisor.sock(), proc_id).await;
+    assert!(
+        supervisor.registry().debug_entry_stats(proc_id).is_some(),
+        "600s 宽限期内 entry 本应还在"
+    );
 
     let mut stream = UnixStream::connect(supervisor.sock())
         .await
@@ -188,39 +254,69 @@ async fn cleanup_pty_reclaims_but_keeps_sticky_exit() {
         other => panic!("unexpected cleanup reply: {other:?}"),
     }
 
-    let stats = supervisor
-        .registry()
-        .debug_entry_stats(proc_id)
-        .expect("cleanup 后仍须保留墓碑");
-    assert!(!stats.pty_master_open, "cleanup 应关闭 pty master fd");
-    assert_eq!(stats.buffered_bytes, 0, "cleanup 应释放 ring");
-
-    let (_, frames) = attach_and_drain(supervisor.sock(), proc_id).await;
     assert!(
-        frames
-            .iter()
-            .any(|frame| matches!(frame, ControlReply::Exited { .. })),
-        "cleanup 之后 attach 仍须拿到 sticky exit，实际 {frames:?}"
+        supervisor.registry().debug_entry_stats(proc_id).is_none(),
+        "Cleanup 之后 entry 应立即离开 registry"
     );
 }
 
-/// 墓碑本身也不能无界增长：超过上限后按 FIFO 淘汰最老的墓碑。
-#[tokio::test]
-async fn tombstones_are_bounded() {
-    let supervisor = InProcessProcSupervisor::start_with(Duration::from_millis(200), 2)
-        .await
-        .expect("start supervisor");
-    let procs: Vec<String> = (0..6).map(|i| format!("pty-bounded-{i}")).collect();
-    for proc_id in &procs {
-        ensure_pty(supervisor.sock(), proc_id, &["-c", "printf abc"], 4096).await;
-        await_exit(supervisor.sock(), proc_id).await;
+/// 父进程后台起一个子 shell，用 `exec < /dev/tty` 把 stdin 重新指回 pty slave
+/// （POSIX 下非交互 shell 的 `&` 会把 stdin 改成 /dev/null，不重开就读不到注入
+/// 的字节，测试会假绿），然后阻塞在 `read` 上。父进程把它的 pid 写进
+/// `pid_file` 后退出。
+///
+/// `trap '' HUP` 是必需的：pty child 是会话首进程，它退出时内核会给整个前台
+/// 进程组发 SIGHUP。没有 trap 孙子进程会随父一起死，master 立刻 EOF，这条测试
+/// 就悄悄退化成 happy path。`sleep 0.3` 关掉 fork/trap 竞争窗口。
+///
+/// 于是孙子进程满足两件事：**持有 slave**（master 不会 EOF），且 **stdin 是
+/// pty**（任何 `\n`+VEOF 注入都会让它的 `read` 拿到 EOF 从而退出）。它是 EOF
+/// 注入的直接探测器。
+fn grandchild_script(pid_file: &Path) -> String {
+    format!(
+        "read x; (trap '' HUP; exec < /dev/tty; while read _; do :; done) & \
+         printf '%s' \"$!\" > {}; sleep 0.3; exit 0",
+        pid_file.display(),
+    )
+}
+
+/// True when `pid` names a process that still exists and has not become a
+/// zombie —— 僵尸已经关掉了全部 fd，证明不了它还攥着 slave。
+fn process_is_alive(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    matches!(rest.split_whitespace().next(), Some(state) if state != "Z" && state != "X")
+}
+
+fn read_pid_file(pid_file: &Path) -> i32 {
+    let raw = std::fs::read_to_string(pid_file)
+        .unwrap_or_else(|e| panic!("read {}: {e}", pid_file.display()));
+    raw.trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("parse pid {raw:?}: {e}"))
+}
+
+fn kill_pid(pid: i32) {
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
     }
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    let count = supervisor.registry().debug_entry_count();
-    assert!(
-        count <= 2,
-        "registry 应被墓碑上限约束，实际 {count} 条 entry"
-    );
+}
+
+/// 轮询到 entry 真的从 registry 消失（或超时失败）。清扫是周期性的，所以断言
+/// 必须等它一拍，而不是睡一个魔数。
+async fn await_entry_gone(registry: &calm_proc_supervisor::ProcRegistry, proc_id: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if registry.debug_entry_stats(proc_id).is_none() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{proc_id}: 宽限期早已过去，entry 仍留在 registry");
 }
 
 async fn ensure_noisy_pty(sock: &Path, proc_id: &str) {
@@ -260,6 +356,24 @@ async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usi
     match read_frame(&mut stream).await.expect("read ready") {
         ControlReply::Ready => {}
         other => panic!("unexpected ready reply: {other:?}"),
+    }
+}
+
+async fn write_stdin(sock: &Path, proc_id: &str, bytes: &[u8]) {
+    let mut stream = UnixStream::connect(sock).await.expect("connect write");
+    write_frame(
+        &mut stream,
+        &ControlMsg::WriteStdin(calm_session::control::WriteStdinRequest {
+            proc_id: proc_id.into(),
+            bytes: bytes.to_vec(),
+            write_seq: Some(1),
+        }),
+    )
+    .await
+    .expect("write stdin");
+    match timeout_read(&mut stream).await {
+        ControlReply::WriteAck { .. } => {}
+        other => panic!("unexpected write reply: {other:?}"),
     }
 }
 
