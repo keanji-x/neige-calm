@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { generateMockFiles, parsePathTemplate, validateNoManualPathDispatch, validateOpenApi } from './generator';
+import { assertRouteCardinality, generateMockFiles, parsePathTemplate, validateNoManualPathDispatch, validateOpenApi } from './generator';
+import { NEGATIVE_FIXTURES, POSITIVE_FIXTURES, compareFixtureManifest } from './fixture-manifest.mjs';
 
 const fixtureRoot = resolve(import.meta.dirname, 'fixtures');
-const POSITIVE = Object.freeze(['additional-properties.json', 'compositions.json', 'path-and-ref.json'] as const);
-const NEGATIVE = Object.freeze(['broken-ref.json', 'invalid-template.json', 'mismatched-parameters.json', 'no-leading-slash.json', 'no-responses.json', 'unmatched-close.json'] as const);
+const POSITIVE = POSITIVE_FIXTURES;
+const NEGATIVE = NEGATIVE_FIXTURES;
 const EXPECTED_RULES = Object.freeze({
   'broken-ref.json': ['reference'],
   'invalid-template.json': ['path-template'],
@@ -18,8 +19,14 @@ const EXPECTED_RULES = Object.freeze({
 const load = (kind: 'positive' | 'negative', name: string): unknown => JSON.parse(readFileSync(resolve(fixtureRoot, kind, name), 'utf8'));
 
 describe('mock OpenAPI generator', () => {
-  it('keeps fixture manifests internally aligned', () => {
+  it('keeps fixture manifests aligned with every tracked fixture', () => {
     expect(Object.keys(EXPECTED_RULES).sort()).toEqual([...NEGATIVE]);
+    const tracked = [...POSITIVE.map((name) => `tools/mock/fixtures/positive/${name}`),
+      ...NEGATIVE.map((name) => `tools/mock/fixtures/negative/${name}`)];
+    expect(compareFixtureManifest('positive', POSITIVE, tracked)).toBe('');
+    expect(compareFixtureManifest('negative', NEGATIVE, tracked)).toBe('');
+    expect(compareFixtureManifest('positive', POSITIVE, [...tracked, 'tools/mock/fixtures/positive/unlisted.json']))
+      .toContain('manifest differs from Git');
   });
 
   for (const name of POSITIVE) it(`accepts ${name}`, () => {
@@ -28,7 +35,7 @@ describe('mock OpenAPI generator', () => {
     expect(generateMockFiles(document, 'export type Cove = {};\nexport interface A {}\n')[0].content).toContain('mockOperations');
   });
 
-  for (const name of NEGATIVE) it(`attributes every violation in ${name}`, () => {
+  for (const name of Object.keys(EXPECTED_RULES) as Array<keyof typeof EXPECTED_RULES>) it(`attributes every violation in ${name}`, () => {
     const violations = validateOpenApi(load('negative', name));
     const rules = violations.map((item) => item.rule);
     expect(violations).toHaveLength(EXPECTED_RULES[name].length);
@@ -64,14 +71,17 @@ describe('mock OpenAPI generator', () => {
 
   it('serializes object keys in stable code-point order', () => {
     const content = generateMockFiles(load('positive', 'path-and-ref.json'), 'export type Cove = {};')[0].content;
-    expect(content.indexOf('"method"')).toBeLessThan(content.indexOf('"parameters"'));
+    const [route] = generatedValue(content, 'mockOperations') as Array<Record<string, unknown>>;
+    expect(Object.keys(route)).toEqual(['method', 'parameters', 'path', 'responses', 'template']);
   });
 
   it('fails closed on unknown path-item keys and preserves operation/route cardinality', () => {
     const document = { paths: { '/api/a': { GET: { responses: { 200: {} } } }, '/api/b': { $ref: '#/components/pathItems/P' } } };
-    expect(validateOpenApi(document).map(({ rule }) => rule)).toEqual(['path-item-key', 'path-item-key']);
+    expect(validateOpenApi(document).map(({ rule }) => rule)).toEqual(['path-item-key', 'unsupported-path-item-ref']);
+    expect(validateOpenApi({ paths: { '/a': { 'x-owner': 'mock', get: { responses: { 200: {} } } } } })).toEqual([]);
     const valid = { paths: { '/a': { get: { responses: { 200: {} } }, post: { responses: { 204: {} } } } } };
     expect(generatedValue(generateMockFiles(valid, '')[0].content, 'mockOperations')).toHaveLength(2);
+    expect(() => assertRouteCardinality(valid.paths, 1)).toThrow('2 input operations, 1 generated routes');
   });
 
   it('applies operation parameter overrides by exact name and location', () => {

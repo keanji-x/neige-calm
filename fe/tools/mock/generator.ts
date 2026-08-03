@@ -61,9 +61,12 @@ export function validateOpenApi(input: unknown): Violation[] {
   const templateOwners = new Map<string, string>();
   for (const [path, pathItemValue] of Object.entries(input.paths)) {
     if (!object(pathItemValue)) { violations.push({ rule: 'path-item-shape', location: path, message: 'path item must be an object' }); continue; }
-    for (const key of Object.keys(pathItemValue)) if (!PATH_ITEM_FIELDS.has(key)) violations.push({
-      rule: 'path-item-key', location: path, message: `unrecognized path item key ${JSON.stringify(key)}`,
-    });
+    for (const key of Object.keys(pathItemValue)) {
+      if (key === '$ref') violations.push({ rule: 'unsupported-path-item-ref', location: path, message: 'path item $ref is not supported until PR2' });
+      else if (!PATH_ITEM_FIELDS.has(key) && !key.startsWith('x-')) violations.push({
+        rule: 'path-item-key', location: path, message: `unrecognized path item key ${JSON.stringify(key)}`,
+      });
+    }
     let parsed: ReturnType<typeof parsePathTemplate>;
     try { parsed = parsePathTemplate(path); }
     catch (error) { violations.push({ rule: 'path-template', location: path, message: String(error) }); continue; }
@@ -78,14 +81,12 @@ export function validateOpenApi(input: unknown): Violation[] {
       if (!object(operation)) { violations.push({ rule: 'operation-shape', location, message: 'operation must be an object' }); continue; }
       const rawParameters = [...unknownArray(pathItemValue.parameters), ...unknownArray(operation.parameters)];
       const declared: string[] = [];
-      const resolvedParameters = new Map<string, JsonObject>();
       for (const raw of rawParameters) {
         try {
           const parameter = resolveParameter(input, raw);
-          if (typeof parameter.name === 'string' && typeof parameter.in === 'string') resolvedParameters.set(`${parameter.name}\0${parameter.in}`, parameter);
+          if (typeof parameter.name === 'string' && parameter.in === 'path') declared.push(parameter.name);
         } catch (error) { violations.push({ rule: 'reference', location, message: String(error) }); }
       }
-      for (const parameter of resolvedParameters.values()) if (parameter.in === 'path') declared.push(parameter.name as string);
       for (const name of parsed.parameters) if (!declared.includes(name)) violations.push({ rule: 'path-parameter', location, message: `{${name}} is not declared` });
       for (const name of declared) if (!parsed.parameters.includes(name)) violations.push({ rule: 'path-parameter', location, message: `${name} is declared but absent from template` });
       if (!object(operation.responses) || Object.keys(operation.responses).length === 0) violations.push({ rule: 'responses', location, message: 'operation must declare responses' });
@@ -101,6 +102,8 @@ export function validateOpenApi(input: unknown): Violation[] {
       visit(operation);
     }
   }
+  // A parameter $ref is checked once while resolving parameters and again by the general $ref walk.
+  // Collapse only byte-identical diagnostics within one operation; distinct messages or locations remain visible.
   return violations.filter((violation, index) => violations.findIndex((candidate) => candidate.rule === violation.rule
     && candidate.location === violation.location && candidate.message === violation.message) === index);
 }
@@ -113,6 +116,14 @@ function stable(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stable);
   if (!object(value)) return value;
   return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+}
+
+export function assertRouteCardinality(paths: JsonObject, generatedRouteCount: number): void {
+  const inputOperationCount = Object.entries(paths).reduce((count, [, pathItem]) => count + (object(pathItem)
+    ? Object.keys(pathItem).filter((key) => HTTP_METHODS.includes(key as typeof HTTP_METHODS[number])).length : 0), 0);
+  if (generatedRouteCount !== inputOperationCount) throw new Error(
+    `route count mismatch: ${inputOperationCount} input operations, ${generatedRouteCount} generated routes`,
+  );
 }
 
 export function generateMockFiles(input: unknown, wireSource: string): GeneratedFile[] {
@@ -144,9 +155,7 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
         responses });
     }
   }
-  const operationCount = Object.values(document.paths).reduce<number>((count, value) => count + (object(value)
-    ? HTTP_METHODS.filter((method) => object(value[method])).length : 0), 0);
-  if (routes.length !== operationCount) throw new Error(`route count mismatch: ${operationCount} input operations, ${routes.length} generated routes`);
+  assertRouteCardinality(document.paths, routes.length);
   const componentSchemas = object(document.components) && object(document.components.schemas) ? document.components.schemas : {};
   const schemaWireTypes = Object.fromEntries(Object.keys(componentSchemas).sort().map((name) => [name, wireTypes.has(name) ? name : null]));
   const banner = '// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。\n';

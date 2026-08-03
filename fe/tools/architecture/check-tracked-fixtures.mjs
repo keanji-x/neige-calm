@@ -1,15 +1,14 @@
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
+import { compareMockFixtureFiles, listMockFixtureFiles } from './tracked-mock-fixtures.mjs';
+import { NEGATIVE_FIXTURES, POSITIVE_FIXTURES, compareFixtureManifest } from '../mock/fixture-manifest.mjs';
 
 /** @param {string} root @param {string} path */
 function gitLsFiles(root, path) {
-  try { return execFileSync('git', ['ls-files', '--', path], { cwd: root, encoding: 'utf8' }); }
-  catch (error) {
-    if (error && typeof error === 'object' && 'status' in error && error.status === 0
-      && 'stdout' in error && typeof error.stdout === 'string') return error.stdout;
-    throw error;
-  }
+  const result = spawnSync('git', ['ls-files', '--', path], { cwd: root, encoding: 'utf8' });
+  if (result.status !== 0) throw result.error ?? new Error(result.stderr || `git ls-files failed for ${path}`);
+  return result.stdout;
 }
 
 export function checkTrackedFixtures(rootPath = '.') {
@@ -33,12 +32,17 @@ export function checkTrackedFixtures(rootPath = '.') {
   const untracked = fixtureDirectories.filter((directory) => !trackedDirectories.has(directory));
   const problems = untracked.length ? [`directories absent from Git: ${untracked.join(', ')}`] : [];
   const mockFixtureRoot = resolve(root, 'tools/mock/fixtures');
-  const mockDiskFiles = ['positive', 'negative'].flatMap((kind) => readdirSync(resolve(mockFixtureRoot, kind))
-    .map((name) => `tools/mock/fixtures/${kind}/${name}`)).sort();
+  const { files: mockDiskFiles, problem: mockDirectoryProblem } = listMockFixtureFiles(mockFixtureRoot);
   const mockTrackedFiles = gitLsFiles(root, 'tools/mock/fixtures').trim().split('\n').filter(Boolean).sort();
-  if (JSON.stringify(mockDiskFiles) !== JSON.stringify(mockTrackedFiles)) problems.push(
-    `mock fixture files differ from Git\ndisk: ${mockDiskFiles.join(', ')}\ntracked: ${mockTrackedFiles.join(', ')}`,
-  );
+  if (mockDirectoryProblem) problems.push(mockDirectoryProblem);
+  else {
+    const mockDifference = compareMockFixtureFiles(mockDiskFiles, mockTrackedFiles);
+    if (mockDifference) problems.push(mockDifference);
+    const positiveManifestDifference = compareFixtureManifest('positive', POSITIVE_FIXTURES, mockTrackedFiles);
+    if (positiveManifestDifference) problems.push(positiveManifestDifference);
+    const negativeManifestDifference = compareFixtureManifest('negative', NEGATIVE_FIXTURES, mockTrackedFiles);
+    if (negativeManifestDifference) problems.push(negativeManifestDifference);
+  }
   return problems.length ? `tracked-fixtures: ${problems.join('\n')}` : '';
 }
 
