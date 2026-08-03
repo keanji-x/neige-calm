@@ -16,9 +16,9 @@ export interface ConfirmDialogProps {
 const DialogViewContext = createContext<DialogViewController | null>(null);
 export function useDialogView(): DialogViewController | null { return useContext(DialogViewContext); }
 
+const focusableSelector = 'a[href],area[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
 function focusables(panel: HTMLElement): HTMLElement[] {
-  // Keep the selector literal at the call site so architecture/no-class-dom-query can parse it fail-closed.
-  return Array.from(panel.querySelectorAll<HTMLElement>('a[href],area[href],button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]')).filter((element) =>
+  return Array.from(panel.querySelectorAll<HTMLElement>(focusableSelector)).filter((element) =>
     !element.hasAttribute('disabled') && !element.closest('[inert]') && isVisibleWithin(element, panel));
 }
 function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {

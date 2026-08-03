@@ -17,7 +17,10 @@ unrelated to this namespace contract.
 
 `architecture/no-class-dom-query` parses static selectors used by
 `querySelector(All)`, `closest`, and `matches`; every class selector is banned,
-and dynamic selectors fail closed. `getElementsByClassName` is always banned.
+and dynamic selectors fail closed. A module-scope `const` initialized once from
+a string literal in the same file is resolved as that literal. Function
+parameters, imports, template literals, concatenations, and reassigned `let`
+bindings remain fail-closed. `getElementsByClassName` is always banned.
 Use stable `data-*` hooks. Third-party DOM may use an exact `{ file, selector }`
 exception only when the selector includes an application container prefix,
 such as `.file-viewer-code-wrap .cm-scroller`.

@@ -17,6 +17,19 @@ function memberName(member) {
   return null;
 }
 
+/** @param {import('eslint').Rule.RuleContext} context @param {any} node */
+function moduleConstLiteral(context, node) {
+  if (node?.type !== 'Identifier') return null;
+  const scope = context.sourceCode.getScope(node);
+  const resolved = scope.references.find((reference) => reference.identifier === node)?.resolved;
+  const definition = resolved?.defs[0];
+  if (resolved?.scope.type !== 'module' || resolved.defs.length !== 1
+    || definition?.type !== 'Variable' || definition.parent?.kind !== 'const'
+    || definition.node.init?.type !== 'Literal' || typeof definition.node.init.value !== 'string'
+    || resolved.references.filter((reference) => reference.isWrite()).length !== 1) return null;
+  return definition.node.init.value;
+}
+
 /** @param {string} selector */
 function selectorFacts(selector) {
   let hasClass = false;
@@ -77,11 +90,12 @@ export const noClassDomQuery = {
         }
         if (!selectorMethods.has(method)) return;
         const selectorNode = node.arguments[0];
-        if (selectorNode?.type !== 'Literal' || typeof selectorNode.value !== 'string') {
+        const selector = selectorNode?.type === 'Literal' && typeof selectorNode.value === 'string'
+          ? selectorNode.value : moduleConstLiteral(context, selectorNode);
+        if (selector === null) {
           context.report({ node, messageId: 'dynamicSelector' });
           return;
         }
-        const selector = selectorNode.value;
         let facts;
         try { facts = selectorFacts(selector); } catch {
           context.report({ node: selectorNode, messageId: 'invalidSelector', data: { selector } });

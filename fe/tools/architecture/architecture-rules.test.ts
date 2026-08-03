@@ -173,6 +173,14 @@ describe('architecture/no-class-dom-query', () => {
   it('accepts a static data selector', async () => {
     expect(await lintFixture('no-class-dom-query', 'dom-selector/data-selector.ts')).toHaveLength(0);
   });
+  it('accepts a module-scope single-assignment const string without a class', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/module-const-data.ts')).toHaveLength(0);
+  });
+  it('rejects a class in a module-scope single-assignment const as a class selector', async () => {
+    const messages = await lintFixture('no-class-dom-query', 'dom-selector/module-const-class.ts');
+    expect(messages).toHaveLength(1);
+    expect(messages.at(0)?.messageId).toBe('classSelector');
+  });
 });
 
 describe('architecture/no-core-platform-escape', () => {
