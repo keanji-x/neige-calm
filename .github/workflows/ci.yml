@@ -363,6 +363,9 @@ jobs:
         working-directory: fe
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the readonly gate can diff against the PR base.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
