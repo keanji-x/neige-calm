@@ -21,3 +21,13 @@ The runtime page is a harness, not a full-site scan. It deliberately injects one
 After a runnable application exists, call `auditRuntimeStyles` from Playwright on every routed page and relevant theme/state combination. Feed real `entry.css`, the named unlayered exception files, and the P8b global-class manifest into the static/build audit in CI.
 
 The repository audit rejects both undeclared unlayered declarations and unused manifest entries, so the exception set remains bidirectional when the first exception is introduced.
+# CSS source-entry syntax matrix
+
+| Form | Covered syntax |
+| --- | --- |
+| `static-import` | Static side-effect or binding `import` |
+| `re-export` | `export ... from` |
+| `dynamic-import` | Nested, conditional, or awaited `import()` |
+| `commonjs-require` | Nested or top-level `require()` |
+
+The fixture keys and `CSS_SOURCE_ENTRY_FORMS` are asserted equal in both directions, so adding or dropping a recognized source-entry form requires an explicit table and test update.

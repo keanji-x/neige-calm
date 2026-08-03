@@ -1,0 +1,4 @@
+static-import: "import './static.css';"
+re-export: "export { default as styles } from './exported.css';"
+dynamic-import: "async function load(active) { if (active) await import('./dynamic.css'); }"
+commonjs-require: "function load() { return require('./legacy.css'); }"

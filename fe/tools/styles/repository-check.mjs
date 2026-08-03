@@ -10,6 +10,9 @@ const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
 export const EXPECTED_LAYER_ORDER = Object.freeze([
   'reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides',
 ]);
+export const CSS_SOURCE_ENTRY_FORMS = Object.freeze([
+  'static-import', 're-export', 'dynamic-import', 'commonjs-require',
+]);
 const LEGACY_DATA_ATTRIBUTES = new Map([
   ['web/src/ui/dialog/public.tsx:data-variant', 'frozen UI interface; visual variant, not a DOM locator'],
 ]);
@@ -85,12 +88,18 @@ export function auditCssImports(code, file) {
   }
   const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true,
     file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-  source.forEachChild((node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
-      && node.moduleSpecifier.text.endsWith('.css')) {
+  const visit = (node) => {
+    const specifier = (ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+      ? node.moduleSpecifier
+      : ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
+        || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
+        ? node.arguments[0] : undefined;
+    if (specifier && ts.isStringLiteralLike(specifier) && specifier.text.endsWith('.css')) {
       violations.push(`${file}: CSS must enter through styles/entry.css, not a source import`);
     }
-  });
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
   return violations;
 }
 

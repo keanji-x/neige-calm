@@ -5,7 +5,7 @@ import stylelint from 'stylelint';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
-import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, auditUnlayeredExceptions, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
+import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, auditUnlayeredExceptions, CSS_SOURCE_ENTRY_FORMS, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
@@ -355,6 +355,16 @@ describe('P8b2 forward style gates', () => {
       .toContain('web/src/styles/entry.css: third-party CSS must be imported from styles/vendor.css');
     expect(auditCssImports("@import '@astryxdesign/core/astryx.css' layer(astryx);", 'web/src/styles/vendor.css'))
       .toEqual([]);
+  });
+
+  it('covers every source-level CSS entry syntax in both directions', () => {
+    const cases = parse(read('css-imports/source-forms.yaml')) as Record<string, string>;
+    expect(new Set(Object.keys(cases))).toEqual(new Set(CSS_SOURCE_ENTRY_FORMS));
+    for (const [form, source] of Object.entries(cases)) {
+      expect(auditCssImports(source, `${form}.tsx`), form).toEqual([
+        `${form}.tsx: CSS must enter through styles/entry.css, not a source import`,
+      ]);
+    }
   });
 
   it('binds each unlayered exception to selector, property, expiry, and actual use', () => {
