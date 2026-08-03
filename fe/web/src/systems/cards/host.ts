@@ -31,21 +31,55 @@ export interface CardHost {
   resolve(cardId: string): CardHostCapabilities | null;
 }
 
-function connectController(writer: CardLifecycleWriter, controller: CardController): () => void {
+export type CardControllerCallback = 'onVisibleChange' | 'onFocusChange' | 'onResize' | 'onRefresh';
+
+export interface CardControllerErrorContext {
+  readonly cardId: string;
+  readonly callback: CardControllerCallback;
+}
+
+export interface CardHostOptions {
+  onControllerError?(error: unknown, context: CardControllerErrorContext): void;
+}
+
+function connectController(
+  writer: CardLifecycleWriter,
+  controller: CardController,
+  cardId: string,
+  onControllerError: NonNullable<CardHostOptions['onControllerError']>,
+): () => void {
+  const deliver = (callback: CardControllerCallback, result: void | Promise<void>): void => {
+    void Promise.resolve(result).catch((error: unknown) => onControllerError(error, { cardId, callback }));
+  };
   let previous = writer.getSnapshot();
   return writer.subscribe(() => {
     const current = writer.getSnapshot();
     const delivered = previous;
     previous = current;
-    if (current.visible !== delivered.visible) void controller.onVisibleChange?.(current.visible);
-    if (current.focused !== delivered.focused) void controller.onFocusChange?.(current.focused);
-    if (!sameGeometry(current.geometry, delivered.geometry)) void controller.onResize?.(current.geometry);
-    if (current.refreshEpoch > delivered.refreshEpoch) void controller.onRefresh?.();
+    if (current.visible !== delivered.visible && controller.onVisibleChange !== undefined) {
+      deliver('onVisibleChange', controller.onVisibleChange(current.visible));
+    }
+    if (current.focused !== delivered.focused && controller.onFocusChange !== undefined) {
+      deliver('onFocusChange', controller.onFocusChange(current.focused));
+    }
+    if (!sameGeometry(current.geometry, delivered.geometry) && controller.onResize !== undefined) {
+      deliver('onResize', controller.onResize(current.geometry));
+    }
+    if (current.refreshEpoch > delivered.refreshEpoch && controller.onRefresh !== undefined) {
+      deliver('onRefresh', controller.onRefresh());
+    }
   });
 }
 
-export function createCardHost(registry: CardRegistry): CardHost {
+export function createCardHost(registry: CardRegistry, options: CardHostOptions = {}): CardHost {
   const resolver = createCardInstanceResolver();
+  const onControllerError = options.onControllerError === undefined
+    ? ((error: unknown, context: CardControllerErrorContext) => {
+      console.error('CardControllerCallbackRejected', context, error);
+    })
+    : (error: unknown, context: CardControllerErrorContext) => {
+      options.onControllerError?.(error, context);
+    };
   return Object.freeze({
     registry,
     mount(card: RegisteredCard): MountedCard {
@@ -95,7 +129,9 @@ export function createCardHost(registry: CardRegistry): CardHost {
         if (entry?.refreshBacking === 'epoch' && controller?.onRefresh !== undefined) {
           throw new Error(`RefreshBackingConflict(${entry.type})`);
         }
-        if (controller !== undefined) disconnect = connectController(writer, controller);
+        if (controller !== undefined) {
+          disconnect = connectController(writer, controller, card.id, onControllerError);
+        }
       } catch (error) {
         disconnect();
         void controller?.dispose?.();

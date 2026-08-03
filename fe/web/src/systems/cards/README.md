@@ -11,6 +11,7 @@
 - app 必须通过 `app/cards.ts` 的单行注册序列组装 built-ins。顺序是 terminal → codex → spec → claude → wave-report → file-viewer → iframe → plugin-iframe，因为 codex/spec 的兜底命中依赖插入顺序。
 - card 只能读取冻结 lifecycle snapshot、订阅变化、使用 instance slots、发送 runtime command；宿主独占 visibility/focus/geometry writer。这样卡片不能伪造宿主观测状态。
 - `setVisible(false)` 只发布生命周期变化，绝不卸载。只有显式 `unmount()` 才注销 resolver、退订 controller 并 dispose 一次，因为离开视口卸载会丢 PTY 或 iframe 会话。
+- controller 生命周期回调的 Promise rejection 不传播给宿主调用方，也不阻断后续回调投递；宿主通过 `onControllerError(error, { cardId, callback })` 统一观察，未配置时降级为 `console.error`。
 - 默认 snapshot 是 visible=true、focused=false、geometry=0/0/not-ready、refreshEpoch=0；相同状态不通知，而每个 refresh 命令都推进 epoch。默认可见让无 observer 环境仍能工作。
 - resolver 注销会比对当前 instance identity，旧挂载的 cleanup 不能删除快速重挂产生的新 instance。这样 StrictMode 与竞态 cleanup 不会击穿宿主路由。
 - entry 的 `wheelTarget` 冻结为接收 card 与只含 `cardId`/`slots` 的 instance，并返回 xterm ref、native-scroll ref、sink 或 null；具体路由与卡片壳接线留给后续 slice。

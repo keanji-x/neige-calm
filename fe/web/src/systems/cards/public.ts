@@ -21,7 +21,10 @@ export type {
 } from './contracts.js';
 export type { CardWheelTargetDecl } from './lifecycle.js';
 export type {
+  CardControllerCallback,
+  CardControllerErrorContext,
   CardHost,
+  CardHostOptions,
   CardHostWriter,
   MountedCard,
 } from './host.js';

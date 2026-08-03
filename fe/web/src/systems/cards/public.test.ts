@@ -182,6 +182,31 @@ describe('cards public behavior', () => {
     expect(onRefresh).toHaveBeenCalledOnce();
   });
 
+  it('routes a rejected controller callback without blocking later delivery', async () => {
+    const registry = createCardRegistry();
+    const rejection = new Error('visible failed');
+    const second = vi.fn();
+    const onControllerError = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      createController: (card) => card.id === 'first'
+        ? { onVisibleChange: () => Promise.reject(rejection) }
+        : { onVisibleChange: second },
+    });
+    const host = createCardHost(registry, { onControllerError });
+    const first = host.mount({ type: 'behavior-one', id: 'first', payload: { label: 'x' } });
+    const later = host.mount({ type: 'behavior-one', id: 'second', payload: { label: 'x' } });
+
+    first.host.setVisible(false);
+    later.host.setVisible(false);
+    await vi.waitFor(() => expect(onControllerError).toHaveBeenCalledWith(rejection, {
+      cardId: 'first',
+      callback: 'onVisibleChange',
+    }));
+    expect(second).toHaveBeenCalledWith(false);
+  });
+
   it('[INV-CARD-093] snapshots listeners before notification', () => {
     const registry = createCardRegistry();
     registry.register({ ...base, type: 'behavior-one' });
