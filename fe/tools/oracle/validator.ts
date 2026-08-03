@@ -306,8 +306,9 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       baseline.set(entry.id, entry.subtype);
     }
   }
+  const unsupportedRows = parseStructuredList(options.anchorUnsupportedPath);
   const registeredUnsupported = new Map<string, string[]>();
-  for (const raw of parseStructuredList(options.anchorUnsupportedPath)) {
+  for (const raw of unsupportedRows) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
     if (typeof entry.id === 'string' && Array.isArray(entry.locations)
@@ -410,6 +411,10 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       `baseline count must equal actual count: declared ${baselineRows.length}, distinct valid ${baseline.size}, actual ${actualBaseline.size}`);
   }
   if (options.anchorUnsupportedPath) {
+    if (unsupportedRows.length !== registeredUnsupported.size) {
+      add('<unsupported>', '<count>', 'source-anchor',
+        `unsupported count must equal distinct valid count: declared ${unsupportedRows.length}, distinct valid ${registeredUnsupported.size}`);
+    }
     const unsupportedIds = new Set([...actualUnsupported.keys(), ...registeredUnsupported.keys()]);
     for (const id of unsupportedIds) {
       const actual = actualUnsupported.get(id) ?? [];

@@ -158,6 +158,19 @@ describe('oracle rule fixtures', () => {
     );
   });
 
+  it('rejects duplicate ids in the unsupported account', () => {
+    const root = resolve(fixtures, 'source-anchor/positive');
+    const violations = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorUnsupportedPath: resolve(fixtures, 'source-anchor/duplicate-unsupported.yaml'),
+    });
+    expect(violations.map((violation) => violation.message)).toContain(
+      'unsupported count must equal distinct valid count: declared 2, distinct valid 1',
+    );
+  });
+
   it('does not read ids mentioned in markdown prose as anchor exceptions', () => {
     const root = resolve(fixtures, 'source-anchor/negative');
     const violations = validateOracle({

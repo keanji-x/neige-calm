@@ -4,10 +4,12 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "$0")/.." && pwd)
 validator="$repo_root/fe/tools/oracle/validator.ts"
 fixture="$repo_root/fe/tools/oracle/fixtures/former-id-unique/negative/data.yaml"
+unsupported="$repo_root/docs/oracle/anchor-unsupported.yaml"
 tmp_dir=$(mktemp -d)
 cp "$validator" "$tmp_dir/validator.ts"
 cp "$fixture" "$tmp_dir/former-id.yaml"
-trap 'cp "$tmp_dir/validator.ts" "$validator"; cp "$tmp_dir/former-id.yaml" "$fixture"; rm -rf "$tmp_dir"' EXIT
+cp "$unsupported" "$tmp_dir/anchor-unsupported.yaml"
+trap 'cp "$tmp_dir/validator.ts" "$validator"; cp "$tmp_dir/former-id.yaml" "$fixture"; cp "$tmp_dir/anchor-unsupported.yaml" "$unsupported"; rm -rf "$tmp_dir"' EXIT
 
 replace() {
   local file=$1 old=$2 new=$3
@@ -36,6 +38,7 @@ run_mutation() {
   printf '%s\n' "$output" | sed -nE 's/^ FAIL  .* > (.*)$/  - \1/p' | sort -u
   cp "$tmp_dir/validator.ts" "$validator"
   cp "$tmp_dir/former-id.yaml" "$fixture"
+  cp "$tmp_dir/anchor-unsupported.yaml" "$unsupported"
   if [[ $code -eq 0 ]]; then exit 13; fi
 }
 
@@ -72,3 +75,19 @@ run_mutation css-selector-inline-comments-count-as-code
 
 replace "$validator" "result.get(identifier)!.add(lineAtFieldOffset(field.startLine, field.text, offset));" "result.get(identifier)!.add(startLine);"
 run_mutation css-field-match-offset-ignored
+
+cp "$unsupported" "$tmp_dir/before"
+(cd "$repo_root/fe" && node --input-type=module - "$unsupported" <<'NODE'
+import { readFileSync, writeFileSync } from 'node:fs';
+import { parse, stringify } from 'yaml';
+const file = process.argv[2];
+const rows = parse(readFileSync(file, 'utf8'));
+rows.push(rows[0]);
+writeFileSync(file, stringify(rows));
+NODE
+)
+if cmp -s "$tmp_dir/before" "$unsupported"; then
+  echo "mutation did not change $unsupported" >&2
+  exit 12
+fi
+run_mutation duplicate-unsupported-id

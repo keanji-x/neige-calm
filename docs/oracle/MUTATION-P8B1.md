@@ -15,3 +15,4 @@ Runner：`scratchpad/mut-p8b1.sh`。每次 `replace()` 都先保留原文件，�
 | baseline unbaselined loop disabled | 新违规不再报 `unbaselined` | fixture、baseline 双向、prose | 1 / 3 |
 | baseline stale loop disabled | 已修债务仍留在基线 | baseline 双向 | 1 / 1 |
 | baseline count guard disabled | 重复行或数量不等不再报错 | baseline 双向 | 1 / 1 |
+| duplicate unsupported id | unsupported 台账重复 id 被静默覆盖 | negative fixture、真数据 | 1 / 2 |
