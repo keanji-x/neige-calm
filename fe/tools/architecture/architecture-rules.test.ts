@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, extname, relative, resolve } from 'node:path';
 import { ESLint } from 'eslint';
 import * as tsParser from '@typescript-eslint/parser';
 import { describe, expect, it } from 'vitest';
@@ -8,8 +8,32 @@ import { architecturePlugin } from './plugin.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const fixtureRoot = resolve(import.meta.dirname, 'rule-fixtures');
+const referencedFixtures = new Set<string>();
+
+function fixtureFilesUnder(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(directory, entry.name);
+    return entry.isDirectory() ? fixtureFilesUnder(path) : ['.ts', '.tsx'].includes(extname(path)) ? [path] : [];
+  });
+}
+
+function referencedFixtureClosure(): Set<string> {
+  const references = new Set(referencedFixtures);
+  for (const fixture of references) {
+    const source = readFileSync(resolve(fixtureRoot, fixture), 'utf8');
+    for (const match of source.matchAll(/(?:from\s*|import\s*\()\s*['"]([^'"]+)['"]/g)) {
+      if (!match[1].startsWith('.')) continue;
+      const target = resolve(fixtureRoot, dirname(fixture), match[1]);
+      for (const candidate of [target, `${target}.ts`, `${target}.tsx`]) {
+        if (existsSync(candidate)) references.add(relative(fixtureRoot, candidate).replaceAll('\\', '/'));
+      }
+    }
+  }
+  return references;
+}
 
 async function lintFixture(ruleName: string, fixture: string, options?: Record<string, unknown>) {
+  referencedFixtures.add(fixture);
   const file = resolve(fixtureRoot, fixture);
   const eslint = new ESLint({
     overrideConfigFile: true,
@@ -256,4 +280,13 @@ describe('architecture allowlists', () => {
       }
     });
   }
+});
+
+describe('architecture rule fixture coverage', () => {
+  it('references every rule fixture directly or through a fixture import', () => {
+    const allFixtures = new Set(fixtureFilesUnder(fixtureRoot)
+      .map((file) => relative(fixtureRoot, file).replaceAll('\\', '/')));
+    const references = referencedFixtureClosure();
+    expect([...allFixtures].filter((fixture) => !references.has(fixture))).toEqual([]);
+  });
 });
