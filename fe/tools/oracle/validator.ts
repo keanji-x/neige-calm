@@ -65,15 +65,20 @@ function isIdentifierCharacter(character: string | undefined): boolean {
   return character !== undefined && /[A-Za-z0-9_$-]/.test(character);
 }
 
-function hasBoundedOccurrence(text: string, anchor: string): boolean {
+function withoutCssComments(text: string): string {
+  return text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\r\n]/g, ' '));
+}
+
+function boundedOccurrenceOffsets(text: string, anchor: string): number[] {
+  const offsets: number[] = [];
   let offset = text.indexOf(anchor);
   while (offset !== -1) {
     const before = text[offset - 1];
     const after = text[offset + anchor.length];
-    if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) return true;
+    if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) offsets.push(offset);
     offset = text.indexOf(anchor, offset + 1);
   }
-  return false;
+  return offsets;
 }
 
 function typescriptAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
@@ -104,19 +109,39 @@ function typescriptAnchorLines(path: string, contents: string, identifiers: read
   return result;
 }
 
+function lineAtFieldOffset(startLine: number, field: string, offset: number): number {
+  return startLine + (field.slice(0, offset).match(/\n/g)?.length ?? 0);
+}
+
 function postcssAnchorLines(contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
   const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
   const root = postcss.parse(contents);
   const visit = (node: ChildNode): void => {
     if (node.type === 'comment') return;
-    const fields: string[] = [];
-    if (node.type === 'rule') fields.push(node.selector);
-    else if (node.type === 'decl') fields.push(node.prop, node.value);
-    else if (node.type === 'atrule') fields.push(node.name, node.params);
     const startLine = node.source?.start?.line;
     if (startLine !== undefined) {
+      const fields: Array<{ text: string; startLine: number }> = [];
+      if (node.type === 'rule') fields.push({ text: withoutCssComments(node.selector), startLine });
+      else if (node.type === 'decl') {
+        const between = node.raws.between ?? '';
+        fields.push({ text: node.prop, startLine });
+        fields.push({
+          text: withoutCssComments(node.value),
+          startLine: lineAtFieldOffset(startLine, between, between.length),
+        });
+      } else if (node.type === 'atrule') {
+        fields.push({ text: node.name, startLine });
+        fields.push({
+          text: withoutCssComments(node.params),
+          startLine: lineAtFieldOffset(startLine, node.raws.afterName ?? '', (node.raws.afterName ?? '').length),
+        });
+      }
       for (const identifier of identifiers) {
-        if (fields.some((field) => hasBoundedOccurrence(field, identifier))) result.get(identifier)!.add(startLine);
+        for (const field of fields) {
+          for (const offset of boundedOccurrenceOffsets(field.text, identifier)) {
+            result.get(identifier)!.add(lineAtFieldOffset(field.startLine, field.text, offset));
+          }
+        }
       }
     }
     if ('nodes' in node) node.nodes?.forEach(visit);
@@ -125,7 +150,7 @@ function postcssAnchorLines(contents: string, identifiers: readonly string[]): M
   return result;
 }
 
-function codeAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> | null {
+export function codeAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> | null {
   const ext = extension(path);
   if (TYPESCRIPT_EXTENSIONS.has(ext)) return typescriptAnchorLines(path, contents, identifiers);
   if (ext === '.css') return postcssAnchorLines(contents, identifiers);

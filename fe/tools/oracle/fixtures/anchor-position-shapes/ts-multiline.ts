@@ -1,0 +1,2 @@
+const value =
+  function typescriptMultiline() {};

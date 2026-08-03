@@ -2,9 +2,24 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
+import { codeAnchorLines, defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
+
+const anchorPositionShapes = [
+  ['css-selector-single.css', ['selectorSingle'], { selectorSingle: [1] }],
+  ['css-selector-multiline.css', ['selectorMultiline'], { selectorMultiline: [2] }],
+  ['css-selector-inline-comment.css', ['fakeAnchor', 'selectorAfterComment'], { fakeAnchor: [], selectorAfterComment: [1] }],
+  ['css-selector-comment-only.css', ['commentOnlyAnchor'], { commentOnlyAnchor: [] }],
+  ['css-declaration-single.css', ['declarationSingle'], { declarationSingle: [1] }],
+  ['css-declaration-multiline-comment.css', ['fakeValueAnchor', 'declarationMultiline'], { fakeValueAnchor: [], declarationMultiline: [3] }],
+  ['css-atrule-single.css', ['atruleSingle'], { atruleSingle: [1] }],
+  ['css-atrule-multiline.css', ['atruleMultiline'], { atruleMultiline: [2] }],
+  ['css-comment-node.css', ['standaloneCommentAnchor'], { standaloneCommentAnchor: [] }],
+  ['ts-single.ts', ['typescriptSingle'], { typescriptSingle: [1] }],
+  ['ts-multiline.ts', ['typescriptMultiline'], { typescriptMultiline: [2] }],
+  ['ts-comment.ts', ['typescriptCommentAnchor'], { typescriptCommentAnchor: [] }],
+] as const;
 
 function run(rule: string, kind: 'positive' | 'negative') {
   const root = resolve(fixtures, rule, kind);
@@ -23,6 +38,21 @@ const cases = [
 ] as const;
 
 describe('oracle rule fixtures', () => {
+  it('covers exactly every CSS anchor position shape fixture in both directions', () => {
+    const shapeRoot = resolve(fixtures, 'anchor-position-shapes');
+    const fixtureFiles = readdirSync(shapeRoot, { withFileTypes: true })
+      .filter((entry) => entry.isFile()).map((entry) => entry.name);
+    const declaredFiles = anchorPositionShapes.map(([file]) => file);
+    expect(new Set(declaredFiles)).toEqual(new Set(fixtureFiles));
+    expect(new Set(fixtureFiles)).toEqual(new Set(declaredFiles));
+  });
+
+  it.each(anchorPositionShapes)('anchor position shape %s', (file, identifiers, expected) => {
+    const contents = readFileSync(resolve(fixtures, 'anchor-position-shapes', file), 'utf8');
+    const actual = codeAnchorLines(file, contents, identifiers);
+    expect(actual).not.toBeNull();
+    expect(Object.fromEntries([...actual!].map(([identifier, lines]) => [identifier, [...lines]]))).toEqual(expected);
+  });
   it('anchors the guarded YAML fields to the SCHEMA example', () => {
     const schema = readFileSync(resolve(import.meta.dirname, '../../../docs/oracle/SCHEMA.md'), 'utf8');
     const entrySection = /^# Oracle 条目 schema[^\n]*\n([\s\S]*?)(?=^## )/m.exec(schema)?.[1] ?? '';
@@ -73,7 +103,8 @@ describe('oracle rule fixtures', () => {
   }
   it('covers exactly every rule the validator can emit', () => {
     const fixtureDirectories = readdirSync(fixtures, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name !== 'field-types').map((entry) => entry.name);
+      .filter((entry) => entry.isDirectory() && !['field-types', 'anchor-position-shapes'].includes(entry.name))
+      .map((entry) => entry.name);
     expect(new Set(fixtureDirectories)).toEqual(new Set(ORACLE_RULES));
   });
   for (const rule of cases) {
