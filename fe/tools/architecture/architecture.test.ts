@@ -39,8 +39,11 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const error = checkTopLevel(cwd);
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
-  if (caseName === 'core-no-jsx') {
-    const error = checkCoreNoJsx(resolve(fixtures, caseName, kind, 'core'));
+  if (caseName === 'core-no-jsx' || caseName === 'cards-registry-no-jsx') {
+    const error = checkCoreNoJsx(
+      resolve(fixtures, caseName, kind, 'core'),
+      resolve(fixtures, caseName, kind, 'web/src/systems/cards'),
+    );
     return { status: error ? 1 : 0, stdout: error, stderr: '' };
   }
   if (caseName === 'core-markdown-node-import') {
@@ -128,6 +131,7 @@ describe('architecture fixtures', () => {
     ['core-platform-node-types', '2591'],
     ['core-platform-types', '2584'],
     ['core-no-jsx', 'bad.tsx'],
+    ['cards-registry-no-jsx', 'registry.tsx'],
     ['react-state-hook-import', 'web/src/ui/state/public.ts'],
     ['eslint-config-root-only', 'nested/eslint.config.js'],
     ['eslint-no-off-shims', 'example/rule'],

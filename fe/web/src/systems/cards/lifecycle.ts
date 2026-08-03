@@ -8,6 +8,7 @@ import type {
 declare module './registry.js' {
   interface CardEntry {
     readonly createController?: CreateCardController;
+    readonly wheelTarget?: (...args: readonly unknown[]) => unknown;
     readonly refreshBacking?: 'controller' | 'epoch' | 'none';
   }
 }

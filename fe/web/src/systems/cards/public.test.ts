@@ -84,4 +84,89 @@ describe('cards public behavior', () => {
     expect(() => registry.register({ ...base, type: 'behavior-two', claim: { mode: 'exact', kind: 'duplicate-kind' } }))
       .toThrow('DuplicateExactClaim(duplicate-kind)');
   });
+
+  it('[GATE-CARD-077/078] rejects invalid refresh backing', () => {
+    const registry = createCardRegistry();
+    expect(() => registry.register({ ...base, type: 'behavior-one', refreshBacking: 'controller' }))
+      .toThrow('RefreshBackingMissingController(behavior-one)');
+    registry.register({
+      ...base, type: 'behavior-one', refreshBacking: 'epoch', createController: () => ({ onRefresh: vi.fn() }),
+    });
+    expect(() => createCardHost(registry).mount({ type: 'behavior-one', id: 'conflict', payload: { label: 'x' } }))
+      .toThrow('RefreshBackingConflict(behavior-one)');
+  });
+
+  it('[INV-CARD-072] overwrites a repeated type registration', () => {
+    const registry = createCardRegistry();
+    registry.register({ ...base, type: 'behavior-one', title: () => 'first' });
+    const replacement = { ...base, type: 'behavior-one' as const, title: () => 'replacement' };
+    expect(() => registry.register(replacement)).not.toThrow();
+    expect(registry.get('behavior-one')).toBe(replacement);
+  });
+
+  it('[INV-CARD-091] skips equal visibility updates', () => {
+    const registry = createCardRegistry();
+    const onVisibleChange = vi.fn();
+    registry.register({ ...base, type: 'behavior-one', createController: () => ({ onVisibleChange }) });
+    const mounted = createCardHost(registry).mount({ type: 'behavior-one', id: 'life', payload: { label: 'x' } });
+    const notified = vi.fn();
+    mounted.card.lifecycle.subscribe(notified);
+    mounted.host.setVisible(true);
+    expect(onVisibleChange).not.toHaveBeenCalled();
+    expect(notified).not.toHaveBeenCalled();
+  });
+
+  it('[INV-CARD-093] snapshots listeners before notification', () => {
+    const registry = createCardRegistry();
+    registry.register({ ...base, type: 'behavior-one' });
+    const mounted = createCardHost(registry).mount({ type: 'behavior-one', id: 'life', payload: { label: 'x' } });
+    const second = vi.fn();
+    let unsubscribeSecond: () => void = () => undefined;
+    mounted.card.lifecycle.subscribe(() => unsubscribeSecond());
+    unsubscribeSecond = mounted.card.lifecycle.subscribe(second);
+    mounted.host.setVisible(false);
+    expect(second).toHaveBeenCalledOnce();
+  });
+
+  it('[INV-CARD-101] stale unmount does not unregister a replacement instance', () => {
+    const registry = createCardRegistry();
+    registry.register({ ...base, type: 'behavior-one' });
+    const host = createCardHost(registry);
+    const first = host.mount({ type: 'behavior-one', id: 'same', payload: { label: 'first' } });
+    const replacement = host.mount({ type: 'behavior-one', id: 'same', payload: { label: 'replacement' } });
+    first.unmount();
+    expect(host.resolve('same')).toBe(replacement.card);
+  });
+
+  const mountedSlots = () => {
+    const registry = createCardRegistry();
+    registry.register({ ...base, type: 'behavior-one' });
+    return createCardHost(registry)
+      .mount({ type: 'behavior-one', id: 'slots', payload: { label: 'x' } }).card.slots;
+  };
+
+  it('[INV-CARD-086] uses initial only on the first read', () => {
+    const slots = mountedSlots();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(slots.get('first-wins', 'first')).toBe('first');
+    expect(slots.get('first-wins', 'later')).toBe('first');
+    warn.mockRestore();
+  });
+
+  it('[INV-CARD-087] evaluates a lazy slot initial only once', () => {
+    const slots = mountedSlots();
+    const lazy = vi.fn(() => ({ current: null as null | string }));
+    const initialRef = slots.get('xtermRef', lazy);
+    expect(slots.get('xtermRef', lazy)).toBe(initialRef);
+    expect(lazy).toHaveBeenCalledOnce();
+  });
+
+  it('[INV-CARD-090] warns when a later slot initial differs', () => {
+    const slots = mountedSlots();
+    expect(slots.get('first-wins', 'first')).toBe('first');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(slots.get('first-wins', 'later')).toBe('first');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('CardSlotInitialConflict(first-wins)'));
+    warn.mockRestore();
+  });
 });

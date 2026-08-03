@@ -54,8 +54,18 @@ export function createCardHost(registry: CardRegistry): CardHost {
         subscribe: (listener: () => void) => writer.subscribe(listener),
       });
       const slotValues = new Map<string, unknown>();
+      const slotInitials = new Map<string, unknown>();
       const slots: CardSlotStore = Object.freeze({
-        get: <Value>(key: string) => slotValues.get(key) as Value | undefined,
+        get: <Value>(key: string, initial?: Value | (() => Value)) => {
+          if (!slotValues.has(key)) {
+            const value = typeof initial === 'function' ? (initial as () => Value)() : initial;
+            slotValues.set(key, value);
+            slotInitials.set(key, initial);
+          } else if (import.meta.env.DEV && initial !== undefined && !Object.is(slotInitials.get(key), initial)) {
+            console.warn(`CardSlotInitialConflict(${key}): first initial differs from later initial`);
+          }
+          return slotValues.get(key) as Value;
+        },
         set: <Value>(key: string, value: Value) => { slotValues.set(key, value); },
       });
       const capabilities: CardHostCapabilities = Object.freeze({

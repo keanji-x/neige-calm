@@ -1,10 +1,11 @@
-import { describe, expect, expectTypeOf, it } from 'vitest';
+import { describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import type {
   CardController,
   CardDataMap,
   CardEntry,
   CardHostCapabilities,
+  KernelCardInput,
   RegisteredCard,
 } from './public.js';
 import { createCardHost, createCardRegistry } from './public.js';
@@ -13,6 +14,9 @@ declare module './registry.js' {
   interface CardDataMap {
     contractAlpha: { type: 'contract-alpha'; id: string; payload: { value: number } };
     contractBeta: { type: 'contract-beta'; id: string; payload: { value: string } };
+    contractPrefix: { type: 'contract-prefix'; id: string; payload: null };
+    contractDeep: { type: 'contract-deep'; id: string; payload: null };
+    contractFallback: { type: 'contract-fallback'; id: string; payload: null };
   }
 }
 
@@ -31,10 +35,14 @@ function entry(
     title: () => type,
     accessibleName: () => type,
     create,
-    fromKernel: (card) =>
-      card.kind === 'shared-kernel' ? { type, id: card.id, payload: { value: type === 'contract-alpha' ? 1 : 'b' } } : null,
+    fromKernel: (card) => {
+      if (card.kind !== 'shared-kernel') return null;
+      return type === 'contract-alpha'
+        ? { type: 'contract-alpha', id: card.id, payload: { value: 1 } }
+        : { type: 'contract-beta', id: card.id, payload: { value: 'b' } };
+    },
     createController,
-  } as CardEntry;
+  } satisfies CardEntry;
 }
 
 describe('cards public contract', () => {
@@ -77,5 +85,34 @@ describe('cards public contract', () => {
       const controller = null as unknown as CardController;
       void controller;
     }
+    const registry = createCardRegistry();
+    registry.register(entry('contract-alpha'));
+    const mounted = createCardHost(registry).mount({ type: 'contract-alpha', id: 'readonly', payload: { value: 1 } });
+    expect((mounted.card.lifecycle as unknown as Record<string, unknown>).setVisible).toBeUndefined();
+    expect(Object.isFrozen(mounted.card.lifecycle)).toBe(true);
+    expect(Object.keys(mounted.card.lifecycle).sort()).toEqual(['getSnapshot', 'subscribe']);
+  });
+
+  it('[INV-CARD-073] dispatches exact, longest prefix, then untried fallback', () => {
+    const registry = createCardRegistry();
+    const exact = vi.fn((raw: KernelCardInput) => raw.kind === 'k' ? { type: 'contract-alpha' as const, id: raw.id, payload: { value: 1 } } : null);
+    const short = vi.fn((raw: KernelCardInput) => raw.id === '3' ? null : { type: 'contract-prefix' as const, id: raw.id, payload: null });
+    const deep = vi.fn((raw: KernelCardInput) => raw.id === '3' ? null : { type: 'contract-deep' as const, id: raw.id, payload: null });
+    const fallback = vi.fn((raw: KernelCardInput) => raw.id === '3' ? null : { type: 'contract-fallback' as const, id: raw.id, payload: null });
+    const make = (type: CardEntry['type'], claim: CardEntry['claim'], fromKernel: NonNullable<CardEntry['fromKernel']>) => ({
+      component, defaultSize: size, title: () => type, accessibleName: () => type, create, type, claim, fromKernel,
+    }) satisfies CardEntry;
+    registry.register(make('contract-alpha', { mode: 'exact', kind: 'k' }, exact));
+    registry.register(make('contract-prefix', { mode: 'prefix', prefix: 'k' }, short));
+    registry.register(make('contract-deep', { mode: 'prefix', prefix: 'k/deep' }, deep));
+    registry.register(make('contract-fallback', undefined, fallback));
+
+    expect(registry.resolve({ id: '1', kind: 'k', payload: null })?.type).toBe('contract-alpha');
+    expect(short).not.toHaveBeenCalled();
+    expect(registry.resolve({ id: '2', kind: 'k/deep/x', payload: null })?.type).toBe('contract-deep');
+    exact.mockClear();
+    exact.mockReturnValue(null);
+    expect(registry.resolve({ id: '3', kind: 'k', payload: null })).toBeNull();
+    expect(exact).toHaveBeenCalledOnce();
   });
 });

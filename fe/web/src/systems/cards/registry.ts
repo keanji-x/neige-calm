@@ -20,6 +20,8 @@ export interface CardSize {
   readonly minH: number;
 }
 
+export const FALLBACK_SIZE: CardSize = Object.freeze({ w: 4, h: 6, minW: 3, minH: 3 });
+
 export type CardKindClaim =
   | Readonly<{ mode: 'exact'; kind: string }>
   | Readonly<{ mode: 'prefix'; prefix: string }>;
