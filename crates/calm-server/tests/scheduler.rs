@@ -243,6 +243,19 @@ fn app_state_for_context_events(boot: &Boot) -> AppState {
     )
 }
 
+#[tokio::test]
+async fn dispatcher_health_monitor_shares_scheduler_context_metrics() {
+    let boot = boot().await;
+    let state = app_state_for_context_events(&boot);
+    assert!(
+        Arc::ptr_eq(
+            &state.dispatcher.scheduler().context_metrics(),
+            &state.dispatcher.context_monitor().metrics(),
+        ),
+        "the Dispatcher health exporter must share the scheduler claim metrics Arc"
+    );
+}
+
 async fn seed_runtime_session_in_pool(
     pool: &sqlx::SqlitePool,
     card_id: &str,
@@ -3098,7 +3111,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         "deleted-depth-two-ref",
     ] {
         let boot = boot().await;
-        set_lifecycle(&boot, WaveLifecycle::Working).await;
+        set_lifecycle(&boot, WaveLifecycle::Draft).await;
         let key = format!("root-{case}");
         let valid_root = json!({
             "key": key, "kind": "terminal", "goal": "true",
@@ -3134,8 +3147,17 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             initial.push(("b_dead", "prose", json!({"markdown": "target"})));
         }
         edit_report_blocks(&boot, &initial, 0).await;
+        set_lifecycle(&boot, WaveLifecycle::Draft).await;
         let task_id = format!("{}:{key}", boot.wave_id);
         assert!(boot.repo.task_get(&task_id).await.unwrap().is_some());
+        let (_runtime, scheduler) = build_scheduler(
+            &boot,
+            vec![Arc::new(CardSpawnAdapter {
+                kind: "terminal-worker",
+                card_id: boot.worker_card_id.to_string(),
+            })],
+        );
+        scheduler.schedule_wave(boot.wave_id.clone()).await;
 
         let broken = match case {
             "duplicate" => vec![
@@ -3202,6 +3224,27 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         } else {
             edit_report_blocks(&boot, &broken, 1).await;
         }
+        set_lifecycle(&boot, WaveLifecycle::Working).await;
+        scheduler.schedule_wave(boot.wave_id.clone()).await;
+        assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
+        assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+        let indexed: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(indexed, 0, "case {case}");
+        let stale: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
+                .bind(&task_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(
+            stale.is_none_or(|value| value.is_none()),
+            "case {case}: context_stale_at_ms must remain NULL when the row survives"
+        );
         if matches!(
             case,
             "duplicate" | "tombstoned" | "absent" | "invalid-root-ref"
@@ -3218,26 +3261,9 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 .await
                 .expect_err("fixture must fail closure resolution")
                 .variant();
-        let (_runtime, scheduler) = build_scheduler(
-            &boot,
-            vec![Arc::new(CardSpawnAdapter {
-                kind: "terminal-worker",
-                card_id: boot.worker_card_id.to_string(),
-            })],
-        );
-        scheduler.schedule_wave(boot.wave_id.clone()).await;
         let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
         assert_eq!(row.status, TaskStatus::Pending, "case {case}");
         assert_eq!(row.context_stale_at_ms, None, "case {case}");
-        assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
-        assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
-        let indexed: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
-                .bind(&task_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(indexed, 0, "case {case}");
         assert_eq!(
             scheduler.context_resolve_failure_count(expected_variant),
             1,
@@ -3286,19 +3312,26 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
                     id: "b_head_1".into(),
                     kind: "task".into(),
                     rev: 1,
-                    payload: json!({"key": "blocked-head", "kind": "terminal", "goal": "true"}),
+                    payload: json!({
+                        "key": "blocked-head", "kind": "terminal", "goal": "true",
+                        "declared_by": "spec", "ready": true,
+                        "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
+                    }),
                 },
                 ReportBlock {
-                    id: "b_head_2".into(),
-                    kind: "task".into(),
+                    id: "b_dead".into(),
+                    kind: "prose".into(),
                     rev: 1,
-                    payload: json!({"key": "blocked-head", "kind": "terminal", "goal": "true"}),
+                    payload: json!({"markdown": "present before projection edit"}),
                 },
                 ReportBlock {
                     id: "b_tail".into(),
                     kind: "task".into(),
                     rev: 1,
-                    payload: json!({"key": "healthy-tail", "kind": "terminal", "goal": "true"}),
+                    payload: json!({
+                        "key": "healthy-tail", "kind": "terminal", "goal": "true",
+                        "declared_by": "spec", "ready": true
+                    }),
                 },
             ]),
         })
@@ -3313,6 +3346,35 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
     let healthy_id = healthy.id.clone();
     seed_task(&boot, healthy).await;
     let pool = boot.repo.sqlite_pool().unwrap();
+    edit_report_blocks(
+        &boot,
+        &[
+            (
+                "b_head_1",
+                "task",
+                json!({
+                    "key": "blocked-head", "kind": "terminal", "goal": "true",
+                    "declared_by": "spec", "ready": true,
+                    "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
+                }),
+            ),
+            (
+                "b_tail",
+                "task",
+                json!({
+                    "key": "healthy-tail", "kind": "terminal", "goal": "true",
+                    "declared_by": "spec", "ready": true
+                }),
+            ),
+        ],
+        0,
+    )
+    .await;
+    sqlx::query("UPDATE waves SET task_budget = 1 WHERE id = ?1")
+        .bind(boot.wave_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
         .bind(&blocked_id)
         .execute(&pool)
@@ -3343,7 +3405,7 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
         "the same pass must continue until one claim consumes capacity"
     );
     assert_eq!(
-        scheduler.context_resolve_failure_count("duplicate_live_key"),
+        scheduler.context_resolve_failure_count("referenced_block_absent"),
         1
     );
 }
@@ -3399,6 +3461,10 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
         })],
     );
     scheduler.schedule_wave(boot.wave_id.clone()).await;
+    assert!(
+        scheduler.context_metrics().snapshot().closure_total > 0,
+        "one production claim must increment the exported closure counter"
+    );
     let monitor =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     sqlx::query(

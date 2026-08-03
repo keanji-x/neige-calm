@@ -118,19 +118,17 @@ async fn pending_context_stale_cleanup_is_idempotent_and_scoped() {
         .run(&pool)
         .await
         .expect("apply real 0069 migration");
-    let changes_after_first: i64 = sqlx::query_scalar("SELECT total_changes()")
-        .fetch_one(&pool)
-        .await
-        .expect("read changes after first migration");
-    migrator_through_0069()
-        .run(&pool)
-        .await
-        .expect("re-run real 0069 migration");
-    let changes_after_second: i64 = sqlx::query_scalar("SELECT total_changes()")
-        .fetch_one(&pool)
-        .await
-        .expect("read changes after second migration");
-    assert_eq!(changes_after_second, changes_after_first);
+    let repeated = sqlx::query(include_str!(
+        "../../../migrations/0069_clear_pending_context_stale.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("execute the 0069 statement body a second time");
+    assert_eq!(
+        repeated.rows_affected(),
+        0,
+        "the 0069 SQL body itself must be idempotent"
+    );
     let pending_stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = 'p'")
             .fetch_one(&pool)

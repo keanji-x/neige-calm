@@ -676,10 +676,11 @@ impl Scheduler {
         let closure = if task.origin == "legacy" {
             FrozenClosure::default()
         } else {
-            let monitor = TaskContextMonitor::new(
+            let monitor = TaskContextMonitor::new_with_metrics(
                 Arc::clone(&self.repo),
                 self.events.clone(),
                 self.write.clone(),
+                Arc::clone(&self.context_metrics),
             );
             match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
                 Ok(closure) => closure,

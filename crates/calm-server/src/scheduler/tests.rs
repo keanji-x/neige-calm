@@ -55,9 +55,7 @@ fn keys(tasks: &[Task]) -> Vec<&str> {
 #[test]
 fn design_claim_resolution_failure_scope_is_consistent() {
     let design = include_str!("../../../../docs/architecture/985-doc-as-plan.md");
-    assert!(design.contains(
-        "claim 前的定位失败不在\n> 本条范围内，一律不下判决、按 race-lost 处理，见 §5.2"
-    ));
+    assert!(design.contains("claim 前定位失败一律不下判决"));
     assert!(!design.contains("越 cove、超预算、确定性定位失败一律直接判"));
 }
 

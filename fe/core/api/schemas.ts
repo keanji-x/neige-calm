@@ -587,6 +587,9 @@ export const taskDispatchedSchema = z.object({
   }),
 });
 
+// These fields are required here although Rust uses `serde(default)` for
+// historical storage: the WS outlet reserializes the Rust Event enum instead
+// of forwarding raw persisted payloads (pinned by the min-golden canonical case).
 export const taskContextFrozenSchema = z.object({
   ev: z.literal('task.context_frozen'),
   data: z.object({
