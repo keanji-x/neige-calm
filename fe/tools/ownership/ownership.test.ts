@@ -23,7 +23,12 @@ describe('ownership fixtures', () => {
         expect(violations.some(({ rule }) => rule === 'change-request-shape'), field).toBe(true);
         expect(violations.some(({ rule }) => rule === 'readonly-change-request'), field).toBe(true);
       }
-      else expect(violations.some(({ rule }) => rule === 'entry-shape'), field).toBe(true);
+      else {
+        expect(violations.some(({ rule }) => rule === 'entry-shape'), field).toBe(true);
+        if (field === 'entry.readonly') {
+          expect(violations.some(({ rule }) => rule === 'readonly-change-request'), field).toBe(true);
+        }
+      }
     }
   });
   it('covers exactly every rule the validator can emit', () => {
