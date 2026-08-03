@@ -1,7 +1,7 @@
 // @ts-check
 import { relative } from 'node:path';
 import stylelint from 'stylelint';
-import { rightmostCompound } from './selector.mjs';
+import { classes, rightmostCompound } from './selector.mjs';
 
 export const ruleName = 'neige-calm/unlayered-cm-scope';
 export const messages = stylelint.utils.ruleMessages(ruleName, {
@@ -11,17 +11,7 @@ export const messages = stylelint.utils.ruleMessages(ruleName, {
 /** @param {string} selector */
 function hasCodeMirrorClass(selector) {
   const compound = rightmostCompound(selector);
-  let square = 0;
-  let round = 0;
-  for (let index = 0; index < compound.length; index += 1) {
-    const char = compound[index];
-    if (char === '[') square += 1;
-    else if (char === ']') square -= 1;
-    else if (char === '(') round += 1;
-    else if (char === ')') round -= 1;
-    else if (char === '.' && square === 0 && round === 0 && compound.slice(index + 1).startsWith('cm-')) return true;
-  }
-  return false;
+  return classes(compound, false).some((name) => name.startsWith('cm-'));
 }
 
 /** @type {import('stylelint').Rule} */
