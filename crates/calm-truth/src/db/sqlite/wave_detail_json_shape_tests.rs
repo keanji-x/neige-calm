@@ -349,3 +349,123 @@ async fn payload_write_of_invalid_json_is_refused() {
     assert_eq!(detail.cards[0].id.as_str(), card_id);
     assert!(detail.overlays.is_empty());
 }
+
+/// The triggers above only guard writes made after they exist, so migration
+/// 0070 also SCANS the rows that were already there and aborts if any of them
+/// fails `json_valid`. This drives the real migration text — not a copy of it
+/// — against a database seeded with exactly the row the scan exists for.
+const MIGRATION_0070: &str = include_str!("../../../migrations/0070_payload_json_valid.sql");
+
+/// Replay the migration the way `sqlx::migrate` applies it: one transaction,
+/// rolled back whole if any statement aborts.
+async fn replay_0070(repo: &SqlxRepo) -> Result<(), sqlx::Error> {
+    let mut tx = repo.pool().begin().await.expect("begin");
+    let res = sqlx::raw_sql(MIGRATION_0070).execute(&mut *tx).await;
+    match res {
+        Ok(_) => {
+            tx.commit().await.expect("commit");
+            Ok(())
+        }
+        Err(e) => {
+            tx.rollback().await.expect("rollback");
+            Err(e)
+        }
+    }
+}
+
+/// Drop what migration 0070 creates so the real file can be replayed.
+async fn drop_0070_triggers(repo: &SqlxRepo) {
+    for name in [
+        "cards_payload_json_valid_insert",
+        "cards_payload_json_valid_update",
+        "overlays_payload_json_valid_insert",
+        "overlays_payload_json_valid_update",
+    ] {
+        sqlx::query(&format!("DROP TRIGGER {name}"))
+            .execute(repo.pool())
+            .await
+            .expect("drop trigger");
+    }
+}
+
+#[tokio::test]
+async fn migration_0070_aborts_on_preexisting_invalid_payload() {
+    const FORGERY: &str =
+        r#"{}},{"id":"forged","wave_id":"forged","kind":"note","sort":9,"payload":{}"#;
+
+    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
+    let wave_id = empty_wave(&repo).await;
+    let card_id = add_card(
+        &repo,
+        &wave_id,
+        NewCard {
+            wave_id: wave_id.clone().into(),
+            kind: "note".into(),
+            sort: Some(1.0),
+            payload: json!({}),
+            title: None,
+        },
+    )
+    .await;
+
+    // A clean database replays the migration end to end: the scan finds
+    // nothing, and the triggers come back.
+    drop_0070_triggers(&repo).await;
+    replay_0070(&repo)
+        .await
+        .expect("0070 must apply to a database whose payloads are all valid JSON");
+
+    // Now the row the scan exists for. It can only be written with the
+    // triggers gone — which is precisely the pre-0070 database this scan is
+    // the fence for.
+    drop_0070_triggers(&repo).await;
+    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+        .bind(FORGERY)
+        .bind(&card_id)
+        .execute(repo.pool())
+        .await
+        .expect("seed a pre-0070 invalid payload");
+
+    let err = replay_0070(&repo)
+        .await
+        .expect_err("0070 must abort rather than install triggers over an invalid row");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("migration 0070 aborted") && msg.contains("cards.payload"),
+        "abort must name the offending table: {msg}"
+    );
+
+    // Fail-closed: nothing was installed, so a later run cannot mistake this
+    // database for a scanned one.
+    let triggers: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%_payload_json_valid_%'")
+            .fetch_one(repo.pool())
+            .await
+            .expect("count triggers");
+    assert_eq!(triggers, 0, "aborted migration must not leave triggers");
+
+    // Same fence on the other table, with its own message.
+    sqlx::query("UPDATE cards SET payload = '{}' WHERE id = ?1")
+        .bind(&card_id)
+        .execute(repo.pool())
+        .await
+        .expect("restore the card payload");
+    sqlx::query(
+        "INSERT INTO overlays (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at) \
+         VALUES ('forged-overlay', 'p', 'card', ?1, 'status', ?2, 0)",
+    )
+    .bind(&card_id)
+    .bind(FORGERY)
+    .execute(repo.pool())
+    .await
+    .expect("seed a pre-0070 invalid overlay payload");
+
+    let err = replay_0070(&repo)
+        .await
+        .expect_err("0070 must abort on an invalid overlay payload too");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("migration 0070 aborted") && msg.contains("overlays.payload"),
+        "abort must name the offending table: {msg}"
+    );
+}
