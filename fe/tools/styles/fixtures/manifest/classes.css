@@ -1,0 +1,3 @@
+@layer base {
+  .alpha .beta { color: green; }
+}

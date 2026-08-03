@@ -1,0 +1,88 @@
+import postcss, { type AtRule, type ChildNode, type Rule } from 'postcss';
+
+export interface CssViolation { rule: string; message: string }
+
+function enclosingLayer(node: ChildNode): string | undefined {
+  interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
+  let parent = node.parent as ParentNode | undefined;
+  while (parent) {
+    if (parent.type === 'atrule' && parent.name?.toLowerCase() === 'layer' && parent.nodes) return parent.params?.trim();
+    parent = parent.parent;
+  }
+  return undefined;
+}
+
+export function layerOrder(entryCss: string): string[] {
+  const root = postcss.parse(entryCss);
+  const declaration = root.nodes.find((node): node is AtRule => node.type === 'atrule' && node.name.toLowerCase() === 'layer' && !node.nodes);
+  if (!declaration) throw new Error('entry.css must declare the layer order');
+  return declaration.params.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function rightmostCompound(selector: string): string {
+  let square = 0;
+  let round = 0;
+  let lastBoundary = 0;
+  for (let index = 0; index < selector.length; index += 1) {
+    const char = selector[index];
+    if (char === '[') square += 1;
+    else if (char === ']') square -= 1;
+    else if (char === '(') round += 1;
+    else if (char === ')') round -= 1;
+    else if (square === 0 && round === 0 && (char === '>' || char === '+' || char === '~' || char === ' ')) lastBoundary = index + 1;
+  }
+  return selector.slice(lastBoundary).trim();
+}
+
+function classes(selector: string): string[] {
+  const found: string[] = [];
+  for (let index = 0; index < selector.length; index += 1) {
+    if (selector[index] !== '.') continue;
+    let cursor = index + 1;
+    let name = '';
+    while (cursor < selector.length) {
+      const char = selector[cursor];
+      const code = char?.charCodeAt(0) ?? 0;
+      const valid = char === '-' || char === '_' || (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code >= 128;
+      if (!valid) break;
+      name += char;
+      cursor += 1;
+    }
+    if (name) found.push(name);
+    index = cursor - 1;
+  }
+  return found;
+}
+
+export function auditLayeredCss(css: string, order: readonly string[], unlayeredException = false): CssViolation[] {
+  const violations: CssViolation[] = [];
+  const root = postcss.parse(css);
+  root.walkRules((rule) => {
+    const layer = enclosingLayer(rule);
+    if (!unlayeredException) {
+      if (!layer) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
+      else if (!order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
+      return;
+    }
+    for (const selector of rule.selectors) {
+      if (!classes(rightmostCompound(selector)).some((name) => name.startsWith('cm-'))) {
+        violations.push({ rule: 'unlayered-cm-scope', message: `rightmost compound lacks .cm-: ${selector}` });
+      }
+    }
+  });
+  return violations;
+}
+
+export function extractGlobalClasses(stylesheets: readonly string[]): Set<string> {
+  const result = new Set<string>();
+  for (const css of stylesheets) postcss.parse(css).walkRules((rule: Rule) => classes(rule.selector).forEach((name) => result.add(name)));
+  return result;
+}
+
+export function compareGlobalClassManifest(cssClasses: ReadonlySet<string>, manifest: readonly string[]): CssViolation[] {
+  const declared = new Set(manifest);
+  const violations: CssViolation[] = [];
+  for (const name of [...cssClasses].sort()) if (!declared.has(name)) violations.push({ rule: 'global-class-manifest', message: `CSS-only class: ${name}` });
+  for (const name of [...declared].sort()) if (!cssClasses.has(name)) violations.push({ rule: 'global-class-manifest', message: `manifest-only class: ${name}` });
+  return violations;
+}
