@@ -39,5 +39,5 @@ e2e-artifacts/
 # Local reference checkouts
 external/
 
-# Local mutation harness (kept in the worktree, never committed)
+# Re-runnable R3 mutation evidence (kept in the worktree, never committed)
 /scratchpad/mut-p8a.sh
