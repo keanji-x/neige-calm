@@ -4,7 +4,7 @@
   statement: "Contract remains true"
   why: "Fixture reason"
   source: "fixture-source.txt:1"
-  authoritative_test: "missing.test.ts:1"
+  authoritative_test: "fixture-source.txt:2"
   owner_slice: "styles/global"
   intentional_omission: false
   runtime_layer: "styles"
