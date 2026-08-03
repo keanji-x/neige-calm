@@ -101,6 +101,18 @@ describe('oracle rule fixtures', () => {
     });
     expect(matched).toEqual([]);
 
+    const added = validateOracle({
+      repoRoot: fixtures,
+      oracleDir: root,
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor/incomplete-baseline.json'),
+    });
+    expect(added).toHaveLength(2);
+    expect(added.map((violation) => violation.message)).toContain('unbaselined not-in-file');
+    expect(added.map((violation) => violation.message)).toContain(
+      'baseline count must equal actual count: declared 2, distinct valid 2, actual 3',
+    );
+
     const fixedRoot = resolve(fixtures, 'source-anchor/positive');
     const stale = validateOracle({
       repoRoot: fixtures,
