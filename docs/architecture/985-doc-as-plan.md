@@ -1034,8 +1034,9 @@ effective_policy(wave) =
 两个字段**（否则「只改策略」的 patch 被当空 patch 短路，一个事件都不发）、
 REST 400 校验、OpenAPI / zod / web 生成物。
 
-**这一档的诊断必须成对**：「本 wave 有一条未清除的人工否决（`key`: X），
-spec 声明的任务需要逐条放行；清除办法见下」——**没有这条诊断就是静默降级**。
+**这一档的诊断必须成对**：「本 wave 已设为『spec 的任务等我放行』，spec 声明的任务需逐条放行；恢复自动化见下」
+（**与墓碑脱钩**：B2 后可以有墓碑而 wave 仍是 `auto-declare`，也可以没有任何墓碑
+而 wave 是 `declare-and-wait`，文案不得把成因说成墓碑）——**没有这条诊断就是静默降级**。
 
 **不做「有界时间窗」**：时间窗一到循环即恢复，**吸收态没了**；
 且窗口需要一个时间戳 ⇒ 不是当前文档的函数 ⇒ rebuild 重建不出
@@ -1365,14 +1366,13 @@ OpenAPI 重生成无 diff / web build + vitest。
 
 ### 切片 3c — 前端：状态回显 + 诊断渲染（~350 行）
 
-**代码依赖 3b；发布依赖 3b′**，且**建议与 3b′ 进同一次对人可见的发布** ——
+**代码依赖 3b；发布依赖 3b′**，且**必须与 3b′ 进同一次对人可见的发布**（§12.2 A 硬约束）——
 3b 是「行会被守卫式删除」的第一片，而诊断渲染在 3c，中间的窗口里系统第一次做决定
 却完全沉默。
 
 交付：`task` 块的状态回显（§3.8）；`taskDiagnostics` 渲染；
 **`released_by_user` 的人用放行开关**（人可写、spec 不可写，§3.7 规则 5）——
-**缺它则 `declare-and-wait` 这一档在 UI 上无法放行**，而 §6.1 的墓碑会让被否决过
-的 wave 会被人在确认框里切到这一档，出口必须存在。
+**缺它则 `declare-and-wait` 这一档在 UI 上无法放行**，而人在确认框里选「要」会把该 wave 切到这一档，**出口必须存在**。
 **每一类诊断都要有「人话 + 下一步动作」（§12.2 C 已裁决，全部采纳）**，
 `Diagnostic` 结构定死为
 `{ code, message_args, related_block_ids, related_wave_id?, action? }` ——
@@ -1391,7 +1391,7 @@ OpenAPI 重生成无 diff / web build + vitest。
 | 越 cove / 引用解析失败 | 哪一条 `refs`、指向哪、怎么重新链接 |
 | `closure_truncated` | 「引用链过深/过宽，此任务将按最保守方式判失效；请把上下文收敛进更少的块」|
 | 墓碑挡住重声明 | 哪条墓碑、谁立的、**两个清除动作各自的后果**（删墓碑 = key 可重提；PATCH 策略 = 恢复自动化但保留否决记录）|
-| 人工否决 ⇒ `declare-and-wait` | 本 wave 需逐条放行、放行开关在哪 |
+| 本 wave 处于 `declare-and-wait` | 本 wave 需逐条放行、放行开关在哪、怎么恢复自动化（**不要把成因说成墓碑**）|
 | context-stale (a) 引用变了 / (b) 声明自己变了 | **两形态必须分得开**；(b) 必须说明「**worker 的产出仍在**（卡与日志都在），只是没有被验证过」（§6.5）|
 
 **对外概念契约（§12.2 D 已裁决）** —— 3c 的**每一处渲染都必须能归到下面三句之一，
@@ -1455,7 +1455,7 @@ task 块时，**当场弹确认框**「要不要此后 spec 的任务都等你�
 ```
 切片 1（惰性）→ 2（惰性）→ 3a（调度惰性、事件面通电）→ 3b（声明有后果）
    → 3b′（冻结通电，**部署硬门**）
-        ├── 3c（前端，建议与 3b′ 同发布）
+        ├── 3c（前端，**必须**与 3b′ 同发布）
         ├── 4（LLM 裁决，可后排）
         ├── 5（模板 + upsert 退场）
         ├── 6（树预算 + sub-wave）
@@ -1533,8 +1533,8 @@ UI 上没有任何标记，任务就是不跑。
 
 | 选项 | 代价 |
 |---|---|
-| **B1 自动派生**（现设计）| 每次否决都要付「全 wave 收紧 + 删掉别的 pending 行」的摩擦；诊断能解释，但要人回来看 |
-| **B2 改为一次点击** —— 人删任务时 UI 当场问「要不要此后 spec 的任务都等你放行？[要 / 只删这条]」，选「要」就写显式 `automation_policy = 'declare-and-wait'` | **机制一个字都不用改**（显式设置本来就压过派生值，§6.6 的三态）。代价：人不点时，「spec 换 key 重提绕过否决」的循环仍然存在 |
+| **B1 自动派生**（原设计）| 每次否决都要付「全 wave 收紧 + 删掉别的 pending 行」的摩擦；诊断能解释，但要人回来看 |
+| **B2 改为一次点击** —— 人删任务时 UI 当场问「要不要此后 spec 的任务都等你放行？[要 / 只删这条]」，选「要」就写显式 `automation_policy = 'declare-and-wait'` | **机制一个字都不用改**（显式设置本来就是第一分支；**B2 落地后第二分支已删**，§6.6）。代价：人不点时，「spec 换 key 重提绕过否决」的循环仍然存在 |
 
 **裁决：B2。** 定价理由：那条循环的真实频率**从未被观测到**（它的证伪装置本身是一条
 尚未上线的可观测量），而「全 wave 收紧 + 删掉别人的 pending 行」的摩擦是**每次
@@ -1651,11 +1651,11 @@ UI 应给 task 块两种截然不同的形态（草案/可改 vs 已交付/只�
 | **A10** | 两个 NEW 事件的 role_gate | **严格 `Kernel \| KernelDispatcher`，例外条款不是同构**（§2.1）| —— |
 | **A11** | `spec_task_ceiling` 的谓词 | **`occupied` 只数在飞行，`pending` 是产物不数**（§4.2 规则 3）| ceiling 改成跨 wave / 跨树的量 ⇒ 准入顺序需重新定义 |
 | **A12** | 人的否决能否被换 key 绕过 | **本设计只挡同 `key`；换 key 的循环由 B2 的一次点击（人显式切 `declare-and-wait`）挡，不再自动派生**（§6.1，2026-08-03 改） | **观测到真实的换 key 循环** ⇒ 恢复 `effective_policy` 的第二分支（自动派生），并配 wave 级横幅 + 确认框 + 两个清除按钮 |
+| **A13** | 三列进不进 `TASK_COLUMNS` | **不进**，各配定向 reader（§9.2）| —— |
 | **P1** | 3c 与 3b′ 是否同发布 | **必须同一次对人可见发布**（硬约束）| 3c 的工期长到拖垮 3b′ 的部署窗口 |
 | **P2** | 墓碑 ⇒ `declare-and-wait` 的触发 | **一次点击（确认框），不自动派生**；机制未改，只改触发 | 同 A12 |
 | **P3** | 诊断的人话与下一步 | **全部采纳**：10 类诊断各自的必说内容 + `Diagnostic` 带 `related_block_ids` | —— |
 | **P4** | 对外概念 | **收敛为三句话，作为 3c 的筛子**：归不进三句的渲染即实现细节泄漏 | 出现一个真实必要、却归不进三句的概念 |
-| **A13** | 三列进不进 `TASK_COLUMNS` | **不进**，各配定向 reader（§9.2）| —— |
 
 ---
 
@@ -1777,7 +1777,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 列 | 类型 | 谁写 | rebuild | 片 |
 |---|---|---|---|---|
 | `spec_task_ceiling` | `INTEGER NULL`（默认常数 32）| **只有 `EditAuthor::User` 经 `WavePatch`**；spec 403 | 列本身即真源 | 3b |
-| `automation_policy` | `TEXT NULL`（**三态**：NULL = 内核默认）| 同上 | `effective_policy` 是列 + 文档墓碑的**纯派生** | 3b |
+| `automation_policy` | `TEXT NULL`（**三态**：NULL = 内核默认）| 同上 | **列本身即真源**：`effective_policy` = 该列非 NULL 时取列值，否则 `auto-declare`（**B2 后不再依赖文档墓碑**）| 3b |
 | `parent_wave_id` / `tree_task_budget` | `TEXT NULL` / `INTEGER NULL`（默认 32）| 内核（wave 创建）| —— | 6 |
 
 ### C.3 不落列的载体
@@ -1858,7 +1858,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
   `resume_dispatched`**（注意：boot 路径上的补跑必然 no-op，不得把那一格写成断言，
   但**必须断言这一格**）。
 
-**切片 3c**：三类文案（人工否决 / context-stale (a) / context-stale (b)）+
+**切片 3c**：三类文案（本 wave 处于 `declare-and-wait` / context-stale (a) / context-stale (b)）+
 其余每一类诊断的「人话 + 下一步动作」+ `Diagnostic` 带 `related_block_ids` +
 **`released_by_user` 放行开关可用**（`declare-and-wait` 的唯一 UI 出口）。
 
@@ -1899,7 +1899,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 4c | **once-per-condition**：已判 material 且冻结点未推进的任务，其后任意多轮 sweep **不再产生新 `TaskContextAdvanced`，也不再送第 2 级裁决**。**成本论证**：电平触发在一个按构造持续存在的条件上 ⇒ 每轮重发一条**不可裁剪**的事件并**重复调用 LLM**。（material 侧靠 `context_stale_at_ms` 不重发，immaterial 侧靠冻结点推进不重发，**两者成对**）|
 | 5 的三构造 | (a) worker 未开始 → 重启 → 不得 spawn；(b) **gate 未开始**（`gate_attempt = 0` + material）→ 重启 → **不得有任何 gate shell 命令被执行**；(c) **已开始的不受影响**（验证没有过度收紧）|
 | 5b seam | boot 顺序**两半缺一不可**：(a) 源码序断言 + (b) **seam 测试**（真实跑一次 boot，断言上下文 sweep 的副作用先于 operation 恢复可见）|
-| 6b | **两个清除动作互相独立**（B2 后不再有派生耦合）：删墓碑 ⇒ 该 `key` 可重新声明；PATCH `automation_policy='auto-declare'` ⇒ 恢复自动化**且墓碑保留**。**换 key 不再被机制挡** —— 只有人显式切到 `declare-and-wait` 时才需逐条放行（§12.1 风险 15）|
+| 6b | **两个清除动作互相独立**（B2 后不再有派生耦合）：删墓碑 ⇒ 该 `key` 可重新声明；PATCH `automation_policy='auto-declare'` ⇒ 恢复自动化**且墓碑保留**。（换 key 不再被机制挡 —— 那是 §12.1 风险 15 记录的**已知缺口**，不是本条要验收的不变量）|
 | 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**，那条论断已被明确驳回。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**（投影只落 `pending` 行，派发是 scheduler 的独立动作）；树内 `declared_by='spec'` 的非终结行 ≤ `tree_task_budget`（切片 6）|
 | 10 | **`refs[]` 的 cove 边界**：越界引用 ⇒ 该块不可调度 + 诊断，且**该引用不得出现在任何 `TaskContextFrozen.refs` 里** |
 | 11 生成器 | rebuild ≡ 增量的属性测试，其生成器**必须能生成「制造诊断的编辑」**：重复 key / 环 / 跨 cove / 撤回放行位 |
