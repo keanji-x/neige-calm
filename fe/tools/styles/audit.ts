@@ -6,6 +6,10 @@ export const STYLE_RULES = Object.freeze([
   'rule-in-layer', 'known-layer', 'unlayered-cm-scope', 'global-class-manifest',
   'runtime-stylesheet-readable', 'runtime-inline-style',
 ] as const);
+export const CSS_NODE_SOURCES = Object.freeze([
+  'static-rule', 'static-layer-statement', 'static-layer-import', 'static-anonymous-layer',
+  'runtime-style-text', 'runtime-style-cssom', 'runtime-external-stylesheet', 'runtime-inline-attribute',
+] as const);
 
 function enclosingLayer(node: ChildNode): { layered: boolean; name?: string } {
   interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
@@ -33,11 +37,27 @@ export function layerOrder(entryCss: string): string[] {
 export function auditLayeredCss(css: string, order: readonly string[], unlayeredException = false): CssViolation[] {
   const violations: CssViolation[] = [];
   const root = postcss.parse(css);
+  if (!unlayeredException) {
+    root.walkAtRules((atRule) => {
+      if (atRule.name.toLowerCase() === 'layer' && atRule.parent === root) {
+        if (atRule.nodes && !atRule.params.trim()) {
+          violations.push({ rule: 'known-layer', message: 'anonymous layer' });
+        } else {
+          for (const name of atRule.params.split(',').map((item) => item.trim().split('.')[0]).filter(Boolean)) {
+            if (!order.includes(name)) violations.push({ rule: 'known-layer', message: `unknown layer ${name}` });
+          }
+        }
+      }
+      if (atRule.name.toLowerCase() === 'import') {
+        const layer = /\blayer\(\s*([^\s)]+)\s*\)/i.exec(atRule.params)?.[1]?.split('.')[0];
+        if (layer && !order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
+      }
+    });
+  }
   root.walkRules((rule) => {
     const layer = enclosingLayer(rule);
     if (!unlayeredException) {
       if (!layer.layered) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
-      else if (layer.name && !order.includes(layer.name)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer.name}` });
       return;
     }
     for (const selector of rule.selectors) {
@@ -64,10 +84,29 @@ export function compareGlobalClassManifest(cssClasses: ReadonlySet<string>, mani
 }
 
 interface RuntimeElement { textContent: string | null; getAttribute(name: string): string | null }
-interface RuntimeSheet { ownerNode?: unknown; cssRules?: ArrayLike<{ cssText: string }> }
+interface RuntimeSheet { ownerNode?: unknown; cssRules?: ArrayLike<{ cssText: string }>; insertRule?(rule: string): number }
 export interface RuntimeDocument {
   styleSheets: ArrayLike<RuntimeSheet>;
   querySelectorAll(selector: string): ArrayLike<RuntimeElement>;
+}
+
+function canonicalRule(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '').replace(/;}/g, '}');
+}
+
+function cssomOnlyRules(text: string, rules: readonly { cssText: string }[]): string[] {
+  const textCounts = new Map<string, number>();
+  for (const node of postcss.parse(text).nodes) {
+    const key = canonicalRule(node.toString());
+    textCounts.set(key, (textCounts.get(key) ?? 0) + 1);
+  }
+  return rules.map((rule) => rule.cssText).filter((css) => {
+    const key = canonicalRule(css);
+    const remaining = textCounts.get(key) ?? 0;
+    if (remaining === 0) return true;
+    textCounts.set(key, remaining - 1);
+    return false;
+  });
 }
 
 export function auditRuntimeStyles(document: RuntimeDocument, order: readonly string[]): CssViolation[] {
@@ -75,9 +114,10 @@ export function auditRuntimeStyles(document: RuntimeDocument, order: readonly st
   const styleNodes = Array.from(document.querySelectorAll('style'));
   for (const style of styleNodes) violations.push(...auditLayeredCss(style.textContent ?? '', order));
   for (const sheet of Array.from(document.styleSheets)) {
-    if (styleNodes.includes(sheet.ownerNode as RuntimeElement)) continue;
     try {
-      const css = Array.from(sheet.cssRules ?? []).map((rule) => rule.cssText).join('\n');
+      const rules = Array.from(sheet.cssRules ?? []);
+      const owner = styleNodes.includes(sheet.ownerNode as RuntimeElement) ? sheet.ownerNode as RuntimeElement : undefined;
+      const css = (owner ? cssomOnlyRules(owner.textContent ?? '', rules) : rules.map((rule) => rule.cssText)).join('\n');
       violations.push(...auditLayeredCss(css, order));
     } catch {
       violations.push({ rule: 'runtime-stylesheet-readable', message: 'stylesheet cssRules are not readable' });

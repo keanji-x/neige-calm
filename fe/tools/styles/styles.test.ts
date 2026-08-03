@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
-import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
+import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
@@ -27,6 +27,25 @@ async function lintCss(code: string, filename: string, exceptions: string[] = []
 }
 
 describe('CSS AST fixtures', () => {
+  it('covers every static and runtime CSS node source in both directions', () => {
+    const traversalSurface = new Map<string, () => unknown>([
+      ['static-rule', () => auditLayeredCss(read('layered/negative/case.css'), order)],
+      ['static-layer-statement', () => auditLayeredCss(read('traversal/static-layer-statement.css'), order)],
+      ['static-layer-import', () => auditLayeredCss(read('traversal/static-layer-import.css'), order)],
+      ['static-anonymous-layer', () => auditLayeredCss(read('traversal/static-anonymous-layer.css'), order)],
+      ['runtime-style-text', () => auditRuntimeStyles(new JSDOM(read('runtime/negative/page.html')).window.document, order)],
+      ['runtime-style-cssom', () => {
+        const document = new JSDOM(read('traversal/runtime-style-cssom.html')).window.document;
+        Array.from(document.styleSheets)[0]?.insertRule('.cssom-injected {}');
+        return auditRuntimeStyles(document, order);
+      }],
+      ['runtime-external-stylesheet', () => auditRuntimeStyles({ styleSheets: [{ cssRules: [{ cssText: '.external {}' }] }], querySelectorAll: () => [] }, order)],
+      ['runtime-inline-attribute', () => auditRuntimeStyles(new JSDOM(read('runtime-inline/negative/page.html')).window.document, order)],
+    ]);
+    expect(new Set(traversalSurface.keys())).toEqual(new Set(CSS_NODE_SOURCES));
+    expect(new Set(CSS_NODE_SOURCES)).toEqual(new Set(traversalSurface.keys()));
+    for (const [source, evidence] of traversalSurface) expect(evidence(), source).not.toEqual([]);
+  });
   it('covers exactly every rule the audit can emit', () => {
     const unreadable = {};
     Object.defineProperty(unreadable, 'cssRules', { get: () => { throw new Error('denied'); } });
@@ -59,6 +78,27 @@ describe('CSS AST fixtures', () => {
     expect(auditLayeredCss('@layer ui.card { .nested {} }', order)).toEqual([]);
   });
 
+  it('rejects every at-rule form that introduces a layer outside the order', () => {
+    expect(auditLayeredCss(read('traversal/static-layer-statement.css'), order)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer alien' },
+    ]);
+    expect(auditLayeredCss(read('traversal/static-layer-import.css'), order)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer alien' },
+    ]);
+    expect(auditLayeredCss(read('traversal/static-anonymous-layer.css'), order)).toEqual([
+      { rule: 'known-layer', message: 'anonymous layer' },
+    ]);
+  });
+
+  it('makes import.css and order.css real negatives when their layer leaves the order', () => {
+    expect(auditLayeredCss(read('layer-forms/import.css'), ['a'])).toEqual([
+      { rule: 'known-layer', message: 'unknown layer name' },
+    ]);
+    expect(auditLayeredCss(read('layer-forms/order.css'), ['a'])).toEqual([
+      { rule: 'known-layer', message: 'unknown layer b' },
+    ]);
+  });
+
   it('covers every supported @layer writing form with the effective top-level name', () => {
     const forms = new Map([
       ['named.css', 'name'],
@@ -70,7 +110,9 @@ describe('CSS AST fixtures', () => {
       ['import.css', 'name'],
     ]);
     for (const [file] of forms) {
-      expect(auditLayeredCss(read(`layer-forms/${file}`), ['name', 'a'] as const), file).toEqual([]);
+      const violations = auditLayeredCss(read(`layer-forms/${file}`), ['name', 'a', 'b'] as const);
+      if (file === 'anonymous.css') expect(violations, file).toEqual([{ rule: 'known-layer', message: 'anonymous layer' }]);
+      else expect(violations, file).toEqual([]);
     }
     const fixtureFiles = new Set(readdirSync(resolve(fixtures, 'layer-forms')));
     expect(fixtureFiles).toEqual(new Set(forms.keys()));
@@ -160,5 +202,13 @@ it('runtime CSSOM branch reads rules produced by jsdom CSSOM', () => {
   };
   expect(auditRuntimeStyles(negativeCssomOnly, order)).toEqual([
     { rule: 'rule-in-layer', message: 'unlayered selector: .cssom-loose' },
+  ]);
+});
+
+it('runtime audit reads CSSOM rules inserted into a style-owned sheet', () => {
+  const document = new JSDOM(read('traversal/runtime-style-cssom.html')).window.document;
+  Array.from(document.styleSheets)[0]?.insertRule('.cssom-injected {}');
+  expect(auditRuntimeStyles(document, order)).toEqual([
+    { rule: 'rule-in-layer', message: 'unlayered selector: .cssom-injected' },
   ]);
 });
