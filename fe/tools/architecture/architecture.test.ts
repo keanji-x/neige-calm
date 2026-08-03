@@ -41,6 +41,10 @@ const packageImportShapes = [
   'static-import', 'side-effect-import', 'type-import', 'named-reexport', 'star-reexport',
   'namespace-reexport', 'dynamic-import', 'require-call', 'import-equals-require',
 ] as const;
+const consumerImportShapes = [
+  'named-import', 'default-import', 'namespace-member', 'named-reexport',
+  'dynamic-import-destructure', 'require-member',
+] as const;
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
   if (caseName.startsWith('dup-')) {
@@ -251,6 +255,14 @@ describe('duplication manifest on the application tree', () => {
     for (const shape of packageImportShapes) {
       const errors = checkDuplicationManifest(resolve(shapeFixtures, 'package-import', shape));
       expect(errors.some((error) => error.includes('INV-DUP-005')), shape).toBe(true);
+    }
+  });
+  it('covers exactly the independently enumerated consumer-import syntax fixtures', () => {
+    const fixtureNames = new Set(readdirSync(resolve(shapeFixtures, 'consumer-import')));
+    expect(fixtureNames).toEqual(new Set(consumerImportShapes));
+    for (const shape of consumerImportShapes) {
+      const errors = checkDuplicationManifest(resolve(shapeFixtures, 'consumer-import', shape));
+      expect(errors.some((error) => error.includes('INV-DUP-001')), shape).toBe(true);
     }
   });
   it('deep-freezes manifest entries and nested arrays', () => {

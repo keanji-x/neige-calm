@@ -67,6 +67,50 @@ function packageSources(ast) {
   return sources;
 }
 
+/** @param {ts.SourceFile} ast @returns {{ name: string, source: string }[]} */
+function consumedSymbols(ast) {
+  const consumed = [];
+  const namespaceSources = new Map();
+  for (const statement of ast.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const source = statement.moduleSpecifier.text;
+      if (statement.importClause?.name) consumed.push({ name: statement.importClause.name.text, source });
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        consumed.push(...bindings.elements.map((element) => ({ name: (element.propertyName ?? element.name).text, source })));
+      } else if (bindings && ts.isNamespaceImport(bindings)) {
+        namespaceSources.set(bindings.name.text, source);
+      }
+    } else if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)
+      && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+      consumed.push(...statement.exportClause.elements.map((element) => ({
+        name: (element.propertyName ?? element.name).text,
+        source: statement.moduleSpecifier.text,
+      })));
+    }
+  }
+  function visit(node) {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression)) {
+      const source = namespaceSources.get(node.expression.text);
+      if (source) consumed.push({ name: node.name.text, source });
+    } else if (ts.isPropertyAccessExpression(node) && ts.isCallExpression(node.expression)
+      && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'require'
+      && node.expression.arguments.length >= 1 && ts.isStringLiteral(node.expression.arguments[0])) {
+      consumed.push({ name: node.name.text, source: node.expression.arguments[0].text });
+    }
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer
+      && ts.isAwaitExpression(node.initializer) && ts.isCallExpression(node.initializer.expression)
+      && node.initializer.expression.expression.kind === ts.SyntaxKind.ImportKeyword
+      && node.initializer.expression.arguments.length >= 1 && ts.isStringLiteral(node.initializer.expression.arguments[0])) {
+      const source = node.initializer.expression.arguments[0].text;
+      for (const element of node.name.elements) consumed.push({ name: (element.propertyName ?? element.name).getText(ast), source });
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  return consumed;
+}
+
 /** @param {string} root @returns {string[]} */
 export function checkDuplicationManifest(root) {
   const errors = [];
@@ -92,18 +136,11 @@ export function checkDuplicationManifest(root) {
         }
       }
     }
-    for (const statement of ast.statements) {
-      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-      const source = statement.moduleSpecifier.text;
-      const clause = statement.importClause;
-      const imported = clause?.namedBindings && ts.isNamedImports(clause.namedBindings)
-        ? clause.namedBindings.elements.map((element) => (element.propertyName ?? element.name).text) : [];
-      for (const name of imported) {
-        const entry = consumerEntriesBySymbol.get(name);
-        if (!entry || !source.startsWith('.')) continue;
-        const target = normalized(relative(root, resolve(dirname(file), source)));
-        if (target !== normalized(entry.canonicalPath)) errors.push(`${entry.id}: ${name} consumers must import ${entry.canonicalPath}; found ${source} in ${path}`);
-      }
+    for (const { name, source } of consumedSymbols(ast)) {
+      const entry = consumerEntriesBySymbol.get(name);
+      if (!entry || !source.startsWith('.')) continue;
+      const target = normalized(relative(root, resolve(dirname(file), source)));
+      if (target !== normalized(entry.canonicalPath)) errors.push(`${entry.id}: ${name} consumers must import ${entry.canonicalPath}; found ${source} in ${path}`);
     }
   }
   return errors;

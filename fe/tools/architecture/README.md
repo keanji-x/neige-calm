@@ -68,6 +68,19 @@ unrelated application behavior. Dependency-cruiser fixtures verify that both
 public-entry rules see dynamic imports. ESLint fixtures lint a dynamic markdown
 import through each of the three markdown-restriction pattern configurations.
 
+The consumer-import syntax table is exhaustive over these enumerated forms:
+
+| Consumer shape | Decision |
+| --- | --- |
+| named import and default import | checked by the consumed/local binding name |
+| namespace import followed by member access | checked by the accessed member name |
+| named re-export from another module | checked as consumption of the original export name |
+| dynamic `import()` followed by destructuring | checked for a literal relative source |
+| `require()` followed by member access | checked for a literal relative source |
+
+Computed module sources and computed namespace properties are registered escapes:
+proving their values would require constant folding or data-flow analysis.
+
 The local mutation harness first runs the named sentinel, then reruns its whole
 Vitest file without `-t`. Its report lists every failed test and the full-suite
 failure count; multiple failures are expected when one shared checker branch
