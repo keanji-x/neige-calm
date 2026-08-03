@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { extname, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { parse } from 'yaml';
+import postcss from 'postcss';
 import { auditLayeredCss, compareGlobalClassManifest, extractGlobalClasses, layerOrder } from './audit.ts';
 
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
@@ -52,6 +53,35 @@ export function auditModuleLayer(css, file) {
   return violations.map(({ message }) => `${file}: ${message}`);
 }
 
+export function auditCssImports(code, file) {
+  const violations = [];
+  if (extname(file) === '.css') {
+    postcss.parse(code).walkAtRules('import', (rule) => {
+      const target = /^(?:url\(\s*)?["']?([^"')\s]+)/.exec(rule.params.trim())?.[1] ?? '';
+      const thirdParty = !target.startsWith('.') && !target.startsWith('/');
+      if (file !== 'web/src/styles/entry.css' && file !== 'web/src/styles/vendor.css') {
+        violations.push(`${file}: CSS imports are only allowed from styles/entry.css or styles/vendor.css`);
+      }
+      if (thirdParty && file !== 'web/src/styles/vendor.css') {
+        violations.push(`${file}: third-party CSS must be imported from styles/vendor.css`);
+      }
+      if (!thirdParty && file === 'web/src/styles/vendor.css') {
+        violations.push(`${file}: vendor.css may only import third-party CSS`);
+      }
+    });
+    return violations;
+  }
+  const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true,
+    file.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
+  source.forEachChild((node) => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)
+      && node.moduleSpecifier.text.endsWith('.css')) {
+      violations.push(`${file}: CSS must enter through styles/entry.css, not a source import`);
+    }
+  });
+  return violations;
+}
+
 export function auditStyleRepository(feRoot) {
   const stylesRoot = resolve(feRoot, 'web/src/styles');
   const webRoot = resolve(feRoot, 'web/src');
@@ -83,14 +113,21 @@ export function auditStyleRepository(feRoot) {
       .map(({ message }) => `${path}: ${message}`));
   }
 
-  for (const path of cssFiles.filter((candidate) => candidate.endsWith('.module.css'))) {
+  for (const path of cssFiles) {
     const file = relative(feRoot, path).replaceAll('\\', '/');
-    violations.push(...auditModuleLayer(readFileSync(path, 'utf8'), file));
+    const css = readFileSync(path, 'utf8');
+    violations.push(...auditCssImports(css, file));
+    if (path.endsWith('.module.css')) violations.push(...auditModuleLayer(css, file));
+    if (!['web/src/styles/entry.css', 'web/src/styles/tokens.css'].includes(file)
+      && !exceptionPaths.includes(file)) {
+      violations.push(...auditLayeredCss(css, order).map(({ message }) => `${file}: ${message}`));
+    }
   }
   for (const path of allFiles.filter((candidate) => SOURCE_EXTENSIONS.has(extname(candidate))
     && !candidate.includes('.test.') && !candidate.includes('.contract.test.'))) {
     const file = relative(feRoot, path).replaceAll('\\', '/');
-    violations.push(...auditDataAttributes(readFileSync(path, 'utf8'), file));
+    const code = readFileSync(path, 'utf8');
+    violations.push(...auditDataAttributes(code, file), ...auditCssImports(code, file));
   }
   return violations;
 }

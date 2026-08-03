@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
-import { auditDataAttributes, auditModuleLayer, auditStyleRepository } from './repository-check.mjs';
+import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository } from './repository-check.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
@@ -321,6 +321,22 @@ describe('P8b2 forward style gates', () => {
       .toEqual(['web/src/features/wave/bad.module.css: unlayered selector: .unlayered']);
     expect(auditModuleLayer('@layer features { .local {} }', 'web/src/features/wave/good.module.css')).toEqual([]);
     expect(auditModuleLayer('@layer ui { .local {} }', 'web/src/ui/dialog/good.module.css')).toEqual([]);
+  });
+
+  it('rejects an unlayered rule in an ordinary non-module stylesheet', () => {
+    const fixtureRoot = resolve(fixtures, 'repository/non-module-negative');
+    expect(auditStyleRepository(fixtureRoot)).toContain(
+      'web/src/features/wave/legacy.css: unlayered selector: button',
+    );
+  });
+
+  it('enforces the single CSS entry and vendor import boundary', () => {
+    expect(auditCssImports('@import "./loose.css" layer(ui);', 'web/src/ui/loose.css')).toHaveLength(1);
+    expect(auditCssImports("import '@astryxdesign/core/astryx.css';", 'web/src/main.tsx')).toHaveLength(1);
+    expect(auditCssImports("@import '@astryxdesign/core/astryx.css' layer(astryx);", 'web/src/styles/entry.css'))
+      .toContain('web/src/styles/entry.css: third-party CSS must be imported from styles/vendor.css');
+    expect(auditCssImports("@import '@astryxdesign/core/astryx.css' layer(astryx);", 'web/src/styles/vendor.css'))
+      .toEqual([]);
   });
 
   it('audits the real repository manifests and forward gates', () => {
