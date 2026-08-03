@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { extname, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { cruise as dependencyCruise, type IConfiguration } from 'dependency-cruiser';
 import { ESLint } from 'eslint';
@@ -15,6 +15,16 @@ const fixtures = resolve(import.meta.dirname, 'fixtures');
 const shapeFixtures = resolve(fixtures, '_syntax-shapes');
 const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfiguration;
 const cruiseOptions = config.options ?? {};
+const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs', '.fixture']);
+
+function sourceFilesUnder(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(root, entry.name);
+    return entry.isDirectory()
+      ? sourceFilesUnder(path)
+      : sourceExtensions.has(extname(path)) ? [path] : [];
+  });
+}
 
 // Independent contract tables: never derive these shapes from checker implementation.
 const publicSymbolShapes = new Map<string, boolean>([
@@ -173,7 +183,7 @@ describe('architecture fixtures', () => {
     ['core-no-platform-globals', 'WebSocket'],
     ['core-no-platform-global-fetch', 'fetch'],
     ['core-no-platform-global-location', 'location'],
-    ['core-no-web-styles', 'web/src/styles'],
+    ['core-no-web-styles', 'core-no-web-layers'],
     ['core-platform-node-types', '2591'],
     ['core-platform-types', '2584'],
     ['core-no-jsx', 'bad.tsx'],
@@ -195,6 +205,29 @@ describe('architecture fixtures', () => {
       expect(negative.status, negative.stdout + negative.stderr).not.toBe(0);
       const expected = expectedViolation.get(caseName) ?? (caseName.startsWith('no-barrel-index') ? 'no-barrel-index' : caseName);
       expect(negative.stdout + negative.stderr).toContain(expected);
+
+      const negativeRoot = resolve(fixtures, caseName, 'negative');
+      const diagnostic = negative.stdout + negative.stderr;
+      const dependencyViolations = (() => {
+        try {
+          const parsed: unknown = JSON.parse(negative.stdout);
+          return Array.isArray(parsed) ? parsed as Array<{ rule?: { name?: string }, from?: string, to?: string }> : [];
+        } catch {
+          return [];
+        }
+      })();
+      if (dependencyViolations.length) {
+        expect(dependencyViolations.length, `${caseName} must produce a violation`).toBeGreaterThan(0);
+        expect(new Set(dependencyViolations.map((violation) => violation.rule?.name)), caseName)
+          .toEqual(new Set([expected]));
+        const participants = new Set(dependencyViolations.flatMap((violation) => [violation.from, violation.to]));
+        for (const file of sourceFilesUnder(negativeRoot)) {
+          expect(participants, `${caseName}: ${relative(negativeRoot, file)} must participate in a violation`)
+            .toContain(relative(negativeRoot, file).replaceAll('\\', '/'));
+        }
+      } else {
+        expect(diagnostic, `${caseName} must produce a violation for ${expected}`).toContain(expected);
+      }
     });
   }
 });
