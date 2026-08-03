@@ -961,7 +961,7 @@
   why: >
     这是 brand 端到端接通的那一环：产出端打 brand、shared/state.ts 消费端塌成 never，
     两头合起来才关上"顺手把它塞进本地 state"的口子。运行时是恒等转换，brand 是类型幻影。
-  source: web/src/hooks/useOverlayState.ts:80-85,92,204-210
+  source: web/src/hooks/useOverlayState.ts:80-85,204-210
   authoritative_test: web/src/hooks/useOverlayState.test-d.ts:28-47
   owner_slice: core/state/overlay-state
   intentional_omission: false

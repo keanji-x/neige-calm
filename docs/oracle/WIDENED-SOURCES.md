@@ -1,6 +1,6 @@
 # P8b-1 误加宽 source 逐条判定
 
-范围由 `dbbbf77d^..dbbbf77d` 的 73 个 source 改写减去已在原 58 条差分对拍中核准的 9 条，以及独立核准的 `INV-APP-012`、`GATE-OVERLAY-001` 得到，恰为 62 条。路径 A 逐行核对原区间与 statement；路径 B 不看追加行，从 `authoritative_test` 反查（有测试时）或用 statement 所述行为/调用点反向搜索（`NONE` 时）。两路均命中原区间，追加行不增加契约证据，故 62/62 回退、0 保留。
+范围是 `dbbbf77d^..dbbbf77d` 改写的全部 73 个 source，不使用排除公式。路径 A 逐行核对加宽前区间与 statement；路径 B 不看追加行，从 `authoritative_test` 反查（有测试时）或用 statement 所述行为/调用点反向搜索（`NONE` 时）。两路均命中加宽前区间，追加行不增加契约证据；73/73 均判定回退，HEAD 与加宽前值逐字一致。
 
 | # | id | 被追加位置 | 路径 B 实际来源 | 判定 |
 |---:|---|---|---|---|
@@ -66,5 +66,16 @@
 | 60 | `INV-UI-CONFIRM-064` | `ConfirmDialog.tsx:1` | authoritative test `ConfirmDialog.contract.test.tsx:54` | 回退 |
 | 61 | `INV-UI-CONFIRM-065` | `ConfirmDialog.tsx:58` | authoritative test `ConfirmDialog.contract.test.tsx:220` | 回退 |
 | 62 | `INV-UI-CONFIRM-070` | `ConfirmDialog.tsx:40` | statement 行为反向搜索 | 回退 |
+| 63 | `INV-A11Y-014` | `Cove.tsx:76,58,91` | statement 反查排序实现 `:99,168-189` | 回退 |
+| 64 | `INV-A11Y-019` | `Wave.tsx:117` | statement 反查默认视图分支 `:252-266` | 回退 |
+| 65 | `INV-A11Y-035` | `Cove.tsx:169` | locator 契约反查两个 select 区间 | 回退 |
+| 66 | `INV-A11Y-057` | `Wave.tsx:117,252-294` | statement 反查 Tab 顺序 `:295-433` | 回退 |
+| 67 | `INV-A11Y-059` | `WaveRow.tsx:20`、`Cove.tsx:111-115` | statement 正典实现反查 `WaveRow.tsx:44-65` | 回退 |
+| 68 | `CAP-A11Y-063` | hook `:196`、Menu `:37` | authoritative test `a11y-keyboard.spec.ts:316` | 回退 |
+| 69 | `CAP-A11Y-069` | `WaveList.tsx:1` | statement 反查 Delete/Backspace 分支 `:205-225` | 回退 |
+| 70 | `CAP-A11Y-070` | `WaveList.tsx:91` | statement 反查 roving Tab 分支 | 回退 |
+| 71 | `INV-APP-012` | `providers.tsx:178` | authoritative test `cache-bust-db-instance-id.test.tsx:267` | 回退 |
+| 72 | `GATE-OVERLAY-001` | `useOverlayState.ts:92` | type test `useOverlayState.test-d.ts:28-47` | 回退 |
+| 73 | `CAP-A11Y-067` | `WaveList.tsx:91` | statement 反查 Home/End 分支 `:200-230` | 回退 |
 
 回退后未通过机器锚点的条目不再扩 source；统一登记到 `ANCHOR-NONE.md`，保留上述人工双路径结论。

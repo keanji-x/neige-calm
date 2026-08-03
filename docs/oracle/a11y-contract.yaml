@@ -262,7 +262,7 @@
   why: >
     §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
     §3.1 的 tab 顺序
-  source: web/src/pages/Cove.tsx:76,58,91,99,168-189
+  source: web/src/pages/Cove.tsx:99,168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: true
@@ -347,7 +347,7 @@
     Report 视图必须是新 wave 的默认视图；overlay 缺失时 WavePage 回落到 report
   why: >
     §2.2 与 §2.7 都明示 "Report is the default for new waves" / "Absence defaults to report"
-  source: web/src/pages/Wave.tsx:117,252-266
+  source: web/src/pages/Wave.tsx:252-266
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -629,7 +629,7 @@
     切换用 `selectOptions`
   why: >
     §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
-  source: web/src/pages/Cove.tsx:507-552,169; web/src/shared/components/NewTaskForm.tsx:913-998
+  source: web/src/pages/Cove.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -1038,7 +1038,7 @@
     §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
     无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
     自管内部序列）
-  source: web/src/pages/Wave.tsx:117,252-433
+  source: web/src/pages/Wave.tsx:295-433
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1076,7 +1076,7 @@
     WaveRow 与 CovePage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
   why: >
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
-  source: web/src/shared/components/WaveRow.tsx:20,44-65; web/src/pages/Cove.tsx:111-115
+  source: web/src/shared/components/WaveRow.tsx:44-65
   authoritative_test: NONE
   owner_slice: none/policy/a11y-doc
   intentional_omission: false
@@ -1147,7 +1147,7 @@
   why: >
     §3.3：由 `useRovingTabindex` 的 `onEscape` 回调拥有，AddPanel 把它接到
     `closeAndRestoreFocus`
-  source: web/src/ui/hooks/useRovingTabindex.ts:196,265-314; web/src/ui/Menu/Menu.tsx:37,123-148
+  source: web/src/ui/hooks/useRovingTabindex.ts:265-314; web/src/ui/Menu/Menu.tsx:123-148
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
   owner_slice: ui/roving
   intentional_omission: false
@@ -1253,7 +1253,7 @@
   why: >
     §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
     操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型
-  source: web/src/WaveList.tsx:1,30-32,205-225
+  source: web/src/WaveList.tsx:30-32,205-225
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1269,7 +1269,7 @@
     WaveList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 wave 头部
   why: >
     §3.4：roving tabindex 让整个列表只占一个 tab stop，Tab 必须是「出口」而非在卡片间走
-  source: web/src/WaveList.tsx:18-22,91,123-125,200-230
+  source: web/src/WaveList.tsx:18-22,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
