@@ -29,7 +29,7 @@
 | 23 | CAP-A11Y-033 source | `NewTaskForm.tsx:621-659` checkbox | 从 `merge_policy` 提交值反查 checkbox → `633-659` | 是 |
 | 24 | INV-A11Y-034 source | `NewTaskForm.tsx:621-659` description | 从 `aria-describedby` 反查提示节点 → `639-657` | 是 |
 | 25 | INV-A11Y-035 source | Cove `507-552` + NewTaskForm `913-998` | 两个 label/combobox 调用链反查 → 同区间 | 是 |
-| 26 | INV-A11Y-036 source | WaveGrid `239-254` + 三个 CardHead 调用点 | drag selector与消费者反查 → 同四区间 | 是 |
+| 26 | INV-A11Y-036 source | WaveGrid `239-254` + 7 类 card 渲染点 + CardHead `146,158,167-172` | 从 `card-drag-handle` 全仓消费者反查 → `WaveGrid.tsx:239-254`; `UnknownCard.tsx:30-35`; `plugin-iframe.tsx:375-381`; `codex.tsx:171-177,355-362`; `iframe.tsx:118-124`; `terminal.tsx:129-135,148-155`; `file-viewer.tsx:376-382`; `CardHead.tsx:146,158,167-172` | 是 |
 | 27 | INV-A11Y-038 source | CardHead `146-204` + 三个调用点 | 三种 card 反查共享组件 → 同四区间 | 是 |
 | 28 | INV-A11Y-040 source | `XtermView.tsx:481-501` tabindex 降级 | 从 `xterm-helper-textarea` 后的 tabIndex 写入反查 → `481-501` | 是 |
 | 29 | INV-A11Y-041 source | `XtermView.tsx:481-501,1082-1110` ownership | 从 terminal body 键盘 handler 反向排查 → 相同 | 是 |
@@ -56,7 +56,7 @@
 | 50 | INV-A11Y-104 source | config `9-127` + setup `1-168` | trace smoke 反查 → 同两区间 | 是 |
 | 51 | INV-A11Y-105 source | playwright dependencies `28-32,91-127` | setup lifecycle → 同区间 | 是 |
 | 52 | INV-A11Y-110 source | `ui/README.md:217-289` 文档边界 | 同 family 相邻文档条目 → `217-289` | 是 |
-| 53 | GATE-REPORT-BLOCKS-002 source | index `15-27` + schema `26-90` | parity test 反查 → 同两区间 | 是 |
+| 53 | GATE-REPORT-BLOCKS-002 source | index `15-27` + wave-report schemas `26-163` | parity test `report-blocks.test.tsx:565` 反查 app/task strict schemas → 同两区间 | 是 |
 | 54 | GATE-WIRE-003 source | `.cargo/config.toml:19-25` env | schemas test → `19-25` | 是 |
 | 55 | CAP-APP-076 authoritative_test | e2e `106-188` instrumentation | source theme hook → `106-188` | 是 |
 | 56 | GATE-UI-LAYER-072 authoritative_test | eslint test `61-185` 正反路径 | source README/rule → `61-185` | 是 |
@@ -64,6 +64,8 @@
 | 58 | INV-CONNIND-019 authoritative_test | axe suite `229-425` 双主题 | source 注释/相邻 axe 条目 → `229-425` | 是 |
 
 结论：58/58 区间重叠；0 条分歧，未硬填候选。
+
+路径 B 在 `c89fa925` 的重做只更换了 24 行证据措辞，24 行最终结论区间均未移动；因此该次重做不能证明候选盲化，只能审计到描述内容属实。
 
 ## 穷尽式措辞自查
 
