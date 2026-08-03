@@ -36,7 +36,7 @@ describe('CSS AST fixtures', () => {
       ['runtime-style-text', () => auditRuntimeStyles(new JSDOM(read('runtime/negative/page.html')).window.document, order)],
       ['runtime-style-cssom', () => {
         const document = new JSDOM(read('traversal/runtime-style-cssom.html')).window.document;
-        Array.from(document.styleSheets)[0]?.insertRule('.cssom-injected {}');
+        (Array.from(document.styleSheets)[0] as { insertRule(rule: string): number } | undefined)?.insertRule('.cssom-injected {}');
         return auditRuntimeStyles(document, order);
       }],
       ['runtime-external-stylesheet', () => auditRuntimeStyles({ styleSheets: [{ cssRules: [{ cssText: '.external {}' }] }], querySelectorAll: () => [] }, order)],
@@ -212,7 +212,7 @@ it('runtime CSSOM branch reads rules produced by jsdom CSSOM', () => {
 
 it('runtime audit reads CSSOM rules inserted into a style-owned sheet', () => {
   const document = new JSDOM(read('traversal/runtime-style-cssom.html')).window.document;
-  Array.from(document.styleSheets)[0]?.insertRule('.cssom-injected {}');
+  (Array.from(document.styleSheets)[0] as { insertRule(rule: string): number } | undefined)?.insertRule('.cssom-injected {}');
   expect(auditRuntimeStyles(document, order)).toEqual([
     { rule: 'rule-in-layer', message: 'unlayered selector: .cssom-injected' },
   ]);

@@ -84,7 +84,7 @@ export function compareGlobalClassManifest(cssClasses: ReadonlySet<string>, mani
 }
 
 interface RuntimeElement { textContent: string | null; getAttribute(name: string): string | null }
-interface RuntimeSheet { ownerNode?: unknown; cssRules?: ArrayLike<{ cssText: string }>; insertRule?(rule: string): number }
+interface RuntimeSheet { ownerNode?: unknown; cssRules?: ArrayLike<{ cssText: string }> }
 export interface RuntimeDocument {
   styleSheets: ArrayLike<RuntimeSheet>;
   querySelectorAll(selector: string): ArrayLike<RuntimeElement>;
