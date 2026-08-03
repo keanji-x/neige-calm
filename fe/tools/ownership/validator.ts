@@ -8,14 +8,13 @@ export interface OwnershipEntry {
   readonly?: boolean;
 }
 
-export interface ChangeRequest { path: string; reason: string; issue: string; base: string }
+export interface OwnershipCommit { sha: string; message: string; paths: readonly string[] }
 export interface OwnershipViolation { rule: string; message: string }
 export const OWNERSHIP_RULES = Object.freeze([
-  'entry-shape', 'change-request-shape', 'exactly-one-owner', 'coverage', 'stale-change-request', 'readonly-change-request',
+  'entry-shape', 'exactly-one-owner', 'coverage', 'readonly-change-trailer',
 ] as const);
 export const OWNERSHIP_YAML_FIELDS = Object.freeze([
   'entry.path', 'entry.type', 'entry.owner', 'entry.readonly',
-  'changeRequest.path', 'changeRequest.reason', 'changeRequest.issue', 'changeRequest.base',
 ] as const);
 
 function clean(path: string): string {
@@ -43,31 +42,10 @@ function overlap(left: OwnershipEntry, right: OwnershipEntry): boolean {
 export function validateOwnership(
   entries: readonly unknown[],
   existingFiles: readonly string[],
-  changedPaths: readonly string[] = [],
-  changeRequests: readonly unknown[] = [],
-  changeBase = '',
+  commits: readonly OwnershipCommit[] = [],
 ): OwnershipViolation[] {
   const violations: OwnershipViolation[] = [];
   const validEntries: OwnershipEntry[] = [];
-  const validRequests: ChangeRequest[] = [];
-  for (const [index, request] of changeRequests.entries()) {
-    const candidate = request && typeof request === 'object' && !Array.isArray(request)
-      ? request as Record<string, unknown> : {};
-    if (typeof candidate.path !== 'string' || !validPath(candidate.path)
-      || typeof candidate.reason !== 'string' || candidate.reason.trim() === ''
-      || typeof candidate.issue !== 'string' || candidate.issue.trim() === ''
-      || typeof candidate.base !== 'string' || !/^[0-9a-f]{40}$/.test(candidate.base)) {
-      violations.push({ rule: 'change-request-shape', message: `invalid change request ${index + 1}` });
-      continue;
-    }
-    validRequests.push(candidate as unknown as ChangeRequest);
-  }
-  const changed = new Set(changedPaths.map(clean));
-  for (const request of validRequests) {
-    if (request.base !== changeBase || !changed.has(clean(request.path))) {
-      violations.push({ rule: 'stale-change-request', message: `${request.path} has a consumed or mismatched change request` });
-    }
-  }
   for (const [index, entry] of entries.entries()) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
       violations.push({ rule: 'entry-shape', message: `invalid entry ${index + 1}: ${String(entry)}` });
@@ -101,11 +79,15 @@ export function validateOwnership(
     const count = validEntries.filter((entry) => entryMatches(entry, file)).length;
     if (count !== 1) violations.push({ rule: 'coverage', message: `${file} has ${count} owners` });
   }
-  for (const path of changedPaths.map(clean).sort()) {
-    const frozen = validEntries.filter((entry) => entry.readonly === true && entryMatches(entry, path));
-    if (frozen.length === 0) continue;
-    const approved = validRequests.some((request) => path === clean(request.path) && request.base === changeBase);
-    if (!approved) violations.push({ rule: 'readonly-change-request', message: `${path} changed without a change request` });
+  for (const commit of commits) {
+    const approved = new Set(Array.from(commit.message.matchAll(/^OWNERSHIP-CHANGE:\s+(\S+)\s+—\s+\S.+$/gm), (match) => clean(match[1])));
+    for (const path of commit.paths.map(clean).sort()) {
+      if (!validEntries.some((entry) => entry.readonly === true && entryMatches(entry, path))) continue;
+      if (!approved.has(path)) violations.push({
+        rule: 'readonly-change-trailer',
+        message: `${commit.sha} changes frozen ${path} without an OWNERSHIP-CHANGE trailer`,
+      });
+    }
   }
   return violations;
 }
@@ -120,22 +102,39 @@ export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string
     .sort();
 }
 
-export function gitChangedPaths(repoRoot: string, baseRef = 'origin/main', headRef = 'HEAD'): string[] {
-  const mergeBase = gitMergeBase(repoRoot, baseRef, headRef);
-  return execFileSync('git', ['diff', '--name-only', mergeBase, headRef, '--'], { cwd: repoRoot, encoding: 'utf8' })
-    .split(/\r?\n/).filter(Boolean);
+export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef = 'HEAD'): OwnershipCommit[] {
+  const hashes = execFileSync('git', ['log', '--no-merges', '--format=%H', `${baseSha}..${headRef}`, '--'], {
+    cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).split(/\r?\n/).filter(Boolean);
+  return hashes.map((sha) => ({
+    sha,
+    message: execFileSync('git', ['log', '-1', '--format=%B', sha], { cwd: repoRoot, encoding: 'utf8' }),
+    paths: execFileSync('git', ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha, '--'], {
+      cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).split(/\r?\n/).filter(Boolean),
+  }));
 }
 
-export function gitMergeBase(repoRoot: string, baseRef = 'origin/main', headRef = 'HEAD'): string {
+export function resolveOwnershipBase(repoRoot: string, injectedBase = process.env.OWNERSHIP_BASE_SHA ?? '', headRef = 'HEAD'): string {
+  if (injectedBase !== '') {
+    try {
+      if (!/^0{40}$/.test(injectedBase)) {
+        execFileSync('git', ['cat-file', '-e', `${injectedBase}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+        return injectedBase;
+      }
+    } catch { /* event base unavailable: use the frozen-vectors fallback below */ }
+    return execFileSync('git', ['rev-parse', `${headRef}~1`], { cwd: repoRoot, encoding: 'utf8' }).trim();
+  }
   try {
-    return execFileSync('git', ['merge-base', baseRef, headRef], {
+    return execFileSync('git', ['merge-base', 'origin/main', headRef], {
       cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
   } catch {
-    throw new Error(`cannot resolve ownership audit base ref ${baseRef}; run: git fetch origin main`);
+    throw new Error('cannot resolve ownership audit base ref origin/main; run: git fetch origin main');
   }
 }
 
-export function auditRepositoryOwnership(repoRoot: string, entries: readonly OwnershipEntry[], requests: readonly ChangeRequest[]): OwnershipViolation[] {
-  return validateOwnership(entries, repositoryFiles(repoRoot), gitChangedPaths(repoRoot), requests, gitMergeBase(repoRoot));
+export function auditRepositoryOwnership(repoRoot: string, entries: readonly OwnershipEntry[]): OwnershipViolation[] {
+  const base = resolveOwnershipBase(repoRoot);
+  return validateOwnership(entries, repositoryFiles(repoRoot), gitOwnershipCommits(repoRoot, base));
 }

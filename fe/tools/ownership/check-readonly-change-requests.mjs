@@ -1,11 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parse } from 'yaml';
 
 const validatorPath = './validator.ts';
-const { gitChangedPaths, gitMergeBase, repositoryFiles, validateOwnership } = await import(validatorPath);
+const { gitOwnershipCommits, repositoryFiles, resolveOwnershipBase, validateOwnership } = await import(validatorPath);
 const { auditStyleRepository } = await import('../styles/repository-check.mjs');
 const { ownershipManifest } = await import('../../ownership-manifest.mjs');
 
@@ -18,10 +17,9 @@ function git(...args) {
 
 try {
   const feRoot = join(import.meta.dirname, '../..');
-  const requests = parse(readFileSync(join(feRoot, 'ownership-change-requests.yaml'), 'utf8'));
-  const repositoryChanges = gitChangedPaths(join(feRoot, '..'));
+  const base = resolveOwnershipBase(join(feRoot, '..'));
   const repositoryViolations = validateOwnership(
-    ownershipManifest, repositoryFiles(join(feRoot, '..')), repositoryChanges, requests, gitMergeBase(join(feRoot, '..')),
+    ownershipManifest, repositoryFiles(join(feRoot, '..')), gitOwnershipCommits(join(feRoot, '..'), base),
   );
   if (repositoryViolations.length) {
     throw new Error(`repository ownership audit failed:\n${repositoryViolations
@@ -42,22 +40,27 @@ try {
   git('add', 'frozen.txt');
   git('commit', '-m', 'change');
 
-  const changed = gitChangedPaths(repository);
+  const fixtureBase = resolveOwnershipBase(repository, '');
   const violations = validateOwnership(
-    [{ path: 'frozen.txt', type: 'file', owner: 'fixture', readonly: true }], [], changed, [], gitMergeBase(repository),
+    [{ path: 'frozen.txt', type: 'file', owner: 'fixture', readonly: true }], [], gitOwnershipCommits(repository, fixtureBase),
   );
-  if (violations.length !== 1 || violations[0]?.rule !== 'readonly-change-request') {
-    throw new Error('ownership checker failed to reject a readonly change without a change request');
+  if (violations.length !== 1 || violations[0]?.rule !== 'readonly-change-trailer') {
+    throw new Error('ownership checker failed to reject a readonly change without a trailer');
   }
+
+  const headParent = git('rev-parse', 'HEAD~1').trim();
+  if (resolveOwnershipBase(repository, '0'.repeat(40)) !== headParent) throw new Error('zero base did not fall back to HEAD~1');
+  if (resolveOwnershipBase(repository, 'f'.repeat(40)) !== headParent) throw new Error('missing injected base did not fall back to HEAD~1');
 
   git('branch', '-D', 'origin/main');
   try {
-    gitChangedPaths(repository);
+    resolveOwnershipBase(repository, '');
     throw new Error('ownership checker silently accepted a missing base ref');
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes('git fetch origin main')) throw error;
   }
-  console.log(`ownership readonly alarm: ${violations[0].message}`);
+  console.log(`ownership readonly trailer alarm: ${violations[0].message}`);
+  console.log('ownership injected-base fallback: zero or unavailable SHA resolves to HEAD~1');
   console.log('ownership missing-ref check: fail-closed with git fetch origin main guidance');
 } finally {
   rmSync(repository, { recursive: true, force: true });

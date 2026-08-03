@@ -2,17 +2,17 @@
 
 This validator prevents implementation work from falling between slices. Entries are explicit files or directory prefixes, overlapping entries are rejected even when they describe future files, and every current file below `fe/core` and `fe/web/src` must match exactly once.
 
-`OWNERSHIP_YAML_FIELDS` has no external schema document: the validator is the authoritative source for that field set, and fixtures are its executable coverage evidence.
+`OWNERSHIP_YAML_FIELDS` has no external schema document: the validator is the authoritative source for the manifest field set, and fixtures are its executable coverage evidence.
 
-Readonly entries freeze interfaces and `styles/`. Each change request records the exact merge-base revision for the approved change. The checker requires both exact path and base matches, and rejects requests whose path is no longer changed, so a merged request must be removed and cannot approve later edits.
+Readonly entries freeze interfaces and `styles/`. Every commit that changes a frozen path must carry an exact-path trailer in its full message: `OWNERSHIP-CHANGE: <path> — <reason> (#issue)`. A trailer approves only that commit and path; approvals remain auditable in history and require no post-merge cleanup.
 
-`npm run lint:js` drives `check-readonly-change-requests.mjs`. This Git-dependent check must not run inside Vitest: its subprocess requirement and its base-ref requirement are two independent environmental constraints. The checker exercises both the readonly alarm and the actionable, fail-closed missing-ref diagnostic in isolated Git repositories, while Vitest tests the pure validator with injected changed paths.
+`npm run lint:js` drives `check-readonly-change-requests.mjs`. CI injects the pull-request base or push predecessor through `OWNERSHIP_BASE_SHA`; a zero or unavailable injected SHA falls back to `HEAD~1`. Only local runs without an injected base fall back to `origin/main`, with an actionable fail-closed diagnostic. This Git-dependent check must not run inside Vitest: the checker exercises Git behavior in isolated repositories, while Vitest tests the pure validator with injected commit/path/message records.
 
 ## Known escapes
 
 - Ownership describes write authority, not whether an owner implemented the right behavior.
 - Renames appear as changed paths and therefore require a request when either affected path is readonly; rename intent is not inferred.
-- The tool validates manifest mechanics only. P8b owns the actual future-file manifest and change-request records.
+- The tool validates manifest mechanics only. P8b owns the actual future-file manifest and approval trailers.
 
 ## Stage 2 connection
 

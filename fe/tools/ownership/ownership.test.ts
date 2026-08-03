@@ -2,11 +2,10 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
+import { OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, repositoryFiles, validateOwnership, type OwnershipEntry } from './validator';
 import { ownershipManifest } from '../../ownership-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
-const BASE = '0123456789abcdef0123456789abcdef01234567';
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
   return parse(readFileSync(resolve(fixtures, caseName, kind, 'manifest.yaml'), 'utf8')) as OwnershipEntry[];
 }
@@ -21,23 +20,23 @@ function fixtureFiles(root: string): string[] {
 describe('ownership fixtures', () => {
   it('guards exactly every YAML field in both directions', () => {
     const fixture = parse(readFileSync(resolve(fixtures, 'field-types/negative/cases.yaml'), 'utf8')) as Record<string, {
-      entries: unknown[]; requests?: unknown[]; changed?: string[];
+      entries: unknown[];
     }>;
     expect(new Set(Object.keys(fixture))).toEqual(new Set(OWNERSHIP_YAML_FIELDS));
     for (const [field, testCase] of Object.entries(fixture)) {
-      const violations = validateOwnership(testCase.entries, [], testCase.changed ?? [], testCase.requests ?? []);
+      const violations = validateOwnership(testCase.entries, []);
       expect(violations, field).toHaveLength(1);
-      expect(violations[0]?.rule, field).toBe(field.startsWith('changeRequest.') ? 'change-request-shape' : 'entry-shape');
+      expect(violations[0]?.rule, field).toBe('entry-shape');
     }
   });
   it('covers exactly every rule the validator can emit', () => {
     const evidence: Record<string, () => { rule: string }[]> = {
       'entry-shape': () => validateOwnership(entries('entry-shape', 'negative'), []),
-      'change-request-shape': () => validateOwnership([], [], [], [{ path: 1, reason: 'fixture', issue: '#997' }]),
       'exactly-one-owner': () => validateOwnership(entries('exactly-one-owner', 'negative'), []),
       coverage: () => validateOwnership(entries('coverage', 'negative'), repositoryFiles('', fixtureFiles(resolve(fixtures, 'coverage/negative')))),
-      'stale-change-request': () => validateOwnership([], [], [], [{ path: 'fe/core/model.ts', reason: 'old', issue: '#997', base: BASE }], BASE),
-      'readonly-change-request': () => validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css']),
+      'readonly-change-trailer': () => validateOwnership(entries('readonly', 'negative'), [], [{
+        sha: 'abc123', message: 'change without approval', paths: ['fe/web/src/styles/tokens.css'],
+      }]),
     };
     expect(new Set(Object.keys(evidence))).toEqual(new Set(OWNERSHIP_RULES));
     for (const [rule, runEvidence] of Object.entries(evidence)) {
@@ -79,46 +78,24 @@ describe('ownership fixtures', () => {
     ]);
   });
 
-  it('requires a corresponding change request for readonly changes', () => {
+  it('requires an exact-path trailer on each commit with readonly changes', () => {
     const manifest = entries('readonly', 'positive');
-    const requests: ChangeRequest[] = [{ path: 'fe/web/src/styles/tokens.css', reason: 'approved token update', issue: '#997', base: BASE }];
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], requests, BASE)).toEqual([]);
-    expect(validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css'])).toEqual([
-      { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
+    const approved = { sha: 'abc123', message: 'change\n\nOWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997)', paths: ['fe/web/src/styles/tokens.css'] };
+    expect(validateOwnership(manifest, [], [approved])).toEqual([]);
+    expect(validateOwnership(entries('readonly', 'negative'), [], [{
+      sha: 'abc123', message: 'change without approval', paths: ['fe/web/src/styles/tokens.css'],
+    }])).toEqual([
+      { rule: 'readonly-change-trailer', message: 'abc123 changes frozen fe/web/src/styles/tokens.css without an OWNERSHIP-CHANGE trailer' },
     ]);
-    const prefixRequest: ChangeRequest[] = [{ path: 'fe/web/src/styles', reason: 'broad request', issue: '#997', base: BASE }];
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], prefixRequest, BASE)
-      .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/other.css'], requests, BASE)
-      .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], [
-      { path: 'fe/web/src/styles/tokens.css', reason: 'missing issue', issue: '' },
-    ])).toEqual([
-      { rule: 'change-request-shape', message: 'invalid change request 1' },
-      { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
-    ]);
+    expect(validateOwnership(manifest, [], [{ ...approved,
+      message: 'OWNERSHIP-CHANGE: fe/web/src/styles — broad approval (#997)',
+    }]).some(({ rule }) => rule === 'readonly-change-trailer')).toBe(true);
     expect(validateOwnership([
       { path: 'fe/core/model.ts', type: 'file', owner: 'core/model', readonly: 'false' },
-    ], [], ['fe/core/model.ts'])).toEqual([
+    ], [], [{ sha: 'def456', message: 'change', paths: ['fe/core/model.ts'] }])).toEqual([
       { rule: 'entry-shape', message: 'invalid entry 1: fe/core/model.ts' },
-      { rule: 'readonly-change-request', message: 'fe/core/model.ts changed without a change request' },
+      { rule: 'readonly-change-trailer', message: 'def456 changes frozen fe/core/model.ts without an OWNERSHIP-CHANGE trailer' },
     ]);
-  });
-
-  it('rejects an old request reused for a new revision and consumed requests', () => {
-    const manifest = entries('readonly', 'positive');
-    const old = parse(readFileSync(
-      resolve(fixtures, 'change-request-lifecycle/negative/requests.yaml'), 'utf8',
-    )) as ChangeRequest[];
-    const nextBase = 'abcdef0123456789abcdef0123456789abcdef01';
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], old, nextBase))
-      .toEqual(expect.arrayContaining([
-        { rule: 'stale-change-request', message: 'fe/web/src/styles/tokens.css has a consumed or mismatched change request' },
-        { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
-      ]));
-    expect(validateOwnership(manifest, [], [], old, BASE)).toContainEqual(
-      { rule: 'stale-change-request', message: 'fe/web/src/styles/tokens.css has a consumed or mismatched change request' },
-    );
   });
 
 });
@@ -157,7 +134,8 @@ describe('P8b2 ownership exit', () => {
     }], []).some(({ rule }) => rule === 'exactly-one-owner')).toBe(true);
     expect(validateOwnership(ownershipManifest, [...trackedRepositoryFiles, 'fe/web/src/features/unowned.ts'])
       .some(({ rule }) => rule === 'coverage')).toBe(true);
-    expect(validateOwnership(ownershipManifest, [], ['fe/core/state/types.ts'])
-      .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
+    expect(validateOwnership(ownershipManifest, [], [{
+      sha: 'mutation', message: 'weaken gate', paths: ['fe/core/state/types.ts'],
+    }]).some(({ rule }) => rule === 'readonly-change-trailer')).toBe(true);
   });
 });
