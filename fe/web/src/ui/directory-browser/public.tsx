@@ -19,18 +19,23 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
   const [pathText, setPathText] = useState(initialPath ? directoryInputValue(initialPath) : '');
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const requestSequence = useRef(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const visible = useMemo(() => listing?.entries.filter((entry) => entry.name.toLowerCase().startsWith(pathText.slice(directoryInputValue(listing.path).length).toLowerCase())) ?? [], [listing, pathText]);
   const interactive = (entry: DirectoryEntry) => entry.isDirectory || mode === 'file';
   const load = (path?: string) => {
-    const sequence = ++requestSequence.current; setError(null);
+    if (path !== undefined && !path.startsWith('/')) { setError('Enter an absolute path'); return; }
+    const sequence = ++requestSequence.current; setError(null); setLoading(true);
     void listDirectory(path).then((next) => {
       if (requestSequence.current !== sequence) return;
       setListing(next);
       setPathText(directoryInputValue(next.path));
       setActiveIndex(next.entries.findIndex(interactive));
+      setLoading(false);
+      requestAnimationFrame(() => requestAnimationFrame(() => inputRef.current?.focus()));
     }).catch((reason: unknown) => {
-      if (requestSequence.current === sequence) setError(reason instanceof Error ? reason.message : 'Failed to list directory');
+      if (requestSequence.current === sequence) { setLoading(false); setError(reason instanceof Error ? reason.message : 'Failed to list directory'); }
     });
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath is a mount-time seed; navigation owns all later loads.
@@ -42,17 +47,25 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
     if (index >= 0 && index < visible.length) setActiveIndex(index);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    const entry = activeIndex === null ? undefined : visible[activeIndex];
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); move(event.key === 'ArrowDown' ? 1 : -1); }
-    else if (event.key === 'Enter' && activeIndex !== null) {
-      event.preventDefault(); const entry = visible[activeIndex];
-      if (entry?.isDirectory) load(entry.path); else if (entry && mode === 'file') onSelect(entry.path);
+    else if (event.key === 'Escape') { event.preventDefault(); onCancel(); }
+    else if (event.key === '/' && entry?.isDirectory) { event.preventDefault(); load(entry.path); }
+    else if (event.key === 'Enter') {
+      event.preventDefault();
+      if (!pathText.startsWith('/')) { setError('Enter an absolute path'); return; }
+      if (entry?.isDirectory) load(entry.path);
+      else if (entry && mode === 'file') onSelect(entry.path);
+      else if (listing && pathText === directoryInputValue(listing.path)) onSelect(listing.path);
+      else load(normalizeDirectoryPath(pathText));
     }
   };
   const matchesListing = listing !== null && pathText === directoryInputValue(listing.path);
   return <section className="directory-browser">
-    <label>Directory path<input role="combobox" aria-controls="directory-options" aria-expanded="true"
+    <label>Directory path<input ref={inputRef} role="combobox" aria-controls="directory-options" aria-expanded="true"
       aria-activedescendant={activeIndex === null ? undefined : `directory-option-${activeIndex}`}
-      value={pathText} onChange={(event) => setPathText(event.currentTarget.value)} onKeyDown={onKeyDown}/></label>
+      value={pathText} onChange={(event) => { setPathText(event.currentTarget.value); setActiveIndex(null); }} onKeyDown={onKeyDown}/></label>
+    {loading && <p role="status">Loading…</p>}
     {error && <p role="alert">{error}</p>}
     <ul id="directory-options" role="listbox">{visible.map((entry, index) => <li key={entry.path} role="none"><button
       id={`directory-option-${index}`} role="option" type="button" aria-selected={index === activeIndex}

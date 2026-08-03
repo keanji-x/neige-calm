@@ -1,51 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-
-const harness = vi.hoisted(() => ({ effects: [] as Array<() => void | (() => void)> }));
-vi.mock('react', async (original) => ({
-  ...await original<typeof import('react')>(),
-  createContext: () => ({ Provider: ({ children }: { children: unknown }) => children }),
-  useContext: () => null,
-  useEffect: (effect: () => void | (() => void)) => { harness.effects.push(effect); },
-  useMemo: <T,>(factory: () => T) => factory(),
-  useRef: <T,>(value: T) => ({ current: value }),
-}));
-vi.mock('../state/public.ts', () => ({ useState: <T,>(value: T) => [value, vi.fn()] as const }));
-vi.mock('react-dom', () => ({ createPortal: (node: unknown) => node }));
-
+import { cleanup, render } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dialog } from './public.tsx';
 
-class FakeElement {
-  parentElement: FakeElement | null = null;
-  attributes = new Map<string, string>();
-  focus = vi.fn(() => { if (!this.hasAttribute('inert')) fakeDocument.activeElement = this; });
-  hasAttribute(name: string) { return this.attributes.has(name); }
-  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
-  setAttribute(name: string, value: string) { this.attributes.set(name, value); }
-  removeAttribute(name: string) { this.attributes.delete(name); }
-  closest() { return null; }
-  querySelectorAll() { return []; }
-  contains(element: unknown) { return element === this; }
-}
-const target = new FakeElement();
-const fakeDocument = {
-  body: Object.assign(new FakeElement(), { style: { overflow: '' }, children: [target] }),
-  activeElement: target,
-  addEventListener: vi.fn(), removeEventListener: vi.fn(), contains: (element: unknown) => element === target,
-};
+// eslint-disable-next-line @typescript-eslint/unbound-method -- the test restores and invokes this DOM prototype method with an explicit receiver.
+const nativeFocus = HTMLElement.prototype.focus;
 
 describe('Dialog cleanup order regression', () => {
-  beforeEach(() => { harness.effects.length = 0; target.attributes.clear(); target.focus.mockClear(); fakeDocument.activeElement = target; });
-  it('removes inert before restoring focus to the background trigger', () => {
-    vi.stubGlobal('HTMLElement', FakeElement);
-    vi.stubGlobal('document', fakeDocument);
-    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1));
+  beforeEach(() => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
-    Dialog({ open: true, title: 'Test', onClose: vi.fn() });
-    const cleanups = harness.effects.map((effect) => effect()).filter((cleanup): cleanup is () => void => typeof cleanup === 'function');
-    expect(target.hasAttribute('inert')).toBe(true);
-    for (const cleanup of cleanups) cleanup();
-    expect(target.hasAttribute('inert')).toBe(false);
-    expect(target.focus).toHaveBeenCalledOnce();
-    expect(fakeDocument.activeElement).toBe(target);
+    HTMLElement.prototype.focus = function focus(options?: FocusOptions) {
+      if (!this.closest('[inert]')) nativeFocus.call(this, options);
+    };
+  });
+  afterEach(() => { cleanup(); HTMLElement.prototype.focus = nativeFocus; vi.unstubAllGlobals(); });
+
+  it('removes inert before restoring focus to the real background trigger', () => {
+    const trigger = document.body.appendChild(document.createElement('button'));
+    trigger.textContent = 'Open';
+    trigger.focus();
+    const result = render(<Dialog open title="Test" onClose={vi.fn()}/>);
+    expect(trigger.closest('[inert]')).not.toBeNull();
+    result.unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
   });
 });

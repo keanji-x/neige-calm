@@ -1,9 +1,9 @@
-import { createContext, useContext, useEffect, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useState } from '../state/public.ts';
 
 export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?: () => void }
-export interface DialogViewController { pushView: (view: DialogChildView) => void; popView: () => void }
+export interface DialogViewController { pushView: (view: DialogChildView) => () => void; popView: () => void }
 export interface DialogProps {
   open: boolean; onClose: () => void; title?: string; hideTitleRow?: boolean; children?: ReactNode; wide?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>; restoreFocusRef?: RefObject<HTMLElement | null>;
@@ -23,22 +23,30 @@ function focusables(panel: HTMLElement): HTMLElement[] {
 }
 
 export function Dialog({ open, onClose, title, hideTitleRow, children, wide, initialFocusRef, restoreFocusRef }: DialogProps) {
-  const [view, setView] = useState<DialogChildView | null>(null);
+  const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
+  const nextViewId = useRef(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  useEffect(() => { if (!open) setView(null); }, [open, setView]);
+  const popView = useCallback(() => setViews((current) => current.slice(0, -1)), [setViews]);
+  const pushView = useCallback((view: DialogChildView) => {
+    const id = ++nextViewId.current;
+    setViews((current) => [...current, { ...view, id }]);
+    return () => setViews((current) => current.filter((candidate) => candidate.id !== id));
+  }, [setViews]);
+  const view = views.at(-1) ?? null;
+  useEffect(() => { if (!open) setViews([]); }, [open, setViews]);
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      if (view) { if (view.onEscape) view.onEscape(); else setView(null); }
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (view) { if (view.onEscape) view.onEscape(); else popView(); }
       else onClose();
     };
     const overflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     document.addEventListener('keydown', onKeyDown);
     return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = overflow; };
-  }, [onClose, open, setView, view]);
+  }, [onClose, open, popView, view]);
 
   // Load-bearing declaration order: remove inert before the following focus-restore cleanup runs.
   useEffect(() => {
@@ -73,7 +81,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, children, wide, ini
     };
   }, [initialFocusRef, open, restoreFocusRef]);
 
-  const controller = useMemo<DialogViewController>(() => ({ pushView: setView, popView: () => setView(null) }), [setView]);
+  const controller = useMemo<DialogViewController>(() => ({ pushView, popView }), [popView, pushView]);
   if (!open) return null;
   const showingView = view !== null;
   const headerTitle = showingView ? view.title : title;

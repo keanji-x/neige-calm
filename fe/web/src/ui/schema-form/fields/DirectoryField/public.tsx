@@ -12,13 +12,11 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
   const [browsing, setBrowsing] = useState(false);
   const dialog = useDialogView();
   useEffect(() => {
-    if (!dialog) return;
-    if (!browsing) { dialog.popView(); return; }
+    if (!dialog || !browsing) return;
     const cancel = () => setBrowsing(false);
-    dialog.pushView({ title: mode === 'file' ? 'Choose a file or folder' : 'Choose a directory', onEscape: cancel,
+    return dialog.pushView({ title: mode === 'file' ? 'Choose a file or folder' : 'Choose a directory', onEscape: cancel,
       body: <DirectoryBrowser listDirectory={listDirectory} initialPath={value || null} mode={mode} onCancel={cancel} onSelect={(path) => { onChange(path); setBrowsing(false); }}/>,
     });
-    return () => dialog.popView();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- capture value and callbacks only when browsing toggles; value changes must not repush the child view.
   }, [browsing, dialog]);
   return <div className="directory-field"><button type="button" id={id} aria-haspopup="dialog" title={value || placeholder} onClick={() => setBrowsing(true)}>

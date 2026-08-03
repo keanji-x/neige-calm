@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expectTypeOf, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import { Dialog, ConfirmDialog, useDialogView, type DialogViewController } from './dialog/public.tsx';
 import { Menu, type MenuTriggerProps } from './menu/public.tsx';
 import { useRovingTabindex, type RovingResult } from './focus/public.ts';
@@ -21,8 +22,7 @@ function FakeConsumer() {
 }
 
 describe('minimal public-only consumer', () => {
-  it('forms a compilable consumer chain for every frozen primitive', () => {
-    const consumer = <FakeConsumer />;
-    expect(consumer.type).toBe(FakeConsumer);
+  it('[type-only] forms a compilable consumer chain for every frozen primitive', () => {
+    expectTypeOf(FakeConsumer).returns.toMatchTypeOf<ReactNode>();
   });
 });
