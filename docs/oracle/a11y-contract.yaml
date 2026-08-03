@@ -689,7 +689,7 @@
     渲染 `.card-head-icon` / `.card-head-title` / 可选 `.card-head-status` 槽
   why: >
     #178 / #213 / #227 的 head 统一化；三处 accessible-name 组合方式必须一致
-  source: web/src/cards/CardHead.tsx
+  source: web/src/cards/CardHead.tsx:146-204; web/src/cards/builtins/terminal.tsx:129-155; web/src/cards/builtins/codex.tsx:355-362; web/src/cards/plugin-iframe.tsx:375-381
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
   intentional_omission: false
@@ -726,7 +726,7 @@
     又因为 xterm 把 Tab 转发给 PTY，只要 wave 里有任何 xterm-backed card，外层键盘导航就被
     困住。用户仍可点击进入（xterm 自己的 mousedown 会聚焦 textarea），之后所有按键
     （含 Tab → tab-completion）流向 PTY
-  source: web/src/XtermView.tsx
+  source: web/src/XtermView.tsx:481-501
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -744,7 +744,7 @@
   why: >
     §2.4 / §3.4 / §9 三处一致声明 "Out of scope — the renderer owns its own contract"。
     新写的人容易误以为「终端没做键盘 a11y」而去补拦截，反而破坏 PTY 转发
-  source: web/src/XtermView.tsx
+  source: web/src/XtermView.tsx:481-501,1082-1110
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: true
@@ -911,7 +911,7 @@
   why: >
     Slice 9 定义的确切 key/payload 形状；schema 常量 `OVERLAY_VIEW_MODE_SCHEMA_VERSION`
     与 layout 的并列放在 `web/src/cards/builtins/schemaVersions.ts`
-  source: web/src/cards/builtins/schemaVersions.ts
+  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Wave.tsx:252-273
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: systems/cards/overlays
   intentional_omission: false
@@ -927,7 +927,7 @@
     view-mode overlay 必须与既有的 `kind: 'layout'` overlay 分开存放
   why: >
     Slice 9 明示：否则 list-mode 用户（从不拖拽）为了翻一下 cycle 按钮就得铸一行 layout
-  source: web/src/cards/builtins/schemaVersions.ts
+  source: web/src/cards/builtins/schemaVersions.ts:39-44; web/src/pages/Wave.tsx:252-257
   authoritative_test: NONE
   owner_slice: systems/cards/overlays
   intentional_omission: false
@@ -1146,7 +1146,7 @@
   why: >
     §3.3：由 `useRovingTabindex` 的 `onEscape` 回调拥有，AddPanel 把它接到
     `closeAndRestoreFocus`
-  source: web/src/hooks/useRovingTabindex.ts
+  source: web/src/ui/hooks/useRovingTabindex.ts:265-314; web/src/ui/Menu/Menu.tsx:123-148
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
   owner_slice: ui/roving
   intentional_omission: false
@@ -1319,7 +1319,7 @@
     单字母 typeahead 跳到首个匹配、Enter/Space 激活、Escape 关闭
   why: >
     Slice 7 (#73) 经由 `useRovingTabindex` 落地；§9 记录该 gap 已 Resolved
-  source: web/src/hooks/useRovingTabindex.ts
+  source: web/src/ui/hooks/useRovingTabindex.ts:230-340
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
   owner_slice: ui/roving
   intentional_omission: false
@@ -1336,7 +1336,7 @@
     打开时聚焦第一项；关闭时（Escape / 激活 / 外部点击）焦点必须回到触发按钮
   why: >
     Slice 7：菜单若每项都是 tab stop，Tab 会在菜单内走而不是离开，破坏 §3.1 的页面级序列
-  source: web/src/hooks/useRovingTabindex.ts
+  source: web/src/ui/hooks/useRovingTabindex.ts:187-205,265-340; web/src/ui/Menu/Menu.tsx:123-148
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:422
   owner_slice: ui/roving
   intentional_omission: false
@@ -1862,7 +1862,7 @@
   why: >
     §8.2 定义的 helper API 面。`clearEventTrace` 必须**原地**清空以保留组件里缓存的引用；
     `waitForEvent` 用 `page.waitForFunction` 拿亚毫秒粒度
-  source: web/e2e/helpers/trace.ts
+  source: web/e2e/helpers/trace.ts:36-89
   authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -1880,7 +1880,7 @@
     `cargo run --bin replay --features fixtures --serve` 并预载 event-trace fixture
   why: >
     Slice 5：任何需要 trace ring buffer 的 spec 都必须挂 `a11y` project
-  source: web/e2e/_setup/replay-server.ts
+  source: web/playwright.config.ts:9-32,91-127; web/e2e/_setup/replay-server.setup.ts:1-21,65-168
   authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -1897,7 +1897,7 @@
     的依赖运行
   why: >
     §8.3 明示后果：单独跑 `--project=chromium` 因此永远不需要 PATH 上有 cargo
-  source: web/e2e/_setup/replay-server.ts
+  source: web/playwright.config.ts:28-32,91-127
   authoritative_test: NONE
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -2000,7 +2000,7 @@
   why: >
     #60 引入该 README 作为 `web/src/ui/` 每个原语契约的正典家（今天是 `Dialog`，
     `Menu` 与 `ConfirmDialog` 后续 slice 跟进）。重复会导致两份说法漂移
-  source: web/src/ui/README.md
+  source: web/src/ui/README.md:217-289
   authoritative_test: NONE
   owner_slice: none/policy/ui-doc
   intentional_omission: true
