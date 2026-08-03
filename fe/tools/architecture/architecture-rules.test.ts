@@ -143,7 +143,7 @@ describe('architecture/no-calm-key-outside-core-keys', () => {
       expect(messages.at(0)?.messageId).toBe(messageId);
     });
   }
-  for (const fixture of ['core/keys/calm-key.ts', 'calm-key/injected-key.ts', 'calm-key/known-concatenation-escape.ts'] as const) {
+  for (const fixture of ['core/keys/calm-key.ts', 'core/keys.ts', 'calm-key/injected-key.ts', 'calm-key/known-concatenation-escape.ts'] as const) {
     it(`accepts ${fixture}`, async () => {
       expect(await lintFixture('no-calm-key-outside-core-keys', fixture)).toHaveLength(0);
     });

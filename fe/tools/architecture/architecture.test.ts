@@ -148,6 +148,7 @@ describe('architecture fixtures', () => {
     ['dup-import-fence-symbol', 'INV-DUP-004'],
     ['core-markdown-node-import', 'node:fs'],
     ['markdown-micromark-import', 'micromark-extension-gfm'],
+    ['markdown-public-entry-core', 'markdown-public-entry-only'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
     ['core-no-node-global-buffer', 'Buffer'],

@@ -13,7 +13,9 @@ all string and template heads beginning `calm:` or `calm.`. Consumers should
 import a key factory or accept the key through an injected port. A deliberately
 split constant such as `'calm' + ':x'` is a known escape: recognizing it safely
 requires constant folding/data-flow, while banning all concatenation would be
-unrelated to this namespace contract.
+unrelated to this namespace contract. A template whose non-first static segment
+contains the prefix (for example, `` `${prefix}calm:x` ``) is likewise a known
+escape because only the statically anchored head proves the runtime prefix.
 
 `architecture/no-class-dom-query` parses static selectors used by
 `querySelector(All)`, `closest`, and `matches`; every class selector is banned,
@@ -21,6 +23,9 @@ and dynamic selectors fail closed. A module-scope `const` initialized once from
 a string literal in the same file is resolved as that literal. Function
 parameters, imports, template literals, concatenations, and reassigned `let`
 bindings remain fail-closed. `getElementsByClassName` is always banned.
+Destructuring a method first (for example,
+`const { querySelector } = document`) is a known escape because the call no
+longer retains its DOM receiver; resolving that alias requires data-flow.
 Use stable `data-*` hooks. Third-party DOM may use an exact `{ file, selector }`
 exception only when the selector includes an application container prefix,
 such as `.file-viewer-code-wrap .cm-scroller`.

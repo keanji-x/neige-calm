@@ -19,7 +19,7 @@ export const noCalmKeyOutsideCoreKeys = {
   },
   create(context) {
     const filename = context.filename.replaceAll('\\', '/');
-    if (filename.includes('/core/keys/')) return {};
+    if (filename.includes('/core/keys/') || /\/core\/keys\.[cm]?[jt]sx?$/.test(filename)) return {};
     const report = (/** @type {any} */ node) => context.report({
       node, messageId: 'key', data: { source: context.sourceCode.getText(node) },
     });
