@@ -17,6 +17,18 @@ describe('ownership fixtures', () => {
     ]);
   });
 
+  it('reports malformed entry fields without throwing', () => {
+    expect(validateOwnership([
+      { path: 1, type: 'file', owner: 'ui/test' },
+      { path: 'fe/core/model.ts', type: 'file', owner: null },
+      null,
+    ], [])).toEqual([
+      { rule: 'entry-shape', message: 'invalid entry 1: 1' },
+      { rule: 'entry-shape', message: 'invalid entry 2: fe/core/model.ts' },
+      { rule: 'entry-shape', message: 'invalid entry 3: null' },
+    ]);
+  });
+
   it('rejects overlapping future paths without consulting the file tree', () => {
     expect(validateOwnership(entries('exactly-one-owner', 'positive'), [])).toEqual([]);
     expect(validateOwnership(entries('exactly-one-owner', 'negative'), [])).toEqual([

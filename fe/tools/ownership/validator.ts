@@ -48,30 +48,40 @@ function filesUnder(root: string): string[] {
 }
 
 export function validateOwnership(
-  entries: readonly OwnershipEntry[],
+  entries: readonly unknown[],
   existingFiles: readonly string[],
   changedPaths: readonly string[] = [],
   changeRequests: readonly ChangeRequest[] = [],
 ): OwnershipViolation[] {
   const violations: OwnershipViolation[] = [];
+  const validEntries: OwnershipEntry[] = [];
   for (const [index, entry] of entries.entries()) {
-    if (!validPath(entry.path) || !['file', 'directory'].includes(entry.type) || entry.owner.trim() === '') {
-      violations.push({ rule: 'entry-shape', message: `invalid entry ${index + 1}: ${entry.path}` });
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      violations.push({ rule: 'entry-shape', message: `invalid entry ${index + 1}: ${String(entry)}` });
+      continue;
     }
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate.path !== 'string' || typeof candidate.type !== 'string'
+      || typeof candidate.owner !== 'string' || !validPath(candidate.path)
+      || !['file', 'directory'].includes(candidate.type) || candidate.owner.trim() === '') {
+      violations.push({ rule: 'entry-shape', message: `invalid entry ${index + 1}: ${String(candidate.path)}` });
+      continue;
+    }
+    validEntries.push(candidate as unknown as OwnershipEntry);
   }
-  for (let left = 0; left < entries.length; left += 1) {
-    for (let right = left + 1; right < entries.length; right += 1) {
-      if (overlap(entries[left], entries[right])) {
-        violations.push({ rule: 'exactly-one-owner', message: `${entries[left].path} overlaps ${entries[right].path}` });
+  for (let left = 0; left < validEntries.length; left += 1) {
+    for (let right = left + 1; right < validEntries.length; right += 1) {
+      if (overlap(validEntries[left], validEntries[right])) {
+        violations.push({ rule: 'exactly-one-owner', message: `${validEntries[left].path} overlaps ${validEntries[right].path}` });
       }
     }
   }
   for (const file of existingFiles.map(clean).sort()) {
-    const count = entries.filter((entry) => entryMatches(entry, file)).length;
+    const count = validEntries.filter((entry) => entryMatches(entry, file)).length;
     if (count !== 1) violations.push({ rule: 'coverage', message: `${file} has ${count} owners` });
   }
   for (const path of changedPaths.map(clean).sort()) {
-    const frozen = entries.filter((entry) => entry.readonly === true && entryMatches(entry, path));
+    const frozen = validEntries.filter((entry) => entry.readonly === true && entryMatches(entry, path));
     if (frozen.length === 0) continue;
     const approved = changeRequests.some((request) => request.reason.trim() !== ''
       && request.issue.trim() !== '' && path === clean(request.path));
