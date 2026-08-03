@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
+import { auditRepositoryOwnership, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
@@ -48,4 +48,13 @@ describe('ownership fixtures', () => {
     ])).toHaveLength(1);
   });
 
+});
+
+it('drives coverage against the complete real repository tree', () => {
+  const repoRoot = resolve(import.meta.dirname, '../../..');
+  const actualFiles = repositoryFiles(repoRoot);
+  const violations = auditRepositoryOwnership(repoRoot, [], []);
+  expect(actualFiles.length).toBeGreaterThan(100);
+  expect(violations).toHaveLength(actualFiles.length);
+  expect(violations.every(({ rule }) => rule === 'coverage')).toBe(true);
 });
