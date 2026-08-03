@@ -55,7 +55,7 @@ use crate::db::sqlite::{
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
     wave_lifecycle_and_budget_tx,
 };
-use crate::db::{Repo, write_in_tx_typed, write_with_actor_events_typed};
+use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus, EventScope};
 use crate::ids::{ActorId, WaveId};
@@ -71,7 +71,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
-use crate::task_context::{FrozenClosure, ResolveError, TaskContextMonitor, context_ref};
+use crate::task_context::{FrozenClosure, TaskContextMonitor, context_ref};
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 /// Kernel default per-wave task budget when `waves.task_budget` is NULL
@@ -185,6 +185,9 @@ pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
         })
         .count() as i64;
     let capacity = (budget - running_cost).max(0) as usize;
+    if capacity == 0 {
+        return Vec::new();
+    }
     tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Pending)
@@ -193,7 +196,6 @@ pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
                 .iter()
                 .all(|dep| done_keys.contains(dep.as_str()))
         })
-        .take(capacity)
         .cloned()
         .collect()
 }
@@ -351,6 +353,7 @@ pub struct Scheduler {
     /// context sweep has persisted every material verdict.
     context_sweep_boot_done: AtomicBool,
     claim_fence_race_lost: Arc<std::sync::atomic::AtomicU64>,
+    context_resolve_failures: DashMap<&'static str, u64>,
     claim_fence_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
 }
 
@@ -422,6 +425,7 @@ impl Scheduler {
             boot_sweep_done: AtomicBool::new(false),
             context_sweep_boot_done: AtomicBool::new(false),
             claim_fence_race_lost: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            context_resolve_failures: DashMap::new(),
             claim_fence_test_hook: std::sync::Mutex::new(None),
         })
     }
@@ -436,6 +440,12 @@ impl Scheduler {
 
     pub fn claim_fence_race_lost_count(&self) -> u64 {
         self.claim_fence_race_lost.load(Ordering::Relaxed)
+    }
+
+    pub fn context_resolve_failure_count(&self, variant: &'static str) -> u64 {
+        self.context_resolve_failures
+            .get(variant)
+            .map_or(0, |count| *count)
     }
 
     /// Resolve the kernel default budget from `NEIGE_WAVE_TASK_BUDGET`
@@ -560,9 +570,26 @@ impl Scheduler {
             return Ok(());
         }
         let budget = self.wave_budget(wave_id).await?;
+        let capacity = (budget
+            - tasks
+                .iter()
+                .filter(|task| {
+                    matches!(
+                        task.status,
+                        TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
+                    )
+                })
+                .count() as i64)
+            .max(0) as usize;
         let ready = compute_ready(&tasks, budget);
+        let mut claimed = 0;
         for task in ready {
-            self.dispatch_task(task, &wave).await;
+            if self.dispatch_task(task, &wave).await {
+                claimed += 1;
+                if claimed == capacity {
+                    break;
+                }
+            }
         }
         Ok(())
     }
@@ -587,10 +614,10 @@ impl Scheduler {
     /// §5.4 — claim one ready task and drive its worker spawn. Every
     /// failure mode is contained here (logged, row reconciled); the
     /// pass continues with its remaining ready tasks.
-    async fn dispatch_task(self: &Arc<Self>, task: Task, wave: &Wave) {
+    async fn dispatch_task(self: &Arc<Self>, task: Task, wave: &Wave) -> bool {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             tracing::debug!(task_id = %task.id, "scheduler: task already in flight; skipping");
-            return;
+            return false;
         };
         // Global spawn cap — same semaphore the dispatcher holds across
         // its spawn handling.
@@ -598,7 +625,7 @@ impl Scheduler {
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!("scheduler: dispatcher semaphore closed; skipping dispatch");
-                return;
+                return false;
             }
         };
         // The spawn is driven off the row the claim tx itself re-read
@@ -609,14 +636,14 @@ impl Scheduler {
         // path is `WHERE status = 'pending'`.
         let frozen = match self.claim_task(&task, wave).await {
             Ok(Some(frozen)) => frozen,
-            Ok(None) => return, // someone else won the claim
+            Ok(None) => return false, // someone else won the claim
             Err(e) => {
                 tracing::warn!(
                     task_id = %task.id,
                     error = %e,
                     "scheduler: claim tx failed; task stays pending for the next trigger"
                 );
-                return;
+                return false;
             }
         };
         if let Err(e) = self.drive_spawn(&frozen, wave).await {
@@ -626,6 +653,7 @@ impl Scheduler {
                 "scheduler: worker spawn drive failed; sweep will reconcile"
             );
         }
+        true
     }
 
     /// The claim tx (§5.4 step 1, one eventized write): in-tx lifecycle
@@ -657,39 +685,15 @@ impl Scheduler {
             );
             match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
                 Ok(closure) => closure,
-                Err(
-                    ResolveError::StorageUnavailable(_) | ResolveError::MalformedStoredReport(_),
-                ) => {
-                    // MalformedStoredReport remains retryable in this slice. The per-row
-                    // failure counter and promotion to material after three consecutive
-                    // rounds are delivered by 3b′-ii item 7.
-                    return Ok(None);
-                }
-                Err(
-                    ResolveError::RootAbsent
-                    | ResolveError::RootTombstoned
-                    | ResolveError::DuplicateLiveKey
-                    | ResolveError::ReferencedWaveAbsent(_)
-                    | ResolveError::ReferencedBlockAbsent(_)
-                    | ResolveError::ReportAbsent(_)
-                    | ResolveError::CrossCove(_)
-                    | ResolveError::InvalidReference(_),
-                ) => {
-                    let task_id = task.id.clone();
-                    write_in_tx_typed(self.repo.as_ref(), move |tx| {
-                        Box::pin(async move {
-                            sqlx::query(
-                                "UPDATE tasks SET context_stale_at_ms = ?1, updated_at_ms = ?1 \
-                                 WHERE id = ?2 AND status = 'pending' AND context_stale_at_ms IS NULL",
-                            )
-                            .bind(now_ms())
-                            .bind(task_id)
-                            .execute(&mut **tx)
-                            .await?;
-                            Ok(())
-                        })
-                    })
-                    .await?;
+                Err(error) => {
+                    let variant = error.variant();
+                    *self.context_resolve_failures.entry(variant).or_insert(0) += 1;
+                    tracing::warn!(
+                        task_id = %task.id,
+                        resolve_error_variant = variant,
+                        error = ?error,
+                        "scheduler: claim context resolution failed; task stays pending"
+                    );
                     return Ok(None);
                 }
             }

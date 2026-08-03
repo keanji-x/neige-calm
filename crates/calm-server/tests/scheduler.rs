@@ -3053,7 +3053,14 @@ async fn claim_fence_rejects_cross_wave_edit_after_resolution_without_side_effec
 
 #[tokio::test]
 async fn deterministic_root_location_failures_do_not_freeze_or_index() {
-    for case in ["duplicate", "tombstoned", "absent"] {
+    for case in [
+        "duplicate",
+        "tombstoned",
+        "absent",
+        "invalid-root-ref",
+        "deleted-direct-ref",
+        "deleted-depth-two-ref",
+    ] {
         let boot = boot().await;
         set_lifecycle(&boot, WaveLifecycle::Working).await;
         let key = format!("root-{case}");
@@ -3076,6 +3083,42 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 rev: 1,
                 payload: json!({"markdown": "nothing"}),
             }],
+            "invalid-root-ref" => vec![ReportBlock {
+                id: "b_1005".into(),
+                kind: "task".into(),
+                rev: 1,
+                payload: json!({
+                    "key": key, "kind": "terminal", "goal": "true", "refs": ["not-a-neige-link"]
+                }),
+            }],
+            "deleted-direct-ref" => vec![ReportBlock {
+                id: "b_1006".into(),
+                kind: "task".into(),
+                rev: 1,
+                payload: json!({
+                    "key": key, "kind": "terminal", "goal": "true",
+                    "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
+                }),
+            }],
+            "deleted-depth-two-ref" => vec![
+                ReportBlock {
+                    id: "b_1007".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({
+                        "key": key, "kind": "terminal", "goal": "true",
+                        "refs": [format!("neige://wave/{}#b_cafe", boot.wave_id)]
+                    }),
+                },
+                ReportBlock {
+                    id: "b_cafe".into(),
+                    kind: "prose".into(),
+                    rev: 1,
+                    payload: json!({
+                        "markdown": format!("[deep](neige://wave/{}#b_dead)", boot.wave_id)
+                    }),
+                },
+            ],
             _ => unreachable!(),
         };
         insert_report_payload(
@@ -3100,6 +3143,12 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             .execute(&pool)
             .await
             .unwrap();
+        let expected_variant =
+            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+                .resolve_task_closure(boot.wave_id.as_str(), &key)
+                .await
+                .expect_err("fixture must fail closure resolution")
+                .variant();
         let (_runtime, scheduler) = build_scheduler(
             &boot,
             vec![Arc::new(CardSpawnAdapter {
@@ -3110,8 +3159,9 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         scheduler.schedule_wave(boot.wave_id.clone()).await;
         let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
         assert_eq!(row.status, TaskStatus::Pending, "case {case}");
-        assert!(row.context_stale_at_ms.is_some(), "case {case}");
+        assert_eq!(row.context_stale_at_ms, None, "case {case}");
         assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
+        assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
         let indexed: i64 =
             sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
                 .bind(&task_id)
@@ -3119,7 +3169,113 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 .await
                 .unwrap();
         assert_eq!(indexed, 0, "case {case}");
+        assert_eq!(
+            scheduler.context_resolve_failure_count(expected_variant),
+            1,
+            "case {case} must increment its ResolveError bucket"
+        );
+        if matches!(case, "deleted-direct-ref" | "deleted-depth-two-ref") {
+            let repaired_id = "b_dead";
+            let report_id = format!("report-{case}");
+            let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id = ?1")
+                .bind(&report_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            let mut report: WaveReportPayload = serde_json::from_str(&payload).unwrap();
+            report.doc_rev += 1;
+            report.blocks.as_mut().unwrap().push(ReportBlock {
+                id: repaired_id.into(),
+                kind: "prose".into(),
+                rev: 1,
+                payload: json!({"markdown": "repaired"}),
+            });
+            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
+                .bind(serde_json::to_string(&report).unwrap())
+                .bind(report_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+                .resolve_task_closure(boot.wave_id.as_str(), &key)
+                .await
+                .expect("repaired fixture must resolve before retrying production claim");
+            scheduler.schedule_wave(boot.wave_id.clone()).await;
+            assert_ne!(
+                boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+                TaskStatus::Pending,
+                "case {case} must recover after the referenced block is restored"
+            );
+        }
     }
+}
+
+#[tokio::test]
+async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    insert_report_payload(
+        &boot,
+        "blocked-head-report",
+        serde_json::to_value(WaveReportPayload {
+            schema_version: WaveReportPayload::SCHEMA_VERSION,
+            doc_rev: 1,
+            summary: String::new(),
+            body: String::new(),
+            blocks: Some(vec![
+                ReportBlock {
+                    id: "b_head_1".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({"key": "blocked-head", "kind": "terminal", "goal": "true"}),
+                },
+                ReportBlock {
+                    id: "b_head_2".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({"key": "blocked-head", "kind": "terminal", "goal": "true"}),
+                },
+            ]),
+        })
+        .unwrap(),
+    )
+    .await;
+    let mut blocked = plan_task(&boot.wave_id, "blocked-head", TaskKind::Terminal, &[]);
+    blocked.priority = 10;
+    let blocked_id = blocked.id.clone();
+    seed_task(&boot, blocked).await;
+    let healthy = plan_task(&boot.wave_id, "healthy-tail", TaskKind::Terminal, &[]);
+    let healthy_id = healthy.id.clone();
+    seed_task(&boot, healthy).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&blocked_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let blocked = boot.repo.task_get(&blocked_id).await.unwrap().unwrap();
+    let healthy = boot.repo.task_get(&healthy_id).await.unwrap().unwrap();
+    assert_eq!(blocked.status, TaskStatus::Pending);
+    assert_eq!(blocked.context_stale_at_ms, None);
+    assert_ne!(
+        healthy.status,
+        TaskStatus::Pending,
+        "the same pass must continue until one claim consumes capacity"
+    );
+    assert_eq!(
+        scheduler.context_resolve_failure_count("duplicate_live_key"),
+        1
+    );
 }
 
 #[tokio::test]

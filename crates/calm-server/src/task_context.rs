@@ -66,6 +66,23 @@ pub enum ResolveError {
     InvalidReference(String),
 }
 
+impl ResolveError {
+    pub const fn variant(&self) -> &'static str {
+        match self {
+            Self::StorageUnavailable(_) => "storage_unavailable",
+            Self::MalformedStoredReport(_) => "malformed_stored_report",
+            Self::RootAbsent => "root_absent",
+            Self::RootTombstoned => "root_tombstoned",
+            Self::DuplicateLiveKey => "duplicate_live_key",
+            Self::ReferencedWaveAbsent(_) => "referenced_wave_absent",
+            Self::ReferencedBlockAbsent(_) => "referenced_block_absent",
+            Self::ReportAbsent(_) => "report_absent",
+            Self::CrossCove(_) => "cross_cove",
+            Self::InvalidReference(_) => "invalid_reference",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct ContextMetrics {
     detections: AtomicU64,

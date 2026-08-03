@@ -15,6 +15,19 @@ fn migrator_through_0066() -> sqlx::migrate::Migrator {
     }
 }
 
+fn migrator_through_0068() -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 68)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
 #[tokio::test]
 async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     let pool = SqlitePoolOptions::new()
@@ -63,5 +76,46 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     assert!(
         !first_sweep_material,
         "the first sweep after upgrade must not mark a backfilled legacy task material"
+    );
+}
+
+#[tokio::test]
+async fn pending_context_stale_cleanup_is_idempotent_and_scoped() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open migration fixture");
+    migrator_through_0068()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0068");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,created_at_ms,updated_at_ms,context_stale_at_ms) VALUES ('p','w','p','codex','p','null','[]','pending',1,1,9), ('r','w','r','codex','r','null','[]','running',1,1,9)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed stale rows");
+
+    let cleanup = "UPDATE tasks SET context_stale_at_ms = NULL WHERE status = 'pending' AND context_stale_at_ms IS NOT NULL";
+    let first = sqlx::query(cleanup)
+        .execute(&pool)
+        .await
+        .expect("first cleanup");
+    let second = sqlx::query(cleanup)
+        .execute(&pool)
+        .await
+        .expect("second cleanup");
+    assert_eq!(first.rows_affected(), 1);
+    assert_eq!(second.rows_affected(), 0);
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = 'r'")
+            .fetch_one(&pool)
+            .await
+            .expect("read in-flight row");
+    assert_eq!(
+        stale,
+        Some(9),
+        "migration must not touch in-flight verdicts"
     );
 }

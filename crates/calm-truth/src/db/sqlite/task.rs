@@ -220,6 +220,13 @@ pub async fn wave_require_task_gates_tx(
 /// the same tx that appends `Event::TaskDispatched` and the
 /// `Dispatching → Working` promotion so projections never observe a
 /// claimed row without its dispatch record.
+const TASK_CLAIM_PENDING_SQL: &str = r#"UPDATE tasks
+           SET status = 'dispatched',
+               claim_context_json = ?1,
+               context_closure_truncated = ?2,
+               updated_at_ms = ?3
+           WHERE id = ?4 AND status = 'pending'"#;
+
 pub async fn task_claim_pending_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
@@ -229,20 +236,13 @@ pub async fn task_claim_pending_tx(
 ) -> Result<u64> {
     let context_json = serde_json::to_string(context)
         .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))?;
-    let res = sqlx::query(
-        r#"UPDATE tasks
-           SET status = 'dispatched',
-               claim_context_json = ?1,
-               context_closure_truncated = ?2,
-               updated_at_ms = ?3
-           WHERE id = ?4 AND status = 'pending' AND context_stale_at_ms IS NULL"#,
-    )
-    .bind(&context_json)
-    .bind(i64::from(closure_truncated))
-    .bind(now)
-    .bind(id)
-    .execute(&mut **tx)
-    .await?;
+    let res = sqlx::query(TASK_CLAIM_PENDING_SQL)
+        .bind(&context_json)
+        .bind(i64::from(closure_truncated))
+        .bind(now)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
     if res.rows_affected() != 0 {
         sqlx::query("DELETE FROM task_ref_index WHERE task_id = ?1")
             .bind(id)
@@ -260,6 +260,16 @@ pub async fn task_claim_pending_tx(
         }
     }
     Ok(res.rows_affected())
+}
+
+#[cfg(test)]
+mod claim_sql_tests {
+    use super::TASK_CLAIM_PENDING_SQL;
+
+    #[test]
+    fn pending_claim_has_no_context_stale_predicate() {
+        assert!(!TASK_CLAIM_PENDING_SQL.contains("context_stale_at_ms"));
+    }
 }
 
 /// Issue #644 PR-B — the scheduler's post-spawn running stamp (design

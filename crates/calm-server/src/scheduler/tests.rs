@@ -94,13 +94,17 @@ fn budget_counts_dispatched_running_and_verifying() {
         "3 in flight fill budget 3"
     );
     let ready = compute_ready(&tasks, 4);
-    assert_eq!(keys(&ready), vec!["d"], "one free slot under budget 4");
+    assert_eq!(
+        keys(&ready),
+        vec!["d", "e"],
+        "positive capacity returns every candidate; the pass consumes one successful claim"
+    );
     let ready = compute_ready(&tasks, 5);
     assert_eq!(keys(&ready), vec!["d", "e"]);
 }
 
 #[test]
-fn ready_set_preserves_scheduler_order_and_caps_at_budget() {
+fn ready_set_preserves_scheduler_order_without_preconsuming_capacity() {
     // Input order is the repo's `(priority DESC, created_at ASC,
     // key ASC)`; compute_ready must not reorder (policy-free).
     let mut high = task("zz-high", TaskStatus::Pending, &[], 9);
@@ -111,7 +115,7 @@ fn ready_set_preserves_scheduler_order_and_caps_at_budget() {
         task("bb-low", TaskStatus::Pending, &[], 0),
     ];
     let ready = compute_ready(&tasks, 2);
-    assert_eq!(keys(&ready), vec!["zz-high", "aa-low"]);
+    assert_eq!(keys(&ready), vec!["zz-high", "aa-low", "bb-low"]);
 }
 
 #[test]
