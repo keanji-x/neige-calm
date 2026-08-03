@@ -116,6 +116,7 @@ it('runtime audit reports unreadable stylesheet rules', () => {
 
 it('runtime CSSOM branch reads rules produced by jsdom CSSOM', () => {
   const real = new JSDOM(read('runtime-cssom/positive/page.html')).window.document;
+  const negative = new JSDOM(read('runtime-cssom/negative/page.html')).window.document;
   const firstSheet = Array.from(real.styleSheets)[0];
   expect(Array.from(firstSheet?.cssRules ?? [])[0]?.cssText).toContain('@layer ui');
   const cssomOnly: RuntimeDocument = {
@@ -123,4 +124,11 @@ it('runtime CSSOM branch reads rules produced by jsdom CSSOM', () => {
     querySelectorAll: (selector) => selector === 'style' ? [] : real.querySelectorAll(selector),
   };
   expect(auditRuntimeStyles(cssomOnly, order)).toEqual([]);
+  const negativeCssomOnly: RuntimeDocument = {
+    styleSheets: negative.styleSheets,
+    querySelectorAll: (selector) => selector === 'style' ? [] : negative.querySelectorAll(selector),
+  };
+  expect(auditRuntimeStyles(negativeCssomOnly, order)).toEqual([
+    { rule: 'rule-in-layer', message: 'unlayered selector: .cssom-loose' },
+  ]);
 });
