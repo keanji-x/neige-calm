@@ -761,7 +761,7 @@
   migration: pending
 
 - id: GATE-STATE-002
-  kind: invariant
+  kind: gate
   family: persistent-brand
   statement: >
     条件类型必须写成单元素元组形式 `[T] extends [Persistent<unknown>]`，禁止裸
