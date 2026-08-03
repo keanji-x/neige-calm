@@ -1,8 +1,8 @@
 use crate::support;
+use std::time::Duration;
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
@@ -28,7 +28,7 @@ async fn codex_rollout_preserves_unterminated_final_line_until_complete() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-torn").await == 2 }
     })
@@ -43,7 +43,7 @@ async fn codex_rollout_preserves_unterminated_final_line_until_complete() {
     assert_cursor(&repo, "card-torn", 3).await;
 
     append_raw(&path, &format!("{}\n", &next[split_at..]));
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-torn").await == 3 }
     })

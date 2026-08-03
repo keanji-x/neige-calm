@@ -37,7 +37,7 @@ async fn worker_flow_driver_drop_cancels_tail_tasks() {
         .attach_runtime_for_test(seed.runtime.clone())
         .await
         .unwrap();
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -49,7 +49,7 @@ async fn worker_flow_driver_drop_cancels_tail_tasks() {
     assert!(!stop.is_cancelled());
     drop(driver);
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let stop = stop.clone();
         async move { stop.is_cancelled() }
     })
@@ -86,7 +86,7 @@ async fn worker_flow_driver_drop_cancels_start_on_boot_tail_tasks() {
     );
     driver.start_on_boot().await.unwrap();
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -98,7 +98,7 @@ async fn worker_flow_driver_drop_cancels_start_on_boot_tail_tasks() {
     assert!(!stop.is_cancelled());
     drop(driver);
 
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let stop = stop.clone();
         async move { stop.is_cancelled() }
     })
