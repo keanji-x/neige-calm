@@ -73,6 +73,29 @@ mutate_ownership_test() {
   echo "$label: red (exit $result)"
 }
 
+mutate_ownership_unit_test() {
+  local label=$1 target=$2 mutated=$3 backup result
+  backup=$(mktemp)
+  cp "$target" "$backup"
+  if cmp -s "$target" "$mutated"; then
+    echo "$label: refused no-op mutation" >&2
+    rm -f "$backup"
+    return 2
+  fi
+  cp "$mutated" "$target"
+  set +e
+  (cd "$repo/fe" && npx vitest run tools/ownership/ownership.test.ts)
+  result=$?
+  set -e
+  cp "$backup" "$target"
+  rm -f "$backup" "$mutated"
+  if (( result == 0 )); then
+    echo "$label: unexpectedly green" >&2
+    return 1
+  fi
+  echo "$label: red (exit $result)"
+}
+
 tokens="$repo/fe/web/src/styles/tokens.css"
 entry="$repo/fe/web/src/styles/entry.css"
 candidate=$(mktemp)
@@ -102,6 +125,10 @@ sed 's/|| expiryDate\.toISOString()\.slice(0, 10) !== entry\.expiry/|| false/' "
 mutate_tools_test expiry-calendar-normalization "$repository_check" "$candidate"
 
 ownership_validator="$repo/fe/tools/ownership/validator.ts"
+candidate=$(mktemp)
+sed '/const approved =/c\    const approved = new Set(Array.from(commit.message.matchAll(/^OWNERSHIP-CHANGE:\\s+(\\S+)\\s+—\\s+\\S.+$/gm), (match) => clean(match[1])));' "$ownership_validator" > "$candidate"
+mutate_ownership_unit_test ownership-trailer-without-issue "$ownership_validator" "$candidate"
+
 candidate=$(mktemp)
 sed "/return execFileSync('git', \['merge-base', injectedBase, headRef\], {/,/}).trim();/c\\
         return injectedBase;" "$ownership_validator" > "$candidate"

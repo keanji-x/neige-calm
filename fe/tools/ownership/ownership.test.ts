@@ -97,6 +97,9 @@ describe('ownership fixtures', () => {
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css approved token update (#997)',
       'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css —',
       '* OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#abc)',
+      'OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#997) trailing text',
     ]) {
       expect(validateOwnership(manifest, [], [{ ...approved, message }]), message).toEqual([
         { rule: 'readonly-change-trailer', message: 'abc123 changes frozen fe/web/src/styles/tokens.css without an OWNERSHIP-CHANGE trailer' },

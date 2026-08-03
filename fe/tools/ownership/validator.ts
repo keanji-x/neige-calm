@@ -80,7 +80,7 @@ export function validateOwnership(
     if (count !== 1) violations.push({ rule: 'coverage', message: `${file} has ${count} owners` });
   }
   for (const commit of commits) {
-    const approved = new Set(Array.from(commit.message.matchAll(/^OWNERSHIP-CHANGE:\s+(\S+)\s+—\s+\S.+$/gm), (match) => clean(match[1])));
+    const approved = new Set(Array.from(commit.message.matchAll(/^OWNERSHIP-CHANGE:\s+(\S+)\s+—\s+\S.+\s+\(#\d+\)$/gm), (match) => clean(match[1])));
     for (const path of commit.paths.map(clean).sort()) {
       if (!validEntries.some((entry) => entry.readonly === true && entryMatches(entry, path))) continue;
       if (!approved.has(path)) violations.push({
