@@ -8,12 +8,17 @@ import { describe, expect, it } from 'vitest';
 import { checkCoreNoJsx } from './check-core-no-jsx.mjs';
 import { checkEslintHygiene } from './check-eslint-hygiene.mjs';
 import { checkTopLevel } from './check-top-level.mjs';
+import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfiguration;
 const cruiseOptions = config.options ?? {};
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
+  if (caseName.startsWith('dup-inv-')) {
+    const errors = checkDuplicationManifest(resolve(fixtures, caseName, kind));
+    return { status: errors.length ? 1 : 0, stdout: errors.join('\n'), stderr: '' };
+  }
   if (caseName === 'test-module-runtime-state-exemption') {
     const fixtureDir = resolve(fixtures, caseName, kind, 'web/src');
     const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
@@ -118,6 +123,16 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 
 describe('architecture fixtures', () => {
   const expectedViolation = new Map<string, string>([
+    ['dup-inv-001', 'INV-DUP-001'],
+    ['dup-inv-002', 'INV-DUP-002'],
+    ['dup-inv-003', 'INV-DUP-003'],
+    ['dup-inv-004', 'INV-DUP-004'],
+    ['dup-inv-005', 'INV-DUP-005'],
+    ['dup-inv-006', 'INV-DUP-006'],
+    ['dup-inv-007', 'INV-DUP-007'],
+    ['dup-inv-008', 'INV-DUP-008'],
+    ['dup-inv-009', 'INV-DUP-009'],
+    ['dup-inv-010', 'INV-DUP-010'],
     ['core-markdown-node-import', 'node:fs'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
@@ -150,4 +165,10 @@ describe('architecture fixtures', () => {
       expect(negative.stdout + negative.stderr).toContain(expected);
     });
   }
+});
+
+describe('duplication manifest on the application tree', () => {
+  it('keeps INV-DUP-001..010 implementations and consumers canonical', () => {
+    expect(checkDuplicationManifest(resolve(import.meta.dirname, '../..'))).toEqual([]);
+  });
 });

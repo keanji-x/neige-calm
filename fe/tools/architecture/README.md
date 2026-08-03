@@ -21,3 +21,22 @@ and dynamic selectors fail closed. `getElementsByClassName` is always banned.
 Use stable `data-*` hooks. Third-party DOM may use an exact `{ file, selector }`
 exception only when the selector includes an application container prefix,
 such as `.file-viewer-code-wrap .cm-scroller`.
+
+`duplication-manifest.mjs` is the single owner of `INV-DUP-001..010` paths.
+Eight entries enforce one named implementation and one import source. The two
+markdown entries enforce the sole `core/markdown/public.ts` entry and divide
+renderer tooling from parser/outline tooling so each fence is independently
+testable. Consumers should use the canonical public path, never deep imports.
+
+| Contract | Constraint type | Rule/check | Fixture directory |
+| --- | --- | --- | --- |
+| INV-DUP-001 | unique implementation | duplication manifest | `dup-inv-001` |
+| INV-DUP-002 | unique implementation | duplication manifest | `dup-inv-002` |
+| INV-DUP-003 | unique implementation | duplication manifest | `dup-inv-003` |
+| INV-DUP-004 | markdown import fence | duplication manifest + markdown public entry | `dup-inv-004` |
+| INV-DUP-005 | markdown import fence | duplication manifest + markdown public entry | `dup-inv-005` |
+| INV-DUP-006 | unique implementation | duplication manifest | `dup-inv-006` |
+| INV-DUP-007 | unique implementation | duplication manifest | `dup-inv-007` |
+| INV-DUP-008 | unique implementation | duplication manifest | `dup-inv-008` |
+| INV-DUP-009 | unique implementation | duplication manifest | `dup-inv-009` |
+| INV-DUP-010 | unique implementation | duplication manifest | `dup-inv-010` |

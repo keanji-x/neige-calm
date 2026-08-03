@@ -12,6 +12,7 @@ module.exports = {
     { name: 'core-no-react', severity: 'error', from: { path: '^core/' }, to: { path: '(^|node_modules/)(react|react-dom)(/|$)' } },
     { name: 'no-barrel-index', severity: 'error', from: { path: '(^|/)index\\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$' }, to: { dependencyTypes: ['export', 'import'] } },
     { name: 'cards-public-entry-only', severity: 'error', from: { path: '^(core/|web/src/)', pathNot: '^web/src/systems/cards/' }, to: { path: '^web/src/systems/cards/(?!public\\.ts$)' } },
+    { name: 'markdown-public-entry-only', severity: 'error', from: { path: '^web/src/' }, to: { path: '^core/markdown/(?!public\\.ts$)' } },
     { name: 'no-shared-directory', severity: 'error', from: {}, to: { path: '(^|/)shared(/|$)' } },
     { name: 'no-circular', severity: 'error', from: {}, to: { circular: true } },
   ],
