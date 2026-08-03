@@ -44,23 +44,30 @@ function canonicalOwners(path: string): Set<string> {
 function locationErrors(value: unknown, repoRoot: string): string[] {
   if (typeof value !== 'string') return ['must be a string location'];
   const errors: string[] = [];
-  for (const location of value.split(' + ')) {
-    const match = LOCATION_PATTERN.exec(location);
-    if (!match) {
-      errors.push(`invalid location: ${location}`);
-      continue;
+  for (const group of value.trim().split(/\s*;\s*|\s+\+\s+|\s+/)) {
+    const [first, ...additionalRanges] = group.split(',');
+    const firstMatch = LOCATION_PATTERN.exec(first);
+    const locations = firstMatch
+      ? [first, ...additionalRanges.map((range) => `${firstMatch[1]}:${range}`)]
+      : [first, ...additionalRanges];
+    for (const location of locations) {
+      const match = LOCATION_PATTERN.exec(location);
+      if (!match) {
+        errors.push(`invalid location: ${location}`);
+        continue;
+      }
+      const [, path, startText, endText] = match;
+      const target = isAbsolute(path) ? path : resolve(repoRoot, path);
+      if (!existsSync(target)) {
+        errors.push(`path does not exist: ${path}`);
+        continue;
+      }
+      const contents = readFileSync(target, 'utf8');
+      const lineCount = contents === '' ? 0 : contents.replace(/\r?\n$/, '').split(/\r?\n/).length;
+      const start = Number(startText);
+      const end = Number(endText ?? startText);
+      if (start < 1 || end < start || end > lineCount) errors.push(`line range ${start}-${end} outside ${path} (1-${lineCount})`);
     }
-    const [, path, startText, endText] = match;
-    const target = isAbsolute(path) ? path : resolve(repoRoot, path);
-    if (!existsSync(target)) {
-      errors.push(`path does not exist: ${path}`);
-      continue;
-    }
-    const contents = readFileSync(target, 'utf8');
-    const lineCount = contents === '' ? 0 : contents.replace(/\r?\n$/, '').split(/\r?\n/).length;
-    const start = Number(startText);
-    const end = Number(endText ?? startText);
-    if (start < 1 || end < start || end > lineCount) errors.push(`line range ${start}-${end} outside ${path} (1-${lineCount})`);
   }
   return errors;
 }

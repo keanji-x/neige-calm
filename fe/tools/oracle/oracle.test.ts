@@ -32,7 +32,7 @@ describe('oracle rule fixtures', () => {
   }
 });
 
-it('source-location validates every location joined with +', () => {
+it('source-location validates every location across all corpus separators', () => {
   const violations = run('source-location-multiple', 'negative');
   expect(run('source-location-multiple', 'positive')).toEqual([]);
   expect(violations).toHaveLength(1);
