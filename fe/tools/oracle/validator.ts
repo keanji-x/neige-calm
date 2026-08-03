@@ -26,7 +26,7 @@ const ENUMS: Record<string, readonly unknown[]> = {
 };
 const KIND_PREFIX: Record<string, string> = { invariant: 'INV', capability: 'CAP', gate: 'GATE' };
 const ID_PATTERN = /^(?:E2E-)?(INV|CAP|GATE)-(?:[A-Z0-9]+-)+\d{3}$/;
-const LOCATION_PATTERN = /^(.+):(\d+)(?:-(\d+))?$/;
+const LOCATION_PATTERN = /^([^\s:]+):(\d+)(?:-(\d+))?$/;
 
 function strings(value: unknown): string[] {
   if (typeof value === 'string') return [value];

@@ -36,7 +36,7 @@ it('source-location validates every location across all corpus separators', () =
   const violations = run('source-location-multiple', 'negative');
   expect(run('source-location-multiple', 'positive')).toEqual([]);
   expect(violations).toHaveLength(1);
-  expect(violations[0]?.message).toContain('missing.ts');
+  expect(violations[0]?.message).toBe('invalid location: missing.ts:not-a-line');
 });
 
 it('matches the temporary real-data violation baseline exactly', () => {
