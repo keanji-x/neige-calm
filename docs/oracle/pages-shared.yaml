@@ -441,7 +441,8 @@
     前端 zod schema 必须与 Rust 侧的上限/形状严格对齐(caps 与 strict shape),不得放宽。
   why: >
     测试名 "enforces the Rust-parity caps and strict shapes" —— 前端宽于后端会渲染出后端永远拒收的东西。
-  source: web/src/pages/report-blocks/index.tsx:15-22 (schemas from cards/builtins/wave-report)
+    schema 定义来自 cards/builtins/wave-report，由 report-blocks 渲染入口消费。
+  source: web/src/pages/report-blocks/index.tsx:15-27; web/src/cards/builtins/wave-report.tsx:26-163
   authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:565
   owner_slice: features/report/blocks
   intentional_omission: false
@@ -4409,7 +4410,7 @@
   why: >
     源码注释指向 `web/e2e/a11y-axe.spec.ts` 作为闸门。
   source: web/src/shared/components/ConnectionIndicator.tsx:14-21,28-37
-  authoritative_test: web/e2e/a11y-axe.spec.ts
+  authoritative_test: web/e2e/a11y-axe.spec.ts:229-425
   owner_slice: ui/atoms
   intentional_omission: false
   runtime_layer: ui
