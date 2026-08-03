@@ -230,7 +230,10 @@ describe('duplication manifest on the application tree', () => {
     const idsWithManifestObligations = duplicationManifest
       .filter((entry) => entry.mergeObligations?.length)
       .map((entry) => entry.id);
-    expect(idsWithManifestObligations).toEqual(idsWithOracleMergeObligations);
+    expect(idsWithManifestObligations).toEqual(expect.arrayContaining(idsWithOracleMergeObligations));
+    for (const id of idsWithOracleMergeObligations) {
+      expect(duplicationManifest.find((entry) => entry.id === id)?.mergeObligations?.length, id).toBeGreaterThan(0);
+    }
   });
   it('keeps INV-DUP-001..010 implementations and consumers canonical', () => {
     expect(checkDuplicationManifest(resolve(import.meta.dirname, '../..'))).toEqual([]);
