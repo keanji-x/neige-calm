@@ -1228,7 +1228,7 @@
   why: >
     源码注释:"Interrupted turns never emit `item/completed`, so without this FE-local row the stop would be
     visually silent (#668). Skipped on the graceful idle no-op — nothing was actually stopped."
-  source: web/src/pages/SpecConversation.tsx:431-444
+  source: web/src/pages/SpecConversation.tsx:431-444,488
   authoritative_test: web/src/pages/SpecConversation.test.tsx:1225,1238
   owner_slice: features/spec/conversation
   intentional_omission: true
@@ -1668,7 +1668,7 @@
   why: >
     源码注释:"A successful reset mints a fresh harness session — the dormant state (and its stale errors)
     no longer applies." 测试 "keeps the stop error when reset itself fails" 锁定反面。
-  source: web/src/pages/useSpecCurrentRun.ts:196-219
+  source: web/src/pages/useSpecCurrentRun.ts:196-219,150
   authoritative_test: web/src/pages/useSpecCurrentRun.test.tsx:196,210,227,246
   owner_slice: features/spec/current-run
   intentional_omission: false
@@ -3179,7 +3179,7 @@
   why: >
     源码注释:"creating the *first* cove has no other home"(所以入口在 Sidebar 而不是 CovePage);
     `+` 放在标题行是"so the trigger stays in view even when the cove list overflows"。
-  source: web/src/shared/components/Sidebar.tsx:531-606
+  source: web/src/shared/components/Sidebar.tsx:531-606,323
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -3839,7 +3839,7 @@
   why: >
     源码注释:"Nested ARIA dialogs are not allowed"。两条测试从正反面锁定
     ("does not advertise its own role=dialog" / "renders without a role when used inline")。
-  source: web/src/shared/components/DirectoryPicker.tsx:452-461
+  source: web/src/shared/components/DirectoryPicker.tsx:452-461,148
   authoritative_test: web/src/shared/components/DirectoryPicker.test.tsx:68,97
   owner_slice: ui/directory-browser
   intentional_omission: true
@@ -4071,7 +4071,7 @@
   why: >
     "clicking Browse pushes a view whose title becomes the dialog accessible name" —— 这是嵌套视图不另开
     dialog 的补偿机制。
-  source: web/src/shared/components/DirectoryPicker.tsx:66-79 + web/src/shared/components/NewTaskForm.tsx:533-543
+  source: web/src/shared/components/DirectoryPicker.tsx:66-79 + web/src/shared/components/NewTaskForm.tsx:533-543,523
   authoritative_test: web/src/shared/components/DirectoryPicker.test.tsx:686
   owner_slice: ui/directory-browser
   intentional_omission: false
@@ -4092,7 +4092,7 @@
     字段类型;新增类型必须评估是否该另起渲染器。
   why: >
     文件头注释:"we'd rather keep this file small than pre-build a generic that grows scope creep."
-  source: web/src/shared/components/SchemaForm.tsx:1-8,81-138
+  source: web/src/shared/components/SchemaForm.tsx:1-8,14,81-138
   authoritative_test: NONE
   owner_slice: ui/schema-form
   intentional_omission: true
@@ -4676,7 +4676,7 @@
     必须逐字一致(含 "Its cards (including any terminals) go too. This cannot be undone.")。
   why: >
     同一个破坏性操作在两个入口给出不同措辞会让用户怀疑二者语义不同;两处的确认模式也刻意相同(close-then-await)。
-  source: web/src/pages/Cove.tsx:196-208 + web/src/shared/components/Sidebar.tsx:447-459
+  source: web/src/pages/Cove.tsx:196-208 + web/src/shared/components/Sidebar.tsx:447-459,151
   authoritative_test: web/src/pages/Cove.test.tsx:286 + web/src/shared/components/Sidebar.test.tsx:85
   owner_slice: ui/confirm-dialog/copy
   intentional_omission: false

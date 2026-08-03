@@ -237,7 +237,7 @@
   why: >
     对称防"爆破过度"回归：匹配路径上误删 cursor 会丢掉自启动以来的全部事件，
     误删 cache/IDB 会白掉首屏。
-  source: web/src/app/providers.tsx:181,198-202
+  source: web/src/app/providers.tsx:181,178,198-202
   authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:267
   owner_slice: app/providers
   intentional_omission: false

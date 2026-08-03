@@ -146,7 +146,7 @@
     别名指向的 positional token 本身已经随主题切换；在 dark 里覆盖别名等于把它重新钉死到
     另一个（多半是过期的）目标上，直接抵消掉 cascade。注释判定这几乎总是复制粘贴 bug，
     要求"大声报错"。
-  source: web/src/calm-tokens.test.ts:454-460
+  source: web/src/calm-tokens.test.ts:454-460,463
   authoritative_test: web/src/calm-tokens.test.ts:462-471
   owner_slice: styles/tokens
   intentional_omission: false
@@ -439,7 +439,7 @@
   why: >
     【已知缺口】测试层是"给人看行号"的可读报告，真正拦截靠 .stylelintrc.cjs 的
     declaration-property-value-disallowed-list。#165 slice 3。
-  source: web/src/calm-tokens.test.ts:903-907
+  source: web/src/calm-tokens.test.ts:903-907,908
   authoritative_test: web/src/calm-tokens.test.ts:908-928
   owner_slice: styles/tokens
   intentional_omission: true
@@ -842,7 +842,7 @@
   why: >
     【已知缺口】CallExpression 访问器里显式 `callee.computed` 为真就 return。新架构需要
     决定是补上（computed + 字面量 key 是可静态判定的）还是继续接受这个旁路。
-  source: web/eslint-rules/no-react-state-hook-members.cjs:48-57
+  source: web/eslint-rules/no-react-state-hook-members.cjs:48-57,31
   authoritative_test: NONE
   owner_slice: none/lint/custom-rules
   intentional_omission: true
@@ -902,7 +902,7 @@
     【已知缺口】注释原话："Type-checker glitches are non-fatal —— 规则降级为仅泛型检测。
     宽松地 lint 好过崩溃。" 后果是：类型服务出问题时闸门整片静默失效，没有任何信号。
     这是典型的 fail-open 设计，新架构应重新评估。
-  source: web/eslint-rules/no-persistent-in-usestate.cjs:138-152
+  source: web/eslint-rules/no-persistent-in-usestate.cjs:138-152,1
   authoritative_test: NONE
   owner_slice: none/lint/custom-rules
   intentional_omission: true
@@ -961,7 +961,7 @@
   why: >
     这是 brand 端到端接通的那一环：产出端打 brand、shared/state.ts 消费端塌成 never，
     两头合起来才关上"顺手把它塞进本地 state"的口子。运行时是恒等转换，brand 是类型幻影。
-  source: web/src/hooks/useOverlayState.ts:80-85,204-210
+  source: web/src/hooks/useOverlayState.ts:80-85,92,204-210
   authoritative_test: web/src/hooks/useOverlayState.test-d.ts:28-47
   owner_slice: core/state/overlay-state
   intentional_omission: false
@@ -1370,7 +1370,7 @@
   why: >
     逐 entity 钉住让回归容易定位——`Card.payload` 的漂移会先在这里亮，而不是在整个
     wireEventSchema 上给一坨天书报错。
-  source: web/src/api/schemas.test.ts:216-219
+  source: web/src/api/schemas.test.ts:216-219,220
   authoritative_test: web/src/api/schemas.test.ts:220-224
   owner_slice: core/schemas/wire-types
   intentional_omission: false
@@ -1426,7 +1426,7 @@
   why: >
     判别式联合的兜底行为：schema 不能退化成宽松形状，否则新变体和坏 payload 就无从区分。
     测试刻意只断言 issues 非空、不断言具体 issue code（不同 zod 版本会变）。
-  source: web/src/api/schemas.ts:1-13
+  source: web/src/api/schemas.ts:1-13,926
   authoritative_test: web/src/api/schemas.test.ts:91-102
   owner_slice: core/schemas/wire-types
   intentional_omission: false

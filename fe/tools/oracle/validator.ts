@@ -103,37 +103,55 @@ function locationErrors(value: unknown, repoRoot: string): string[] {
   return errors;
 }
 
-function statementIdentifiers(statement: unknown): string[] {
+export function extractStatementIdentifiers(statement: unknown): string[] {
   if (typeof statement !== 'string') return [];
   const identifiers = new Set<string>();
   const addMatches = (text: string, pattern: RegExp): void => {
     for (const match of text.matchAll(pattern)) identifiers.add(match[0]);
   };
   for (const code of statement.matchAll(/`([^`]+)`/g)) {
-    addMatches(code[1], /aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$-]*/g);
+    for (const match of code[1].matchAll(/aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$-]*/g)) {
+      const candidate = match[0];
+      if (/^(?:aria-|[.#])/.test(candidate) || /[-_]/.test(candidate) || /[a-z][A-Z]|[A-Z].*[A-Z]/.test(candidate)) {
+        identifiers.add(candidate);
+      }
+    }
   }
-  addMatches(statement, /aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:[_-][\w$-]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g);
+  addMatches(statement, /aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:_[\w$]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g);
   return [...identifiers];
 }
 
 function sourceAnchorError(source: unknown, statement: unknown, repoRoot: string): string | null {
   if (typeof source !== 'string') return null;
-  const identifiers = statementIdentifiers(statement);
+  const identifiers = extractStatementIdentifiers(statement);
   if (identifiers.length === 0) return null;
   const locations = parseLocations(source);
   if (locations.some((location) => typeof location === 'string')) return null;
+  const sourceFiles = new Map<string, string>();
+  for (const location of locations) {
+    if (typeof location !== 'string' && !sourceFiles.has(location.path)) {
+      sourceFiles.set(location.path, readFileSync(resolve(repoRoot, location.path), 'utf8'));
+    }
+  }
+  const usableIdentifiers = identifiers.filter((identifier) => {
+    const variants = identifier.startsWith('.') || identifier.startsWith('#')
+      ? [identifier, identifier.slice(1)]
+      : [identifier];
+    return [...sourceFiles.values()].some((contents) => variants.some((variant) => contents.includes(variant)));
+  });
+  if (usableIdentifiers.length === 0) return null;
   const citedText = locations.map((location) => {
     if (typeof location === 'string') return '';
-    const lines = readFileSync(resolve(repoRoot, location.path), 'utf8').split(/\r?\n/);
+    const lines = sourceFiles.get(location.path)!.split(/\r?\n/);
     return lines.slice(location.start - 1, location.end).join('\n');
   }).join('\n');
-  if (identifiers.some((identifier) => {
+  if (usableIdentifiers.some((identifier) => {
     const variants = identifier.startsWith('.') || identifier.startsWith('#')
       ? [identifier, identifier.slice(1)]
       : [identifier];
     return variants.some((variant) => citedText.includes(variant));
   })) return null;
-  return `source ranges contain none of the statement identifiers: ${identifiers.join(', ')}`;
+  return `source ranges contain none of the statement identifiers: ${usableIdentifiers.join(', ')}`;
 }
 
 export function validateOracle(options: ValidateOptions): Violation[] {

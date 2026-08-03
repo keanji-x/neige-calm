@@ -101,7 +101,7 @@
     箭头导航进入可操作元素时必须落在内层 button 上
   why: >
     §2.1 与 §5 都指明内建 role 的 `<button>` 是首选范式（intrinsic role，无需手写按键处理）
-  source: web/src/pages/Cove.tsx:286-313
+  source: web/src/pages/Cove.tsx:286-313,426
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -118,7 +118,7 @@
     `<nav aria-label="Coves">` 子 landmark 内
   why: >
     §2.1 记录：这是 bootstrap-only 的唯一建 cove 入口
-  source: web/src/shared/components/Sidebar.tsx:161-167
+  source: web/src/shared/components/Sidebar.tsx:161-167,224
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -262,7 +262,7 @@
   why: >
     §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
     §3.1 的 tab 顺序
-  source: web/src/pages/Cove.tsx:99,168-189
+  source: web/src/pages/Cove.tsx:76,58,91,99,168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: true
@@ -347,7 +347,7 @@
     Report 视图必须是新 wave 的默认视图；overlay 缺失时 WavePage 回落到 report
   why: >
     §2.2 与 §2.7 都明示 "Report is the default for new waves" / "Absence defaults to report"
-  source: web/src/pages/Wave.tsx:252-266
+  source: web/src/pages/Wave.tsx:117,252-266
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -504,7 +504,7 @@
     #891 slice ③ 的 CI 回归：`/browse/i` 同时命中 Browse… 按钮和一个名为
     "E2E browse cove" 的 select trigger，触发 strict-mode 冲突。已扫过的哨兵 locator：
     `'Browse…'`(U+2026)、`'Create task'`、`'Use a different cove'`
-  source: web/e2e/wave-create-browse-cwd.spec.ts:57
+  source: web/e2e/wave-create-browse-cwd.spec.ts:57,90
   authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:57
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -629,7 +629,7 @@
     切换用 `selectOptions`
   why: >
     §2.2 明示 locator 契约；"Semantics are plain native select throughout — no custom aria"
-  source: web/src/pages/Cove.tsx:507-552; web/src/shared/components/NewTaskForm.tsx:913-998
+  source: web/src/pages/Cove.tsx:507-552,169; web/src/shared/components/NewTaskForm.tsx:913-998
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -706,7 +706,7 @@
     `"terminal"`；统一化后不得再有 " · live" 后缀
   why: >
     §2.4 明示 "Don't rename — the test suite expects this literal"
-  source: web/src/cards/builtins/terminal.tsx:75-100
+  source: web/src/cards/builtins/terminal.tsx:75-100,71
   authoritative_test: web/e2e/new-terminal-card.spec.ts:17
   owner_slice: systems/terminal/card
   intentional_omission: false
@@ -782,7 +782,7 @@
   why: >
     §2.5 明示原因：codex hook 每秒可能触发数次，assertive 会不停打断屏幕阅读器。
     §2.7 要求新增 overlay 的 live region 照抄这个 polite + 窄作用域范式
-  source: web/src/cards/builtins/codex.tsx:158-180
+  source: web/src/cards/builtins/codex.tsx:158-180,364
   authoritative_test: NONE
   owner_slice: systems/cards/codex
   intentional_omission: false
@@ -816,7 +816,7 @@
     "Codex is starting… waiting for PTY."
   why: >
     §2.5 + §8.1：这是文档里点名可以用 `getByText` 定位的「无歧义正文」范例
-  source: web/src/cards/builtins/codex.tsx:181-191
+  source: web/src/cards/builtins/codex.tsx:181-191,269
   authoritative_test: NONE
   owner_slice: systems/cards/codex
   intentional_omission: false
@@ -837,7 +837,7 @@
   why: >
     §2.6：没有它 `jsx-a11y/iframe-has-title` 直接 fail；该 title 同时兼作测试 locator
     （`getByTitle`），是 host 侧唯一契约
-  source: web/src/cards/plugin-iframe.tsx:379
+  source: web/src/cards/plugin-iframe.tsx:379,378
   authoritative_test: NONE
   owner_slice: systems/cards/plugin
   intentional_omission: false
@@ -854,7 +854,7 @@
     不得加 "Plugin: " 前缀
   why: >
     #213 迁移：去掉前缀后 head 的 accessible-name 组合方式与 Terminal / Codex 一致
-  source: web/src/cards/plugin-iframe.tsx:363-368
+  source: web/src/cards/plugin-iframe.tsx:363-368,362
   authoritative_test: NONE
   owner_slice: systems/cards/plugin
   intentional_omission: false
@@ -871,7 +871,7 @@
     frame 必须能从外部经 `getByTitle` 触达。`sandbox="allow-scripts allow-same-origin"`
   why: >
     §2.6 明示 out of scope；否则会有人试图给插件内部补 a11y 而破坏 sandbox 边界
-  source: web/src/cards/plugin-iframe.tsx:379
+  source: web/src/cards/plugin-iframe.tsx:379,399
   authoritative_test: NONE
   owner_slice: systems/cards/plugin
   intentional_omission: true
@@ -1038,7 +1038,7 @@
     §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
     无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
     自管内部序列）
-  source: web/src/pages/Wave.tsx:295-433
+  source: web/src/pages/Wave.tsx:117,252-433
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1076,7 +1076,7 @@
     WaveRow 与 CovePage 的 `EditableTitle` 是「把 button 包进视觉外壳」的正典范例
   why: >
     §3.2：`role="button"` 需要手写 Enter/Space 处理，是净负债
-  source: web/src/shared/components/WaveRow.tsx:44-65
+  source: web/src/shared/components/WaveRow.tsx:20,44-65; web/src/pages/Cove.tsx:111-115
   authoritative_test: NONE
   owner_slice: none/policy/a11y-doc
   intentional_omission: false
@@ -1093,7 +1093,7 @@
     WavePage 的 rename span
   why: >
     §3.2：它必须坐在 `<h1>` 内而不破坏 heading 的 accessible-name 组合，所以不能用真 button
-  source: web/src/pages/Wave.tsx:209-273
+  source: web/src/pages/Wave.tsx:209-273,117
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1147,7 +1147,7 @@
   why: >
     §3.3：由 `useRovingTabindex` 的 `onEscape` 回调拥有，AddPanel 把它接到
     `closeAndRestoreFocus`
-  source: web/src/ui/hooks/useRovingTabindex.ts:265-314; web/src/ui/Menu/Menu.tsx:123-148
+  source: web/src/ui/hooks/useRovingTabindex.ts:196,265-314; web/src/ui/Menu/Menu.tsx:37,123-148
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:316
   owner_slice: ui/roving
   intentional_omission: false
@@ -1181,7 +1181,7 @@
   why: >
     §3.3 明示这对不对称行为：blur 存、Esc 丢。重写时若把 Esc 也接成 commit 会静默吞掉
     用户的「我不要了」意图
-  source: web/src/pages/Cove.tsx:226-229
+  source: web/src/pages/Cove.tsx:226-229,254
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -1217,7 +1217,7 @@
     WaveList 中 Home / End 必须跳到第一 / 最后一张卡片
   why: >
     Slice 9 契约条目
-  source: web/src/WaveList.tsx:18-22,123-125,200-230
+  source: web/src/WaveList.tsx:18-22,91,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1253,7 +1253,7 @@
   why: >
     §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
     操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型
-  source: web/src/WaveList.tsx:30-32,205-225
+  source: web/src/WaveList.tsx:1,30-32,205-225
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1269,7 +1269,7 @@
     WaveList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 wave 头部
   why: >
     §3.4：roving tabindex 让整个列表只占一个 tab stop，Tab 必须是「出口」而非在卡片间走
-  source: web/src/WaveList.tsx:18-22,123-125,200-230
+  source: web/src/WaveList.tsx:18-22,91,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1428,7 +1428,7 @@
     元素；已脱离文档的节点必须被静默跳过
   why: >
     §4.4；脱离节点若不跳过，`focus()` 无效且焦点掉回 `<body>`
-  source: web/src/ui/Dialog/Dialog.tsx:250-261
+  source: web/src/ui/Dialog/Dialog.tsx:250-261,248
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
   owner_slice: ui/dialog
   intentional_omission: false
@@ -1461,7 +1461,7 @@
     作为 `aria-label`
   why: >
     §4.7 定义的 role + name 契约；locator 依赖 `getByRole('dialog', { name })`
-  source: web/src/ui/Dialog/Dialog.tsx:348-350
+  source: web/src/ui/Dialog/Dialog.tsx:348-350,360
   authoritative_test: web/e2e/a11y-axe.spec.ts:382
   owner_slice: ui/dialog
   intentional_omission: false
@@ -1499,7 +1499,7 @@
     CovePage 用 `<h1>` 内的真实嵌套 `<button>`——后者是首选）
   why: >
     §5：不可聚焦就没有键盘进入 rename 的路径
-  source: web/src/pages/Cove.tsx:188-293
+  source: web/src/pages/Cove.tsx:188-293,58
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
   owner_slice: features/cove/page
   intentional_omission: false
@@ -1534,7 +1534,7 @@
     （Enter 走原生 button 激活）
   why: >
     Slice 3 (#64)：F2 是 Windows 惯例。preventDefault 只给 F2 是因为 Enter 不需要拦截
-  source: web/src/pages/Wave.tsx:197-209
+  source: web/src/pages/Wave.tsx:197-209,346
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1628,7 +1628,7 @@
     §6 的表格是这份清单的唯一记录处。另有无 `outline:none` 但有 focus-visible 的表面：
     `.cove-title-input`、`.new-wave-input`；而 `.wave-back` / `.wave-cove` / `.crumb-link`
     用实心 `outline` + `outline-offset`，从不剥默认焦点环
-  source: web/src/calm.css:283
+  source: web/src/calm.css:283,299
   authoritative_test: NONE
   owner_slice: styles/global
   intentional_omission: false
@@ -1646,7 +1646,7 @@
     两种形态都必须在面板背景上可见，不得按主题调暗
   why: >
     §6 定义的两种确切形态；"we don't dim them theme-side" 是明确禁令
-  source: web/src/calm.css:291-293
+  source: web/src/calm.css:291-293,308
   authoritative_test: web/e2e/color-system-anchor.spec.ts:26
   owner_slice: styles/global
   intentional_omission: false
@@ -1702,7 +1702,7 @@
   why: >
     Slice 4 (#65)：`!important` 是**必需的**——否则赢不过任何内联 `animation:` 简写。
     这是全局覆盖，新增 `animation:` 因此是免费的
-  source: web/src/calm.css:2483-2492
+  source: web/src/calm.css:2483-2492,3521
   authoritative_test: NONE
   owner_slice: styles/global
   intentional_omission: false
@@ -1736,7 +1736,7 @@
   why: >
     §7 明示 "Don't add a spinner where text would do"——spinner 在 reduced-motion 下会
     被折叠成静止，从而丢失它承载的信息
-  source: web/src/pages/Wave.tsx:256
+  source: web/src/pages/Wave.tsx:256,291
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1793,7 +1793,7 @@
   why: >
     §8.1：这是屏幕阅读器与 AI agent 走的同一条路径——测试若够不到，它们也够不到。
     这条既是测试纪律也是产品可驱动性的代理指标
-  source: web/e2e/a11y-keyboard.spec.ts:215
+  source: web/e2e/a11y-keyboard.spec.ts:215,236
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:215
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -1958,7 +1958,7 @@
   why: >
     Slice 2 review 期间捕获（原写于该原语还叫 `Modal.tsx` 时），由 PR #93 逐字搬过来。
     记录在案是为了让读者不会把它当作真理去依赖
-  source: web/src/ui/Dialog/Dialog.tsx:111-117
+  source: web/src/ui/Dialog/Dialog.tsx:111-117,124
   authoritative_test: NONE
   owner_slice: ui/dialog
   intentional_omission: false
