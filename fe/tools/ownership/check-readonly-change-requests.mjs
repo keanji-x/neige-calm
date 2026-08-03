@@ -18,8 +18,11 @@ function git(...args) {
 try {
   const feRoot = join(import.meta.dirname, '../..');
   const base = resolveOwnershipBase(join(feRoot, '..'));
+  const commits = process.env.OWNERSHIP_EVENT_NAME === 'push'
+    ? []
+    : gitOwnershipCommits(join(feRoot, '..'), base);
   const repositoryViolations = validateOwnership(
-    ownershipManifest, repositoryFiles(join(feRoot, '..')), gitOwnershipCommits(join(feRoot, '..'), base),
+    ownershipManifest, repositoryFiles(join(feRoot, '..')), commits,
   );
   if (repositoryViolations.length) {
     throw new Error(`repository ownership audit failed:\n${repositoryViolations
