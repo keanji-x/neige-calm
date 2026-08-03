@@ -40,9 +40,11 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
   if (!unlayeredException) {
     root.walkAtRules((atRule) => {
       if (atRule.name.toLowerCase() === 'layer' && atRule.parent === root) {
+        let containsRule = false;
+        atRule.walkRules(() => { containsRule = true; });
         if (atRule.nodes && !atRule.params.trim()) {
           violations.push({ rule: 'known-layer', message: 'anonymous layer' });
-        } else {
+        } else if (!containsRule) {
           for (const name of atRule.params.split(',').map((item) => item.trim().split('.')[0]).filter(Boolean)) {
             if (!order.includes(name)) violations.push({ rule: 'known-layer', message: `unknown layer ${name}` });
           }
@@ -58,6 +60,7 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
     const layer = enclosingLayer(rule);
     if (!unlayeredException) {
       if (!layer.layered) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
+      else if (layer.name && !order.includes(layer.name)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer.name}` });
       return;
     }
     for (const selector of rule.selectors) {
