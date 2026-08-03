@@ -164,6 +164,15 @@ describe('CSS AST fixtures', () => {
     expect(auditLayeredCss('.application-panel:not(.cm-editor) {}', order, true)).toHaveLength(1);
   });
 
+  it('still rejects unknown layer statements and imports in unlayered exception files', () => {
+    expect(auditLayeredCss('@layer alien; .cm-x {}', order, true)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer alien' },
+    ]);
+    expect(auditLayeredCss('@import url("theme.css") layer(alien); .cm-x {}', order, true)).toEqual([
+      { rule: 'known-layer', message: 'unknown layer alien' },
+    ]);
+  });
+
   it('compares extracted global classes with the manifest in both directions', () => {
     const actual = extractGlobalClasses([read('manifest/classes.css')]);
     expect(compareGlobalClassManifest(actual, ['alpha', 'beta'])).toEqual([]);

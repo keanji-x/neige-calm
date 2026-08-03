@@ -38,35 +38,33 @@ export function layerOrder(entryCss: string): string[] {
 export function auditLayeredCss(css: string, order: readonly string[], unlayeredException = false): CssViolation[] {
   const violations: CssViolation[] = [];
   const root = postcss.parse(css);
-  if (!unlayeredException) {
-    root.walkAtRules((atRule) => {
-      const hasLayerAncestor = (): boolean => {
-        let parent = atRule.parent;
-        while (parent && parent !== root) {
-          if (parent.type === 'atrule' && parent.name.toLowerCase() === 'layer') return true;
-          parent = parent.parent;
-        }
-        return false;
-      };
-      if (atRule.name.toLowerCase() === 'layer' && !hasLayerAncestor()) {
-        let containsRule = false;
-        atRule.walkRules(() => { containsRule = true; });
-        if (atRule.nodes && !atRule.params.trim() && !containsRule) {
-          violations.push({ rule: 'known-layer', message: 'anonymous layer' });
-        } else if (!containsRule) {
-          for (const name of atRule.params.split(',').map((item) => item.trim().split('.')[0]).filter(Boolean)) {
-            if (!order.includes(name)) violations.push({ rule: 'known-layer', message: `unknown layer ${name}` });
-          }
+  root.walkAtRules((atRule) => {
+    const hasLayerAncestor = (): boolean => {
+      let parent = atRule.parent;
+      while (parent && parent !== root) {
+        if (parent.type === 'atrule' && parent.name.toLowerCase() === 'layer') return true;
+        parent = parent.parent;
+      }
+      return false;
+    };
+    if (atRule.name.toLowerCase() === 'layer' && !hasLayerAncestor()) {
+      let containsRule = false;
+      atRule.walkRules(() => { containsRule = true; });
+      if (atRule.nodes && !atRule.params.trim() && !containsRule) {
+        violations.push({ rule: 'known-layer', message: 'anonymous layer' });
+      } else if (!containsRule) {
+        for (const name of atRule.params.split(',').map((item) => item.trim().split('.')[0]).filter(Boolean)) {
+          if (!order.includes(name)) violations.push({ rule: 'known-layer', message: `unknown layer ${name}` });
         }
       }
-      if (atRule.name.toLowerCase() === 'import') {
-        const layerMatch = /\blayer(?:\(\s*([^\s)]+)\s*\))?(?=\s|;|$)/i.exec(atRule.params);
-        const layer = layerMatch?.[1]?.split('.')[0];
-        if (layerMatch && !layer) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
-        else if (layer && !order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
-      }
-    });
-  }
+    }
+    if (atRule.name.toLowerCase() === 'import') {
+      const layerMatch = /\blayer(?:\(\s*([^\s)]+)\s*\))?(?=\s|;|$)/i.exec(atRule.params);
+      const layer = layerMatch?.[1]?.split('.')[0];
+      if (layerMatch && !layer) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
+      else if (layer && !order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
+    }
+  });
   root.walkRules((rule) => {
     const layer = enclosingLayer(rule);
     if (!unlayeredException) {
