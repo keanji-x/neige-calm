@@ -62,15 +62,20 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
       const source = ts.sys.readFile(resolve(fixtureDir, fixtureName)) ?? '';
       return eslint.lintText(source, { filePath: resolve(import.meta.dirname, '../../web/src', targetName) });
     }));
-    const messages = results.flatMap(([result]) => result.messages)
-      .filter((message) => message.ruleId?.startsWith('architecture/'));
+    const messages = results.flatMap(([result], index) => result.messages
+      .filter((message) => message.ruleId?.startsWith('architecture/'))
+      .map((message) => ({ ...message, fixtureName: fixtureTargets[index][0] })));
     const ruleIds = messages.map((message) => message.ruleId);
     if (kind === 'positive') {
       return { status: messages.length ? 1 : 0, stdout: ruleIds.join('\n'), stderr: '' };
     }
     const expectedRules = ['architecture/no-module-runtime-state', 'architecture/no-create-context-outside-allowlist'];
     const missingRules = expectedRules.filter((ruleId) => !ruleIds.includes(ruleId));
-    return { status: missingRules.length ? 0 : 1, stdout: missingRules.length ? missingRules.join('\n') : caseName, stderr: '' };
+    return {
+      status: missingRules.length ? 0 : 1,
+      stdout: missingRules.length ? missingRules.join('\n') : messages.map((message) => `web/src/${message.fixtureName}: ${message.ruleId}`).join('\n'),
+      stderr: '',
+    };
   }
   if (caseName.startsWith('source-layout') || caseName === 'top-level-only-main') {
     const cwd = resolve(fixtures, caseName, kind);
@@ -212,6 +217,7 @@ describe('architecture fixtures', () => {
     ['source-layout', 'core/helpers.js'],
     ['source-layout-dir', 'web/src/features/inbox/shared'],
     ['top-level-only-main', 'web/src/loose.js'],
+    ['test-module-runtime-state-exemption', 'architecture/'],
   ]);
 
   for (const caseName of readdirSync(fixtures)) {
@@ -245,6 +251,14 @@ describe('architecture fixtures', () => {
         }
       } else {
         expect(diagnostic, `${caseName} must produce a violation for ${expected}`).toContain(expected);
+        const sourceFiles = sourceFilesUnder(negativeRoot);
+        for (const file of sourceFiles) {
+          const fixturePath = relative(negativeRoot, file).replaceAll('\\', '/');
+          const pathWithoutExtension = fixturePath.replace(/\.(?:[cm]?[jt]sx?|fixture)$/, '');
+          const diagnosticSuffix = pathWithoutExtension.split('/').slice(-2).join('/');
+          expect(sourceFiles.length === 1 || diagnostic.includes(fixturePath) || diagnostic.includes(diagnosticSuffix),
+            `${caseName}: ${fixturePath} must participate in a violation`).toBe(true);
+        }
       }
     });
   }
