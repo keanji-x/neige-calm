@@ -1,5 +1,5 @@
--- #985: claim 前定位失败从未产生判决事件；清除历史误写，使投影与事件日志重新一致。
--- 幂等且只触碰仍为 pending 的行；material 只能属于 in-flight 行。
+-- #985 防御性清理：pending stale 在已发布版本中不可达；所有 stale 写者都有
+-- in-flight 守卫，且行不会回到 pending。仅为曾带 claim 侧误写的短命开发分支兜底。
 UPDATE tasks
 SET context_stale_at_ms = NULL
 WHERE status = 'pending'

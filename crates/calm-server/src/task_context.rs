@@ -9,6 +9,7 @@ use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::wave_report::ReportBlock;
+use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 
 use crate::db::{Repo, write_in_tx_typed, write_with_actor_events_typed};
@@ -100,6 +101,8 @@ pub struct ContextMetrics {
     sweep_caps: AtomicU64,
     last_success_ms: AtomicI64,
     consecutive_failures: AtomicU64,
+    claim_fence_race_lost: AtomicU64,
+    context_resolve_failures: DashMap<&'static str, u64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -116,6 +119,8 @@ pub struct ContextMetricsSnapshot {
     pub sweep_caps: u64,
     pub last_success_age_seconds: u64,
     pub consecutive_failures: u64,
+    pub claim_fence_race_lost: u64,
+    pub context_resolve_failures: BTreeMap<&'static str, u64>,
 }
 
 impl ContextMetrics {
@@ -143,7 +148,21 @@ impl ContextMetrics {
                 now_ms().saturating_sub(last) as u64 / 1000
             },
             consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
+            claim_fence_race_lost: self.claim_fence_race_lost.load(Ordering::Relaxed),
+            context_resolve_failures: self
+                .context_resolve_failures
+                .iter()
+                .map(|entry| (*entry.key(), *entry.value()))
+                .collect(),
         }
+    }
+
+    pub fn record_claim_fence_race_lost(&self) {
+        self.claim_fence_race_lost.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_context_resolve_failure(&self, variant: &'static str) {
+        *self.context_resolve_failures.entry(variant).or_insert(0) += 1;
     }
 
     fn export(&self) -> ContextMetricsSnapshot {
@@ -155,6 +174,8 @@ impl ContextMetrics {
             context_sweep_verified_tuples = health.sweep_verified_tuples,
             context_sweep_hits = health.sweep_hits,
             context_sweep_caps = health.sweep_caps,
+            context_claim_fence_race_lost = health.claim_fence_race_lost,
+            context_resolve_failures = ?health.context_resolve_failures,
             "task context sweep metrics"
         );
         health
@@ -170,11 +191,20 @@ pub struct TaskContextMonitor {
 
 impl TaskContextMonitor {
     pub fn new(repo: Arc<dyn Repo>, events: EventBus, write: WriteContext) -> Self {
+        Self::new_with_metrics(repo, events, write, Arc::new(ContextMetrics::default()))
+    }
+
+    pub fn new_with_metrics(
+        repo: Arc<dyn Repo>,
+        events: EventBus,
+        write: WriteContext,
+        metrics: Arc<ContextMetrics>,
+    ) -> Self {
         Self {
             repo,
             events,
             write,
-            metrics: Arc::new(ContextMetrics::default()),
+            metrics,
         }
     }
 

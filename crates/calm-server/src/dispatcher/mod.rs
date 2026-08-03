@@ -682,10 +682,11 @@ impl Dispatcher {
             Arc::downgrade(&operation_runtime),
             Arc::clone(&semaphore),
         );
-        let context_monitor = Arc::new(TaskContextMonitor::new(
+        let context_monitor = Arc::new(TaskContextMonitor::new_with_metrics(
             repo.clone(),
             events.clone(),
             write.clone(),
+            scheduler.context_metrics(),
         ));
         // #741 §1.3 — take the durable-liveness feeder's notification
         // subscription BEFORE `shared_codex_appserver` is moved into the

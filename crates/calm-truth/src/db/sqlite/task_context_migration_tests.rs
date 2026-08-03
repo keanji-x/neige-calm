@@ -28,6 +28,19 @@ fn migrator_through_0068() -> sqlx::migrate::Migrator {
     }
 }
 
+fn migrator_through_0069() -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 69)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
 #[tokio::test]
 async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     let pool = SqlitePoolOptions::new()
@@ -97,17 +110,33 @@ async fn pending_context_stale_cleanup_is_idempotent_and_scoped() {
     .await
     .expect("seed stale rows");
 
-    let cleanup = "UPDATE tasks SET context_stale_at_ms = NULL WHERE status = 'pending' AND context_stale_at_ms IS NOT NULL";
-    let first = sqlx::query(cleanup)
-        .execute(&pool)
+    let events_before: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&pool)
         .await
-        .expect("first cleanup");
-    let second = sqlx::query(cleanup)
-        .execute(&pool)
+        .expect("count events before migration");
+    migrator_through_0069()
+        .run(&pool)
         .await
-        .expect("second cleanup");
-    assert_eq!(first.rows_affected(), 1);
-    assert_eq!(second.rows_affected(), 0);
+        .expect("apply real 0069 migration");
+    let changes_after_first: i64 = sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(&pool)
+        .await
+        .expect("read changes after first migration");
+    migrator_through_0069()
+        .run(&pool)
+        .await
+        .expect("re-run real 0069 migration");
+    let changes_after_second: i64 = sqlx::query_scalar("SELECT total_changes()")
+        .fetch_one(&pool)
+        .await
+        .expect("read changes after second migration");
+    assert_eq!(changes_after_second, changes_after_first);
+    let pending_stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = 'p'")
+            .fetch_one(&pool)
+            .await
+            .expect("read pending row");
+    assert_eq!(pending_stale, None);
     let stale: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = 'r'")
             .fetch_one(&pool)
@@ -117,5 +146,13 @@ async fn pending_context_stale_cleanup_is_idempotent_and_scoped() {
         stale,
         Some(9),
         "migration must not touch in-flight verdicts"
+    );
+    let events_after: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .expect("count events after migration");
+    assert_eq!(
+        events_after, events_before,
+        "migration must not emit events"
     );
 }

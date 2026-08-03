@@ -41,6 +41,7 @@ use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_WRITE_MARKDOWN;
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
@@ -71,7 +72,9 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_report::tasks_rebuild_tx;
 use calm_types::event::TaskContextRef;
+use calm_types::report_blocks::render_fence;
 use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 use serde_json::{Value, json};
 
@@ -168,6 +171,11 @@ async fn boot() -> Boot {
         "spec-thread",
     )
     .await;
+    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(wave.id.as_str())
+        .execute(sqlx_repo.pool())
+        .await
+        .expect("mark spec session as wave root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -2826,6 +2834,29 @@ async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     .unwrap();
 }
 
+async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)], if_doc_rev: u64) {
+    let body = blocks
+        .iter()
+        .map(|(id, kind, payload)| {
+            let content = if *kind == "prose" {
+                payload["markdown"].as_str().unwrap().to_string()
+            } else {
+                render_fence(kind, payload)
+            };
+            format!("<!-- neige:{id} -->\n{content}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    call_tool(
+        boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(boot),
+        json!({"body": body, "if_doc_rev": if_doc_rev}),
+    )
+    .await
+    .expect("production report edit");
+}
+
 #[tokio::test]
 async fn report_without_doc_rev_is_retryable_malformed_instead_of_revision_zero() {
     let boot = boot().await;
@@ -3039,6 +3070,11 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
     assert_eq!(index_rows, 0);
     assert_eq!(spawned.load(Ordering::SeqCst), 0);
     assert_eq!(scheduler.claim_fence_race_lost_count(), 1);
+    assert_eq!(
+        scheduler.context_metrics().snapshot().claim_fence_race_lost,
+        1,
+        "claim fence counter must be present in the production health snapshot"
+    );
 }
 
 #[tokio::test]
@@ -3064,85 +3100,118 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         let boot = boot().await;
         set_lifecycle(&boot, WaveLifecycle::Working).await;
         let key = format!("root-{case}");
-        let task_block = |id: &str, tombstone: bool| ReportBlock {
-            id: id.into(),
-            kind: "task".into(),
-            rev: 1,
-            payload: if tombstone {
-                json!({"key": key, "tombstone": {"reason": "gone"}})
-            } else {
-                json!({"key": key, "kind": "terminal", "goal": "true"})
-            },
-        };
-        let blocks = match case {
-            "duplicate" => vec![task_block("b_1001", false), task_block("b_1002", false)],
-            "tombstoned" => vec![task_block("b_1003", true)],
-            "absent" => vec![ReportBlock {
-                id: "b_1004".into(),
-                kind: "prose".into(),
-                rev: 1,
-                payload: json!({"markdown": "nothing"}),
-            }],
-            "invalid-root-ref" => vec![ReportBlock {
-                id: "b_1005".into(),
-                kind: "task".into(),
-                rev: 1,
-                payload: json!({
-                    "key": key, "kind": "terminal", "goal": "true", "refs": ["not-a-neige-link"]
-                }),
-            }],
-            "deleted-direct-ref" => vec![ReportBlock {
-                id: "b_1006".into(),
-                kind: "task".into(),
-                rev: 1,
-                payload: json!({
-                    "key": key, "kind": "terminal", "goal": "true",
-                    "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
-                }),
-            }],
-            "deleted-depth-two-ref" => vec![
-                ReportBlock {
-                    id: "b_1007".into(),
-                    kind: "task".into(),
-                    rev: 1,
-                    payload: json!({
-                        "key": key, "kind": "terminal", "goal": "true",
-                        "refs": [format!("neige://wave/{}#b_cafe", boot.wave_id)]
-                    }),
-                },
-                ReportBlock {
-                    id: "b_cafe".into(),
-                    kind: "prose".into(),
-                    rev: 1,
-                    payload: json!({
-                        "markdown": format!("[deep](neige://wave/{}#b_dead)", boot.wave_id)
-                    }),
-                },
-            ],
-            _ => unreachable!(),
-        };
+        let valid_root = json!({
+            "key": key, "kind": "terminal", "goal": "true",
+            "declared_by": "spec", "ready": true
+        });
         insert_report_payload(
             &boot,
             &format!("report-{case}"),
             serde_json::to_value(WaveReportPayload {
                 schema_version: WaveReportPayload::SCHEMA_VERSION,
-                doc_rev: 1,
+                doc_rev: 0,
                 summary: String::new(),
                 body: String::new(),
-                blocks: Some(blocks),
+                blocks: Some(Vec::new()),
             })
             .unwrap(),
         )
         .await;
-        let task = plan_task(&boot.wave_id, &key, TaskKind::Terminal, &[]);
-        let task_id = task.id.clone();
-        seed_task(&boot, task).await;
+        let root_id = "b_1001";
+        let mut initial = vec![(root_id, "task", valid_root.clone())];
+        if case == "deleted-direct-ref" {
+            initial[0].2["refs"] = json!([format!("neige://wave/{}#b_dead", boot.wave_id)]);
+            initial.push(("b_dead", "prose", json!({"markdown": "target"})));
+        } else if case == "deleted-depth-two-ref" {
+            initial[0].2["refs"] = json!([format!("neige://wave/{}#b_cafe", boot.wave_id)]);
+            initial.push((
+                "b_cafe",
+                "prose",
+                json!({
+                    "markdown": format!("[deep](neige://wave/{}#b_dead)", boot.wave_id)
+                }),
+            ));
+            initial.push(("b_dead", "prose", json!({"markdown": "target"})));
+        }
+        edit_report_blocks(&boot, &initial, 0).await;
+        let task_id = format!("{}:{key}", boot.wave_id);
+        assert!(boot.repo.task_get(&task_id).await.unwrap().is_some());
+
+        let broken = match case {
+            "duplicate" => vec![
+                (root_id, "task", valid_root.clone()),
+                ("b_1002", "task", valid_root.clone()),
+            ],
+            "tombstoned" => vec![(
+                root_id,
+                "task",
+                json!({
+                    "key": key, "declared_by": "spec", "tombstoned_by": "spec",
+                    "tombstone": {"reason": "gone"}
+                }),
+            )],
+            "absent" => vec![("b_1004", "prose", json!({"markdown": "nothing"}))],
+            "invalid-root-ref" => vec![(
+                root_id,
+                "task",
+                json!({
+                    "key": key, "kind": "terminal", "goal": "true",
+                    "declared_by": "spec", "ready": true,
+                    "refs": ["not-a-neige-link"]
+                }),
+            )],
+            "deleted-direct-ref" => vec![(root_id, "task", initial[0].2.clone())],
+            "deleted-depth-two-ref" => vec![
+                (root_id, "task", initial[0].2.clone()),
+                ("b_cafe", "prose", initial[1].2.clone()),
+            ],
+            _ => unreachable!(),
+        };
         let pool = boot.repo.sqlite_pool().unwrap();
-        sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-            .bind(&task_id)
-            .execute(&pool)
+        if case == "invalid-root-ref" {
+            // The public writer rejects malformed refs before persistence. Model
+            // an older/corrupt stored report, then run the production rebuild
+            // projection boundary; the task row itself was still created by the
+            // real report edit above.
+            let malformed = WaveReportPayload {
+                schema_version: WaveReportPayload::SCHEMA_VERSION,
+                doc_rev: 2,
+                summary: String::new(),
+                body: String::new(),
+                blocks: Some(vec![ReportBlock {
+                    id: root_id.into(),
+                    kind: "task".into(),
+                    rev: 2,
+                    payload: broken[0].2.clone(),
+                }]),
+            };
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query(
+                "UPDATE cards SET payload = ?1, body_crdt = NULL \
+                 WHERE wave_id = ?2 AND kind = 'wave-report'",
+            )
+            .bind(serde_json::to_string(&malformed).unwrap())
+            .bind(boot.wave_id.as_str())
+            .execute(&mut *tx)
             .await
             .unwrap();
+            tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        } else {
+            edit_report_blocks(&boot, &broken, 1).await;
+        }
+        if matches!(
+            case,
+            "duplicate" | "tombstoned" | "absent" | "invalid-root-ref"
+        ) {
+            assert!(
+                boot.repo.task_get(&task_id).await.unwrap().is_none(),
+                "case {case}: production projection must guard-delete the pending row"
+            );
+            continue;
+        }
         let expected_variant =
             TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
                 .resolve_task_closure(boot.wave_id.as_str(), &key)
@@ -3174,28 +3243,18 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             1,
             "case {case} must increment its ResolveError bucket"
         );
+        assert_eq!(
+            scheduler
+                .context_metrics()
+                .snapshot()
+                .context_resolve_failures
+                .get(expected_variant),
+            Some(&1),
+            "case {case}: resolve bucket must be present in the production health snapshot"
+        );
         if matches!(case, "deleted-direct-ref" | "deleted-depth-two-ref") {
-            let repaired_id = "b_dead";
-            let report_id = format!("report-{case}");
-            let payload: String = sqlx::query_scalar("SELECT payload FROM cards WHERE id = ?1")
-                .bind(&report_id)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-            let mut report: WaveReportPayload = serde_json::from_str(&payload).unwrap();
-            report.doc_rev += 1;
-            report.blocks.as_mut().unwrap().push(ReportBlock {
-                id: repaired_id.into(),
-                kind: "prose".into(),
-                rev: 1,
-                payload: json!({"markdown": "repaired"}),
-            });
-            sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
-                .bind(serde_json::to_string(&report).unwrap())
-                .bind(report_id)
-                .execute(&pool)
-                .await
-                .unwrap();
+            let repaired = vec![(root_id, "task", valid_root.clone())];
+            edit_report_blocks(&boot, &repaired, 2).await;
             TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
                 .resolve_task_closure(boot.wave_id.as_str(), &key)
                 .await
@@ -3204,7 +3263,7 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
             assert_ne!(
                 boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
                 TaskStatus::Pending,
-                "case {case} must recover after the referenced block is restored"
+                "case {case} must recover after the next valid report edit"
             );
         }
     }
@@ -3235,6 +3294,12 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
                     rev: 1,
                     payload: json!({"key": "blocked-head", "kind": "terminal", "goal": "true"}),
                 },
+                ReportBlock {
+                    id: "b_tail".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({"key": "healthy-tail", "kind": "terminal", "goal": "true"}),
+                },
             ]),
         })
         .unwrap(),
@@ -3250,6 +3315,11 @@ async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
         .bind(&blocked_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&healthy_id)
         .execute(&pool)
         .await
         .unwrap();

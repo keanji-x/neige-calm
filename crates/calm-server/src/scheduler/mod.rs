@@ -71,7 +71,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
-use crate::task_context::{FrozenClosure, TaskContextMonitor, context_ref};
+use crate::task_context::{ContextMetrics, FrozenClosure, TaskContextMonitor, context_ref};
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 /// Kernel default per-wave task budget when `waves.task_budget` is NULL
@@ -169,23 +169,26 @@ pub fn lifecycle_allows_scheduling(lifecycle: WaveLifecycle) -> bool {
 /// lease at operation claim time, and the lease path is
 /// `.claude/worktrees/<wave>/<card>`, so concurrent claims are disjoint by
 /// construction. This function intentionally remains budget arithmetic.
+fn wave_capacity(tasks: &[Task], budget: i64) -> usize {
+    let running_cost = tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
+            )
+        })
+        .count() as i64;
+    (budget - running_cost).max(0) as usize
+}
+
 pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
     let done_keys: BTreeSet<&str> = tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Done)
         .map(|t| t.key.as_str())
         .collect();
-    let running_cost = tasks
-        .iter()
-        .filter(|t| {
-            matches!(
-                t.status,
-                TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
-            )
-        })
-        .count() as i64;
-    let capacity = (budget - running_cost).max(0) as usize;
-    if capacity == 0 {
+    if wave_capacity(tasks, budget) == 0 {
         return Vec::new();
     }
     tasks
@@ -352,8 +355,7 @@ pub struct Scheduler {
     /// #985 PR3a — dispatched recovery must not start until the boot
     /// context sweep has persisted every material verdict.
     context_sweep_boot_done: AtomicBool,
-    claim_fence_race_lost: Arc<std::sync::atomic::AtomicU64>,
-    context_resolve_failures: DashMap<&'static str, u64>,
+    context_metrics: Arc<ContextMetrics>,
     claim_fence_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
 }
 
@@ -424,8 +426,7 @@ impl Scheduler {
             inflight: Arc::new(DashMap::new()),
             boot_sweep_done: AtomicBool::new(false),
             context_sweep_boot_done: AtomicBool::new(false),
-            claim_fence_race_lost: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            context_resolve_failures: DashMap::new(),
+            context_metrics: Arc::new(ContextMetrics::default()),
             claim_fence_test_hook: std::sync::Mutex::new(None),
         })
     }
@@ -439,13 +440,20 @@ impl Scheduler {
     }
 
     pub fn claim_fence_race_lost_count(&self) -> u64 {
-        self.claim_fence_race_lost.load(Ordering::Relaxed)
+        self.context_metrics.snapshot().claim_fence_race_lost
     }
 
     pub fn context_resolve_failure_count(&self, variant: &'static str) -> u64 {
-        self.context_resolve_failures
+        self.context_metrics
+            .snapshot()
+            .context_resolve_failures
             .get(variant)
-            .map_or(0, |count| *count)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn context_metrics(&self) -> Arc<ContextMetrics> {
+        Arc::clone(&self.context_metrics)
     }
 
     /// Resolve the kernel default budget from `NEIGE_WAVE_TASK_BUDGET`
@@ -570,17 +578,7 @@ impl Scheduler {
             return Ok(());
         }
         let budget = self.wave_budget(wave_id).await?;
-        let capacity = (budget
-            - tasks
-                .iter()
-                .filter(|task| {
-                    matches!(
-                        task.status,
-                        TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
-                    )
-                })
-                .count() as i64)
-            .max(0) as usize;
+        let capacity = wave_capacity(&tasks, budget);
         let ready = compute_ready(&tasks, budget);
         let mut claimed = 0;
         for task in ready {
@@ -687,7 +685,7 @@ impl Scheduler {
                 Ok(closure) => closure,
                 Err(error) => {
                     let variant = error.variant();
-                    *self.context_resolve_failures.entry(variant).or_insert(0) += 1;
+                    self.context_metrics.record_context_resolve_failure(variant);
                     tracing::warn!(
                         task_id = %task.id,
                         resolve_error_variant = variant,
@@ -718,7 +716,7 @@ impl Scheduler {
             hook.resolved.notify_one();
             hook.resume.notified().await;
         }
-        let claim_fence_race_lost = Arc::clone(&self.claim_fence_race_lost);
+        let context_metrics = Arc::clone(&self.context_metrics);
         let result =
             write_with_actor_events_typed::<Task, _>(
                 self.repo.as_ref(),
@@ -743,7 +741,7 @@ impl Scheduler {
                         // changed report doc_rev is a silent race loss. This runs before
                         // the pending -> dispatched state flip.
                         for (frozen_wave, frozen_rev) in &claim_doc_revs {
-                            let current: Option<Option<i64>> = sqlx::query_as::<_, (Option<i64>,)>(
+                            let current: Option<Option<i64>> = match sqlx::query_as::<_, (Option<i64>,)>(
                                 "SELECT json_extract(c.payload, '$.docRev') FROM cards c \
                                  JOIN waves w ON w.id = c.wave_id \
                                  WHERE c.wave_id = ?1 AND c.kind = 'wave-report' LIMIT 1",
@@ -751,10 +749,20 @@ impl Scheduler {
                             .bind(frozen_wave)
                             .fetch_optional(&mut **tx)
                             .await
-                            .map(|row| row.map(|(value,)| value))
-                            .unwrap_or(None);
+                            {
+                                Ok(row) => row.map(|(value,)| value),
+                                Err(error) => {
+                                    tracing::warn!(
+                                        wave_id = frozen_wave,
+                                        error = %error,
+                                        "scheduler: claim fence doc_rev query failed; failing closed"
+                                    );
+                                    context_metrics.record_claim_fence_race_lost();
+                                    return Err(race_lost_err());
+                                }
+                            };
                             if !fence_revision_matches(current, *frozen_rev) {
-                                claim_fence_race_lost.fetch_add(1, Ordering::Relaxed);
+                                context_metrics.record_claim_fence_race_lost();
                                 return Err(race_lost_err());
                             }
                         }
@@ -786,7 +794,7 @@ impl Scheduler {
                                 .map(|current| (&current.block_id, &current.hash))
                                 != Some((&root.block_id, &root.hash))
                             {
-                                claim_fence_race_lost.fetch_add(1, Ordering::Relaxed);
+                                context_metrics.record_claim_fence_race_lost();
                                 return Err(race_lost_err());
                             }
                         }
