@@ -26,7 +26,10 @@ const cases = [
 describe('oracle rule fixtures', () => {
   it('anchors the guarded YAML fields to the SCHEMA example', () => {
     const schema = readFileSync(resolve(import.meta.dirname, '../../../docs/oracle/SCHEMA.md'), 'utf8');
-    const example = /```yaml\s*\n([\s\S]*?)```/.exec(schema)?.[1];
+    const entrySection = /^# Oracle 条目 schema[^\n]*\n([\s\S]*?)(?=^## )/m.exec(schema)?.[1] ?? '';
+    const yamlBlocks = [...entrySection.matchAll(/```yaml\s*\n([\s\S]*?)```/g)];
+    expect(yamlBlocks, 'the Oracle entry section must contain exactly one fenced YAML example').toHaveLength(1);
+    const example = yamlBlocks[0]?.[1];
     expect(example, 'SCHEMA.md must contain its fenced YAML entry example').toBeDefined();
     const parsed: unknown = parse(example ?? '');
     expect(Array.isArray(parsed) && parsed.length === 1 && parsed[0] && typeof parsed[0] === 'object').toBe(true);
