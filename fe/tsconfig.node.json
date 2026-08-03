@@ -15,6 +15,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "tools"],
+  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "tools", "mock"],
   "exclude": ["tools/architecture/fixtures"]
 }
