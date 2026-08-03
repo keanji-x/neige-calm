@@ -13,6 +13,7 @@
 - `setVisible(false)` 只发布生命周期变化，绝不卸载。只有显式 `unmount()` 才注销 resolver、退订 controller 并 dispose 一次，因为离开视口卸载会丢 PTY 或 iframe 会话。
 - 默认 snapshot 是 visible=true、focused=false、geometry=0/0/not-ready、refreshEpoch=0；相同状态不通知，而每个 refresh 命令都推进 epoch。默认可见让无 observer 环境仍能工作。
 - resolver 注销会比对当前 instance identity，旧挂载的 cleanup 不能删除快速重挂产生的新 instance。这样 StrictMode 与竞态 cleanup 不会击穿宿主路由。
+- entry 的 `wheelTarget` 冻结为接收 card 与只含 `cardId`/`slots` 的 instance，并返回 xterm ref、native-scroll ref、sink 或 null；具体路由与卡片壳接线留给后续 slice。
 
 ## 故意不做
 

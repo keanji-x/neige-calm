@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CardEntry } from './public.js';
 import { createCardHost, createCardRegistry } from './public.js';
@@ -17,6 +17,8 @@ const base = {
   accessibleName: () => 'accessible',
   create: Object.freeze({ mode: 'kernel-minted-only' } as const),
 };
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('cards public behavior', () => {
   it('runs the public-only fake consumer chain: register, resolve, host, lifecycle', () => {
@@ -96,6 +98,48 @@ describe('cards public behavior', () => {
       .toThrow('RefreshBackingConflict(behavior-one)');
   });
 
+  it('[INV-CARD-072] removes an overwritten type claim before installing its replacement', () => {
+    const registry = createCardRegistry();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      claim: { mode: 'exact', kind: 'released-kind' },
+      fromKernel: (raw) => ({ type: 'behavior-one', id: raw.id, payload: { label: 'stale' } }),
+    });
+    registry.register({ ...base, type: 'behavior-one' });
+    expect(registry.resolve({ id: 'old', kind: 'released-kind', payload: null })).toBeNull();
+    expect(() => registry.register({
+      ...base,
+      type: 'behavior-two',
+      claim: { mode: 'exact', kind: 'released-kind' },
+    })).not.toThrow();
+  });
+
+  it('rolls back failed controller initialization', () => {
+    const registry = createCardRegistry();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      createController: () => { throw new Error('controller failed'); },
+    });
+    const host = createCardHost(registry);
+    expect(() => host.mount({ type: 'behavior-one', id: 'failed', payload: { label: 'x' } }))
+      .toThrow('controller failed');
+    expect(host.resolve('failed')).toBeNull();
+
+    const dispose = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      refreshBacking: 'epoch',
+      createController: () => ({ onRefresh: vi.fn(), dispose }),
+    });
+    expect(() => host.mount({ type: 'behavior-one', id: 'conflict-dispose', payload: { label: 'x' } }))
+      .toThrow('RefreshBackingConflict(behavior-one)');
+    expect(host.resolve('conflict-dispose')).toBeNull();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
   it('[INV-CARD-072] overwrites a repeated type registration', () => {
     const registry = createCardRegistry();
     registry.register({ ...base, type: 'behavior-one', title: () => 'first' });
@@ -114,6 +158,28 @@ describe('cards public behavior', () => {
     mounted.host.setVisible(true);
     expect(onVisibleChange).not.toHaveBeenCalled();
     expect(notified).not.toHaveBeenCalled();
+  });
+
+  it('advances the delivered snapshot before synchronous re-entry', () => {
+    const registry = createCardRegistry();
+    const onRefresh = vi.fn();
+    const onVisibleChange = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      createController: (_card, capabilities) => ({
+        onVisibleChange: (visible) => {
+          onVisibleChange(visible);
+          capabilities.emit({ type: 'refresh' });
+        },
+        onRefresh,
+      }),
+    });
+    const mounted = createCardHost(registry)
+      .mount({ type: 'behavior-one', id: 'reentrant', payload: { label: 'x' } });
+    mounted.host.setVisible(false);
+    expect(onVisibleChange).toHaveBeenCalledOnce();
+    expect(onRefresh).toHaveBeenCalledOnce();
   });
 
   it('[INV-CARD-093] snapshots listeners before notification', () => {
@@ -153,7 +219,7 @@ describe('cards public behavior', () => {
     warn.mockRestore();
   });
 
-  it('[INV-CARD-087] evaluates a lazy slot initial only once', () => {
+  it('[INV-CARD-086/CAP-CARD-090] evaluates a lazy mutable-ref initial only once', () => {
     const slots = mountedSlots();
     const lazy = vi.fn(() => ({ current: null as null | string }));
     const initialRef = slots.get('xtermRef', lazy);
@@ -161,12 +227,23 @@ describe('cards public behavior', () => {
     expect(lazy).toHaveBeenCalledOnce();
   });
 
-  it('[INV-CARD-090] warns when a later slot initial differs', () => {
+  it('[GATE-CARD-087] warns with both values when a later slot initial differs', () => {
     const slots = mountedSlots();
     expect(slots.get('first-wins', 'first')).toBe('first');
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(slots.get('first-wins', 'later')).toBe('first');
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('CardSlotInitialConflict(first-wins)'));
+    expect(warn).toHaveBeenCalledWith(
+      'CardSlotInitialConflict(first-wins): first=first, next=later',
+    );
+    warn.mockRestore();
+  });
+
+  it('[GATE-CARD-087] does not warn for repeated inline lazy initial factories', () => {
+    const slots = mountedSlots();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const first = slots.get('xtermRef', () => ({ current: null as null | string }));
+    expect(slots.get('xtermRef', () => ({ current: null as null | string }))).toBe(first);
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 });

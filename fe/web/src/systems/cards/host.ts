@@ -35,11 +35,12 @@ function connectController(writer: CardLifecycleWriter, controller: CardControll
   let previous = writer.getSnapshot();
   return writer.subscribe(() => {
     const current = writer.getSnapshot();
-    if (current.visible !== previous.visible) void controller.onVisibleChange?.(current.visible);
-    if (current.focused !== previous.focused) void controller.onFocusChange?.(current.focused);
-    if (!sameGeometry(current.geometry, previous.geometry)) void controller.onResize?.(current.geometry);
-    if (current.refreshEpoch > previous.refreshEpoch) void controller.onRefresh?.();
+    const delivered = previous;
     previous = current;
+    if (current.visible !== delivered.visible) void controller.onVisibleChange?.(current.visible);
+    if (current.focused !== delivered.focused) void controller.onFocusChange?.(current.focused);
+    if (!sameGeometry(current.geometry, delivered.geometry)) void controller.onResize?.(current.geometry);
+    if (current.refreshEpoch > delivered.refreshEpoch) void controller.onRefresh?.();
   });
 }
 
@@ -55,17 +56,27 @@ export function createCardHost(registry: CardRegistry): CardHost {
       });
       const slotValues = new Map<string, unknown>();
       const slotInitials = new Map<string, unknown>();
+      function getSlot<Value>(key: string): Value | undefined;
+      function getSlot<Value>(key: string, initial: Value | (() => Value)): Value;
+      function getSlot<Value>(key: string, initial?: Value | (() => Value)): Value | undefined {
+        if (!slotValues.has(key)) {
+          const value = typeof initial === 'function' ? (initial as () => Value)() : initial;
+          slotValues.set(key, value);
+          slotInitials.set(key, value);
+        } else if (
+          import.meta.env.DEV
+          && initial !== undefined
+          && typeof initial !== 'function'
+          && !Object.is(slotInitials.get(key), initial)
+        ) {
+          console.warn(
+            `CardSlotInitialConflict(${key}): first=${String(slotInitials.get(key))}, next=${String(initial)}`,
+          );
+        }
+        return slotValues.get(key) as Value | undefined;
+      }
       const slots: CardSlotStore = Object.freeze({
-        get: <Value>(key: string, initial?: Value | (() => Value)) => {
-          if (!slotValues.has(key)) {
-            const value = typeof initial === 'function' ? (initial as () => Value)() : initial;
-            slotValues.set(key, value);
-            slotInitials.set(key, initial);
-          } else if (import.meta.env.DEV && initial !== undefined && !Object.is(slotInitials.get(key), initial)) {
-            console.warn(`CardSlotInitialConflict(${key}): first initial differs from later initial`);
-          }
-          return slotValues.get(key) as Value;
-        },
+        get: getSlot,
         set: <Value>(key: string, value: Value) => { slotValues.set(key, value); },
       });
       const capabilities: CardHostCapabilities = Object.freeze({
@@ -76,13 +87,21 @@ export function createCardHost(registry: CardRegistry): CardHost {
           if (command.type === 'refresh') writer.bumpRefresh();
         },
       });
-      const unregister = resolver.register(card.id, capabilities);
       const entry = registry.get(card.type);
-      const controller = entry?.createController?.(card, capabilities);
-      if (entry?.refreshBacking === 'epoch' && controller?.onRefresh !== undefined) {
-        throw new Error(`RefreshBackingConflict(${entry.type})`);
+      let controller: CardController | undefined;
+      let disconnect = (): void => undefined;
+      try {
+        controller = entry?.createController?.(card, capabilities);
+        if (entry?.refreshBacking === 'epoch' && controller?.onRefresh !== undefined) {
+          throw new Error(`RefreshBackingConflict(${entry.type})`);
+        }
+        if (controller !== undefined) disconnect = connectController(writer, controller);
+      } catch (error) {
+        disconnect();
+        void controller?.dispose?.();
+        throw error;
       }
-      const disconnect = controller === undefined ? () => undefined : connectController(writer, controller);
+      const unregister = resolver.register(card.id, capabilities);
       let mounted = true;
       return Object.freeze({
         card: capabilities,

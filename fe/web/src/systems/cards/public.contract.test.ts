@@ -5,6 +5,7 @@ import type {
   CardDataMap,
   CardEntry,
   CardHostCapabilities,
+  CardWheelTargetDecl,
   KernelCardInput,
   RegisteredCard,
 } from './public.js';
@@ -53,6 +54,26 @@ describe('cards public contract', () => {
     expectTypeOf<Extract<RegisteredCard, { type: 'contract-beta' }>>().toEqualTypeOf<{
       type: 'contract-beta'; id: string; payload: { value: string };
     }>();
+  });
+
+  it('exposes the concrete entry wheel target contract', () => {
+    const wheelTarget: NonNullable<CardEntry['wheelTarget']> = (card, instance) => {
+      expectTypeOf(card).toEqualTypeOf<RegisteredCard>();
+      expectTypeOf(instance).toEqualTypeOf<Pick<CardHostCapabilities, 'cardId' | 'slots'>>();
+      return { kind: 'sink' };
+    };
+    expectTypeOf<ReturnType<typeof wheelTarget>>().toEqualTypeOf<CardWheelTargetDecl | null>();
+    expect(wheelTarget).toBeTypeOf('function');
+  });
+
+  it('types missing slot initials as possibly undefined', () => {
+    const compileOnly = false as boolean;
+    if (compileOnly) {
+      const slots = null as unknown as CardHostCapabilities['slots'];
+      // @ts-expect-error -- a missing key without an initial may be undefined.
+      void slots.get<string>('never-written').length;
+      void slots.get('with-initial', '').length;
+    }
   });
 
   it('[INV-CARD-073/225] preserves fallback full-scan insertion order', () => {
@@ -114,5 +135,6 @@ describe('cards public contract', () => {
     exact.mockReturnValue(null);
     expect(registry.resolve({ id: '3', kind: 'k', payload: null })).toBeNull();
     expect(exact).toHaveBeenCalledOnce();
+    expect(short).toHaveBeenCalledOnce();
   });
 });

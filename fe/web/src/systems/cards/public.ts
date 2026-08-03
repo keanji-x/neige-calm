@@ -19,6 +19,7 @@ export type {
   CardRuntimeCommand,
   CreateCardController,
 } from './contracts.js';
+export type { CardWheelTargetDecl } from './lifecycle.js';
 export type {
   CardHost,
   CardHostWriter,

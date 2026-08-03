@@ -87,6 +87,13 @@ export function createCardRegistry(): CardRegistry {
     register<Card extends RegisteredCard>(typedEntry: CardEntry<Card>): void {
       const entry = typedEntry as unknown as CardEntry;
       validateEntry(entry, exact, prefix);
+      const previous = entries.get(entry.type);
+      if (previous?.claim?.mode === 'exact' && exact.get(previous.claim.kind) === previous) {
+        exact.delete(previous.claim.kind);
+      }
+      if (previous?.claim?.mode === 'prefix' && prefix.get(previous.claim.prefix) === previous) {
+        prefix.delete(previous.claim.prefix);
+      }
       entries.set(entry.type, entry);
       if (entry.claim?.mode === 'exact') exact.set(entry.claim.kind, entry);
       if (entry.claim?.mode === 'prefix') prefix.set(entry.claim.prefix, entry);

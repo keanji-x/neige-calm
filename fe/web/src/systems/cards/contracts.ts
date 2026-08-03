@@ -39,7 +39,8 @@ export interface CardController {
 }
 
 export interface CardSlotStore {
-  get<Value>(key: string, initial?: Value | (() => Value)): Value;
+  get<Value>(key: string): Value | undefined;
+  get<Value>(key: string, initial: Value | (() => Value)): Value;
   set<Value>(key: string, value: Value): void;
 }
 

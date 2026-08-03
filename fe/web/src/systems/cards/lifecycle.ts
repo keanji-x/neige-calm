@@ -1,14 +1,23 @@
+import type { RefObject } from 'react';
 import type {
   CardGeometry,
+  CardHostCapabilities,
   CardLifecycleSnapshot,
   CardLifecycleWriter,
   CreateCardController,
 } from './contracts.js';
+export type CardWheelTargetDecl =
+  | Readonly<{ kind: 'xterm'; ref: RefObject<unknown> }>
+  | Readonly<{ kind: 'native-scroll'; ref: RefObject<unknown> }>
+  | Readonly<{ kind: 'sink' }>;
 
 declare module './registry.js' {
   interface CardEntry {
     readonly createController?: CreateCardController;
-    readonly wheelTarget?: (...args: readonly unknown[]) => unknown;
+    readonly wheelTarget?: (
+      card: RegisteredCard,
+      instance: Pick<CardHostCapabilities, 'cardId' | 'slots'>,
+    ) => CardWheelTargetDecl | null;
     readonly refreshBacking?: 'controller' | 'epoch' | 'none';
   }
 }
