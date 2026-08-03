@@ -74,7 +74,8 @@ export function auditDataAttributes(code, file) {
 }
 
 export function auditModuleLayer(css, file) {
-  const expected = file.includes('/ui/') ? 'ui' : file.includes('/features/') ? 'features' : undefined;
+  const expected = file.startsWith('web/src/ui/') ? 'ui'
+    : file.startsWith('web/src/features/') ? 'features' : undefined;
   if (!expected) return [`${file}: CSS Module must live below ui/ or features/`];
   const violations = auditLayeredCss(css, [expected]);
   return violations.map(({ message }) => `${file}: ${message}`);

@@ -346,6 +346,16 @@ describe('P8b2 forward style gates', () => {
       .toEqual(['web/src/features/wave/bad.module.css: unlayered selector: .unlayered']);
     expect(auditModuleLayer('@layer features { .local {} }', 'web/src/features/wave/good.module.css')).toEqual([]);
     expect(auditModuleLayer('@layer ui { .local {} }', 'web/src/ui/dialog/good.module.css')).toEqual([]);
+    const nestedUi = 'web/src/features/wave/ui/toolbar.module.css';
+    expect(auditModuleLayer(read('module-layer/nested-ui-negative.module.css'), nestedUi))
+      .toContain(`${nestedUi}: unknown layer ui`);
+    expect(auditModuleLayer(read('module-layer/nested-ui-positive.module.css'), nestedUi)).toEqual([]);
+    for (const layer of ['systems', 'app', 'core']) {
+      const nestedOwner = layer === 'core' ? 'core/wave/ui/toolbar.module.css'
+        : `web/src/${layer}/wave/ui/toolbar.module.css`;
+      expect(auditModuleLayer('@layer ui { .local {} }', nestedOwner), layer)
+        .toEqual([`${nestedOwner}: CSS Module must live below ui/ or features/`]);
+    }
   });
 
   it('rejects an unlayered rule in an ordinary non-module stylesheet', () => {

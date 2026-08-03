@@ -2,6 +2,8 @@
 
 These checks make cascade boundaries observable: `entry.css` supplies the only layer order, PostCSS AST traversal rejects rules outside known layers, CodeMirror exceptions stay scoped by their rightmost compound selector, and extracted global classes must equal the manifest in both directions.
 
+Path ownership must always use anchored prefixes, never substring matching such as `includes`.
+
 The `neige-calm/unlayered-cm-scope` stylelint rule runs under `npm run lint:css`. Its
 `unlayeredExceptions` is loaded from `web/src/styles/unlayered-exceptions.yaml`; stylelint enforces the rightmost `.cm-*` selector scope for every listed path, while `repository-check.mjs` is the exact selector/property/expiry/usage gate.
 

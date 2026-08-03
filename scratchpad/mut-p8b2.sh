@@ -113,6 +113,10 @@ mutate reversed-production-order "$entry" "$candidate"
 
 repository_check="$repo/fe/tools/styles/repository-check.mjs"
 candidate=$(mktemp)
+sed "s/file\.startsWith('web\/src\/ui\/')/file.includes('\/ui\/')/; s/file\.startsWith('web\/src\/features\/')/file.includes('\/features\/')/" "$repository_check" > "$candidate"
+mutate_tools_test css-module-owner-substring "$repository_check" "$candidate"
+
+candidate=$(mktemp)
 sed "s/specifier\.text\.split(\/\[?#\]\/, 1)\[0\]/specifier.text/" "$repository_check" > "$candidate"
 mutate_tools_test css-query-fragment-pathname "$repository_check" "$candidate"
 
