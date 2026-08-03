@@ -373,7 +373,7 @@
   migration: pending
 
 - id: GATE-TOKENS-020
-  kind: invariant
+  kind: gate
   family: tokens-zindex
   statement: >
     六个 z-index token 的数值必须按声明顺序严格递增：
