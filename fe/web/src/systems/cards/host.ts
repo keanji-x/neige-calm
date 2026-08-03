@@ -31,7 +31,7 @@ export interface CardHost {
   resolve(cardId: string): CardHostCapabilities | null;
 }
 
-export type CardControllerCallback = 'onVisibleChange' | 'onFocusChange' | 'onResize' | 'onRefresh';
+export type CardControllerCallback = 'onVisibleChange' | 'onFocusChange' | 'onResize' | 'onRefresh' | 'dispose';
 
 export interface CardControllerErrorContext {
   readonly cardId: string;
@@ -48,8 +48,14 @@ function connectController(
   cardId: string,
   onControllerError: NonNullable<CardHostOptions['onControllerError']>,
 ): () => void {
-  const deliver = (callback: CardControllerCallback, result: void | Promise<void>): void => {
-    void Promise.resolve(result).catch((error: unknown) => onControllerError(error, { cardId, callback }));
+  const deliver = (callback: CardControllerCallback, invoke: () => void | Promise<void>): void => {
+    try {
+      void Promise.resolve(invoke()).catch(
+        (error: unknown) => onControllerError(error, { cardId, callback }),
+      );
+    } catch (error) {
+      onControllerError(error, { cardId, callback });
+    }
   };
   let previous = writer.getSnapshot();
   return writer.subscribe(() => {
@@ -57,16 +63,17 @@ function connectController(
     const delivered = previous;
     previous = current;
     if (current.visible !== delivered.visible && controller.onVisibleChange !== undefined) {
-      deliver('onVisibleChange', controller.onVisibleChange(current.visible));
+      const result = controller.onVisibleChange(current.visible);
+      deliver('onVisibleChange', () => result);
     }
     if (current.focused !== delivered.focused && controller.onFocusChange !== undefined) {
-      deliver('onFocusChange', controller.onFocusChange(current.focused));
+      deliver('onFocusChange', () => controller.onFocusChange?.(current.focused));
     }
     if (!sameGeometry(current.geometry, delivered.geometry) && controller.onResize !== undefined) {
-      deliver('onResize', controller.onResize(current.geometry));
+      deliver('onResize', () => controller.onResize?.(current.geometry));
     }
     if (current.refreshEpoch > delivered.refreshEpoch && controller.onRefresh !== undefined) {
-      deliver('onRefresh', controller.onRefresh());
+      deliver('onRefresh', () => controller.onRefresh?.());
     }
   });
 }
@@ -80,6 +87,15 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
     : (error: unknown, context: CardControllerErrorContext) => {
       options.onControllerError?.(error, context);
     };
+  const disposeController = (controller: CardController | undefined, cardId: string): void => {
+    try {
+      void Promise.resolve(controller?.dispose?.()).catch(
+        (error: unknown) => onControllerError(error, { cardId, callback: 'dispose' }),
+      );
+    } catch (error) {
+      onControllerError(error, { cardId, callback: 'dispose' });
+    }
+  };
   return Object.freeze({
     registry,
     mount(card: RegisteredCard): MountedCard {
@@ -134,7 +150,7 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
         }
       } catch (error) {
         disconnect();
-        void controller?.dispose?.();
+        disposeController(controller, card.id);
         throw error;
       }
       const unregister = resolver.register(card.id, capabilities);
@@ -151,7 +167,7 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
           mounted = false;
           disconnect();
           unregister();
-          void controller?.dispose?.();
+          disposeController(controller, card.id);
         },
       });
     },

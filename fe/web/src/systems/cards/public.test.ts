@@ -207,6 +207,94 @@ describe('cards public behavior', () => {
     expect(second).toHaveBeenCalledWith(false);
   });
 
+  it('routes a synchronously thrown controller callback without throwing or blocking later delivery', () => {
+    const registry = createCardRegistry();
+    const failure = new Error('visible threw');
+    const second = vi.fn();
+    const onControllerError = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      createController: (card) => card.id === 'throwing'
+        ? { onVisibleChange: () => { throw failure; } }
+        : { onVisibleChange: second },
+    });
+    const host = createCardHost(registry, { onControllerError });
+    const throwing = host.mount({ type: 'behavior-one', id: 'throwing', payload: { label: 'x' } });
+    const later = host.mount({ type: 'behavior-one', id: 'later', payload: { label: 'x' } });
+
+    expect(() => throwing.host.setVisible(false)).not.toThrow();
+    expect(onControllerError).toHaveBeenCalledWith(failure, {
+      cardId: 'throwing',
+      callback: 'onVisibleChange',
+    });
+    later.host.setVisible(false);
+    expect(second).toHaveBeenCalledWith(false);
+  });
+
+  it('routes a synchronously thrown dispose while completing unmount', () => {
+    const registry = createCardRegistry();
+    const failure = new Error('dispose threw');
+    const onControllerError = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      createController: () => ({ dispose: () => { throw failure; } }),
+    });
+    const host = createCardHost(registry, { onControllerError });
+    const mounted = host.mount({ type: 'behavior-one', id: 'dispose-sync', payload: { label: 'x' } });
+
+    expect(() => mounted.unmount()).not.toThrow();
+    expect(host.resolve('dispose-sync')).toBeNull();
+    expect(onControllerError).toHaveBeenCalledWith(failure, {
+      cardId: 'dispose-sync',
+      callback: 'dispose',
+    });
+  });
+
+  it('routes a rejected dispose without an unhandled rejection', async () => {
+    const registry = createCardRegistry();
+    const rejection = new Error('dispose rejected');
+    const onControllerError = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      createController: () => ({ dispose: () => Promise.reject(rejection) }),
+    });
+    const mounted = createCardHost(registry, { onControllerError })
+      .mount({ type: 'behavior-one', id: 'dispose-async', payload: { label: 'x' } });
+
+    mounted.unmount();
+    await vi.waitFor(() => expect(onControllerError).toHaveBeenCalledWith(rejection, {
+      cardId: 'dispose-async',
+      callback: 'dispose',
+    }));
+  });
+
+  it('routes a dispose failure during failed controller initialization rollback', () => {
+    const registry = createCardRegistry();
+    const disposeFailure = new Error('rollback dispose threw');
+    const onControllerError = vi.fn();
+    registry.register({
+      ...base,
+      type: 'behavior-one',
+      refreshBacking: 'epoch',
+      createController: () => ({
+        onRefresh: vi.fn(),
+        dispose: () => { throw disposeFailure; },
+      }),
+    });
+    const host = createCardHost(registry, { onControllerError });
+
+    expect(() => host.mount({ type: 'behavior-one', id: 'rollback-dispose', payload: { label: 'x' } }))
+      .toThrow('RefreshBackingConflict(behavior-one)');
+    expect(host.resolve('rollback-dispose')).toBeNull();
+    expect(onControllerError).toHaveBeenCalledWith(disposeFailure, {
+      cardId: 'rollback-dispose',
+      callback: 'dispose',
+    });
+  });
+
   it('[INV-CARD-093] snapshots listeners before notification', () => {
     const registry = createCardRegistry();
     registry.register({ ...base, type: 'behavior-one' });
