@@ -1,7 +1,6 @@
 use crate::support;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
@@ -31,7 +30,7 @@ async fn codex_rollout_rewrite_with_changed_consumed_prefix_reingests_replacemen
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 3, Duration::from_secs(1)).await;
+    wait_for_item_count(&repo, card_id, 3).await;
     wait_for_cursor(&repo, card_id, 4, Some("a-old-3")).await;
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -49,7 +48,7 @@ async fn codex_rollout_rewrite_with_changed_consumed_prefix_reingests_replacemen
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 7, Duration::from_millis(120)).await;
+    wait_for_item_count(&repo, card_id, 7).await;
     wait_for_cursor(&repo, card_id, 5, Some("call-new-4")).await;
 
     let items = flow_items(&repo, card_id).await;
@@ -91,7 +90,7 @@ async fn codex_rollout_rewrite_after_uuidless_prefix_uses_line_hash_and_reingest
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 2, Duration::from_secs(1)).await;
+    wait_for_item_count(&repo, card_id, 2).await;
     let old_hash = wait_for_cursor_with_line_hash(&repo, card_id, 4, None, None).await;
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -109,7 +108,7 @@ async fn codex_rollout_rewrite_after_uuidless_prefix_uses_line_hash_and_reingest
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 5, Duration::from_millis(120)).await;
+    wait_for_item_count(&repo, card_id, 5).await;
     let new_hash = wait_for_cursor_with_line_hash(&repo, card_id, 5, None, Some(&old_hash)).await;
     assert_ne!(new_hash, old_hash);
 
@@ -143,7 +142,7 @@ async fn codex_rollout_same_uuidless_prefix_rewrite_keeps_cursor_without_reemit(
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 2, Duration::from_secs(1)).await;
+    wait_for_item_count(&repo, card_id, 2).await;
     let old_hash = wait_for_cursor_with_line_hash(&repo, card_id, 4, None, None).await;
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -161,7 +160,7 @@ async fn codex_rollout_same_uuidless_prefix_rewrite_keeps_cursor_without_reemit(
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 3, Duration::from_millis(120)).await;
+    wait_for_item_count(&repo, card_id, 3).await;
     let new_hash = wait_for_cursor_with_line_hash(&repo, card_id, 5, None, Some(&old_hash)).await;
     assert_ne!(new_hash, old_hash);
 
@@ -195,7 +194,7 @@ async fn codex_rollout_rewrite_with_same_consumed_prefix_identity_does_not_reemi
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 3, Duration::from_secs(1)).await;
+    wait_for_item_count(&repo, card_id, 3).await;
     wait_for_cursor(&repo, card_id, 4, Some("a-same-3")).await;
     token.cancel();
     handle.await.unwrap().unwrap();
@@ -213,7 +212,7 @@ async fn codex_rollout_rewrite_with_same_consumed_prefix_identity_does_not_reemi
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wait_for_item_count(&repo, card_id, 4, Duration::from_millis(120)).await;
+    wait_for_item_count(&repo, card_id, 4).await;
     wait_for_cursor(&repo, card_id, 5, Some("a-same-4")).await;
 
     let items = flow_items(&repo, card_id).await;
@@ -232,8 +231,15 @@ async fn codex_rollout_rewrite_with_same_consumed_prefix_identity_does_not_reemi
     handle.await.unwrap().unwrap();
 }
 
-async fn wait_for_item_count(repo: &SqlxRepo, card_id: &str, expected: usize, timeout: Duration) {
-    wf::wait_until(timeout, || async {
+/// Liveness wait: polls until the card holds `expected` items.
+///
+/// Deliberately takes no timeout argument. Every call site used to pass its
+/// own budget and the tightest were 120 ms — six polls at the helper's 20 ms
+/// interval, which a single CI scheduling stall could blow on a correct run.
+/// The bound is an anti-hang guard, not a latency contract, so there is nothing
+/// a caller could legitimately want to tighten it to.
+async fn wait_for_item_count(repo: &SqlxRepo, card_id: &str, expected: usize) {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_item_list_by_card(card_id, 0, 100, false)
             .await
             .unwrap()
@@ -249,7 +255,7 @@ async fn wait_for_cursor(
     record_index: i64,
     last_source_uuid: Option<&str>,
 ) {
-    wf::wait_until(Duration::from_secs(1), || async {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
             .await
             .unwrap()
@@ -268,7 +274,7 @@ async fn wait_for_cursor_with_line_hash(
     last_source_uuid: Option<&str>,
     previous_hash: Option<&str>,
 ) -> String {
-    wf::wait_until(Duration::from_secs(1), || async {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
             .await
             .unwrap()

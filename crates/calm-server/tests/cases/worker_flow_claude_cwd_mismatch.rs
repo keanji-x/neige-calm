@@ -1,7 +1,6 @@
 use crate::support;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
@@ -76,7 +75,7 @@ async fn claude_transcript_inband_cwd_mismatch_warns_but_keeps_flowing() {
 
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-claude-inband-cwd").await == 3 }
     })

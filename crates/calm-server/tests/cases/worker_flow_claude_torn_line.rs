@@ -1,8 +1,8 @@
 use crate::support;
+use std::time::Duration;
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
@@ -33,7 +33,7 @@ async fn claude_transcript_preserves_unterminated_final_line_until_complete() {
 
     let (token, handle) =
         wf::spawn_claude_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-claude-torn").await == 2 }
     })
@@ -54,7 +54,7 @@ async fn claude_transcript_preserves_unterminated_final_line_until_complete() {
 
     append_raw(&path, &format!("{}\n", &next[split_at..]));
     let second_len = file_len(&path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-claude-torn").await == 3 }
     })

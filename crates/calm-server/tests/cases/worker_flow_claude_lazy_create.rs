@@ -52,7 +52,7 @@ async fn claude_transcript_source_persists_past_lazy_retry_budget_until_file_app
         ],
     );
 
-    wf::wait_until(Duration::from_millis(1_300), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { user_message_seen(&repo, card_id, "created later").await }
     })
@@ -92,7 +92,7 @@ async fn claude_transcript_source_exits_during_lazy_retry_when_runtime_becomes_t
         .await
         .unwrap();
 
-    wf::wait_until(Duration::from_secs(2), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 0 }
     })
@@ -125,7 +125,7 @@ async fn claude_transcript_source_drains_file_created_as_runtime_exits_during_la
         .await
         .unwrap();
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -156,20 +156,16 @@ async fn claude_transcript_source_drains_file_created_as_runtime_exits_during_la
         }
     );
 
-    wf::wait_until(
-        lazy_retry_delay + poll_interval * 2 + Duration::from_millis(500),
-        || {
-            let repo = repo.clone();
-            let driver = driver.clone();
-            async move {
-                flow_item_count(&repo, card_id).await == 2
-                    || driver.tasks_alive_for_test().await == 0
-            }
-        },
-    )
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
+        let repo = repo.clone();
+        let driver = driver.clone();
+        async move {
+            flow_item_count(&repo, card_id).await == 2 || driver.tasks_alive_for_test().await == 0
+        }
+    })
     .await;
     assert_eq!(flow_item_count(&repo, card_id).await, 2);
-    wf::wait_until(Duration::from_millis(500), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 0 }
     })

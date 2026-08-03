@@ -69,7 +69,7 @@ async fn worker_flow_driver_boot_enumerates_active_codex_and_claude_runtimes() {
     );
     driver.start_on_boot().await.unwrap();
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = driver.clone();
         async move { driver.tasks_alive_for_test().await == 2 }
     })
@@ -140,7 +140,7 @@ async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
             new_status: WorkerSessionState::Running,
         },
     );
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let driver = state.worker_flow.clone();
         async move { driver.tasks_alive_for_test().await == 1 }
     })
@@ -243,7 +243,7 @@ async fn worker_flow_driver_uses_terminal_row_cwd_for_legacy_claude_card() {
     );
     driver.attach_runtime_for_test(runtime).await.unwrap();
 
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, card_id).await == 1 }
     })
