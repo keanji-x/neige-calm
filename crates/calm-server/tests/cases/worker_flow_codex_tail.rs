@@ -1,7 +1,6 @@
 use crate::support;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
@@ -28,7 +27,7 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-tail").await == 3 }
     })
@@ -42,7 +41,7 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
             wf::function_output("call-1", "/tmp"),
         ],
     );
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-tail").await == 5 }
     })
@@ -55,7 +54,7 @@ async fn codex_rollout_tail_records_and_resumes_from_cursor() {
     wf::append_rollout(&path, &[wf::assistant_message("a2", "after restart")]);
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move { item_count(&repo, "card-tail").await == 6 }
     })
@@ -82,7 +81,7 @@ async fn assert_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
 }
 
 async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    wf::wait_until(Duration::from_millis(120), || async {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
             .await
             .unwrap()

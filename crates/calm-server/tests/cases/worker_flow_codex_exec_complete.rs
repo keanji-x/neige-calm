@@ -1,7 +1,6 @@
 use crate::support;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::RepoRead;
 use calm_server::db::sqlite::SqlxRepo;
@@ -87,7 +86,7 @@ async fn codex_rollout_records_failed_exec_command_end() {
 }
 
 async fn wait_for_cursor(repo: &SqlxRepo, card_id: &str, record_index: i64) {
-    wf::wait_until(Duration::from_secs(1), || async {
+    wf::wait_until(wf::LIVENESS_BUDGET, || async {
         repo.worker_flow_cursor_get(card_id, CODEX_ROLLOUT_SOURCE_KIND)
             .await
             .unwrap()

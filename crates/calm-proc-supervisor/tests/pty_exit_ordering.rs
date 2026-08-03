@@ -40,6 +40,16 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
+/// Liveness upper bound for "read the next frame / wait for the expected
+/// state". Anti-hang guard only — no case here claims the supervisor reacts
+/// within this budget, so a slow-but-correct run must still pass. Costs
+/// nothing on the happy path (each wait returns as soon as its frame lands).
+/// The 1-2s budgets this replaces are the same shape that flaked on CI's
+/// 2-core runner under `retries = 0`. 120s matches nextest ci's `slow-timeout`,
+/// so past this point nextest's own slow-test warning is the signal.
+/// To assert promptness, measure elapsed and assert on it instead.
+const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
+
 /// Bytes of filler the child bursts out right before exiting.
 const BURST: usize = 200_000;
 const SENTINEL: &str = "END-OF-STREAM-993";
@@ -126,7 +136,7 @@ async fn exited_is_the_last_frame_for_a_live_attacher() {
     // `Exited` is terminal by construction (the supervisor closes the stream),
     // so nothing may follow it.
     let after: Result<ControlReply, _> =
-        tokio::time::timeout(Duration::from_secs(2), read_frame(&mut attach))
+        tokio::time::timeout(LIVENESS_BUDGET, read_frame(&mut attach))
             .await
             .expect("timed out waiting for stream close after Exited");
     assert!(
@@ -318,7 +328,7 @@ async fn exited_is_final_when_a_grandchild_holds_the_pty_open() {
 
     // `Exited` is terminal: the supervisor closes the stream after it.
     let after: Result<ControlReply, _> =
-        tokio::time::timeout(Duration::from_secs(2), read_frame(&mut attach))
+        tokio::time::timeout(LIVENESS_BUDGET, read_frame(&mut attach))
             .await
             .expect("timed out waiting for stream close after Exited");
     assert!(
@@ -439,7 +449,7 @@ async fn the_reader_keeps_draining_the_master_after_the_seal() {
     // The marker is written only after all `POST_SEAL_BURST` bytes have been
     // accepted by the tty. With a reader that stops at the seal, the grandchild
     // wedges in `write()` after ~64 KiB and this never appears.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     let written = loop {
         if let Some(written) = read_written_bytes(&done_file) {
             break written;
@@ -543,7 +553,7 @@ async fn write_stdin(sock: &Path, proc_id: &str, bytes: &[u8]) {
 }
 
 async fn timeout_read(stream: &mut UnixStream) -> ControlReply {
-    tokio::time::timeout(Duration::from_secs(10), read_frame(stream))
+    tokio::time::timeout(LIVENESS_BUDGET, read_frame(stream))
         .await
         .expect("timed out reading reply")
         .expect("read reply")

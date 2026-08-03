@@ -8,6 +8,16 @@ use std::path::Path;
 use std::time::Duration;
 use tokio::net::UnixStream;
 
+/// Liveness upper bound for "read the next frame / wait for the expected
+/// state". Anti-hang guard only — no case here claims the supervisor reacts
+/// within this budget, so a slow-but-correct run must still pass. Costs
+/// nothing on the happy path (each wait returns as soon as its frame lands).
+/// The 1-2s budgets this replaces are the same shape that flaked on CI's
+/// 2-core runner under `retries = 0`. 120s matches nextest ci's `slow-timeout`,
+/// so past this point nextest's own slow-test warning is the signal.
+/// To assert promptness, measure elapsed and assert on it instead.
+const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
+
 #[tokio::test]
 async fn attach_race_no_byte_loss() {
     let supervisor = InProcessProcSupervisor::start()
@@ -46,7 +56,7 @@ async fn attach_race_no_byte_loss() {
         other => panic!("unexpected attach reply: {other:?}"),
     };
     let expected = b"chunk-1-chunk-2-chunk-3-chunk-4-chunk-5-chunk-6-chunk-7-chunk-8-chunk-9-";
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while !contains(&bytes, expected) && tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(50), read_frame(&mut attach)).await {
             Ok(Ok(ControlReply::Output {
@@ -150,7 +160,7 @@ async fn cleanup(sock: &Path, proc_id: &str) {
 }
 
 async fn timeout_read(stream: &mut UnixStream) -> ControlReply {
-    tokio::time::timeout(Duration::from_secs(2), read_frame(stream))
+    tokio::time::timeout(LIVENESS_BUDGET, read_frame(stream))
         .await
         .expect("timed out reading reply")
         .expect("read reply")

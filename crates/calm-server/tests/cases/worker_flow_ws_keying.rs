@@ -1,7 +1,6 @@
 use crate::support;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use calm_server::db::sqlite::{SqlxRepo, card_delete_tx, worker_flow_item_insert_tx};
 
@@ -31,7 +30,7 @@ async fn worker_flow_items_key_worker_session_id_by_runtime_id() {
 
     let (token, handle) =
         wf::spawn_source_with_path(repo.clone(), seed.runtime.clone(), &seed, &path);
-    wf::wait_until(Duration::from_secs(1), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         let card_id = card_id.clone();
         async move { flow_item_count(&repo, &card_id).await == 2 }

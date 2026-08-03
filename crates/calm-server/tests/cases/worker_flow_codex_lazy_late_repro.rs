@@ -59,7 +59,7 @@ async fn codex_rollout_source_ingests_file_created_after_budget_while_alive() {
     );
 
     // A correct, liveness-gated source ingests the item once the file appears.
-    wf::wait_until(Duration::from_secs(2), || {
+    wf::wait_until(wf::LIVENESS_BUDGET, || {
         let repo = repo.clone();
         async move {
             repo.worker_flow_item_list_by_card(card_id, 0, 100, false)

@@ -23,6 +23,34 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use uuid::Uuid;
 
+/// Liveness upper bound for "wait until the expected event arrives".
+///
+/// This is **not** a contract: nothing in this file claims the renderer, the
+/// supervisor or the pty reacts within this budget. It exists only so a wedged
+/// test fails with a readable message instead of hanging until the harness
+/// kills it. On the happy path it costs exactly nothing — every wait below
+/// returns the instant its event lands.
+///
+/// Sized to be an order of magnitude above the worst plausible scheduling
+/// stall. CI is a 2-core runner with nextest saturating both cores, and these
+/// cases spawn a real `calm-proc-supervisor` plus real pty children, so the
+/// gap between "the ack was sent" and "this task got scheduled to observe it"
+/// is pure CPU contention. The previous 2s budget lost that race twice on CI
+/// (runs 30563715610 / 30627347602, `input ack timeout: Elapsed(())`, with the
+/// pty child provably already reaped) and once locally under a cold build.
+/// The budget is 120s, matching nextest ci's `slow-timeout` — i.e. exactly as
+/// long as the harness is willing to call this test normal; past that point
+/// nextest's own slow-test warning is the signal, not a hand-picked deadline.
+/// Measured: under artificial contention (this test pinned to one core against
+/// 12 busy loops) a 30s budget still failed 2/12 rounds while 120s passed 12/12
+/// and 300s passed 12/12 — the ack arrives, it is only ever starved, so the
+/// budget must be sized for starvation rather than for expected latency.
+///
+/// To assert that something happens *within* a deadline, do not narrow this —
+/// measure the elapsed time and assert on it explicitly (see
+/// `TERM_TO_KILL_GRACE` below for that shape).
+const LIVENESS_BUDGET: Duration = Duration::from_secs(120);
+
 #[tokio::test]
 async fn in_process_renderer_drives_real_supervisor_and_pty() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -84,7 +112,7 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
         })
         .await
         .expect("send client hello");
-    let hello = timeout(Duration::from_secs(2), daemon_rx.recv())
+    let hello = timeout(LIVENESS_BUDGET, daemon_rx.recv())
         .await
         .expect("server hello timeout")
         .expect("server hello channel closed");
@@ -108,7 +136,7 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
     wait_for_terminal_exited(&mut events).await;
     wait_for_daemon_terminal_exited(&mut daemon_rx).await;
     assert!(
-        timeout(Duration::from_secs(2), entry.wait_exited())
+        timeout(LIVENESS_BUDGET, entry.wait_exited())
             .await
             .expect("entry exit timeout")
             .is_some(),
@@ -119,7 +147,7 @@ async fn in_process_renderer_drives_real_supervisor_and_pty() {
     assert!(registry.get(&terminal_id).is_none());
 
     drop(client_tx);
-    timeout(Duration::from_secs(2), pump)
+    timeout(LIVENESS_BUDGET, pump)
         .await
         .expect("pump join timeout")
         .expect("pump join")
@@ -160,7 +188,7 @@ async fn late_client_attach_receives_sticky_terminal_exited() {
 
     let (client_tx, mut daemon_rx, pump) = spawn_client_pump(entry.clone());
     send_client_hello(&client_tx, &terminal_id).await;
-    let hello = timeout(Duration::from_secs(2), daemon_rx.recv())
+    let hello = timeout(LIVENESS_BUDGET, daemon_rx.recv())
         .await
         .expect("server hello timeout")
         .expect("server hello channel closed");
@@ -173,7 +201,7 @@ async fn late_client_attach_receives_sticky_terminal_exited() {
 
     registry.drop_entry(&terminal_id).await;
     drop(client_tx);
-    timeout(Duration::from_secs(2), pump)
+    timeout(LIVENESS_BUDGET, pump)
         .await
         .expect("pump join timeout")
         .expect("pump join")
@@ -230,7 +258,7 @@ async fn registry_ensure_lazily_reattaches_when_registry_is_empty() {
 
     let (client_tx, mut daemon_rx, pump) = spawn_client_pump(entry_b.clone());
     send_client_hello(&client_tx, &terminal_id).await;
-    let hello = timeout(Duration::from_secs(2), daemon_rx.recv())
+    let hello = timeout(LIVENESS_BUDGET, daemon_rx.recv())
         .await
         .expect("server hello timeout")
         .expect("server hello channel closed");
@@ -250,7 +278,7 @@ async fn registry_ensure_lazily_reattaches_when_registry_is_empty() {
 
     registry_b.drop_entry(&terminal_id).await;
     drop(client_tx);
-    timeout(Duration::from_secs(2), pump)
+    timeout(LIVENESS_BUDGET, pump)
         .await
         .expect("pump join timeout")
         .expect("pump join")
@@ -317,7 +345,7 @@ async fn send_client_hello(client_tx: &mpsc::Sender<ClientMsg>, terminal_id: &st
 }
 
 async fn wait_for_hello_patch(rx: &mut tokio::sync::broadcast::Receiver<DaemonMsg>) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(!remaining.is_zero(), "timed out waiting for hello patch");
@@ -334,7 +362,7 @@ async fn wait_for_hello_patch(rx: &mut tokio::sync::broadcast::Receiver<DaemonMs
 }
 
 async fn wait_for_child_ready(rx: &mut tokio::sync::broadcast::Receiver<DaemonMsg>) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(!remaining.is_zero(), "timed out waiting for ChildReady");
@@ -349,7 +377,7 @@ async fn wait_for_child_ready(rx: &mut tokio::sync::broadcast::Receiver<DaemonMs
 }
 
 async fn wait_for_input_ack(rx: &mut mpsc::Receiver<DaemonMsg>, expected: u64) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(!remaining.is_zero(), "timed out waiting for InputAck");
@@ -365,7 +393,7 @@ async fn wait_for_input_ack(rx: &mut mpsc::Receiver<DaemonMsg>, expected: u64) {
 }
 
 async fn wait_for_terminal_exited(rx: &mut tokio::sync::broadcast::Receiver<DaemonMsg>) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(!remaining.is_zero(), "timed out waiting for TerminalExited");
@@ -405,7 +433,7 @@ struct ExitFrame {
 }
 
 async fn wait_for_daemon_terminal_exited(rx: &mut mpsc::Receiver<DaemonMsg>) -> ExitFrame {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         assert!(
@@ -489,8 +517,13 @@ async fn drop_entry_persists_the_terminal_exit_to_the_database() {
             program: "/bin/sh".into(),
             args: vec![
                 "-c".into(),
+                // The grandchild's own sleep must outlast the whole test: the
+                // degradation self-check below asserts it is *still alive*
+                // after teardown, so a grandchild that reaped itself on
+                // schedule would turn that check into a false failure on a
+                // slow box. It only lingers when the test fails anyway.
                 format!(
-                    "trap '' TERM; setsid sh -c 'echo $$ > {}; sleep 5' & echo up; sleep 30",
+                    "trap '' TERM; setsid sh -c 'echo $$ > {}; sleep 600' & echo up; sleep 30",
                     gc_pid_file.display()
                 ),
             ],
@@ -630,7 +663,7 @@ async fn drop_entry_keeps_the_term_grace_when_the_attach_reader_died_early() {
     // `read_frame` errors out and it leaves the loop having persisted nothing.
     supervisor.kill().await.expect("kill supervisor");
     let _ = supervisor.wait().await;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while UnixStream::connect(&control_sock).await.is_ok() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -721,7 +754,13 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
                     // group, which is exactly what the group SIGKILL must
                     // reach. `exec` makes the `sleep` itself the leader, so it
                     // dies on SIGTERM with no shell in the way.
-                    "sh -c 'trap \"\" TERM HUP; echo $$ > {}; sleep 10' & echo up; exec sleep 30",
+                    // The member's sleep MUST outlast the poll deadline below.
+                    // It is the only thing that distinguishes "the group
+                    // SIGKILL reaped it" from "it just finished on its own": if
+                    // the sleep could expire first, a leaked member would be
+                    // indistinguishable from a killed one and the test would
+                    // pass with the fix reverted.
+                    "sh -c 'trap \"\" TERM HUP; echo $$ > {}; sleep 600' & echo up; exec sleep 30",
                     member_pid_file.display()
                 ),
             ],
@@ -746,8 +785,10 @@ async fn drop_entry_kills_process_group_members_that_outlive_the_leader() {
 
     // The member ignores TERM and HUP, so only the group SIGKILL can end it.
     // Polling (rather than asserting once) covers signal delivery and reaping;
-    // a leaked member stays alive for its full 10s and blows the deadline.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    // a leaked member stays alive for its full 600s and blows the deadline (that
+    // sleep must outlast LIVENESS_BUDGET, or a leak would be indistinguishable
+    // from a normal exit and the test would pass with the fix reverted).
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while process_is_alive(member_pid) {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -821,7 +862,7 @@ async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
 
 /// Waits for the grandchild to publish its pid, then parses it.
 async fn wait_for_pid_file(path: &Path) -> i32 {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     loop {
         if let Ok(raw) = std::fs::read_to_string(path)
             && let Ok(pid) = raw.trim().parse::<i32>()
@@ -867,7 +908,7 @@ async fn spawn_proc_supervisor(control_sock: &Path) -> Child {
 }
 
 async fn wait_until_listening(sock: &Path) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + LIVENESS_BUDGET;
     while tokio::time::Instant::now() < deadline {
         if UnixStream::connect(sock).await.is_ok() {
             return;
