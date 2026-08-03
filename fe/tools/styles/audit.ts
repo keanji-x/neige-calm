@@ -11,7 +11,7 @@ export const CSS_NODE_SOURCES = Object.freeze([
   'runtime-style-text', 'runtime-style-cssom', 'runtime-external-stylesheet', 'runtime-inline-attribute',
 ] as const);
 
-function enclosingLayer(node: ChildNode): { layered: boolean; name?: string } {
+function enclosingLayer(node: ChildNode): { layered: boolean; name?: string; anonymous?: boolean } {
   interface ParentNode { type: string; name?: string; params?: string; nodes?: unknown[]; parent?: ParentNode }
   let parent = node.parent as ParentNode | undefined;
   let layered = false;
@@ -20,7 +20,8 @@ function enclosingLayer(node: ChildNode): { layered: boolean; name?: string } {
     if (parent.type === 'atrule' && parent.name?.toLowerCase() === 'layer' && parent.nodes) {
       layered = true;
       const candidate = parent.params?.trim().split('.')[0];
-      if (candidate) name = candidate;
+      if (!candidate) return { layered: true, anonymous: true };
+      name = candidate;
     }
     parent = parent.parent;
   }
@@ -39,10 +40,18 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
   const root = postcss.parse(css);
   if (!unlayeredException) {
     root.walkAtRules((atRule) => {
-      if (atRule.name.toLowerCase() === 'layer' && atRule.parent === root) {
+      const hasLayerAncestor = (): boolean => {
+        let parent = atRule.parent;
+        while (parent && parent !== root) {
+          if (parent.type === 'atrule' && parent.name.toLowerCase() === 'layer') return true;
+          parent = parent.parent;
+        }
+        return false;
+      };
+      if (atRule.name.toLowerCase() === 'layer' && !hasLayerAncestor()) {
         let containsRule = false;
         atRule.walkRules(() => { containsRule = true; });
-        if (atRule.nodes && !atRule.params.trim()) {
+        if (atRule.nodes && !atRule.params.trim() && !containsRule) {
           violations.push({ rule: 'known-layer', message: 'anonymous layer' });
         } else if (!containsRule) {
           for (const name of atRule.params.split(',').map((item) => item.trim().split('.')[0]).filter(Boolean)) {
@@ -51,8 +60,10 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
         }
       }
       if (atRule.name.toLowerCase() === 'import') {
-        const layer = /\blayer\(\s*([^\s)]+)\s*\)/i.exec(atRule.params)?.[1]?.split('.')[0];
-        if (layer && !order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
+        const layerMatch = /\blayer(?:\(\s*([^\s)]+)\s*\))?(?=\s|;|$)/i.exec(atRule.params);
+        const layer = layerMatch?.[1]?.split('.')[0];
+        if (layerMatch && !layer) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
+        else if (layer && !order.includes(layer)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer}` });
       }
     });
   }
@@ -60,6 +71,7 @@ export function auditLayeredCss(css: string, order: readonly string[], unlayered
     const layer = enclosingLayer(rule);
     if (!unlayeredException) {
       if (!layer.layered) violations.push({ rule: 'rule-in-layer', message: `unlayered selector: ${rule.selector}` });
+      else if (layer.anonymous) violations.push({ rule: 'known-layer', message: 'anonymous layer' });
       else if (layer.name && !order.includes(layer.name)) violations.push({ rule: 'known-layer', message: `unknown layer ${layer.name}` });
       return;
     }

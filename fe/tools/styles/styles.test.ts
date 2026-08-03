@@ -27,6 +27,31 @@ async function lintCss(code: string, filename: string, exceptions: string[] = []
 }
 
 describe('CSS AST fixtures', () => {
+  it('covers the complete layer source x form x position surface in both directions', () => {
+    const sources = ['layer-block', 'layer-statement', 'layer-import'] as const;
+    const forms = ['named', 'anonymous'] as const;
+    const positions = ['top', 'nested'] as const;
+    const applicable = (source: typeof sources[number], form: typeof forms[number], position: typeof positions[number]): boolean =>
+      !(source === 'layer-statement' && form === 'anonymous') && !(source === 'layer-import' && position === 'nested');
+    const expected = new Set(sources.flatMap((source) => forms.flatMap((form) => positions
+      .filter((position) => applicable(source, form, position))
+      .map((position) => `${source}-${form}-${position}`))));
+    const traversalSurface = new Map<string, string>([
+      ['layer-block-named-top', 'traversal/layer-block-named-top.css'],
+      ['layer-block-named-nested', 'traversal/layer-block-named-nested.css'],
+      ['layer-block-anonymous-top', 'traversal/layer-block-anonymous-top.css'],
+      ['layer-block-anonymous-nested', 'traversal/layer-block-anonymous-nested.css'],
+      ['layer-statement-named-top', 'traversal/layer-statement-named-top.css'],
+      ['layer-statement-named-nested', 'traversal/layer-statement-named-nested.css'],
+      ['layer-import-named-top', 'traversal/layer-import-named-top.css'],
+      ['layer-import-anonymous-top', 'traversal/layer-import-anonymous-top.css'],
+    ]);
+    expect(new Set(traversalSurface.keys())).toEqual(expected);
+    for (const [cell, fixture] of traversalSurface) {
+      expect(auditLayeredCss(read(fixture), order), cell).not.toEqual([]);
+    }
+  });
+
   it('covers every static and runtime CSS node source in both directions', () => {
     const traversalSurface = new Map<string, () => unknown>([
       ['static-rule', () => auditLayeredCss(read('layered/negative/case.css'), order)],
@@ -86,6 +111,14 @@ describe('CSS AST fixtures', () => {
       { rule: 'known-layer', message: 'unknown layer alien' },
     ]);
     expect(auditLayeredCss(read('traversal/static-anonymous-layer.css'), order)).toEqual([
+      { rule: 'known-layer', message: 'anonymous layer' },
+    ]);
+  });
+
+  it('inherits named child layers but rejects anonymous child layers', () => {
+    expect(auditLayeredCss('@layer ui { @layer alien {} }', order)).toEqual([]);
+    expect(auditLayeredCss(read('traversal/layer-child-named.css'), order)).toEqual([]);
+    expect(auditLayeredCss(read('traversal/layer-child-anonymous.css'), order)).toEqual([
       { rule: 'known-layer', message: 'anonymous layer' },
     ]);
   });
