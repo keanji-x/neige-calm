@@ -7,6 +7,9 @@ import postcss from 'postcss';
 import { auditLayeredCss, compareGlobalClassManifest, extractGlobalClasses, layerOrder } from './audit.ts';
 
 const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+export const EXPECTED_LAYER_ORDER = Object.freeze([
+  'reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides',
+]);
 const LEGACY_DATA_ATTRIBUTES = new Map([
   ['web/src/ui/dialog/public.tsx:data-variant', 'frozen UI interface; visual variant, not a DOM locator'],
 ]);
@@ -91,6 +94,9 @@ export function auditStyleRepository(feRoot) {
   const globalManifest = readYamlArray(resolve(stylesRoot, 'global-classes.yaml'));
   const exceptions = readYamlArray(resolve(stylesRoot, 'unlayered-exceptions.yaml'));
   const violations = [];
+  if (order.join(',') !== EXPECTED_LAYER_ORDER.join(',')) {
+    violations.push(`web/src/styles/entry.css: layer order must be ${EXPECTED_LAYER_ORDER.join(' → ')}`);
+  }
 
   const manifestClasses = globalManifest.map((entry) => {
     if (typeof entry !== 'string') throw new Error('global-classes.yaml entries must be class-name strings');

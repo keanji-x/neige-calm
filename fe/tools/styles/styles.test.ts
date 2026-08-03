@@ -4,11 +4,12 @@ import { resolve } from 'node:path';
 import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
-import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository } from './repository-check.mjs';
+import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepository, EXPECTED_LAYER_ORDER } from './repository-check.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
-const order = layerOrder(read('entry.css'));
+const productionEntry = resolve(import.meta.dirname, '../../web/src/styles/entry.css');
+const order = layerOrder(readFileSync(productionEntry, 'utf8'));
 const jsdomModule: unknown = createRequire(import.meta.url)('jsdom');
 const JSDOM = (jsdomModule as { JSDOM: new (html: string) => { window: { document: RuntimeDocument } } }).JSDOM;
 
@@ -103,7 +104,7 @@ describe('CSS AST fixtures', () => {
     }
   });
   it('uses entry.css as the sole layer-order source', () => {
-    expect(order).toEqual(['reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides']);
+    expect(order).toEqual(EXPECTED_LAYER_ORDER);
   });
 
   it('accepts layered rules and rejects an unlayered rule', () => {
@@ -333,6 +334,12 @@ describe('P8b2 forward style gates', () => {
   it('audits entry.css imports rather than only reading its layer order', () => {
     expect(auditStyleRepository(resolve(fixtures, 'repository/entry-import-negative'))).toContain(
       'web/src/styles/entry.css: imported rules cannot be statically inspected; @import must explicitly declare layer',
+    );
+  });
+
+  it('rejects a reversed production layer order', () => {
+    expect(auditStyleRepository(resolve(fixtures, 'repository/order-negative'))).toContain(
+      `web/src/styles/entry.css: layer order must be ${EXPECTED_LAYER_ORDER.join(' → ')}`,
     );
   });
 
