@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { parse } from 'yaml';
 
 const validatorPath = './validator.ts';
-const { gitChangedPaths, repositoryFiles, validateOwnership } = await import(validatorPath);
+const { gitChangedPaths, gitMergeBase, repositoryFiles, validateOwnership } = await import(validatorPath);
 const { auditStyleRepository } = await import('../styles/repository-check.mjs');
 const { ownershipManifest } = await import('../../ownership-manifest.mjs');
 
@@ -21,7 +21,7 @@ try {
   const requests = parse(readFileSync(join(feRoot, 'ownership-change-requests.yaml'), 'utf8'));
   const repositoryChanges = gitChangedPaths(join(feRoot, '..'));
   const repositoryViolations = validateOwnership(
-    ownershipManifest, repositoryFiles(join(feRoot, '..')), repositoryChanges, requests,
+    ownershipManifest, repositoryFiles(join(feRoot, '..')), repositoryChanges, requests, gitMergeBase(join(feRoot, '..')),
   );
   if (repositoryViolations.length) {
     throw new Error(`repository ownership audit failed:\n${repositoryViolations
@@ -44,7 +44,7 @@ try {
 
   const changed = gitChangedPaths(repository);
   const violations = validateOwnership(
-    [{ path: 'frozen.txt', type: 'file', owner: 'fixture', readonly: true }], [], changed, [],
+    [{ path: 'frozen.txt', type: 'file', owner: 'fixture', readonly: true }], [], changed, [], gitMergeBase(repository),
   );
   if (violations.length !== 1 || violations[0]?.rule !== 'readonly-change-request') {
     throw new Error('ownership checker failed to reject a readonly change without a change request');

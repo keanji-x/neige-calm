@@ -15,3 +15,6 @@ changeRequest.reason:
 changeRequest.issue:
   entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
   requests: [{ path: fe/core/model.ts, reason: approved, issue: 1 }]
+changeRequest.base:
+  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
+  requests: [{ path: fe/core/model.ts, reason: approved, issue: "#997", base: not-a-sha }]

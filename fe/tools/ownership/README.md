@@ -4,7 +4,7 @@ This validator prevents implementation work from falling between slices. Entries
 
 `OWNERSHIP_YAML_FIELDS` has no external schema document: the validator is the authoritative source for that field set, and fixtures are its executable coverage evidence.
 
-Readonly entries freeze interfaces and `styles/`. The repository entry point computes `git merge-base origin/main HEAD`, audits the resulting changed paths, and requires a corresponding non-empty change-request record for every readonly change.
+Readonly entries freeze interfaces and `styles/`. Each change request records the exact merge-base revision for the approved change. The checker requires both exact path and base matches, and rejects requests whose path is no longer changed, so a merged request must be removed and cannot approve later edits.
 
 `npm run lint:js` drives `check-readonly-change-requests.mjs`. This Git-dependent check must not run inside Vitest: its subprocess requirement and its base-ref requirement are two independent environmental constraints. The checker exercises both the readonly alarm and the actionable, fail-closed missing-ref diagnostic in isolated Git repositories, while Vitest tests the pure validator with injected changed paths.
 

@@ -6,6 +6,7 @@ import { OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, repositoryFiles, validateOwners
 import { ownershipManifest } from '../../ownership-manifest.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
+const BASE = '0123456789abcdef0123456789abcdef01234567';
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
   return parse(readFileSync(resolve(fixtures, caseName, kind, 'manifest.yaml'), 'utf8')) as OwnershipEntry[];
 }
@@ -28,6 +29,7 @@ describe('ownership fixtures', () => {
       'change-request-shape': () => validateOwnership([], [], [], [{ path: 1, reason: 'fixture', issue: '#997' }]),
       'exactly-one-owner': () => validateOwnership(entries('exactly-one-owner', 'negative'), []),
       coverage: () => validateOwnership(entries('coverage', 'negative'), repositoryFiles(resolve(fixtures, 'coverage/negative'))),
+      'stale-change-request': () => validateOwnership([], [], [], [{ path: 'fe/core/model.ts', reason: 'old', issue: '#997', base: BASE }], BASE),
       'readonly-change-request': () => validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css']),
     };
     expect(new Set(Object.keys(evidence))).toEqual(new Set(OWNERSHIP_RULES));
@@ -72,14 +74,16 @@ describe('ownership fixtures', () => {
 
   it('requires a corresponding change request for readonly changes', () => {
     const manifest = entries('readonly', 'positive');
-    const requests: ChangeRequest[] = [{ path: 'fe/web/src/styles/tokens.css', reason: 'approved token update', issue: '#997' }];
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], requests)).toEqual([]);
+    const requests: ChangeRequest[] = [{ path: 'fe/web/src/styles/tokens.css', reason: 'approved token update', issue: '#997', base: BASE }];
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], requests, BASE)).toEqual([]);
     expect(validateOwnership(entries('readonly', 'negative'), [], ['fe/web/src/styles/tokens.css'])).toEqual([
       { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
     ]);
-    const prefixRequest: ChangeRequest[] = [{ path: 'fe/web/src/styles', reason: 'broad request', issue: '#997' }];
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], prefixRequest)).toHaveLength(1);
-    expect(validateOwnership(manifest, [], ['fe/web/src/styles/other.css'], requests)).toHaveLength(1);
+    const prefixRequest: ChangeRequest[] = [{ path: 'fe/web/src/styles', reason: 'broad request', issue: '#997', base: BASE }];
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], prefixRequest, BASE)
+      .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/other.css'], requests, BASE)
+      .some(({ rule }) => rule === 'readonly-change-request')).toBe(true);
     expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], [
       { path: 'fe/web/src/styles/tokens.css', reason: 'missing issue', issue: '' },
     ])).toEqual([
@@ -92,6 +96,20 @@ describe('ownership fixtures', () => {
       { rule: 'entry-shape', message: 'invalid entry 1: fe/core/model.ts' },
       { rule: 'readonly-change-request', message: 'fe/core/model.ts changed without a change request' },
     ]);
+  });
+
+  it('rejects an old request reused for a new revision and consumed requests', () => {
+    const manifest = entries('readonly', 'positive');
+    const old = parse(readFileSync(resolve(fixtures, 'change-request-lifecycle/negative/requests.yaml'), 'utf8'));
+    const nextBase = 'abcdef0123456789abcdef0123456789abcdef01';
+    expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], old, nextBase))
+      .toEqual(expect.arrayContaining([
+        { rule: 'stale-change-request', message: 'fe/web/src/styles/tokens.css has a consumed or mismatched change request' },
+        { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
+      ]));
+    expect(validateOwnership(manifest, [], [], old, BASE)).toContainEqual(
+      { rule: 'stale-change-request', message: 'fe/web/src/styles/tokens.css has a consumed or mismatched change request' },
+    );
   });
 
 });
