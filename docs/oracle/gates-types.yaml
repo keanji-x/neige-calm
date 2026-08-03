@@ -990,7 +990,8 @@
   test_tier: static
   migration: pending
 
-- id: GATE-OVERLAY-003
+- id: INV-OVERLAY-001
+  former_id: GATE-OVERLAY-003
   kind: invariant
   family: overlay-state
   statement: >
