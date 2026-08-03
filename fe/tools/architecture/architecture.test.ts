@@ -40,6 +40,7 @@ const publicSymbolShapes = new Map<string, boolean>([
 const packageImportShapes = [
   'static-import', 'side-effect-import', 'type-import', 'named-reexport', 'star-reexport',
   'namespace-reexport', 'dynamic-import', 'require-call', 'import-equals-require',
+  'dynamic-import-template-literal', 'dynamic-import-with-attributes',
 ] as const;
 const consumerImportShapes = [
   'named-import', 'default-import', 'namespace-member', 'named-reexport',
@@ -96,7 +97,7 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const output = messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
     return { status: messages.length ? 1 : 0, stdout: output, stderr: '' };
   }
-  if (caseName === 'markdown-micromark-import') {
+  if (caseName.startsWith('markdown-micromark-')) {
     const filePath = resolve(fixtures, caseName, kind, 'web/src/case.ts');
     const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
     const lintPaths = ['web/src/main.tsx', 'web/src/ui/state/public.ts', 'core/platform-independent.ts'];
@@ -180,6 +181,8 @@ describe('architecture fixtures', () => {
     ['dup-import-fence-symbol', 'INV-DUP-005'],
     ['core-markdown-node-import', 'node:fs'],
     ['markdown-micromark-import', 'no-restricted-syntax'],
+    ['markdown-micromark-template-import', 'no-restricted-syntax'],
+    ['markdown-micromark-attributes-import', 'no-restricted-syntax'],
     ['cards-public-entry-dynamic', 'cards-public-entry-only'],
     ['markdown-public-entry-dynamic', 'markdown-public-entry-only'],
     ['markdown-public-entry-core', 'markdown-public-entry-only'],

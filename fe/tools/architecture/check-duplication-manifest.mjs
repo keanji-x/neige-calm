@@ -21,6 +21,10 @@ function packageMatches(source, pattern) {
   if (pattern.endsWith('*')) return source.startsWith(pattern.slice(0, -1));
   return source === pattern || source.startsWith(`${pattern}/`);
 }
+/** @param {ts.Expression | undefined} node @returns {string | undefined} */
+function staticString(node) {
+  return node && (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined;
+}
 /** @param {ts.Node} node @param {ts.SyntaxKind} kind */
 function hasModifier(node, kind) { return ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === kind); }
 /** @param {ts.BindingName} name @returns {string[]} */
@@ -57,9 +61,9 @@ function packageSources(ast) {
       && node.moduleReference.expression && ts.isStringLiteral(node.moduleReference.expression)) {
       sources.push(node.moduleReference.expression.text);
     } else if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
-      || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
-      && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0])) {
-      sources.push(node.arguments[0].text);
+      || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))) {
+      const source = staticString(node.arguments[0]);
+      if (source !== undefined) sources.push(source);
     }
     ts.forEachChild(node, visit);
   }

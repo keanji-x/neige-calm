@@ -11,7 +11,11 @@ import { createContextAllowlist, moduleRuntimeStateAllowlist } from './tools/arc
 const typedFiles = ['**/*.{ts,tsx}'];
 const nodeBuiltinImports = [...new Set(builtinModules.map((name) => name.replace(/^node:/, '')))]
   .flatMap((name) => [name, `node:${name}`]);
-const restrictedDynamicMarkdownImport = 'ImportExpression[source.type="Literal"][source.value=/^(?:react-markdown(?:\\/|$)|remark-|rehype-|mdast-util-|micromark(?:\\/|-|$)|unified(?:\\/|$))/]';
+const markdownPackagePattern = '^(?:react-markdown(?:\\/|$)|remark-|rehype-|mdast-util-|micromark(?:\\/|-|$)|unified(?:\\/|$))';
+const restrictedDynamicMarkdownImport = [
+  `ImportExpression[source.type="Literal"][source.value=/${markdownPackagePattern}/]`,
+  `ImportExpression[source.type="TemplateLiteral"][source.expressions.length=0][source.quasis.0.value.cooked=/${markdownPackagePattern}/]`,
+].join(', ');
 
 export default tseslint.config(
   { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', '**/fixtures/**', 'tools/architecture/rule-fixtures/**'] },
