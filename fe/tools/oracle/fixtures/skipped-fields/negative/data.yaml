@@ -1,0 +1,13 @@
+- id: "INV-TEST-001"
+  kind: "invariant"
+  family: "fixture"
+  statement: "Contract remains true"
+  why: "Fixture reason"
+  source: "fixture-source.txt:1"
+  authoritative_test: "NONE"
+  owner_slice: "styles/global"
+  intentional_omission: false
+  runtime_layer: "styles"
+  verification_owner: null
+  test_tier: "static"
+  migration: "skipped"

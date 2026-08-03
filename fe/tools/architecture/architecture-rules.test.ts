@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, extname, relative, resolve } from 'node:path';
 import { ESLint } from 'eslint';
 import * as tsParser from '@typescript-eslint/parser';
 import { describe, expect, it } from 'vitest';
@@ -8,8 +8,32 @@ import { architecturePlugin } from './plugin.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const fixtureRoot = resolve(import.meta.dirname, 'rule-fixtures');
+const referencedFixtures = new Set<string>();
+
+function fixtureFilesUnder(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = resolve(directory, entry.name);
+    return entry.isDirectory() ? fixtureFilesUnder(path) : ['.ts', '.tsx'].includes(extname(path)) ? [path] : [];
+  });
+}
+
+function referencedFixtureClosure(): Set<string> {
+  const references = new Set(referencedFixtures);
+  for (const fixture of references) {
+    const source = readFileSync(resolve(fixtureRoot, fixture), 'utf8');
+    for (const match of source.matchAll(/(?:from\s*|import\s*\()\s*['"]([^'"]+)['"]/g)) {
+      if (!match[1].startsWith('.')) continue;
+      const target = resolve(fixtureRoot, dirname(fixture), match[1]);
+      for (const candidate of [target, `${target}.ts`, `${target}.tsx`]) {
+        if (existsSync(candidate)) references.add(relative(fixtureRoot, candidate).replaceAll('\\', '/'));
+      }
+    }
+  }
+  return references;
+}
 
 async function lintFixture(ruleName: string, fixture: string, options?: Record<string, unknown>) {
+  referencedFixtures.add(fixture);
   const file = resolve(fixtureRoot, fixture);
   const eslint = new ESLint({
     overrideConfigFile: true,
@@ -113,6 +137,96 @@ describe('architecture/no-module-runtime-state', () => {
   });
 });
 
+describe('architecture/no-direct-persistence', () => {
+  for (const [fixture, messageId] of [
+    ['persistence/direct-identifier.ts', 'direct'],
+    ['persistence/window-local-storage.ts', 'direct'],
+    ['persistence/computed-global-this.ts', 'direct'],
+    ['persistence/destructure-window.ts', 'direct'],
+    ['persistence/alias-session-storage.ts', 'direct'],
+    ['persistence/indexed-db-open.ts', 'direct'],
+  ] as const) {
+    it(`rejects ${fixture}`, async () => {
+      const messages = await lintFixture('no-direct-persistence', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe(messageId);
+    });
+  }
+  for (const fixture of ['core/keys/storage.ts', 'persistence/injected-port.ts'] as const) {
+    it(`accepts ${fixture}`, async () => {
+      expect(await lintFixture('no-direct-persistence', fixture)).toHaveLength(0);
+    });
+  }
+});
+
+describe('architecture/no-calm-key-outside-core-keys', () => {
+  for (const [fixture, messageId] of [['calm-key/string-literal.ts', 'key'], ['calm-key/template-head.ts', 'key']] as const) {
+    it(`rejects ${fixture}`, async () => {
+      const messages = await lintFixture('no-calm-key-outside-core-keys', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe(messageId);
+    });
+  }
+  for (const fixture of ['core/keys/calm-key.ts', 'core/keys.ts', 'calm-key/injected-key.ts', 'calm-key/known-concatenation-escape.ts'] as const) {
+    it(`accepts ${fixture}`, async () => {
+      expect(await lintFixture('no-calm-key-outside-core-keys', fixture)).toHaveLength(0);
+    });
+  }
+});
+
+describe('architecture/no-class-dom-query', () => {
+  for (const [fixture, messageId] of [
+    ['dom-selector/query-selector.ts', 'classSelector'],
+    ['dom-selector/query-selector-all.ts', 'classSelector'],
+    ['dom-selector/closest.ts', 'classSelector'],
+    ['dom-selector/matches.ts', 'classSelector'],
+    ['dom-selector/get-elements-by-class-name.ts', 'classNameApi'],
+    ['dom-selector/dynamic.ts', 'dynamicSelector'],
+    ['dom-selector/template.ts', 'dynamicSelector'],
+  ] as const) {
+    it(`rejects ${fixture}`, async () => {
+      const messages = await lintFixture('no-class-dom-query', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe(messageId);
+    });
+  }
+  it('allows an exact third-party selector with an application container prefix', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/allowlisted.ts', {
+      allowlist: [{ file: 'rule-fixtures/dom-selector/allowlisted.ts', selector: '.file-viewer-code-wrap .cm-scroller' }],
+    })).toHaveLength(0);
+  });
+  it('rejects an allowlist entry without a container prefix', async () => {
+    const messages = await lintFixture('no-class-dom-query', 'dom-selector/bare-allowlisted.ts', {
+      allowlist: [{ file: 'rule-fixtures/dom-selector/bare-allowlisted.ts', selector: '.cm-scroller' }],
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages.at(0)?.messageId).toBe('classSelector');
+  });
+  it('accepts a static data selector', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/data-selector.ts')).toHaveLength(0);
+  });
+  it('accepts a module-scope single-assignment const string without a class', async () => {
+    expect(await lintFixture('no-class-dom-query', 'dom-selector/module-const-data.ts')).toHaveLength(0);
+  });
+  it('rejects a class in a module-scope single-assignment const as a class selector', async () => {
+    const messages = await lintFixture('no-class-dom-query', 'dom-selector/module-const-class.ts');
+    expect(messages).toHaveLength(1);
+    expect(messages.at(0)?.messageId).toBe('classSelector');
+  });
+});
+
+describe('architecture/no-core-platform-escape', () => {
+  it('rejects globalThis.fetch', async () => {
+    expect(await lintFixture('no-core-platform-escape', 'core-escape/global-this-fetch.ts')).toHaveLength(1);
+  });
+  it('rejects dynamic import()', async () => {
+    expect(await lintFixture('no-core-platform-escape', 'core-escape/dynamic-import.ts')).toHaveLength(1);
+  });
+  it('accepts injected transports and static imports', async () => {
+    expect(await lintFixture('no-core-platform-escape', 'core-escape/injected.ts')).toHaveLength(0);
+  });
+});
+
 describe('architecture/no-create-context-outside-allowlist', () => {
   const rejected = [
     ['create-context-named.ts', 'createContext'],
@@ -166,4 +280,13 @@ describe('architecture allowlists', () => {
       }
     });
   }
+});
+
+describe('architecture rule fixture coverage', () => {
+  it('references every rule fixture directly or through a fixture import', () => {
+    const allFixtures = new Set(fixtureFilesUnder(fixtureRoot)
+      .map((file) => relative(fixtureRoot, file).replaceAll('\\', '/')));
+    const references = referencedFixtureClosure();
+    expect([...allFixtures].filter((fixture) => !references.has(fixture))).toEqual([]);
+  });
 });
