@@ -1,0 +1,1 @@
+globalThis['localStorage'].getItem('key');

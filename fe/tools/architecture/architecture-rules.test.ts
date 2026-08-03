@@ -113,6 +113,26 @@ describe('architecture/no-module-runtime-state', () => {
   });
 });
 
+describe('architecture/no-direct-persistence', () => {
+  for (const fixture of [
+    'persistence/direct-identifier.ts',
+    'persistence/window-local-storage.ts',
+    'persistence/computed-global-this.ts',
+    'persistence/destructure-window.ts',
+    'persistence/alias-session-storage.ts',
+    'persistence/indexed-db-open.ts',
+  ] as const) {
+    it(`rejects ${fixture}`, async () => {
+      expect(await lintFixture('no-direct-persistence', fixture)).toHaveLength(1);
+    });
+  }
+  for (const fixture of ['core/keys/storage.ts', 'persistence/injected-port.ts'] as const) {
+    it(`accepts ${fixture}`, async () => {
+      expect(await lintFixture('no-direct-persistence', fixture)).toHaveLength(0);
+    });
+  }
+});
+
 describe('architecture/no-create-context-outside-allowlist', () => {
   const rejected = [
     ['create-context-named.ts', 'createContext'],

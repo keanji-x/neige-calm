@@ -47,7 +47,10 @@ export default tseslint.config(
   {
     files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}', 'web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     ignores: moduleRuntimeStateAllowlist,
-    rules: { 'architecture/no-module-runtime-state': 'error' },
+    rules: {
+      'architecture/no-module-runtime-state': 'error',
+      'architecture/no-direct-persistence': 'error',
+    },
   },
   {
     files: ['web/src/app/router.{ts,tsx}'],
