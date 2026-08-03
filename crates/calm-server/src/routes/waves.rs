@@ -62,13 +62,16 @@ use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::validate_transition;
-use crate::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
+use crate::wave_report::{
+    WaveReportPayload, persist_report, resolve_report_for_wave, tasks_rebuild_tx,
+};
+use crate::wave_report_read::load_report_read_snapshot;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -86,7 +89,10 @@ pub fn router() -> Router<AppState> {
         // session cookie). The MCP `calm.report.{write,edit}` path is
         // unchanged; both paths funnel through `wave_report::persist_report`
         // so the dual-event invariant + CRDT write stays one boundary.
-        .route("/api/waves/{id}/report", post(update_wave_report))
+        .route(
+            "/api/waves/{id}/report",
+            get(get_wave_report).post(update_wave_report),
+        )
         .route("/api/waves/{id}/backlinks", get(get_wave_backlinks))
         .route("/api/waves/{id}/files/ls", get(list_wave_files))
         .route("/api/waves/{id}/files/cat", get(cat_wave_file))
@@ -829,6 +835,17 @@ pub(crate) async fn update_wave(
     };
     let actor_id = actor.to_actor_id();
 
+    // Issue #985 — wave-level automation controls are human decisions.
+    // Reject non-user actors before entering the eventized write so neither
+    // the row nor a WaveUpdated event can land.
+    if (p.spec_task_ceiling.is_some() || p.automation_policy.is_some())
+        && !matches!(actor_id, ActorId::User)
+    {
+        return Err(CalmError::Forbidden(
+            "automation_policy and spec_task_ceiling are user-only".into(),
+        ));
+    }
+
     // Issue #145 — lifecycle transitions go through a typed state
     // machine. The validator runs *before* the write so an illegal
     // transition surfaces as `Forbidden` without persisting either
@@ -872,6 +889,20 @@ pub(crate) async fn update_wave(
             "task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
         )));
     }
+    if let Some(Some(ceiling)) = p.spec_task_ceiling
+        && ceiling < 0
+    {
+        return Err(CalmError::BadRequest(format!(
+            "spec_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
+        )));
+    }
+    if let Some(Some(policy)) = &p.automation_policy
+        && !matches!(policy.as_str(), "auto-declare" | "declare-and-wait")
+    {
+        return Err(CalmError::BadRequest(format!(
+            "automation_policy must be auto-declare or declare-and-wait (got {policy}); pass null to reset to the kernel default"
+        )));
+    }
 
     // If the patch is now entirely empty (lifecycle was a no-op and
     // no other field was supplied) there's nothing to write and
@@ -882,7 +913,9 @@ pub(crate) async fn update_wave(
         || p.archived_at.is_some()
         || p.pinned_at.is_some()
         || p.task_budget.is_some()
-        || p.require_task_gates.is_some();
+        || p.require_task_gates.is_some()
+        || p.spec_task_ceiling.is_some()
+        || p.automation_policy.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
         return Ok(Json(existing));
     }
@@ -894,6 +927,7 @@ pub(crate) async fn update_wave(
     // row shape. Both share scope + actor; both land or neither does.
     let cove_id_for_event = existing.cove_id.clone();
     let wave_id_for_event = existing.id.clone();
+    let projection_policy_changed = p.spec_task_ceiling.is_some() || p.automation_policy.is_some();
     let p_for_tx = p.clone();
     let (wave, _ids) = write_with_events_typed(
         s.repo.as_ref(),
@@ -905,6 +939,11 @@ pub(crate) async fn update_wave(
             let scope = scope.clone();
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p_for_tx).await?;
+                let projection = if projection_policy_changed {
+                    Some(tasks_rebuild_tx(tx, &id).await?)
+                } else {
+                    None
+                };
                 let mut events: Vec<(EventScope, Event)> = Vec::new();
                 if let Some((from, to)) = lifecycle_change {
                     events.push((
@@ -919,9 +958,21 @@ pub(crate) async fn update_wave(
                     ));
                 }
                 events.push((
-                    scope,
+                    scope.clone(),
                     Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
                 ));
+                if let Some(projection) = projection
+                    && !projection.changed_keys.is_empty()
+                {
+                    events.push((
+                        scope,
+                        Event::PlanUpdated {
+                            wave_id: wave_id_for_event,
+                            changed_keys: projection.changed_keys,
+                            agent_message: None,
+                        },
+                    ));
+                }
                 Ok((wave, events))
             })
         },
@@ -1166,6 +1217,49 @@ pub struct UpdateWaveReportBody {
     /// splitting at H1 (`^# `) headings; the kernel does not interpret
     /// the structure.
     pub body: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveReportReadResponse {
+    pub schema_version: u32,
+    pub doc_rev: u64,
+    pub summary: String,
+    pub body: String,
+    pub blocks: Vec<calm_types::wave_report::ReportBlock>,
+    pub task_diagnostics: Vec<crate::db::sqlite::BlockVerdict>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/waves/{id}/report",
+    tag = "waves",
+    params(("id" = String, Path, description = "Wave id")),
+    responses(
+        (status = 200, description = "Current report with derived task diagnostics", body = WaveReportReadResponse),
+        (status = 401, description = "Missing or invalid session", body = ErrorBody),
+        (status = 404, description = "Wave not found", body = ErrorBody)
+    ),
+)]
+pub(crate) async fn get_wave_report(
+    State(s): State<RouteState>,
+    _principal: Principal,
+    Path(id): Path<String>,
+) -> Result<Response> {
+    let (_, report_card, _) = resolve_report_for_wave(s.repo.as_ref(), &id).await?;
+    let snapshot = load_report_read_snapshot(s.repo.as_ref(), report_card.id.as_str()).await?;
+    Ok((
+        StatusCode::OK,
+        Json(WaveReportReadResponse {
+            schema_version: snapshot.schema_version,
+            doc_rev: snapshot.doc_rev,
+            summary: snapshot.summary,
+            body: snapshot.body,
+            blocks: snapshot.blocks,
+            task_diagnostics: snapshot.task_diagnostics,
+        }),
+    )
+        .into_response())
 }
 
 /// `POST /api/waves/:id/report` — user-driven wave-report edit. The

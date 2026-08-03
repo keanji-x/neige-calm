@@ -4096,11 +4096,20 @@ fork 后立刻 rebuild，声明一致、状态全新；`calm.plan.upsert` 不在
      （必须写明两条清除办法），没有第二层。
    - **一次否决改变整个 wave 的姿态**，并会连带删掉该 wave 内其它未放行的
      spec pending 行（§6.1 已定价、§12 切片 3b 已列为必测）。
+
      这是本设计里"一处否决、全 wave 收紧"的**唯一**一处。
    **证伪装置（保留）**：可观测量「同一 wave 内，在一次 `tombstoned_by:"user"`
    否决之后 N 分钟内，spec 新增 `task` 声明的速率与条数」——与 §13.18 的
    "每 wave spec 声明速率"同一组指标、同一处上报。它现在测的是**提议**速率
    （落行已被机制挡住），仍然是"spec 是否在原地打转"的直接信号。
+22b. **升级日的 legacy 在飞行不计入 `spec_task_ceiling` 的 `occupied`。** 规则
+   3″ 的证明口径刻意只数 `declared_by='spec' AND origin='block'`；因此 0068
+   backfill 得到的 `origin='legacy'` dispatched/running/verifying 行，在被同 key
+   文档声明收编前，不占这条投影存量护栏。人的“这个 wave 当前总共有多少未结
+   任务”口径会暂时大于 ceiling；其在飞并发仍受 `task_budget` 限制，且
+   `unknown_deps` 按规则 3‴ 必须把这些 legacy 在飞 key 视为已知。若产品要让
+   ceiling 覆盖升级遗留存量，应另做一次有归属证据的物化/收编，不能在
+   `occupied` 查询里无条件混入 legacy 行而改写不变量 7b 的证明对象。
 23. **判决的执行路径是 r5 才补上、r6 才放对位置的，它未经实测**（NEW，r5 ⑮；
    **r6 ⑲ 重写**，§5.3.3）。这条规则是本设计**唯一**让"判 material 之后不再
    起新工作"变成真的东西，而它**改的是崩溃恢复路径**——那是全项目最难在测试里

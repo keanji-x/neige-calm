@@ -706,6 +706,8 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         gate_pid_boot_id: None,
         running_deadline_ms: None,
         context_stale_at_ms: None,
+        declared_by: "spec".into(),
+        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

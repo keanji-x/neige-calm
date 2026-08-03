@@ -788,7 +788,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        get: operations["get_wave_report"];
         put?: never;
         /**
          * `POST /api/waves/:id/report` — user-driven wave-report edit. The
@@ -948,6 +948,12 @@ export interface components {
             head_elided: boolean;
             label: string;
             tail_elided: boolean;
+        };
+        BlockVerdict: {
+            blockId: string;
+            diagnostics: components["schemas"]["Diagnostic"][];
+            key: string;
+            schedulable: boolean;
         };
         Card: {
             /** Format: int64 */
@@ -1200,6 +1206,10 @@ export interface components {
         DeleteReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
+        };
+        Diagnostic: {
+            message: string;
+            path: string;
         };
         DirEntry: {
             is_dir: boolean;
@@ -2161,6 +2171,11 @@ export interface components {
              *     or omit (`None`) to leave alone.
              */
             archived_at?: number | null;
+            /**
+             * @description Issue #985 — per-wave declaration policy. A present null resets to
+             *     the kernel default.
+             */
+            automation_policy?: string | null;
             lifecycle?: null | components["schemas"]["WaveLifecycle"];
             /**
              * Format: int64
@@ -2176,6 +2191,12 @@ export interface components {
             require_task_gates?: boolean | null;
             /** Format: double */
             sort?: number | null;
+            /**
+             * Format: int64
+             * @description Issue #985 — maximum admitted spec-declared task inventory. A
+             *     present null resets to the kernel default.
+             */
+            spec_task_ceiling?: number | null;
             /**
              * Format: int64
              * @description Issue #644 — per-wave scheduler budget (`waves.task_budget`,
@@ -2244,6 +2265,16 @@ export interface components {
              *     [[required-over-option]] rule.
              */
             summary: string;
+        };
+        WaveReportReadResponse: {
+            blocks: components["schemas"]["ReportBlock"][];
+            body: string;
+            /** Format: int64 */
+            docRev: number;
+            /** Format: int32 */
+            schemaVersion: number;
+            summary: string;
+            taskDiagnostics: components["schemas"]["BlockVerdict"][];
         };
         /**
          * @description Issue #250 PR 2 — calendar window query parameters for
@@ -4777,6 +4808,47 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_wave_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current report with derived task diagnostics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveReportReadResponse"];
+                };
+            };
+            /** @description Missing or invalid session */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

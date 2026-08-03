@@ -82,6 +82,7 @@ use utoipa::OpenApi;
         crate::routes::waves::get_wave_backlinks,
         // Issue #247 PR3 — user-facing wave-report edit endpoint
         crate::routes::waves::update_wave_report,
+        crate::routes::waves::get_wave_report,
         crate::routes::wave_report_blocks::create_block,
         crate::routes::wave_report_blocks::update_block,
         crate::routes::wave_report_blocks::delete_block,

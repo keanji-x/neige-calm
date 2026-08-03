@@ -33,7 +33,8 @@
 //!     disguise)
 //!
 //! `begin_immediate_tx(` is excluded from all patterns by exact-token
-//! matching. The allowlist is keyed by content (enclosing fn needle), not
+//! matching; calls to the deferred `begin_read_tx(` helper are included.
+//! The allowlist is keyed by content (enclosing fn needle), not
 //! by hit count, and the `tests.rs` / `*_tests.rs` name exemption is
 //! verified fail-closed against each file's `mod` registration site.
 
@@ -52,7 +53,7 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
 
 /// Documented READ-ONLY deferred transactions, keyed by CONTENT rather
 /// than hit count (#930 review hardening): `(relative path, needle)`
-/// where the needle — the enclosing `fn` name — must appear in the
+/// where the needle — the enclosing call-site `fn` name — must appear in the
 /// normalized text within `ALLOWLIST_NEEDLE_WINDOW_LINES` lines above
 /// EVERY matched begin in that file. A different deferred tx appearing
 /// elsewhere in the same file therefore fails even when the total hit
@@ -61,9 +62,19 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
 /// A deferred transaction that performs no writes never competes for the
 /// shared-cache writer slot, so it cannot be a hold-and-wait party.
 const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[
-    // `wave_detail`: one consistent snapshot across wave/cards/overlays
-    // SELECTs; commits without writing.
-    ("calm-truth/src/db/sqlite/read.rs", "fn wave_detail("),
+    // The helper is the single place that opens the deferred transaction;
+    // every production caller is independently enumerated below.
+    (
+        "calm-truth/src/db/sqlite/read_transaction.rs",
+        "fn begin_read_tx(",
+    ),
+    // Each read-only call site is named explicitly so adding another caller
+    // cannot silently inherit the helper's exemption.
+    ("calm-truth/src/db/sqlite/read.rs", "async fn wave_detail("),
+    (
+        "calm-truth/src/db/sqlite/read.rs",
+        "async fn task_diagnostics(",
+    ),
 ];
 
 /// How far above a matched begin the allowlist needle may sit. The fn
@@ -79,7 +90,7 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
 
     let mut scanned = 0usize;
     let mut violations: Vec<String> = Vec::new();
-    let mut consulted_allowlist: HashSet<&str> = HashSet::new();
+    let mut consulted_allowlist: HashSet<String> = HashSet::new();
     let mut name_exempted: Vec<(String, PathBuf)> = Vec::new();
 
     for crate_src in ["calm-server/src", "calm-truth/src"] {
@@ -115,25 +126,28 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
             if hits.is_empty() {
                 continue;
             }
-            match READ_ONLY_DEFERRED_ALLOWLIST
+            let allowlist: Vec<_> = READ_ONLY_DEFERRED_ALLOWLIST
                 .iter()
-                .find(|(file, _)| *file == rel)
-            {
-                Some((file, needle)) => {
-                    consulted_allowlist.insert(*file);
+                .filter(|(file, _)| *file == rel)
+                .collect();
+            match allowlist.is_empty() {
+                false => {
+                    consulted_allowlist.insert(rel.clone());
                     for (line, form) in &hits {
                         let hi = line - 1; // hits are 1-based; norm_lines 0-based
                         let lo = hi.saturating_sub(ALLOWLIST_NEEDLE_WINDOW_LINES);
-                        if !norm_lines[lo..hi].iter().any(|l| l.contains(needle)) {
+                        if !allowlist.iter().any(|(_, needle)| {
+                            norm_lines[lo..hi].iter().any(|l| l.contains(needle))
+                        }) {
                             violations.push(format!(
-                                "{rel}:{line}: {form} lacks allowlist needle {needle:?} within \
+                                "{rel}:{line}: {form} lacks a call-site allowlist needle within \
                                  {ALLOWLIST_NEEDLE_WINDOW_LINES} lines above — a different \
                                  deferred tx in an allowlisted file still fails"
                             ));
                         }
                     }
                 }
-                None => {
+                true => {
                     for (line, form) in &hits {
                         violations.push(format!("{rel}:{line}: {form}"));
                     }
@@ -154,7 +168,7 @@ fn production_deferred_transactions_are_read_only_allowlisted() {
     );
     for (file, _) in READ_ONLY_DEFERRED_ALLOWLIST {
         assert!(
-            consulted_allowlist.contains(file),
+            consulted_allowlist.contains(*file),
             "stale READ_ONLY_DEFERRED_ALLOWLIST entry (file moved or converted): {file}"
         );
     }
@@ -539,9 +553,9 @@ fn flatten_production(lines: &[(usize, &str)]) -> Vec<(char, usize)> {
 }
 
 /// Scan the flattened production stream for deferred-transaction begins.
-/// Word-exact token matching: `begin` and `begin_with` are maximal ident
-/// runs, so `begin_immediate_tx(` (and any `*begin*` identifier) never
-/// matches. Returns `(1-based line of the begin token, form description)`.
+/// Word-exact token matching: `begin`, `begin_with`, and the centralized
+/// deferred helper `begin_read_tx` are recognized; `begin_immediate_tx(`
+/// never matches. Returns `(1-based line of the begin token, description)`.
 fn scan_deferred_begins(flat: &[(char, usize)]) -> Vec<(usize, &'static str)> {
     fn is_ident(c: char) -> bool {
         c.is_alphanumeric() || c == '_'
@@ -593,12 +607,27 @@ fn scan_deferred_begins(flat: &[(char, usize)]) -> Vec<(usize, &'static str)> {
                 "begin_with" if !begin_with_first_arg_is_immediate(flat, k) => {
                     hits.push((line, "`begin_with(` without a \"BEGIN IMMEDIATE\" literal"));
                 }
+                "begin_read_tx" if !preceded_by_fn_keyword(flat, start) => {
+                    hits.push((line, "deferred helper `begin_read_tx(`"));
+                }
                 _ => {}
             }
         }
         i = j;
     }
     hits
+}
+
+fn preceded_by_fn_keyword(flat: &[(char, usize)], start: usize) -> bool {
+    let mut end = start;
+    while end > 0 && flat[end - 1].0 == ' ' {
+        end -= 1;
+    }
+    let mut begin = end;
+    while begin > 0 && (flat[begin - 1].0.is_alphanumeric() || flat[begin - 1].0 == '_') {
+        begin -= 1;
+    }
+    flat[begin..end].iter().map(|(c, _)| *c).collect::<String>() == "fn"
 }
 
 /// True iff the argument list opening at `open_paren` starts with the

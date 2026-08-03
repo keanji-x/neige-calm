@@ -774,16 +774,13 @@ pub enum Event {
         agent_message: Option<String>,
     },
 
-    /// Issue #644 — the spec revised the wave's task plan via
-    /// `calm.plan.upsert` / `calm.plan.cancel`. Appended in the same
-    /// eventized tx as the `tasks` row writes, wave-scoped, actor
-    /// `AiSpec`. `changed_keys` lists the task keys whose rows were
-    /// created/updated/canceled by the call (`unchanged` upserts are
-    /// not listed). The PR-B scheduler subscribes to this kind as its
-    /// primary trigger; until then it is an audit/UI record only.
+    /// The task plan changed via an explicit plan tool or report-block
+    /// projection. `changed_keys` is the sorted, deduplicated union of
+    /// inserted, declaration-updated, and deleted rows; unchanged
+    /// declarations are omitted.
     ///
-    /// Spec-only: the in-tx role gate refuses this event from any AI
-    /// worker actor, mirroring the dispatch-request rule (#583).
+    /// Worker-AI actors are excluded by the in-tx role gate; spec and user
+    /// report edits may produce this event.
     #[serde(rename = "plan.updated")]
     PlanUpdated {
         wave_id: WaveId,

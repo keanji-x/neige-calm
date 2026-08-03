@@ -4,9 +4,28 @@ use crate::wave_report::ReportBlock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use utoipa::ToSchema;
 
 pub const GATE_TIMEOUT_DEFAULT_SECS: i64 = 1800;
 pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
+
+pub fn json_eq(a: &str, b: &str) -> bool {
+    match (
+        serde_json::from_str::<Value>(a),
+        serde_json::from_str::<Value>(b),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+pub fn opt_json_eq(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => json_eq(a, b),
+        _ => false,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +46,9 @@ pub struct GateStepInput {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskDeclaration {
+    /// Present only for declarations projected from report blocks. Plan-upsert
+    /// validation has no block whose diagnostics could be indexed.
+    pub block_index: Option<usize>,
     pub block_id: String,
     pub key: String,
     pub kind: String,
@@ -35,18 +57,26 @@ pub struct TaskDeclaration {
     pub gate: Option<GateInput>,
     pub no_gate_reason: Option<String>,
     pub depends_on: Vec<String>,
+    pub context: Value,
+    pub cwd: Option<String>,
+    pub priority: i64,
+    pub refs: Vec<String>,
+    pub declared_by: String,
+    pub released_by_user: bool,
+    pub tombstoned_by_user: bool,
     pub ready: bool,
     pub tombstone: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct Diagnostic {
     pub path: String,
     pub message: String,
 }
 
 impl Diagnostic {
-    fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             path: path.into(),
             message: message.into(),
@@ -313,7 +343,19 @@ pub fn project_task_declarations(
         }
         if let Err(error) = super::validate_payload(super::KIND_TASK, &block.payload) {
             diagnostics[index].push(Diagnostic::new("payload", error));
-            continue;
+            // Preserve a keyed declaration when the payload is structurally
+            // readable.  Its payload diagnostic keeps it unschedulable while
+            // allowing both diagnostic read paths to explain why an existing
+            // pending row was removed.
+            if block.payload.get("key").and_then(Value::as_str).is_none()
+                || block
+                    .payload
+                    .get("declared_by")
+                    .and_then(Value::as_str)
+                    .is_none()
+            {
+                continue;
+            }
         }
         let payload = block
             .payload
@@ -323,6 +365,7 @@ pub fn project_task_declarations(
             .get("tombstone")
             .is_some_and(|value| !value.is_null());
         let declaration = TaskDeclaration {
+            block_index: Some(index),
             block_id: block.id.clone(),
             key: payload["key"].as_str().expect("validated key").to_string(),
             kind: payload
@@ -341,7 +384,7 @@ pub fn project_task_declarations(
                 .map(str::to_string),
             gate: payload
                 .get("gate")
-                .map(|gate| serde_json::from_value(gate.clone()).expect("validated gate")),
+                .and_then(|gate| serde_json::from_value(gate.clone()).ok()),
             no_gate_reason: payload
                 .get("no_gate_reason")
                 .and_then(Value::as_str)
@@ -357,6 +400,36 @@ pub fn project_task_declarations(
                         .collect()
                 })
                 .unwrap_or_default(),
+            context: payload
+                .get("context")
+                .cloned()
+                .unwrap_or(Value::Object(Default::default())),
+            cwd: payload
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            priority: payload.get("priority").and_then(Value::as_i64).unwrap_or(0),
+            refs: payload
+                .get("refs")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            declared_by: payload["declared_by"]
+                .as_str()
+                .expect("validated declared_by")
+                .to_string(),
+            released_by_user: payload
+                .get("released_by_user")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            tombstoned_by_user: payload.get("tombstoned_by").and_then(Value::as_str)
+                == Some("user"),
             ready: payload
                 .get("ready")
                 .and_then(Value::as_bool)
@@ -418,6 +491,7 @@ mod tests {
 
     fn declaration(key: &str, dependencies: &[&str]) -> TaskDeclaration {
         TaskDeclaration {
+            block_index: None,
             block_id: key.into(),
             key: key.into(),
             kind: "codex".into(),
@@ -426,6 +500,13 @@ mod tests {
             gate: None,
             no_gate_reason: None,
             depends_on: dependencies.iter().map(|value| (*value).into()).collect(),
+            context: serde_json::json!({}),
+            cwd: None,
+            priority: 0,
+            refs: Vec::new(),
+            declared_by: "spec".into(),
+            released_by_user: false,
+            tombstoned_by_user: false,
             ready: true,
             tombstone: false,
         }

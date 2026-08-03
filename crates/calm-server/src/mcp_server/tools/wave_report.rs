@@ -95,10 +95,11 @@ fn read_descriptor() -> ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
         description: "Spec-only: read the wave's report. Returns \
              `{ text, body, summary, schemaVersion, docRev, updated_at, \
-             blocks }` — `text` is the flat Markdown (`body` is a \
+             blocks, taskDiagnostics }` — `text` is the flat Markdown (`body` is a \
              legacy alias with the same value) and `blocks` is the \
              addressable index `[{ id, kind, rev }]` in document \
-             order. The report is made of blocks: address them with \
+             order; `taskDiagnostics` is the read-time DB-aware task-block \
+             schedulability result. The report is made of blocks: address them with \
              `calm.report.blocks.upsert` / `.move` / `.delete` (all \
              take `if_rev` for optimistic concurrency; see \
              `calm.report.blocks.kinds` for the block vocabulary). \
@@ -177,6 +178,7 @@ pub(crate) async fn report_read(
         "docRev": snapshot.doc_rev,
         "updated_at": snapshot.updated_at,
         "blocks": index,
+        "taskDiagnostics": snapshot.task_diagnostics,
     }))
 }
 

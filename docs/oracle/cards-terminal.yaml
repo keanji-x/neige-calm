@@ -1,0 +1,4165 @@
+# meta:
+#   slice: cards-terminal
+#   id_domain: CARD
+#   extracted: 2026-08-02
+#
+#   覆盖文件（全部读完，含测试）:
+#     web/src/XtermView.tsx (1156)            web/src/XtermView.test.tsx (1577)
+#     web/src/WaveGrid.tsx (302)              web/src/WaveGrid.test.tsx (482)
+#     web/src/WaveList.tsx (275)              web/src/WaveList.test.tsx (632)
+#     web/src/cards/registry.ts               web/src/cards/registry.test.tsx
+#     web/src/cards/resolver.ts               web/src/cards/lifecycle.ts / .test.ts
+#     web/src/cards/CardHead.tsx / .test.tsx  web/src/cards/LetterAvatar.tsx / .test.tsx
+#     web/src/cards/UnknownCard.tsx / .test.tsx
+#     web/src/cards/useCardVisibilityFocus.ts / .test.tsx
+#     web/src/cards/useCardOverlay.ts / .test.tsx
+#     web/src/cards/overlayRegistry.ts        web/src/cards/__tests__/overlayRegistry.test.ts
+#     web/src/cards/excludeReportCards.ts / .test.ts
+#     web/src/cards/plugin-iframe.tsx         web/src/cards/wave-file-tree.tsx / .test.tsx
+#     web/src/cards/builtins/{index,schemaVersions,terminal,codex,spec,iframe,
+#                             file-viewer,file-viewer-markdown,file-viewer-markdown-toc,
+#                             wave-report}.tsx  + 各自 *.test.tsx
+#     web/src/input/{wheelRouter,useWheelRouter,wheelTargets,useXtermWheelTarget,
+#                    xtermAdapter}.ts + wheelRouter.test.ts / xtermAdapter.test.ts
+#     web/src/wave-fs-viewers/{registry,schemas,useWaveFsViewer,index}.ts + tests
+#     web/eslint.config.js (card-head 类名守卫)
+#
+#   条目总数: 228
+#     kind 分布: invariant 169 / capability 34 / gate 25
+#     intentional_omission: true 的条目 = 25（“故意不做 / 必须串行 / 必须先后”类）
+#
+#   family 分组统计（编号为全局唯一单调序列 CARD-001..228，
+#                    kind 前缀随条目性质变化，同 family 连续）:
+#     xterm-connection ......... 12   (CARD-001..012)
+#     xterm-geometry ........... 16   (CARD-013..028)
+#     xterm-theme .............. 10   (CARD-029..038)
+#     xterm-data ............... 11   (CARD-039..049)
+#     xterm-exit ...............  9   (CARD-050..058)
+#     xterm-owner ..............  6   (CARD-059..064)
+#     xterm-input-a11y .........  7   (CARD-065..071)
+#     card-registry ............ 14   (CARD-072..085)
+#     card-slots ...............  5   (CARD-086..090)
+#     card-lifecycle ........... 10   (CARD-091..100)
+#     card-resolver ............  4   (CARD-101..104)
+#     card-visibility-focus ....  6   (CARD-105..110)
+#     card-head ................ 12   (CARD-111..122)
+#     letter-avatar ............  4   (CARD-123..126)
+#     wave-grid ................ 10   (CARD-127..136)
+#     wave-list ................ 10   (CARD-137..146)
+#     wheel-routing ............ 14   (CARD-147..160)
+#     xterm-wheel-adapter ......  8   (CARD-161..168)
+#     card-kind-terminal .......  5   (CARD-169..173)
+#     card-kind-codex ..........  7   (CARD-174..180)
+#     card-kind-spec ...........  3   (CARD-181..183)
+#     card-kind-iframe .........  8   (CARD-184..191)
+#     card-kind-file-viewer ....  9   (CARD-192..200)
+#     card-kind-wave-report ....  4   (CARD-201..204)
+#     card-kind-plugin .........  5   (CARD-205..209)
+#     card-kind-unknown ........  3   (CARD-210..212)
+#     schema-versions ..........  6   (CARD-213..218)
+#     wave-fs-viewers ..........  5   (CARD-219..223)
+#     builtins-boot ............  5   (CARD-224..228)
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-connection — WebSocket 生命周期 / refresh / teardown
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-001
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    refresh() 重建 WebSocket 后，旧 WebSocket 的 onclose / onmessage / onerror
+    回调必须已被置 null，旧连接的迟到 close 不得改动 status，也不得再触发
+    onRoleChange(null)
+  why: >
+    刷新后旧 socket 仍会 fire close(1006)；若回调仍挂着，父卡片的 role pill 会被
+    清成 null、status 会退回 'closed'，而新连接明明已经 connected。测试断言
+    stale close 后 roleChanges.at(-1) 仍是 'Owner' 且 statusSetCalls 为空
+  source: web/src/XtermView.tsx:1012-1023
+  authoritative_test: web/src/XtermView.test.tsx:437
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-002
+  kind: capability
+  family: xterm-connection
+  statement: >
+    XtermView 必须通过 useImperativeHandle 暴露 refresh()：调用后重建 WS +
+    Terminal，且新 WS 的 url 与旧的一致（同一 terminal endpoint）
+  why: >
+    #306 删掉了 XtermView 内部的 Restart / Reconnect 覆盖层；card head 的刷新
+    动作只能走这个 imperative handle，否则等于没有重连入口
+  source: web/src/XtermView.tsx:259-274
+  authoritative_test: web/src/XtermView.test.tsx:420
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-003
+  kind: capability
+  family: xterm-connection
+  statement: >
+    XtermView 必须通过同一 handle 暴露 getWheelTarget()，未挂载 / 已卸载时返回 null
+  why: >
+    滚轮路由用它拿到 xterm 滚动适配器；卸载后 rootRef.current 为 null，返回 null
+    才能让 wheelRouter 退化成 sink 而不是崩溃
+  source: web/src/XtermView.tsx:263-271
+  authoritative_test: web/src/XtermView.test.tsx:407
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-004
+  kind: gate
+  family: xterm-connection
+  statement: >
+    ClientHello.protocol_version 必须等于 4，且与 crates/calm-session
+    PROTOCOL_VERSION 保持锁步
+  why: >
+    版本不匹配时守护进程回 ProtocolError(UnsupportedVersion)。3→4 是 #388 Phase 3c
+    删除 chat-mode 线格变体导致 bincode discriminant 位移
+  source: web/src/XtermView.tsx:108-117
+  authoritative_test: web/src/XtermView.test.tsx:568
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-005
+  kind: capability
+  family: xterm-connection
+  statement: >
+    ClientHello 必须带 initial_scrollback='All'、resume_from=null、
+    role_hint='Owner'、capabilities.render_encodings=['Vt']、supports_scrollback=true、
+    supports_sixel=false、supports_images=false、kernel_originated_input=false
+  why: >
+    'All' 让 wave 导航导致的 remount 能拿回守护进程保留的 scrollback；浏览器是
+    不可信入口，kernel_originated_input 必须声明 false（WS 桥接层也会强制剥掉）
+  source: web/src/XtermView.tsx:603-636
+  authoritative_test: web/src/XtermView.test.tsx:568
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-006
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    每个连接的 client_id 必须用 makeUuid()（基于 crypto.getRandomValues），
+    不得直接调用 crypto.randomUUID()
+  why: >
+    randomUUID 只在 secure context 可用；LAN http://192.168.x.x:4040 场景会抛
+    TypeError。守护进程的 OwnerRegistry 以 client_id 为键，拿不到就丢所有权
+  source: web/src/XtermView.tsx:565-573
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-007
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    客户端不得再维护任何 JS 层的连接活性定时器（旧的 40s onmessage 超时已删除）；
+    活性检测完全由服务端 ping/pong 拥有
+  why: >
+    浏览器自动 pong 不经过 JS onmessage，空闲 codex 提示符 40 秒无输出会被误判
+    成 1006 假死。服务端 10s ping / 30s pong_timeout 已覆盖真实失败模式
+  source: web/src/XtermView.tsx:591-599
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-008
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    卸载时必须只在 termRef.current 仍指向本次 effect 创建的 term 时才置 null；
+    sendRef 同理
+  why: >
+    StrictMode 双调用下，上一轮的 teardown 可能在下一轮 mount 装好新实例之后才跑；
+    无守卫会把新实例清成 null
+  source: web/src/XtermView.tsx:1029-1040
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-009
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    bridge-mount effect 的依赖必须是 [terminalId, reconnectKey, layoutRetryKey]；
+    theme 与 status 必须故意排除在外
+  why: >
+    theme 进依赖会让主题切换重建 WS + Terminal（#177 e2e 用 __xtermMounts__ 钉死
+    “主题切换不 remount”）；status 进依赖会让任何状态跃迁触发 cleanup→term.dispose()
+    从而抹掉缓冲区，违背 #306 的 warp 式“退出后缓冲区保留”
+  source: web/src/XtermView.tsx:1066-1080
+  authoritative_test: web/src/XtermView.test.tsx:1263
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-010
+  kind: capability
+  family: xterm-connection
+  statement: >
+    仅当 ?testMounts=1 时才安装 window.__xtermMounts__ 计数与
+    window.__xtermDumps__[terminalId] 缓冲区序列化钩子；生产用户不得携带这些副作用
+  why: >
+    #177 的 e2e（a11y-177-theme-toggle-no-remount）与 OSC 回显 e2e
+    （new-terminal-osc-echo）分别读这两个全局；dump 按 terminalId 分键，因为一个
+    wave 可能有多张 xterm 卡片，只有 cooked-shell 那张能复现回显 bug
+  source: web/src/XtermView.tsx:189-198,418-435
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-011
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    卸载 / terminalId 切换时必须移除本 terminal 自己的 __xtermDumps__ 条目，
+    不得删除兄弟卡片的条目
+  why: >
+    钩子按 terminalId 分键；误删会让并行 e2e 断言拿不到另一张卡的缓冲区
+  source: web/src/XtermView.tsx:366-372,1025-1028
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-012
+  kind: invariant
+  family: xterm-connection
+  statement: >
+    ws.onmessage 收到非法 JSON 时必须静默 return，不得抛出
+  why: >
+    任何一帧解析失败都不该炸掉整条消息泵；协议是外部输入
+  source: web/src/XtermView.tsx:651-657
+  authoritative_test: NONE
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-geometry — 挂载延迟 / fit / resize / commit 下限 / epoch
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-013
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    容器 offsetWidth < 80px 或 offsetHeight < 24px 时，不得构造 Terminal、
+    不得开 WebSocket；必须进入 geometryDeferred 状态并只渲染 “Loading terminal…”
+  why: >
+    xterm/FitAddon 在坍缩的卡片 body 上 bootstrap 会得到退化网格；四行以上的
+    宿主表面是最低可用量
+  source: web/src/XtermView.tsx:119-130,373-382
+  authoritative_test: web/src/XtermView.test.tsx:479
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-014
+  kind: capability
+  family: xterm-geometry
+  statement: >
+    延迟挂载期间必须挂一个 ResizeObserver，一旦观察到非退化尺寸就 disconnect
+    自己并 bump layoutRetryKey 触发重挂
+  why: >
+    卡片布局迟到（RGL 首帧、wave 切换）时必须能自愈，否则终端永远停在 Loading
+  source: web/src/XtermView.tsx:344-365
+  authoritative_test: web/src/XtermView.test.tsx:496
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-015
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    延迟重试的 ResizeObserver 必须记住上次失败的像素尺寸（lastFailedMountSizeRef），
+    观察到完全相同的尺寸时不得重试
+  why: >
+    否则同尺寸抖动会无限 mount→dispose→defer 循环
+  source: web/src/XtermView.tsx:348-356,380,519-522
+  authoritative_test: web/src/XtermView.test.tsx:527
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-016
+  kind: capability
+  family: xterm-geometry
+  statement: >
+    观察到与上次失败尺寸不同且非退化的尺寸时，必须重试挂载（重新构造 Terminal 与 WS）
+  why: >
+    失败尺寸缓存不能变成永久拒绝；变化即代表布局真的动了
+  source: web/src/XtermView.tsx:348-360
+  authoritative_test: web/src/XtermView.test.tsx:546
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-017
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    初次 fit() 后若 term.cols < 8 或 term.rows < 4，必须 dispose 掉刚建的 Terminal、
+    移除 dump 钩子、记录失败尺寸，并回到延迟态；不得开 WebSocket
+  why: >
+    低于 8x4 不是可用 PTY 视口；把这种瞬时/失败的 fit 结果提交上去会污染共享模型
+  source: web/src/XtermView.tsx:123-126,514-527
+  authoritative_test: web/src/XtermView.test.tsx:515
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-018
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    ResizeObserver 的第一次（强制的）观察通知必须被丢弃，不得当作用户 resize 意图
+  why: >
+    挂载时的 fit 已经供给了 ClientHello.desired_size；而 ServerHello 可能已把本地
+    xterm 恢复到更宽的权威 PTY 尺寸。把首次通知当意图会立刻把 PTY 收窄回去，
+    重新制造 remount 数据丢失 bug
+  source: web/src/XtermView.tsx:929-938
+  authoritative_test: web/src/XtermView.test.tsx:628
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-019
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    resize 回调必须用 requestAnimationFrame 合帧，一帧最多做一次 fit
+  why: >
+    RGL 的 resize 手柄在每个 mousemove 都触发 ResizeObserver；不合帧会导致终端
+    持续重 fit 重绘，表现为内层 canvas 1-2px 抖动
+  source: web/src/XtermView.tsx:922-943
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-020
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    容器像素尺寸退化时，resize 路径必须在调用 fit() 之前直接 return —— 不得
+    先 fit 再抑制提交
+  why: >
+    fit() 会原地改本地 xterm；即使抑制了 ResizeCommit，本地缓冲区也会停在 2x1，
+    在下一次观察前用错误几何解释 RenderPatch 字节
+  source: web/src/XtermView.tsx:944-958
+  authoritative_test: web/src/XtermView.test.tsx:703
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-021
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    像素门通过但 fit() 落到 cols<8 / rows<4 的边缘网格时，必须把本地 xterm
+    resize 回 lastCols/lastRows（最后已知良好值）并 return，不得提交
+  why: >
+    fit() 已经原地改过 xterm；不回滚就会用退化网格渲染后续 RenderPatch
+  source: web/src/XtermView.tsx:964-980
+  authoritative_test: web/src/XtermView.test.tsx:770
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-022
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    容器退化后恢复到与退化前完全相同的尺寸时，整个过程不得产生任何 ResizeCommit
+  why: >
+    lastCols/lastRows 保持不变，等价于“什么都没发生”；多余的 commit 会触发守护
+    进程侧模型重排 + 全量快照
+  source: web/src/XtermView.tsx:969-1001
+  authoritative_test: web/src/XtermView.test.tsx:740
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-023
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    lastCols/lastRows 必须在收到 ResizeApplied 之后才更新，不得在发出
+    ResizeCommit 时就乐观写入
+  why: >
+    否则去抖/合并可能吞掉“回到同一尺寸”的后续有意 resize
+  source: web/src/XtermView.tsx:988-1001,752-762
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-024
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    resizeEpoch 必须在每次 ResizeCommit 前单调 +1；收到 epoch 小于当前值的
+    ResizeApplied 必须直接丢弃
+  why: >
+    慢网络下乱序到达的旧 applied 会覆盖已更新的本地几何
+  source: web/src/XtermView.tsx:574-577,752-762
+  authoritative_test: web/src/XtermView.test.tsx:1356
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-025
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    首次 attach 时只有在“纯扩张”（mountDesired 两轴都 >= pty_size 且至少一轴 >）
+    且 client_role==='Owner' 时才允许发 ResizeCommit；收缩或混轴变化必须等稳定的
+    ResizeObserver 意图
+  why: >
+    纯扩张不会裁剪权威恢复模型；而 remount 时的收缩 / 混轴变化会销毁历史
+  source: web/src/XtermView.tsx:692-708
+  authoritative_test: web/src/XtermView.test.tsx:684
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-026
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    mountDesired 必须与 term.cols/rows 分开保存（挂载 fit 的快照），
+    不得在 ServerHello resize 之后再读 term.cols 当作 desired
+  why: >
+    ServerHello 可能先把本地 xterm 拉回权威 PTY 几何，之后再判断纯扩张就恒为假
+  source: web/src/XtermView.tsx:578-582
+  authoritative_test: web/src/XtermView.test.tsx:684
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-027
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    初次 fit() 抛异常时必须吞掉（容器可能首帧还没布局），不得让挂载失败
+  why: >
+    首帧未布局是正常时序；后续 ResizeObserver 会补
+  source: web/src/XtermView.tsx:502-513
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-028
+  kind: gate
+  family: xterm-geometry
+  statement: >
+    本地 xterm 的 scrollback 必须为 2000，与 calm-server
+    terminal_renderer/mod.rs 的 SCROLLBACK_MAX_LINES 锁步
+  why: >
+    本地环不能小于服务端 ServerHello.snapshot.scrollback 的上限，否则回放被截断
+  source: web/src/XtermView.tsx:394-400
+  authoritative_test: web/src/XtermView.test.tsx:596
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-theme — OSC 抑制 / TerminalThemeUpdate / pendingThemeRef
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-029
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    term.open(container) 之后必须为 OSC 10 / 11 / 12 注册返回 true 的处理器，
+    抑制 xterm.js 内置的颜色自动回复
+  why: >
+    #177 —— 守护进程是唯一权威回应方（它知道宿主浏览器真实表面色）。xterm.js 的
+    本地回复会把透明 clearColor #ffffff00 序列化成 rgb:ffff/ffff/ffff/0000，
+    codex 解析成纯白，抢在守护进程前把错值送回线上
+  source: web/src/XtermView.tsx:439-451
+  authoritative_test: web/src/XtermView.test.tsx:1386
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-030
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    theme effect 每次运行（含首次挂载）都必须无条件派发 TerminalThemeUpdate；
+    不得加 “本次与上次相同就跳过” 的守卫
+  why: >
+    #177 —— remount（Suspense 闪烁、persist-query 水合、懒加载 chunk 重跑）会重置
+    任何组件内 prev 记账，从而跳过派发，正是要关掉的 bug。抑制逻辑放在守护进程侧：
+    fg/bg 与当前默认值相同时状态机丢弃该更新
+  source: web/src/XtermView.tsx:298-339
+  authoritative_test: web/src/XtermView.test.tsx:1461
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-031
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    WS effect 尚未装好 send 时，theme effect 必须把 ClientMsg 缓存进
+    pendingThemeRef；WS effect 在赋值 sendRef.current = send 之后必须立刻排空它
+    并把 ref 置 null
+  why: >
+    冷挂载时 theme effect 会先于 bridge-mount effect 生效（后者在 !container 时
+    早退，StrictMode 双调用放大了这个窗口），没有缓冲这一帧就被静默丢弃
+  source: web/src/XtermView.tsx:283-290,329-338,554-563
+  authoritative_test: web/src/XtermView.test.tsx:1493
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-032
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    send() 在 ws.readyState !== OPEN 时必须把帧压入 pendingFrames 队列，
+    不得静默丢弃；ws.onopen 必须在发完 ClientHello 之后排空该队列
+  why: >
+    #177 —— 主题在 new WebSocket(…) 与 onopen 之间切换是真实竞态；pre-#177 的
+    send() 会在 readyState 检查处丢帧，守护进程的 OSC 10/11 默认值永远不更新
+  source: web/src/XtermView.tsx:535-549,637-648
+  authoritative_test: web/src/XtermView.test.tsx:1514
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-033
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    pendingFrames 的排空必须发生在 ClientHello 之后（ClientHello 必须是线上第一帧）
+  why: >
+    握手帧必须先到，守护进程才认得这个连接
+  source: web/src/XtermView.tsx:601-648
+  authoritative_test: web/src/XtermView.test.tsx:1493
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-034
+  kind: capability
+  family: xterm-theme
+  statement: >
+    theme prop 翻转必须原地改写 term.options.theme（不重建 Terminal / WS），
+    并向守护进程派发对应的浅/深 RGB
+  why: >
+    xterm.js 把 options 当可变袋子，赋值 theme 即官方重着色路径；重建会丢缓冲区
+  source: web/src/XtermView.tsx:292-324
+  authoritative_test: web/src/XtermView.test.tsx:1437
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-035
+  kind: gate
+  family: xterm-theme
+  statement: >
+    TerminalThemeUpdate 的 fg/bg 必须取自 api/themeRgb.ts 的
+    LIGHT_THEME_RGB / DARK_THEME_RGB（浅 fg [42,47,58] bg [252,254,255]；
+    深 fg [216,219,226] bg [15,20,24]）
+  why: >
+    守护进程用这两个值合成 OSC 10/11 回复；数值漂移会让 TUI 看到错误的宿主表面色
+  source: web/src/XtermView.tsx:19,325-328
+  authoritative_test: web/src/XtermView.test.tsx:1400
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-036
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    连续快速切换主题时，每一次转变都必须产生恰好一帧 TerminalThemeUpdate，
+    不得丢帧也不得合并
+  why: >
+    守护进程按顺序收到每个转变，最终状态才等于最后一次；合并会引入乱序风险
+  source: web/src/XtermView.tsx:320-339
+  authoritative_test: web/src/XtermView.test.tsx:1543
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-037
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    Terminal 构造时必须从 latestThemeRef.current 读主题，而不是从 effect 闭包里
+    捕获的 theme
+  why: >
+    bridge-mount effect 故意不把 theme 放进依赖；闭包里的值会是挂载那一刻的旧值，
+    reconnect / layoutRetry 后会用错主题构造
+  source: web/src/XtermView.tsx:208-213,390-392
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-038
+  kind: invariant
+  family: xterm-theme
+  statement: >
+    LIGHT_THEME / DARK_THEME 的 background 必须是透明 '#ffffff00'
+  why: >
+    卡片自己画背景；不透明背景会盖掉卡片表面。也正因为它透明，才必须抑制
+    xterm 的 OSC 回复（见 CARD-029）
+  source: web/src/XtermView.tsx:23-53
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-theme
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-data — 快照 / 补丁写入顺序
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-039
+  kind: invariant
+  family: xterm-data
+  statement: >
+    ServerHello 处理必须先写 snapshot.scrollback，再写 '\r\n'.repeat(term.rows)，
+    最后才写 snapshot.data —— 三步顺序不可调换
+  why: >
+    #457 —— snapshot.data 以 ED 2（\x1b[2J）开头；不先把视口内容冲进 xterm 的
+    scrollback 环，刚回放的历史尾部会被这条清屏擦掉
+  source: web/src/XtermView.tsx:678-688
+  authoritative_test: web/src/XtermView.test.tsx:806
+  owner_slice: systems/terminal/xterm-data
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-040
+  kind: invariant
+  family: xterm-data
+  statement: >
+    ServerHello.snapshot.scrollback 为 null 时必须只写 data 一次，
+    不得写换行填充
+  why: >
+    没有历史就没有被擦除的风险；多余的 rows 行换行会白白推走首屏内容
+  source: web/src/XtermView.tsx:678-686
+  authoritative_test: web/src/XtermView.test.tsx:839
+  owner_slice: systems/terminal/xterm-data
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-041
+  kind: invariant
+  family: xterm-data
+  statement: >
+    独立 RenderSnapshot 携带 scrollback 时，必须按 clear() → 写 '\x1b[H' →
+    写 scrollback → 写 '\r\n'.repeat(rows) → 写 data 的四写顺序
+  why: >
+    #473 —— clear() 保留当前光标列；ServerHello 用的是全新 Terminal，而滞后恢复
+    快照回放进的是已有会话，必须把恢复的历史从第 0 列开始。ED 2 擦除守卫同 #457
+  source: web/src/XtermView.tsx:733-744
+  authoritative_test: web/src/XtermView.test.tsx:1037
+  owner_slice: systems/terminal/xterm-data
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-042
+  kind: invariant
+  family: xterm-data
+  statement: >
+    RenderSnapshot.scrollback 为 null 时不得调用 term.clear()，只写一次 data
+  why: >
+    无历史可恢复时清屏纯属丢失用户可见内容
+  source: web/src/XtermView.tsx:733-747
+  authoritative_test: web/src/XtermView.test.tsx:1071
+  owner_slice: systems/terminal/xterm-data
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-043
+  kind: invariant
+  family: xterm-data
+  statement: >
+    快照 data 的写入必须带完成回调，在回调里调用 term.scrollToBottom()，
+    不得在 write 之后同步调用
+  why: >
+    xterm 的 write 是异步排队的；同步滚底会在数据落盘前执行，落到错误位置
+  source: web/src/XtermView.tsx:686-688,745-747
+  authoritative_test: web/src/XtermView.test.tsx:1012
+  owner_slice: systems/terminal/xterm-data
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-044
+  kind: invariant
+  family: xterm-data
+  statement: >
+    ServerHello / RenderSnapshot 中 cols/rows 与本地 term 不一致时必须先
+    term.resize 到快照尺寸并同步 lastCols/lastRows，再写回放
+  why: >
+    尺寸不匹配会让光标定位错位；lastCols/Rows 不同步则后续 resize 比较基线错误
+  source: web/src/XtermView.tsx:671-677,727-732
+  authoritative_test: web/src/XtermView.test.tsx:866
+  owner_slice: systems/terminal/xterm-data
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-045
+  kind: invariant
+  family: xterm-data
+  statement: >
+    RenderPatch 只有在 encoding === 'Vt' 时才写入终端；其它编码必须丢弃但仍更新
+    render_rev / pty_seq
+  why: >
+    客户端只声明了 Vt 能力；把未知编码字节直接喂给 xterm 会渲染成乱码
+  source: web/src/XtermView.tsx:713-721
+  authoritative_test: web/src/XtermView.test.tsx:986
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-046
+  kind: capability
+  family: xterm-data
+  statement: >
+    收到 SnapshotRequired 时必须 term.clear() 并等待随后的 RenderSnapshot，
+    不得自行请求或重连
+  why: >
+    守护进程已决定要下发全量快照；客户端只需清干净本地状态
+  source: web/src/XtermView.tsx:764-769
+  authoritative_test: NONE
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-047
+  kind: invariant
+  family: xterm-data
+  statement: >
+    Backpressure 帧当前必须只记日志、不做节流；线格形状存在但守护进程尚未发出
+  why: >
+    留形状但不实现策略是显式决定；无声吞掉会让将来真出现时无法调试
+  source: web/src/XtermView.tsx:844-850
+  authoritative_test: NONE
+  owner_slice: systems/terminal/protocol
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-048
+  kind: invariant
+  family: xterm-data
+  statement: >
+    Vec<u8> 线格必须以普通 JS Array<number> 传输，写入前用 Uint8Array.from 转换
+  why: >
+    JSON 编码的 ClientMsg/DaemonMsg 无法承载二进制；xterm.write 需要 Uint8Array
+  source: web/src/XtermView.tsx:161-176,679,686,739,745
+  authoritative_test: web/src/XtermView.test.tsx:610
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-049
+  kind: invariant
+  family: xterm-data
+  statement: >
+    renderRev / ptySeq 必须在每种承载它们的帧上持续更新（ServerHello /
+    RenderPatch / RenderSnapshot / ResizeApplied），即使当前无人消费
+  why: >
+    未来的 RenderAck 反压与 resume 路径依赖它们保持当前值；中断更新会让恢复点失效
+  source: web/src/XtermView.tsx:584-589,709-710,718-719,748-749,760-761
+  authoritative_test: NONE
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-exit — 退出状态 / close backstop
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-050
+  kind: invariant
+  family: xterm-exit
+  statement: >
+    ws.onclose 的退出 backstop 必须同时满足 “code===1000 且 reason==='child-exited'”
+    与 “exitInfoRef.current === null” 两个条件才触发；已有 TerminalExited 帧交付过
+    退出码时必须跳过
+  why: >
+    #306 —— 父组件的 onExitChange 是无去重的裸 setState。无条件触发会在正常
+    happy path（TerminalExited(137) → 1000 child-exited close）把徽章从
+    “exit 137”（错误色）刷回“exit”（中性色）并卡住
+  source: web/src/XtermView.tsx:883-899
+  authoritative_test: web/src/XtermView.test.tsx:1202
+  owner_slice: systems/terminal/exit-badge
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-051
+  kind: invariant
+  family: xterm-exit
+  statement: >
+    退出信息必须同时写进 exitInfoRef（同步镜像）和 exitInfo state；close 处理器
+    只能读 ref，不得读 state
+  why: >
+    setState 异步，close 处理器在下一 tick 读闭包里的 exitInfo 仍是 null，
+    ref 才能让 CARD-050 的门无竞态
+  source: web/src/XtermView.tsx:228-236,770-773
+  authoritative_test: web/src/XtermView.test.tsx:1202
+  owner_slice: systems/terminal/exit-badge
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-052
+  kind: capability
+  family: xterm-exit
+  statement: >
+    即使 TerminalExited JSON 帧在慢链路上丢失，仅凭 code 1000 + reason
+    'child-exited' 的关闭帧也必须触发 onExitChange({exit_code:null,signal_killed:false})
+  why: >
+    父卡片需要在任何退出路径上都能渲染徽章；见 ws/terminal.rs CLOSE_REASON_CHILD_EXITED
+  source: web/src/XtermView.tsx:872-899
+  authoritative_test: web/src/XtermView.test.tsx:1285
+  owner_slice: systems/terminal/exit-badge
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-053
+  kind: invariant
+  family: xterm-exit
+  statement: >
+    ws.onclose / ws.onerror 更新 status 时必须用函数式更新且不得覆盖已有的
+    'exited' 或 'protocol-error'；child-exited 关闭可以把非终态提升为 'exited'
+  why: >
+    这两个终态携带比通用关闭码更丰富的信息；覆盖会让 ProtocolError 覆盖层消失
+  source: web/src/XtermView.tsx:872-882,903-909
+  authoritative_test: web/src/XtermView.test.tsx:1330
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-054
+  kind: invariant
+  family: xterm-exit
+  statement: >
+    TerminalExited 上报的 onExitChange 必须带 signal_killed:false —— JSON 线格枚举
+    不携带信号标志，code 就是 POSIX 的 128+sig
+  why: >
+    守护进程线格早于信号感知；更可靠的 signal_killed 走 REST 种子（父组件挂载时读
+    terminal 行）。伪造 true 会让徽章语义错误
+  source: web/src/XtermView.tsx:770-787
+  authoritative_test: web/src/XtermView.test.tsx:1154
+  owner_slice: systems/terminal/exit-badge
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-055
+  kind: invariant
+  family: xterm-exit
+  statement: >
+    退出后必须不渲染 'exited' / 'closed' 覆盖层：缓冲区保持可见可滚动可复制，
+    退出信息只由父卡片 head 的小徽章承载
+  why: >
+    #306 的 v1 UX 是 warp / zellij 式 “关闭后保留缓冲区”；覆盖层会盖掉用户要看的输出
+  source: web/src/XtermView.tsx:1122-1132
+  authoritative_test: web/src/XtermView.test.tsx:1263
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-056
+  kind: capability
+  family: xterm-exit
+  statement: >
+    'protocol-error' 是唯一保留的接管式覆盖层，必须带 role="alert" +
+    aria-live="assertive"，显示 code 与 message，UnsupportedVersion 额外提示
+    需刷新，并提供一个 Refresh 按钮
+  why: >
+    协议错误是开发者向的红色错误（线格版本不匹配等），值得接管表面；其它状态不值得
+  source: web/src/XtermView.tsx:1133-1153
+  authoritative_test: web/src/XtermView.test.tsx:1130
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-057
+  kind: invariant
+  family: xterm-exit
+  statement: >
+    卸载 / reconnectKey bump 时必须调用 onExitChange(null) 与 onRoleChange(null)，
+    并把 exitInfoRef 重置为 null —— 且这三者必须在 teardown 同步做，不能依赖 ws.onclose
+  why: >
+    #421 —— 否则用户触发的 Refresh/Reset 会把上一次守护进程 attach 的退出徽章
+    继承到新 attach 上（例如 Reset 收割旧 codex app-server 导致的 exit_code=1）。
+    StrictMode 卸载或 terminalId 切换时根本不会有 close 帧
+  source: web/src/XtermView.tsx:1041-1064
+  authoritative_test: NONE
+  owner_slice: systems/terminal/exit-badge
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-058
+  kind: capability
+  family: xterm-exit
+  statement: >
+    TerminalExited 时必须在缓冲区内 writeln 一行暗色 '[process exited (code N)]'
+    行内标记（有 code 时带括号，无则省略）
+  why: >
+    覆盖层被删掉后，这是缓冲区内唯一的“进程已退出”可见痕迹
+  source: web/src/XtermView.tsx:788-792
+  authoritative_test: web/src/XtermView.test.tsx:1154
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-owner — 角色 / 所有权
+# ─────────────────────────────────────────────────────────────────────
+
+- id: CAP-CARD-059
+  kind: capability
+  family: xterm-owner
+  statement: >
+    ServerHello 分配 client_role='Observer' 而本端 wantedOwner 为真时，必须立即
+    发送 'OwnerClaim'，不得等第一个 owner-gated 帧失败再抢
+  why: >
+    上一任所有者的泵可能还没释放；懒抢会让用户第一次输入被 NotOwner 拒绝
+  source: web/src/XtermView.tsx:661-670
+  authoritative_test: web/src/XtermView.test.tsx:890
+  owner_slice: systems/terminal/ownership
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-060
+  kind: capability
+  family: xterm-owner
+  statement: >
+    OwnerChanged 宣告 owner_client_id === null 时，若本端仍想要所有权，必须再发
+    一次 'OwnerClaim'
+  why: >
+    无主状态是抢占窗口；不抢会永远停在 Observer
+  source: web/src/XtermView.tsx:803-811
+  authoritative_test: web/src/XtermView.test.tsx:910
+  owner_slice: systems/terminal/ownership
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-061
+  kind: capability
+  family: xterm-owner
+  statement: >
+    OwnerChanged 指向本端 clientId 时，必须上报 onRoleChange('Owner')、清空
+    protocolError，并重发当前 term.cols/rows 的 ResizeCommit
+  why: >
+    作为 Observer 期间发出的 ResizeCommit 会被拒，PTY 停在上一任所有者的几何；
+    本地 xterm 已经 fit 过，拿到所有权就要把真实尺寸推上去
+  source: web/src/XtermView.tsx:812-828
+  authoritative_test: web/src/XtermView.test.tsx:926
+  owner_slice: systems/terminal/ownership
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-062
+  kind: invariant
+  family: xterm-owner
+  statement: >
+    上一条的 owner-claim ResizeCommit 必须在 term.cols<8 或 term.rows<4 时被抑制
+  why: >
+    退化几何提交上去会污染共享 PTY 模型（与挂载/resize 路径同一条下限）
+  source: web/src/XtermView.tsx:819-838
+  authoritative_test: web/src/XtermView.test.tsx:962
+  owner_slice: systems/terminal/ownership
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-063
+  kind: invariant
+  family: xterm-owner
+  statement: >
+    OwnerChanged 指向别的 client 时必须上报 onRoleChange('Observer')；
+    WS 关闭 / 出错 / teardown 时必须上报 null
+  why: >
+    角色徽章活在父卡片的 CardHead status 槽里；XtermView 内部不再画角落覆盖层。
+    null 代表“角色未知”，父组件据此清 pill
+  source: web/src/XtermView.tsx:66-78,839-841,900-901,908
+  authoritative_test: web/src/XtermView.test.tsx:437
+  owner_slice: systems/terminal/ownership
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-064
+  kind: invariant
+  family: xterm-owner
+  statement: >
+    onRoleChange / onExitChange 必须通过 ref 捕获最新回调，不得进 bridge-mount
+    effect 的依赖数组
+  why: >
+    父组件回调 identity 翻转不应该拆掉 WebSocket
+  source: web/src/XtermView.tsx:237-249
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-input-a11y — 输入 / 键盘 / 无障碍
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-065
+  kind: invariant
+  family: xterm-input-a11y
+  statement: >
+    浏览器打字路径的 Input 帧必须始终带 input_seq: 0（“不要求 ack”）
+  why: >
+    issue #115 选项 (b)：守护进程写入字节后保持沉默，热路径上不发 InputAck。
+    只有 kernel-originated 的瞬时客户端（inject_stdin）才用非零 seq
+  source: web/src/XtermView.tsx:911-920
+  authoritative_test: web/src/XtermView.test.tsx:1106
+  owner_slice: systems/terminal/input
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-066
+  kind: capability
+  family: xterm-input-a11y
+  statement: >
+    纯 Cmd 组合键必须映射为 PTY 字节：Cmd+ArrowLeft→\x01、Cmd+ArrowRight→\x05、
+    Cmd+Backspace→\x15，并 preventDefault + 返回 false
+  why: >
+    #554 —— 移植 VS Code 默认 Mac sendSequence 键位
+    (terminalContrib/sendSequence 的 240-253 行)
+  source: web/src/XtermView.tsx:452-480
+  authoritative_test: NONE
+  owner_slice: systems/terminal/input
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-067
+  kind: invariant
+  family: xterm-input-a11y
+  statement: >
+    上述 Cmd 处理器必须以 `!metaKey || ctrlKey || altKey` 短路放行 —— 非 Mac
+    与任何修饰组合都必须原样透传
+  why: >
+    保证零回归：只接管纯 Cmd 场景
+  source: web/src/XtermView.tsx:461-479
+  authoritative_test: NONE
+  owner_slice: systems/terminal/input
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-068
+  kind: invariant
+  family: xterm-input-a11y
+  statement: >
+    term.open() 之后必须把 xterm 生成的 textarea.xterm-helper-textarea 的
+    tabindex 改为 -1
+  why: >
+    issue #236 后续 —— xterm 的 keydown 会吞掉所有 Tab（转成 \t 送 PTY），
+    一旦焦点落上去，普通 Tab 导航就永远出不来，wave 页只要有一张 xterm 卡片
+    键盘导航（a11y-keyboard.spec.ts）就断。用户仍可点击进入终端
+  source: web/src/XtermView.tsx:481-501
+  authoritative_test: NONE
+  owner_slice: systems/terminal/a11y
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-069
+  kind: invariant
+  family: xterm-input-a11y
+  statement: >
+    xterm 渲染容器必须带 aria-hidden="true" 与 role="presentation"，
+    把整个 xterm DOM 子树排除出 axe 扫描与读屏内容树
+  why: >
+    issue #236 后续 / PR #239 —— 守护进程的粗体绿 runner@runner 提示符触发
+    .xterm-fg-10.xterm-bold 对比度 2.81:1 违规。调色板改到 4.5:1 会破坏用户
+    终端预期；语义正确的做法是把 AT 范围限定在画布之外的真实文本
+  source: web/src/XtermView.tsx:1084-1110
+  authoritative_test: NONE
+  owner_slice: systems/terminal/a11y
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-070
+  kind: invariant
+  family: xterm-input-a11y
+  statement: >
+    XtermView 根节点必须带 className="xterm-view" 与 data-terminal-id 属性
+  why: >
+    .xterm-view 是滚轮路由识别“这是 xterm 卡片但 handle 尚未注册”的兜底选择器
+    （见 wheelRouter XTERM_ROOT_SELECTOR）；data-terminal-id 供 e2e 定位
+  source: web/src/XtermView.tsx:1083
+  authoritative_test: web/src/input/wheelRouter.test.ts:286
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-071
+  kind: capability
+  family: xterm-input-a11y
+  statement: >
+    几何延迟期间显示 “Loading terminal…”；connecting / handshaking 阶段分别显示
+    “connecting…” / “handshaking…”，且这两者必须在 geometryDeferred 为真时被抑制
+  why: >
+    延迟期还没开 WebSocket，显示 connecting 会误导；三个状态互斥
+  source: web/src/XtermView.tsx:1111-1121
+  authoritative_test: web/src/XtermView.test.tsx:601
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-registry — 注册表 / claim 分发 / 模块级单例
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-072
+  kind: invariant
+  family: card-registry
+  statement: >
+    卡片注册表由三张模块级 Map（REGISTRY / EXACT_CLAIMS / PREFIX_CLAIMS）与一个
+    模块级 warned Set 组成；它们的行为契约是：进程内全局唯一、按 key 去重、
+    重复注册同一 type 覆盖而非报错，警告每 key 只打一次
+  why: >
+    M3 之前三处 5-case switch 散落在 ui.tsx / WaveGrid.tsx / api/adapt.ts；
+    收敛成一张分发表后插件才能在运行时 .set() 进来。warnOnce 防止未知 kind
+    在每帧渲染时刷屏
+  source: web/src/cards/registry.ts:210-225
+  authoritative_test: web/src/cards/registry.test.tsx:239
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-073
+  kind: invariant
+  family: card-registry
+  statement: >
+    adaptKernelCard 的分发顺序必须是：精确 claim → 最长前缀 claim →
+    其余带 fromKernel 的条目全扫（且必须跳过已试过的 exact / prefix 条目）
+  why: >
+    精确优先保证 kind 完全命中时不被前缀截胡；最长前缀保证 ui://a/b 类嵌套
+    命名空间取最具体那个；兜底全扫是遗留兼容路径
+  source: web/src/cards/registry.ts:355-389
+  authoritative_test: web/src/cards/registry.test.tsx:240,269,297
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-074
+  kind: gate
+  family: card-registry
+  statement: >
+    registerCard 必须在缺 title / accessibleName 时抛 EntryMissingMetadata，
+    在缺 create 时抛 MissingCreateStrategy
+  why: >
+    这两个元数据是 WaveList 的 aria-label 与 CardHead 标题的唯一来源；缺失会
+    退化成 "Card N" 占位而无人发现
+  source: web/src/cards/registry.ts:246-256
+  authoritative_test: web/src/cards/registry.test.tsx:372
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-075
+  kind: gate
+  family: card-registry
+  statement: >
+    create.mode === 'generic' 的条目必须同时声明 claim.mode === 'exact'，
+    否则抛 GenericCreateRequiresExactClaim
+  why: >
+    generic 创建把表单 payload 直接送到某个 kernel kind；没有精确 claim 就无法
+    确定要写哪个 kind
+  source: web/src/cards/registry.ts:251-253
+  authoritative_test: web/src/cards/registry.test.tsx:393
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-076
+  kind: gate
+  family: card-registry
+  statement: >
+    同一 claim.kind（或 claim.prefix）被两个不同 type 注册时必须抛
+    DuplicateExactClaim / DuplicatePrefixClaim；同 type 重复注册允许
+  why: >
+    两个条目争同一 kernel kind 会让分发结果依赖注册顺序，是隐蔽的不确定性。
+    同 type 重注册是热更新/测试重放的正常情况
+  source: web/src/cards/registry.ts:257-268
+  authoritative_test: web/src/cards/registry.test.tsx:312
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-077
+  kind: gate
+  family: card-registry
+  statement: >
+    refreshBacking === 'controller' 的条目必须提供 createController，
+    否则抛 RefreshBackingMissingController
+  why: >
+    刷新命令要落到 controller.onRefresh 上；没有 controller 就是静默的死刷新按钮
+  source: web/src/cards/registry.ts:269-271
+  authoritative_test: web/src/cards/registry.test.tsx:405
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-078
+  kind: gate
+  family: card-registry
+  statement: >
+    refreshBacking === 'epoch' 的条目其 controller 不得声明 onRefresh，
+    否则挂载时抛 RefreshBackingConflict
+  why: >
+    epoch 语义是靠 useCardSlot 版本号触发重挂（如 iframe 的 key），与
+    controller.onRefresh 是互斥的两条实现；同时存在会双重刷新
+  source: web/src/cards/registry.ts:506-515
+  authoritative_test: web/src/cards/registry.test.tsx:475
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-079
+  kind: invariant
+  family: card-registry
+  statement: >
+    addPanelEntries() 必须排除 create.mode 为 'catalog' 或 'kernel-minted-only'
+    的条目
+  why: >
+    catalog 类由 /api/plugins/views 目录驱动发现；kernel-minted-only（spec /
+    wave-report）用户根本不能手动添加
+  source: web/src/cards/registry.ts:336-353
+  authoritative_test: web/src/cards/registry.test.tsx:416
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-080
+  kind: invariant
+  family: card-registry
+  statement: >
+    renderCard 遇到未注册 type 时必须 warnOnce 并返回 null（不抛）；
+    sizeFor 遇到未注册 type 时必须 warnOnce 并返回 FALLBACK_SIZE {w:4,h:6,minW:3,minH:3}
+  why: >
+    宁可渲染一个尺寸略错的占位，也不要抛异常炸掉整个 wave 网格
+  source: web/src/cards/registry.ts:214-217,290-326
+  authoritative_test: web/src/cards/UnknownCard.test.tsx:53
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-081
+  kind: invariant
+  family: card-registry
+  statement: >
+    renderCard 必须把卡片组件包在 CardInstanceProvider 里，cardId 取
+    card.id ?? card.type，deletable 取 opts.deletable !== false
+  why: >
+    没有 provider 就没有 useCardSlot / lifecycle / resolver 注册，滚轮路由与
+    controller 全部失效；id 缺失（乐观新增中）时用 type 兜底保证 provider 仍在
+  source: web/src/cards/registry.ts:304-316
+  authoritative_test: web/src/cards/registry.test.tsx:519
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-082
+  kind: invariant
+  family: card-registry
+  statement: >
+    registry.ts 必须保持为纯 .ts 模块（用 createElement 而非 JSX）
+  why: >
+    保住设计文档里的文件名与模块边界；改成 .tsx 会牵连构建与文档引用
+  source: web/src/cards/registry.ts:299-303
+  authoritative_test: NONE
+  owner_slice: systems/cards/registry
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: architecture
+  test_tier: none
+  migration: pending
+
+- id: GATE-CARD-083
+  kind: gate
+  family: card-registry
+  statement: >
+    CardEntry 的 createController / wheelTarget / refreshBacking 与
+    CardInstanceCtx.emit 必须通过 lifecycle.ts 的 declare module './registry'
+    声明合并注入，而不是直接写在 registry.ts 的接口里
+  why: >
+    保持 registry ← lifecycle 的单向依赖；registry.ts 不 import lifecycle 的
+    运行期类型也能通过编译。删掉合并块会让 registry.ts 里对这些字段的引用编译失败
+  source: web/src/cards/lifecycle.ts:116-133
+  authoritative_test: web/src/cards/registry.test.tsx:474
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-084
+  kind: gate
+  family: card-registry
+  statement: >
+    每个内置卡片模块必须通过 declare module '../../types' 往
+    WaveCardDataMap 里注册自己的 data 类型，使 WaveCardData 保持为已注册
+    map 值的可辨识联合
+  why: >
+    这是让 card.type 判别在类型层穷尽的唯一机制；漏声明会让新 kind 在联合外，
+    switch 穷尽检查失效
+  source: web/src/cards/builtins/terminal.tsx:20-24
+  authoritative_test: web/src/cards/registry.test.tsx:866
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-085
+  kind: capability
+  family: card-registry
+  statement: >
+    必须提供 __resetRegistryForTest() 清空三张 Map（warned Set 不清）
+  why: >
+    模块级单例跨测试文件泄漏；没有 reset 就无法独立测试 claim 冲突
+  source: web/src/cards/registry.ts:284-288
+  authoritative_test: web/src/cards/registry.test.tsx:312
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-slots — useCardSlot 共享状态槽
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-086
+  kind: invariant
+  family: card-slots
+  statement: >
+    useCardSlot 的 initial 只在首次读取时生效（含惰性函数只求值一次）；
+    后续读取传入的 initial 必须被忽略
+  why: >
+    槽是跨组件共享状态而非 hook；后写覆盖会让 CardHead 动作与卡片 body 看到不同初值
+  source: web/src/cards/registry.ts:131-163,227-229,428-431
+  authoritative_test: web/src/cards/registry.test.tsx:170
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-087
+  kind: gate
+  family: card-slots
+  statement: >
+    DEV 模式下，同一 key 的后续读取传入与首次不同（!Object.is）的 initial 时
+    必须 console.warn，指明首次用的值与本次用的值
+  why: >
+    "first read wins" 是静默陷阱；没有这个警告，传不同初值的写法只会表现为
+    “我的默认值没生效”
+  source: web/src/cards/registry.ts:432-443
+  authoritative_test: web/src/cards/registry.test.tsx:202
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-088
+  kind: invariant
+  family: card-slots
+  statement: >
+    useCardSlot 的 setter 必须支持函数式更新，写入后 bump provider 的 version
+    强制子树重渲染
+  why: >
+    槽存在 useRef 的 Map 里，不 bump 版本 React 不会重渲染
+  source: web/src/cards/registry.ts:444-454
+  authoritative_test: web/src/cards/registry.test.tsx:558
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-089
+  kind: invariant
+  family: card-slots
+  statement: >
+    useCardSlot 不得当作 useEffect 依赖机制使用 —— 它不随依赖变化重跑，
+    只有 setter 调用才触发重渲染；也不得存放派生渲染数据
+  why: >
+    文档化的三条反模式；派生数据放槽里会与 props 失同步
+  source: web/src/cards/registry.ts:135-158
+  authoritative_test: NONE
+  owner_slice: systems/cards/registry
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-090
+  kind: capability
+  family: card-slots
+  statement: >
+    可变 ref 容器是槽的合法用法（useCardSlot('xtermRef', () => ({current:null}))），
+    用于 controller 与 body 共享同一 imperative handle
+  why: >
+    terminal / codex 的 wheelTarget 与 onRefresh 都靠这个拿到 XtermViewHandle
+  source: web/src/cards/registry.ts:156-158
+  authoritative_test: web/src/cards/builtins/codex.test.tsx:172
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-lifecycle — 生命周期 store / controller 布线
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-091
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    lifecycle store 的每个快照必须冻结（含嵌套 geometry），setVisible /
+    setFocused / setGeometry 在值相等时必须直接 return 不通知
+  why: >
+    冻结阻止消费者篡改共享快照；相等短路避免 IntersectionObserver 抖动引发
+    controller 回调风暴
+  source: web/src/cards/lifecycle.ts:52-114
+  authoritative_test: web/src/cards/lifecycle.test.ts:18
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-092
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    bumpRefresh 必须每次都通知（不做相等短路），refreshEpoch 每次 +1
+  why: >
+    刷新是命令而非状态；相等短路会让连续两次刷新只生效一次
+  source: web/src/cards/lifecycle.ts:110-112
+  authoritative_test: web/src/cards/lifecycle.test.ts:46
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-093
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    notify 遍历监听者前必须先 Array.from 快照集合，允许监听者在迭代中退订
+  why: >
+    直接遍历 Set 时退订会跳过后续监听者
+  source: web/src/cards/lifecycle.ts:85-88
+  authoritative_test: web/src/cards/lifecycle.test.ts:67
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-094
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    默认快照必须是 visible:true、focused:false、geometry {0,0,ready:false}、
+    refreshEpoch:0
+  why: >
+    默认可见让没有 IntersectionObserver 的环境（jsdom / 老浏览器）不至于把卡片
+    当成不可见而停掉内容
+  source: web/src/cards/lifecycle.ts:52-57
+  authoritative_test: web/src/cards/lifecycle.test.ts:5
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-095
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    暴露给卡片子组件的 lifecycle 必须是冻结的只读视图（只有 getSnapshot /
+    subscribe）；writer（setVisible 等）只能经 resolver 交给宿主
+  why: >
+    卡片自己写可见性会绕过 IntersectionObserver 这个唯一真相源
+  source: web/src/cards/registry.ts:408-416
+  authoritative_test: web/src/cards/registry.test.tsx:519
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-096
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    controller 的创建/销毁 effect 依赖必须只有 [cardId]；controller 在 cardId
+    变化时重建，卸载时 dispose 恰好一次
+  why: >
+    card 对象每次渲染都是新引用；进依赖会让 controller 每帧重建，xterm 刷新句柄
+    等有状态资源全丢
+  source: web/src/cards/registry.ts:492-522
+  authoritative_test: web/src/cards/registry.test.tsx:615,641
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-097
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    lifecycle 订阅回调必须逐项 diff 上一快照：visible 变才调 onVisibleChange、
+    focused 变才调 onFocusChange、geometry 用 sameGeometry 比较、
+    refreshEpoch 严格大于才调 onRefresh
+  why: >
+    一次 notify 只改一个字段，无差分会把四个回调全打一遍；refreshEpoch 用 > 而非
+    !== 保证 epoch 只前进不回放
+  source: web/src/cards/registry.ts:524-543,66-68
+  authoritative_test: web/src/cards/registry.test.tsx:558
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-098
+  kind: capability
+  family: card-lifecycle
+  statement: >
+    ctx.emit({type:'refresh'}) 必须转成 lifecycleWriter.bumpRefresh()，
+    再经订阅差分落到 controller.onRefresh
+  why: >
+    CardHead 的刷新按钮与 controller 之间不能直连；epoch 是唯一通路，
+    保证多个触发源语义一致
+  source: web/src/cards/registry.ts:417-422,538-540
+  authoritative_test: web/src/cards/registry.test.tsx:558
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-099
+  kind: gate
+  family: card-lifecycle
+  statement: >
+    useCardInstanceCtx / useCardLifecycle 在 CardInstanceProvider 之外调用
+    必须抛错；useOptionalCardInstanceCtx 才允许返回 null
+  why: >
+    静默返回 null 会让 CardHead 的 actions 无声消失
+  source: web/src/cards/registry.ts:552-566
+  authoritative_test: web/src/cards/registry.test.tsx:694
+  owner_slice: systems/cards/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-100
+  kind: invariant
+  family: card-lifecycle
+  statement: >
+    controller 的所有回调返回值必须以 void 吞掉（允许返回 Promise），
+    不得 await 也不得未处理拒绝
+  why: >
+    生命周期通知是 fire-and-forget；卡住会阻塞订阅链上的后续 controller
+  source: web/src/cards/registry.ts:529-540,517-521
+  authoritative_test: NONE
+  owner_slice: systems/cards/lifecycle
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-resolver — cardId → 实例的模块级解析表
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-101
+  kind: invariant
+  family: card-resolver
+  statement: >
+    CARD_ENTRY_RESOLVER 是模块级 Map<cardId, {card, instance, writer}>；
+    其注销函数必须先比对 “当前值 === 注册时的那个值” 再删除
+  why: >
+    StrictMode 双挂载 / 快速重挂时，旧实例的 cleanup 可能在新实例注册之后才跑，
+    无守卫会把新实例从表里删掉，滚轮路由与可见性写入随即失效
+  source: web/src/cards/resolver.ts:22-34
+  authoritative_test: web/src/cards/registry.test.tsx:519
+  owner_slice: systems/cards/resolver
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-102
+  kind: invariant
+  family: card-resolver
+  statement: >
+    resolver 里的 writer 是宿主专用后门；卡片子组件必须继续用 useCardLifecycle()
+    拿冻结只读 store
+  why: >
+    可写句柄泄漏给卡片会让 CARD-095 的只读约束形同虚设
+  source: web/src/cards/resolver.ts:8-16
+  authoritative_test: web/src/cards/registry.test.tsx:519
+  owner_slice: systems/cards/resolver
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-103
+  kind: invariant
+  family: card-resolver
+  statement: >
+    向 resolver 的注册必须只在 card 存在时进行，依赖为
+    [card, cardId, ctx.useCardSlot, lifecycleWriter]
+  why: >
+    无 card 的 provider（纯壳）不该占用 cardId 键位，否则会遮蔽真正的卡片
+  source: web/src/cards/registry.ts:480-490
+  authoritative_test: NONE
+  owner_slice: systems/cards/resolver
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-104
+  kind: capability
+  family: card-resolver
+  statement: >
+    必须提供 __resetCardEntryResolverRegistryForTest() 清空解析表
+  why: >
+    模块级 Map 跨测试泄漏；WaveGrid / WaveList / wheelRouter 测试都在
+    beforeEach+afterEach 调它
+  source: web/src/cards/resolver.ts:44-46
+  authoritative_test: web/src/WaveList.test.tsx:189
+  owner_slice: systems/cards/resolver
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-visibility-focus — 宿主侧可见性 / 焦点观测
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-105
+  kind: invariant
+  family: card-visibility-focus
+  statement: >
+    卡片壳的识别选择器必须是 [data-card-id]；IntersectionObserver 必须以
+    { root: null, threshold: 0 } 观测（相对视口，任意像素相交即算可见）
+  why: >
+    threshold 0 让“刚露出一行”也算可见，避免长卡片在滚动中被判不可见而停活
+  source: web/src/cards/useCardVisibilityFocus.ts:4,57-67
+  authoritative_test: web/src/cards/useCardVisibilityFocus.test.tsx:109
+  owner_slice: systems/cards/visibility
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-106
+  kind: invariant
+  family: card-visibility-focus
+  statement: >
+    可见性变化只能写进 lifecycle writer（setVisible）；宿主绝不能因为卡片离开
+    视口就卸载它
+  why: >
+    terminal / iframe 等有状态内容一旦卸载，PTY 连接与 iframe 会话全丢。
+    WaveList / WaveGrid 测试都断言 onUnmount 未被调用且 DOM 仍在
+  source: web/src/cards/useCardVisibilityFocus.ts:58-67
+  authoritative_test: web/src/WaveList.test.tsx:355
+  owner_slice: systems/cards/visibility
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-107
+  kind: capability
+  family: card-visibility-focus
+  statement: >
+    必须用 MutationObserver（childList + subtree）跟踪挂载后新增/移除的卡片壳，
+    新增即 observe、移除即 unobserve
+  why: >
+    卡片是动态增删的；只在挂载时扫一次会让后加的卡片永远收不到可见性事件
+  source: web/src/cards/useCardVisibilityFocus.ts:75-87
+  authoritative_test: web/src/cards/useCardVisibilityFocus.test.tsx:124
+  owner_slice: systems/cards/visibility
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-108
+  kind: invariant
+  family: card-visibility-focus
+  statement: >
+    IntersectionObserver / MutationObserver 不可用时必须优雅降级（typeof 检查），
+    不得抛错
+  why: >
+    jsdom 与老环境没有这两个 API；卡片仍应渲染
+  source: web/src/cards/useCardVisibilityFocus.ts:57,75
+  authoritative_test: NONE
+  owner_slice: systems/cards/visibility
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-109
+  kind: invariant
+  family: card-visibility-focus
+  statement: >
+    focusout 只有在 relatedTarget 所属壳与来源壳不同时才写 setFocused(false)；
+    同壳内部移动焦点不得产生 false→true 抖动
+  why: >
+    卡片头按钮 → 卡片 body 的 Tab 移动属于“焦点仍在卡内”；抖动会让 controller
+    误以为失焦（测试断言这段过程 onFocusChange 仅被调用一次）
+  source: web/src/cards/useCardVisibilityFocus.ts:32-38
+  authoritative_test: web/src/WaveGrid.test.tsx:399
+  owner_slice: systems/cards/visibility
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-110
+  kind: invariant
+  family: card-visibility-focus
+  statement: >
+    卸载时必须移除 focusin/focusout 监听、disconnect 两个 observer、清空
+    observed 集合
+  why: >
+    scrollRoot 可能被复用；残留监听会向已销毁的 writer 写入
+  source: web/src/cards/useCardVisibilityFocus.ts:90-97
+  authoritative_test: web/src/cards/useCardVisibilityFocus.test.tsx:155
+  owner_slice: systems/cards/visibility
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-head — 统一卡头槽契约
+# ─────────────────────────────────────────────────────────────────────
+
+- id: GATE-CARD-111
+  kind: gate
+  family: card-head
+  statement: >
+    JSX className 中出现 card-head / card-head-decor / card-head-title /
+    card-head-status / card-head-icon 必须被 no-restricted-syntax 拦截，
+    唯一豁免文件是 src/cards/CardHead.tsx
+  why: >
+    issue #221 / PR #178+#213 —— CardHead 是拥有这些类的类型化槽组件；
+    外部自造会让视觉统一（大写标题、字母头像、点状态、observer pill）重新漂移
+  source: web/eslint.config.js:22-26,55-96
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: GATE-CARD-112
+  kind: gate
+  family: card-head
+  statement: >
+    上述守卫必须覆盖三种 JSX 形态：字符串字面量、表达式字面量、模板串任意片段；
+    并且必须显式放行 card-head-observing-pill / card-head-icon--letter /
+    card-head-icon--c{0..7} / card-drag-handle / codex-card-head
+  why: >
+    前两个是槽内合法内容与内部 BEM 修饰符，后两个是调用方经 className prop
+    合法传入的（RGL 拖拽手柄、codex 自己的卡头修饰类）
+  source: web/eslint.config.js:66-96
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: lint
+  test_tier: static
+  migration: pending
+
+- id: INV-CARD-113
+  kind: invariant
+  family: card-head
+  statement: >
+    CardHead 的 DOM 顺序必须是 icon → title → children → actions → status →
+    close button，且 close button 结构上必须在 status 之后
+  why: >
+    status 的 justify-content: flex-end 靠它是最后一个 flex 子项来右钉；
+    close 按钮绝对定位脱流，放最后才不打乱槽布局
+  source: web/src/cards/CardHead.tsx:10-16,157-204
+  authoritative_test: web/src/cards/CardHead.test.tsx:134,203
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-114
+  kind: invariant
+  family: card-head
+  statement: >
+    某个 prop 为 undefined 时必须完全不渲染对应槽 wrapper，不得留空 span
+  why: >
+    flex 父级的 gap 会把空 span 当子项，产生多余间距
+  source: web/src/cards/CardHead.tsx:117-123,166-183
+  authoritative_test: web/src/cards/CardHead.test.tsx:33
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-115
+  kind: invariant
+  family: card-head
+  statement: >
+    onClose 为 undefined 时必须完全不渲染关闭按钮（而不是渲染禁用态）
+  why: >
+    issue #229 —— kernel 拥有的卡片（deletable:false）与 WaveList（行级关闭按钮）
+    都靠这个"不渲染"契约；每个内置卡片都把 onClose:undefined 当成"别显示关闭"
+  source: web/src/cards/CardHead.tsx:54-62,184-203
+  authoritative_test: web/src/WaveGrid.test.tsx:276
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-116
+  kind: invariant
+  family: card-head
+  statement: >
+    关闭按钮与 head action 按钮必须同时 stopPropagation 于 click / keyDown /
+    mouseDown 三个事件
+  why: >
+    mouseDown 冒泡会让 RGL 拖拽手柄（卡头通常带 card-drag-handle）把点击当拖拽起手；
+    keyDown 冒泡会打到 WaveList 行的 roving handler（测试断言 Enter 在 Reload
+    按钮上不被 preventDefault）
+  source: web/src/cards/CardHead.tsx:190-202,208-226
+  authoritative_test: web/src/WaveList.test.tsx:323
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-117
+  kind: capability
+  family: card-head
+  statement: >
+    closeAriaLabel 必须透传到关闭按钮的 aria-label，缺省为 'Close'；
+    所有内置卡片在 WaveGrid 语境下统一传 'Remove panel'
+  why: >
+    WaveGrid 测试用 button.card-grid-close 与该 label 作为 deletable 契约的查询锚点
+  source: web/src/cards/CardHead.tsx:63-64,193
+  authoritative_test: web/src/cards/CardHead.test.tsx:172,180
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-118
+  kind: capability
+  family: card-head
+  statement: >
+    双击标题必须进入内联重命名；提交（Enter / blur）时只有草稿与原值不同才发
+    updateCard mutation，Escape 取消
+  why: >
+    无差异不发写请求，避免每次误双击都产生一条 card.updated 事件
+  source: web/src/cards/CardHead.tsx:67-115,160-170
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-119
+  kind: invariant
+  family: card-head
+  statement: >
+    重命名能力必须在无 card.id、或 card.type 为 'spec' / 'wave-report' 时禁用
+  why: >
+    这两类是 kernel 铸造的卡片，标题由服务端拥有
+  source: web/src/cards/CardHead.tsx:140-145
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-120
+  kind: invariant
+  family: card-head
+  statement: >
+    重命名输入框必须对 mouseDown / doubleClick / keyDown 全部 stopPropagation
+  why: >
+    否则输入过程中的按键会被 RGL 拖拽和 WaveList roving handler 抢走
+  source: web/src/cards/CardHead.tsx:100-111
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-121
+  kind: invariant
+  family: card-head
+  statement: >
+    只有在调用方未传 icon 且 titleNode 是纯字符串时才合成字母头像；
+    非字符串标题必须不渲染 icon
+  why: >
+    非字符串标题通常包着富内容，字母头像会冲突；要图标就必须显式传 icon
+  source: web/src/cards/CardHead.tsx:147-156
+  authoritative_test: web/src/cards/CardHead.test.tsx:127
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-122
+  kind: invariant
+  family: card-head
+  statement: >
+    标题优先级必须是 card.title（若 card 上有该字段且非空）→ title prop →
+    entry.title(card)
+  why: >
+    用户重命名过的标题必须压过 entry 的默认标题
+  source: web/src/cards/CardHead.tsx:135-139
+  authoritative_test: web/src/cards/CardHead.test.tsx:15
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: letter-avatar
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-123
+  kind: invariant
+  family: letter-avatar
+  statement: >
+    字母头像的 DOM 必须是
+    <span class="card-head-icon card-head-icon--letter card-head-icon--c{idx}" aria-hidden="true">，
+    这三段类名是 calm.css 规则的承重结构
+  why: >
+    抽出成组件是为了让 AddPanel 菜单渲染完全相同的字形；DOM 形状改变会同时
+    打断两处样式
+  source: web/src/cards/LetterAvatar.tsx:9-13,48-61
+  authoritative_test: web/src/cards/LetterAvatar.test.tsx:20
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-124
+  kind: invariant
+  family: letter-avatar
+  statement: >
+    调色板下标必须由 djb2 哈希对 8 取模确定，同一 title 必然得到同一 c{idx}
+  why: >
+    颜色是视觉指纹，必须跨渲染 / 跨组件稳定；碰撞无所谓（非安全属性）
+  source: web/src/cards/LetterAvatar.tsx:15-25
+  authoritative_test: web/src/cards/LetterAvatar.test.tsx:36
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-125
+  kind: invariant
+  family: letter-avatar
+  statement: >
+    首字母取 trim 后第一个 \S（Unicode 友好）并大写；标题为空白时必须返回 null
+    （整个头像不渲染）
+  why: >
+    空白标题没有字可画；渲染空方块比不渲染更丑
+  source: web/src/cards/LetterAvatar.tsx:27-33,49-50
+  authoritative_test: web/src/cards/LetterAvatar.test.tsx:48
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-126
+  kind: capability
+  family: letter-avatar
+  statement: >
+    标题小写等于 'codex' / 'claude' 时必须追加语义类
+    card-head-icon--codex / --claude
+  why: >
+    两个 agent 有品牌色，不走哈希调色板
+  source: web/src/cards/LetterAvatar.tsx:35-40,52-56
+  authoritative_test: NONE
+  owner_slice: systems/cards/card-head
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: wave-grid
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-127
+  kind: invariant
+  family: wave-grid
+  statement: >
+    WaveGrid 必须导入 react-grid-layout/css/styles.css 与
+    react-resizable/css/styles.css 两份 vendor CSS；应用层样式只能覆盖不能替代
+  why: >
+    RGL 的定位（transform/absolute）与 react-resizable 的手柄命中区完全由这两份
+    vendor CSS 提供；漏掉任一份卡片会全部堆叠在左上角或无法拉伸
+  source: web/src/WaveGrid.tsx:13-14
+  authoritative_test: NONE
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-128
+  kind: invariant
+  family: wave-grid
+  statement: >
+    绝不能把 RGL 的运行时 layout 镜像进 React useState
+  why: >
+    PR #12 / issue #13 —— 镜像会与 RGL 内部的 minW/minH 归一化形成反馈回路，
+    在紧渲染循环里每秒数百次地在两份布局快照之间来回跳
+  source: web/src/WaveGrid.tsx:160-177
+  authoritative_test: NONE
+  owner_slice: features/wave/grid
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-129
+  kind: invariant
+  family: wave-grid
+  statement: >
+    layout 必须用 useMemo 保持引用稳定（依赖 waveId / cardKeys 字符串 /
+    storedPositions），卡片不变时交给 RGL 的必须是同一个引用
+  why: >
+    引用变化会触发 RGL 重新归一化，等价于上一条的回路
+  source: web/src/WaveGrid.tsx:169-177
+  authoritative_test: NONE
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-130
+  kind: invariant
+  family: wave-grid
+  statement: >
+    onLayoutChange 必须经 requestAnimationFrame 合帧：latch 最新布局，一帧最多
+    一次 upsertOverlay；rAF 不可用时退化为 setTimeout(0)
+  why: >
+    RGL 在拖拽的每个 pointermove 都触发 onLayoutChange，一帧一次 POST 才合理；
+    rAF 把节奏绑在浏览器绘制循环上，无需人调延迟常数
+  source: web/src/WaveGrid.tsx:185-224
+  authoritative_test: web/src/WaveGrid.test.tsx:431
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-131
+  kind: invariant
+  family: wave-grid
+  statement: >
+    卸载时必须 cancelAnimationFrame 掉挂起的 rAF
+  why: >
+    拖到一半导航走人时，latch 的布局相对用户意图已经过期
+  source: web/src/WaveGrid.tsx:226-237
+  authoritative_test: NONE
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-132
+  kind: gate
+  family: wave-grid
+  statement: >
+    每次布局写入必须带 schemaVersion: OVERLAY_LAYOUT_SCHEMA_VERSION（当前 1），
+    payload 形状为 { schemaVersion, positions: {key: {x,y,w,h}} }
+  why: >
+    Tier A 持久化契约；缺字段被读侧当作 v1，但新写入必须显式打戳
+  source: web/src/WaveGrid.tsx:48-55,217-220
+  authoritative_test: web/src/WaveGrid.test.tsx:431
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-133
+  kind: invariant
+  family: wave-grid
+  statement: >
+    slotKey 必须优先用 kernel id（card slot 用 card.id，unknown slot 用 slot.id），
+    只在缺失时退回 `idx-${i}`；WaveList 必须用完全相同的 slotKey 形状
+  why: >
+    键跨重排稳定，RGL keys 与持久化布局才不漂移；grid/list 共享同一键形状，
+    切换视图时卡片不会卸载重挂（xterm 会话保活、codex 钩子继续落在同一实例）
+  source: web/src/WaveGrid.tsx:28-35 web/src/WaveList.tsx:56-63
+  authoritative_test: NONE
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-134
+  kind: invariant
+  family: wave-grid
+  statement: >
+    closable 判定必须是 slot.deletable !== false —— 只有字面 false 才隐藏关闭 X，
+    undefined 必须视为可删
+  why: >
+    issue #229 PR A —— 事件日志回放与旧 KernelCard 线格不带该字段；kernel 默认
+    与 OpenAPI 输出都偏向 true
+  source: web/src/WaveGrid.tsx:262-278
+  authoritative_test: web/src/WaveGrid.test.tsx:330
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-135
+  kind: invariant
+  family: wave-grid
+  statement: >
+    每个卡片包裹 div 必须带 className="wave-card"、data-wheel-card，
+    以及 card slot 时的 data-card-id
+  why: >
+    data-wheel-card 是滚轮路由定位活动卡壳的选择器，data-card-id 是可见性/焦点
+    观测与 entry 级 wheelTarget 解析的键
+  source: web/src/WaveGrid.tsx:279-285
+  authoritative_test: web/src/WaveGrid.test.tsx:356
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-136
+  kind: invariant
+  family: wave-grid
+  statement: >
+    新卡片必须按行主序在底部自动打包（超出 12 列换行），已有 stored 位置的卡片
+    必须原样复用；nextY 只由计划保留的 stored 条目决定
+  why: >
+    新卡片不能盖在已有卡片上，也不能把用户排好的布局推乱
+  source: web/src/WaveGrid.tsx:57-110
+  authoritative_test: web/src/WaveGrid.test.tsx:235
+  owner_slice: features/wave/grid
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: wave-list
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-137
+  kind: invariant
+  family: wave-list
+  statement: >
+    Alt+Arrow 换序的两次 updateCard mutation 必须串行 await，
+    绝不可改成 Promise.all
+  why: >
+    并发会让两个 onMutate 的缓存快照互相竞争，第二个乐观写覆盖第一个，
+    UI 短暂出现两张卡 sort 相同。测试显式钉死：第一次 mutation 未 resolve 时
+    只能看到 1 次调用
+  source: web/src/WaveList.tsx:161-185
+  authoritative_test: web/src/WaveList.test.tsx:491
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-138
+  kind: invariant
+  family: wave-list
+  statement: >
+    swap 必须由 swapInFlight ref 串行化：上一次换序未结束时新的换序请求直接丢弃
+  why: >
+    慢 ack 下用户连按 Alt+Down 会让 activeIndex 漂移，第二次换序作用在陈旧卡片上
+  source: web/src/WaveList.tsx:128-152,183-185
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-139
+  kind: invariant
+  family: wave-list
+  statement: >
+    两张卡都必须有 kernel id 且 sort 都非 null 才允许换序；否则静默 no-op
+  why: >
+    乐观新增（服务端未 ack）的卡片没有 id；router 虽总能填 sort，仍需防御读时缺失
+  source: web/src/WaveList.tsx:81-89,136-148
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-140
+  kind: invariant
+  family: wave-list
+  statement: >
+    换序中途失败（第一条成功第二条失败）必须只 console.warn，不弹 toast；
+    靠 refetch 按 kernel 顺序收敛
+  why: >
+    与既有的重命名 / 拖拽错误路径保持同一模式；再按一次 Alt+ArrowUp 即可恢复
+  source: web/src/WaveList.tsx:168-185
+  authoritative_test: NONE
+  owner_slice: features/wave/list
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-141
+  kind: capability
+  family: wave-list
+  statement: >
+    列表行必须实现 roving tabindex：只有 activeIndex 那行 tabIndex=0，其余 -1；
+    ArrowUp/Down 移动焦点，Home/End 跳首尾
+  why: >
+    Slice 9 —— RGL 没有键盘故事；列表视图是键盘规范路径。Tab 进入列表只在活动项
+    停一次，再按 Tab 就离开
+  source: web/src/WaveList.tsx:113-126,232-248
+  authoritative_test: web/src/WaveList.test.tsx:233,399,424
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-142
+  kind: invariant
+  family: wave-list
+  statement: >
+    行的 onKeyDown 必须先处理 Alt+ArrowUp / Alt+ArrowDown / Delete / Backspace
+    并 return，只有未认领的键才委派给 useRovingTabindex 的 handler
+  why: >
+    非 Alt 的方向键归 hook；Alt 组合归列表。顺序反了 hook 会把 Alt+Arrow 当普通
+    方向键消费掉
+  source: web/src/WaveList.tsx:200-231
+  authoritative_test: web/src/WaveList.test.tsx:446
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-143
+  kind: invariant
+  family: wave-list
+  statement: >
+    行内嵌套的 action / 关闭按钮的 keydown 必须不冒泡到行的 roving handler
+    （由 CardHead 的 stopPropagation 保证），且行 handler 不得 preventDefault
+    这些事件
+  why: >
+    否则在卡头 Reload 按钮上按 Enter 会被行 handler 吞掉，按钮永远激活不了
+  source: web/src/WaveList.tsx:205-231 web/src/cards/CardHead.tsx:198,220
+  authoritative_test: web/src/WaveList.test.tsx:323
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-144
+  kind: capability
+  family: wave-list
+  statement: >
+    Delete / Backspace 必须直接删除聚焦卡片，不做二次确认；行级 × 按钮点击
+    等价，且必须 stopPropagation
+  why: >
+    与 grid 视图的 × 行为对齐 —— grid 不确认，list 也不确认
+  source: web/src/WaveList.tsx:218-225,249-260
+  authoritative_test: web/src/WaveList.test.tsx:598,616
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-145
+  kind: invariant
+  family: wave-list
+  statement: >
+    每个 <li> 必须带 aria-label（来自 entry.accessibleName，缺失时退化为
+    "Card N" 或 "Unknown card: {kind}")、aria-posinset、aria-setsize，
+    以及枚举全部快捷键的 aria-keyshortcuts
+  why: >
+    读屏与 Playwright getByRole('listitem', {name}) 都依赖它；快捷键字符串是
+    Slice 9 契约的一部分
+  source: web/src/WaveList.tsx:65-79,240-243
+  authoritative_test: web/src/WaveList.test.tsx:250,273
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-146
+  kind: invariant
+  family: wave-list
+  statement: >
+    列表顺序必须直接消费 props.cards（kernel 按 sort 升序返回），
+    WaveList 自己不得排序也不得持有位置状态
+  why: >
+    kernel 是排序的唯一真相源；本地再排会与 WS card.updated 回放竞争
+  source: web/src/WaveList.tsx:105-111
+  authoritative_test: web/src/WaveList.test.tsx:209
+  owner_slice: features/wave/list
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: wheel-routing — 滚轮路由（当前硬编码 class 选择器）
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-147
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    滚轮路由的四种结果必须是且只是 page / native-scroll / xterm / sink
+  why: >
+    page = 放行浏览器原生滚动；sink = 吃掉事件不滚任何东西（防止卡片内滚轮
+    穿透去滚页面）。少一种就会出现“卡片内滚动带动整页”的老 bug
+  source: web/src/input/wheelRouter.ts:7-11
+  authoritative_test: web/src/input/wheelRouter.test.ts:207
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-148
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    事件目标位于 .modal-overlay / .modal-panel 内时必须立即返回 page，
+    这是所有其它判定之前的第一道分支
+  why: >
+    对话框有自己的滚动行为；被卡片路由接管会让弹窗内容滚不动
+  source: web/src/input/wheelRouter.ts:13,117
+  authoritative_test: web/src/input/wheelRouter.test.ts:250
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-149
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    活动卡壳必须用 document.elementFromPoint(clientX, clientY) 取，再向上
+    closest('[data-wheel-card]')，并且必须落在 scrollRoot 之内；
+    光标不在任何卡片上时返回 page
+  why: >
+    按光标位置而非事件目标决定，才符合“鼠标悬停在哪就滚哪”的直觉；
+    scrollRoot 边界防止滚到别的视图的卡片
+  source: web/src/input/wheelRouter.ts:14,63-74,118
+  authoritative_test: web/src/input/wheelRouter.test.ts:570,584
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-150
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    路由优先级必须是：modal → 无活动卡 → 卡内原生可滚容器 → entry 声明的
+    wheelTarget → WeakMap 注册的 xterm → .xterm-view 存在但未注册则 sink →
+    默认 sink
+  why: >
+    卡内原生滚动排在 entry 声明之前是显式决定（测试 "keeps in-card native
+    scrollable routing before entry declarations"）：用户光标正压在一个真的能滚
+    的元素上时，卡片自己的声明不该抢
+  source: web/src/input/wheelRouter.ts:108-146
+  authoritative_test: web/src/input/wheelRouter.test.ts:301
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-151
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    "卡内原生可滚"的判定必须是 overflowY 为 auto|scroll 且
+    scrollHeight > clientHeight，且查找必须限制在活动卡壳边界内（closestWithin）
+  why: >
+    只有真的溢出才算可滚；越出卡壳去找会把父级滚动容器误当成卡内目标
+  source: web/src/input/wheelRouter.ts:22-43,120-125
+  authoritative_test: web/src/input/wheelRouter.test.ts:220
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-152
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    活动卡壳有 .xterm-view 后代但没有注册过 wheel target 时必须返回 sink，
+    绝不能返回 page
+  why: >
+    xterm handle 还没挂上的窗口里放行滚轮，会让整页跟着滚，视觉上像卡片"漏了"
+  source: web/src/input/wheelRouter.ts:15,139-145
+  authoritative_test: web/src/input/wheelRouter.test.ts:286
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-153
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    WeakMap（registerXtermShell）的 xterm 路由必须优先于 entry 解析被检查；
+    壳上没有 data-card-id 时必须完全不调用 resolveCardById
+  why: >
+    Today 页的 bespoke 终端面板没有 card id，只能走 WeakMap；顺序反了会白白
+    调用解析器（测试断言 resolveCardById 未被调用）
+  source: web/src/input/wheelRouter.ts:127-140 web/src/input/wheelTargets.ts:1-23
+  authoritative_test: web/src/input/wheelRouter.test.ts:396
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-154
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    entry 声明为 kind:'xterm' 但 ref.current 尚未接上（或不是合法
+    XtermViewHandle）时必须返回 sink；kind:'native-scroll' 但 ref.current
+    为 null 时必须返回 page
+  why: >
+    xterm 卡片未就绪时必须吃掉事件（同 CARD-152）；native-scroll 卡片未就绪时
+    放行页面滚动才是符合直觉的降级
+  source: web/src/input/wheelRouter.ts:91-106
+  authoritative_test: web/src/input/wheelRouter.test.ts:344,359
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-155
+  kind: gate
+  family: wheel-routing
+  statement: >
+    wheelRouter.ts 源码中不得出现 file-viewer 相关的遗留字面量
+    (.cm-scroller / .file-viewer-tree-list / .file-viewer-changes /
+    .file-viewer-merge / data-wheel-file-viewer-tab)，由一条读源码的测试守卫
+  why: >
+    这些选择器已下沉到 file-viewer entry 的 wheelTarget 声明；路由层再硬编码
+    就等于两套真相
+  source: web/src/input/wheelRouter.ts:13-15
+  authoritative_test: web/src/input/wheelRouter.test.ts:421
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-156
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    wheel 监听必须注册在 scrollRoot 上，且 capture:true + passive:false
+  why: >
+    capture 保证在卡片内部任何 handler 之前拿到事件；passive:false 是能调
+    preventDefault 的前提，缺了整个 sink / native-scroll 路由全部失效
+  source: web/src/input/useWheelRouter.ts:52-59
+  authoritative_test: web/src/input/wheelRouter.test.ts:430
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-157
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    page 路由必须直接 return（不 preventDefault）；native-scroll 与 sink 必须
+    preventDefault；xterm 只有在 decide 返回 consume 时才 preventDefault 并 apply
+  why: >
+    xterm 返回 pass（无论 edge 还是 passthrough）都必须让事件继续冒泡，
+    否则终端滚到顶/底后页面就再也滚不动了
+  source: web/src/input/useWheelRouter.ts:30-49
+  authoritative_test: web/src/input/wheelRouter.test.ts:447,494,522,553
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-158
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    native-scroll 路由必须用 pixelDelta 归一化后的 x/y 同时滚动
+    scrollLeft 与 scrollTop
+  why: >
+    只处理 y 会让横向滚动内容（宽表格 / 代码）无法用触控板横滑
+  source: web/src/input/useWheelRouter.ts:32-38 web/src/input/wheelRouter.ts:45-61
+  authoritative_test: web/src/input/wheelRouter.test.ts:475
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-159
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    pixelDelta 必须按 deltaMode 归一：LINE 乘 16px；PAGE 乘 currentTarget 的
+    clientHeight（无则 400）；PIXEL 原样
+  why: >
+    Firefox 默认发 LINE 模式；不归一会让滚动量差一个数量级
+  source: web/src/input/wheelRouter.ts:16,45-61
+  authoritative_test: web/src/input/wheelRouter.test.ts:166
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-160
+  kind: invariant
+  family: wheel-routing
+  statement: >
+    xterm 路由传给 decide/apply 的必须是原始 event.deltaY 与 event.deltaMode，
+    不得先经 pixelDelta 归一
+  why: >
+    xtermAdapter 自己有一套 deltaYToLines 的行换算；双重归一会让滚动量翻倍
+  source: web/src/input/useWheelRouter.ts:39-45
+  authoritative_test: web/src/input/wheelRouter.test.ts:494
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: xterm-wheel-adapter
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-161
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    终端开启了鼠标上报（mouseTrackingMode 存在且不为 'none'）或处于 alternate
+    缓冲区时，必须返回 pass/'passthrough'，让原始 wheel 事件继续走到 xterm 自己
+  why: >
+    这两种状态下滚轮语义属于 TUI 应用（vim/less/codex），不是滚动历史
+  source: web/src/input/xtermAdapter.ts:28-33,56-58
+  authoritative_test: web/src/input/xtermAdapter.test.ts:23
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-162
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    可选的 xterm 状态字段全部缺失时（modes / buffer 都 undefined），
+    必须落到滚动历史分支（shouldPassThroughToXterm 返回 false）
+  why: >
+    保守默认：拿不到状态就当普通缓冲区，滚动历史比让事件穿透更安全
+  source: web/src/input/xtermAdapter.ts:28-33
+  authoritative_test: web/src/input/xtermAdapter.test.ts:36
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-163
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    已滚到顶（viewportY===0）时向上滚、已到底（viewportY===baseY）时向下滚，
+    必须返回 pass/'edge'
+  why: >
+    边缘放行才能让滚动链继续传给页面；空缓冲区（0===0）向下滚也算边缘
+  source: web/src/input/xtermAdapter.ts:62-77
+  authoritative_test: web/src/input/xtermAdapter.test.ts:87,103,135
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-164
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    换算后行数为 0（deltaY===0）时必须返回 pass/'edge'
+  why: >
+    没有位移就不该吃掉事件
+  source: web/src/input/xtermAdapter.ts:35-36,60-61
+  authoritative_test: web/src/input/xtermAdapter.test.ts:119
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-165
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    terminalRef.current 为 null 时 decide 必须返回 consume，apply 必须安全 no-op
+  why: >
+    终端还没建好时吃掉滚轮，避免页面被意外滚动；apply 不能因为无终端而抛
+  source: web/src/input/xtermAdapter.ts:53-55,80-85
+  authoritative_test: web/src/input/xtermAdapter.test.ts:71
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-166
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    deltaYToLines 换算必须是：LINE 模式取绝对值四舍五入且至少 1 行；
+    PAGE 模式 ×10 且至少 1；PIXEL 模式 ÷16 且至少 1；符号保留
+  why: >
+    "至少 1 行" 保证小幅触控板滑动也有反馈；PIXEL/16 对应 16px 行高假设
+  source: web/src/input/xtermAdapter.ts:35-44
+  authoritative_test: web/src/input/xtermAdapter.test.ts:41
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-167
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    apply 必须重新检查 shouldPassThroughToXterm，不得假设 decide 与 apply 之间
+    终端状态没变
+  why: >
+    两次调用之间 TUI 可能刚切进 alternate 缓冲区；此时 scrollLines 会滚错东西
+  source: web/src/input/xtermAdapter.ts:80-85
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-adapter
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-168
+  kind: invariant
+  family: xterm-wheel-adapter
+  statement: >
+    useXtermWheelTargetRef 必须用 useLayoutEffect + 版本号（setRef 时 bump）
+    重新注册 WeakMap，且注册目标是 target.root.closest('[data-wheel-card]')
+  why: >
+    ref callback 不触发重渲染，没有版本号就永远注册不上；layout effect 保证
+    在浏览器绘制前完成注册，首个滚轮事件就能命中
+  source: web/src/input/useXtermWheelTarget.ts:9-30
+  authoritative_test: NONE
+  owner_slice: systems/wheel
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-terminal
+# ─────────────────────────────────────────────────────────────────────
+
+- id: CAP-CARD-169
+  kind: capability
+  family: card-kind-terminal
+  statement: >
+    terminal 卡片在拿到 terminalId 前必须渲染静态 lines 形态（带光标占位），
+    拿到后才懒加载 XtermView
+  why: >
+    xterm.js + fit addon + CSS 约 150KB；卡片先于 PTY 存在是正常时序
+    （kernel 之后才补 terminal_id）
+  source: web/src/cards/builtins/terminal.tsx:36-42,145,190-212
+  authoritative_test: web/src/cards/builtins/terminal.test.tsx:72
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-170
+  kind: capability
+  family: card-kind-terminal
+  statement: >
+    terminal 卡片挂载时必须用 getTerminalForCard(cardId) 从 REST 播种退出徽章
+    （exit_code 非空或 signal_killed 为真时才设），失败必须静默无徽章
+  why: >
+    #306 —— 刷新页面遇到已退出的终端要立刻显示徽章，不能等 WS attach。
+    卡片刚铸造（还没 terminal 行）或并发删除都会让请求失败，属正常
+  source: web/src/cards/builtins/terminal.tsx:94-125
+  authoritative_test: NONE
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-171
+  kind: invariant
+  family: card-kind-terminal
+  statement: >
+    有 exit 信息时必须不再渲染绿色 Working 点；退出徽章必须排在角色 pill 之后、
+    状态点之左
+  why: >
+    绿点会读成"仍在运行"，与徽章矛盾；徽章放左侧让状态点的锚点不随 pill 出现
+    消失而位移
+  source: web/src/cards/builtins/terminal.tsx:155-188
+  authoritative_test: NONE
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-172
+  kind: invariant
+  family: card-kind-terminal
+  statement: >
+    TerminalEntry 必须声明 refreshBacking:'none' 且其 controller 只做
+    onVisibleChange 日志 —— 明确不提供 onRefresh
+  why: >
+    终端刷新走 XtermView 的 imperative handle（codex 卡片才把它接到 onRefresh）；
+    终端卡自己不暴露刷新动作
+  source: web/src/cards/builtins/terminal.tsx:225-232
+  authoritative_test: web/src/cards/builtins/terminal.test.tsx:129,166
+  owner_slice: systems/terminal/card
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-173
+  kind: invariant
+  family: card-kind-terminal
+  statement: >
+    terminal 卡的 wheelTarget 必须声明 kind:'xterm' 并指向 useCardSlot('xtermRef')
+    这个共享槽；卡片 body 通过同一 key 写入 handle
+  why: >
+    entry 级声明与组件实例必须落在同一个槽上，否则路由拿到的永远是 null
+  source: web/src/cards/builtins/terminal.tsx:44-46,73-81,233-238
+  authoritative_test: web/src/cards/builtins/terminal.test.tsx:129
+  owner_slice: systems/terminal/card
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-codex
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-174
+  kind: invariant
+  family: card-kind-codex
+  statement: >
+    codex 卡片不得持有本地 FSM —— 六态状态（Starting/Idle/Working/AwaitingInput/
+    Errored/Done）由 kernel 的 card_fsm 任务拥有，客户端只读
+    Overlay{entity_kind:'card', kind:'status'}
+  why: >
+    kernel 在服务端算 wave 并集；本地再跑一套 FSM 会与并集不一致
+  source: web/src/cards/builtins/codex.tsx:11-17,231-237
+  authoritative_test: web/src/cards/useCardOverlay.test.tsx:198
+  owner_slice: systems/cards/codex
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-175
+  kind: invariant
+  family: card-kind-codex
+  statement: >
+    状态点显示的 FSM 优先级必须是 overlay 状态 → runtimeStatus 映射
+    (failed→Errored, exited|superseded→Done) → 本地兜底 fsm
+  why: >
+    overlay 是最权威的实时信号；runtime 是 REST 快照兜底；本地 'Starting'
+    只是首帧占位
+  source: web/src/cards/builtins/codex.tsx:269-277,452-462
+  authoritative_test: web/src/cards/builtins/codex.test.tsx:268,293
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-176
+  kind: invariant
+  family: card-kind-codex
+  statement: >
+    unsupportedVersion 分支必须拆成独立组件先返回，避免在同一组件里跨分支调用 hooks
+  why: >
+    rules-of-hooks —— 早退分支下面还有十几个 hook，写在一起会条件调用
+  source: web/src/cards/builtins/codex.tsx:188-214
+  authoritative_test: NONE
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: architecture
+  test_tier: none
+  migration: pending
+
+- id: INV-CARD-177
+  kind: invariant
+  family: card-kind-codex
+  statement: >
+    codex/claude 卡的钩子事件订阅在卸载时只能 off() 监听器，不得从共享事件流
+    移除 topic
+  why: >
+    共享流上的 topic 订阅是粘性的（与 XtermView 终端流同理）；移除会影响同 topic
+    的其它消费者
+  source: web/src/cards/builtins/codex.tsx:320-351
+  authoritative_test: NONE
+  owner_slice: systems/cards/codex
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: CAP-CARD-178
+  kind: capability
+  family: card-kind-codex
+  statement: >
+    只有 claude 卡片在 ended（有 exit 或 runtime 为 exited/failed/superseded）
+    时才渲染 Restart 按钮；codex 卡片必须不渲染
+  why: >
+    只有 claude 有 restartClaudeCard 端点；codex 的重启路径不同
+  source: web/src/cards/builtins/codex.tsx:277,386-403,421-441
+  authoritative_test: web/src/cards/builtins/codex.test.tsx:202,252
+  owner_slice: systems/cards/codex
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-179
+  kind: invariant
+  family: card-kind-codex
+  statement: >
+    Restart 成功后才允许 setExit(null) 并调用 xtermRef.refresh()；失败必须
+    保留退出态并显示错误文案
+  why: >
+    失败后清掉退出徽章会让用户以为重启成功了（测试断言失败时不刷新 XtermView）
+  source: web/src/cards/builtins/codex.tsx:305-318
+  authoritative_test: web/src/cards/builtins/codex.test.tsx:225
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-180
+  kind: invariant
+  family: card-kind-codex
+  statement: >
+    CodexEntry.fromKernel 必须在 payload.spec_harness === true 时返回 null，
+    把该卡让给 SpecEntry
+  why: >
+    spec 卡的 kernel kind 也是 'codex'，只能靠 payload 判别符区分；不让位会
+    让 spec 卡渲染成普通 codex 卡
+  source: web/src/cards/builtins/codex.tsx:552-556
+  authoritative_test: web/src/cards/builtins/spec.test.tsx:92
+  owner_slice: systems/cards/codex
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-spec
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-181
+  kind: invariant
+  family: card-kind-spec
+  statement: >
+    spec 卡片必须是无头的（Component: () => null）、defaultSize 1x1、
+    create 为 kernel-minted-only
+  why: >
+    spec harness 不是用户可见面板，只是让 wave 知道有这个 agent 存在；
+    有 UI 会在网格里占位
+  source: web/src/cards/builtins/spec.tsx:43-51
+  authoritative_test: NONE
+  owner_slice: features/spec/card
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: e2e
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-182
+  kind: invariant
+  family: card-kind-spec
+  statement: >
+    spec 的识别必须且只能靠 payload.spec_harness === true 这个判别符
+    （isSpecHarnessPayload），不看其它字段
+  why: >
+    kernel kind 是 'codex'；判别符是唯一区分点。加别的条件会让部分 spec 卡漏判
+  source: web/src/cards/builtins/spec.tsx:33-41,55
+  authoritative_test: web/src/cards/builtins/spec.test.tsx:112
+  owner_slice: features/spec/card
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-183
+  kind: capability
+  family: card-kind-spec
+  statement: >
+    spec 的 accessibleName 必须在有 goal 时输出 "Spec agent: {goal}"，
+    否则 "Spec agent"
+  why: >
+    无头卡片在 WaveList 里仍会占一行，读屏需要有意义的名字
+  source: web/src/cards/builtins/spec.tsx:49-50
+  authoritative_test: NONE
+  owner_slice: features/spec/card
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-iframe
+# ─────────────────────────────────────────────────────────────────────
+
+- id: GATE-CARD-184
+  kind: gate
+  family: card-kind-iframe
+  statement: >
+    iframe URL 必须通过 isAllowedIframeUrl（解析后协议只能是 http: 或 https:），
+    javascript: / data: 必须在提交时被拒
+  why: >
+    javascript: URL 在 iframe 中执行等于 XSS；data: 可绕过同源判断
+  source: web/src/cards/builtins/iframe.tsx:23-35,92-96
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:351,364
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-185
+  kind: invariant
+  family: card-kind-iframe
+  statement: >
+    sandbox 基线必须是 'allow-scripts allow-popups allow-forms
+    allow-popups-to-escape-sandbox'；allow-same-origin 只在
+    "跨源 且 用户显式 trusted" 时追加，同源目标永远不加
+  why: >
+    同源 + allow-same-origin 等于完全逃逸沙箱；跨源加它是 noVNC 一类应用的
+    必要开关，必须由用户显式授权
+  source: web/src/cards/builtins/iframe.tsx:48-59
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:142,169,178
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-186
+  kind: invariant
+  family: card-kind-iframe
+  statement: >
+    iframe 元素的 key 必须是 `${epoch}::${sandboxPolicy}` —— 沙箱策略变化必须
+    重挂 iframe
+  why: >
+    浏览器不会对已挂载 iframe 重新应用 sandbox 属性；不重挂会让新导航跑在旧策略下
+  source: web/src/cards/builtins/iframe.tsx:166-180
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:265
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-187
+  kind: invariant
+  family: card-kind-iframe
+  statement: >
+    提交新 URL 时信任必须被重置为 false；只有提交的 URL 与当前 URL 完全相同时
+    才保留信任
+  why: >
+    信任是授予某个具体源的；换 URL 还带着信任等于把 allow-same-origin 给了
+    用户没审过的站点
+  source: web/src/cards/builtins/iframe.tsx:98-102
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:192,213
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-188
+  kind: invariant
+  family: card-kind-iframe
+  statement: >
+    提交后到服务端回包之间，pendingUrlRef 必须挡住与自己提交值相同的 card.url
+    prop 回灌，避免乐观 URL 被陈旧 prop 覆盖
+  why: >
+    PATCH 期间到达的旧 card.url 会把地址栏和 iframe 拽回去
+  source: web/src/cards/builtins/iframe.tsx:72-82,98
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:398
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-189
+  kind: capability
+  family: card-kind-iframe
+  statement: >
+    信任复选框只在当前 URL 跨源时渲染
+  why: >
+    同源永远不加 allow-same-origin，显示开关会误导
+  source: web/src/cards/builtins/iframe.tsx:137-164
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:280
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-190
+  kind: invariant
+  family: card-kind-iframe
+  statement: >
+    IframeEntry 必须用 refreshBacking:'epoch'，刷新动作只 bump
+    useCardSlot('epoch')，controller 不得声明 onRefresh
+  why: >
+    iframe 的"刷新"语义就是换 key 重挂；与 CARD-078 的冲突门配套
+  source: web/src/cards/builtins/iframe.tsx:189-196,206-218
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:110,466
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-191
+  kind: invariant
+  family: card-kind-iframe
+  statement: >
+    payload 校验失败的警告必须按 card id 去重（模块级 warnedInvalidPayloads Set）
+  why: >
+    fromKernel 在每次卡片列表刷新时都会跑；不去重会刷屏
+  source: web/src/cards/builtins/iframe.tsx:37,219-232
+  authoritative_test: web/src/cards/builtins/iframe.test.tsx:103
+  owner_slice: systems/cards/iframe
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-file-viewer
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-192
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    file-viewer 的导航状态（tab / folderPath / selectedPath / diffSelected）
+    必须持久化在 kind:'file-viewer-nav' 的 card overlay 里，schemaVersion 固定 1
+  why: >
+    卡片重挂（视图切换 / 页面刷新）后要回到用户上次看的位置
+  source: web/src/cards/builtins/file-viewer.tsx:63,83-99,167-172
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:870
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-193
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    只有在 nav overlay 查询状态为 success（navOverlayReady）之后，才允许把
+    listDir 的规范化结果或父目录回退写回 overlay
+  why: >
+    水合前写入会用种子值覆盖掉服务器上真正持久化的导航状态
+  source: web/src/cards/builtins/file-viewer.tsx:173-174,215-237
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:730,762
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-194
+  kind: capability
+  family: card-kind-file-viewer
+  statement: >
+    持久化的目录已被删除时，必须逐级向上回退到父目录，而不是直接报错
+  why: >
+    分支切换 / 目录重命名后卡片仍要可用
+  source: web/src/cards/builtins/file-viewer.tsx:224-240
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:762
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-195
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    图片扩展名必须走 readFileRaw 的 <img src>，不得按 UTF-8 文本读取
+  why: >
+    二进制按文本读会产生乱码并可能撑爆内存
+  source: web/src/cards/builtins/file-viewer.tsx:65-74,101-104,276-279,533-542
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:484
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-196
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    markdown 文件默认 Preview 模式，非 markdown 文件必须强制 effectiveMode
+    为 'source'；模式状态在换文件时随组件卸载自然重置
+  why: >
+    换文件时 CodeTab 会先渲染 "Loading file…" 占位，卸载 LoadedFileContent ——
+    这个 per-file 重置是想要的行为
+  source: web/src/cards/builtins/file-viewer.tsx:566-578
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:514,714
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-197
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    TOC 跳转必须用 paneContainerRef.querySelector('[id="…"]') 限定在本卡片的
+    pane 内，不得用全局 document.getElementById 或 '#id'
+  why: >
+    md-h-N 这种 id 在多张 file-viewer 卡片之间不唯一，全局查找会滚错卡片；
+    '#id' 选择器在部分引擎对 "短横线接数字" 有怪异行为
+  source: web/src/cards/builtins/file-viewer.tsx:632-647
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:606
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-198
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    搜索状态与 TOC 折叠状态必须是纯本地 state，明确不持久化；换文件时
+    必须关闭搜索栏并清空高亮
+  why: >
+    搜索与 TOC 折叠是"本次阅读会话"的辅助；重开应回到展开 + 无搜索
+  source: web/src/cards/builtins/file-viewer.tsx:580-608,629-631
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:560,1144
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-199
+  kind: invariant
+  family: card-kind-file-viewer
+  statement: >
+    pane ref 槽（fvPaneRef）必须由 MutationObserver 跟随 DOM 变化更新，
+    并按 tab 选择目标：code → .file-viewer-markdown-body ?? .cm-scroller ??
+    .file-viewer-tree-list；diff → .file-viewer-merge ?? .file-viewer-changes
+  why: >
+    这是 entry 级 wheelTarget 的 native-scroll 目标；懒加载的 pane 挂载时机不定，
+    只在 effect 里取一次会拿到 null
+  source: web/src/cards/builtins/file-viewer.tsx:131-143,255-273,966-972
+  authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:839
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-200
+  kind: gate
+  family: card-kind-file-viewer
+  statement: >
+    Markdown 渲染必须保持 react-markdown v10 默认（不开 rehype-raw）：
+    原始 <script> / <img onerror> 渲染成字面文本，javascript: 链接被剥离
+  why: >
+    文件内容是不可信输入；开启原始 HTML 等于任意 XSS
+  source: web/src/cards/builtins/file-viewer.tsx:686-703
+  authoritative_test: web/src/cards/builtins/file-viewer-markdown.test.tsx:12
+  owner_slice: systems/fs-viewers/file-viewer
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-wave-report
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-201
+  kind: invariant
+  family: card-kind-wave-report
+  statement: >
+    wave-report 卡片必须是无头的（Component: () => null），
+    create 为 kernel-minted-only，无 addPanel 入口
+  why: >
+    issue #229 PR B —— 每个 wave 只有一张，内容由报告视图渲染，网格里不占面板
+  source: web/src/cards/builtins/wave-report.tsx:213-221
+  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:115
+  owner_slice: features/report/card
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-202
+  kind: gate
+  family: card-kind-wave-report
+  statement: >
+    wave-report payload 的当前 schemaVersion 为 3（v2 加 blocks 数组，
+    v3 加 docRev 文档级乐观并发锚点）；读侧只拒绝高于该常量的版本，
+    v1/v2/v3 共用同一套可选块解析器
+  why: >
+    #960 PR2 / #979 —— 向后兼容读，向前拒绝写；docRev 是整文档写路径的
+    乐观并发前提
+  source: web/src/cards/builtins/schemaVersions.ts:28-30
+    web/src/cards/builtins/wave-report.tsx:222-261
+  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:64,79
+  owner_slice: features/report/card
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-203
+  kind: invariant
+  family: card-kind-wave-report
+  statement: >
+    单个 block 的 kind 未知、或已知 kind 的 payload 校验失败时，必须落到不透明
+    的 catch-all（渲染成占位），绝不能让整张卡片解析失败
+  why: >
+    一个坏块不该毁掉整份报告
+  source: web/src/cards/builtins/wave-report.tsx:26-31
+  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:56
+  owner_slice: features/report/card
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-204
+  kind: gate
+  family: card-kind-wave-report
+  statement: >
+    block payload 的 zod 上限必须与 Rust 侧校验一致（strictObject、
+    candles 2..5000、columns 1..32、rows ≤500、字符串 ≤2048）
+  why: >
+    #960 review r1 —— kernel 接受的 payload 必须正好等于前端接受的，
+    否则会出现"存得进去但渲染不出来"
+  source: web/src/cards/builtins/wave-report.tsx:46-80
+  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:92,106
+  owner_slice: features/report/card
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-plugin
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-205
+  kind: invariant
+  family: card-kind-plugin
+  statement: >
+    插件卡 kind 只接受规范的 ui://<plugin>/<view> 形式；遗留的
+    plugin:<id>:<view> 必须被拒（parsePluginCardKind 返回 null）
+  why: >
+    M4 删除了遗留形式；返回 null 让 adaptKernelCard 继续往下找，
+    最终由 renderCard 打一次性警告
+  source: web/src/cards/plugin-iframe.tsx:55-86 web/src/cards/registry.ts:15-18
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-206
+  kind: gate
+  family: card-kind-plugin
+  statement: >
+    iframe 发起的工具调用必须只允许 neige.* 前缀；其余必须在客户端就返回
+    isError 的 MCP 风格结果
+  why: >
+    迁移文档 §7.6 row 5 —— 服务端 403 forbidden_tool 是权威门，客户端镜像
+    这道门是为了让 iframe 看到干净的协议内错误而不是网络拒绝
+  source: web/src/cards/plugin-iframe.tsx:11-14,219-230
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-207
+  kind: invariant
+  family: card-kind-plugin
+  statement: >
+    AppBridge 必须以 null 作为 MCP client 构造，且只实现 oncalltool（与
+    onloggingmessage）；onreadresource / onlistresources 等必须保持默认空，
+    让 AppBridge 回 MethodNotFound
+  why: >
+    §3.2 —— Neige 不代理远程 MCP server，iframe 唯一的写路径就是 neige.* 回调
+  source: web/src/cards/plugin-iframe.tsx:16-21,201-213
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-208
+  kind: invariant
+  family: card-kind-plugin
+  statement: >
+    主题切换必须走独立的 [theme] effect 调 bridge.setHostContext，
+    bridge-setup effect 的依赖必须只有 [card.id, card.resource_uri, parsed]；
+    构造时的主题从 latestThemeRef 读
+  why: >
+    issue #22 —— 主题翻转不能重挂 iframe + 重建 transport + 重跑 connect；
+    只发一帧 host-context-changed
+  source: web/src/cards/plugin-iframe.tsx:106-121,144-151,318-342
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-209
+  kind: invariant
+  family: card-kind-plugin
+  statement: >
+    teardown 必须先把 bridgeRef.current 置 null，再 close bridge 与 transport；
+    connect 成功后必须再 push 一次 setHostContext(最新主题)
+  why: >
+    先置 null 防止 StrictMode 重挂窗口里对已拆桥调用 setHostContext；
+    connect 期间发生的主题翻转会被握手窗口吞掉，必须补推
+  source: web/src/cards/plugin-iframe.tsx:268-289,301-314
+  authoritative_test: NONE
+  owner_slice: systems/cards/plugin
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: card-kind-unknown
+# ─────────────────────────────────────────────────────────────────────
+
+- id: CAP-CARD-210
+  kind: capability
+  family: card-kind-unknown
+  statement: >
+    adaptKernelCard 返回 null 的 kernel 卡片必须渲染 UnknownCard 占位
+    （显示原始 kernelKind 与 "UI couldn't parse this card's payload"），
+    不得被过滤掉
+  why: >
+    之前 currentWave 直接滤掉 null，wave 少一个面板而用户与 devtools 都看不见
+    schema 漂移
+  source: web/src/cards/UnknownCard.tsx:1-44
+  authoritative_test: web/src/cards/UnknownCard.test.tsx:25
+  owner_slice: systems/cards/unknown
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-211
+  kind: invariant
+  family: card-kind-unknown
+  statement: >
+    UnknownCard 的头必须带 card-drag-handle，使 RGL 拖拽范围与其它卡片一致
+  why: >
+    否则未知卡片在网格里拖不动
+  source: web/src/cards/UnknownCard.tsx:30-35
+  authoritative_test: web/src/cards/UnknownCard.test.tsx:33
+  owner_slice: systems/cards/unknown
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-212
+  kind: invariant
+  family: card-kind-unknown
+  statement: >
+    UNKNOWN_CARD_SIZE 必须与注册表的 FALLBACK_SIZE 一致（4x6, min 3x3）
+  why: >
+    两条兜底路径（无 entry / 无 fromKernel 认领）必须给出同样的占位尺寸
+  source: web/src/cards/UnknownCard.tsx:19 web/src/cards/registry.ts:217
+  authoritative_test: web/src/cards/UnknownCard.test.tsx:42
+  owner_slice: systems/cards/unknown
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: schema-versions / overlays
+# ─────────────────────────────────────────────────────────────────────
+
+- id: GATE-CARD-213
+  kind: gate
+  family: schema-versions
+  statement: >
+    payloadSchemaVersion 缺字段或非数字时必须返回 1；每种 kind 都从 1 起步，
+    因此缺字段只可能是 v1 行
+  why: >
+    Tier A 契约：老前端写的无版本 payload 被接受；新前端对老 kernel 打未来
+    版本戳会被写边界校验器拒绝
+  source: web/src/cards/builtins/schemaVersions.ts:1-19,46-65
+  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:79
+  owner_slice: systems/cards/schema-versions
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-214
+  kind: invariant
+  family: schema-versions
+  statement: >
+    payload 版本高于前端支持时，fromKernel 必须返回一张带 unsupportedVersion
+    的降级卡片（而不是 null），卡片渲染"请刷新"提示
+  why: >
+    返回 null 会让网格布局在它周围塌陷；保留卡位并说明原因才可诊断
+  source: web/src/cards/builtins/terminal.tsx:256-274
+  authoritative_test: web/src/cards/builtins/terminal.test.tsx:110
+  owner_slice: systems/cards/schema-versions
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: GATE-CARD-215
+  kind: gate
+  family: schema-versions
+  statement: >
+    schemaVersions.ts 的常量必须与 crates/calm-server/src/validation.rs 手工保持
+    同步（非自动生成）
+  why: >
+    schema 存在 JSON 里而非 Rust 类型中，无法生成；漂移由 kernel 写边界校验器
+    在运行时抓
+  source: web/src/cards/builtins/schemaVersions.ts:1-18
+  authoritative_test: NONE
+  owner_slice: systems/cards/schema-versions
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-216
+  kind: gate
+  family: schema-versions
+  statement: >
+    kernelOverlayKinds 必须恰好是七种：status / progress / eta / now / layout /
+    file-viewer-nav / any_card_needs_input，且用
+    `as const satisfies readonly (keyof OverlayKindPayloadRegistry)[]` 钉住
+  why: >
+    satisfies 让 registry 里新增 kind 却漏加数组元素时编译不过；测试再钉一次数量
+  source: web/src/cards/overlayRegistry.ts:40-68
+  authoritative_test: web/src/cards/__tests__/overlayRegistry.test.ts:12
+  owner_slice: systems/cards/overlays
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-217
+  kind: invariant
+  family: schema-versions
+  statement: >
+    useCardOverlay 必须走共享的 ['overlays','card'] REST 快照查询 + select 收窄，
+    不得再折叠 WS overlay.set / overlay.deleted 帧到本地 state
+  why: >
+    #854 / PR #867 —— 无 REST 种子的折叠只知道挂载期间恰好到达的帧；超配额冷连接
+    会跳过整段回放，导致每张 codex/claude 卡的状态点卡在 "Starting"。
+    共享查询让一次 overlay 事件风暴只花一次 GET
+  source: web/src/cards/useCardOverlay.ts:1-54
+  authoritative_test: web/src/cards/useCardOverlay.test.tsx:68
+  owner_slice: systems/cards/overlays
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-218
+  kind: invariant
+  family: schema-versions
+  statement: >
+    overlay 匹配语义必须只按 (entity_id, kind)，故意忽略 plugin_id
+  why: >
+    沿用旧折叠语义；REST 列表在 (plugin_id, entity_kind, entity_id, kind)
+    上唯一，而 kernel 拥有的 kind 只有单一写者
+  source: web/src/cards/useCardOverlay.ts:31-36,48-51
+  authoritative_test: web/src/cards/useCardOverlay.test.tsx:92
+  owner_slice: systems/cards/overlays
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: wave-fs-viewers
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-219
+  kind: invariant
+  family: wave-fs-viewers
+  statement: >
+    wave fs viewer 注册表是模块级数组，resolve 必须返回第一个 match 命中的
+    viewer（注册顺序即优先级）
+  why: >
+    重叠匹配时用注册顺序决定优先级，是显式契约（测试 "uses the first registered
+    viewer when matches overlap"）；index.ts 的注册顺序因此是承重的
+  source: web/src/wave-fs-viewers/registry.ts:16-26 web/src/wave-fs-viewers/index.ts:13-19
+  authoritative_test: web/src/wave-fs-viewers/registry.test.ts:38
+  owner_slice: systems/fs-viewers/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-220
+  kind: invariant
+  family: wave-fs-viewers
+  statement: >
+    viewer 是乐观设计：不做版本号也不做迁移；任何形状不匹配 / 漂移 / 畸形
+    payload 都必须从 parse 抛出
+  why: >
+    抛出是与调用方约定的信号 —— 调用方 catch 后保留原始 CodeMirror JSON 兜底视图
+  source: web/src/wave-fs-viewers/registry.ts:1-5
+  authoritative_test: NONE
+  owner_slice: systems/fs-viewers/registry
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-221
+  kind: invariant
+  family: wave-fs-viewers
+  statement: >
+    useWaveFsViewer 必须在 parse 抛出时返回 null（等价于"没有 viewer"），
+    不得让异常冒泡
+  why: >
+    冒泡会炸掉整个 wave 文件浏览面板，而正确降级是显示原始 JSON
+  source: web/src/wave-fs-viewers/useWaveFsViewer.ts:12-25
+  authoritative_test: NONE
+  owner_slice: systems/fs-viewers/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-CARD-222
+  kind: gate
+  family: wave-fs-viewers
+  statement: >
+    wave-fs-viewers/schemas.ts 的 zod schema 必须与 api/generated 的类型对齐
+    （枚举钉住生成的联合，card/wave/run/hook-event/runtime 钉住生成形状）
+  why: >
+    viewer 直接读 kernel 落盘的 JSON；schema 与生成类型漂移会让 viewer 静默
+    退化成原始 JSON 而无人察觉
+  source: web/src/wave-fs-viewers/schemas.ts:1-145
+  authoritative_test: web/src/wave-fs-viewers/schemas.test.ts:42
+  owner_slice: systems/fs-viewers/schemas
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: CAP-CARD-223
+  kind: capability
+  family: wave-fs-viewers
+  statement: >
+    必须提供 __resetWaveFsViewerRegistryForTest() 清空数组
+  why: >
+    index.ts 在导入时就注册七个内置 viewer，模块级数组跨测试泄漏
+  source: web/src/wave-fs-viewers/registry.ts:28-30
+  authoritative_test: web/src/wave-fs-viewers/registry.test.ts:21
+  owner_slice: systems/fs-viewers/registry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+# ─────────────────────────────────────────────────────────────────────
+# family: builtins-boot / 杂项模块级单例
+# ─────────────────────────────────────────────────────────────────────
+
+- id: INV-CARD-224
+  kind: invariant
+  family: builtins-boot
+  statement: >
+    registerBuiltins() 必须由模块级 `registered` 布尔守卫做一次性化；
+    第二次调用必须直接 return
+  why: >
+    StrictMode 在 dev 下双挂载会重复注册并重复打警告；Map 本身按 key 去重，
+    跳过第二遍只是为了 boot 日志干净
+  source: web/src/cards/builtins/index.ts:23-30
+  authoritative_test: NONE
+  owner_slice: systems/cards/builtins
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-225
+  kind: invariant
+  family: builtins-boot
+  statement: >
+    内置注册顺序必须是 terminal → codex → spec → claude → wave-report →
+    file-viewer → iframe → plugin-iframe
+  why: >
+    spec 与 codex 都可能面对 kernel kind 'codex'；虽然靠 payload 判别符区分
+    （见 CARD-180），但 adaptKernelCard 的兜底全扫依赖 REGISTRY 插入顺序，
+    改顺序会改变兜底路径的命中结果
+  source: web/src/cards/builtins/index.ts:31-45
+  authoritative_test: web/src/cards/builtins/spec.test.tsx:92
+  owner_slice: systems/cards/builtins
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-226
+  kind: invariant
+  family: builtins-boot
+  statement: >
+    excludeReportCards 必须在过滤 spec / wave-report 的同时保留 originalIndex，
+    并对 unknown slot 额外按原始 kernelKind === 'wave-report' 防御性过滤
+  why: >
+    onRemoveCard 按 detail.cards[idx] 寻址，丢了原索引就会删错卡。
+    spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
+    unknown 分支识别 —— 这是已知且接受的缺口
+  source: web/src/cards/excludeReportCards.ts:8-24
+  authoritative_test: web/src/cards/excludeReportCards.test.ts:59,74
+  owner_slice: features/report/exclude-cards
+  intentional_omission: true
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: INV-CARD-227
+  kind: invariant
+  family: builtins-boot
+  statement: >
+    WaveFileTree 必须以 key={waveId} 包一层，使换 wave 时内部状态
+    （expandedDirs / focusedPath）整体重置
+  why: >
+    展开状态是路径相关的；跨 wave 保留会指向不存在的目录
+  source: web/src/cards/wave-file-tree.tsx:22-44
+  authoritative_test: web/src/cards/wave-file-tree.test.tsx:100
+  owner_slice: systems/fs-viewers/wave-file-tree
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
+
+- id: INV-CARD-228
+  kind: invariant
+  family: builtins-boot
+  statement: >
+    WaveFileTree 默认隐藏点开头的条目（每一级目录都过滤），且当被聚焦的行因
+    隐藏而消失时必须把 tab stop 还给根节点
+  why: >
+    焦点落在已移除的 DOM 上会让键盘导航失效（tabindex 全 -1，Tab 直接跳出树）
+  source: web/src/cards/wave-file-tree.tsx:12-17,58-70
+  authoritative_test: web/src/cards/wave-file-tree.test.tsx:119,195
+  owner_slice: systems/fs-viewers/wave-file-tree
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: browser
+  migration: pending
