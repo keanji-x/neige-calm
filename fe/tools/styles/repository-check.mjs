@@ -1,3 +1,4 @@
+// @ts-nocheck -- Reason: executable Node checker imports the TypeScript audit directly; its typed public surface is declared in repository-check.d.mts.
 import { readFileSync, readdirSync } from 'node:fs';
 import { extname, relative, resolve } from 'node:path';
 import ts from 'typescript';

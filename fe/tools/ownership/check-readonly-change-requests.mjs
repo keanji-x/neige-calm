@@ -30,7 +30,8 @@ try {
     ownershipManifest, repositoryFiles(join(feRoot, '..')), repositoryChanges, requests,
   );
   if (repositoryViolations.length) {
-    throw new Error(`repository ownership audit failed:\n${repositoryViolations.map(({ message }) => message).join('\n')}`);
+    throw new Error(`repository ownership audit failed:\n${repositoryViolations
+      .map(/** @param {{message: string}} violation */ (violation) => violation.message).join('\n')}`);
   }
   console.log(`ownership manifest: ${ownershipManifest.length} entries, complete coverage, no overlaps`);
   const styleViolations = auditStyleRepository(join(import.meta.dirname, '../..'));

@@ -310,7 +310,7 @@ describe('P8b2 forward style gates', () => {
   });
 
   it('rejects a non-prefixed data attribute from the negative fixture', () => {
-    expect(auditDataAttributes(read('data-attributes/negative.tsx'), 'fixture.tsx')).toEqual([
+    expect(auditDataAttributes(read('data-attributes/negative.txt'), 'fixture.tsx')).toEqual([
       'fixture.tsx: nonconforming data-card-id; use data-nc-<kebab-case>',
     ]);
     expect(auditDataAttributes('const x = <div data-nc-card-id="42" aria-label="card" />;', 'ok.tsx')).toEqual([]);
