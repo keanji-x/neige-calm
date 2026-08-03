@@ -114,16 +114,18 @@ describe('architecture/no-module-runtime-state', () => {
 });
 
 describe('architecture/no-direct-persistence', () => {
-  for (const fixture of [
-    'persistence/direct-identifier.ts',
-    'persistence/window-local-storage.ts',
-    'persistence/computed-global-this.ts',
-    'persistence/destructure-window.ts',
-    'persistence/alias-session-storage.ts',
-    'persistence/indexed-db-open.ts',
+  for (const [fixture, messageId] of [
+    ['persistence/direct-identifier.ts', 'direct'],
+    ['persistence/window-local-storage.ts', 'direct'],
+    ['persistence/computed-global-this.ts', 'direct'],
+    ['persistence/destructure-window.ts', 'direct'],
+    ['persistence/alias-session-storage.ts', 'direct'],
+    ['persistence/indexed-db-open.ts', 'direct'],
   ] as const) {
     it(`rejects ${fixture}`, async () => {
-      expect(await lintFixture('no-direct-persistence', fixture)).toHaveLength(1);
+      const messages = await lintFixture('no-direct-persistence', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe(messageId);
     });
   }
   for (const fixture of ['core/keys/storage.ts', 'persistence/injected-port.ts'] as const) {
@@ -134,9 +136,11 @@ describe('architecture/no-direct-persistence', () => {
 });
 
 describe('architecture/no-calm-key-outside-core-keys', () => {
-  for (const fixture of ['calm-key/string-literal.ts', 'calm-key/template-head.ts'] as const) {
+  for (const [fixture, messageId] of [['calm-key/string-literal.ts', 'key'], ['calm-key/template-head.ts', 'key']] as const) {
     it(`rejects ${fixture}`, async () => {
-      expect(await lintFixture('no-calm-key-outside-core-keys', fixture)).toHaveLength(1);
+      const messages = await lintFixture('no-calm-key-outside-core-keys', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe(messageId);
     });
   }
   for (const fixture of ['core/keys/calm-key.ts', 'calm-key/injected-key.ts', 'calm-key/known-concatenation-escape.ts'] as const) {
@@ -147,17 +151,19 @@ describe('architecture/no-calm-key-outside-core-keys', () => {
 });
 
 describe('architecture/no-class-dom-query', () => {
-  for (const fixture of [
-    'dom-selector/query-selector.ts',
-    'dom-selector/query-selector-all.ts',
-    'dom-selector/closest.ts',
-    'dom-selector/matches.ts',
-    'dom-selector/get-elements-by-class-name.ts',
-    'dom-selector/dynamic.ts',
-    'dom-selector/template.ts',
+  for (const [fixture, messageId] of [
+    ['dom-selector/query-selector.ts', 'classSelector'],
+    ['dom-selector/query-selector-all.ts', 'classSelector'],
+    ['dom-selector/closest.ts', 'classSelector'],
+    ['dom-selector/matches.ts', 'classSelector'],
+    ['dom-selector/get-elements-by-class-name.ts', 'classNameApi'],
+    ['dom-selector/dynamic.ts', 'dynamicSelector'],
+    ['dom-selector/template.ts', 'dynamicSelector'],
   ] as const) {
     it(`rejects ${fixture}`, async () => {
-      expect(await lintFixture('no-class-dom-query', fixture)).toHaveLength(1);
+      const messages = await lintFixture('no-class-dom-query', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe(messageId);
     });
   }
   it('allows an exact third-party selector with an application container prefix', async () => {
@@ -166,9 +172,11 @@ describe('architecture/no-class-dom-query', () => {
     })).toHaveLength(0);
   });
   it('rejects an allowlist entry without a container prefix', async () => {
-    expect(await lintFixture('no-class-dom-query', 'dom-selector/bare-allowlisted.ts', {
+    const messages = await lintFixture('no-class-dom-query', 'dom-selector/bare-allowlisted.ts', {
       allowlist: [{ file: 'rule-fixtures/dom-selector/bare-allowlisted.ts', selector: '.cm-scroller' }],
-    })).toHaveLength(1);
+    });
+    expect(messages).toHaveLength(1);
+    expect(messages.at(0)?.messageId).toBe('classSelector');
   });
   it('accepts a static data selector', async () => {
     expect(await lintFixture('no-class-dom-query', 'dom-selector/data-selector.ts')).toHaveLength(0);
