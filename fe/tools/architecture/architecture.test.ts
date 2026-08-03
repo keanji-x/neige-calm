@@ -15,7 +15,7 @@ const config = createRequire(import.meta.url)('./fixture-config.cjs') as IConfig
 const cruiseOptions = config.options ?? {};
 
 async function cruise(caseName: string, kind: 'positive' | 'negative') {
-  if (caseName.startsWith('dup-inv-')) {
+  if (caseName.startsWith('dup-')) {
     const errors = checkDuplicationManifest(resolve(fixtures, caseName, kind));
     return { status: errors.length ? 1 : 0, stdout: errors.join('\n'), stderr: '' };
   }
@@ -142,6 +142,7 @@ describe('architecture fixtures', () => {
     ['dup-inv-008', 'INV-DUP-008'],
     ['dup-inv-009', 'INV-DUP-009'],
     ['dup-inv-010', 'INV-DUP-010'],
+    ['dup-consumer-import', 'INV-DUP-001'],
     ['core-markdown-node-import', 'node:fs'],
     ['markdown-micromark-import', 'micromark-extension-gfm'],
     ['core-no-node-access', 'node:fs'],
