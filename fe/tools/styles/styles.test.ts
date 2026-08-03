@@ -95,3 +95,14 @@ it('runtime audit inspects stylesheet rules not owned by style elements', () => 
     { rule: 'rule-in-layer', message: 'unlayered selector: .external' },
   ]);
 });
+
+it('runtime CSSOM branch reads rules produced by jsdom CSSOM', () => {
+  const real = new JSDOM(read('runtime-cssom/positive/page.html')).window.document;
+  const firstSheet = Array.from(real.styleSheets)[0];
+  expect(Array.from(firstSheet?.cssRules ?? [])[0]?.cssText).toContain('@layer ui');
+  const cssomOnly: RuntimeDocument = {
+    styleSheets: real.styleSheets,
+    querySelectorAll: (selector) => selector === 'style' ? [] : real.querySelectorAll(selector),
+  };
+  expect(auditRuntimeStyles(cssomOnly, order)).toEqual([]);
+});
