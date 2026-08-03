@@ -251,6 +251,22 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
         .find(|task| task.key == "waited")
         .expect("dispatched row remains");
     assert_eq!(row.status, calm_server::model::TaskStatus::Dispatched);
+    assert!(
+        row.context_stale_at_ms.is_some(),
+        "released_by_user true->false in declare-and-wait must persist a material verdict"
+    );
+    let advanced: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events WHERE kind='task.context_advanced' AND scope_wave=?1",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(advanced, 1, "incremental projection emits exactly once");
+    assert!(
+        rebuild(&boot).await.kernel_events.is_empty(),
+        "an already-stale rebuild emits no duplicate kernel event"
+    );
     assert!(doc_rev_after > doc_rev_before);
     for snapshot in [&after_withdraw, &after_withdraw_rest] {
         assert!(diagnostic_contains(
@@ -285,6 +301,53 @@ async fn declare_and_wait_release_and_withdraw_is_end_to_end() {
         calm_server::plugin_host::mcp::RpcError::INVALID_PARAMS
     );
     assert!(err.message.contains("released_by_user"));
+}
+
+#[tokio::test]
+async fn ready_withdrawal_marks_inflight_material_under_both_policies() {
+    for policy in ["auto-declare", "declare-and-wait"] {
+        let boot = new_boot().await;
+        let mut declaration = task("withdraw-ready");
+        let (id, rev) = upsert(&boot, None, declaration.clone()).await;
+        sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='withdraw-ready'")
+            .bind(boot.wave_id.as_str())
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+        patch_policy(&boot, policy).await;
+        declaration["ready"] = json!(false);
+        user_upsert(&boot, &id, rev, declaration).await;
+        let stale: Option<i64> = sqlx::query_scalar(
+            "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='withdraw-ready'",
+        )
+        .bind(boot.wave_id.as_str())
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+        assert!(stale.is_some(), "policy {policy}");
+    }
+}
+
+#[tokio::test]
+async fn release_edges_obey_current_wait_policy_and_forward_edge_is_safe() {
+    let boot = new_boot().await;
+    let (id, rev) = upsert(&boot, None, task("release-edge")).await;
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='release-edge'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let mut released = task("release-edge");
+    released["released_by_user"] = json!(true);
+    user_upsert(&boot, &id, rev, released).await;
+    let stale: Option<i64> = sqlx::query_scalar(
+        "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='release-edge'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert_eq!(stale, None, "false->true is never a withdrawal");
 }
 
 #[tokio::test]
@@ -332,6 +395,17 @@ async fn deleting_in_flight_task_block_keeps_withdrawal_diagnostic_readable() {
             "`deleted-running` is in flight (running)"
         ));
     }
+    let stale: Option<i64> = sqlx::query_scalar(
+        "SELECT context_stale_at_ms FROM tasks WHERE wave_id=?1 AND key='deleted-running'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    assert!(
+        stale.is_some(),
+        "block deletion uses the material primitive"
+    );
 }
 
 #[tokio::test]
@@ -486,7 +560,7 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
 }
 
 async fn task_bytes(boot: &Boot) -> Vec<String> {
-    sqlx::query_scalar("SELECT json_object('key',key,'kind',kind,'goal',goal,'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd,'depends',depends_on_json,'priority',priority,'gate',gate_json,'declared_by',declared_by,'origin',origin,'status',status,'status_detail',status_detail,'worker',worker_card_id,'gate_result',gate_result_json,'gate_attempt',gate_attempt,'gate_pid',gate_pid,'gate_pid_starttime',gate_pid_starttime,'gate_pid_boot_id',gate_pid_boot_id,'finished',finished_at_ms,'deadline',running_deadline_ms,'claim_context',claim_context_json,'context_stale',context_stale_at_ms,'closure_truncated',context_closure_truncated) FROM tasks WHERE wave_id=?1 ORDER BY key")
+    sqlx::query_scalar("SELECT json_object('key',key,'kind',kind,'goal',goal,'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd,'depends',depends_on_json,'priority',priority,'gate',gate_json,'declared_by',declared_by,'origin',origin,'decl_ready',decl_ready,'decl_released_by_user',decl_released_by_user,'context_verify_failures',context_verify_failures,'status',status,'status_detail',status_detail,'worker',worker_card_id,'gate_result',gate_result_json,'gate_attempt',gate_attempt,'gate_pid',gate_pid,'gate_pid_starttime',gate_pid_starttime,'gate_pid_boot_id',gate_pid_boot_id,'finished',finished_at_ms,'deadline',running_deadline_ms,'claim_context',claim_context_json,'context_stale',context_stale_at_ms,'closure_truncated',context_closure_truncated) FROM tasks WHERE wave_id=?1 ORDER BY key")
         .bind(boot.wave_id.as_str()).fetch_all(&boot.repo.sqlite_pool().unwrap()).await.unwrap()
 }
 
@@ -560,15 +634,7 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
 
 #[tokio::test]
 async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row_mutation() {
-    for field in [
-        "goal",
-        "acceptance",
-        "gate",
-        "context",
-        "cwd",
-        "depends_on",
-        "priority",
-    ] {
+    for field in ["goal", "acceptance", "gate", "context", "cwd", "depends_on"] {
         let boot = new_boot().await;
         let (id, rev) = upsert(&boot, None, task("flight")).await;
         sqlx::query("UPDATE tasks SET status='running',status_detail='owned' WHERE wave_id=?1 AND key='flight'")
@@ -600,7 +666,6 @@ async fn inflight_goal_acceptance_and_gate_changes_are_each_detected_without_row
             "context" => changed[field] = json!({"changed": true}),
             "cwd" => changed[field] = json!("/changed"),
             "depends_on" => changed[field] = json!(["other"]),
-            "priority" => changed[field] = json!(99),
             _ => unreachable!(),
         }
         upsert(&boot, Some((&id, rev)), changed).await;

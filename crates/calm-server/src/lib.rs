@@ -231,10 +231,7 @@ pub async fn task_context_sweep_on_boot(state: &state::AppState) -> crate::error
         std::time::Duration::from_secs(30),
     )
     .await?;
-    state
-        .dispatcher
-        .scheduler()
-        .mark_context_sweep_boot_complete();
+    state.dispatcher.scheduler().open_context_sweep_gate().await;
     Ok(())
 }
 

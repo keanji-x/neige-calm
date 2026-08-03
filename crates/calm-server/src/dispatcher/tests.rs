@@ -1,4 +1,16 @@
 use super::*;
+
+#[test]
+fn periodic_reconcile_sweeps_context_before_scheduler() {
+    let source = include_str!("mod.rs");
+    let loop_start = source
+        .find("loop {\n                interval.tick().await;\n                if let Err(error) = tick_context_monitor.sweep().await")
+        .expect("periodic loop starts with context sweep");
+    let body = &source[loop_start..];
+    let context = body.find("tick_context_monitor.sweep().await").unwrap();
+    let scheduler = body.find("tick_scheduler.sweep_all().await").unwrap();
+    assert!(context < scheduler);
+}
 use calm_types::worker::WorkerSessionId;
 
 /// Env-override permits parsing — covers the four cases the helper
@@ -1958,8 +1970,12 @@ fn spec_push_predicate_and_observation_mapping_agree() {
         ),
         row(
             Event::TaskContextAdvanced {
+                wave_id: Default::default(),
+                task_key: String::new(),
                 task_id: "w:k".into(),
+                changed_refs: Vec::new(),
                 verdict: "material".into(),
+                rationale: String::new(),
             },
             ActorId::KernelDispatcher,
             false,

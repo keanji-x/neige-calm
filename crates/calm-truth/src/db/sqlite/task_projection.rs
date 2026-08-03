@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
+use calm_types::ids::{ActorId, WaveId};
 use calm_types::report_blocks::tasks::{
     Diagnostic, GateInput, TaskDeclaration, gate_rule_violations, json_eq, opt_json_eq,
     unknown_deps,
 };
-use calm_types::report_links::parse_destination;
+use calm_types::report_links::{parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
 use utoipa::ToSchema;
@@ -26,7 +28,16 @@ type FrozenDeclarationRow = (
     Option<String>,
     String,
     String,
+    i64,
+    i64,
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WithdrawalEdge {
+    Ready,
+    ReleasedByUser,
+}
 
 fn declaration_context_json(declaration: &TaskDeclaration, legacy: bool) -> Result<String> {
     let mut context = declaration.context.clone();
@@ -84,12 +95,63 @@ pub struct BlockVerdict {
     pub key: String,
     pub diagnostics: Vec<Diagnostic>,
     pub schedulable: bool,
+    pub withdrawal: Option<WithdrawalEdge>,
+    pub effective_wait: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct TaskProjectionOutcome {
     pub changed_keys: Vec<String>,
     pub diagnostics: Vec<BlockVerdict>,
+    pub kernel_events: Vec<(ActorId, EventScope, Event)>,
+}
+
+/// Single-winner material verdict. Callers that commit this transaction must
+/// merge the returned kernel events into that same eventized write.
+pub async fn mark_context_material_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    wave_id: &str,
+    changed_refs: Vec<TaskContextChangedRef>,
+    rationale: &str,
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT t.key,w.cove_id FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
+    )
+    .bind(task_id)
+    .bind(wave_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((task_key, cove_id)) = row else {
+        return Ok(Vec::new());
+    };
+    let changed = sqlx::query(
+        "UPDATE tasks SET context_stale_at_ms=?1,context_verify_failures=0 WHERE id=?2 AND status IN ('dispatched','running','verifying') AND context_stale_at_ms IS NULL",
+    )
+    .bind(now_ms())
+    .bind(task_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        == 1;
+    if !changed {
+        return Ok(Vec::new());
+    }
+    Ok(vec![(
+        ActorId::Kernel,
+        EventScope::Wave {
+            wave: WaveId::from(wave_id),
+            cove: cove_id.into(),
+        },
+        Event::TaskContextAdvanced {
+            wave_id: WaveId::from(wave_id),
+            task_key,
+            task_id: task_id.into(),
+            changed_refs,
+            verdict: "material".into(),
+            rationale: rationale.into(),
+        },
+    )])
 }
 
 fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
@@ -177,17 +239,41 @@ pub async fn evaluate_schedulability_tx(
                 "task requires a gate or no_gate_reason",
             ));
         }
-        for reference in &declaration.refs {
-            let target: Option<(String, String)> = if let Some((dst_wave, _)) =
+        let mut references = declaration.refs.clone();
+        for text in [
+            Some(declaration.goal.as_str()),
+            declaration.acceptance.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            references.extend(scan_links(text).links.into_iter().filter_map(|link| {
+                link.dst_block_id
+                    .map(|block| format!("neige://wave/{}#{block}", link.dst_wave_id))
+            }));
+        }
+        references.sort();
+        references.dedup();
+        for reference in &references {
+            let target: Option<(String, String, i64)> = if let Some((dst_wave, dst_block)) =
                 parse_destination(reference)
             {
-                sqlx::query_as("SELECT w.cove_id,c.kind FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1")
-                    .bind(dst_wave).fetch_optional(&mut **tx).await?
+                let Some(dst_block) = dst_block else {
+                    diagnostics.push(Diagnostic::new(
+                        "refs",
+                        format!("reference `{reference}` must identify a block"),
+                    ));
+                    continue;
+                };
+                sqlx::query_as(
+                    "SELECT w.cove_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.wave_id=w.id AND card.kind='wave-report' AND json_extract(block.value,'$.id')=?2) FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1",
+                )
+                    .bind(dst_wave).bind(dst_block).fetch_optional(&mut **tx).await?
             } else if let Some(card_id) = reference
                 .strip_prefix("neige://card/")
                 .filter(|id| !id.is_empty() && !id.contains('/'))
             {
-                sqlx::query_as("SELECT w.cove_id,c.kind FROM cards card JOIN waves w ON w.id=card.wave_id JOIN coves c ON c.id=w.cove_id WHERE card.id=?1")
+                sqlx::query_as("SELECT w.cove_id,c.kind,1 FROM cards card JOIN waves w ON w.id=card.wave_id JOIN coves c ON c.id=w.cove_id WHERE card.id=?1")
                     .bind(card_id).fetch_optional(&mut **tx).await?
             } else {
                 continue;
@@ -197,7 +283,7 @@ pub async fn evaluate_schedulability_tx(
                     "refs",
                     format!("reference target `{reference}` does not exist"),
                 )),
-                Some((target_cove, target_kind))
+                Some((target_cove, target_kind, _))
                     if target_cove != source_cove && target_kind != "system" =>
                 {
                     diagnostics.push(Diagnostic::new(
@@ -205,6 +291,10 @@ pub async fn evaluate_schedulability_tx(
                         format!("cross-cove reference `{reference}` is not schedulable"),
                     ));
                 }
+                Some((_, _, 0)) => diagnostics.push(Diagnostic::new(
+                    "refs",
+                    format!("reference target `{reference}` does not exist"),
+                )),
                 Some(_) => {}
             }
         }
@@ -223,6 +313,8 @@ pub async fn evaluate_schedulability_tx(
             key: declaration.key.clone(),
             schedulable: declaration.ready && !declaration.tombstone && diagnostics.is_empty(),
             diagnostics,
+            withdrawal: None,
+            effective_wait,
         });
     }
 
@@ -230,7 +322,7 @@ pub async fn evaluate_schedulability_tx(
     // in-flight declaration cannot consume capacity, and a terminal key can never
     // produce a new live row.
     let frozen: Vec<FrozenDeclarationRow> = sqlx::query_as(
-        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,origin FROM tasks WHERE wave_id=?1 AND status!='pending'",
+        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,origin,decl_ready,decl_released_by_user FROM tasks WHERE wave_id=?1 AND status!='pending'",
     )
     .bind(wave_id)
     .fetch_all(&mut **tx)
@@ -247,10 +339,12 @@ pub async fn evaluate_schedulability_tx(
             acceptance,
             cwd,
             depends,
-            priority,
+            _priority,
             gate,
-            declared_by,
+            _declared_by,
             origin,
+            decl_ready,
+            decl_released_by_user,
         )) = frozen_by_key.get(&declaration.key)
         else {
             continue;
@@ -269,9 +363,14 @@ pub async fn evaluate_schedulability_tx(
             || acceptance != &declaration.acceptance
             || cwd != &declaration.cwd
             || actual_depends != expected_depends
-            || priority != &declaration.priority
-            || !gate_eq(gate, &declaration.gate)?
-            || declared_by != &declaration.declared_by;
+            || !gate_eq(gate, &declaration.gate)?;
+        verdict.withdrawal = if *decl_ready == 1 && !declaration.ready {
+            Some(WithdrawalEdge::Ready)
+        } else if *decl_released_by_user == 1 && !declaration.released_by_user && effective_wait {
+            Some(WithdrawalEdge::ReleasedByUser)
+        } else {
+            None
+        };
         if changed || !matches!(status.as_str(), "dispatched" | "running" | "verifying") {
             verdict.diagnostics.push(Diagnostic::new(
                 "key",
@@ -283,7 +382,8 @@ pub async fn evaluate_schedulability_tx(
             ));
             verdict.schedulable = false;
         }
-        if !verdict.schedulable && matches!(status.as_str(), "dispatched" | "running" | "verifying")
+        if verdict.withdrawal.is_some()
+            && matches!(status.as_str(), "dispatched" | "running" | "verifying")
         {
             verdict
                 .diagnostics
@@ -308,6 +408,8 @@ pub async fn evaluate_schedulability_tx(
                 diagnostics: vec![withdrawal_diagnostic(&key, &status)],
                 key,
                 schedulable: false,
+                withdrawal: None,
+                effective_wait,
             });
         }
     }
@@ -363,11 +465,12 @@ pub async fn project_tasks_tx(
         .filter(|v| !v.key.is_empty())
         .map(|v| (v.key.clone(), v.schedulable))
         .collect();
-    let existing: Vec<(String, String, String)> =
-        sqlx::query_as("SELECT id,key,status FROM tasks WHERE wave_id=?1 AND origin='block'")
-            .bind(wave_id)
-            .fetch_all(&mut **tx)
-            .await?;
+    let existing: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id,key,status,claim_context_json FROM tasks WHERE wave_id=?1 AND origin='block'",
+    )
+    .bind(wave_id)
+    .fetch_all(&mut **tx)
+    .await?;
     let mut verdicts = verdicts;
     let verdict_index_by_key: BTreeMap<_, _> = verdicts
         .iter()
@@ -375,10 +478,79 @@ pub async fn project_tasks_tx(
         .filter(|(_, verdict)| !verdict.key.is_empty())
         .map(|(index, verdict)| (verdict.key.clone(), index))
         .collect();
+    let declaration_by_key: BTreeMap<_, _> = declarations
+        .iter()
+        .map(|declaration| (declaration.key.as_str(), declaration))
+        .collect();
     let mut changed = BTreeSet::new();
-    for (id, key, status) in &existing {
+    let mut kernel_events = Vec::new();
+    for (id, key, status, claim_context_json) in &existing {
         if !schedulable_by_key.get(key).is_some_and(|value| *value) {
             if matches!(status.as_str(), "dispatched" | "running" | "verifying") {
+                let withdrawal = verdict_index_by_key
+                    .get(key)
+                    .and_then(|index| verdicts[*index].withdrawal)
+                    .is_some();
+                let declaration_removed = declaration_by_key
+                    .get(key.as_str())
+                    .is_none_or(|declaration| declaration.tombstone);
+                if withdrawal || declaration_removed {
+                    let mut changed_refs: Vec<_> = verdict_index_by_key
+                        .get(key)
+                        .and_then(|index| {
+                            let verdict = &verdicts[*index];
+                            verdict.withdrawal.map(|edge| {
+                                let (from, to) = match edge {
+                                    WithdrawalEdge::Ready => ("ready:true", "ready:false"),
+                                    WithdrawalEdge::ReleasedByUser => {
+                                        ("released_by_user:true", "released_by_user:false")
+                                    }
+                                };
+                                TaskContextChangedRef {
+                                    wave_id: WaveId::from(wave_id),
+                                    block_id: verdict.block_id.clone(),
+                                    from_hash: from.into(),
+                                    to_hash: to.into(),
+                                    ..Default::default()
+                                }
+                            })
+                        })
+                        .into_iter()
+                        .collect();
+                    if declaration_removed && changed_refs.is_empty() {
+                        changed_refs.extend(
+                            claim_context_json
+                                .as_deref()
+                                .and_then(|json| {
+                                    serde_json::from_str::<Vec<TaskContextRef>>(json).ok()
+                                })
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter(|frozen| frozen.is_root)
+                                .map(|frozen| TaskContextChangedRef {
+                                    wave_id: frozen.wave_id,
+                                    block_id: frozen.block_id,
+                                    from_rev: frozen.rev,
+                                    from_hash: frozen.hash,
+                                    ..Default::default()
+                                }),
+                        );
+                    }
+                    kernel_events.extend(
+                        mark_context_material_tx(
+                            tx,
+                            id,
+                            wave_id,
+                            changed_refs,
+                            if withdrawal {
+                                "task declaration was withdrawn"
+                            } else {
+                                "task declaration block was removed"
+                            },
+                        )
+                        .await?,
+                    );
+                }
                 let diagnostic = withdrawal_diagnostic(key, status);
                 // Declaration-backed rows already received this diagnostic from
                 // evaluate_schedulability_tx; this branch only covers deleted blocks.
@@ -388,6 +560,8 @@ pub async fn project_tasks_tx(
                         key: key.clone(),
                         diagnostics: vec![diagnostic],
                         schedulable: false,
+                        withdrawal: None,
+                        effective_wait: false,
                     });
                 }
             } else if task_delete_pending_tx(tx, id).await? != 0 {
@@ -428,12 +602,13 @@ pub async fn project_tasks_tx(
             .transpose()
             .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
         let result = sqlx::query(
-            "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,'block',?13,?13) ON CONFLICT(wave_id,key) DO UPDATE SET kind=excluded.kind,goal=excluded.goal,context_json=excluded.context_json,acceptance_criteria=excluded.acceptance_criteria,cwd=excluded.cwd,depends_on_json=excluded.depends_on_json,priority=excluded.priority,gate_json=excluded.gate_json,declared_by=excluded.declared_by,origin='block',updated_at_ms=excluded.updated_at_ms WHERE tasks.status='pending' AND (tasks.origin='block' OR tasks.origin='legacy') AND (tasks.kind IS NOT excluded.kind OR tasks.goal IS NOT excluded.goal OR tasks.context_json IS NOT excluded.context_json OR tasks.acceptance_criteria IS NOT excluded.acceptance_criteria OR tasks.cwd IS NOT excluded.cwd OR tasks.depends_on_json IS NOT excluded.depends_on_json OR tasks.priority IS NOT excluded.priority OR tasks.gate_json IS NOT excluded.gate_json OR tasks.declared_by IS NOT excluded.declared_by OR tasks.origin IS NOT 'block')",
+            "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,status,declared_by,origin,decl_ready,decl_released_by_user,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,'block',?13,?14,?15,?15) ON CONFLICT(wave_id,key) DO UPDATE SET kind=excluded.kind,goal=excluded.goal,context_json=excluded.context_json,acceptance_criteria=excluded.acceptance_criteria,cwd=excluded.cwd,depends_on_json=excluded.depends_on_json,priority=excluded.priority,gate_json=excluded.gate_json,declared_by=excluded.declared_by,origin='block',decl_ready=excluded.decl_ready,decl_released_by_user=excluded.decl_released_by_user,updated_at_ms=excluded.updated_at_ms WHERE tasks.status='pending' AND (tasks.origin='block' OR tasks.origin='legacy') AND (tasks.kind IS NOT excluded.kind OR tasks.goal IS NOT excluded.goal OR tasks.context_json IS NOT excluded.context_json OR tasks.acceptance_criteria IS NOT excluded.acceptance_criteria OR tasks.cwd IS NOT excluded.cwd OR tasks.depends_on_json IS NOT excluded.depends_on_json OR tasks.priority IS NOT excluded.priority OR tasks.gate_json IS NOT excluded.gate_json OR tasks.declared_by IS NOT excluded.declared_by OR tasks.origin IS NOT 'block' OR tasks.decl_ready IS NOT excluded.decl_ready OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user)",
         )
         .bind(&id).bind(wave_id).bind(&declaration.key).bind(&declaration.kind)
         .bind(&declaration.goal).bind(context).bind(&declaration.acceptance)
         .bind(&declaration.cwd).bind(depends).bind(declaration.priority).bind(gate)
-        .bind(&declaration.declared_by).bind(now).execute(&mut **tx).await?;
+        .bind(&declaration.declared_by).bind(i64::from(declaration.ready))
+        .bind(i64::from(declaration.released_by_user)).bind(now).execute(&mut **tx).await?;
         if result.rows_affected() != 0 {
             changed.insert(declaration.key.clone());
         }
@@ -441,6 +616,7 @@ pub async fn project_tasks_tx(
     Ok(TaskProjectionOutcome {
         changed_keys: changed.into_iter().collect(),
         diagnostics: verdicts,
+        kernel_events,
     })
 }
 

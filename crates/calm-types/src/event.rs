@@ -45,6 +45,24 @@ pub struct TaskContextRef {
     pub is_root: bool,
 }
 
+/// One changed frozen reference carried by a context-advance verdict.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "web/src/api/generated-events.ts")]
+pub struct TaskContextChangedRef {
+    #[serde(default)]
+    pub wave_id: WaveId,
+    #[serde(default)]
+    pub block_id: String,
+    #[serde(default)]
+    pub from_rev: i64,
+    #[serde(default)]
+    pub to_rev: i64,
+    #[serde(default)]
+    pub from_hash: String,
+    #[serde(default)]
+    pub to_hash: String,
+}
+
 // ---------------------------------------------------------------------------
 // ArtifactRef — placeholder identifier for #129 Artifact Stream
 // ---------------------------------------------------------------------------
@@ -839,7 +857,18 @@ pub enum Event {
     /// later slices may add a second-level adjudicator. Strict Kernel /
     /// KernelDispatcher only (plain User is denied).
     #[serde(rename = "task.context_advanced")]
-    TaskContextAdvanced { task_id: String, verdict: String },
+    TaskContextAdvanced {
+        #[serde(default)]
+        wave_id: WaveId,
+        #[serde(default)]
+        task_key: String,
+        task_id: String,
+        #[serde(default)]
+        changed_refs: Vec<TaskContextChangedRef>,
+        verdict: String,
+        #[serde(default)]
+        rationale: String,
+    },
 
     /// Issue #760 slice 1 — the kernel acquired a workflow-agnostic
     /// isolated workspace lease for a Codex task. The lease is just a

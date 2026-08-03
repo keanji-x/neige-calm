@@ -952,8 +952,10 @@ export interface components {
         BlockVerdict: {
             blockId: string;
             diagnostics: components["schemas"]["Diagnostic"][];
+            effectiveWait: boolean;
             key: string;
             schedulable: boolean;
+            withdrawal?: null | components["schemas"]["WithdrawalEdge"];
         };
         Card: {
             /** Format: int64 */
@@ -2317,6 +2319,8 @@ export interface components {
              */
             until?: number | null;
         };
+        /** @enum {string} */
+        WithdrawalEdge: "ready" | "releasedByUser";
         /** @enum {string} */
         WorkerSessionKind: "terminal" | "codex" | "claude" | "shared-spec";
         /**

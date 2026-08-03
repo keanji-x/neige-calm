@@ -612,8 +612,19 @@ export const taskContextFrozenSchema = z.object({
 export const taskContextAdvancedSchema = z.object({
   ev: z.literal('task.context_advanced'),
   data: z.object({
+    wave_id: z.string(),
+    task_key: z.string(),
     task_id: z.string(),
+    changed_refs: z.array(z.object({
+      wave_id: z.string(),
+      block_id: z.string(),
+      from_rev: z.number(),
+      to_rev: z.number(),
+      from_hash: z.string(),
+      to_hash: z.string(),
+    })),
     verdict: z.string(),
+    rationale: z.string(),
   }),
 });
 

@@ -154,3 +154,34 @@ async fn pending_context_stale_cleanup_is_idempotent_and_scoped() {
         "migration must not emit events"
     );
 }
+
+#[tokio::test]
+async fn upgrade_0070_backfills_inflight_block_declaration_state() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open migration fixture");
+    migrator_through_0069()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0069");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,created_at_ms,updated_at_ms) VALUES ('flight','w','flight','codex','g','null','[]','running','spec','block','[]',1,1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed pre-0070 in-flight block task");
+
+    crate::MIGRATOR
+        .run(&pool)
+        .await
+        .expect("run the real 0070 migration");
+    let row: (i64, i64, i64, Option<i64>) = sqlx::query_as(
+        "SELECT decl_ready,decl_released_by_user,context_verify_failures,context_stale_at_ms FROM tasks WHERE id='flight'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read upgraded task");
+    assert_eq!(row, (1, 0, 0, None));
+}

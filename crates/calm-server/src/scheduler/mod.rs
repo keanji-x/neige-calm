@@ -1218,6 +1218,18 @@ impl Scheduler {
         self.context_sweep_boot_done.store(true, Ordering::SeqCst);
     }
 
+    /// A successful full context sweep opens the resume gate exactly once.
+    /// The winner immediately retries dispatched rows in the same turn.
+    pub async fn open_context_sweep_gate(self: &Arc<Self>) {
+        if self
+            .context_sweep_boot_done
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.sweep_all().await;
+        }
+    }
+
     /// TEST seam for assertions around the context-sweep boot fence.
     pub fn context_sweep_boot_completed(&self) -> bool {
         self.context_sweep_boot_done.load(Ordering::SeqCst)

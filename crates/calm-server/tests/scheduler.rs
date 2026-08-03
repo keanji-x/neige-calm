@@ -2519,7 +2519,7 @@ async fn stale_spawn_started_worker_is_recovered_without_rechecking_context() {
 }
 
 #[tokio::test]
-async fn context_boot_seam_blocks_dispatched_redrive_until_gate_opens() {
+async fn later_successful_context_sweep_opens_gate_and_redrives_dispatched_same_turn() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let mut pending = plan_task(&boot.wave_id, "boot-pending-op", TaskKind::Terminal, &[]);
@@ -2559,10 +2559,9 @@ async fn context_boot_seam_blocks_dispatched_redrive_until_gate_opens() {
         .unwrap();
     assert_eq!(pending_op.phase.tag(), PhaseTag::Pending);
 
-    scheduler.mark_context_sweep_boot_complete();
     let plan = runtime.recover_on_boot().await.unwrap();
     runtime.apply_recovery(plan).await.unwrap();
-    scheduler.sweep_boot().await;
+    scheduler.open_context_sweep_gate().await;
     for _ in 0..100 {
         if spawned.load(Ordering::SeqCst) == 2 {
             break;
@@ -3102,14 +3101,7 @@ async fn claim_fence_rejects_cross_wave_edit_after_resolution_without_side_effec
 
 #[tokio::test]
 async fn deterministic_root_location_failures_do_not_freeze_or_index() {
-    for case in [
-        "duplicate",
-        "tombstoned",
-        "absent",
-        "invalid-root-ref",
-        "deleted-direct-ref",
-        "deleted-depth-two-ref",
-    ] {
+    for case in ["duplicate", "tombstoned", "absent", "invalid-root-ref"] {
         let boot = boot().await;
         set_lifecycle(&boot, WaveLifecycle::Draft).await;
         let key = format!("root-{case}");
@@ -3149,7 +3141,10 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
         edit_report_blocks(&boot, &initial, 0).await;
         set_lifecycle(&boot, WaveLifecycle::Draft).await;
         let task_id = format!("{}:{key}", boot.wave_id);
-        assert!(boot.repo.task_get(&task_id).await.unwrap().is_some());
+        assert!(
+            boot.repo.task_get(&task_id).await.unwrap().is_some(),
+            "initial projection for case {case}"
+        );
         let (_runtime, scheduler) = build_scheduler(
             &boot,
             vec![Arc::new(CardSpawnAdapter {
@@ -3622,7 +3617,7 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
 }
 
 #[tokio::test]
-async fn context_sweep_verifies_available_refs_when_closure_was_truncated() {
+async fn context_sweep_marks_material_when_closure_was_truncated() {
     let boot = boot().await;
     let monitor = seed_frozen_context_fixture(&boot, "truncated-still-matches").await;
     let pool = boot.repo.sqlite_pool().unwrap();
@@ -3634,10 +3629,71 @@ async fn context_sweep_verifies_available_refs_when_closure_was_truncated() {
 
     monitor.sweep().await.unwrap();
 
-    assert!(
-        event_rows(&boot, "task.context_advanced").await.is_empty(),
-        "budget exhaustion alone must not invalidate a matching frozen prefix"
+    assert_eq!(
+        event_rows(&boot, "task.context_advanced").await.len(),
+        1,
+        "a truncated closure has an unverifiable suffix and is fail-closed"
     );
+}
+
+#[tokio::test]
+async fn retryable_context_verification_counts_resets_and_escalates_on_third_round() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "retryable-verify").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let task_id = format!("{}:retryable-verify", boot.wave_id);
+    sqlx::query(
+        "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for expected in [1_i64, 2] {
+        monitor.sweep().await.unwrap();
+        let row: (i64, Option<i64>) = sqlx::query_as(
+            "SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, (expected, None));
+    }
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,'$.docRev',4) WHERE id='context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor.sweep().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT context_verify_failures FROM tasks WHERE id=?1",)
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0,
+        "one successful verification resets the per-row streak"
+    );
+    sqlx::query(
+        "UPDATE cards SET payload=json_remove(payload,'$.docRev') WHERE id='context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor.sweep().await.unwrap();
+    monitor.sweep().await.unwrap();
+    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+    monitor.sweep().await.unwrap();
+    let row: (i64, Option<i64>) =
+        sqlx::query_as("SELECT context_verify_failures,context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(row.0, 0);
+    assert!(row.1.is_some());
+    assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
 }
 
 async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {

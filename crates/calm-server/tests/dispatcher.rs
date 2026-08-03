@@ -563,8 +563,12 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         events.emit(
             ActorId::Kernel,
             Event::TaskContextAdvanced {
+                wave_id: Default::default(),
+                task_key: String::new(),
                 task_id: format!("noise-{index}"),
+                changed_refs: Vec::new(),
                 verdict: "material".into(),
+                rationale: String::new(),
             },
         );
     }

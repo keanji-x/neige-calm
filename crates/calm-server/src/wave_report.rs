@@ -662,9 +662,6 @@ pub(crate) async fn persist_report_with_shadow(
                 let blocks = projected_payload.blocks.as_deref().unwrap_or_default();
                 let (declarations, block_diagnostics) =
                     calm_types::report_blocks::tasks::project_task_declarations(blocks);
-                let task_projection =
-                    project_tasks_tx(tx, wave_id.as_str(), &declarations, &block_diagnostics)
-                        .await?;
                 let payload_value = serde_json::to_value(&projected_payload).map_err(|e| {
                     CalmError::Internal(format!("wave_report: serialize projected payload: {e}"))
                 })?;
@@ -684,6 +681,13 @@ pub(crate) async fn persist_report_with_shadow(
                 //    edit-log entry (matches the historical broadcast
                 //    order before PR2 added the structured event).
                 let updated = card_update_with_crdt_tx(tx, &id, patch, crdt_bytes).await?;
+                // The block-existence leg of projection reads the report cache.
+                // Update that cache first inside this same transaction so refs
+                // are checked against this write's snapshot, never the previous
+                // committed payload. Any projection error still rolls all of it back.
+                let task_projection =
+                    project_tasks_tx(tx, wave_id.as_str(), &declarations, &block_diagnostics)
+                        .await?;
                 let report_edited = Event::WaveReportEdited {
                     wave_id: wave_id.clone(),
                     card_id: report_card_id,
@@ -715,6 +719,7 @@ pub(crate) async fn persist_report_with_shadow(
                         },
                     ));
                 }
+                events.extend(task_projection.kernel_events);
                 Ok(((updated, outcome), events))
             })
         },

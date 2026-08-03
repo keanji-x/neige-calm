@@ -819,6 +819,8 @@ impl Dispatcher {
                         tokio::spawn(async move {
                             if let Err(error) = context_monitor.sweep().await {
                                 tracing::warn!(%error, "task context sweep after lag failed");
+                            } else {
+                                scheduler.open_context_sweep_gate().await;
                             }
                             scheduler.sweep_all().await;
                         });
@@ -847,10 +849,12 @@ impl Dispatcher {
             interval.tick().await;
             loop {
                 interval.tick().await;
-                tick_scheduler.sweep_all().await;
                 if let Err(error) = tick_context_monitor.sweep().await {
                     tracing::warn!(%error, "periodic task context sweep failed");
+                } else {
+                    tick_scheduler.open_context_sweep_gate().await;
                 }
+                tick_scheduler.sweep_all().await;
             }
         });
         let reaper_handle = if reaper_disabled_from_env() {
