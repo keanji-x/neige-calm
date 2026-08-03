@@ -1,0 +1,21 @@
+entry.path:
+  entries: [{ path: 1, type: file, owner: ui/test, readonly: false }]
+entry.type:
+  entries: [{ path: fe/core/model.ts, type: 1, owner: ui/test, readonly: false }]
+entry.owner:
+  entries: [{ path: fe/core/model.ts, type: file, owner: 1, readonly: false }]
+entry.readonly:
+  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: "false" }]
+  changed: [fe/core/model.ts]
+changeRequest.path:
+  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
+  changed: [fe/core/model.ts]
+  requests: [{ path: 1, reason: approved, issue: "#997" }]
+changeRequest.reason:
+  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
+  changed: [fe/core/model.ts]
+  requests: [{ path: fe/core/model.ts, reason: 1, issue: "#997" }]
+changeRequest.issue:
+  entries: [{ path: fe/core/model.ts, type: file, owner: ui/test, readonly: true }]
+  changed: [fe/core/model.ts]
+  requests: [{ path: fe/core/model.ts, reason: approved, issue: 1 }]

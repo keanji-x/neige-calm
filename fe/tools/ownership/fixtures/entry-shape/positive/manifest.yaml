@@ -1,3 +1,4 @@
 - path: fe/core/state/public.ts
   type: file
   owner: core-state
+  readonly: false

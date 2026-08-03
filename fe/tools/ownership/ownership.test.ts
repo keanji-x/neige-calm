@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { auditRepositoryOwnership, OWNERSHIP_RULES, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
+import { auditRepositoryOwnership, OWNERSHIP_RULES, OWNERSHIP_YAML_FIELDS, repositoryFiles, validateOwnership, type ChangeRequest, type OwnershipEntry } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntry[] {
@@ -10,8 +10,24 @@ function entries(caseName: string, kind: 'positive' | 'negative'): OwnershipEntr
 }
 
 describe('ownership fixtures', () => {
+  it('guards exactly every YAML field in both directions', () => {
+    const fixture = parse(readFileSync(resolve(fixtures, 'field-types/negative/cases.yaml'), 'utf8')) as Record<string, {
+      entries: unknown[]; requests?: unknown[]; changed?: string[];
+    }>;
+    expect(new Set(Object.keys(fixture))).toEqual(new Set(OWNERSHIP_YAML_FIELDS));
+    expect(new Set(OWNERSHIP_YAML_FIELDS)).toEqual(new Set(Object.keys(fixture)));
+    for (const [field, testCase] of Object.entries(fixture)) {
+      const violations = validateOwnership(testCase.entries, [], testCase.changed ?? [], testCase.requests ?? []);
+      expect(violations.length, field).toBeGreaterThan(0);
+      if (field.startsWith('changeRequest.')) {
+        expect(violations.some(({ rule }) => rule === 'change-request-shape'), field).toBe(true);
+        expect(violations.some(({ rule }) => rule === 'readonly-change-request'), field).toBe(true);
+      }
+      else expect(violations.some(({ rule }) => rule === 'entry-shape'), field).toBe(true);
+    }
+  });
   it('covers exactly every rule the validator can emit', () => {
-    const covered = ['entry-shape', 'exactly-one-owner', 'coverage', 'readonly-change-request'];
+    const covered = ['entry-shape', 'change-request-shape', 'exactly-one-owner', 'coverage', 'readonly-change-request'];
     expect(new Set(covered)).toEqual(new Set(OWNERSHIP_RULES));
   });
   it('rejects glob entries', () => {
@@ -61,7 +77,10 @@ describe('ownership fixtures', () => {
     expect(validateOwnership(manifest, [], ['fe/web/src/styles/other.css'], requests)).toHaveLength(1);
     expect(validateOwnership(manifest, [], ['fe/web/src/styles/tokens.css'], [
       { path: 'fe/web/src/styles/tokens.css', reason: 'missing issue', issue: '' },
-    ])).toHaveLength(1);
+    ])).toEqual([
+      { rule: 'change-request-shape', message: 'invalid change request 1' },
+      { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
+    ]);
   });
 
 });

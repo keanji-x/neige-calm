@@ -22,6 +22,11 @@ export const ORACLE_RULES = Object.freeze([
   'source-location', 'authoritative-test-location', 'why-nonempty', 'statement-nonempty',
 ] as const);
 
+export const ORACLE_YAML_FIELDS = Object.freeze([
+  'id', 'kind', 'family', 'statement', 'why', 'source', 'authoritative_test', 'owner_slice',
+  'intentional_omission', 'runtime_layer', 'verification_owner', 'test_tier', 'migration', 'skip_reason',
+] as const);
+
 const REQUIRED = ['id', 'kind', 'family', 'statement', 'why', 'source', 'authoritative_test', 'owner_slice',
   'intentional_omission', 'runtime_layer', 'verification_owner', 'test_tier', 'migration'] as const;
 const ENUMS: Record<string, readonly unknown[]> = {
@@ -102,6 +107,9 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       const id = typeof entry.id === 'string' ? entry.id : `<entry-${index + 1}>`;
       const missing = REQUIRED.filter((field) => !Object.hasOwn(entry, field));
       if (missing.length) add(file, id, 'required-fields', `missing: ${missing.join(', ')}`);
+      if (Object.hasOwn(entry, 'family') && (typeof entry.family !== 'string' || entry.family.trim() === '')) {
+        add(file, id, 'required-fields', 'family must be a non-empty string');
+      }
       for (const [field, allowed] of Object.entries(ENUMS)) {
         if (Object.hasOwn(entry, field) && !allowed.includes(entry[field])) add(file, id, `enum-${field}`, `invalid ${field}`);
       }

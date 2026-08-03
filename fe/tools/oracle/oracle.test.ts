@@ -2,7 +2,7 @@ import { readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import baseline from './baseline.json' with { type: 'json' };
-import { defaultOracleOptions, ORACLE_RULES, validateOracle } from './validator';
+import { defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 
@@ -23,9 +23,16 @@ const cases = [
 ] as const;
 
 describe('oracle rule fixtures', () => {
+  it('guards exactly every YAML field in both directions', () => {
+    const typeFixtures = readdirSync(resolve(fixtures, 'field-types'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    expect(new Set(typeFixtures)).toEqual(new Set(ORACLE_YAML_FIELDS));
+    expect(new Set(ORACLE_YAML_FIELDS)).toEqual(new Set(typeFixtures));
+    for (const field of typeFixtures) expect(run(`field-types/${field}`, 'negative').length, field).toBeGreaterThan(0);
+  });
   it('covers exactly every rule the validator can emit', () => {
     const fixtureDirectories = readdirSync(fixtures, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+      .filter((entry) => entry.isDirectory() && entry.name !== 'field-types').map((entry) => entry.name);
     expect(new Set(fixtureDirectories)).toEqual(new Set(ORACLE_RULES));
   });
   for (const rule of cases) {
