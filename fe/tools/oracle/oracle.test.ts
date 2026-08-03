@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { validateOracle } from './validator';
+import baseline from './baseline.json' with { type: 'json' };
+import { defaultOracleOptions, validateOracle } from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 
@@ -36,4 +37,11 @@ it('source-location validates every location joined with +', () => {
   expect(run('source-location-multiple', 'positive')).toEqual([]);
   expect(violations).toHaveLength(1);
   expect(violations[0]?.message).toContain('missing.ts');
+});
+
+it('matches the temporary real-data violation baseline exactly', () => {
+  const repoRoot = resolve(import.meta.dirname, '../../..');
+  const actual = validateOracle(defaultOracleOptions(repoRoot)).map(({ id, rule }) => ({ id, rule }));
+  expect(actual).toHaveLength(baseline.total);
+  expect(actual).toEqual(baseline.violations);
 });

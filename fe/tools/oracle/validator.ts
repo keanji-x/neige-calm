@@ -104,9 +104,11 @@ export function validateOracle(options: ValidateOptions): Violation[] {
         if (entry.verification_owner === null) add(file, id, 'non-skipped-owner', 'non-skipped entry requires verification_owner');
       }
       if (typeof entry.intentional_omission !== 'boolean') add(file, id, 'intentional-omission-boolean', 'intentional_omission must be boolean');
-      for (const error of locationErrors(entry.source, options.repoRoot)) add(file, id, 'source-location', error);
+      const sourceErrors = locationErrors(entry.source, options.repoRoot);
+      if (sourceErrors.length) add(file, id, 'source-location', sourceErrors.join('; '));
       if (entry.authoritative_test !== 'NONE') {
-        for (const error of locationErrors(entry.authoritative_test, options.repoRoot)) add(file, id, 'authoritative-test-location', error);
+        const testErrors = locationErrors(entry.authoritative_test, options.repoRoot);
+        if (testErrors.length) add(file, id, 'authoritative-test-location', testErrors.join('; '));
       }
       if (typeof entry.why !== 'string' || entry.why.trim() === '') add(file, id, 'why-nonempty', 'why must be non-empty');
       if (typeof entry.statement !== 'string' || entry.statement.trim() === '') add(file, id, 'statement-nonempty', 'statement must be non-empty');
