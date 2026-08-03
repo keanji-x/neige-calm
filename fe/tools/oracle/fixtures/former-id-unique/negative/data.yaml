@@ -1,5 +1,4 @@
-- id: INV-TEST-001
-  former_id: GATE-TEST-002
+- id: INV-TEST-002
   kind: invariant
   family: fixture
   statement: Contract remains true
@@ -12,9 +11,9 @@
   verification_owner: unit
   test_tier: static
   migration: pending
-- id: GATE-TEST-003
-  former_id: GATE-TEST-002
-  kind: gate
+- id: INV-TEST-003
+  former_id: INV-TEST-002
+  kind: invariant
   family: fixture
   statement: Contract remains true
   why: Fixture reason
