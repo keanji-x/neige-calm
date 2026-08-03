@@ -175,6 +175,18 @@ describe('architecture/no-class-dom-query', () => {
   });
 });
 
+describe('architecture/no-core-platform-escape', () => {
+  it('rejects globalThis.fetch', async () => {
+    expect(await lintFixture('no-core-platform-escape', 'core-escape/global-this-fetch.ts')).toHaveLength(1);
+  });
+  it('rejects dynamic import()', async () => {
+    expect(await lintFixture('no-core-platform-escape', 'core-escape/dynamic-import.ts')).toHaveLength(1);
+  });
+  it('accepts injected transports and static imports', async () => {
+    expect(await lintFixture('no-core-platform-escape', 'core-escape/injected.ts')).toHaveLength(0);
+  });
+});
+
 describe('architecture/no-create-context-outside-allowlist', () => {
   const rejected = [
     ['create-context-named.ts', 'createContext'],

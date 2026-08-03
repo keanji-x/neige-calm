@@ -64,6 +64,15 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
     const output = messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n');
     return { status: messages.length ? 1 : 0, stdout: output, stderr: '' };
   }
+  if (caseName === 'markdown-micromark-import') {
+    const filePath = resolve(fixtures, caseName, kind, 'web/src/case.ts');
+    const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
+    const [result] = await eslint.lintText(ts.sys.readFile(filePath) ?? '', {
+      filePath: resolve(import.meta.dirname, '../../web/src/main.tsx'),
+    });
+    const messages = result.messages.filter((message) => message.ruleId === 'no-restricted-imports');
+    return { status: messages.length ? 1 : 0, stdout: messages.map((message) => `${message.ruleId}: ${message.message}`).join('\n'), stderr: '' };
+  }
   if (caseName === 'react-state-hook-import') {
     const filePath = resolve(fixtures, caseName, kind, 'web/src/ui/case.ts');
     const eslint = new ESLint({ cwd: resolve(import.meta.dirname, '../..'), ignore: false });
@@ -134,6 +143,7 @@ describe('architecture fixtures', () => {
     ['dup-inv-009', 'INV-DUP-009'],
     ['dup-inv-010', 'INV-DUP-010'],
     ['core-markdown-node-import', 'node:fs'],
+    ['markdown-micromark-import', 'micromark-extension-gfm'],
     ['core-no-node-access', 'node:fs'],
     ['core-no-node-bare-import', "'fs'"],
     ['core-no-node-global-buffer', 'Buffer'],

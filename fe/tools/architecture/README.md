@@ -40,3 +40,8 @@ testable. Consumers should use the canonical public path, never deep imports.
 | INV-DUP-008 | unique implementation | duplication manifest | `dup-inv-008` |
 | INV-DUP-009 | unique implementation | duplication manifest | `dup-inv-009` |
 | INV-DUP-010 | unique implementation | duplication manifest | `dup-inv-010` |
+
+The markdown import fence includes `micromark*`; consumers use
+`core/markdown/public.ts`. `architecture/no-core-platform-escape` closes the
+`globalThis.fetch` and dynamic `import()` paths left by identifier-only global
+restrictions. Inject a transport or adapter through a static boundary instead.

@@ -37,7 +37,7 @@ export default tseslint.config(
           message: 'Import guarded state hooks from web/src/ui/state/public.ts so the Persistent<T> guard applies.',
         }],
         patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'micromark', 'micromark/**', 'micromark-*', 'micromark-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
       }],
       'react-hooks/rules-of-hooks': 'error',
@@ -82,7 +82,7 @@ export default tseslint.config(
       // Reason: this outlet must import the original React hooks that its guarded wrappers forward to.
       'no-restricted-imports': ['error', {
         patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'micromark', 'micromark/**', 'micromark-*', 'micromark-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
       }],
     },
@@ -95,10 +95,11 @@ export default tseslint.config(
     files: ['core/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
     rules: {
       'no-restricted-globals': ['error', 'WebSocket', 'fetch', 'location', 'process', 'require', 'Buffer'],
+      'architecture/no-core-platform-escape': 'error',
       'no-restricted-imports': ['error', {
         paths: nodeBuiltinImports.map((name) => ({ name, message: 'Core must remain platform-independent.' })),
         patterns: [
-          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
+          { group: ['react-markdown', 'react-markdown/**', 'remark-*', 'remark-*/**', 'rehype-*', 'rehype-*/**', 'mdast-util-*', 'mdast-util-*/**', 'micromark', 'micromark/**', 'micromark-*', 'micromark-*/**', 'unified', 'unified/**'], message: 'Import markdown tooling only through core/markdown.' },
         ],
       }],
     },
