@@ -244,7 +244,7 @@
   why: >
     §2.2：否则 `getByRole('button', { name: /today/i })` 会与 sidebar 的 Today 导航按钮
     冲突；测试范式是 `getByRole('region', { name: 'Waves' }).getByRole('button', …)`
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -262,7 +262,7 @@
   why: >
     §2.2 明示 "no per-status sub-sections"；分区会引入额外 landmark 与 tab stop 并破坏
     §3.1 的 tab 顺序
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:99,168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: true
@@ -539,7 +539,7 @@
   why: >
     §2.2：区分靠排印而非分隔符；locator 必须用前缀匹配
     `getByRole('option', { name: /^None/ })`，因为描述被折进了 name
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:494-552
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
@@ -557,7 +557,7 @@
   why: >
     #891 slice ③：per-variant state 必须干净起步；Dialog 自身的 initial-focus 只在 open
     时跑一次，所以 variant-change effect 必须自己接管切换后的焦点（共用 `initialFocusRef`）
-  source: web/src/shared/components/NewTaskForm.tsx
+  source: web/src/pages/Cove.tsx:450-478,554-560
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -575,7 +575,7 @@
     （Browse… 目录选择器）仍然渲染自己的标题头
   why: >
     §2.2 记录的既定形状；缺了 aria-label 对话框就没有 accessible name
-  source: web/src/ui/Dialog/Dialog.tsx
+  source: web/src/pages/Cove.tsx:480-490; web/src/ui/Dialog/Dialog.tsx:342-382
   authoritative_test: NONE
   owner_slice: ui/dialog
   intentional_omission: true
@@ -1017,7 +1017,7 @@
     在下一个 stop）→ `+ New wave` ghost 按钮。分区标题不是 tab stop
   why: >
     §3.1 记录的确切序列，无测试覆盖
-  source: web/src/pages/Cove.tsx
+  source: web/src/pages/Cove.tsx:99-143,168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
   intentional_omission: false
