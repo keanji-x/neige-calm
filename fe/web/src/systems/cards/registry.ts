@@ -1,0 +1,130 @@
+import type { ComponentType } from 'react';
+import type { CardHostCapabilities } from './contracts.js';
+
+export interface CardDataMap {
+  readonly _cardDataMapBrand?: never;
+}
+
+export type RegisteredCard = CardDataMap[Exclude<keyof CardDataMap, '_cardDataMapBrand'>];
+
+export interface KernelCardInput {
+  readonly id: string;
+  readonly kind: string;
+  readonly payload: unknown;
+}
+
+export interface CardSize {
+  readonly w: number;
+  readonly h: number;
+  readonly minW: number;
+  readonly minH: number;
+}
+
+export const FALLBACK_SIZE: CardSize = Object.freeze({ w: 4, h: 6, minW: 3, minH: 3 });
+
+export type CardKindClaim =
+  | Readonly<{ mode: 'exact'; kind: string }>
+  | Readonly<{ mode: 'prefix'; prefix: string }>;
+
+export type CardCreateStrategy =
+  | Readonly<{ mode: 'generic'; buildPayload(input: Readonly<Record<string, string>>): unknown }>
+  | Readonly<{ mode: 'atomic'; submit(input: Readonly<Record<string, string>>): Promise<{ cardId: string }> }>
+  | Readonly<{ mode: 'catalog'; catalog: string }>
+  | Readonly<{ mode: 'kernel-minted-only' }>;
+
+export interface CardComponentProps<Card extends { readonly id: string; readonly type: string } = RegisteredCard> {
+  readonly card: Card;
+  readonly host: CardHostCapabilities;
+}
+
+export interface CardEntry<Card extends { readonly id: string; readonly type: string } = RegisteredCard> {
+  readonly type: Card['type'];
+  readonly component: ComponentType<CardComponentProps<Card>>;
+  readonly defaultSize: CardSize;
+  readonly claim?: CardKindClaim;
+  readonly title?: (card: Card) => string;
+  readonly accessibleName?: (card: Card) => string;
+  readonly create?: CardCreateStrategy;
+  readonly fromKernel?: (card: KernelCardInput) => Card | null;
+}
+
+export interface CardRegistry {
+  register<Card extends RegisteredCard>(entry: CardEntry<Card>): void;
+  get(type: string): CardEntry | undefined;
+  resolve(card: KernelCardInput): RegisteredCard | null;
+  entries(): readonly CardEntry[];
+}
+
+function validateEntry(entry: CardEntry, exact: Map<string, CardEntry>, prefix: Map<string, CardEntry>): void {
+  if (entry.title === undefined) throw new Error(`EntryMissingMetadata(${entry.type}, title)`);
+  if (entry.accessibleName === undefined) throw new Error(`EntryMissingMetadata(${entry.type}, accessibleName)`);
+  if (entry.create === undefined) throw new Error(`MissingCreateStrategy(${entry.type})`);
+  if (entry.create.mode === 'generic' && entry.claim?.mode !== 'exact') {
+    throw new Error(`GenericCreateRequiresExactClaim(${entry.type})`);
+  }
+  if (entry.refreshBacking === 'controller' && entry.createController === undefined) {
+    throw new Error(`RefreshBackingMissingController(${entry.type})`);
+  }
+  if (entry.claim?.mode === 'exact') {
+    const previous = exact.get(entry.claim.kind);
+    if (previous !== undefined && previous.type !== entry.type) {
+      throw new Error(`DuplicateExactClaim(${entry.claim.kind})`);
+    }
+  }
+  if (entry.claim?.mode === 'prefix') {
+    const previous = prefix.get(entry.claim.prefix);
+    if (previous !== undefined && previous.type !== entry.type) {
+      throw new Error(`DuplicatePrefixClaim(${entry.claim.prefix})`);
+    }
+  }
+}
+
+export function createCardRegistry(): CardRegistry {
+  const entries = new Map<string, CardEntry>();
+  const exact = new Map<string, CardEntry>();
+  const prefix = new Map<string, CardEntry>();
+  return Object.freeze({
+    register<Card extends RegisteredCard>(typedEntry: CardEntry<Card>): void {
+      const entry = typedEntry as unknown as CardEntry;
+      validateEntry(entry, exact, prefix);
+      const previous = entries.get(entry.type);
+      if (previous?.claim?.mode === 'exact' && exact.get(previous.claim.kind) === previous) {
+        exact.delete(previous.claim.kind);
+      }
+      if (previous?.claim?.mode === 'prefix' && prefix.get(previous.claim.prefix) === previous) {
+        prefix.delete(previous.claim.prefix);
+      }
+      entries.set(entry.type, entry);
+      if (entry.claim?.mode === 'exact') exact.set(entry.claim.kind, entry);
+      if (entry.claim?.mode === 'prefix') prefix.set(entry.claim.prefix, entry);
+    },
+    get: (type: string) => entries.get(type),
+    resolve(card: KernelCardInput): RegisteredCard | null {
+      const tried = new Set<CardEntry>();
+      const exactEntry = exact.get(card.kind);
+      if (exactEntry !== undefined) tried.add(exactEntry);
+      const exactResult = exactEntry?.fromKernel?.(card);
+      if (exactResult != null) return exactResult;
+
+      let longest: CardEntry | undefined;
+      let longestLength = -1;
+      for (const [candidate, entry] of prefix) {
+        if (card.kind.startsWith(candidate) && candidate.length > longestLength) {
+          longest = entry;
+          longestLength = candidate.length;
+        }
+      }
+      if (longest !== undefined) tried.add(longest);
+      const prefixResult = longest?.fromKernel?.(card);
+      if (prefixResult != null) return prefixResult;
+
+      for (const entry of entries.values()) {
+        if (tried.has(entry) || entry.fromKernel === undefined) continue;
+        const result = entry.fromKernel(card);
+        if (result != null) return result;
+      }
+      return null;
+    },
+    entries: () => Object.freeze([...entries.values()]),
+  });
+}
