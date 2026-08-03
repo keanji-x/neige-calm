@@ -657,7 +657,7 @@
   why: >
     源码注释："Callers opting in must provide their own dismiss affordance
     (Esc and overlay-click still work)" —— 否则出现无法关闭的对话框。
-  source: web/src/ui/Dialog/Dialog.tsx:50-52,55
+  source: web/src/ui/Dialog/Dialog.tsx:50-52
   authoritative_test: NONE
   owner_slice: ui/dialog
   intentional_omission: false
@@ -732,7 +732,7 @@
   why: >
     源码注释：typeahead buffer 走 ref + idle timer，open/close 周期不需要清；但
     active index 必须重锚，否则第二次打开会停在上次的位置。
-  source: web/src/ui/Menu/Menu.tsx:152-163,142
+  source: web/src/ui/Menu/Menu.tsx:152-163
   authoritative_test: web/src/ui/Menu/Menu.test.tsx:117
   owner_slice: ui/menu
   intentional_omission: false
@@ -1201,7 +1201,7 @@
     源码/README："A user who reflexively hits Enter on the dialog appearing MUST
     NOT trigger the destructive action." 这正是 ConfirmDialog 相对
     `window.confirm()` 的核心价值。
-  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:6-9,1,87-96
+  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:6-9,87-96
   authoritative_test: web/src/ui/ConfirmDialog/ConfirmDialog.contract.test.tsx:54
   owner_slice: ui/confirm-dialog
   intentional_omission: false
@@ -1218,7 +1218,7 @@
   why: >
     契约测试 F 显式连按三次 Enter 断言 onConfirm 从未被调用；这是"手滑连击"
     这一真实破坏场景的兜底。
-  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:6-9,58,114-121
+  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:6-9,114-121
   authoritative_test: web/src/ui/ConfirmDialog/ConfirmDialog.contract.test.tsx:220
   owner_slice: ui/confirm-dialog
   intentional_omission: false
@@ -1311,7 +1311,7 @@
     源码 "What this primitive deliberately does NOT do" 一节逐条列出：前三项从
     Dialog 继承，pending 视觉留给调用方塞进 `description` 或在旁边组合。
     重复实现会与 Dialog 的契约打架。
-  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:22-28,40
+  source: web/src/ui/ConfirmDialog/ConfirmDialog.tsx:22-28
   authoritative_test: NONE
   owner_slice: ui/confirm-dialog
   intentional_omission: true

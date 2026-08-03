@@ -44,7 +44,7 @@
   why: >
     playwright.config.ts:9-17 — booting the full kernel + sqlite seed from Playwright is
     slower than the human dev loop and would race an already-running `make dev`.
-  source: web/playwright.config.ts:106-118,63
+  source: web/playwright.config.ts:106-118
   authoritative_test: web/playwright.config.ts:106
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -194,7 +194,7 @@
     setup worker exits, and the grandchild's first `tracing::info!` then takes SIGPIPE
     (root cause of the `socket hang up` flake, debug PR #191). Detached also lets teardown
     SIGTERM the whole process group.
-  source: web/e2e/_setup/replay-server.setup.ts:100-123,95
+  source: web/e2e/_setup/replay-server.setup.ts:100-123
   authoritative_test: web/e2e/_setup/replay-server.setup.ts:118
   owner_slice: none/e2e/infra
   intentional_omission: false
@@ -382,7 +382,7 @@
   why: >
     helpers/reset.ts:95-104 — #250 PR2 made cwd required; #177 made `theme` required
     end-to-end. Every wave-creating fixture in the suite carries an inert dark sentinel.
-  source: web/e2e/helpers/reset.ts:105-114,118
+  source: web/e2e/helpers/reset.ts:105-114
   authoritative_test: web/e2e/helpers/reset.ts:105
   owner_slice: features/wave/create
   intentional_omission: false
@@ -1067,7 +1067,7 @@
   why: >
     wave-create.spec.ts:81-96 — these three are the minimal field set every creation spec in
     the suite drives.
-  source: web/e2e/wave-create.spec.ts:81-96,66
+  source: web/e2e/wave-create.spec.ts:81-96
   authoritative_test: web/e2e/wave-create.spec.ts:82
   owner_slice: features/wave/create
   intentional_omission: false
@@ -1123,7 +1123,7 @@
     wave-create-auto-match.spec.ts:6-11 — "longest-prefix resolve wins over surrounding page
     context". Without it the user silently lands waves in the wrong cove every time they type
     a path another cove already owns.
-  source: web/e2e/wave-create-auto-match.spec.ts:122-143,88
+  source: web/e2e/wave-create-auto-match.spec.ts:122-143
   authoritative_test: web/e2e/wave-create-auto-match.spec.ts:142
   owner_slice: features/wave/create
   intentional_omission: false
@@ -1181,7 +1181,7 @@
   why: >
     wave-create-new-cove.spec.ts:1-16 — the two-step is opaque from the user's POV; only the
     URL push and the resulting rows are observable.
-  source: web/e2e/wave-create-new-cove.spec.ts:99-152,21
+  source: web/e2e/wave-create-new-cove.spec.ts:99-152
   authoritative_test: web/e2e/wave-create-new-cove.spec.ts:49
   owner_slice: features/wave/create
   intentional_omission: false
@@ -1256,7 +1256,7 @@
     wave-create-conflict.spec.ts:1-16 (#250 PR3 fix-loop "B1") — pre-fix the error read
     "claimed by another cove" regardless of cache state; the absent-UUID assertion is what
     proves the name lookup hit rather than the fallback.
-  source: web/e2e/wave-create-conflict.spec.ts:127-135,1
+  source: web/e2e/wave-create-conflict.spec.ts:127-135
   authoritative_test: web/e2e/wave-create-conflict.spec.ts:131
   owner_slice: features/wave/create
   intentional_omission: false
@@ -1312,7 +1312,7 @@
   why: >
     wave-create-browse-cwd.spec.ts:116-126 — the walker is `GET /api/fs/listdir` running in
     the kernel container; the trailing slash in the input value is part of the contract.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:116-126,110
+  source: web/e2e/wave-create-browse-cwd.spec.ts:116-126
   authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:119
   owner_slice: ui/directory-browser
   intentional_omission: false
@@ -1570,7 +1570,7 @@
   why: >
     a11y-cwd-resolve.spec.ts:57-76 — the 201 (not 200) is asserted so a server-side conflict
     or bad path shape surfaces at the seeding call, not as a later confusing failure.
-  source: web/e2e/a11y-cwd-resolve.spec.ts:61-76,57
+  source: web/e2e/a11y-cwd-resolve.spec.ts:61-76
   authoritative_test: web/e2e/a11y-cwd-resolve.spec.ts:70
   owner_slice: features/cove/folders
   intentional_omission: false
@@ -1590,7 +1590,7 @@
     a11y-cwd-resolve.spec.ts:28-36,264-272 — deliberately NOT covered by a Playwright spec;
     the branch is only reachable by seeding overlapping rows through the raw repo, which is a
     Rust-integration-test concern.
-  source: web/e2e/a11y-cwd-resolve.spec.ts:264-272,328
+  source: web/e2e/a11y-cwd-resolve.spec.ts:264-272
   authoritative_test: NONE
   owner_slice: features/cove/folders
   intentional_omission: true
@@ -1872,7 +1872,7 @@
   why: >
     a11y-keyboard.spec.ts:619-629 — chained restore through AddPanel's pre-open restore; a
     regression drops the user's focus to `<body>`.
-  source: web/e2e/a11y-keyboard.spec.ts:627-629,626
+  source: web/e2e/a11y-keyboard.spec.ts:627-629
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:629
   owner_slice: ui/dialog/modal
   intentional_omission: false
@@ -3648,7 +3648,7 @@
   why: >
     a11y-axe.spec.ts:212-223,286-289 — the reverse-citation index; the link must be a real link
     role so keyboard/AT users can traverse it.
-  source: web/e2e/a11y-axe.spec.ts:212-223,284
+  source: web/e2e/a11y-axe.spec.ts:212-223
   authoritative_test: web/e2e/a11y-axe.spec.ts:287
   owner_slice: features/report/backlinks
   intentional_omission: false
@@ -4289,7 +4289,7 @@
   why: >
     tui-theme-protocol.spec.ts:172-194 — the round-trip budget is asserted (soft) so a regression
     that makes theme changes take seconds is visible.
-  source: web/e2e/tui-theme-protocol.spec.ts:172-194,260
+  source: web/e2e/tui-theme-protocol.spec.ts:172-194
   authoritative_test: web/e2e/tui-theme-protocol.spec.ts:184
   owner_slice: systems/terminal/card
   intentional_omission: false
@@ -4365,7 +4365,7 @@
     Fix A — the mount-time no-op `TerminalThemeUpdate` must be SUPPRESSED when the daemon was
     already spawned with that exact theme.
   why: new-terminal-osc-echo.spec.ts:26-30 — removes the write that produced the echo at all.
-  source: web/e2e/new-terminal-osc-echo.spec.ts:26-30,25
+  source: web/e2e/new-terminal-osc-echo.spec.ts:26-30
   authoritative_test: web/e2e/new-terminal-osc-echo.spec.ts:238
   owner_slice: systems/terminal/card
   intentional_omission: true
@@ -4555,7 +4555,7 @@
     wheel-wave-switch-routing.spec.ts:91-180 — the routing regression: post-remount the wheel
     handler can end up bound to a stale element, so the terminal freezes and the page scrolls
     instead.
-  source: web/e2e/wheel-wave-switch-routing.spec.ts:172-180,146
+  source: web/e2e/wheel-wave-switch-routing.spec.ts:172-180
   authoritative_test: web/e2e/wheel-wave-switch-routing.spec.ts:91
   owner_slice: features/wave/scroll
   intentional_omission: false
@@ -4573,7 +4573,7 @@
   why: >
     wheel-wave-switch-routing.spec.ts:146-170 — the remounted terminal reflows for several frames;
     wheeling at a stale coordinate lands on a different element and the test lies.
-  source: web/e2e/wheel-wave-switch-routing.spec.ts:146-170,142
+  source: web/e2e/wheel-wave-switch-routing.spec.ts:146-170
   authoritative_test: web/e2e/wheel-wave-switch-routing.spec.ts:149
   owner_slice: none/e2e/infra
   intentional_omission: false

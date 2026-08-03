@@ -75,7 +75,7 @@
     刷新后旧 socket 仍会 fire close(1006)；若回调仍挂着，父卡片的 role pill 会被
     清成 null、status 会退回 'closed'，而新连接明明已经 connected。测试断言
     stale close 后 roleChanges.at(-1) 仍是 'Owner' 且 statusSetCalls 为空
-  source: web/src/XtermView.tsx:1012-1023,1045
+  source: web/src/XtermView.tsx:1012-1023
   authoritative_test: web/src/XtermView.test.tsx:437
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -1087,7 +1087,7 @@
     行内标记（有 code 时带括号，无则省略）
   why: >
     覆盖层被删掉后，这是缓冲区内唯一的“进程已退出”可见痕迹
-  source: web/src/XtermView.tsx:788-792,776
+  source: web/src/XtermView.tsx:788-792
   authoritative_test: web/src/XtermView.test.tsx:1154
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -1632,7 +1632,7 @@
     强制子树重渲染
   why: >
     槽存在 useRef 的 Map 里，不 bump 版本 React 不会重渲染
-  source: web/src/cards/registry.ts:444-454,437
+  source: web/src/cards/registry.ts:444-454
   authoritative_test: web/src/cards/registry.test.tsx:558
   owner_slice: systems/cards/registry
   intentional_omission: false
@@ -2834,7 +2834,7 @@
   why: >
     这些选择器已下沉到 file-viewer entry 的 wheelTarget 声明；路由层再硬编码
     就等于两套真相
-  source: web/src/input/wheelRouter.ts:13-15,2
+  source: web/src/input/wheelRouter.ts:13-15
   authoritative_test: web/src/input/wheelRouter.test.ts:421
   owner_slice: systems/wheel
   intentional_omission: false
@@ -3844,7 +3844,7 @@
     UnknownCard 的头必须带 card-drag-handle，使 RGL 拖拽范围与其它卡片一致
   why: >
     否则未知卡片在网格里拖不动
-  source: web/src/cards/UnknownCard.tsx:30-35,21
+  source: web/src/cards/UnknownCard.tsx:30-35
   authoritative_test: web/src/cards/UnknownCard.test.tsx:33
   owner_slice: systems/cards/unknown
   intentional_omission: false
@@ -4027,7 +4027,7 @@
     不得让异常冒泡
   why: >
     冒泡会炸掉整个 wave 文件浏览面板，而正确降级是显示原始 JSON
-  source: web/src/wave-fs-viewers/useWaveFsViewer.ts:12-25,4
+  source: web/src/wave-fs-viewers/useWaveFsViewer.ts:12-25
   authoritative_test: NONE
   owner_slice: systems/fs-viewers/registry
   intentional_omission: false
@@ -4155,7 +4155,7 @@
     隐藏而消失时必须把 tab stop 还给根节点
   why: >
     焦点落在已移除的 DOM 上会让键盘导航失效（tabindex 全 -1，Tab 直接跳出树）
-  source: web/src/cards/wave-file-tree.tsx:12-17,6,58-70
+  source: web/src/cards/wave-file-tree.tsx:12-17,58-70
   authoritative_test: web/src/cards/wave-file-tree.test.tsx:119,195
   owner_slice: systems/fs-viewers/wave-file-tree
   intentional_omission: false
