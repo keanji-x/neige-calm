@@ -330,6 +330,12 @@ describe('P8b2 forward style gates', () => {
     );
   });
 
+  it('audits entry.css imports rather than only reading its layer order', () => {
+    expect(auditStyleRepository(resolve(fixtures, 'repository/entry-import-negative'))).toContain(
+      'web/src/styles/entry.css: imported rules cannot be statically inspected; @import must explicitly declare layer',
+    );
+  });
+
   it('enforces the single CSS entry and vendor import boundary', () => {
     expect(auditCssImports('@import "./loose.css" layer(ui);', 'web/src/ui/loose.css')).toHaveLength(1);
     expect(auditCssImports("import '@astryxdesign/core/astryx.css';", 'web/src/main.tsx')).toHaveLength(1);
