@@ -11,3 +11,7 @@ The editable absolute path is a combobox controlling a listbox; options retain f
 ## Test contract
 
 The injected `ListDirectory` port keeps listing behavior independent of business APIs. Pure path tests lock canonical trailing-slash and join semantics; DOM tests cover loading, validation, filtering reset, keyboard navigation, cancellation, selection, and post-load focus.
+
+## Deliberately not done
+
+This slice freezes the props surface and behavioral contract, not visual styling. The rendered class names are placeholders; their CSS Modules and global-class ownership belong to §13 sequence 8 (the styles layer, global-class manifest, and unlayered-exception manifest) and the implementation phase. The current rendering is intentionally not visually finished, which is not a defect in this slice.

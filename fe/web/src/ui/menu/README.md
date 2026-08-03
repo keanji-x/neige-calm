@@ -11,3 +11,7 @@ The structure is menu → presentation list item → menuitem so list semantics 
 ## Test contract
 
 Consumers locate the menu and items by role and label. Rendered DOM and keyboard tests lock the role/ARIA structure, horizontal-key pass-through, initial-item focus, and synchronous restore-before-select ordering without depending on source spelling.
+
+## Deliberately not done
+
+This slice freezes the props surface and behavioral contract, not visual styling. The rendered class names, including the `is-active` state hook, are placeholders; their CSS Modules and global-class ownership belong to §13 sequence 8 (the styles layer, global-class manifest, and unlayered-exception manifest) and the implementation phase. The current rendering is intentionally not visually finished, which is not a defect in this slice.
