@@ -47,10 +47,10 @@ use std::time::Duration;
 
 use dashmap::DashMap;
 use serde_json::{Value, json};
-use tokio::sync::Semaphore;
+use tokio::sync::{Notify, Semaphore};
 
 use crate::db::sqlite::{
-    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_legacy_pending_tx,
+    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
     wave_lifecycle_and_budget_tx,
@@ -71,6 +71,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
+use crate::task_context::{ContextMetrics, FrozenClosure, TaskContextMonitor, context_ref};
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 /// Kernel default per-wave task budget when `waves.task_budget` is NULL
@@ -99,6 +100,13 @@ pub(crate) fn race_lost_err() -> CalmError {
 
 pub(crate) fn is_race_lost(e: &CalmError) -> bool {
     matches!(e, CalmError::Conflict(m) if m == RACE_LOST)
+}
+
+fn fence_revision_matches(current: Option<Option<i64>>, frozen: u64) -> bool {
+    current
+        .flatten()
+        .and_then(|value| u64::try_from(value).ok())
+        == Some(frozen)
 }
 
 async fn mark_running_timeout_cleanup_tx(
@@ -161,22 +169,28 @@ pub fn lifecycle_allows_scheduling(lifecycle: WaveLifecycle) -> bool {
 /// lease at operation claim time, and the lease path is
 /// `.claude/worktrees/<wave>/<card>`, so concurrent claims are disjoint by
 /// construction. This function intentionally remains budget arithmetic.
+fn wave_capacity(tasks: &[Task], budget: i64) -> usize {
+    let running_cost = tasks
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
+            )
+        })
+        .count() as i64;
+    (budget - running_cost).max(0) as usize
+}
+
 pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
     let done_keys: BTreeSet<&str> = tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Done)
         .map(|t| t.key.as_str())
         .collect();
-    let running_cost = tasks
-        .iter()
-        .filter(|t| {
-            matches!(
-                t.status,
-                TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
-            )
-        })
-        .count() as i64;
-    let capacity = (budget - running_cost).max(0) as usize;
+    if wave_capacity(tasks, budget) == 0 {
+        return Vec::new();
+    }
     tasks
         .iter()
         .filter(|t| t.status == TaskStatus::Pending)
@@ -185,7 +199,6 @@ pub fn compute_ready(tasks: &[Task], budget: i64) -> Vec<Task> {
                 .iter()
                 .all(|dep| done_keys.contains(dep.as_str()))
         })
-        .take(capacity)
         .cloned()
         .collect()
 }
@@ -342,6 +355,17 @@ pub struct Scheduler {
     /// #985 PR3a — dispatched recovery must not start until the boot
     /// context sweep has persisted every material verdict.
     context_sweep_boot_done: AtomicBool,
+    context_metrics: Arc<ContextMetrics>,
+    claim_fence_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
+}
+
+/// Deterministic integration-test rendezvous after closure resolution and
+/// before the claim transaction begins.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ClaimFenceTestHook {
+    pub resolved: Arc<Notify>,
+    pub resume: Arc<Notify>,
 }
 
 impl Scheduler {
@@ -402,7 +426,34 @@ impl Scheduler {
             inflight: Arc::new(DashMap::new()),
             boot_sweep_done: AtomicBool::new(false),
             context_sweep_boot_done: AtomicBool::new(false),
+            context_metrics: Arc::new(ContextMetrics::default()),
+            claim_fence_test_hook: std::sync::Mutex::new(None),
         })
+    }
+
+    #[doc(hidden)]
+    pub fn set_claim_fence_test_hook(&self, hook: ClaimFenceTestHook) {
+        *self
+            .claim_fence_test_hook
+            .lock()
+            .expect("claim fence hook lock") = Some(hook);
+    }
+
+    pub fn claim_fence_race_lost_count(&self) -> u64 {
+        self.context_metrics.snapshot().claim_fence_race_lost
+    }
+
+    pub fn context_resolve_failure_count(&self, variant: &'static str) -> u64 {
+        self.context_metrics
+            .snapshot()
+            .context_resolve_failures
+            .get(variant)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn context_metrics(&self) -> Arc<ContextMetrics> {
+        Arc::clone(&self.context_metrics)
     }
 
     /// Resolve the kernel default budget from `NEIGE_WAVE_TASK_BUDGET`
@@ -527,9 +578,16 @@ impl Scheduler {
             return Ok(());
         }
         let budget = self.wave_budget(wave_id).await?;
+        let capacity = wave_capacity(&tasks, budget);
         let ready = compute_ready(&tasks, budget);
+        let mut claimed = 0;
         for task in ready {
-            self.dispatch_task(task, &wave).await;
+            if self.dispatch_task(task, &wave).await {
+                claimed += 1;
+                if claimed == capacity {
+                    break;
+                }
+            }
         }
         Ok(())
     }
@@ -554,10 +612,10 @@ impl Scheduler {
     /// §5.4 — claim one ready task and drive its worker spawn. Every
     /// failure mode is contained here (logged, row reconciled); the
     /// pass continues with its remaining ready tasks.
-    async fn dispatch_task(self: &Arc<Self>, task: Task, wave: &Wave) {
+    async fn dispatch_task(self: &Arc<Self>, task: Task, wave: &Wave) -> bool {
         let Some(_inflight) = InflightGuard::acquire(&self.inflight, &task.id) else {
             tracing::debug!(task_id = %task.id, "scheduler: task already in flight; skipping");
-            return;
+            return false;
         };
         // Global spawn cap — same semaphore the dispatcher holds across
         // its spawn handling.
@@ -565,7 +623,7 @@ impl Scheduler {
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!("scheduler: dispatcher semaphore closed; skipping dispatch");
-                return;
+                return false;
             }
         };
         // The spawn is driven off the row the claim tx itself re-read
@@ -576,14 +634,14 @@ impl Scheduler {
         // path is `WHERE status = 'pending'`.
         let frozen = match self.claim_task(&task, wave).await {
             Ok(Some(frozen)) => frozen,
-            Ok(None) => return, // someone else won the claim
+            Ok(None) => return false, // someone else won the claim
             Err(e) => {
                 tracing::warn!(
                     task_id = %task.id,
                     error = %e,
                     "scheduler: claim tx failed; task stays pending for the next trigger"
                 );
-                return;
+                return false;
             }
         };
         if let Err(e) = self.drive_spawn(&frozen, wave).await {
@@ -593,6 +651,7 @@ impl Scheduler {
                 "scheduler: worker spawn drive failed; sweep will reconcile"
             );
         }
+        true
     }
 
     /// The claim tx (§5.4 step 1, one eventized write): in-tx lifecycle
@@ -614,6 +673,30 @@ impl Scheduler {
     /// (round-2 review F1), or the wave row was deleted. No event is
     /// persisted.
     async fn claim_task(&self, task: &Task, wave: &Wave) -> Result<Option<Task>> {
+        let closure = if task.origin == "legacy" {
+            FrozenClosure::default()
+        } else {
+            let monitor = TaskContextMonitor::new_with_metrics(
+                Arc::clone(&self.repo),
+                self.events.clone(),
+                self.write.clone(),
+                Arc::clone(&self.context_metrics),
+            );
+            match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
+                Ok(closure) => closure,
+                Err(error) => {
+                    let variant = error.variant();
+                    self.context_metrics.record_context_resolve_failure(variant);
+                    tracing::warn!(
+                        task_id = %task.id,
+                        resolve_error_variant = variant,
+                        error = ?error,
+                        "scheduler: claim context resolution failed; task stays pending"
+                    );
+                    return Ok(None);
+                }
+            }
+        };
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
             cove: wave.cove_id.clone(),
@@ -621,6 +704,20 @@ impl Scheduler {
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
         let budget_default = self.budget_default;
+        let claim_refs = closure.refs;
+        let claim_doc_revs = closure.doc_revs;
+        let claim_truncated = closure.closure_truncated;
+        let task_key = task.key.clone();
+        let test_hook = self
+            .claim_fence_test_hook
+            .lock()
+            .expect("claim fence hook lock")
+            .take();
+        if let Some(hook) = test_hook {
+            hook.resolved.notify_one();
+            hook.resume.notified().await;
+        }
+        let context_metrics = Arc::clone(&self.context_metrics);
         let result =
             write_with_actor_events_typed::<Task, _>(
                 self.repo.as_ref(),
@@ -641,8 +738,71 @@ impl Scheduler {
                         if !lifecycle_allows_scheduling(lifecycle) {
                             return Err(race_lost_err());
                         }
+                        // §5.2 claim fence: missing wave/report, a changed root, or any
+                        // changed report doc_rev is a silent race loss. This runs before
+                        // the pending -> dispatched state flip.
+                        for (frozen_wave, frozen_rev) in &claim_doc_revs {
+                            let current: Option<Option<i64>> = match sqlx::query_as::<_, (Option<i64>,)>(
+                                "SELECT json_extract(c.payload, '$.docRev') FROM cards c \
+                                 JOIN waves w ON w.id = c.wave_id \
+                                 WHERE c.wave_id = ?1 AND c.kind = 'wave-report' LIMIT 1",
+                            )
+                            .bind(frozen_wave)
+                            .fetch_optional(&mut **tx)
+                            .await
+                            {
+                                Ok(row) => row.map(|(value,)| value),
+                                Err(error) => {
+                                    tracing::warn!(
+                                        wave_id = frozen_wave,
+                                        error = %error,
+                                        "scheduler: claim fence doc_rev query failed; failing closed"
+                                    );
+                                    context_metrics.record_claim_fence_race_lost();
+                                    return Err(race_lost_err());
+                                }
+                            };
+                            if !fence_revision_matches(current, *frozen_rev) {
+                                context_metrics.record_claim_fence_race_lost();
+                                return Err(race_lost_err());
+                            }
+                        }
+                        if let Some(root) = claim_refs.iter().find(|reference| reference.is_root) {
+                            let payload: Option<String> = sqlx::query_scalar(
+                                "SELECT payload FROM cards WHERE wave_id = ?1 \
+                                 AND kind = 'wave-report' LIMIT 1",
+                            )
+                            .bind(root.wave_id.as_str())
+                            .fetch_optional(&mut **tx)
+                            .await?;
+                            let current_root = payload
+                                .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
+                                .and_then(|payload| {
+                                    payload.get("blocks").and_then(Value::as_array).cloned()
+                                })
+                                .and_then(|blocks| {
+                                    blocks.into_iter().find_map(|value| {
+                                        let block: calm_types::wave_report::ReportBlock =
+                                            serde_json::from_value(value).ok()?;
+                                        if block.id != root.block_id {
+                                            return None;
+                                        }
+                                        Some(context_ref(root.wave_id.as_str(), &block, true))
+                                    })
+                                });
+                            if current_root
+                                .as_ref()
+                                .map(|current| (&current.block_id, &current.hash))
+                                != Some((&root.block_id, &root.hash))
+                            {
+                                context_metrics.record_claim_fence_race_lost();
+                                return Err(race_lost_err());
+                            }
+                        }
                         let now = now_ms();
-                        let rows = task_claim_legacy_pending_tx(tx, &task_id, now).await?;
+                        let rows =
+                            task_claim_pending_tx(tx, &task_id, now, &claim_refs, claim_truncated)
+                                .await?;
                         if rows == 0 {
                             return Err(race_lost_err());
                         }
@@ -707,8 +867,13 @@ impl Scheduler {
                                 ActorId::KernelDispatcher,
                                 scope.clone(),
                                 Event::TaskContextFrozen {
+                                    wave_id: wave_id.clone(),
+                                    task_key: task_key.clone(),
+                                    idempotency_key: task_id.clone(),
                                     task_id: task_id.clone(),
-                                    refs: Vec::new(),
+                                    refs: claim_refs.clone(),
+                                    doc_revs: claim_doc_revs.clone(),
+                                    truncated: claim_truncated,
                                 },
                             ),
                         ];

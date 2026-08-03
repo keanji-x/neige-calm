@@ -15,6 +15,32 @@ fn migrator_through_0066() -> sqlx::migrate::Migrator {
     }
 }
 
+fn migrator_through_0068() -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 68)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
+fn migrator_through_0069() -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 69)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
 #[tokio::test]
 async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     let pool = SqlitePoolOptions::new()
@@ -63,5 +89,68 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     assert!(
         !first_sweep_material,
         "the first sweep after upgrade must not mark a backfilled legacy task material"
+    );
+}
+
+#[tokio::test]
+async fn pending_context_stale_cleanup_is_idempotent_and_scoped() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open migration fixture");
+    migrator_through_0068()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0068");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,created_at_ms,updated_at_ms,context_stale_at_ms) VALUES ('p','w','p','codex','p','null','[]','pending',1,1,9), ('r','w','r','codex','r','null','[]','running',1,1,9)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed stale rows");
+
+    let events_before: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .expect("count events before migration");
+    migrator_through_0069()
+        .run(&pool)
+        .await
+        .expect("apply real 0069 migration");
+    let repeated = sqlx::query(include_str!(
+        "../../../migrations/0069_clear_pending_context_stale.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("execute the 0069 statement body a second time");
+    assert_eq!(
+        repeated.rows_affected(),
+        0,
+        "the 0069 SQL body itself must be idempotent"
+    );
+    let pending_stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = 'p'")
+            .fetch_one(&pool)
+            .await
+            .expect("read pending row");
+    assert_eq!(pending_stale, None);
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = 'r'")
+            .fetch_one(&pool)
+            .await
+            .expect("read in-flight row");
+    assert_eq!(
+        stale,
+        Some(9),
+        "migration must not touch in-flight verdicts"
+    );
+    let events_after: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+        .fetch_one(&pool)
+        .await
+        .expect("count events after migration");
+    assert_eq!(
+        events_after, events_before,
+        "migration must not emit events"
     );
 }

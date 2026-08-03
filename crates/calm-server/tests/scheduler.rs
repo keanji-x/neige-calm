@@ -27,6 +27,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
@@ -40,6 +41,7 @@ use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_WRITE_MARKDOWN;
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
@@ -59,7 +61,9 @@ use calm_server::operation::{
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes::terminal_cards::stable_payload_hash;
-use calm_server::scheduler::{Scheduler, TerminalTaskHook, build_worker_payload};
+use calm_server::scheduler::{
+    ClaimFenceTestHook, Scheduler, TerminalTaskHook, build_worker_payload,
+};
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
@@ -68,6 +72,10 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_server::wave_report::tasks_rebuild_tx;
+use calm_types::event::TaskContextRef;
+use calm_types::report_blocks::render_fence;
+use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 use serde_json::{Value, json};
 
 struct Boot {
@@ -163,6 +171,11 @@ async fn boot() -> Boot {
         "spec-thread",
     )
     .await;
+    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(wave.id.as_str())
+        .execute(sqlx_repo.pool())
+        .await
+        .expect("mark spec session as wave root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -228,6 +241,19 @@ fn app_state_for_context_events(boot: &Boot) -> AppState {
         Some(boot.card_role_cache.clone()),
         Some(boot.wave_cove_cache.clone()),
     )
+}
+
+#[tokio::test]
+async fn dispatcher_health_monitor_shares_scheduler_context_metrics() {
+    let boot = boot().await;
+    let state = app_state_for_context_events(&boot);
+    assert!(
+        Arc::ptr_eq(
+            &state.dispatcher.scheduler().context_metrics(),
+            &state.dispatcher.context_monitor().metrics(),
+        ),
+        "the Dispatcher health exporter must share the scheduler claim metrics Arc"
+    );
 }
 
 async fn seed_runtime_session_in_pool(
@@ -2730,13 +2756,757 @@ async fn every_dispatch_persists_same_batch_legacy_empty_context_freeze() {
     );
 }
 
-async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
-    let block = json!({
-        "id": "b_1000",
-        "kind": "prose",
-        "rev": 1,
-        "payload": {"markdown": "original contract"}
+#[tokio::test]
+async fn block_task_production_claim_freezes_nonempty_root_context() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let key = "block-freeze";
+    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 7,
+        summary: String::new(),
+        body: "# Task\n".into(),
+        blocks: Some(vec![ReportBlock {
+            id: "b_task_root".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: json!({"key": key, "kind": "terminal", "goal": "echo hi"}),
+        }]),
+    };
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+    )
+    .bind(format!("report-{key}"))
+    .bind(boot.wave_id.as_str())
+    .bind(serde_json::to_string(&report).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let context: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let refs: Vec<TaskContextRef> = serde_json::from_str(&context).unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].block_id, "b_task_root");
+    assert!(refs[0].is_root);
+    let frozen_events = event_rows(&boot, "task.context_frozen").await;
+    assert_eq!(frozen_events.len(), 1);
+    assert_eq!(
+        frozen_events[0].1["doc_revs"][boot.wave_id.as_str()],
+        json!(7),
+        "freeze event must preserve the production report's docRev fence baseline"
+    );
+    assert_eq!(frozen_events[0].1["truncated"], json!(false));
+    assert_eq!(frozen_events[0].1["refs"][0]["is_root"], json!(true));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM task_ref_index WHERE task_id = ?1 AND block_id = 'b_task_root'",
+        )
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        1
+    );
+}
+
+async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
+    sqlx::query(
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+    )
+    .bind(id)
+    .bind(boot.wave_id.as_str())
+    .bind(payload.to_string())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+}
+
+async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)], if_doc_rev: u64) {
+    let body = blocks
+        .iter()
+        .map(|(id, kind, payload)| {
+            let content = if *kind == "prose" {
+                payload["markdown"].as_str().unwrap().to_string()
+            } else {
+                render_fence(kind, payload)
+            };
+            format!("<!-- neige:{id} -->\n{content}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    call_tool(
+        boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(boot),
+        json!({"body": body, "if_doc_rev": if_doc_rev}),
+    )
+    .await
+    .expect("production report edit");
+}
+
+#[tokio::test]
+async fn report_without_doc_rev_is_retryable_malformed_instead_of_revision_zero() {
+    let boot = boot().await;
+    insert_report_payload(
+        &boot,
+        "v2-report",
+        json!({"schemaVersion": 2, "summary": "", "body": "", "blocks": []}),
+    )
+    .await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    assert!(matches!(
+        monitor
+            .resolve_task_closure(boot.wave_id.as_str(), "missing")
+            .await,
+        Err(ResolveError::MalformedStoredReport(_))
+    ));
+}
+
+#[tokio::test]
+async fn missing_blocks_is_empty_and_unrelated_malformed_block_is_ignored() {
+    let boot = boot().await;
+    insert_report_payload(
+        &boot,
+        "empty-report",
+        json!({"schemaVersion": 3, "docRev": 1, "summary": "", "body": ""}),
+    )
+    .await;
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    assert!(matches!(
+        monitor
+            .resolve_task_closure(boot.wave_id.as_str(), "missing")
+            .await,
+        Err(ResolveError::RootAbsent)
+    ));
+
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("DELETE FROM cards WHERE id = 'empty-report'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    insert_report_payload(
+        &boot,
+        "mixed-report",
+        json!({
+            "schemaVersion": 3,
+            "docRev": 2,
+            "summary": "",
+            "body": "",
+            "blocks": [
+                {"id": "b_broken", "kind": 7, "rev": "bad", "payload": null},
+                {"id": "b_target", "kind": "task", "rev": 1,
+                 "payload": {"key": "target", "kind": "terminal", "goal": "ok"}}
+            ]
+        }),
+    )
+    .await;
+    let closure = monitor
+        .resolve_task_closure(boot.wave_id.as_str(), "target")
+        .await
+        .expect("an unrelated malformed block must not poison the target");
+    assert_eq!(closure.refs[0].block_id, "b_target");
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[1].rev', 'bad') \
+         WHERE id = 'mixed-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        monitor
+            .resolve_task_closure(boot.wave_id.as_str(), "target")
+            .await,
+        Err(ResolveError::MalformedStoredReport(_))
+    ));
+}
+
+async fn assert_claim_fence_race_lost(cross_wave: bool) {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let key = if cross_wave {
+        "fence-cross"
+    } else {
+        "fence-same"
+    };
+    let mut refs = Vec::new();
+    if cross_wave {
+        let child = boot
+            .repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: boot.cove_id.clone(),
+                title: "fence child".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        refs.push(format!("neige://wave/{}#b_2000", child.id));
+        let child_report = WaveReportPayload {
+            schema_version: WaveReportPayload::SCHEMA_VERSION,
+            doc_rev: 4,
+            summary: String::new(),
+            body: "child".into(),
+            blocks: Some(vec![ReportBlock {
+                id: "b_2000".into(),
+                kind: "prose".into(),
+                rev: 1,
+                payload: json!({"markdown": "child original"}),
+            }]),
+        };
+        sqlx::query(
+            "INSERT INTO cards \
+             (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+             VALUES ('fence-child-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
+        )
+        .bind(child.id.as_str())
+        .bind(serde_json::to_string(&child_report).unwrap())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    }
+    let root_report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 7,
+        summary: String::new(),
+        body: "root".into(),
+        blocks: Some(vec![ReportBlock {
+            id: "b_fence_root".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: json!({
+                "key": key, "kind": "terminal", "goal": "true", "refs": refs
+            }),
+        }]),
+    };
+    insert_report_payload(
+        &boot,
+        "fence-root-report",
+        serde_json::to_value(root_report).unwrap(),
+    )
+    .await;
+    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let resolved_closure =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+            .resolve_task_closure(boot.wave_id.as_str(), key)
+            .await
+            .expect("fence fixture closure must resolve");
+    assert_eq!(resolved_closure.refs.len(), if cross_wave { 2 } else { 1 });
+
+    let spawned = Arc::new(AtomicUsize::new(0));
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![context_checked_terminal_adapter(&boot, spawned.clone())],
+    );
+    let resolved = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    scheduler.set_claim_fence_test_hook(ClaimFenceTestHook {
+        resolved: resolved.clone(),
+        resume: resume.clone(),
     });
+    let scheduled = {
+        let scheduler = scheduler.clone();
+        let wave_id = boot.wave_id.clone();
+        tokio::spawn(async move { scheduler.schedule_wave(wave_id).await })
+    };
+    resolved.notified().await;
+    let card_id = if cross_wave {
+        "fence-child-report"
+    } else {
+        "fence-root-report"
+    };
+    let block_path = if cross_wave {
+        "$.blocks[0].payload.markdown"
+    } else {
+        "$.blocks[0].payload.goal"
+    };
+    sqlx::query(&format!(
+        "UPDATE cards SET payload = json_set(payload, '$.docRev', json_extract(payload, '$.docRev') + 1, '{block_path}', 'edited after resolve') WHERE id = ?1"
+    ))
+    .bind(card_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    resume.notify_one();
+    scheduled.await.unwrap();
+
+    assert_eq!(
+        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+        TaskStatus::Pending
+    );
+    assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
+    let index_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(index_rows, 0);
+    assert_eq!(spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(scheduler.claim_fence_race_lost_count(), 1);
+    assert_eq!(
+        scheduler.context_metrics().snapshot().claim_fence_race_lost,
+        1,
+        "claim fence counter must be present in the production health snapshot"
+    );
+}
+
+#[tokio::test]
+async fn claim_fence_rejects_same_wave_edit_after_resolution_without_side_effects() {
+    assert_claim_fence_race_lost(false).await;
+}
+
+#[tokio::test]
+async fn claim_fence_rejects_cross_wave_edit_after_resolution_without_side_effects() {
+    assert_claim_fence_race_lost(true).await;
+}
+
+#[tokio::test]
+async fn deterministic_root_location_failures_do_not_freeze_or_index() {
+    for case in [
+        "duplicate",
+        "tombstoned",
+        "absent",
+        "invalid-root-ref",
+        "deleted-direct-ref",
+        "deleted-depth-two-ref",
+    ] {
+        let boot = boot().await;
+        set_lifecycle(&boot, WaveLifecycle::Draft).await;
+        let key = format!("root-{case}");
+        let valid_root = json!({
+            "key": key, "kind": "terminal", "goal": "true",
+            "declared_by": "spec", "ready": true
+        });
+        insert_report_payload(
+            &boot,
+            &format!("report-{case}"),
+            serde_json::to_value(WaveReportPayload {
+                schema_version: WaveReportPayload::SCHEMA_VERSION,
+                doc_rev: 0,
+                summary: String::new(),
+                body: String::new(),
+                blocks: Some(Vec::new()),
+            })
+            .unwrap(),
+        )
+        .await;
+        let root_id = "b_1001";
+        let mut initial = vec![(root_id, "task", valid_root.clone())];
+        if case == "deleted-direct-ref" {
+            initial[0].2["refs"] = json!([format!("neige://wave/{}#b_dead", boot.wave_id)]);
+            initial.push(("b_dead", "prose", json!({"markdown": "target"})));
+        } else if case == "deleted-depth-two-ref" {
+            initial[0].2["refs"] = json!([format!("neige://wave/{}#b_cafe", boot.wave_id)]);
+            initial.push((
+                "b_cafe",
+                "prose",
+                json!({
+                    "markdown": format!("[deep](neige://wave/{}#b_dead)", boot.wave_id)
+                }),
+            ));
+            initial.push(("b_dead", "prose", json!({"markdown": "target"})));
+        }
+        edit_report_blocks(&boot, &initial, 0).await;
+        set_lifecycle(&boot, WaveLifecycle::Draft).await;
+        let task_id = format!("{}:{key}", boot.wave_id);
+        assert!(boot.repo.task_get(&task_id).await.unwrap().is_some());
+        let (_runtime, scheduler) = build_scheduler(
+            &boot,
+            vec![Arc::new(CardSpawnAdapter {
+                kind: "terminal-worker",
+                card_id: boot.worker_card_id.to_string(),
+            })],
+        );
+        scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+        let broken = match case {
+            "duplicate" => vec![
+                (root_id, "task", valid_root.clone()),
+                ("b_1002", "task", valid_root.clone()),
+            ],
+            "tombstoned" => vec![(
+                root_id,
+                "task",
+                json!({
+                    "key": key, "declared_by": "spec", "tombstoned_by": "spec",
+                    "tombstone": {"reason": "gone"}
+                }),
+            )],
+            "absent" => vec![("b_1004", "prose", json!({"markdown": "nothing"}))],
+            "invalid-root-ref" => vec![(
+                root_id,
+                "task",
+                json!({
+                    "key": key, "kind": "terminal", "goal": "true",
+                    "declared_by": "spec", "ready": true,
+                    "refs": ["not-a-neige-link"]
+                }),
+            )],
+            "deleted-direct-ref" => vec![(root_id, "task", initial[0].2.clone())],
+            "deleted-depth-two-ref" => vec![
+                (root_id, "task", initial[0].2.clone()),
+                ("b_cafe", "prose", initial[1].2.clone()),
+            ],
+            _ => unreachable!(),
+        };
+        let pool = boot.repo.sqlite_pool().unwrap();
+        if case == "invalid-root-ref" {
+            // The public writer rejects malformed refs before persistence. Model
+            // an older/corrupt stored report, then run the production rebuild
+            // projection boundary; the task row itself was still created by the
+            // real report edit above.
+            let malformed = WaveReportPayload {
+                schema_version: WaveReportPayload::SCHEMA_VERSION,
+                doc_rev: 2,
+                summary: String::new(),
+                body: String::new(),
+                blocks: Some(vec![ReportBlock {
+                    id: root_id.into(),
+                    kind: "task".into(),
+                    rev: 2,
+                    payload: broken[0].2.clone(),
+                }]),
+            };
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query(
+                "UPDATE cards SET payload = ?1, body_crdt = NULL \
+                 WHERE wave_id = ?2 AND kind = 'wave-report'",
+            )
+            .bind(serde_json::to_string(&malformed).unwrap())
+            .bind(boot.wave_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        } else {
+            edit_report_blocks(&boot, &broken, 1).await;
+        }
+        set_lifecycle(&boot, WaveLifecycle::Working).await;
+        scheduler.schedule_wave(boot.wave_id.clone()).await;
+        assert!(event_rows(&boot, "task.context_frozen").await.is_empty());
+        assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+        let indexed: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM task_ref_index WHERE task_id = ?1")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(indexed, 0, "case {case}");
+        let stale: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
+                .bind(&task_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        assert!(
+            stale.is_none_or(|value| value.is_none()),
+            "case {case}: context_stale_at_ms must remain NULL when the row survives"
+        );
+        if matches!(
+            case,
+            "duplicate" | "tombstoned" | "absent" | "invalid-root-ref"
+        ) {
+            assert!(
+                boot.repo.task_get(&task_id).await.unwrap().is_none(),
+                "case {case}: production projection must guard-delete the pending row"
+            );
+            continue;
+        }
+        let expected_variant =
+            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+                .resolve_task_closure(boot.wave_id.as_str(), &key)
+                .await
+                .expect_err("fixture must fail closure resolution")
+                .variant();
+        let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+        assert_eq!(row.status, TaskStatus::Pending, "case {case}");
+        assert_eq!(row.context_stale_at_ms, None, "case {case}");
+        assert_eq!(
+            scheduler.context_resolve_failure_count(expected_variant),
+            1,
+            "case {case} must increment its ResolveError bucket"
+        );
+        assert_eq!(
+            scheduler
+                .context_metrics()
+                .snapshot()
+                .context_resolve_failures
+                .get(expected_variant),
+            Some(&1),
+            "case {case}: resolve bucket must be present in the production health snapshot"
+        );
+        if matches!(case, "deleted-direct-ref" | "deleted-depth-two-ref") {
+            let repaired = vec![(root_id, "task", valid_root.clone())];
+            edit_report_blocks(&boot, &repaired, 2).await;
+            TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+                .resolve_task_closure(boot.wave_id.as_str(), &key)
+                .await
+                .expect("repaired fixture must resolve before retrying production claim");
+            scheduler.schedule_wave(boot.wave_id.clone()).await;
+            assert_ne!(
+                boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+                TaskStatus::Pending,
+                "case {case} must recover after the next valid report edit"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_claim_does_not_head_of_line_block_budget_one_pass() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    insert_report_payload(
+        &boot,
+        "blocked-head-report",
+        serde_json::to_value(WaveReportPayload {
+            schema_version: WaveReportPayload::SCHEMA_VERSION,
+            doc_rev: 1,
+            summary: String::new(),
+            body: String::new(),
+            blocks: Some(vec![
+                ReportBlock {
+                    id: "b_head_1".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({
+                        "key": "blocked-head", "kind": "terminal", "goal": "true",
+                        "declared_by": "spec", "ready": true,
+                        "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
+                    }),
+                },
+                ReportBlock {
+                    id: "b_dead".into(),
+                    kind: "prose".into(),
+                    rev: 1,
+                    payload: json!({"markdown": "present before projection edit"}),
+                },
+                ReportBlock {
+                    id: "b_tail".into(),
+                    kind: "task".into(),
+                    rev: 1,
+                    payload: json!({
+                        "key": "healthy-tail", "kind": "terminal", "goal": "true",
+                        "declared_by": "spec", "ready": true
+                    }),
+                },
+            ]),
+        })
+        .unwrap(),
+    )
+    .await;
+    let mut blocked = plan_task(&boot.wave_id, "blocked-head", TaskKind::Terminal, &[]);
+    blocked.priority = 10;
+    let blocked_id = blocked.id.clone();
+    seed_task(&boot, blocked).await;
+    let healthy = plan_task(&boot.wave_id, "healthy-tail", TaskKind::Terminal, &[]);
+    let healthy_id = healthy.id.clone();
+    seed_task(&boot, healthy).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    edit_report_blocks(
+        &boot,
+        &[
+            (
+                "b_head_1",
+                "task",
+                json!({
+                    "key": "blocked-head", "kind": "terminal", "goal": "true",
+                    "declared_by": "spec", "ready": true,
+                    "refs": [format!("neige://wave/{}#b_dead", boot.wave_id)]
+                }),
+            ),
+            (
+                "b_tail",
+                "task",
+                json!({
+                    "key": "healthy-tail", "kind": "terminal", "goal": "true",
+                    "declared_by": "spec", "ready": true
+                }),
+            ),
+        ],
+        0,
+    )
+    .await;
+    sqlx::query("UPDATE waves SET task_budget = 1 WHERE id = ?1")
+        .bind(boot.wave_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&blocked_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&healthy_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    let blocked = boot.repo.task_get(&blocked_id).await.unwrap().unwrap();
+    let healthy = boot.repo.task_get(&healthy_id).await.unwrap().unwrap();
+    assert_eq!(blocked.status, TaskStatus::Pending);
+    assert_eq!(blocked.context_stale_at_ms, None);
+    assert_ne!(
+        healthy.status,
+        TaskStatus::Pending,
+        "the same pass must continue until one claim consumes capacity"
+    );
+    assert_eq!(
+        scheduler.context_resolve_failure_count("referenced_block_absent"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let key = "hash-shapes";
+    let report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 1,
+        summary: String::new(),
+        body: String::new(),
+        blocks: Some(vec![
+            ReportBlock {
+                id: "b_3001".into(),
+                kind: "task".into(),
+                rev: 1,
+                payload: json!({
+                    "key": key, "kind": "terminal", "goal": "true", "priority": 1,
+                    "refs": [format!("neige://wave/{}#b_3002", boot.wave_id)]
+                }),
+            },
+            ReportBlock {
+                id: "b_3002".into(),
+                kind: "prose".into(),
+                rev: 1,
+                payload: json!({"markdown": "child original"}),
+            },
+        ]),
+    };
+    insert_report_payload(
+        &boot,
+        "hash-shapes-report",
+        serde_json::to_value(report).unwrap(),
+    )
+    .await;
+    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    assert!(
+        scheduler.context_metrics().snapshot().closure_total > 0,
+        "one production claim must increment the exported closure counter"
+    );
+    let monitor =
+        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.priority', 9) \
+         WHERE id = 'hash-shapes-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert!(event_rows(&boot, "task.context_advanced").await.is_empty());
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[1].payload.markdown', 'changed') \
+         WHERE id = 'hash-shapes-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+}
+
+async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonitor {
+    set_lifecycle(boot, WaveLifecycle::Working).await;
+    let report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 3,
+        summary: String::new(),
+        body: "# Task\n".into(),
+        blocks: Some(vec![ReportBlock {
+            id: "b_1000".into(),
+            kind: "task".into(),
+            rev: 3,
+            payload: json!({"key": key, "kind": "terminal", "goal": "original contract"}),
+        }]),
+    };
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
         "INSERT INTO cards \
@@ -2744,39 +3514,72 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
          VALUES ('context-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
     )
     .bind(boot.wave_id.as_str())
-    .bind(json!({"blocks": [block]}).to_string())
+    .bind(serde_json::to_string(&report).unwrap())
     .execute(&pool)
     .await
     .unwrap();
-    let monitor =
-        TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
-    let frozen = monitor
-        .resolve_closure(boot.wave_id.as_str(), "b_1000")
-        .await
-        .expect("resolve root block");
-    assert_eq!(frozen.refs.len(), 1, "root is depth-zero closure node");
-    assert!(
-        !frozen.refs[0].hash.is_empty(),
-        "fourth tuple member is hash"
-    );
-
-    let mut task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
-    task.status = TaskStatus::Dispatched;
+    let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
-        .bind(serde_json::to_string(&frozen.refs).unwrap())
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
         .bind(&task_id)
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_1000')")
+    let (_runtime, scheduler) = build_scheduler(
+        boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let claimed = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_ne!(
+        claimed.status,
+        TaskStatus::Pending,
+        "fixture must use production claim"
+    );
+    let context: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
-        .bind(boot.wave_id.as_str())
-        .execute(&pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
+    assert_ne!(context, "[]");
+    TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
+}
+
+#[tokio::test]
+async fn edit_then_byte_identical_revert_and_unrelated_doc_rev_do_not_mark_material() {
+    let boot = boot().await;
+    let monitor = seed_frozen_context_fixture(&boot, "reverted").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.docRev', 4, \
+         '$.blocks[0].rev', 4, '$.blocks[0].payload.goal', 'temporary edit') \
+         WHERE id = 'context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.docRev', 5, \
+         '$.blocks[0].rev', 5, '$.blocks[0].payload.goal', 'original contract') \
+         WHERE id = 'context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
     monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    assert!(
+        event_rows(&boot, "task.context_advanced").await.is_empty(),
+        "post-claim equality ignores both rev churn and the report-level docRev fence"
+    );
 }
 
 #[tokio::test]
@@ -2794,7 +3597,7 @@ async fn context_sweep_detects_db_bypass_and_emits_advanced_once() {
             .await
             .unwrap();
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'replacement') WHERE id = ?1",
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'replacement') WHERE id = ?1",
     )
     .bind(card_id)
     .execute(&pool)
@@ -2839,42 +3642,124 @@ async fn context_sweep_verifies_available_refs_when_closure_was_truncated() {
 
 async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id: &str, key: &str) {
     let boot = boot().await;
-    let _monitor = seed_frozen_context_fixture(&boot, key).await;
-    let state = app_state_for_context_events(&boot);
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let referenced = boot
+        .repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: boot.cove_id.clone(),
+            title: deleted_wave_id.into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let child_report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 1,
+        summary: String::new(),
+        body: String::new(),
+        blocks: Some(vec![ReportBlock {
+            id: "b_dead".into(),
+            kind: "prose".into(),
+            rev: 1,
+            payload: json!({"markdown": "will disappear"}),
+        }]),
+    };
     let pool = boot.repo.sqlite_pool().unwrap();
-    let task_id = format!("{}:{key}", boot.wave_id);
-    let missing_ref = json!([{
-        "wave_id": deleted_wave_id,
-        "block_id": "b_deleted",
-        "rev": 1,
-        "hash": "deleted"
-    }]);
-    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
-        .bind(missing_ref.to_string())
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("DELETE FROM task_ref_index WHERE task_id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     sqlx::query(
-        "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_deleted')",
+        "INSERT INTO cards \
+         (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+         VALUES (?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
     )
-    .bind(&task_id)
-    .bind(deleted_wave_id)
+    .bind(format!("deleted-report-{key}"))
+    .bind(referenced.id.as_str())
+    .bind(serde_json::to_string(&child_report).unwrap())
     .execute(&pool)
     .await
     .unwrap();
+    let root_report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 1,
+        summary: String::new(),
+        body: String::new(),
+        blocks: Some(vec![ReportBlock {
+            id: "b_1000".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: json!({
+                "key": key, "kind": "terminal", "goal": "true",
+                "refs": [format!("neige://wave/{}#b_dead", referenced.id)]
+            }),
+        }]),
+    };
+    insert_report_payload(
+        &boot,
+        &format!("deletion-root-{key}"),
+        serde_json::to_value(root_report).unwrap(),
+    )
+    .await;
+    let task_id = format!("{}:{key}", boot.wave_id);
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]),
+    )
+    .await;
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_ne!(frozen, "[]");
+    let frozen_refs: Vec<TaskContextRef> = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(
+        frozen_refs.len(),
+        2,
+        "fixture must freeze the deleted child"
+    );
+    assert!(matches!(
+        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+        TaskStatus::Dispatched | TaskStatus::Running | TaskStatus::Verifying
+    ));
+    sqlx::query("DELETE FROM waves WHERE id = ?1")
+        .bind(referenced.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let state = app_state_for_context_events(&boot);
 
+    let event = match event {
+        Event::WaveDeleted { .. } => Event::WaveDeleted {
+            id: referenced.id.clone(),
+            cove_id: boot.cove_id.clone(),
+        },
+        Event::CoveDeleted { .. } => Event::CoveDeleted {
+            id: boot.cove_id.clone(),
+        },
+        _ => unreachable!("deletion fixture only accepts wave/cove deletion"),
+    };
     boot.events.emit(ActorId::Kernel, event);
-    for _ in 0..100 {
+    for _ in 0..500 {
         if !event_rows(&boot, "task.context_advanced").await.is_empty() {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(
         event_rows(&boot, "task.context_advanced").await.len(),
@@ -2915,7 +3800,7 @@ async fn event_detection_catches_deleted_or_recycled_same_id_same_rev() {
     let monitor = seed_frozen_context_fixture(&boot, "recycled").await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'new incarnation') \
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'new incarnation') \
          WHERE wave_id = ?1 AND kind = 'wave-report'",
     )
     .bind(boot.wave_id.as_str())
@@ -3001,7 +3886,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
          VALUES ('closure-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
     )
     .bind(boot.wave_id.as_str())
-    .bind(json!({"blocks": blocks}).to_string())
+    .bind(json!({"docRev": 1, "blocks": blocks}).to_string())
     .execute(&pool)
     .await
     .unwrap();
@@ -3044,7 +3929,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
     )
     .bind(foreign_wave.id.as_str())
     .bind(
-        json!({"blocks": [{
+        json!({"docRev": 1, "blocks": [{
             "id":"b_f000","kind":"prose","rev":1,"payload":{"markdown":"foreign"}
         }]})
         .to_string(),
@@ -3055,7 +3940,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
     sqlx::query(
         "UPDATE cards SET payload = ?1 WHERE id = 'closure-report'",
     )
-    .bind(json!({"blocks": [{
+    .bind(json!({"docRev": 2, "blocks": [{
         "id":"b_0000","kind":"prose","rev":1,
         "payload":{"markdown": format!("[foreign](neige://wave/{}#b_f000)", foreign_wave.id)}
     }]}).to_string())
@@ -3080,27 +3965,62 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             .fetch_one(&pool)
             .await
             .unwrap();
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM cards WHERE id = 'context-report'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut report: WaveReportPayload = serde_json::from_str(&payload).unwrap();
     for index in 1..65 {
         let key = format!("fanout-{index:02}");
-        let mut task = plan_task(&boot.wave_id, &key, TaskKind::Terminal, &[]);
-        task.status = TaskStatus::Dispatched;
+        report.blocks.as_mut().unwrap().push(ReportBlock {
+            id: format!("b_a{index:03}"),
+            kind: "task".into(),
+            rev: 1,
+            payload: json!({
+                "key": key, "kind": "terminal", "goal": "true",
+                "refs": [format!("neige://wave/{}#b_1000", boot.wave_id)]
+            }),
+        });
+        let task = plan_task(&boot.wave_id, &key, TaskKind::Terminal, &[]);
         let task_id = task.id.clone();
         seed_task(&boot, task).await;
-        sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
-            .bind(&frozen_json)
+        sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
             .bind(&task_id)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,'b_1000')",
-        )
-        .bind(task_id)
+    }
+    report.doc_rev += 1;
+    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
+        .bind(serde_json::to_string(&report).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET task_budget = 65 WHERE id = ?1")
         .bind(boot.wave_id.as_str())
         .execute(&pool)
         .await
         .unwrap();
-    }
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    let claimed: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM tasks WHERE wave_id = ?1 AND status != 'pending' ",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        claimed, 65,
+        "fanout rows must all come from production claim"
+    );
     monitor
         .detect_wave_edit(boot.wave_id.as_str())
         .await
@@ -3111,12 +4031,37 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         "the first task beyond fanout 64 is material even when tuples match"
     );
 
-    let mut cap_task = plan_task(&boot.wave_id, "sweep-cap", TaskKind::Terminal, &[]);
-    cap_task.status = TaskStatus::Dispatched;
+    report.blocks.as_mut().unwrap().push(ReportBlock {
+        id: "b_ca900".into(),
+        kind: "task".into(),
+        rev: 1,
+        payload: json!({"key": "sweep-cap", "kind": "terminal", "goal": "true"}),
+    });
+    report.doc_rev += 1;
+    sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
+        .bind(serde_json::to_string(&report).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET task_budget = 66 WHERE id = ?1")
+        .bind(boot.wave_id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let cap_task = plan_task(&boot.wave_id, "sweep-cap", TaskKind::Terminal, &[]);
     let cap_id = cap_task.id.clone();
     seed_task(&boot, cap_task).await;
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
+        .bind(&cap_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
     let one: Value = serde_json::from_str::<Vec<Value>>(&frozen_json).unwrap()[0].clone();
     let oversized = vec![one; calm_server::task_context::MAX_SWEEP_NODES + 1];
+    // This is the dedicated sweep-limit corruption fixture: no production
+    // claim can emit a closure beyond MAX_REF_NODES, so the persisted
+    // over-limit state must be injected after a real claim.
     sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
         .bind(serde_json::to_string(&oversized).unwrap())
         .bind(cap_id)

@@ -116,26 +116,27 @@ pub fn validate_payload(kind: &str, payload: &Value) -> Result<(), String> {
     }
 }
 
+pub const TASK_FIELDS: &[&str] = &[
+    "key",
+    "kind",
+    "goal",
+    "acceptance",
+    "gate",
+    "no_gate_reason",
+    "depends_on",
+    "priority",
+    "cwd",
+    "context",
+    "refs",
+    "ready",
+    "declared_by",
+    "released_by_user",
+    "spawn",
+    "tombstone",
+    "tombstoned_by",
+];
+
 fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
-    const TASK_FIELDS: &[&str] = &[
-        "key",
-        "kind",
-        "goal",
-        "acceptance",
-        "gate",
-        "no_gate_reason",
-        "depends_on",
-        "priority",
-        "cwd",
-        "context",
-        "refs",
-        "ready",
-        "declared_by",
-        "released_by_user",
-        "spawn",
-        "tombstone",
-        "tombstoned_by",
-    ];
     reject_unknown(map, TASK_FIELDS, errors);
 
     let key = match map.get("key") {

@@ -2303,8 +2303,13 @@ async fn emit_scripted_impl_dispatch(fx: &Fixture, slice_id: &str) -> EventRow {
                             ActorId::KernelDispatcher,
                             scope,
                             Event::TaskContextFrozen {
+                                wave_id: WaveId::default(),
+                                task_key: String::new(),
+                                idempotency_key: String::new(),
                                 task_id: idempotency_key,
                                 refs: vec![],
+                                doc_revs: Default::default(),
+                                truncated: false,
                             },
                         ),
                     ],

@@ -524,29 +524,46 @@ kind 头，这条依赖必须写出来）。
 
 1. claim 前，用 `(wave_id, key)` 在该 wave 当前报告的块快照里定位那个
    `kind == "task"` 且 `payload.key == key` 的**存活块**，取其 `block_id` 作根。
-2. **定位失败分两类**：
-   - **瞬时**（存储/IO 不可用、存储内容损坏到无法解码）⇒ **放弃本次 claim**
-     （race-lost：不写事件、不写 stale、行留在 `pending`），下一轮重来。**完全可逆。**
-   - **确定性**（根块不存在 / 已成墓碑 / 同 `key` 多个存活块 / 越 cove /
-     引用不合法）⇒ 按 `material` 处理，置 `context_stale_at_ms`。
+2. **claim 前定位失败一律不下判决。** 瞬时与确定性失败同等按 race-lost 处理：
+   不写事件、不写 `context_stale_at_ms`、行留在 `pending`，下一轮重来，**完全可逆**。
+   两类只在可观测量上有区别：按 `ResolveError` 变体分桶的计数器 + 一条 `warn!`，
+   不产生任何持久状态。确定性成因由投影既有的守卫式删除承载；该路径对应的事件是
+   既有 `PlanUpdated{changed_keys}`，而不是 claim 路径凭空制造一条没有变更集的判决事件。
+
+   **初稿为什么写反了**：把 in-flight 行的 fail-closed 纪律机械套到了仍为 `pending`
+   的行上，但这里缺少判决成立所需的三个载体：(a) 没有冻结集就没有
+   `changed_refs`，而 §5.4 明定它是 `TaskContextAdvanced` 的唯一存在理由；
+   (b) §5.5 全量 sweep 的枚举源是 in-flight 行，够不到 `pending`；(c) 投影 upsert
+   不清 `context_stale_at_ms`，且行永不回 `pending`，所以人把引用修对也无法复活。
+
+   **四格**：载体 = 无，这正是本条的价值；谁写 = 无人写持久状态，确定性成因由投影
+   守卫式删除写 `tasks` 当前投影并发既有 `PlanUpdated{changed_keys}`；rebuild = pending
+   行是文档的纯函数，天然一致；migration = 不需要新列，但需要一次性、幂等地执行
+   `UPDATE tasks SET context_stale_at_ms = NULL WHERE status = 'pending' AND context_stale_at_ms IS NOT NULL`，只碰 pending、
+   不产生事件——该状态在已发布版本不可达，仅防御曾含 claim 侧误写的未合并开发分支。
 3. `origin='legacy'` 的行跳过定位，冻结集为空集。
 4. 闭包**展开**在 claim 事务之外的普通读里完成，**但根块与各 wave 的 `doc_rev`
    必须在 claim 事务内复核**（§5.2 栅栏）。
+
+`task_claim_pending_tx` **不得**带 `context_stale_at_ms` 谓词：腿 1 后没有写者能让
+pending 行带上该列（`mark_context_material_tx` 自带 in-flight 守卫，且行永不回
+pending），该谓词因而是会诱导后来者补写者的空洞不变量。material 行本已被
+`status = 'pending'` 排除；判决强制点只有 §5.6 的四个 `prepare_tx`，没有第五条。
 
 > **这条分类要求 `ResolveError` 先拆变体。** 现有枚举只有
 > `Missing / CrossCove / InvalidReference / Storage`，而 **`Missing` 一个变体同时
 > 承载两类** —— wave 不存在、报告卡不存在、`blocks` 字段缺失、块不存在；
 > 更糟的是单块反序列化失败被 `.ok()?` **静默吞掉**，最终伪装成「块不存在」
-> ⇒ 一个本该是「存储损坏」的情形会被判成确定性 `material`。
+> ⇒ 一个本该按存储损坏观测的情形会被错分到确定性计数桶。
 >
 > **拆成**：retryable = `StorageUnavailable` / `MalformedStoredReport`；
 > deterministic = `RootAbsent` / `RootTombstoned` / `DuplicateLiveKey` /
 > **`ReferencedWaveAbsent` / `ReferencedBlockAbsent` / `ReportAbsent`** /
 > `CrossCove` / `InvalidReference`。**非根引用的缺失必须有自己的变体**，
 > 否则实现者会把所有 missing 塞回 `RootAbsent`，只是换个名字。
-> **分类按变体匹配，禁止按错误字符串推断。**
-> `MalformedStoredReport` **计入 per-row 失败计数、连续 3 轮后升级为 `material`**
-> —— 损坏的持久数据通常不会自行恢复，无限重试等于饿死该行。
+> **分类按变体匹配，禁止按错误字符串推断。** 这项分类在 claim 前**只影响计数器
+> 分桶**，所有变体仍一律 race-lost；per-row 连续失败升级只属于 3b′-ii 的
+> **in-flight sweep**，不得回灌到 pending claim 路径。
 
 #### claim 栅栏：关掉「解析 → claim」的 TOCTOU
 
@@ -857,8 +874,10 @@ kind 是任务派发与用户建卡**共用**的。
 > 这是**允许的检测延迟**，与 §5.6「禁止在**已判定为** material 的上下文上启动」
 > 不冲突，但 (B) 因此**不能**被读成「所有 material 变化都先于首启被判定」。
 >
-> **(C) 误报侧不属于本断言**：越 cove、超预算、确定性定位失败一律直接判
-> `material`，那是 fail-closed 的保守方向，只增加误报、不削弱 (A)(B)。
+> **(C) 误报侧不属于本断言**：本条只描述 **in-flight 冻结集**在 sweep / detect
+> 路径中的确定性验证失败；越 cove、超预算、块确定不存在等一律直接判 `material`，
+> 是 fail-closed 的保守方向，只增加误报、不削弱 (A)(B)。**claim 前的定位失败不在
+> 本条范围内，一律不下判决、按 race-lost 处理，见 §5.2。**
 >
 > **(A) 与 (B) 互不推出，要分别验收。**
 
@@ -1189,7 +1208,7 @@ UPDATE tasks SET claim_context_json = '[]'
 ⇒ 叠加强制点即为一次必然的 Stuck-ops 事故。
 `context_stale_at_ms` **不需要** backfill —— `NULL` 的语义正是「从未被判 material」。
 
-**切片 3b′（`0069_`）—— 三列，同一个 migration 里连 backfill 一起写**：
+**切片 3b′-ii（`0070_`）—— 三列，同一个 migration 里连 backfill 一起写**：
 
 | 列 | 类型 | backfill | 理由 |
 |---|---|---|---|
@@ -1276,8 +1295,8 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
   **无** `task_ref_index` 行、**无任何 worker / gate 首次启动**。
 - **3d. 根块哈希只在纳入字段集上敏感**：改 `goal` / `kind` / `gate` ⇒ 判；
   改 `priority` / `declared_by` / `spawn` ⇒ **不判**；
-  `released_by_user: false → true` ⇒ **不判**；
-  `ready: true → false` ⇒ **判**（两种策略）；
+  `released_by_user: false → true` ⇒ **不判**。以下属于 **3b′-ii 撤回规则**、
+  在 3b′-i 本片不成立：`ready: true → false` ⇒ **判**（两种策略）；
   `released_by_user: true → false` ⇒ **仅 `declare-and-wait` 下判**。
 - **4. 改动落在冻结集内 ⇒ 在此后第一次完成的 sweep 结束时**必有一条
   `TaskContextAdvanced`，**且它属于 task 所在的 wave**。
@@ -1321,10 +1340,26 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
 
 ### 10.4 门
 
-fmt / clippy `--workspace --all-targets -D warnings` / calm-types /
-**calm-server --lib**（这一格曾被漏跑，导致一个红测试差点进 PR）/
+fmt / clippy `--workspace --all-targets --features calm-server/codex-e2e -- -D warnings` /
+workspace test `--workspace --locked --features calm-server/codex-e2e --profile ci` / calm-types /
+**calm-truth --lib** / **calm-server --lib**（独立 lib target 必须逐格运行，集成套绿不代表它绿）/
 mcp_integration_suite / wave_suite / scheduler / dispatcher /
-OpenAPI 重生成无 diff / web build + vitest。
+OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + test**。
+
+> **这份清单必须与 CI 的 job 列表对齐**（`.github/workflows/ci.yml`：
+> `lint` / `rust (test)` / `web-unit (build + test)` / `fe-unit (lint + build + test)` /
+> `openapi drift` / `a11y` / `chromium e2e` / `stack e2e` / `frozen security vectors`）。
+> **本片三次因为清单与 CI 实际命令不一致而报出假绿**：第一次漏 `calm-truth --lib`（防复发单测落在那个
+> crate，实测 `299 passed; 1 failed`），一次漏 `fe` 的 `test:wire`
+> （`fe/core/api/generated/wire.ts` 与 `web/src/api/generated-events.ts` 必须**逐字节相同**，
+> 而 `gen:api` 只写 web 那一份，fe 那份靠手工同步）；第三次漏了 clippy 与 workspace test
+> 的 `--features calm-server/codex-e2e`。`codex_forge_e2e.rs` 整个文件被该 feature 门住，
+> 不带 feature 时会编译成空；因此本地不带 feature 跑绿不代表 CI 绿。
+> **三次都是「实际 CI 门没有被完整列出和执行」，必须逐字对照 workflow 命令，不能用近似命令或子集替代。**
+>
+> **两个生成物的行尾空格是真实的门**：`npm run gen:api` 的 ts-rs 输出带行尾空格，
+> 编辑器/格式化器一旦剥掉，`openapi drift` 与 `test:wire` 双双变红。
+> 生成物一律提交**生成器的原样输出**，不要手改。
 
 ---
 
@@ -1349,20 +1384,22 @@ OpenAPI 重生成无 diff / web build + vitest。
 
 | # | 交付项 |
 |---|---|
-| 1 | **冻结根接线 + claim 栅栏**：按 `(wave_id, key)` 定位根块 → `resolve_closure` → 传进 `task_claim_pending_tx`。**栅栏的正面表述：claim 事务内、状态翻转之前，复核 (a) 根块 `(block_id, content_hash)` 与 (b) 闭包涉及的每个不同 `wave_id` 的报告 `doc_rev`；任一不一致 ⇒ 回滚 claim、race-lost 重来。** `doc_rev` 已镜像进 `cards.payload`，同事务普通 `SELECT` 可读，**不需要加载 automerge 文档**。**`doc_revs` 只进 `TaskContextFrozen` 事件，不落任何 `tasks` 列，严禁写进 `claim_context_json`**（该列是纯数组、解析失败即判 material，`0067` 已在生产 backfill `'[]'`）。**每个 wave 的 `doc_rev` 先于该 wave 首个块读取**；wave / 报告卡缺失即视为不一致；**栅栏判据只来自本轮内存中的 map**（§5.2「三件事必须写死」）。定位失败分瞬时 / 确定性两类。**拆 `ResolveError` 变体**，`.ok()?` 改显式冒泡，**禁止按错误字符串推断** |
+| 1 | **冻结根接线 + claim 栅栏**：按 `(wave_id, key)` 定位根块 → `resolve_closure` → 传进 `task_claim_pending_tx`。**栅栏的正面表述：claim 事务内、状态翻转之前，复核 (a) 根块 `(block_id, content_hash)` 与 (b) 闭包涉及的每个不同 `wave_id` 的报告 `doc_rev`；任一不一致 ⇒ 回滚 claim、race-lost 重来。** `doc_rev` 已镜像进 `cards.payload`，同事务普通 `SELECT` 可读，**不需要加载 automerge 文档**。**`doc_revs` 只进 `TaskContextFrozen` 事件，不落任何 `tasks` 列，严禁写进 `claim_context_json`**（该列是纯数组、解析失败即判 material，`0067` 已在生产 backfill `'[]'`）。**每个 wave 的 `doc_rev` 先于该 wave 首个块读取**；wave / 报告卡缺失即视为不一致；**栅栏判据只来自本轮内存中的 map**（§5.2「三件事必须写死」）。定位失败不分瞬时 / 确定性，一律不下判决、按变体计数并 `warn!` 后 race-lost；`task_claim_pending_tx` 不得带 `context_stale_at_ms` 谓词。**拆 `ResolveError` 变体**，`.ok()?` 改显式冒泡，**禁止按错误字符串推断** |
+| 1a | **ready capacity 按成功 claim 记账**：不得在候选集上预先 `.take(capacity)`；逐个尝试 ready 行，仅成功 claim 才消耗一个名额，直到成功数达到 capacity，保证普通 race-lost 与定位失败都不队头阻塞 |
 | 2 | **相等式去 `rev`**：只比 `(wave_id, block_id, content_hash)`，**恒比哈希、不得以 rev 短路** |
-| 3 | **根块哈希收窄到 9 字段**；深度 ≥ 1 不收窄。**先把 `TASK_FIELDS` 从函数内局部常量提升为模块级 `pub(crate)`**，再配集合相等元测试（否则测试只能复制一份「期望全集」，是一条自证自明的空洞断言）。写死 canonical 投影函数 + 冻结集加**显式 root 标记** |
-| 4 | **撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` / `effective_wait` 作回传通道 |
-| 5 | **单赢家原语 + 事件管线**：提取 `mark_context_material_tx`，三条路径共用，归因 `ActorId::Kernel`；`TaskProjectionOutcome` 增 `kernel_events`；`tasks_rebuild_tx` 透传；**wave PATCH 从 `write_with_events_typed` 迁到 `write_with_actor_events_typed`**（不迁则 403）；禁止 `_tx` 内 `event_append_in_tx` |
+| 3 | **根块哈希收窄到 9 字段**；深度 ≥ 1 不收窄。**先把 `TASK_FIELDS` 从函数内局部常量提升为模块级 `pub`**（集合相等元测试位于 `calm-server`，而常量位于 `calm-types`，跨 crate 的 `pub(crate)` 不可见），再配集合相等元测试（否则测试只能复制一份「期望全集」，是一条自证自明的空洞断言）。写死 canonical 投影函数 + 冻结集加**显式 root 标记** |
+| 4 | **3b′-ii：撤回规则**：`tasks` 增 `decl_ready` / `decl_released_by_user`；**只在 `project_tasks_tx`** 执行（`evaluate_schedulability_tx` **读路径也在用**，只产诊断）；`released_by_user` 带策略条件；`BlockVerdict` 增 `withdrawal` / `effective_wait` 作回传通道；本片不实现 |
+| 5 | **3b′-ii：单赢家原语 + 事件管线**：提取 `mark_context_material_tx`，三条路径共用，归因 `ActorId::Kernel`；`TaskProjectionOutcome` 增 `kernel_events`；`tasks_rebuild_tx` 透传；**wave PATCH 从 `write_with_events_typed` 迁到 `write_with_actor_events_typed`**（不迁则 403）；禁止 `_tx` 内 `event_append_in_tx`；本片不实现 |
 | 6 | **`closure_truncated` 进 sweep**：与事件路径同形；改掉钉住反向行为的那条测试断言 |
-| 7 | **瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级。**必须与交付项 1 用同一套 `ResolveError` 变体** —— 只修 claim 侧会让文档里同时存在两条互斥处置，那正是被判为 root-cause 的病灶 |
+| 7 | **3b′-ii：in-flight 瞬时失败不下判决**：`refs_match` 改三态；`tasks` 增 `context_verify_failures`；**三个吞错点都改**（`wave_get` / `load_block` / `cove_get_system().ok().flatten()`）；连续 3 轮升级。claim 前 pending 路径不升级，始终遵守交付项 1。**同片补腿 2**：把 `task_projection.rs` 的 refs 检查由目标 wave/card 存在下沉到目标**块**存在，并对 `goal` / `acceptance` 的 `scan_links` 结果施加同一判定，只做深度 ≤ 1；这是 `evaluate_schedulability_tx` 既有跨表读的同构扩展，不新增 §3.8 的读时数据源抽象。可推迟到此项，因为它只缩小残余集合并给 3c 诊断供料，而 3c 与 3b′ 本就必须同一次发布，不产生对人可见窗口。 |
 | 8 | **tick 顺序 + boot 门**：周期 tick 的上下文 sweep 排在 `sweep_all` **之前**并补源码序断言；**任何一次成功 sweep 即原子开门，仅在翻转时补跑 `sweep_all`** |
-| 9 | **事件补齐 + 向后兼容**：`TaskContextFrozen` 补 `truncated` / `doc_revs` / root 标记；`TaskContextAdvanced` 补 `changed_refs` / `wave_id` / `task_key` / `rationale`。新字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程 |
-| 10 | **migration `0069_`**：§9.2 的三列，连类型、backfill SQL、reader 分工、「三列刻意不进 `TASK_COLUMNS`」的旁注一起写在同一个文件里 |
-| 11 | **诊断对齐**：生产里已有第二份 in-flight 比较集，其 `withdrawal_diagnostic` 逐字承诺「any gate operation that has not started will be rejected」——收窄之后改 `priority` 会看到这句话而 gate 不会被拒，**诊断在说谎**。显式对齐两个字段集，并断言诊断承诺与 `context_stale_at_ms` 一致 |
+| 9a | **3b′-i（已做）：冻结事件补齐 + 向后兼容**：`TaskContextFrozen` 补 `truncated` / `doc_revs` / root 标记。字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程 |
+| 9b | **3b′-ii：裁决事件补齐 + 向后兼容**：`TaskContextAdvanced` 补 `changed_refs` / `wave_id` / `task_key` / `rationale`。字段 `#[serde(default)]` + `task_id` 兼容读 + 历史事件可读回归。Tier-A 全流程；本片不实现 |
+| 10 | **migration `0070_`**：§9.2 的三列，连类型、backfill SQL、reader 分工、「三列刻意不进 `TASK_COLUMNS`」的旁注一起写在同一个文件里。`0069_` 是防御性清理；目标状态在已发布版本不可达，仅给曾含 claim 侧误写的开发分支兜底 |
+| 11 | **3b′-ii：诊断对齐**：生产里已有第二份 in-flight 比较集，其 `withdrawal_diagnostic` 逐字承诺「any gate operation that has not started will be rejected」——收窄之后改 `priority` 会看到这句话而 gate 不会被拒，**诊断在说谎**。显式对齐两个字段集，并断言诊断承诺与 `context_stale_at_ms` 一致；本片不实现 |
 
-**验收**：§10.3 + **附录 D.2 的 3b′ 三条补充项**（㉒ 元测试的常量引用、
-㉓ 两条路同结论、㉕ 开门后当轮完成 `resume_dispatched`）。
+**验收**：§10.3 + **附录 D.2 的 3b′ 四条补充项**（㉒ 元测试的常量引用、
+㉓ 两条路同结论、㉕ 开门后当轮完成 `resume_dispatched`、㉖ SQL / migration 回归）。
 
 ### 切片 3c — 前端：状态回显 + 诊断渲染（~350 行）
 
@@ -1486,6 +1523,7 @@ task 块时，**当场弹确认框**「要不要此后 spec 的任务都等你�
 | 14 | **引用锚仍是 block id ⇒ 误中止潮** | 一次大幅整文档重写可能让 `refs[]` 批量失效 ⇒ 闭包解析不到 ⇒ fail-closed 判 material ⇒ **一批在飞任务同时终结**。缓解是「引用已失效，请重新链接」诊断 + marker 通道；**未量化**，上线后需观测 |
 | 15 | **换 `key` 绕过人的否决，防线降为 opt-in** | B2 裁决（§12.2）把「墓碑 ⇒ 自动派生 `declare-and-wait`」改成删任务时的一次点击 ⇒ **人不点时该循环仍然存在**。本设计只保证**同 `key`** 被挡住（§4.2 规则 2 + §3.7 规则 3）。**回退条件**：观测到真实的换 key 循环 ⇒ 恢复 `effective_policy` 的第二分支 + wave 级横幅 + 确认框 + 两个清除按钮（§6.1）|
 | 16 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
+| 17 | **投影暂时看不见深度 ≥ 2 的失效引用、被引用块自身不合法的 `refs`，以及整张报告卡缺席（`ReportAbsent`）** | pending 行会可逆地无限次重试 claim、反复定位失败；`ReportAbsent` 没有对应的投影守卫式删除路径。每次只付一次闭包重解析，不 spawn worker、不改状态，任一侧 wave 编辑即自愈，且成功 claim 才消耗 capacity，所以不拖住同 wave 其它任务。定价与证伪装置：`context_resolve_failures{variant}`；腿 2 在 3b′-ii 下沉块粒度检查以缩小 refs 侧集合 |
 
 ### 12.2 产品侧裁决（2026-08-03 已拍板，四条全部按倾向落）
 
@@ -1716,6 +1754,7 @@ r8 系列的形状很清晰，值得记下来作为方法论：
 | 冻结相关测试全部用 raw SQL 直接种 `claim_context_json`，于是「生产 claim → 冻结」**从来没被任何测试走过一次** | 这是上一条的**残留形态**：fixture 问题修了，但数据预置的旁路还在。3b′ 的验收因此明确**禁止 SQL 预置该列** |
 | `bbaa62b5` 把 `ReportDocOp::MoveBlock` 的前置从 `Option<u32> if_rev` 改成 `u64 if_doc_rev` —— 这是**内核 op 层**变更、影响所有块 kind，设计只把它描述成 MCP 工具契约迁移 | 契约迁移要区分「工具面」与「内核 op 层」 |
 | `e4696f7a` 的 `refuse_if_context_stale` 对**查不到 task 行**也 fail-closed，而三个 worker adapter 此前根本不查 task 行 ⇒ wave 中途被删的 in-flight worker op 现在会在 `prepare_tx` 终结失败 | 新增 fail-closed 分支要枚举「此前不走这条路的调用者」 |
+| 未合并开发提交 `1915601f` 曾让 claim 前确定性定位失败把 `pending` 行写成 stale；该状态在已发布版本中从未可达，但若合入就会叠加 claim stale 谓词与 ready `.take(capacity)`，形成僵尸行 | 分支内同样要核对载体、枚举源与复活路径；capacity 按成功 claim 记账。实现期测试必须经生产 claim 路径构造失败，禁止 SQL 预置 |
 
 ### B.5 方法论：四格纪律的来历
 
@@ -1762,10 +1801,10 @@ backfill**」四格。这四个问题只要有一个空着，就是下一轮的 
 | `declared_by` | `TEXT NOT NULL DEFAULT 'spec'` | 投影（块 payload 的副本）| 投影、预算 | 从文档重建 | 存量全标 `spec` | 3b |
 | `origin` | `TEXT NOT NULL DEFAULT 'legacy'` | 投影 / 收编 | 投影只管 `'block'` | 从文档重建 | 存量全 `legacy` | 3b |
 | `claim_context_json` | `TEXT NULL`（**纯 JSON 数组**）| claim 事务 | `detect_wave_edit` / `sweep_inner`（**解析失败即判 material**）| `TaskContextFrozen` 的投影 | **`'[]'`**（`NULL` = 缺失 ≠ 空）| 3a |
-| `context_stale_at_ms` | `INTEGER NULL` | `mark_context_material_tx`（**单赢家**）| `refuse_if_context_stale` | `TaskContextAdvanced` 的投影 | 不需要（`NULL` = 从未判 material）| 3a |
+| `context_stale_at_ms` | `INTEGER NULL` | `mark_context_material_tx`（**单赢家，且只写 in-flight 行；claim 路径与任何 `pending` 行一律不写**）| `refuse_if_context_stale` | `TaskContextAdvanced` 的投影 | `0069_` 防御性幂等清理不可达的 pending stale 状态（`NULL` = 从未判 material）| 3a / 3b′-i 修复 |
 | `context_closure_truncated` | `INTEGER NOT NULL DEFAULT 0` | claim 事务 | `detect_wave_edit` **与 `sweep_inner`（两处必须同形）** | `TaskContextFrozen.truncated` 的投影 | `0` | 3a |
-| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | 投影，**非 `pending` 行不再更新** | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′ |
-| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | 同上 | 同上 | 同上 | **保持 `0`，显式例外** | 3b′ |
+| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | 投影，**非 `pending` 行不再更新** | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′-ii |
+| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | 同上 | 同上 | 同上 | **保持 `0`，显式例外** | 3b′-ii |
 | `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′ |
 
 **三列（`decl_*` / `context_verify_failures`）刻意不进 `TASK_COLUMNS` / 公共 `Task`**
@@ -1814,6 +1853,8 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | `context_sweep_consecutive_failures` | 计数器 | 与上者**在成功与失败两条路径上都导出** |
 | 检测次数 / 送裁决次数 / `material` 次数 / `closure_truncated` 比例 | 计数器 | 「编辑稀疏」是个假设，让它可被数据推翻 |
 | 栅栏 race-lost 频率 | 计数器 | 若高到影响吞吐，说明报告写与 claim 争用超预期 |
+| `context_resolve_failures{variant}` | 按 `ResolveError` 变体分桶、进入 health 快照与周期 tracing 的计数器 | claim 前 race-lost 不落持久诊断；定位失败不能只剩一条 `warn!` |
+| `claim_fence_race_lost` | claim 栅栏失败计数器，进入同一 health 快照与周期 tracing | 衡量报告写与 claim 的争用及存储错误导致的 fail-closed |
 | 每 wave 的 spec 声明速率 | 计数器 | §8 未结存量上限的证伪装置 |
 
 ---
@@ -1832,7 +1873,9 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 3a | **空冻结集行可区分**：`'[]'` ⇒ 不判 material；`NULL` ⇒ fail-closed 判 material。判据是「冻结集为空」**不是** `origin='legacy'` |
 | 3b | **task 块自身在冻结集内**且带**显式 root 标记**；改 in-flight 的 `goal` ⇒ 必有 `TaskContextAdvanced`（**限定：纳入字段集内的编辑**）|
 | 3c | **栅栏关闭解析→claim 的 TOCTOU**：注入报告写（**同 wave 与跨 wave 各一**）⇒ claim 必须 race-lost、行仍 `pending`、无 `TaskContextFrozen`、无 `task_ref_index` 行、**无任何 worker / gate 首次启动** |
-| 3d | **根块哈希只在纳入集敏感**：`goal`/`kind`/`gate` ⇒ 判；`priority`/`declared_by`/`spawn` ⇒ 不判；`released_by_user: false→true` ⇒ 不判；`ready: true→false` ⇒ 判（两种策略）；`released_by_user: true→false` ⇒ **仅 `declare-and-wait` 下判** |
+| 3d | **根块哈希只在纳入集敏感**：`goal`/`kind`/`gate` ⇒ 判；`priority`/`declared_by`/`spawn` ⇒ 不判；`released_by_user: false→true` ⇒ 不判。**3b′-ii 撤回规则**另覆盖：`ready: true→false` ⇒ 判（两种策略）；`released_by_user: true→false` ⇒ **仅 `declare-and-wait` 下判**；后二者在 3b′-i 本片不成立 |
+| 3e | **claim 前定位失败一律不产生持久状态**：经生产 claim 路径注入根块删除 / 墓碑 / 同 key 多活 / 根块 refs 语法不合法 / 引用目标块被删 / 深度 ≥ 2 引用被删六类成因 ⇒ 无 `TaskContextAdvanced`、无 `TaskContextFrozen`、`context_stale_at_ms` 仍为 `NULL`；前四类另断言 pending 行已被投影删除，后两类另断言行仍 pending 且下一次编辑后可正常 claim。禁止 SQL 预置失败状态 |
+| 3f | **不队头阻塞**：预算 = 1 且一条 ready pending 行 claim 不成功时，同 wave 另一条 ready 任务在同一次调度 pass 内正常派发；capacity 只按成功 claim 消耗 |
 | 4 | 改动落在冻结集内 ⇒ **在此后第一次完成的 sweep 结束时**必有 `TaskContextAdvanced`，**且属于 task 所在的 wave**。E2E **显式跑一次 sweep 再断言**，不等事件到达 |
 | 4d | **瞬时失败不产生持久判决**：不写 `context_stale_at_ms`、仍 in-flight、`context_verify_failures` +1；连续 3 轮才升级；中间任一轮成功即清零 |
 | 5 | **判决落库后禁止起活**：`context_stale_at_ms` 非空 ⇒ 该任务上任何 operation 的 `prepare_tx` 拒绝；**从不打断已启动的** |
@@ -1849,14 +1892,17 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 
 ### D.2 各切片的验收清单
 
-**切片 3b′**（见 §10.3，此处补齐三条无落点的）：
+**切片 3b′**（见 §10.3，此处补齐四条无落点的）：
 
 - **㉒ 元测试**：纳入集 ∪ 排除集 == `TASK_FIELDS`，且**引用同一个常量而非复制品**
-  （`TASK_FIELDS` 必须先提升为模块级 `pub(crate)`）；
+  （`TASK_FIELDS` 必须先提升为模块级 `pub`，供跨 crate 的元测试引用）；
 - **㉓ 回归**：`closure_truncated = true` 的任务，**事件路径与 sweep 两条路给出同一结论**；
 - **㉕ 回归**：boot sweep 失败后，**一次周期 tick 成功即开门并当轮完成
   `resume_dispatched`**（注意：boot 路径上的补跑必然 no-op，不得把那一格写成断言，
   但**必须断言这一格**）。
+- **㉖ SQL / migration 回归**：`task_claim_pending_tx` 的 SQL 不含
+  `context_stale_at_ms` 谓词；从 `0068` fixture 状态运行真实 `0069_`，断言只清 pending、
+  不产事件，且真实 migrator 再跑一次零变更。该清理防御的状态在已发布版本中不可达。
 
 **切片 3c**：三类文案（本 wave 处于 `declare-and-wait` / context-stale (a) / context-stale (b)）+
 其余每一类诊断的「人话 + 下一步动作」+ `Diagnostic` 带 `related_block_ids` +

@@ -1,5 +1,20 @@
 use super::*;
 
+#[test]
+fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
+    assert!(fence_revision_matches(Some(Some(7)), 7));
+    assert!(!fence_revision_matches(None, 7), "missing row");
+    assert!(!fence_revision_matches(Some(None), 7), "SQL NULL");
+    assert!(
+        !fence_revision_matches(Some(Some(-1)), 7),
+        "negative revision"
+    );
+    assert!(
+        !fence_revision_matches(Some(Some(8)), 7),
+        "changed revision"
+    );
+}
+
 fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
     Task {
         id: format!("w:{key}"),
@@ -36,6 +51,13 @@ fn keys(tasks: &[Task]) -> Vec<&str> {
 }
 
 // ---------------------------------------------------- ready set (§5.2)
+
+#[test]
+fn design_claim_resolution_failure_scope_is_consistent() {
+    let design = include_str!("../../../../docs/architecture/985-doc-as-plan.md");
+    assert!(design.contains("claim 前定位失败一律不下判决"));
+    assert!(!design.contains("越 cove、超预算、确定性定位失败一律直接判"));
+}
 
 #[test]
 fn ready_set_requires_all_deps_done() {
@@ -79,13 +101,17 @@ fn budget_counts_dispatched_running_and_verifying() {
         "3 in flight fill budget 3"
     );
     let ready = compute_ready(&tasks, 4);
-    assert_eq!(keys(&ready), vec!["d"], "one free slot under budget 4");
+    assert_eq!(
+        keys(&ready),
+        vec!["d", "e"],
+        "positive capacity returns every candidate; the pass consumes one successful claim"
+    );
     let ready = compute_ready(&tasks, 5);
     assert_eq!(keys(&ready), vec!["d", "e"]);
 }
 
 #[test]
-fn ready_set_preserves_scheduler_order_and_caps_at_budget() {
+fn ready_set_preserves_scheduler_order_without_preconsuming_capacity() {
     // Input order is the repo's `(priority DESC, created_at ASC,
     // key ASC)`; compute_ready must not reorder (policy-free).
     let mut high = task("zz-high", TaskStatus::Pending, &[], 9);
@@ -96,7 +122,7 @@ fn ready_set_preserves_scheduler_order_and_caps_at_budget() {
         task("bb-low", TaskStatus::Pending, &[], 0),
     ];
     let ready = compute_ready(&tasks, 2);
-    assert_eq!(keys(&ready), vec!["zz-high", "aa-low"]);
+    assert_eq!(keys(&ready), vec!["zz-high", "aa-low", "bb-low"]);
 }
 
 #[test]

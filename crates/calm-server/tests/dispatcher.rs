@@ -41,6 +41,7 @@ use calm_server::session_projection_repo::{
 use calm_server::state::{CodexClient, DaemonClient};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
 use calm_server::wave_cove_cache::WaveCoveCache;
+use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 use serde_json::Value;
 
 static DISPATCHER_DAEMON_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -436,32 +437,31 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     .expect("set working lifecycle");
 
     let pool = repo.sqlite_pool().expect("dispatcher test uses sqlite");
-    let block = serde_json::json!({
-        "id": "b_lagged",
-        "kind": "prose",
-        "rev": 1,
-        "payload": {"markdown": "frozen"}
-    });
+    let report = WaveReportPayload {
+        schema_version: WaveReportPayload::SCHEMA_VERSION,
+        doc_rev: 1,
+        summary: String::new(),
+        body: "# Task\n".into(),
+        blocks: Some(vec![ReportBlock {
+            id: "b_1a66ed".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: serde_json::json!({
+                "key": "lagged-stale", "kind": "terminal", "goal": "must not spawn"
+            }),
+        }]),
+    };
     sqlx::query(
         "INSERT INTO cards \
          (id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
          VALUES ('lagged-context-report',?1,'wave-report',-1,?2,'reportcard',0,1,1)",
     )
     .bind(wave_id.as_str())
-    .bind(serde_json::json!({"blocks": [block]}).to_string())
+    .bind(serde_json::to_string(&report).unwrap())
     .execute(&pool)
     .await
     .expect("seed referenced report block");
 
-    let monitor = calm_server::task_context::TaskContextMonitor::new(
-        repo.clone(),
-        events.clone(),
-        calm_server::state::WriteContext::new(cache.clone(), wcc.clone()),
-    );
-    let frozen = monitor
-        .resolve_closure(wave_id.as_str(), "b_lagged")
-        .await
-        .expect("freeze referenced block");
     let task_id = format!("{}:lagged-stale", wave_id.as_str());
     let now = now_ms();
     let task = Task {
@@ -476,7 +476,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         depends_on_json: "[]".into(),
         priority: 0,
         gate_json: None,
-        status: TaskStatus::Dispatched,
+        status: TaskStatus::Pending,
         status_detail: None,
         worker_card_id: None,
         gate_result_json: None,
@@ -487,7 +487,7 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         running_deadline_ms: None,
         context_stale_at_ms: None,
         declared_by: "spec".into(),
-        origin: "legacy".into(),
+        origin: "block".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -499,20 +499,12 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         })
     })
     .await
-    .expect("seed dispatched task");
-    sqlx::query("UPDATE tasks SET claim_context_json = ?1 WHERE id = ?2")
-        .bind(serde_json::to_string(&frozen.refs).unwrap())
+    .expect("seed pending task");
+    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
         .bind(&task_id)
         .execute(&pool)
         .await
-        .expect("persist frozen context");
-    sqlx::query(
-        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.markdown', 'changed') \
-         WHERE id = 'lagged-context-report'",
-    )
-    .execute(&pool)
-    .await
-    .expect("change referenced block without emitting its event");
+        .expect("mark block-origin");
 
     let spawned = Arc::new(AtomicUsize::new(0));
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
@@ -548,6 +540,22 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
     );
     dispatcher.scheduler().mark_boot_sweep_complete();
     dispatcher.scheduler().mark_context_sweep_boot_complete();
+    dispatcher.scheduler().schedule_wave(wave_id.clone()).await;
+    let frozen_context: String =
+        sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .expect("production claim context");
+    assert_ne!(frozen_context, "[]");
+    spawned.store(0, Ordering::SeqCst);
+    sqlx::query(
+        "UPDATE cards SET payload = json_set(payload, '$.blocks[0].payload.goal', 'changed') \
+         WHERE id = 'lagged-context-report'",
+    )
+    .execute(&pool)
+    .await
+    .expect("change referenced block without emitting its event");
 
     // No await after subscription creation: on a current-thread runtime the
     // dispatcher cannot drain until all 1,100 sends have forced one Lagged.

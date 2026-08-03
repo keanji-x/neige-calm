@@ -727,13 +727,19 @@ golden_test!(
     task_context_frozen_full,
     "task_context_frozen.full.json",
     Event::TaskContextFrozen {
+        wave_id: WaveId::from("wave-01"),
+        task_key: "build-step".into(),
+        idempotency_key: "wave-01:build-step".into(),
         task_id: "wave-01:build-step".into(),
         refs: vec![TaskContextRef {
             wave_id: WaveId::from("wave-01"),
             block_id: "block-01".into(),
             rev: 7,
             hash: "sha256:context".into(),
+            is_root: true,
         }],
+        doc_revs: [("wave-01".into(), 7)].into(),
+        truncated: true,
     }
 );
 
@@ -741,8 +747,13 @@ golden_test!(
     task_context_frozen_min,
     "task_context_frozen.min.json",
     Event::TaskContextFrozen {
+        wave_id: WaveId::default(),
+        task_key: String::new(),
+        idempotency_key: String::new(),
         task_id: "wave-01:legacy".into(),
         refs: vec![],
+        doc_revs: Default::default(),
+        truncated: false,
     }
 );
 
