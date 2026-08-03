@@ -9,9 +9,12 @@ export interface GeneratedFile { path: string; content: string }
 
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value);
 const unknownArray = (value: unknown): unknown[] => Array.isArray(value) ? value as unknown[] : [];
+const codePointCompare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
+const PATH_ITEM_FIELDS = new Set<string>([...HTTP_METHODS, 'summary', 'description', 'servers', 'parameters']);
 
 export function parsePathTemplate(path: string): { tokens: TemplateToken[]; parameters: string[] } {
   if (!path.startsWith('/')) throw new Error('path template must start with /');
+  if (path.includes('?') || path.includes('#')) throw new Error('path template must not contain a query or fragment');
   const tokens: TemplateToken[] = [];
   const parameters: string[] = [];
   let literal = '';
@@ -19,11 +22,12 @@ export function parsePathTemplate(path: string): { tokens: TemplateToken[]; para
     const character = path[cursor];
     if (character === '}') throw new Error(`unmatched } at ${cursor}`);
     if (character !== '{') { literal += character; cursor += 1; continue; }
+    if (tokens.at(-1)?.kind === 'parameter' && literal === '') throw new Error('adjacent parameters require a literal separator');
     if (literal !== '') { tokens.push({ kind: 'literal', value: literal }); literal = ''; }
     const end = path.indexOf('}', cursor + 1);
     if (end < 0) throw new Error(`unclosed { at ${cursor}`);
     const name = path.slice(cursor + 1, end);
-    if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) throw new Error(`invalid parameter name ${JSON.stringify(name)}`);
+    if (name === '' || name.includes('{')) throw new Error(`invalid parameter name ${JSON.stringify(name)}`);
     if (parameters.includes(name)) throw new Error(`duplicate parameter {${name}}`);
     parameters.push(name);
     tokens.push({ kind: 'parameter', name });
@@ -54,11 +58,19 @@ function resolveParameter(document: JsonObject, value: unknown): JsonObject {
 export function validateOpenApi(input: unknown): Violation[] {
   const violations: Violation[] = [];
   if (!object(input) || !object(input.paths)) return [{ rule: 'document-shape', location: '#', message: 'paths must be an object' }];
+  const templateOwners = new Map<string, string>();
   for (const [path, pathItemValue] of Object.entries(input.paths)) {
     if (!object(pathItemValue)) { violations.push({ rule: 'path-item-shape', location: path, message: 'path item must be an object' }); continue; }
+    for (const key of Object.keys(pathItemValue)) if (!PATH_ITEM_FIELDS.has(key)) violations.push({
+      rule: 'path-item-key', location: path, message: `unrecognized path item key ${JSON.stringify(key)}`,
+    });
     let parsed: ReturnType<typeof parsePathTemplate>;
     try { parsed = parsePathTemplate(path); }
     catch (error) { violations.push({ rule: 'path-template', location: path, message: String(error) }); continue; }
+    const skeleton = parsed.tokens.map((token) => token.kind === 'literal' ? token.value : '{}').join('');
+    const owner = templateOwners.get(skeleton);
+    if (owner !== undefined) violations.push({ rule: 'path-template-ambiguity', location: path, message: `same route shape as ${owner}` });
+    else templateOwners.set(skeleton, path);
     for (const method of HTTP_METHODS) {
       const operation = pathItemValue[method];
       if (operation === undefined) continue;
@@ -66,12 +78,14 @@ export function validateOpenApi(input: unknown): Violation[] {
       if (!object(operation)) { violations.push({ rule: 'operation-shape', location, message: 'operation must be an object' }); continue; }
       const rawParameters = [...unknownArray(pathItemValue.parameters), ...unknownArray(operation.parameters)];
       const declared: string[] = [];
+      const resolvedParameters = new Map<string, JsonObject>();
       for (const raw of rawParameters) {
         try {
           const parameter = resolveParameter(input, raw);
-          if (parameter.in === 'path' && typeof parameter.name === 'string') declared.push(parameter.name);
+          if (typeof parameter.name === 'string' && typeof parameter.in === 'string') resolvedParameters.set(`${parameter.name}\0${parameter.in}`, parameter);
         } catch (error) { violations.push({ rule: 'reference', location, message: String(error) }); }
       }
+      for (const parameter of resolvedParameters.values()) if (parameter.in === 'path') declared.push(parameter.name as string);
       for (const name of parsed.parameters) if (!declared.includes(name)) violations.push({ rule: 'path-parameter', location, message: `{${name}} is not declared` });
       for (const name of declared) if (!parsed.parameters.includes(name)) violations.push({ rule: 'path-parameter', location, message: `${name} is declared but absent from template` });
       if (!object(operation.responses) || Object.keys(operation.responses).length === 0) violations.push({ rule: 'responses', location, message: 'operation must declare responses' });
@@ -87,7 +101,8 @@ export function validateOpenApi(input: unknown): Violation[] {
       visit(operation);
     }
   }
-  return violations;
+  return violations.filter((violation, index) => violations.findIndex((candidate) => candidate.rule === violation.rule
+    && candidate.location === violation.location && candidate.message === violation.message) === index);
 }
 
 export function extractWireTypeNames(source: string): ReadonlySet<string> {
@@ -111,12 +126,16 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
     for (const method of HTTP_METHODS) {
       const operation = pathItem[method];
       if (!object(operation)) continue;
-      const parameters = [...unknownArray(pathItem.parameters), ...unknownArray(operation.parameters)]
-        .map((item) => resolveParameter(document, item));
-      const responses = Object.entries(operation.responses as JsonObject).sort(([left], [right]) => left.localeCompare(right)).map(([status, raw]) => {
+      const parameterMap = new Map<string, JsonObject>();
+      for (const item of [...unknownArray(pathItem.parameters), ...unknownArray(operation.parameters)]) {
+        const parameter = resolveParameter(document, item);
+        parameterMap.set(`${String(parameter.name)}\0${String(parameter.in)}`, parameter);
+      }
+      const parameters = [...parameterMap.values()];
+      const responses = Object.entries(operation.responses as JsonObject).sort(([left], [right]) => codePointCompare(left, right)).map(([status, raw]) => {
         const response = object(raw) && typeof raw.$ref === 'string' ? resolveLocalRef(document, raw.$ref) : raw;
         const content = object(response) && object(response.content) ? response.content : {};
-        return { status, bodies: Object.entries(content).sort(([left], [right]) => left.localeCompare(right)).map(([contentType, media]) => ({
+        return { status, bodies: Object.entries(content).sort(([left], [right]) => codePointCompare(left, right)).map(([contentType, media]) => ({
           contentType, schema: object(media) ? media.schema ?? null : null,
         })) };
       });
@@ -125,6 +144,9 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
         responses });
     }
   }
+  const operationCount = Object.values(document.paths).reduce<number>((count, value) => count + (object(value)
+    ? HTTP_METHODS.filter((method) => object(value[method])).length : 0), 0);
+  if (routes.length !== operationCount) throw new Error(`route count mismatch: ${operationCount} input operations, ${routes.length} generated routes`);
   const componentSchemas = object(document.components) && object(document.components.schemas) ? document.components.schemas : {};
   const schemaWireTypes = Object.fromEntries(Object.keys(componentSchemas).sort().map((name) => [name, wireTypes.has(name) ? name : null]));
   const banner = '// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。\n';

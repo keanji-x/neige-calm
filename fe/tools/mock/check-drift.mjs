@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { posix, resolve } from 'node:path';
 const { generateMockFiles } = await import(new URL('./generator.ts', import.meta.url).href);
 
@@ -16,11 +16,13 @@ function trackedOutput() {
 }
 const tracked = trackedOutput()
   .split(/\r?\n/).filter(Boolean).map((path) => posix.relative(prefix, path)).sort();
-const openApi = JSON.parse(readFileSync(resolve(repositoryRoot, 'web/src/api/openapi.json'), 'utf8'));
+const openApiPath = resolve(repositoryRoot, 'web/src/api/openapi.json');
+if (!existsSync(openApiPath)) throw new Error(`mock drift input is missing: ${openApiPath}; restore or relocate the legacy OpenAPI document and update tools/mock/generate.mjs plus check-drift.mjs`);
+const openApi = JSON.parse(readFileSync(openApiPath, 'utf8'));
 const wireSource = readFileSync(resolve(feRoot, 'core/api/generated/wire.ts'), 'utf8');
 /** @type {Array<{path: string, content: string}>} */
 const generated = generateMockFiles(openApi, wireSource);
-generated.sort((left, right) => left.path.localeCompare(right.path));
+generated.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
 const expectedNames = generated.map((file) => file.path);
 const problems = [];
 if (JSON.stringify(tracked) !== JSON.stringify(expectedNames)) problems.push(`file set differs\ntracked: ${tracked.join(', ')}\ngenerated: ${expectedNames.join(', ')}`);
