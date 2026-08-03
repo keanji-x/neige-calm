@@ -18,17 +18,8 @@ describe('ownership fixtures', () => {
     expect(new Set(OWNERSHIP_YAML_FIELDS)).toEqual(new Set(Object.keys(fixture)));
     for (const [field, testCase] of Object.entries(fixture)) {
       const violations = validateOwnership(testCase.entries, [], testCase.changed ?? [], testCase.requests ?? []);
-      expect(violations.length, field).toBeGreaterThan(0);
-      if (field.startsWith('changeRequest.')) {
-        expect(violations.some(({ rule }) => rule === 'change-request-shape'), field).toBe(true);
-        expect(violations.some(({ rule }) => rule === 'readonly-change-request'), field).toBe(true);
-      }
-      else {
-        expect(violations.some(({ rule }) => rule === 'entry-shape'), field).toBe(true);
-        if (field === 'entry.readonly') {
-          expect(violations.some(({ rule }) => rule === 'readonly-change-request'), field).toBe(true);
-        }
-      }
+      expect(violations, field).toHaveLength(1);
+      expect(violations[0]?.rule, field).toBe(field.startsWith('changeRequest.') ? 'change-request-shape' : 'entry-shape');
     }
   });
   it('covers exactly every rule the validator can emit', () => {
@@ -95,6 +86,12 @@ describe('ownership fixtures', () => {
     ])).toEqual([
       { rule: 'change-request-shape', message: 'invalid change request 1' },
       { rule: 'readonly-change-request', message: 'fe/web/src/styles/tokens.css changed without a change request' },
+    ]);
+    expect(validateOwnership([
+      { path: 'fe/core/model.ts', type: 'file', owner: 'core/model', readonly: 'false' },
+    ], [], ['fe/core/model.ts'])).toEqual([
+      { rule: 'entry-shape', message: 'invalid entry 1: fe/core/model.ts' },
+      { rule: 'readonly-change-request', message: 'fe/core/model.ts changed without a change request' },
     ]);
   });
 
