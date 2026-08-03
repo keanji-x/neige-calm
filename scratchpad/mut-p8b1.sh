@@ -42,7 +42,7 @@ run_mutation() {
 replace "$validator" "if (anchor.error && anchor.subtype) actualBaseline.set(id, anchor.subtype);" "if (false && anchor.error && anchor.subtype) actualBaseline.set(id, anchor.subtype);"
 run_mutation source-anchor-unconditional-accept
 
-replace "$validator" "if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) return true;" "if (true) return true;"
+replace "$validator" "if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) offsets.push(offset);" "if (true) offsets.push(offset);"
 replace "$validator" "if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) {" "if (true) {"
 run_mutation identifier-boundary-disabled
 
@@ -66,3 +66,9 @@ run_mutation baseline-stale-loop-disabled
 
 replace "$validator" "if (options.anchorBaselinePath" "if (false && options.anchorBaselinePath"
 run_mutation baseline-count-guard-disabled
+
+replace "$validator" "fields.push({ text: withoutCssComments(node.selector), startLine });" "fields.push({ text: node.selector, startLine });"
+run_mutation css-selector-inline-comments-count-as-code
+
+replace "$validator" "result.get(identifier)!.add(lineAtFieldOffset(field.startLine, field.text, offset));" "result.get(identifier)!.add(startLine);"
+run_mutation css-field-match-offset-ignored
