@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 const validatorPath = './validator.ts';
 const { gitChangedPaths, validateOwnership } = await import(validatorPath);
+const { auditStyleRepository } = await import('../styles/repository-check.mjs');
 
 const repository = mkdtempSync(join(tmpdir(), 'ownership-check-'));
 
@@ -14,6 +15,9 @@ function git(...args) {
 }
 
 try {
+  const styleViolations = auditStyleRepository(join(import.meta.dirname, '../..'));
+  if (styleViolations.length) throw new Error(`style repository audit failed:\n${styleViolations.join('\n')}`);
+  console.log('style manifests, CSS Module layers, and data-* attributes: valid');
   git('init', '--initial-branch=main');
   git('config', 'user.email', 'ownership-check@example.invalid');
   git('config', 'user.name', 'Ownership Checker');

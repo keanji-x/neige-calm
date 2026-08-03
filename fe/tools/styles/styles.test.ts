@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import stylelint from 'stylelint';
 import { describe, expect, it } from 'vitest';
 import { auditLayeredCss, auditRuntimeStyles, compareGlobalClassManifest, CSS_NODE_SOURCES, extractGlobalClasses, layerOrder, STYLE_RULES, type RuntimeDocument } from './audit';
+import { auditDataAttributes, auditModuleLayer, auditStyleRepository } from './repository-check.mjs';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
@@ -299,4 +300,30 @@ it('runtime audit reads CSSOM rules inserted into a style-owned sheet', () => {
   expect(auditRuntimeStyles(document, order)).toEqual([
     { rule: 'rule-in-layer', message: 'unlayered selector: .cssom-injected' },
   ]);
+});
+
+describe('P8b2 forward style gates', () => {
+  it('rejects an unregistered global class against the empty manifest', () => {
+    expect(compareGlobalClassManifest(extractGlobalClasses(['.escaped {}']), [])).toEqual([
+      { rule: 'global-class-manifest', message: 'CSS-only class: escaped' },
+    ]);
+  });
+
+  it('rejects a non-prefixed data attribute from the negative fixture', () => {
+    expect(auditDataAttributes(read('data-attributes/negative.tsx'), 'fixture.tsx')).toEqual([
+      'fixture.tsx: nonconforming data-card-id; use data-nc-<kebab-case>',
+    ]);
+    expect(auditDataAttributes('const x = <div data-nc-card-id="42" aria-label="card" />;', 'ok.tsx')).toEqual([]);
+  });
+
+  it('requires every CSS Module to declare its owning layer', () => {
+    expect(auditModuleLayer(read('module-layer/negative.module.css'), 'web/src/features/wave/bad.module.css'))
+      .toEqual(['web/src/features/wave/bad.module.css: unlayered selector: .unlayered']);
+    expect(auditModuleLayer('@layer features { .local {} }', 'web/src/features/wave/good.module.css')).toEqual([]);
+    expect(auditModuleLayer('@layer ui { .local {} }', 'web/src/ui/dialog/good.module.css')).toEqual([]);
+  });
+
+  it('audits the real repository manifests and forward gates', () => {
+    expect(auditStyleRepository(resolve(import.meta.dirname, '../..'))).toEqual([]);
+  });
 });
