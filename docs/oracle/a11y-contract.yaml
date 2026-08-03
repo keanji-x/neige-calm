@@ -414,7 +414,7 @@
   why: >
     §2.2 + §3.4 + §9 明示 "by design"：Slice 9 走 Path C，把键盘能力放进独立的 list 视图，
     而不是给 RGL 补键盘。新写代码的人只会看到「grid 没实现键盘」而误以为是缺陷
-  source: web/src/WaveGrid.tsx:405
+  source: web/src/WaveGrid.tsx:239-254; web/src/WaveList.tsx:1-7
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: true
@@ -431,7 +431,7 @@
     键盘用户 / 屏幕阅读器用户 / 驱动 UI 的 AI agent 都应切到 list 视图操作布局
   why: >
     Slice 9 决议；这是 grid 无键盘故事的对价，必须成对保留
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:1-32,190-269
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/list
   intentional_omission: false
@@ -650,7 +650,7 @@
     唯一视为可拖拽的部分；header 承载 card 的 accessible name
   why: >
     §2.3：header 之外的一切因此保持正常键盘可聚焦，pointer-only 交互不会截走按键
-  source: web/src/WaveGrid.tsx:405
+  source: web/src/WaveGrid.tsx:239-254; web/src/cards/builtins/terminal.tsx:129-155; web/src/cards/builtins/codex.tsx:355-362; web/src/cards/plugin-iframe.tsx:375-381
   authoritative_test: NONE
   owner_slice: systems/cards/card-head
   intentional_omission: false
@@ -1200,7 +1200,7 @@
     WaveList 中 ArrowUp / ArrowDown 必须在卡片之间移动焦点，并**环绕**
   why: >
     Slice 9 的 roving tabindex 契约（`useRovingTabindex`），与 AddPanel 菜单同一套语义
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:18-22,123-125,200-230
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1216,7 +1216,7 @@
     WaveList 中 Home / End 必须跳到第一 / 最后一张卡片
   why: >
     Slice 9 契约条目
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:18-22,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1234,7 +1234,7 @@
     并产生可被 trace ring buffer 捕获的 `card.updated` 事件
   why: >
     Slice 9：这是 grid 无键盘重排的唯一对价路径。带 Alt 是为了不和纯箭头的焦点移动冲突
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:24-28,133-187,205-217
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1252,7 +1252,7 @@
   why: >
     §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
     操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:30-32,205-225
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1268,7 +1268,7 @@
     WaveList 中 Tab 必须退出列表进入后续内容；Shift+Tab 必须回到 wave 头部
   why: >
     §3.4：roving tabindex 让整个列表只占一个 tab stop，Tab 必须是「出口」而非在卡片间走
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:18-22,123-125,200-230
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1285,7 +1285,7 @@
     `aria-keyshortcuts="ArrowUp ArrowDown Alt+ArrowUp Alt+ArrowDown Home End Delete"`
   why: >
     §3.4 明示目的：让这套契约**仅凭 AT 就可发现**，不必读文档。字符串内容与顺序即契约
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:232-267
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -1302,7 +1302,7 @@
   why: >
     §9 明示 "resize is out of scope (cards in list view self-size to intrinsic content)"；
     Slice 9 只承诺 reorder + remove
-  source: web/src/WaveList.tsx
+  source: web/src/WaveList.tsx:1-43,190-275
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: true
