@@ -38,6 +38,8 @@ export type WaveBacklink =
   paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json']['backlinks'][number];
 export type WaveBacklinksResponse =
   paths['/api/waves/{id}/backlinks']['get']['responses'][200]['content']['application/json'];
+export type WaveReportRead =
+  paths['/api/waves/{id}/report']['get']['responses'][200]['content']['application/json'];
 
 export class CalmApiError extends Error {
   status: number;
@@ -214,6 +216,18 @@ export const updateWaveReport = (
     `/api/waves/${encodeURIComponent(id)}/report`,
     { summary: b.summary, body: b.body, ifDocRev: b.docRev },
   );
+
+export const getWaveReport = (id: string) =>
+  request<WaveReportRead>('GET', `/api/waves/${encodeURIComponent(id)}/report`);
+
+export const updateWaveReportBlock = (
+  waveId: string,
+  blockId: string,
+  body: { kind: string; payload: unknown; ifBlockRev: number },
+) => request<unknown>('PATCH', `/api/waves/${encodeURIComponent(waveId)}/report/blocks/${encodeURIComponent(blockId)}`, body);
+
+export const deleteWaveReportBlock = (waveId: string, blockId: string, ifBlockRev: number) =>
+  request<unknown>('DELETE', `/api/waves/${encodeURIComponent(waveId)}/report/blocks/${encodeURIComponent(blockId)}`, { ifBlockRev });
 
 export const listWaveFiles = (waveId: string, path?: string | null) => {
   const qs = new URLSearchParams();

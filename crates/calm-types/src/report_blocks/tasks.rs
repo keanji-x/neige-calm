@@ -78,16 +78,100 @@ pub struct TaskDeclaration {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostic {
+    pub code: String,
+    pub message_args: BTreeMap<String, Value>,
+    pub related_block_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub related_wave_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    /// Compatibility fields for existing MCP clients. `message` is always
+    /// rendered from `code` + `message_args`; it is never a second source.
     pub path: String,
     pub message: String,
 }
 
 impl Diagnostic {
-    pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn coded(
+        code: impl Into<String>,
+        path: impl Into<String>,
+        message_args: BTreeMap<String, Value>,
+        related_block_ids: Vec<String>,
+        related_wave_id: Option<String>,
+        action: Option<String>,
+    ) -> Self {
+        let code = code.into();
+        let message = render_diagnostic_message(&code, &message_args);
         Self {
+            code,
+            message_args,
+            related_block_ids,
+            related_wave_id,
+            action,
             path: path.into(),
-            message: message.into(),
+            message,
         }
+    }
+
+    pub fn new(path: impl Into<String>, message: impl Into<String>) -> Self {
+        let mut args = BTreeMap::new();
+        args.insert("detail".into(), Value::String(message.into()));
+        Self::coded("invalid_declaration", path, args, vec![], None, None)
+    }
+}
+
+pub fn diagnostic_args<const N: usize>(pairs: [(&str, Value); N]) -> BTreeMap<String, Value> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.into(), value))
+        .collect()
+}
+
+fn arg<'a>(args: &'a BTreeMap<String, Value>, key: &str) -> &'a str {
+    args.get(key).and_then(Value::as_str).unwrap_or("")
+}
+
+fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> String {
+    match code {
+        "invalid_declaration" => arg(args, "detail").into(),
+        "duplicate_key" => format!("duplicate key `{}`", arg(args, "key")),
+        "dependency_cycle" => format!("dependency cycle: {}", arg(args, "keys")),
+        "tombstone_blocks_redeclaration" => {
+            format!("task key `{}` has an uncleared tombstone", arg(args, "key"))
+        }
+        "unknown_dependency" => format!("unknown dependency `{}`", arg(args, "dependency")),
+        "gate_required" => "task requires a gate or no_gate_reason".into(),
+        "reference_needs_block" => format!(
+            "reference `{}` must identify a block",
+            arg(args, "reference")
+        ),
+        "reference_missing" => format!(
+            "reference target `{}` does not exist",
+            arg(args, "reference")
+        ),
+        "reference_cross_cove" => format!(
+            "cross-cove reference `{}` is not schedulable",
+            arg(args, "reference")
+        ),
+        "declare_and_wait" => "this wave requires user release before spec tasks are queued".into(),
+        "declaration_changed_in_flight" => {
+            "task is already executing; declaration changes were not applied".into()
+        }
+        "task_key_completed" => "task key has already completed; declare a new key instead".into(),
+        "context_stale_declaration" => format!(
+            "task `{}` is in flight ({}) and cannot be withdrawn immediately; its declaration context is now stale, so any gate operation that has not started will be rejected",
+            arg(args, "key"),
+            arg(args, "status")
+        ),
+        "context_stale_reference" => "a referenced block changed after this task started".into(),
+        "reference_chain_too_large" => "the task reference chain is too deep or too wide".into(),
+        "spec_task_ceiling" => format!(
+            "spec task ceiling of {} is reached",
+            args.get("ceiling")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
+        ),
+        _ => arg(args, "detail").into(),
     }
 }
 
@@ -454,9 +538,22 @@ pub fn project_task_declarations(
             block.kind == super::KIND_TASK
                 && block.payload.get("key").and_then(Value::as_str) == Some(duplicate.as_str())
         }) {
-            diagnostics[index].push(Diagnostic::new(
+            let related: Vec<String> = blocks
+                .iter()
+                .filter(|candidate| {
+                    candidate.kind == super::KIND_TASK
+                        && candidate.payload.get("key").and_then(Value::as_str)
+                            == Some(duplicate.as_str())
+                })
+                .map(|candidate| candidate.id.clone())
+                .collect();
+            diagnostics[index].push(Diagnostic::coded(
+                "duplicate_key",
                 "key",
-                format!("duplicate key `{duplicate}`"),
+                diagnostic_args([("key", Value::String(duplicate.clone()))]),
+                related,
+                None,
+                Some("edit_task_key".into()),
             ));
         }
     }
@@ -466,9 +563,28 @@ pub fn project_task_declarations(
                 && block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())
                 && block.payload.get("tombstone").is_none_or(Value::is_null)
         }) {
-            diagnostics[index].push(Diagnostic::new(
+            let related = blocks
+                .iter()
+                .filter(|candidate| {
+                    candidate.kind == super::KIND_TASK
+                        && candidate.payload.get("key").and_then(Value::as_str) == Some(key)
+                        && candidate
+                            .payload
+                            .get("tombstone")
+                            .is_some_and(|value| !value.is_null())
+                })
+                .map(|candidate| candidate.id.clone())
+                .collect();
+            diagnostics[index].push(Diagnostic::coded(
+                "tombstone_blocks_redeclaration",
                 "key",
-                format!("task key `{key}` has an uncleared tombstone"),
+                diagnostic_args([
+                    ("key", Value::String(key.clone())),
+                    ("tombstoned_by", Value::String("user".into())),
+                ]),
+                related,
+                None,
+                Some("clear_tombstone".into()),
             ));
         }
     }
@@ -482,9 +598,25 @@ pub fn project_task_declarations(
                     .and_then(Value::as_str)
                     .is_some_and(|key| keys.contains(key))
         }) {
-            diagnostics[index].push(Diagnostic::new(
+            let related = blocks
+                .iter()
+                .filter(|candidate| {
+                    candidate.kind == super::KIND_TASK
+                        && candidate
+                            .payload
+                            .get("key")
+                            .and_then(Value::as_str)
+                            .is_some_and(|key| keys.contains(key))
+                })
+                .map(|candidate| candidate.id.clone())
+                .collect();
+            diagnostics[index].push(Diagnostic::coded(
+                "dependency_cycle",
                 "depends_on",
-                format!("dependency cycle: {}", cycle.join(" -> ")),
+                diagnostic_args([("keys", Value::String(cycle.join(" -> ")))]),
+                related,
+                None,
+                Some("edit_dependencies".into()),
             ));
         }
     }
@@ -606,6 +738,12 @@ mod tests {
                 .flatten()
                 .any(|d| d.message.contains("duplicate key"))
         );
+        let duplicate = diagnostics
+            .iter()
+            .flatten()
+            .find(|d| d.code == "duplicate_key")
+            .unwrap();
+        assert_eq!(duplicate.related_block_ids, vec!["b_0001", "b_0002"]);
     }
 
     #[test]
@@ -629,6 +767,8 @@ mod tests {
         assert!(diagnostics[0].is_empty());
         assert_eq!(diagnostics[1].len(), 1);
         assert_eq!(diagnostics[1][0].path, "key");
+        assert_eq!(diagnostics[1][0].code, "tombstone_blocks_redeclaration");
+        assert_eq!(diagnostics[1][0].related_block_ids, vec!["b_0001"]);
         assert_eq!(
             diagnostics[1][0].message,
             "task key `removed` has an uncleared tombstone"
@@ -657,11 +797,12 @@ mod tests {
         });
         let (_, diagnostics) = project_task_declarations(&blocks);
         for block_diagnostics in diagnostics.iter().take(4) {
-            assert!(
-                block_diagnostics
-                    .iter()
-                    .any(|d| d.message.contains("dependency cycle"))
-            );
+            let cycle = block_diagnostics
+                .iter()
+                .find(|d| d.code == "dependency_cycle")
+                .unwrap();
+            assert!(cycle.message.contains("dependency cycle"));
+            assert_eq!(cycle.related_block_ids.len(), 2);
         }
         assert!(diagnostics[4].is_empty());
     }

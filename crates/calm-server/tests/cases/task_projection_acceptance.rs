@@ -1255,12 +1255,12 @@ async fn deleting_dependency_converges_in_one_evaluation_and_rebuild_matches_rea
 }
 
 #[tokio::test]
-async fn uncleared_user_tombstone_derives_wait_and_explicit_auto_declare_recovers() {
+async fn user_tombstone_does_not_derive_wait_and_policy_remains_independent() {
     let boot = new_boot().await;
     let (denied, denied_rev) = upsert(&boot, None, task("denied")).await;
     user_delete(&boot, &denied, denied_rev).await;
     let (replacement, _) = upsert(&boot, None, task("replacement")).await;
-    assert_diagnosed_on_both_reads(&boot, "replacement", "requires user release").await;
+    assert_eq!(keys(&boot).await, ["replacement"]);
     assert!(
         rest_read(&boot).await["blocks"]
             .as_array()
@@ -1268,8 +1268,9 @@ async fn uncleared_user_tombstone_derives_wait_and_explicit_auto_declare_recover
             .iter()
             .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
     );
+    patch_policy(&boot, "declare-and-wait").await;
+    assert_diagnosed_on_both_reads(&boot, "replacement", "requires user release").await;
     patch_policy(&boot, "auto-declare").await;
-    assert_eq!(keys(&boot).await, ["replacement"]);
     assert!(
         rest_read(&boot).await["blocks"]
             .as_array()
@@ -1281,12 +1282,14 @@ async fn uncleared_user_tombstone_derives_wait_and_explicit_auto_declare_recover
 }
 
 #[tokio::test]
-async fn user_veto_removes_other_unreleased_pending_rows_with_readable_reason() {
+async fn explicit_wait_policy_removes_unreleased_pending_rows_with_readable_reason() {
     let boot = new_boot().await;
     let (vetoed, vetoed_rev) = upsert(&boot, None, task("vetoed")).await;
     upsert(&boot, None, task("collateral")).await;
     assert_eq!(keys(&boot).await, ["collateral", "vetoed"]);
     user_delete(&boot, &vetoed, vetoed_rev).await;
+    assert_eq!(keys(&boot).await, ["collateral"]);
+    patch_policy(&boot, "declare-and-wait").await;
     assert_diagnosed_on_both_reads(&boot, "collateral", "requires user release").await;
 }
 

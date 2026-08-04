@@ -110,7 +110,8 @@ pub use task::{
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
-    evaluate_schedulability_tx, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
+    attach_task_read_state_tx, evaluate_schedulability_tx, mark_context_material_tx,
+    project_tasks_tx, task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_update_tx};
 

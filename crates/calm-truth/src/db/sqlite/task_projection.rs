@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
 use calm_types::ids::{ActorId, WaveId};
 use calm_types::report_blocks::tasks::{
-    Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, gate_rule_violations,
-    json_eq, opt_json_eq, unknown_deps,
+    Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, diagnostic_args,
+    gate_rule_violations, json_eq, opt_json_eq, unknown_deps,
 };
 use calm_types::report_links::{parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,94 @@ pub struct BlockVerdict {
     pub key: String,
     pub diagnostics: Vec<Diagnostic>,
     pub schedulable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_card_id: Option<String>,
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
+}
+
+#[derive(sqlx::FromRow)]
+struct TaskReadState {
+    key: String,
+    status: String,
+    status_detail: Option<String>,
+    gate_result_json: Option<String>,
+    worker_card_id: Option<String>,
+    context_stale_at_ms: Option<i64>,
+    context_closure_truncated: i64,
+    claim_context_json: Option<String>,
+}
+
+/// Read-time task-table projection for report rendering. This deliberately
+/// stays beside the existing projection query instead of introducing a live
+/// block data-source abstraction.
+pub async fn attach_task_read_state_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+    verdicts: &mut [BlockVerdict],
+) -> Result<()> {
+    let rows: Vec<TaskReadState> = sqlx::query_as(
+        "SELECT key,status,status_detail,gate_result_json,worker_card_id,context_stale_at_ms,context_closure_truncated,claim_context_json FROM tasks WHERE wave_id=?1",
+    )
+    .bind(wave_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let by_key: BTreeMap<_, _> = rows.into_iter().map(|row| (row.key.clone(), row)).collect();
+    for verdict in verdicts {
+        let Some(row) = by_key.get(&verdict.key) else {
+            continue;
+        };
+        verdict.status = Some(row.status.clone());
+        verdict.status_detail = row.status_detail.clone();
+        verdict.gate_result = row
+            .gate_result_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str(json).ok());
+        verdict.worker_card_id = row.worker_card_id.clone();
+        if row.context_closure_truncated != 0 {
+            verdict.diagnostics.push(Diagnostic::coded(
+                "reference_chain_too_large",
+                "refs",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some("narrow_task_context".into()),
+            ));
+        }
+        let already_declaration_stale = verdict.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.code.as_str(),
+                "context_stale_declaration" | "declaration_changed_in_flight"
+            )
+        });
+        if row.context_stale_at_ms.is_some() && !already_declaration_stale {
+            let related = row
+                .claim_context_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|item| !item.is_root)
+                .map(|item| item.block_id)
+                .collect();
+            verdict.diagnostics.push(Diagnostic::coded(
+                "context_stale_reference",
+                "refs",
+                BTreeMap::new(),
+                related,
+                None,
+                Some("relink_reference".into()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -206,11 +291,31 @@ pub async fn mark_context_material_tx(
 }
 
 fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
-    Diagnostic::new(
+    Diagnostic::coded(
+        "context_stale_declaration",
         "key",
-        format!(
-            "task `{key}` is in flight ({status}) and cannot be withdrawn immediately; its declaration context is now stale, so any gate operation that has not started will be rejected"
-        ),
+        diagnostic_args([
+            ("key", serde_json::Value::String(key.into())),
+            ("status", serde_json::Value::String(status.into())),
+        ]),
+        vec![],
+        None,
+        Some("open_worker_output".into()),
+    )
+}
+
+fn reference_diagnostic(code: &str, reference: &str, wave_id: Option<String>) -> Diagnostic {
+    let related_block_ids = parse_destination(reference)
+        .and_then(|(_, block)| block)
+        .into_iter()
+        .collect();
+    Diagnostic::coded(
+        code,
+        "refs",
+        diagnostic_args([("reference", serde_json::Value::String(reference.into()))]),
+        related_block_ids,
+        wave_id,
+        Some("relink_reference".into()),
     )
 }
 
@@ -242,8 +347,7 @@ pub async fn evaluate_schedulability_tx(
 ) -> Result<Vec<BlockVerdict>> {
     let (configured_policy, ceiling, require_gates) =
         wave_projection_policy_tx(tx, wave_id).await?;
-    let effective_wait = configured_policy.as_deref() == Some("declare-and-wait")
-        || (configured_policy.is_none() && declarations.iter().any(|d| d.tombstoned_by_user));
+    let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
     // unknown_deps knows every in-flight key in the wave, including rows
     // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
     let inflight: Vec<(String,)> = sqlx::query_as(
@@ -279,15 +383,23 @@ pub async fn evaluate_schedulability_tx(
             .cloned()
             .unwrap_or_default();
         for (_, dependency) in unknown.iter().filter(|(key, _)| key == &declaration.key) {
-            diagnostics.push(Diagnostic::new(
+            diagnostics.push(Diagnostic::coded(
+                "unknown_dependency",
                 "depends_on",
-                format!("unknown dependency `{dependency}`"),
+                diagnostic_args([("dependency", serde_json::Value::String(dependency.clone()))]),
+                vec![],
+                None,
+                Some("edit_dependencies".into()),
             ));
         }
         if gate_bad.contains(&declaration.key) {
-            diagnostics.push(Diagnostic::new(
+            diagnostics.push(Diagnostic::coded(
+                "gate_required",
                 "gate",
-                "task requires a gate or no_gate_reason",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some("add_gate_or_reason".into()),
             ));
         }
         let mut references = declaration.refs.clone();
@@ -310,9 +422,10 @@ pub async fn evaluate_schedulability_tx(
                 parse_destination(reference)
             {
                 let Some(dst_block) = dst_block else {
-                    diagnostics.push(Diagnostic::new(
-                        "refs",
-                        format!("reference `{reference}` must identify a block"),
+                    diagnostics.push(reference_diagnostic(
+                        "reference_needs_block",
+                        reference,
+                        None,
                     ));
                     continue;
                 };
@@ -330,21 +443,22 @@ pub async fn evaluate_schedulability_tx(
                 continue;
             };
             match target {
-                None => diagnostics.push(Diagnostic::new(
-                    "refs",
-                    format!("reference target `{reference}` does not exist"),
-                )),
+                None => {
+                    diagnostics.push(reference_diagnostic("reference_missing", reference, None))
+                }
                 Some((target_cove, target_kind, _))
                     if target_cove != source_cove && target_kind != "system" =>
                 {
-                    diagnostics.push(Diagnostic::new(
-                        "refs",
-                        format!("cross-cove reference `{reference}` is not schedulable"),
+                    diagnostics.push(reference_diagnostic(
+                        "reference_cross_cove",
+                        reference,
+                        parse_destination(reference).map(|v| v.0.to_owned()),
                     ));
                 }
-                Some((_, _, 0)) => diagnostics.push(Diagnostic::new(
-                    "refs",
-                    format!("reference target `{reference}` does not exist"),
+                Some((_, _, 0)) => diagnostics.push(reference_diagnostic(
+                    "reference_missing",
+                    reference,
+                    parse_destination(reference).map(|v| v.0.to_owned()),
                 )),
                 Some(_) => {}
             }
@@ -354,15 +468,23 @@ pub async fn evaluate_schedulability_tx(
             && !declaration.released_by_user
             && !declaration.tombstone
         {
-            diagnostics.push(Diagnostic::new(
+            diagnostics.push(Diagnostic::coded(
+                "declare_and_wait",
                 "released_by_user",
-                "this wave requires user release before spec tasks are queued",
+                BTreeMap::new(),
+                vec![],
+                Some(wave_id.into()),
+                Some("release_task".into()),
             ));
         }
         verdicts.push(BlockVerdict {
             block_id: declaration.block_id.clone(),
             key: declaration.key.clone(),
             schedulable: declaration.ready && !declaration.tombstone && diagnostics.is_empty(),
+            status: None,
+            status_detail: None,
+            gate_result: None,
+            worker_card_id: None,
             diagnostics,
             withdrawal: None,
         });
@@ -424,13 +546,24 @@ pub async fn evaluate_schedulability_tx(
             None
         };
         if changed || !matches!(status.as_str(), "dispatched" | "running" | "verifying") {
-            verdict.diagnostics.push(Diagnostic::new(
-                "key",
+            verdict.diagnostics.push(Diagnostic::coded(
                 if changed {
-                    "task is already executing; declaration changes were not applied"
+                    "declaration_changed_in_flight"
                 } else {
-                    "task key has already completed; declare a new key instead"
+                    "task_key_completed"
                 },
+                "key",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some(
+                    if changed {
+                        "open_worker_output"
+                    } else {
+                        "create_task_with_new_key"
+                    }
+                    .into(),
+                ),
             ));
             verdict.schedulable = false;
         }
@@ -465,6 +598,10 @@ pub async fn evaluate_schedulability_tx(
                 diagnostics: vec![withdrawal_diagnostic(&key, &status)],
                 key,
                 schedulable: false,
+                status: Some(status),
+                status_detail: None,
+                gate_result: None,
+                worker_card_id: None,
                 withdrawal: None,
             });
         }
@@ -489,10 +626,30 @@ pub async fn evaluate_schedulability_tx(
             declarations[*i].key.clone(),
         )
     });
+    let admitted: Vec<usize> = candidates.iter().copied().take(capacity).collect();
+    let admitted_ids: Vec<String> = declarations
+        .iter()
+        .enumerate()
+        .filter(|(index, declaration)| {
+            admitted.contains(index) || inflight_key_set.contains(declaration.key.as_str())
+        })
+        .map(|(_, declaration)| declaration.block_id.clone())
+        .collect();
     for index in candidates.into_iter().skip(capacity) {
-        verdicts[index].diagnostics.push(Diagnostic::new(
+        verdicts[index].diagnostics.push(Diagnostic::coded(
+            "spec_task_ceiling",
             "key",
-            format!("spec task ceiling of {ceiling} is reached"),
+            diagnostic_args([
+                ("ceiling", serde_json::Value::from(ceiling)),
+                ("occupied", serde_json::Value::from(occupied)),
+                (
+                    "admission_order",
+                    serde_json::Value::String("document order, then key".into()),
+                ),
+            ]),
+            admitted_ids.clone(),
+            Some(wave_id.into()),
+            Some("raise_spec_task_ceiling".into()),
         ));
         verdicts[index].schedulable = false;
     }
@@ -602,6 +759,10 @@ pub async fn project_tasks_tx(
                         key: key.clone(),
                         diagnostics: vec![diagnostic],
                         schedulable: false,
+                        status: Some(status.clone()),
+                        status_detail: None,
+                        gate_result: None,
+                        worker_card_id: None,
                         withdrawal: None,
                     });
                 }
@@ -717,6 +878,10 @@ mod tests {
         let outcome = project_tasks_tx(&mut tx, &wave, &declarations, &[vec![], vec![]])
             .await
             .unwrap();
+        let mut diagnostics = outcome.diagnostics.clone();
+        attach_task_read_state_tx(&mut tx, &wave, &mut diagnostics)
+            .await
+            .unwrap();
         tx.commit().await.unwrap();
         assert!(!outcome.diagnostics[0].schedulable);
         assert!(
@@ -726,6 +891,7 @@ mod tests {
                 .any(|d| d.message.contains("ceiling"))
         );
         assert!(outcome.diagnostics[1].schedulable);
+        assert_eq!(diagnostics[1].status.as_deref(), Some("dispatched"));
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND status IN ('pending','dispatched','running','verifying')")
             .bind(&wave).fetch_one(&repo.pool).await.unwrap();
         assert_eq!(

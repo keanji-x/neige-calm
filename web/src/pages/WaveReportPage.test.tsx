@@ -12,6 +12,7 @@ import {
   useWaveBacklinksQuery,
   useWaveFileContent,
   useWaveFileList,
+  useWaveReportQuery,
 } from '../api/queries';
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
@@ -24,6 +25,7 @@ vi.mock('../api/queries', () => ({
   useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
+  useWaveReportQuery: vi.fn(),
 }));
 
 vi.mock('./useSpecChatHistory', () => ({
@@ -105,6 +107,7 @@ vi.mock('lightweight-charts', () => ({
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
+const mockUseWaveReportQuery = vi.mocked(useWaveReportQuery);
 const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
 const mockUseSpecChatHistory = vi.mocked(useSpecChatHistory);
@@ -221,6 +224,10 @@ afterEach(() => {
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: undefined,
+      refetch: vi.fn(async () => ({ data: undefined })),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
     mockUseSpecChatHistory.mockReturnValue({
       entries: [],
       initialLoading: false,

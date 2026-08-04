@@ -4119,11 +4119,30 @@
               "$ref": "#/components/schemas/Diagnostic"
             }
           },
+          "gateResult": {},
           "key": {
             "type": "string"
           },
           "schedulable": {
             "type": "boolean"
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "statusDetail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workerCardId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -4517,15 +4536,47 @@
       "Diagnostic": {
         "type": "object",
         "required": [
+          "code",
+          "messageArgs",
+          "relatedBlockIds",
           "path",
           "message"
         ],
         "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
           "message": {
             "type": "string"
           },
+          "messageArgs": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "Compatibility fields for existing MCP clients. `message` is always\nrendered from `code` + `message_args`; it is never a second source."
+          },
+          "relatedBlockIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "relatedWaveId": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

@@ -29,6 +29,7 @@ vi.mock('../../api/queries', () => ({
     error: null,
     isLoading: false,
   })),
+  useWaveReportQuery: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
   useWavesByCoveQuery: vi.fn(() => ({ data: [] })),
 }));
 

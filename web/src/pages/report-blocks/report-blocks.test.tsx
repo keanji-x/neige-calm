@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
+import { taskDiagnosticText, type TaskVerdict } from './task';
 import { ReportAppBlock } from './app';
 import {
   taskBlockPayloadSchema,
@@ -714,7 +715,8 @@ describe('degraded blocks', () => {
     );
   });
 
-  it('renders task declaration fields without projected status or diagnostics', () => {
+  it('renders task status, diagnostics and the release button without exposing ownership fields', async () => {
+    const release = vi.fn();
     render(
       <ReportBlockView block={{
         id: 'b_1234', kind: 'task', rev: 1,
@@ -724,16 +726,54 @@ describe('degraded blocks', () => {
           acceptance: 'All checks pass', depends_on: ['draft'],
           ready: true, declared_by: 'user',
         },
-      } as ReportBlock} />,
+      } as ReportBlock} taskVerdict={{
+        blockId: 'b_1234', key: 'review', schedulable: false,
+        status: 'running', statusDetail: 'worker active', gateResult: null,
+        workerCardId: 'card-worker', diagnostics: [{
+          code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+          path: 'released_by_user', message: 'compat', action: 'release_task',
+        }],
+      }} taskActions={{ release, delete: vi.fn(), clearTombstone: vi.fn(), restoreAutomation: vi.fn() }} />,
     );
     expect(screen.getByRole('region', { name: 'Task review' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'source' })).toHaveAttribute(
       'href', '/wave/w2#b_abcd',
     );
     expect(screen.getByText('All checks pass')).toBeInTheDocument();
-    expect(screen.getByText('Depends on: draft')).toBeInTheDocument();
-    expect(screen.getByText('Declared by user · Ready')).toBeInTheDocument();
-    expect(screen.queryByText(/status|diagnostic/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Waits for: draft')).toBeInTheDocument();
+    expect(screen.getByText('running · worker active')).toBeInTheDocument();
+    expect(screen.queryByText(/declared by/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Allow this task' }));
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['duplicate_key', { key: 'same' }, /Rename this card/],
+    ['dependency_cycle', { keys: 'a -> b -> a' }, /Break one dependency/],
+    ['unknown_dependency', { dependency: 'legacy-only' }, /older task row/],
+    ['gate_required', {}, /Add a check/],
+    ['spec_task_ceiling', { ceiling: 2, occupied: 1 }, /document order, then by key/],
+    ['reference_needs_block', { reference: 'neige:\/\/wave\/w' }, /exact block/],
+    ['reference_missing', { reference: 'neige:\/\/wave\/w#gone' }, /link an existing block/],
+    ['reference_cross_cove', { reference: 'neige:\/\/wave\/other#b' }, /another cove/],
+    ['reference_chain_too_large', {}, /fewer blocks/],
+    ['tombstone_blocks_redeclaration', {}, /keeps the rejection record/],
+    ['declare_and_wait', {}, /Allow this task/],
+    ['context_stale_reference', {}, /referenced block changed/],
+    ['context_stale_declaration', {}, /worker output is still available/],
+  ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
+    expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
+  });
+
+  it('keeps implementation vocabulary out of task UI copy', () => {
+    const source = [
+      'origin', 'content_hash', 'closure_truncated', 'effective_policy',
+      'if_doc_rev', 'if_block_rev',
+    ];
+    const copy = ['reference_chain_too_large', 'declare_and_wait', 'context_stale_reference']
+      .map((code) => taskDiagnosticText({ code, messageArgs: {}, relatedBlockIds: [], path: 'x', message: '' } as TaskVerdict['diagnostics'][number]))
+      .join(' ');
+    for (const forbidden of source) expect(copy).not.toContain(forbidden);
   });
 
   it('keeps the task payload contract split between live declarations and tombstones', () => {

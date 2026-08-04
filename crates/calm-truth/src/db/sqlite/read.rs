@@ -390,8 +390,9 @@ impl RepoRead for SqlxRepo {
         let mut tx = begin_read_tx(&self.pool).await?;
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
-        let diagnostics =
+        let mut diagnostics =
             super::evaluate_schedulability_tx(&mut tx, wave_id, &declarations, &local).await?;
+        super::attach_task_read_state_tx(&mut tx, wave_id, &mut diagnostics).await?;
         tx.commit().await?;
         Ok(diagnostics)
     }

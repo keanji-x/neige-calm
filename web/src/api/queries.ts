@@ -57,6 +57,7 @@ export const queryKeys = {
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveReport: (waveId: string) => ['wave-report', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   waveFiles: (waveId: string) => ['wave-files', waveId] as const,
   waveFileList: (waveId: string, path: string | null | undefined) =>
@@ -234,6 +235,14 @@ export function useWaveFileContent(
     queryKey: waveFileContentQueryKey(waveId ?? '', path),
     queryFn: () => api.catWaveFile(waveId ?? '', path ?? ''),
     enabled: !!waveId && !!path && (opts?.enabled ?? true),
+  });
+}
+
+export function useWaveReportQuery(waveId: string | undefined | null) {
+  return useQuery<api.WaveReportRead, Error>({
+    queryKey: queryKeys.waveReport(waveId ?? ''),
+    queryFn: () => api.getWaveReport(waveId ?? ''),
+    enabled: !!waveId,
   });
 }
 
