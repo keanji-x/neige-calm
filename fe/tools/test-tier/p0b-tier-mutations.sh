@@ -44,7 +44,7 @@ case "${1:-}" in
     test ! -e "$proof"
     cp "$repo_dir/fe/tools/test-tier/layout.browser.test.ts" "$proof"
     trap 'rm -f "$proof" "$report"' EXIT
-    if (cd "$repo_dir/fe" && npx vitest run --project ui-dom web/src/ui/layout-jsdom-proof.test.ts) >"$report" 2>&1; then
+    if (cd "$repo_dir/fe" && npx vitest run --project web-dom web/src/ui/layout-jsdom-proof.test.ts) >"$report" 2>&1; then
       echo "jsdom proof unexpectedly passed" >&2
       exit 1
     fi

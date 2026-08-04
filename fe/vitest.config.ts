@@ -9,15 +9,15 @@ export default defineConfig({
         test: {
           name: 'platform-independent',
           environment: 'node',
-          include: ['core/**/*.test.ts', 'tools/**/*.test.ts', 'web/src/**/*.test.{ts,tsx}'],
-          exclude: ['**/*.browser.test.{ts,tsx}', 'web/src/ui/**/*.test.{ts,tsx}'],
+          include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],
+          exclude: ['**/*.browser.test.{ts,tsx}'],
         },
       },
       {
         test: {
-          name: 'ui-dom',
-          environment: 'jsdom',
-          include: ['web/src/ui/**/*.test.{ts,tsx}'],
+          name: 'web-dom',
+          environment: './tools/test-tier/jsdom-ssr-environment.ts',
+          include: ['web/src/**/*.test.{ts,tsx}'],
           exclude: ['**/*.browser.test.{ts,tsx}'],
         },
       },

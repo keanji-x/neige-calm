@@ -28,5 +28,18 @@
     ],
     "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-data.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"],
     "why_more_than_one": "Both safe and unsafe module-const syntax forms must turn red because resolution is shared; any third red is coupling leakage."
+  },
+  {
+    "mutation_id": "test-tier-map-jsdom-to-node",
+    "defends": ["oracle:INV-OVERLAY-006"],
+    "target": "tools/test-tier/checker.ts",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\nindex 0ca3b757..3e0d6442 100644\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -14,7 +14,7 @@ export interface TierGateInput {\n const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'playwright']),\n-  jsdom: Object.freeze(['web-dom']),\n+  jsdom: Object.freeze(['platform-independent']),\n   static: Object.freeze(['platform-independent']),\n } as const);\n const MIGRATIONS = new Set(['pending', 'skipped', 'migrated']);\n",
+    "expected_red": [
+      "test-tier-project fixtures maps jsdom only to web-dom",
+      "test-tier-project fixtures accepts a migrated jsdom authoritative test collected by web-dom",
+      "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent"
+    ],
+    "selection_paths": ["tools/test-tier/checker.ts", "tools/test-tier/checker.test.ts"],
+    "why_more_than_one": "The shared jsdom mapping is independently pinned by its generic mapping case and both required migrated authoritative fixtures; any fourth red indicates unrelated tier behavior changed."
   }
 ]

@@ -14,7 +14,7 @@ export interface TierGateInput {
 const LOCATION = /^([^\s:]+):(\d+)(?:-(\d+))?$/;
 const EXPECTED_PROJECTS = Object.freeze({
   browser: Object.freeze(['browser', 'playwright']),
-  jsdom: Object.freeze(['ui-dom']),
+  jsdom: Object.freeze(['web-dom']),
   static: Object.freeze(['platform-independent']),
 } as const);
 const MIGRATIONS = new Set(['pending', 'skipped', 'migrated']);
