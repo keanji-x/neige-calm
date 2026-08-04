@@ -28,5 +28,81 @@
     ],
     "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-data.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"],
     "why_more_than_one": "Both safe and unsafe module-const syntax forms must turn red because resolution is shared; any third red is coupling leakage."
+  },
+  {
+    "mutation_id": "test-tier-map-jsdom-to-node",
+    "defends": ["oracle:INV-OVERLAY-006"],
+    "target": "tools/test-tier/checker.ts",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -15,6 +15,6 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser']),\n+  jsdom: Object.freeze(['web-dom']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),\n } as const);\n",
+    "expected_red": [
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser"
+    ],
+    "selection_paths": ["tools/test-tier/checker.ts", "tools/test-tier/checker.test.ts"],
+    "why_more_than_one": "Only the explicit higher-capability jsdom-to-browser case should turn red; any additional red indicates unrelated tier behavior changed."
+  },
+  {
+    "mutation_id": "test-tier-allow-browser-overlap",
+    "defends": ["oracle:INV-OVERLAY-006"],
+    "target": "vitest.config.ts",
+    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -10,6 +10,6 @@ export default defineConfig({\n           name: 'platform-independent',\n           environment: 'node',\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}'],\n+          exclude: [],\n         },\n       },\n",
+    "expected_red": [
+      "test-tier-project fixtures accepts the positive directory",
+      "uses a layout engine for rendered element geometry",
+      "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once"
+    ],
+    "selection_paths": ["tools/test-tier/checker.test.ts", "tools/test-tier/vitest-projects.test.ts"],
+    "why_more_than_one": "The positive browser fixture and representative partition case independently detect the same browser overlap; any third red is unrelated coupling."
+  },
+  {
+    "mutation_id": "test-tier-ignore-migrated",
+    "defends": ["oracle:INV-OVERLAY-006"],
+    "target": "tools/test-tier/checker.ts",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -92,5 +92,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n   repoRoot: string, configRoot: string): TierViolation[] {\n   const violations: TierViolation[] = [];\n   for (const entry of entries) {\n-    if (entry.migration !== 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;\n+    if (entry.migration === 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;\n     const expected = EXPECTED_PROJECTS[entry.test_tier as keyof typeof EXPECTED_PROJECTS];\n",
+    "expected_red": [
+      "test-tier-project fixtures accepts the positive directory",
+      "test-tier-project fixtures checks whether browser tier has sufficient capability in platform-independent",
+      "test-tier-project fixtures checks whether browser tier has sufficient capability in web-dom",
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in platform-independent",
+      "test-tier-project fixtures enforces tier mismatch only after migration",
+      "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent",
+      "test-tier-project fixtures rejects every negative source with its own rule",
+      "test-tier-project fixtures rejects a test collected by the expected project and an extra project",
+      "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
+      "test-tier-project fixtures rejects overlap for jsdom as well as browser",
+      "test-tier-project fixtures parses every authoritative location composition without textual path heuristics",
+      "tier gate decisions reports an oracle tier/project mismatch"
+    ],
+    "selection_paths": ["tools/test-tier/checker.test.ts"],
+    "why_more_than_one": "All migrated mismatch and overlap cases must turn red when migrated entries are skipped; pending-only coverage remains green."
+  },
+  {
+    "mutation_id": "test-tier-ignore-capability",
+    "defends": ["oracle:INV-OVERLAY-006"],
+    "target": "tools/test-tier/checker.ts",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -96,5 +96,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n     for (const source of new Set(referencedPaths(entry.authoritative_test))) {\n       const testPath = configRelativePath(repoRoot, configRoot, source);\n       const actual = testPath === null ? [] : projectsForPath(testPath, projects);\n-      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({\n+      if (actual.length !== 1) violations.push({\n         id: entry.id, rule: 'test-tier-project', source,\n",
+    "expected_red": [
+      "test-tier-project fixtures checks whether browser tier has sufficient capability in platform-independent",
+      "test-tier-project fixtures checks whether browser tier has sufficient capability in web-dom",
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in platform-independent",
+      "test-tier-project fixtures enforces tier mismatch only after migration",
+      "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent",
+      "test-tier-project fixtures rejects every negative source with its own rule",
+      "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
+      "tier gate decisions reports an oracle tier/project mismatch"
+    ],
+    "selection_paths": ["tools/test-tier/checker.test.ts"],
+    "why_more_than_one": "Every isolated insufficient-capability and migrated mismatch case must turn red; overlap-only cases remain unaffected."
+  },
+  {
+    "mutation_id": "test-tier-allow-overlap",
+    "defends": ["oracle:INV-OVERLAY-006"],
+    "target": "tools/test-tier/checker.ts",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -96,5 +96,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n     for (const source of new Set(referencedPaths(entry.authoritative_test))) {\n       const testPath = configRelativePath(repoRoot, configRoot, source);\n       const actual = testPath === null ? [] : projectsForPath(testPath, projects);\n-      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({\n+      if (!expected.some((project) => project === actual[0])) violations.push({\n         id: entry.id, rule: 'test-tier-project', source,\n",
+    "expected_red": [
+      "test-tier-project fixtures rejects a test collected by the expected project and an extra project",
+      "test-tier-project fixtures rejects overlap for jsdom as well as browser"
+    ],
+    "selection_paths": ["tools/test-tier/checker.test.ts"],
+    "why_more_than_one": "The browser and jsdom overlap cases must both detect multiple collection; any third red indicates capability matching changed."
   }
 ]

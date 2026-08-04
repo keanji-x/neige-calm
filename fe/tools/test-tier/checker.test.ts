@@ -35,13 +35,28 @@ describe('test-tier-project fixtures', () => {
   });
 
   it.each([
-    ['browser', 'browser', 'probe.browser.test.ts'],
-    ['jsdom', 'ui-dom', 'probe.dom.test.ts'],
-    ['static', 'platform-independent', 'probe.test.ts'],
-  ])('maps %s only to %s', (tier, projectName, path) => {
+    ['browser', 'web-dom', 'probe.test.ts', false],
+    ['browser', 'platform-independent', 'probe.test.ts', false],
+    ['jsdom', 'platform-independent', 'probe.test.ts', false],
+    ['jsdom', 'browser', 'probe.browser.test.ts', true],
+    ['static', 'web-dom', 'probe.test.ts', true],
+    ['static', 'platform-independent', 'probe.test.ts', true],
+  ])('checks whether %s tier has sufficient capability in %s', (tier, projectName, path, accepted) => {
     const isolatedProjects = [{ name: projectName, include: [path], exclude: [] }];
     const entry = { id: 'GATE-TIER-MAP-001', migration: 'migrated', test_tier: tier, authoritative_test: `fe/${path}:1` };
-    expect(checkTestTier([entry], isolatedProjects, '/repo', '/repo/fe')).toEqual([]);
+    expect(checkTestTier([entry], isolatedProjects, '/repo', '/repo/fe')).toHaveLength(accepted ? 0 : 1);
+  });
+
+  it('accepts a migrated jsdom authoritative test collected by web-dom', () => {
+    const webDom = [{ name: 'web-dom', include: ['web/src/app/probe.test.ts'], exclude: [] }];
+    const entry = { id: 'GATE-TIER-JSDOM-POSITIVE', migration: 'migrated', test_tier: 'jsdom', authoritative_test: 'fe/web/src/app/probe.test.ts:1' };
+    expect(checkTestTier([entry], webDom, '/repo', '/repo/fe')).toEqual([]);
+  });
+
+  it('rejects a migrated jsdom authoritative test collected by platform-independent', () => {
+    const nodeOnly = [{ name: 'platform-independent', include: ['web/src/app/probe.test.ts'], exclude: [] }];
+    const entry = { id: 'GATE-TIER-JSDOM-NEGATIVE', migration: 'migrated', test_tier: 'jsdom', authoritative_test: 'fe/web/src/app/probe.test.ts:1' };
+    expect(checkTestTier([entry], nodeOnly, '/repo', '/repo/fe')).toHaveLength(1);
   });
 
   it('rejects a test collected by the expected project and an extra project', () => {
@@ -76,7 +91,7 @@ describe('test-tier-project fixtures', () => {
 
   it('rejects overlap for jsdom as well as browser', () => {
     const overlapping = [
-      { name: 'ui-dom', include: ['probe.test.tsx'], exclude: [] },
+      { name: 'web-dom', include: ['probe.test.tsx'], exclude: [] },
       { name: 'platform-independent', include: ['*.test.tsx'], exclude: [] },
     ];
     const entry = { id: 'GATE-TIER-MAP-005', migration: 'migrated', test_tier: 'jsdom', authoritative_test: 'fe/probe.test.tsx:1' };

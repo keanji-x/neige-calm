@@ -17,10 +17,11 @@ mutate() {
 }
 
 run_mutation() {
-  local label=$1 target=$2 before=$3 after=$4 pattern=$5 backup
+  local label=$1 target=$2 before=$3 after=$4 pattern=$5 backup cleanup
   backup=$(mktemp)
   cp "$target" "$backup"
-  trap 'cp "$backup" "$target"; rm -f "$backup"' EXIT INT TERM
+  printf -v cleanup 'cp -- %q %q; rm -f -- %q' "$backup" "$target" "$backup"
+  trap "$cleanup" EXIT INT TERM
   mutate "$target" "$before" "$after"
   echo "mutation: $label"
   set +e
@@ -44,7 +45,7 @@ case "${1:-}" in
     test ! -e "$proof"
     cp "$repo_dir/fe/tools/test-tier/layout.browser.test.ts" "$proof"
     trap 'rm -f "$proof" "$report"' EXIT
-    if (cd "$repo_dir/fe" && npx vitest run --project ui-dom web/src/ui/layout-jsdom-proof.test.ts) >"$report" 2>&1; then
+    if (cd "$repo_dir/fe" && npx vitest run --project web-dom web/src/ui/layout-jsdom-proof.test.ts) >"$report" 2>&1; then
       echo "jsdom proof unexpectedly passed" >&2
       exit 1
     fi
@@ -53,8 +54,8 @@ case "${1:-}" in
     ;;
   overlap-browser)
     run_mutation "$1" "$repo_dir/fe/vitest.config.ts" \
-      "exclude: ['**/*.browser.test.{ts,tsx}', 'web/src/ui/**/*.test.{ts,tsx}']" \
-      "exclude: ['web/src/ui/**/*.test.{ts,tsx}']" \
+      "exclude: ['**/*.browser.test.{ts,tsx}']" \
+      "exclude: []" \
       "assigns representative|accepts the positive"
     ;;
   ignore-migrated)
