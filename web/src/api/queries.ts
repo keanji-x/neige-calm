@@ -123,6 +123,18 @@ export const waveBacklinksQueryOptions = (waveId: string) => ({
   queryFn: () => api.getWaveBacklinks(waveId),
 });
 
+export const waveReportQueryOptions = (waveId: string) => ({
+  queryKey: queryKeys.waveReport(waveId),
+  queryFn: async () => {
+    const report = await api.getWaveReport(waveId);
+    return {
+      ...report,
+      taskDiagnostics: report.taskDiagnostics.map((verdict) =>
+        taskBlockVerdictSchema.parse(verdict)),
+    } as api.WaveReportRead;
+  },
+});
+
 export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
   queryKey: queryKeys.overlaysByKind(entity_kind),
   queryFn: () => api.listAllOverlays(entity_kind),
@@ -241,15 +253,7 @@ export function useWaveFileContent(
 
 export function useWaveReportQuery(waveId: string | undefined | null) {
   return useQuery<api.WaveReportRead, Error>({
-    queryKey: queryKeys.waveReport(waveId ?? ''),
-    queryFn: async () => {
-      const report = await api.getWaveReport(waveId ?? '');
-      return {
-        ...report,
-        taskDiagnostics: report.taskDiagnostics.map((verdict) =>
-          taskBlockVerdictSchema.parse(verdict)),
-      } as api.WaveReportRead;
-    },
+    ...waveReportQueryOptions(waveId ?? ''),
     enabled: !!waveId,
   });
 }

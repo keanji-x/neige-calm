@@ -238,6 +238,21 @@ async fn production_reads_attach_task_state_and_read_time_diagnostics() {
         1
     );
     tx.commit().await.unwrap();
+    sqlx::query("UPDATE tasks SET gate_result_json=?1 WHERE id=?2")
+        .bind(
+            json!({
+                "passed": false,
+                "failing_step": "tests",
+                "log_path": "/private/server/gate.log",
+                "log_tail": "secret implementation output",
+                "attempt": 1
+            })
+            .to_string(),
+        )
+        .bind(&task_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
 
     for (name, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
         let verdict = response["taskDiagnostics"]
@@ -247,6 +262,17 @@ async fn production_reads_attach_task_state_and_read_time_diagnostics() {
             .find(|verdict| verdict["key"] == "read-boundary")
             .unwrap_or_else(|| panic!("{name} verdict"));
         assert_eq!(verdict["status"], "dispatched", "{name} projected status");
+        let gate_result = verdict["gateResult"]
+            .as_object()
+            .expect("projected gate result");
+        assert!(
+            !gate_result.contains_key("log_path"),
+            "{name} hides gate log path"
+        );
+        assert!(
+            !gate_result.contains_key("log_tail"),
+            "{name} hides gate log tail"
+        );
         assert!(
             verdict["diagnostics"]
                 .as_array()

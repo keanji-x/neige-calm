@@ -347,7 +347,7 @@ function ReportContent({
   if (contentQ.isLoading) {
     if (path === 'report.md' && isFetching) {
       return shouldFallbackToReportCard ? (
-        <ReportMarkdown body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} />
+        <ReportMarkdown waveId={waveId} body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} />
       ) : (
         <ReportEmptyState />
       );
@@ -360,7 +360,7 @@ function ReportContent({
   }
 
   if (shouldFallbackToReportCard) {
-    return <ReportMarkdown body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} />;
+    return <ReportMarkdown waveId={waveId} body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} />;
   }
 
   if (isReportUnavailable) {
@@ -378,6 +378,7 @@ function ReportContent({
   if (contentQ.data.content_type === 'text/markdown') {
     return (
       <ReportMarkdown
+        waveId={waveId}
         body={contentQ.data.content}
         blocks={path === 'report.md' ? reportCardBlocks : undefined}
         taskDiagnostics={path === 'report.md' ? taskDiagnostics : undefined}
@@ -429,11 +430,13 @@ const MemoizedMarkdownBody = memo(function MemoizedMarkdownBody({
 });
 
 export function ReportMarkdown({
+  waveId,
   body,
   blocks,
   taskDiagnostics,
   taskAction,
 }: {
+  waveId?: string;
   body: string;
   blocks?: ReportBlock[];
   taskDiagnostics?: api.WaveReportRead['taskDiagnostics'];
@@ -454,7 +457,7 @@ export function ReportMarkdown({
     return (
       <>
         {blocks.map((block) => (
-          <ReportBlockView key={block.id} block={block}
+          <ReportBlockView key={block.id} block={block} waveId={waveId}
             taskVerdict={taskDiagnostics?.find((verdict) => verdict.blockId === block.id)}
             taskActions={block.kind === 'task' && taskAction ? {
               release: () => taskAction(block, 'release'),

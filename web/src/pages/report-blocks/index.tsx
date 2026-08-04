@@ -95,6 +95,7 @@ export const ReportBlockView = memo(function ReportBlockView({
   block,
   taskVerdict,
   taskActions,
+  waveId,
 }: {
   block: ReportBlock;
   taskVerdict?: TaskVerdict;
@@ -104,6 +105,7 @@ export const ReportBlockView = memo(function ReportBlockView({
     clearTombstone(): void;
     restoreAutomation(): void;
   };
+  waveId?: string;
 }) {
   switch (block.kind) {
     case 'prose': {
@@ -184,6 +186,7 @@ export const ReportBlockView = memo(function ReportBlockView({
       return (
         <div id={block.id} className="report-block report-block--breakout">
           <ReportTaskBlock payload={parsed.data} verdict={taskVerdict}
+            waveId={waveId}
             onRelease={taskActions?.release} onDelete={taskActions?.delete}
             onClearTombstone={taskActions?.clearTombstone}
             onRestoreAutomation={taskActions?.restoreAutomation} />

@@ -590,7 +590,7 @@ pub fn project_task_declarations(
             .iter()
             .find(|declaration| declaration.key == *key && declaration.tombstone)
             .and_then(|declaration| declaration.tombstoned_by.as_deref())
-            .expect("validated tombstone author");
+            .unwrap_or("spec");
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
             block.kind == super::KIND_TASK
                 && block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())
@@ -822,6 +822,29 @@ mod tests {
                 "task key `removed` has an uncleared tombstone"
             );
         }
+    }
+
+    #[test]
+    fn malformed_tombstone_without_author_remains_readable() {
+        let blocks = vec![
+            ReportBlock {
+                id: "b_0001".into(),
+                kind: super::super::KIND_TASK.into(),
+                rev: 0,
+                payload: json!({"key":"removed","tombstone":{},"declared_by":"spec"}),
+            },
+            ReportBlock {
+                id: "b_0002".into(),
+                kind: super::super::KIND_TASK.into(),
+                rev: 0,
+                payload: json!({"key":"removed","kind":"codex","goal":"again","ready":true,"declared_by":"spec"}),
+            },
+        ];
+
+        let (_, diagnostics) = project_task_declarations(&blocks);
+
+        assert_eq!(diagnostics[1][0].code, "tombstone_blocks_redeclaration");
+        assert_eq!(diagnostics[1][0].message_args["tombstoned_by"], "spec");
     }
 
     #[test]

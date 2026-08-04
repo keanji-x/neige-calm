@@ -619,6 +619,44 @@ describe('EventBridge', () => {
     cleanup();
   });
 
+  it.each([
+    ['task.dispatched', {
+      idempotency_key: 'idem-dispatched', kind: 'codex', wave_id: 'wave_1',
+    }],
+    ['task.gate_result', {
+      task_id: 'task_1', idempotency_key: 'idem-gate', passed: true,
+      log_tail: '', log_path: '/tmp/gate.log', attempt: 1, wave_id: 'wave_1',
+    }],
+  ] as const)('%s invalidates the owning wave report exactly', (eventKind, data) => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(<Wrapper><EventBridge syncEventVersion={1} /></Wrapper>);
+
+    fakeStream.emit({ ev: eventKind, data } as unknown as WireEvent);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-report', 'wave_1'] });
+    cleanup();
+  });
+
+  it.each([
+    ['task.dispatched', { idempotency_key: 'idem-dispatched', kind: 'codex' }],
+    ['task.gate_result', {
+      task_id: 'task_1', idempotency_key: 'idem-gate', passed: true,
+      log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
+    }],
+  ] as const)('%s broadly invalidates reports when its wave cannot be resolved', (eventKind, data) => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(<Wrapper><EventBridge syncEventVersion={1} /></Wrapper>);
+
+    fakeStream.emit({ ev: eventKind, data } as WireEvent);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-report'] });
+    cleanup();
+  });
+
   it('hook events fall back to broad wave-file invalidation without cached ownership', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');

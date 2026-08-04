@@ -791,6 +791,7 @@ describe('degraded blocks', () => {
     ['unknown_dependency', { dependency: 'legacy-only' }, /older task row/],
     ['gate_required', {}, /Add a check/],
     ['spec_task_ceiling', { ceiling: 2, occupied: 1 }, /document order, then by key/],
+    ['spec_task_ceiling', { ceiling: 0, occupied: 0 }, /Raise the limit in wave settings before allowing AI tasks/],
     ['reference_needs_block', { reference: 'neige:\/\/wave\/w' }, /exact block/],
     ['reference_missing', { reference: 'neige:\/\/wave\/w#gone' }, /link an existing block/],
     ['reference_cross_cove', { reference: 'neige:\/\/wave\/other#b' }, /another cove/],
@@ -810,6 +811,7 @@ describe('degraded blocks', () => {
     const forbiddenTerms = [
       'origin', 'content_hash', 'closure_truncated', 'effective_policy',
       'if_doc_rev', 'if_block_rev', 'log_path', 'gate-infra',
+      '/private/server/gate.log', 'secret implementation output',
     ];
     const copy = taskDiagnosticCodes
       .map((code) => taskDiagnosticText({ code, messageArgs: {}, relatedBlockIds: [], path: 'x', message: '' } as TaskVerdict['diagnostics'][number]))

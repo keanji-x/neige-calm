@@ -42,3 +42,29 @@
 
 这些测试分别从真实投影结果、渲染输出和注入的 HTTP 操作边界取证，没有与生产实现共享
 文案表、关联块列表或请求结果 fixture。
+
+## 修复轮 3 收敛
+
+新增 `WaveReportPage` 级链路测试，从 `useWaveReportQuery` 的块、verdict 与诊断数据开始，
+经过 `ReportContent → ReportMarkdown → ReportBlockView → ReportTaskBlock`，覆盖状态回显、
+两条诊断、相关块/相关 wave 路由、worker 产出链接，以及放行、删除、清除墓碑、恢复自动化
+四种动作的真实 API 参数。`CAP-REPORT-TASK-023` 的权威锚点已改指向该测试。
+
+同时补齐 `task.dispatched` / `task.gate_result` 的精确与宽失效表驱动用例、
+`useWaveReportQuery` 的畸形 verdict 拒绝契约、REST/MCP 两侧 gate 日志字段的 wire 筛除，
+以及缺失 `tombstoned_by` 的容错读路径。`ceiling=0` 文案不再建议移动卡片，相关链接均走
+TanStack Router。
+
+### 修复轮 3 七项页面链路变异
+
+以下七项逐项临时改坏并运行
+`WaveReportPage > wires projected task UI and every task action through the page assembly`；每次均
+确认该测试变红后用 `git checkout --` 恢复：
+
+- （待验证）`taskActions` 整体断线。
+- （待验证）`taskVerdict` 整体断线。
+- （待验证）`RelatedBlocks` 直接返回 `null`。
+- （待验证）删除整行诊断渲染。
+- （待验证）删除 `Remove task` 按钮。
+- （待验证）删除 `Open worker output` 链接。
+- （待验证）页面级 `clearTombstone` 改为空函数。
