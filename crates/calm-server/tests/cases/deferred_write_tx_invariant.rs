@@ -3,21 +3,35 @@
 //! `begin_immediate_tx` (BEGIN IMMEDIATE).
 //!
 //! Why: the app's in-memory sqlite is a shared-cache database with
-//! table-granularity locks and a single writer slot. A deferred
-//! (`pool.begin()`) transaction that reads and then writes holds its read
-//! locks while waiting for the writer slot, which closes a wait cycle
-//! against any concurrent IMMEDIATE writer — sqlite's unlock_notify then
-//! fails one side with plain `SQLITE_LOCKED` (6) "database is deadlocked"
-//! (this took down `gh.pr.merge` in CI; see
-//! `calm_truth::db::sqlite::deadlock_semantics_tests` for the pinned
-//! upstream semantics and `operation::claim_completion_deadlock_tests`
-//! for the production repro). A second IMMEDIATE instead parks at BEGIN
-//! holding nothing, so writer-vs-writer can never cycle.
+//! table-granularity locks and a single writer slot. The cycle party is a
+//! lock-HOLDING waiter — ANY explicit transaction that already holds table
+//! locks and then parks on another table. A deferred (`pool.begin()`)
+//! transaction is exactly that: it holds every lock it has taken (R locks
+//! included) until commit, so when it parks it closes a wait cycle against
+//! any concurrent IMMEDIATE writer that takes the same tables in the
+//! opposite order — sqlite's unlock_notify then fails one side with plain
+//! `SQLITE_LOCKED` (6) "database is deadlocked" (this took down
+//! `gh.pr.merge` in CI; see `calm_truth::db::sqlite::deadlock_semantics_tests`
+//! for the pinned upstream semantics and
+//! `operation::claim_completion_deadlock_tests` for the production repro).
+//! A second IMMEDIATE instead parks at BEGIN holding nothing, so
+//! writer-vs-writer can never cycle.
+//!
+//! #1016 correction: "it only reads" is NOT an exemption. A read-only
+//! deferred tx holds R locks across statements, and an R lock blocks an
+//! IMMEDIATE writer's W request just as effectively as a W lock does —
+//! proven end-to-end by `deferred_read_tx_deadlock_repro`, where the
+//! then-allowlisted `read.rs::wave_detail` held R(waves)+R(cards), parked
+//! on `overlays`, and drove `DELETE /api/waves/:id` into code 6.
 //!
 //! If this test starts failing, the new deferred transaction must either
-//! move to `begin_immediate_tx` (it writes) or be added to
-//! `READ_ONLY_DEFERRED_ALLOWLIST` with a justification comment at the
-//! call site (it provably only reads).
+//! move to `begin_immediate_tx` (it writes) or drop the explicit
+//! transaction entirely (it only reads). An AUTOCOMMIT statement — however
+//! many tables it joins — unwinds its implicit transaction and releases
+//! every table lock it took BEFORE sqlx parks in `unlock_notify`
+//! (`deadlock_semantics_autocommit_join_y_first_no_cycle_error_unwind_releases_locks`),
+//! so it is structurally incapable of being a cycle party. That is the
+//! route both former allowlist entries took.
 //!
 //! Scanner hardening (#930 review): each file is lexically NORMALIZED
 //! before scanning — line comments (incl. doc comments), nested block
@@ -51,7 +65,7 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
     "#[cfg(test)]\nmod runtime_read_flip_support;",
 )];
 
-/// Documented READ-ONLY deferred transactions, keyed by CONTENT rather
+/// Documented read-only deferred transactions, keyed by CONTENT rather
 /// than hit count (#930 review hardening): `(relative path, needle)`
 /// where the needle — the enclosing call-site `fn` name — must appear in the
 /// normalized text within `ALLOWLIST_NEEDLE_WINDOW_LINES` lines above
@@ -59,23 +73,24 @@ const TEST_GATED_AT_REGISTRATION: &[(&str, &str, &str)] = &[(
 /// elsewhere in the same file therefore fails even when the total hit
 /// count is unchanged.
 ///
-/// A deferred transaction that performs no writes never competes for the
-/// shared-cache writer slot, so it cannot be a hold-and-wait party.
-const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[
-    // The helper is the single place that opens the deferred transaction;
-    // every production caller is independently enumerated below.
-    (
-        "calm-truth/src/db/sqlite/read_transaction.rs",
-        "fn begin_read_tx(",
-    ),
-    // Each read-only call site is named explicitly so adding another caller
-    // cannot silently inherit the helper's exemption.
-    ("calm-truth/src/db/sqlite/read.rs", "async fn wave_detail("),
-    (
-        "calm-truth/src/db/sqlite/read.rs",
-        "async fn task_diagnostics(",
-    ),
-];
+/// **The allowlist is EMPTY, and that is the intended steady state**
+/// (#1016). The old justification — "a deferred transaction that performs
+/// no writes never competes for the writer slot, so it cannot be a
+/// hold-and-wait party" — was false: closing a cycle needs a lock-HOLDING
+/// waiter, not a writer-slot contender, and a multi-table read-only
+/// deferred tx is one. Its three entries (`begin_read_tx`,
+/// `read.rs::wave_detail`, `read.rs::task_diagnostics`) were removed by
+/// dropping their explicit transactions, not by re-justifying them.
+///
+/// The ONLY exemption that survives the #1016 analysis is a deferred tx
+/// that can never park while holding a lock, i.e. one whose reads
+/// **touch a single table**, or whose blocking point is provably its
+/// **first** lock (`deadlock_semantics_autocommit_join_x_first_no_cycle`
+/// pins that a waiter blocked on its first lock holds nothing). "It only
+/// reads" is not, by itself, such a proof. Before adding an entry, prefer
+/// the two routes that need no proof at all: `begin_immediate_tx` if it
+/// writes, or plain autocommit statements if it does not.
+const READ_ONLY_DEFERRED_ALLOWLIST: &[(&str, &str)] = &[];
 
 /// How far above a matched begin the allowlist needle may sit. The fn
 /// signature is normally a handful of lines up (justification comment in

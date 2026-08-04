@@ -10,7 +10,7 @@
     "dev": "vite web",
     "build": "tsc -b && vite build web",
     "typecheck": "tsc -b",
-    "test": "vitest run --project platform-independent --project ui-dom && npm run test:wire && npm run test:mock-drift",
+    "test": "vitest run --project platform-independent --project web-dom && npm run test:wire && npm run test:mock-drift",
     "test:browser": "vitest run --project browser",
     "test:mutation": "npm run test:mutation:fixtures && node tools/mutation/run.mjs",
     "test:mutation:fixtures": "node tools/mutation/fixture-e2e.mjs",

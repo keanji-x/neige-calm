@@ -7,12 +7,15 @@ describe('vitest project partition', () => {
   const projects = testProjectsFromConfig(vitestConfig);
 
   it('exports exactly the three named projects', () => {
-    expect(projects.map(({ name }) => name)).toEqual(['platform-independent', 'ui-dom', 'browser']);
+    expect(projects.map(({ name }) => name)).toEqual(['platform-independent', 'web-dom', 'browser']);
   });
 
   it.each([
     ['tools/probe.test.ts', ['platform-independent']],
-    ['web/src/ui/probe.test.tsx', ['ui-dom']],
+    ['web/src/app/probe.test.ts', ['web-dom']],
+    ['web/src/features/probe.test.tsx', ['web-dom']],
+    ['web/src/systems/probe.test.ts', ['web-dom']],
+    ['web/src/ui/probe.test.tsx', ['web-dom']],
     ['tools/probe.browser.test.ts', ['browser']],
     ['web/src/ui/probe.browser.test.tsx', ['browser']],
   ])('assigns representative path %s exactly once', (path, expected) => {

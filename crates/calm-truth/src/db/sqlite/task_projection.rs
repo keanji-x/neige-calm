@@ -8,7 +8,7 @@ use calm_types::report_blocks::tasks::{
 };
 use calm_types::report_links::{parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, Transaction};
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
 use crate::error::{CalmError, Result};
@@ -151,7 +151,7 @@ pub struct BlockVerdict {
     pub withdrawal: Option<WithdrawalEdge>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Deserialize)]
 struct TaskReadState {
     key: String,
     status: String,
@@ -162,23 +162,13 @@ struct TaskReadState {
     claim_context_json: Option<String>,
 }
 
-/// Read-time task-table projection for report rendering. This deliberately
-/// stays beside the existing projection query instead of introducing a live
-/// block data-source abstraction.
-pub async fn attach_task_read_state_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    wave_id: &str,
-    verdicts: &mut [BlockVerdict],
-) -> Result<()> {
-    let rows: Vec<TaskReadState> = sqlx::query_as(
-        "SELECT key,status,gate_result_json,worker_card_id,context_stale_at_ms,context_closure_truncated,claim_context_json FROM tasks WHERE wave_id=?1",
-    )
-    .bind(wave_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    let by_key: BTreeMap<_, _> = rows.into_iter().map(|row| (row.key.clone(), row)).collect();
+/// Attach the task-table state carried by `wave_projection_state`'s single
+/// statement. This deliberately stays beside the projection query instead of
+/// introducing a live block data-source abstraction.
+fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut [BlockVerdict]) {
+    let by_key: BTreeMap<_, _> = rows.iter().map(|row| (row.key.as_str(), row)).collect();
     for verdict in verdicts {
-        let Some(row) = by_key.get(&verdict.key) else {
+        let Some(row) = by_key.get(verdict.key.as_str()) else {
             continue;
         };
         verdict.status = Some(row.status.clone());
@@ -272,7 +262,6 @@ pub async fn attach_task_read_state_tx(
             verdict.schedulable = false;
         }
     }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
@@ -364,51 +353,190 @@ fn reference_diagnostic(code: &str, reference: &str, wave_id: Option<String>) ->
     )
 }
 
-async fn wave_projection_policy_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+/// One in-flight `tasks` row, as carried by [`wave_projection_state`]'s
+/// `json_group_array`. Shape mirrors the four columns the predicate needs;
+/// `declared_by` / `origin` are `NOT NULL` since migration 0068.
+#[derive(Deserialize)]
+struct InflightTaskRow {
+    key: String,
+    status: String,
+    declared_by: String,
+    origin: String,
+}
+
+/// Everything the schedulability verdict needs from `waves` + the in-flight
+/// `tasks` rows, read in ONE statement (#1016).
+struct WaveProjectionState {
+    policy: Option<String>,
+    ceiling: i64,
+    require_gates: bool,
+    /// Cove of the wave being projected — the source side of the
+    /// cross-cove reference check.
+    source_cove: String,
+    inflight: Vec<InflightTaskRow>,
+    task_read_state: Vec<TaskReadState>,
+}
+
+#[derive(sqlx::FromRow)]
+struct WaveProjectionStateRow {
+    automation_policy: Option<String>,
+    spec_task_ceiling: Option<i64>,
+    require_task_gates: i64,
+    cove_id: String,
+    inflight_json: String,
+    task_read_state_json: String,
+}
+
+/// Reads the wave's projection policy, its cove, and every in-flight task
+/// row in a SINGLE statement.
+///
+/// This used to be four statements — policy/ceiling/gates, the in-flight key
+/// list, the ceiling-occupancy `count(*)`, and `SELECT cove_id` — which is
+/// fine inside the write path's IMMEDIATE transaction but mixes database
+/// versions on the read path, where the caller runs in autocommit. A ceiling
+/// read at t0 against an occupancy counted at t1 can report a capacity that
+/// never existed, and the orphaned-in-flight scan could contradict the
+/// in-flight key list. One statement is one implicit transaction, so all of
+/// it now comes from one version. It also removes the `SELECT cove_id ...
+/// fetch_one` that turned a concurrently deleted wave into a 500 (it is the
+/// `NotFound` below, i.e. a 404, on the same row that carries the policy).
+///
+/// The three subsets the predicate needs are all derivable from the in-flight
+/// rows, so the extra statements bought nothing even before consistency:
+/// every in-flight key, the `declared_by='spec' AND origin='block'` count,
+/// and the `origin='block'` orphan candidates.
+async fn wave_projection_state(
+    conn: &mut SqliteConnection,
     wave_id: &str,
-) -> Result<(Option<String>, i64, bool)> {
-    let row: Option<(Option<String>, Option<i64>, i64)> = sqlx::query_as(
-        "SELECT automation_policy, spec_task_ceiling, require_task_gates FROM waves WHERE id=?1",
-    )
-    .bind(wave_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    let (policy, ceiling, require_gates) =
-        row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
-    Ok((
-        policy,
-        ceiling.unwrap_or(DEFAULT_SPEC_TASK_CEILING).max(0),
-        require_gates != 0,
-    ))
+    include_read_state: bool,
+) -> Result<WaveProjectionState> {
+    let sql = if include_read_state {
+        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
+                  (SELECT json_group_array(json_object(
+                       'key', t.key, 'status', t.status,
+                       'declared_by', t.declared_by, 'origin', t.origin))
+                   FROM tasks t
+                   WHERE t.wave_id = w.id
+                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
+                  (SELECT json_group_array(json_object(
+                       'key', t.key, 'status', t.status,
+                       'gate_result_json', t.gate_result_json,
+                       'worker_card_id', t.worker_card_id,
+                       'context_stale_at_ms', t.context_stale_at_ms,
+                       'context_closure_truncated', t.context_closure_truncated,
+                       'claim_context_json', t.claim_context_json))
+                   FROM tasks t WHERE t.wave_id = w.id) AS task_read_state_json
+           FROM waves w WHERE w.id = ?1"#
+    } else {
+        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
+                  (SELECT json_group_array(json_object(
+                       'key', t.key, 'status', t.status,
+                       'declared_by', t.declared_by, 'origin', t.origin))
+                   FROM tasks t
+                   WHERE t.wave_id = w.id
+                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
+                  '[]' AS task_read_state_json
+           FROM waves w WHERE w.id = ?1"#
+    };
+    let row: Option<WaveProjectionStateRow> = sqlx::query_as(sql)
+        .bind(wave_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let row = row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+    Ok(WaveProjectionState {
+        policy: row.automation_policy,
+        ceiling: row
+            .spec_task_ceiling
+            .unwrap_or(DEFAULT_SPEC_TASK_CEILING)
+            .max(0),
+        require_gates: row.require_task_gates != 0,
+        source_cove: row.cove_id,
+        inflight: serde_json::from_str(&row.inflight_json)?,
+        task_read_state: serde_json::from_str(&row.task_read_state_json)?,
+    })
 }
 
 /// The single DB-aware schedulability predicate used by writes, rebuilds and reads.
-pub async fn evaluate_schedulability_tx(
-    tx: &mut Transaction<'_, Sqlite>,
+///
+/// Takes a bare connection rather than a transaction (#1016): the WRITE path
+/// hands it `&mut **tx` so its verdict stays atomic with the projection it
+/// drives, while the read-only path (`read.rs::task_diagnostics`) hands it a
+/// pooled connection in AUTOCOMMIT mode.
+///
+/// Consistency on the READ path, stated precisely — including what is still
+/// broken. The verdict core — policy, ceiling, in-flight occupancy, in-flight
+/// keys, the wave's cove — is ONE statement ([`wave_projection_state`]), so a
+/// displayed capacity or schedulability decision can no longer be assembled
+/// from two different versions of the database. Two reads remain outside that
+/// statement, each its own autocommit version:
+///
+///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
+///     key is already executing"; and
+///   * the per-reference existence/cove lookups, which are questions about
+///     OTHER waves and cards and are inherently point-in-time.
+///
+/// The per-reference lookups really are only "possibly stale": they ask about
+/// unrelated entities and a stale answer is a stale answer.
+///
+/// The frozen scan is NOT merely stale — it can make the returned verdict set
+/// SELF-CONTRADICTORY, and this doc says so rather than rounding it down to
+/// "pointwise consistent". The core snapshot at t0 and the frozen scan at t1
+/// disagree about any task whose row changed in between. Concretely: a task
+/// that is in-flight at t0 and deleted (or driven terminal) before t1 still
+/// occupies a ceiling slot in `capacity`, yet no longer appears in
+/// `frozen_by_key`. The result can be a verdict carrying `schedulable = true`
+/// for a key whose slot the same call already counted as taken — a decision
+/// that no single database version would have produced. The reverse skew
+/// (row becomes frozen after t0) is the same shape.
+///
+/// This is not a #1016 regression: the pre-#1016 four-statement version had
+/// the identical split — #1016 only shrank the number of versions that can be
+/// mixed, from four to two. Collapsing the remainder is a separate job:
+/// `evaluate_schedulability` fans out one data-dependent query per declared
+/// ref, so it cannot become a single statement without restructuring the
+/// predicate that the write path shares.
+///
+/// What keeps the skew off the correctness path: on the WRITE path all of
+/// this runs inside the caller's IMMEDIATE transaction, so the verdict that
+/// actually ADMITS tasks is fully atomic. The read path
+/// (`read.rs::task_diagnostics`) is a diagnostics surface — a contradictory
+/// verdict there is displayed, never acted on.
+///
+/// Why not an explicit deferred tx on the read path: it would hold R locks
+/// across statements and could cycle against an IMMEDIATE writer touching the
+/// same tables in the opposite order — the `SQLITE_LOCKED` (6) abort
+/// `deferred_read_tx_deadlock_repro` pins for the sibling reader. That cycle
+/// only exists on a shared-cache database (the in-memory sqlite used by CI
+/// and `make dev-fresh`); the production file database (PRIVATECACHE + WAL)
+/// gives readers a snapshot and never cycles. An autocommit statement that
+/// blocks unwinds its implicit transaction — releasing every table lock it
+/// took — before parking in `unlock_notify`, so it can never be the
+/// lock-HOLDING waiter (pinned by `deadlock_semantics_autocommit_join_*`).
+/// `begin_immediate_tx` would also be cycle-free and fully consistent, but it
+/// takes the writer slot and would serialize this read against every writer
+/// on production too — a real production cost for a non-production gap.
+pub async fn evaluate_schedulability(
+    conn: &mut SqliteConnection,
     wave_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
+    include_read_state: bool,
 ) -> Result<Vec<BlockVerdict>> {
-    let (configured_policy, ceiling, require_gates) =
-        wave_projection_policy_tx(tx, wave_id).await?;
+    let state = wave_projection_state(&mut *conn, wave_id, include_read_state).await?;
+    let configured_policy = state.policy;
+    let ceiling = state.ceiling;
+    let require_gates = state.require_gates;
+    let source_cove = state.source_cove;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
     // unknown_deps knows every in-flight key in the wave, including rows
     // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
-    let inflight: Vec<(String,)> = sqlx::query_as(
-        "SELECT key FROM tasks WHERE wave_id=?1 AND status IN ('dispatched','running','verifying')",
-    )
-    .bind(wave_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    let inflight_keys: Vec<String> = inflight.into_iter().map(|(key,)| key).collect();
+    let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
-    let occupied: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM tasks WHERE wave_id=?1 AND declared_by='spec' AND origin='block' AND status IN ('dispatched','running','verifying')",
-    )
-    .bind(wave_id)
-    .fetch_one(&mut **tx)
-    .await?;
+    let occupied: i64 = state
+        .inflight
+        .iter()
+        .filter(|r| r.declared_by == "spec" && r.origin == "block")
+        .count() as i64;
     let capacity = ceiling.saturating_sub(occupied).max(0) as usize;
 
     let unknown: BTreeSet<_> = unknown_deps(declarations, &inflight_keys)
@@ -417,10 +545,6 @@ pub async fn evaluate_schedulability_tx(
     let gate_bad: BTreeSet<_> = gate_rule_violations(declarations, require_gates)
         .into_iter()
         .collect();
-    let source_cove: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id=?1")
-        .bind(wave_id)
-        .fetch_one(&mut **tx)
-        .await?;
     let mut verdicts = Vec::with_capacity(declarations.len());
     for declaration in declarations {
         let mut diagnostics = block_local_diags
@@ -479,13 +603,13 @@ pub async fn evaluate_schedulability_tx(
                 sqlx::query_as(
                     "SELECT w.cove_id,c.kind,EXISTS(SELECT 1 FROM cards card JOIN json_each(card.payload,'$.blocks') block WHERE card.wave_id=w.id AND card.kind='wave-report' AND json_extract(block.value,'$.id')=?2) FROM waves w JOIN coves c ON c.id=w.cove_id WHERE w.id=?1",
                 )
-                    .bind(dst_wave).bind(dst_block).fetch_optional(&mut **tx).await?
+                    .bind(dst_wave).bind(dst_block).fetch_optional(&mut *conn).await?
             } else if let Some(card_id) = reference
                 .strip_prefix("neige://card/")
                 .filter(|id| !id.is_empty() && !id.contains('/'))
             {
                 sqlx::query_as("SELECT w.cove_id,c.kind,1 FROM cards card JOIN waves w ON w.id=card.wave_id JOIN coves c ON c.id=w.cove_id WHERE card.id=?1")
-                    .bind(card_id).fetch_optional(&mut **tx).await?
+                    .bind(card_id).fetch_optional(&mut *conn).await?
             } else {
                 continue;
             };
@@ -545,7 +669,7 @@ pub async fn evaluate_schedulability_tx(
         "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,origin,decl_ready,decl_released_by_user FROM tasks WHERE wave_id=?1 AND status!='pending'",
     )
     .bind(wave_id)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut *conn)
     .await?;
     let frozen_by_key: BTreeMap<_, _> =
         frozen.into_iter().map(|row| (row.1.clone(), row)).collect();
@@ -633,20 +757,16 @@ pub async fn evaluate_schedulability_tx(
     // still-live projection row as a synthetic verdict so both read APIs retain
     // the §6.5 withdrawal diagnostic without changing their response shape.
     let declared_keys: BTreeSet<&str> = declarations.iter().map(|d| d.key.as_str()).collect();
-    let orphaned_inflight: Vec<(String, String)> = sqlx::query_as(
-        "SELECT key,status FROM tasks WHERE wave_id=?1 AND origin='block' AND status IN ('dispatched','running','verifying')",
-    )
-    .bind(wave_id)
-    .fetch_all(&mut **tx)
-    .await?;
-    for (key, status) in orphaned_inflight {
-        if !declared_keys.contains(key.as_str()) {
+    // Same rows the in-flight key list came from (one statement, one
+    // version), narrowed to block-origin projection rows.
+    for row in state.inflight.iter().filter(|r| r.origin == "block") {
+        if !declared_keys.contains(row.key.as_str()) {
             verdicts.push(BlockVerdict {
                 block_id: String::new(),
-                diagnostics: vec![withdrawal_diagnostic(&key, &status)],
-                key,
+                diagnostics: vec![withdrawal_diagnostic(&row.key, &row.status)],
+                key: row.key.clone(),
                 schedulable: false,
-                status: Some(status),
+                status: Some(row.status.clone()),
                 gate_result: None,
                 worker_card_id: None,
                 withdrawal: None,
@@ -700,6 +820,9 @@ pub async fn evaluate_schedulability_tx(
         ));
         verdicts[index].schedulable = false;
     }
+    if include_read_state {
+        attach_task_read_state(&state.task_read_state, wave_id, &mut verdicts);
+    }
     Ok(verdicts)
 }
 
@@ -719,7 +842,8 @@ pub async fn project_tasks_tx(
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<TaskProjectionOutcome> {
-    let verdicts = evaluate_schedulability_tx(tx, wave_id, declarations, block_local_diags).await?;
+    let verdicts =
+        evaluate_schedulability(tx, wave_id, declarations, block_local_diags, false).await?;
     let schedulable_by_key: BTreeMap<_, _> = verdicts
         .iter()
         .filter(|v| !v.key.is_empty())
@@ -799,7 +923,7 @@ pub async fn project_tasks_tx(
                 }
                 let diagnostic = withdrawal_diagnostic(key, status);
                 // Declaration-backed rows already received this diagnostic from
-                // evaluate_schedulability_tx; this branch only covers deleted blocks.
+                // evaluate_schedulability; this branch only covers deleted blocks.
                 if !verdict_index_by_key.contains_key(key) {
                     verdicts.push(BlockVerdict {
                         block_id: String::new(),
@@ -932,13 +1056,15 @@ mod tests {
             .unwrap();
 
         let mut tx = repo.pool.begin().await.unwrap();
-        let mut verdicts =
-            evaluate_schedulability_tx(&mut tx, &wave, &[declaration(0, "read-state")], &[vec![]])
-                .await
-                .unwrap();
-        attach_task_read_state_tx(&mut tx, &wave, &mut verdicts)
-            .await
-            .unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "read-state")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
 
         let verdict = &verdicts[0];
         assert!(!verdict.schedulable);
@@ -972,13 +1098,15 @@ mod tests {
             .unwrap();
 
         let mut tx = repo.pool.begin().await.unwrap();
-        let mut verdicts =
-            evaluate_schedulability_tx(&mut tx, &wave, &[declaration(0, "root-only")], &[vec![]])
-                .await
-                .unwrap();
-        attach_task_read_state_tx(&mut tx, &wave, &mut verdicts)
-            .await
-            .unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "root-only")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
 
         let verdict = &verdicts[0];
         assert!(!verdict.schedulable);
@@ -1003,11 +1131,12 @@ mod tests {
             .unwrap();
 
         let mut tx = repo.pool.begin().await.unwrap();
-        let verdicts = evaluate_schedulability_tx(
+        let verdicts = evaluate_schedulability(
             &mut tx,
             &wave,
             &[declaration(0, "approval-needed")],
             &[vec![]],
+            true,
         )
         .await
         .unwrap();
@@ -1038,13 +1167,15 @@ mod tests {
             .unwrap();
 
         let mut tx = repo.pool.begin().await.unwrap();
-        let mut verdicts =
-            evaluate_schedulability_tx(&mut tx, &wave, &[declaration(0, "cross-wave")], &[vec![]])
-                .await
-                .unwrap();
-        attach_task_read_state_tx(&mut tx, &wave, &mut verdicts)
-            .await
-            .unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "cross-wave")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
 
         let stale = verdicts[0]
             .diagnostics
@@ -1070,11 +1201,12 @@ mod tests {
             .await
             .unwrap();
         let mut tx = repo.pool.begin().await.unwrap();
-        let verdicts = evaluate_schedulability_tx(
+        let verdicts = evaluate_schedulability(
             &mut tx,
             &wave,
             &[declaration(0, "capacity-zero")],
             &[vec![]],
+            true,
         )
         .await
         .unwrap();
@@ -1096,11 +1228,12 @@ mod tests {
         let outcome = project_tasks_tx(&mut tx, &wave, &declarations, &[vec![], vec![]])
             .await
             .unwrap();
-        let mut diagnostics = outcome.diagnostics.clone();
-        attach_task_read_state_tx(&mut tx, &wave, &mut diagnostics)
-            .await
-            .unwrap();
         tx.commit().await.unwrap();
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let diagnostics =
+            evaluate_schedulability(&mut conn, &wave, &declarations, &[vec![], vec![]], true)
+                .await
+                .unwrap();
         assert!(!outcome.diagnostics[0].schedulable);
         assert!(
             outcome.diagnostics[0]
