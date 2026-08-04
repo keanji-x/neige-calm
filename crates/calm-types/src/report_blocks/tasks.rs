@@ -38,6 +38,26 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "spec_task_ceiling",
 ];
 
+/// Stable producer contract used by §6.5 withdrawal decisions.
+pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
+    ("invalid_declaration", "payload"),
+    ("duplicate_key", "key"),
+    ("dependency_cycle", "depends_on"),
+    ("tombstone_blocks_redeclaration", "key"),
+    ("unknown_dependency", "depends_on"),
+    ("gate_required", "gate"),
+    ("reference_needs_block", "refs"),
+    ("reference_missing", "refs"),
+    ("reference_cross_cove", "refs"),
+    ("declare_and_wait", "released_by_user"),
+    ("declaration_changed_in_flight", "key"),
+    ("task_key_completed", "key"),
+    ("context_stale_declaration", "key"),
+    ("context_stale_reference", "refs"),
+    ("reference_chain_too_large", "refs"),
+    ("spec_task_ceiling", "key"),
+];
+
 pub fn json_eq(a: &str, b: &str) -> bool {
     match (
         serde_json::from_str::<Value>(a),
@@ -107,9 +127,9 @@ pub struct Diagnostic {
     pub related_wave_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    pub path: String,
     /// Compatibility fields for existing MCP clients. `message` is always
     /// rendered from `code` + `message_args`; it is never a second source.
-    pub path: String,
     pub message: String,
 }
 
@@ -127,6 +147,12 @@ impl Diagnostic {
             TASK_DIAGNOSTIC_CODES.contains(&code.as_str()),
             "unregistered task diagnostic code: {code}"
         );
+        let path = path.into();
+        let expected_path = TASK_DIAGNOSTIC_CODE_PATHS
+            .iter()
+            .find_map(|(candidate, path)| (*candidate == code).then_some(*path))
+            .expect("registered task diagnostic code must have a path");
+        assert_eq!(path, expected_path, "wrong path for task diagnostic {code}");
         let message = render_diagnostic_message(&code, &message_args);
         Self {
             code,
@@ -134,7 +160,7 @@ impl Diagnostic {
             related_block_ids,
             related_wave_id,
             action,
-            path: path.into(),
+            path,
             message,
         }
     }
@@ -758,6 +784,47 @@ mod tests {
             None,
             None,
         );
+    }
+
+    #[test]
+    fn diagnostic_code_paths_cover_the_closed_vocabulary() {
+        let expected_paths = [
+            ("invalid_declaration", "payload"),
+            ("duplicate_key", "key"),
+            ("dependency_cycle", "depends_on"),
+            ("tombstone_blocks_redeclaration", "key"),
+            ("unknown_dependency", "depends_on"),
+            ("gate_required", "gate"),
+            ("reference_needs_block", "refs"),
+            ("reference_missing", "refs"),
+            ("reference_cross_cove", "refs"),
+            ("declare_and_wait", "released_by_user"),
+            ("declaration_changed_in_flight", "key"),
+            ("task_key_completed", "key"),
+            ("context_stale_declaration", "key"),
+            ("context_stale_reference", "refs"),
+            ("reference_chain_too_large", "refs"),
+            ("spec_task_ceiling", "key"),
+        ];
+        assert_eq!(TASK_DIAGNOSTIC_CODE_PATHS, expected_paths);
+        let expected = TASK_DIAGNOSTIC_CODES
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let actual = TASK_DIAGNOSTIC_CODE_PATHS
+            .iter()
+            .map(|(code, _)| *code)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            TASK_DIAGNOSTIC_CODE_PATHS.len(),
+            TASK_DIAGNOSTIC_CODES.len()
+        );
+
+        for &(code, path) in TASK_DIAGNOSTIC_CODE_PATHS {
+            let diagnostic = Diagnostic::coded(code, path, BTreeMap::new(), vec![], None, None);
+            assert_eq!(diagnostic.path, path, "path drifted for {code}");
+        }
     }
 
     #[test]

@@ -104,6 +104,8 @@ export const ReportBlockView = memo(function ReportBlockView({
     delete(): void;
     clearTombstone(): void;
     restoreAutomation(): void;
+    pending?: boolean;
+    error?: string;
   };
   waveId?: string;
 }) {
@@ -189,7 +191,8 @@ export const ReportBlockView = memo(function ReportBlockView({
             waveId={waveId}
             onRelease={taskActions?.release} onDelete={taskActions?.delete}
             onClearTombstone={taskActions?.clearTombstone}
-            onRestoreAutomation={taskActions?.restoreAutomation} />
+            onRestoreAutomation={taskActions?.restoreAutomation}
+            actionPending={taskActions?.pending} actionError={taskActions?.error} />
         </div>
       );
     }

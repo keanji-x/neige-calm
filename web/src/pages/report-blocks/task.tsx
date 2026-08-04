@@ -87,6 +87,8 @@ export function ReportTaskBlock({
   onDelete,
   onClearTombstone,
   onRestoreAutomation,
+  actionPending = false,
+  actionError,
   waveId,
 }: {
   payload: TaskBlockPayload;
@@ -95,6 +97,8 @@ export function ReportTaskBlock({
   onDelete?(): void;
   onClearTombstone?(): void;
   onRestoreAutomation?(): void;
+  actionPending?: boolean;
+  actionError?: string;
   waveId?: string;
 }) {
   if (payload.tombstone) {
@@ -105,9 +109,10 @@ export function ReportTaskBlock({
         <strong>{payload.key}</strong>
         <p>{owner} this “do not do” record{payload.tombstone.reason ? `: ${payload.tombstone.reason}` : ''}. {declarer} The AI cannot propose this key again.</p>
         <div className="rb-task-actions">
-          <button type="button" onClick={onClearTombstone}>Allow this key again</button>
-          <button type="button" onClick={onRestoreAutomation}>Restore automatic AI tasks</button>
+          <button type="button" disabled={actionPending} onClick={onClearTombstone}>Allow this key again</button>
+          <button type="button" disabled={actionPending} onClick={onRestoreAutomation}>Restore automatic AI tasks</button>
         </div>
+        {actionError && <p className="rb-task-diagnostic" role="alert">{actionError}</p>}
       </section>
     );
   }
@@ -125,10 +130,11 @@ export function ReportTaskBlock({
       {verdict?.workerCardId && <p><Link to="/wave/$waveId" params={{ waveId: waveId ?? '' }} hash={verdict.workerCardId}>Open worker output</Link></p>}
       {verdict?.diagnostics.map((diagnostic, index) => <p className="rb-task-diagnostic" role="alert" key={`${diagnostic.code}:${index}`}>{taskDiagnosticText(diagnostic)}<RelatedBlocks diagnostic={diagnostic} waveId={waveId} /></p>)}
       <div className="rb-task-actions">
-        {waiting && !payload.released_by_user && <button type="button" onClick={onRelease}>Allow this task</button>}
-        {!delivered && <button type="button" onClick={onDelete}>Remove task</button>}
-        {waiting && <button type="button" onClick={onRestoreAutomation}>Restore automatic AI tasks</button>}
+        {waiting && !payload.released_by_user && <button type="button" disabled={actionPending} onClick={onRelease}>Allow this task</button>}
+        {!delivered && <button type="button" disabled={actionPending} onClick={onDelete}>Remove task</button>}
+        {waiting && <button type="button" disabled={actionPending} onClick={onRestoreAutomation}>Restore automatic AI tasks</button>}
       </div>
+      {actionError && <p className="rb-task-diagnostic" role="alert">{actionError}</p>}
     </section>
   );
 }

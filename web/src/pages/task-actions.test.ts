@@ -20,7 +20,7 @@ describe('task card actions', () => {
   it('asks on deleting a spec task and tightens the wave when the user chooses yes', async () => {
     const calls = deps(true);
     await performTaskAction('w1', task, 'delete', calls);
-    expect(calls.confirm).toHaveBeenCalledWith(expect.stringContaining('只删这条'));
+    expect(calls.confirm).toHaveBeenCalledWith(expect.stringContaining('remove only this task'));
     expect(calls.deleteBlock).toHaveBeenCalledWith('w1', 'b_task', 7);
     expect(calls.patchWave).toHaveBeenCalledWith({ automation_policy: 'declare-and-wait' });
   });

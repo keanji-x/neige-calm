@@ -4547,7 +4547,8 @@
             "type": "string"
           },
           "message": {
-            "type": "string"
+            "type": "string",
+            "description": "Compatibility fields for existing MCP clients. `message` is always\nrendered from `code` + `message_args`; it is never a second source."
           },
           "messageArgs": {
             "type": "object",
@@ -4557,8 +4558,7 @@
             }
           },
           "path": {
-            "type": "string",
-            "description": "Compatibility fields for existing MCP clients. `message` is always\nrendered from `code` + `message_args`; it is never a second source."
+            "type": "string"
           },
           "relatedBlockIds": {
             "type": "array",

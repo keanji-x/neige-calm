@@ -522,7 +522,7 @@ pub async fn evaluate_schedulability_tx(
                 "released_by_user",
                 BTreeMap::new(),
                 vec![],
-                Some(wave_id.into()),
+                None,
                 Some("release_task".into()),
             ));
         }
@@ -994,6 +994,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn declare_and_wait_diagnostic_does_not_link_to_its_own_wave() {
+        let (repo, wave) = setup().await;
+        sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability_tx(
+            &mut tx,
+            &wave,
+            &[declaration(0, "approval-needed")],
+            &[vec![]],
+        )
+        .await
+        .unwrap();
+        let diagnostic = verdicts[0]
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "declare_and_wait")
+            .expect("declare-and-wait diagnostic");
+        assert!(diagnostic.related_wave_id.is_none());
+        assert!(diagnostic.related_block_ids.is_empty());
+    }
+
+    #[tokio::test]
     async fn read_state_groups_related_context_links_by_wave() {
         let (repo, wave) = setup().await;
         insert_block_task(&repo, &wave, "cross-wave", "pending").await;
@@ -1096,7 +1123,7 @@ mod tests {
         let (repo, wave) = setup().await;
         insert_block_task(&repo, &wave, "k1", "pending").await;
         let declarations = vec![declaration(0, "k1"), declaration(1, "k2")];
-        let local = vec![vec![Diagnostic::new("key", "broken")], vec![]];
+        let local = vec![vec![Diagnostic::new("payload", "broken")], vec![]];
         for _ in 0..2 {
             let mut tx = repo.pool.begin().await.unwrap();
             let outcome = project_tasks_tx(&mut tx, &wave, &declarations, &local)

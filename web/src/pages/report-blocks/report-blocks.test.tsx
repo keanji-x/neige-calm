@@ -748,6 +748,8 @@ describe('degraded blocks', () => {
     expect(screen.getByText('All checks pass')).toBeInTheDocument();
     expect(screen.getByText('Waits for: draft')).toBeInTheDocument();
     expect(screen.getByText('In progress')).toBeInTheDocument();
+    expect(screen.getByText('Delivered · read only')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove task' })).not.toBeInTheDocument();
     expect(screen.queryByText(/declared by/i)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Allow this task' }));
     expect(release).toHaveBeenCalledOnce();

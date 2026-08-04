@@ -40,7 +40,7 @@
     calm.css 注释与 WaveReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
     (transition: grid-template-columns);测试 "opens the drawer without unmounting the report document"
     与 "keeps the draft alive when the drawer closes and reopens" 锁定"持久挂载"语义 —— 卸载会丢草稿。
-  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:873-880,1029-1044
+  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:898-905,1055-1070
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2123
   owner_slice: features/report/shell
   intentional_omission: false
@@ -110,7 +110,7 @@
   why: >
     折叠会 hidden 掉当前按钮,焦点会掉到 body;railFocusTransferPending ref 保证只有用户操作路径转移焦点,
     首屏 / localStorage 恢复不抢焦点。
-  source: web/src/pages/WaveReportPage.tsx:829-842,958-983
+  source: web/src/pages/WaveReportPage.tsx:854-867,983-1008
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:1069-1098
   owner_slice: features/report/shell
   intentional_omission: false
@@ -128,7 +128,7 @@
   why: >
     五个 key 常量在 WaveReportPage 顶部逐一声明;测试 "persists each collapsible rail section independently"
     与 "persists the drawer state across remounts" 锁定"独立"这一点(合并成一个 key 会丢失细粒度)。
-  source: web/src/pages/WaveReportPage.tsx:56-63,124-131
+  source: web/src/pages/WaveReportPage.tsx:57-64,130-137
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:1090,2201
   owner_slice: features/report/shell
   intentional_omission: false
@@ -146,7 +146,7 @@
   why: >
     源码注释 "localStorage may throw in private browsing or under quota pressure";三个 reader 的
     fallback 值各不相同且是有意的(窄屏默认收 rail、抽屉默认关)。
-  source: web/src/pages/WaveReportPage.tsx:90-131
+  source: web/src/pages/WaveReportPage.tsx:96-137
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:1128
   owner_slice: features/report/shell
   intentional_omission: false
@@ -198,7 +198,7 @@
   why: >
     面板用 `.hide` class 做位移淡出而非 display:none,节点仍在 DOM 与 AT 树里;不设 tabIndex 会留下
     不可见的 tab 停靠点。SpecConversation 开抽屉时把焦点接管到 textarea(见 INV-SPECCONVO-004)。
-  source: web/src/pages/WaveReportPage.tsx:234-239,260,285
+  source: web/src/pages/WaveReportPage.tsx:240-245,266,291
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:346
   owner_slice: features/report/shell
   intentional_omission: false
@@ -231,7 +231,7 @@
     切换 spec 卡(specCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
-  source: web/src/pages/WaveReportPage.tsx:869-871
+  source: web/src/pages/WaveReportPage.tsx:894-896
   authoritative_test: NONE
   owner_slice: features/report/shell
   intentional_omission: false
@@ -266,7 +266,7 @@
   why: >
     后端有 `idx_cards_one_report_per_wave` 唯一索引,但历史数据/竞态仍可能出现多张;静默挑一张会让用户
     看到"报告内容莫名其妙变了"。
-  source: web/src/pages/WaveReportPage.tsx:78-81,157-163,925-927
+  source: web/src/pages/WaveReportPage.tsx:84-87,163-169,950-952
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:864
   owner_slice: features/report/shell
   intentional_omission: false
@@ -283,7 +283,7 @@
     "版本不支持,请刷新",且大纲面板同步显示 "Outline unavailable for this report version."
   why: >
     前端渲染未来 schema 的块会静默出错;显式版本墙 + 大纲同步降级,避免用户以为报告是空的。
-  source: web/src/pages/WaveReportPage.tsx:302-307,528-533,1010-1013
+  source: web/src/pages/WaveReportPage.tsx:308-313,541-546,1035-1038
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:855-888
   owner_slice: features/report/shell
   intentional_omission: false
@@ -317,7 +317,7 @@
     必须停用(enabled={!filesCollapsed})。
   why: >
     "toggles dotfile rows in the Files rail without hiding siblings";折叠时停查询避免为看不见的面板拉取列表。
-  source: web/src/pages/WaveReportPage.tsx:913-937
+  source: web/src/pages/WaveReportPage.tsx:938-962
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:943
   owner_slice: features/report/shell
   intentional_omission: false
@@ -403,7 +403,7 @@
     深链到达时高亮动画必须先移除再在 requestAnimationFrame 中重新添加 `report-block--highlight`。
   why: >
     连续点击同一目标时不 remove/re-add,CSS animation 不会重放,用户看不到第二次高亮。
-  source: web/src/pages/WaveReportPage.tsx:166-173 + web/src/calm.css:2169-2171
+  source: web/src/pages/WaveReportPage.tsx:172-179 + web/src/calm.css:2169-2171
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:679
   owner_slice: features/report/layout
   intentional_omission: false
@@ -895,7 +895,7 @@
   why: >
     "renders a neige link in a flat-body report as an in-app link" + 路由测试的
     "resolves links from the production flat-report fallback"。
-  source: web/src/pages/WaveReportPage.tsx:413-429
+  source: web/src/pages/WaveReportPage.tsx:422-438
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2382 + web/src/pages/report-blocks/report-links-router.test.tsx:81
   owner_slice: features/report/shell
   intentional_omission: false
@@ -913,7 +913,7 @@
     "does not scroll again when only the blocks array identity changes" —— 每次轮询回来的新数组引用会让
     页面反复自动跳走。同时 "scrolls when the hash target arrives after the report starts loading" 要求
     块 id 变化时能重跑一次。
-  source: web/src/pages/WaveReportPage.tsx:448-454
+  source: web/src/pages/WaveReportPage.tsx:459-465
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2500,2533
   owner_slice: features/report/shell
   intentional_omission: false
@@ -946,7 +946,7 @@
   why: >
     源码注释:"Deliberately bypass TanStack Router: this local scroll marker does not need to trigger route
     state or the deep-link arrival effect." 走路由会二次触发到达 effect 并污染历史栈。
-  source: web/src/pages/WaveReportPage.tsx:542-555
+  source: web/src/pages/WaveReportPage.tsx:555-568
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:679
   owner_slice: features/report/shell
   intentional_omission: true
@@ -963,7 +963,7 @@
     "This wave (self-reference)"。
   why: >
     "labels self-references distinctly" —— 自引用显示 wave 自己的标题会让人以为是别的 wave。
-  source: web/src/pages/WaveReportPage.tsx:610-682
+  source: web/src/pages/WaveReportPage.tsx:623-695
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2229,2324
   owner_slice: features/report/shell
   intentional_omission: false
@@ -980,7 +980,7 @@
     没有 quote 时退回 backlink.label。
   why: >
     引文是服务端(#975)扫描出的片段,前端只负责三段式 wire;省略号标记截断位置,漏掉会让用户以为引文是完整句子。
-  source: web/src/pages/WaveReportPage.tsx:595-607
+  source: web/src/pages/WaveReportPage.tsx:608-620
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2229
   owner_slice: features/report/shell
   intentional_omission: false
@@ -1014,7 +1014,7 @@
   why: >
     "keeps the backlinks section visible with an empty state" + "surfaces backlink loading errors inline" ——
     出错时显示"没有反链"会让用户以为数据真的空。
-  source: web/src/pages/WaveReportPage.tsx:642-660
+  source: web/src/pages/WaveReportPage.tsx:655-673
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2370,2462
   owner_slice: features/report/shell
   intentional_omission: false
@@ -1035,7 +1035,7 @@
   why: >
     "keeps the draft when the persistently mounted drawer closes and reopens" —— 用户打字到一半去看报告
     再回来,草稿没了是最刺痛的丢失。
-  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/WaveReportPage.tsx:1027-1042
+  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/WaveReportPage.tsx:1053-1068
   authoritative_test: web/src/pages/SpecConversation.test.tsx:579 + web/src/pages/WaveReportPage.test.tsx:2182
   owner_slice: features/spec/conversation
   intentional_omission: false

@@ -10,6 +10,7 @@ import {
   useCallback,
 } from 'react';
 import { Link, useRouterState } from '@tanstack/react-router';
+import { useMutation } from '@tanstack/react-query';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { CalmApiError } from '../api/calm';
@@ -69,6 +70,11 @@ const REPORT_CONVERSATION_COLLAPSED_STORAGE_KEY =
 type CardSlot = Extract<WaveCardSlot, { kind: 'card' }>;
 type ReportCardSlot = CardSlot & { card: WaveReportCardData };
 type TaskAction = 'release' | 'delete' | 'clear' | 'restore';
+type TaskActionState = {
+  pending: boolean;
+  blockId?: string;
+  error?: string;
+};
 
 export async function performTaskAction(
   waveId: string,
@@ -92,7 +98,7 @@ export async function performTaskAction(
   } else {
     const payload = block.payload as { declared_by?: string };
     const tighten = action === 'delete' && payload.declared_by === 'spec'
-      ? deps.confirm('要不要此后 spec 的任务都等你放行？\n\n“确定”= 要；“取消”= 只删这条')
+      ? deps.confirm('Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.')
       : false;
     await deps.deleteBlock(waveId, block.id, block.rev);
     if (tighten) await deps.patchWave({ automation_policy: 'declare-and-wait' });
@@ -314,6 +320,7 @@ function ReportContent({
   reportCardBlocks,
   taskDiagnostics,
   taskAction,
+  taskActionState,
 }: {
   waveId: string;
   path: string;
@@ -321,6 +328,7 @@ function ReportContent({
   reportCardBlocks?: ReportBlock[];
   taskDiagnostics?: api.WaveReportRead['taskDiagnostics'];
   taskAction?: (block: ReportBlock, action: TaskAction) => void;
+  taskActionState?: TaskActionState;
 }) {
   const contentQ = useWaveFileContent(waveId, path, { enabled: true });
   const isReportMissing =
@@ -347,7 +355,7 @@ function ReportContent({
   if (contentQ.isLoading) {
     if (path === 'report.md' && isFetching) {
       return shouldFallbackToReportCard ? (
-        <ReportMarkdown waveId={waveId} body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} />
+        <ReportMarkdown waveId={waveId} body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} taskActionState={taskActionState} />
       ) : (
         <ReportEmptyState />
       );
@@ -360,7 +368,7 @@ function ReportContent({
   }
 
   if (shouldFallbackToReportCard) {
-    return <ReportMarkdown waveId={waveId} body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} />;
+    return <ReportMarkdown waveId={waveId} body={reportCardBody ?? ''} blocks={reportCardBlocks} taskDiagnostics={taskDiagnostics} taskAction={taskAction} taskActionState={taskActionState} />;
   }
 
   if (isReportUnavailable) {
@@ -383,6 +391,7 @@ function ReportContent({
         blocks={path === 'report.md' ? reportCardBlocks : undefined}
         taskDiagnostics={path === 'report.md' ? taskDiagnostics : undefined}
         taskAction={path === 'report.md' ? taskAction : undefined}
+        taskActionState={path === 'report.md' ? taskActionState : undefined}
       />
     );
   }
@@ -435,12 +444,14 @@ export function ReportMarkdown({
   blocks,
   taskDiagnostics,
   taskAction,
+  taskActionState,
 }: {
   waveId?: string;
   body: string;
   blocks?: ReportBlock[];
   taskDiagnostics?: api.WaveReportRead['taskDiagnostics'];
   taskAction?: (block: ReportBlock, action: TaskAction) => void;
+  taskActionState?: TaskActionState;
 }) {
   const hash = useRouterState({
     select: (state) => state.location.hash,
@@ -464,6 +475,8 @@ export function ReportMarkdown({
               delete: () => taskAction(block, 'delete'),
               clearTombstone: () => taskAction(block, 'clear'),
               restoreAutomation: () => taskAction(block, 'restore'),
+              pending: taskActionState?.pending,
+              error: taskActionState?.blockId === block.id ? taskActionState.error : undefined,
             } : undefined} />
         ))}
       </>
@@ -810,15 +823,27 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
     () => deriveOutline(reportBlocks),
     [reportBlocks],
   );
-  const taskAction = useCallback(async (block: ReportBlock, action: TaskAction) => {
-    await performTaskAction(wave.id, block, action, {
-      confirm: window.confirm,
-      updateBlock: api.updateWaveReportBlock,
-      deleteBlock: api.deleteWaveReportBlock,
-      patchWave: (body) => api.updateWave(wave.id, body),
-    });
-    await reportQ.refetch();
-  }, [reportQ, wave.id]);
+  const taskActionMutation = useMutation<void, Error, { block: ReportBlock; action: TaskAction }>({
+    mutationFn: async ({ block, action }) => {
+      await performTaskAction(wave.id, block, action, {
+        confirm: window.confirm,
+        updateBlock: api.updateWaveReportBlock,
+        deleteBlock: api.deleteWaveReportBlock,
+        patchWave: (body) => api.updateWave(wave.id, body),
+      });
+      await reportQ.refetch();
+    },
+  });
+  const taskAction = useCallback((block: ReportBlock, action: TaskAction) => {
+    taskActionMutation.mutate({ block, action });
+  }, [taskActionMutation]);
+  const taskActionState: TaskActionState = {
+    pending: taskActionMutation.isPending,
+    blockId: taskActionMutation.variables?.block.id,
+    error: taskActionMutation.error
+      ? `Task action failed: ${formatApiError(taskActionMutation.error)}`
+      : undefined,
+  };
 
   // Sync reset during render so a new wave never renders with the old file path.
   if (lastWaveId !== wave.id) {
@@ -1019,6 +1044,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
                   reportCardBlocks={reportBlocks}
                   taskDiagnostics={reportQ.data?.taskDiagnostics}
                   taskAction={taskAction}
+                  taskActionState={taskActionState}
                 />
               </div>
             ) : (

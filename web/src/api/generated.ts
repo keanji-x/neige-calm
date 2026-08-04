@@ -1213,14 +1213,14 @@ export interface components {
         Diagnostic: {
             action?: string | null;
             code: string;
-            message: string;
-            messageArgs: {
-                [key: string]: unknown;
-            };
             /**
              * @description Compatibility fields for existing MCP clients. `message` is always
              *     rendered from `code` + `message_args`; it is never a second source.
              */
+            message: string;
+            messageArgs: {
+                [key: string]: unknown;
+            };
             path: string;
             relatedBlockIds: string[];
             relatedWaveId?: string | null;

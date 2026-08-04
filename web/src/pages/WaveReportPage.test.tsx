@@ -1,11 +1,13 @@
 import {
   fireEvent,
-  render,
+  render as testingLibraryRender,
   screen,
   waitFor,
   within,
 } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactElement, ReactNode } from 'react';
 import { WaveReportPage } from './WaveReportPage';
 import {
   useOverlaysByKindQuery,
@@ -84,6 +86,17 @@ vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
     <pre data-testid="code-pane">{text}</pre>
   ),
 }));
+
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  return testingLibraryRender(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
 
 // Chart blocks lazy-load lightweight-charts, which needs a real canvas.
 // Stub the v5 module surface; series assertions live in
@@ -931,6 +944,7 @@ describe('WaveReportPage', () => {
             diagnostics: [
             {
               code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+              relatedWaveId: undefined,
               path: 'released_by_user', message: 'compat', action: 'release_task',
             },
             {
@@ -987,7 +1001,7 @@ describe('WaveReportPage', () => {
     fireEvent.click(within(task).getByRole('button', { name: 'Remove task' }));
     await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_task', 3));
     expect(confirm).toHaveBeenLastCalledWith(
-      '要不要此后 spec 的任务都等你放行？\n\n“确定”= 要；“取消”= 只删这条',
+      'Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
     );
     expect(updateWave).not.toHaveBeenCalled();
     fireEvent.click(within(task).getByRole('button', { name: 'Restore automatic AI tasks' }));
@@ -998,7 +1012,7 @@ describe('WaveReportPage', () => {
     await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_second', 5));
     expect(confirm).toHaveBeenCalledTimes(2);
     expect(confirm).toHaveBeenLastCalledWith(
-      '要不要此后 spec 的任务都等你放行？\n\n“确定”= 要；“取消”= 只删这条',
+      'Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
     );
     await waitFor(() => expect(updateWave).toHaveBeenCalledWith('wave_1', {
       automation_policy: 'declare-and-wait',
@@ -1010,6 +1024,14 @@ describe('WaveReportPage', () => {
     fireEvent.click(within(tombstone).getByRole('button', { name: 'Restore automatic AI tasks' }));
     await waitFor(() => expect(updateWave).toHaveBeenCalledTimes(3));
     expect(refetch).toHaveBeenCalledTimes(6);
+
+    deleteBlock.mockRejectedValueOnce(
+      new CalmApiError(409, 'stale_block_rev', 'The task card changed; refresh and try again.'),
+    );
+    fireEvent.click(within(tombstone).getByRole('button', { name: 'Allow this key again' }));
+    expect(await within(tombstone).findByRole('alert')).toHaveTextContent(
+      'Task action failed: The task card changed; refresh and try again.',
+    );
   });
 
   it('shows the duplicate banner and renders the lowest-sort report', () => {
@@ -2266,6 +2288,7 @@ describe('WaveReportPage', () => {
           gateResult: null, workerCardId: null,
           diagnostics: [{
             code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+            relatedWaveId: undefined,
             path: 'released_by_user', message: 'compat', action: 'release_task',
           }],
         }],
@@ -2305,6 +2328,7 @@ describe('WaveReportPage', () => {
           gateResult: null, workerCardId: null,
           diagnostics: [{
             code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+            relatedWaveId: undefined,
             path: 'released_by_user', message: 'compat', action: 'release_task',
           }],
         }],
