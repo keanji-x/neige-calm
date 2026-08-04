@@ -35,6 +35,7 @@ describe('task card actions', () => {
   it('clears a rejection record without changing automation', async () => {
     const calls = deps(false);
     await performTaskAction('w1', { ...task, payload: { key: 'build', tombstone: {}, declared_by: 'spec', tombstoned_by: 'user' } } as ReportBlock, 'clear', calls);
+    expect(calls.confirm).not.toHaveBeenCalled();
     expect(calls.deleteBlock).toHaveBeenCalledOnce();
     expect(calls.patchWave).not.toHaveBeenCalled();
   });

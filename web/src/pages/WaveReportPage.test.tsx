@@ -2247,6 +2247,85 @@ describe('WaveReportPage', () => {
     expect(screen.getByText('fallback').tagName).toBe('STRONG');
   });
 
+  it('keeps projected task diagnostics and actions in the report.md error fallback', () => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 3,
+        summary: '',
+        body: 'Fallback with task',
+        blocks: [{
+          id: 'b_task', kind: 'task', rev: 2,
+          payload: {
+            key: 'ship', kind: 'codex', goal: 'Ship safely', ready: true,
+            declared_by: 'spec', released_by_user: false,
+          },
+        }],
+        taskDiagnostics: [{
+          blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
+          gateResult: null, workerCardId: null,
+          diagnostics: [{
+            code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+            path: 'released_by_user', message: 'compat', action: 'release_task',
+          }],
+        }],
+      },
+      refetch: vi.fn(async () => ({ data: undefined })),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+    mockWaveFileContentForPath('report.md', {
+      error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('legacy')]} />);
+
+    const task = screen.getByRole('region', { name: 'Task ship' });
+    expect(within(task).getByRole('alert')).toHaveTextContent(
+      'AI-proposed tasks in this wave wait for you',
+    );
+    expect(within(task).getByRole('button', { name: 'Allow this task' }))
+      .toBeEnabled();
+  });
+
+  it('keeps projected task diagnostics and actions in the report.md loading fallback', () => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 3,
+        summary: '',
+        body: 'Fallback with task',
+        blocks: [{
+          id: 'b_task', kind: 'task', rev: 2,
+          payload: {
+            key: 'ship', kind: 'codex', goal: 'Ship safely', ready: true,
+            declared_by: 'spec', released_by_user: false,
+          },
+        }],
+        taskDiagnostics: [{
+          blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
+          gateResult: null, workerCardId: null,
+          diagnostics: [{
+            code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+            path: 'released_by_user', message: 'compat', action: 'release_task',
+          }],
+        }],
+      },
+      refetch: vi.fn(async () => ({ data: undefined })),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+    mockWaveFileContentForPath('report.md', {
+      isLoading: true,
+      fetchStatus: 'fetching',
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('legacy')]} />);
+
+    const task = screen.getByRole('region', { name: 'Task ship' });
+    expect(within(task).getByRole('alert')).toHaveTextContent(
+      'AI-proposed tasks in this wave wait for you',
+    );
+    expect(within(task).getByRole('button', { name: 'Allow this task' }))
+      .toBeEnabled();
+  });
+
   it('renders the conversation drawer closed by default with the report beside it', () => {
     const { container } = render(
       <WaveReportPage

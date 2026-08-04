@@ -958,6 +958,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_state_root_only_context_remains_fail_closed() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "root-only", "pending").await;
+        let claim_context = json!([
+            {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true}
+        ]);
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='root-only'")
+            .bind(claim_context.to_string())
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let mut verdicts =
+            evaluate_schedulability_tx(&mut tx, &wave, &[declaration(0, "root-only")], &[vec![]])
+                .await
+                .unwrap();
+        attach_task_read_state_tx(&mut tx, &wave, &mut verdicts)
+            .await
+            .unwrap();
+
+        let verdict = &verdicts[0];
+        assert!(!verdict.schedulable);
+        for code in ["reference_chain_too_large", "context_stale_reference"] {
+            let diagnostic = verdict
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code == code)
+                .unwrap_or_else(|| panic!("missing {code}"));
+            assert!(diagnostic.related_block_ids.is_empty());
+            assert!(diagnostic.related_wave_id.is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn read_state_groups_related_context_links_by_wave() {
         let (repo, wave) = setup().await;
         insert_block_task(&repo, &wave, "cross-wave", "pending").await;
