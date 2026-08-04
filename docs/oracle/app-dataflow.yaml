@@ -705,12 +705,13 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.report_edited` 必须同时失效该 wave 的 wave-files 与全局 `['wave-backlinks']`。
+    `wave.report_edited` 必须同时失效该 wave 的 wave-files、`wave-report` 与全局
+    `['wave-backlinks']`。
   why: >
     策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
     所以反链只能整片失效，不能按 wave 收窄。
-  source: web/src/app/invalidationPolicies.ts:186-190
-  authoritative_test: web/src/app/eventBridge.test.tsx:648
+  source: web/src/app/invalidationPolicies.ts:189-197
+  authoritative_test: web/src/app/eventBridge.test.tsx:689-727
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app

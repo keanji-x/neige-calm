@@ -905,6 +905,13 @@ describe('WaveReportPage', () => {
             },
           },
           {
+            id: 'b_second', kind: 'task', rev: 5,
+            payload: {
+              key: 'verify', kind: 'codex', goal: 'Verify the join', ready: false,
+              declared_by: 'spec', released_by_user: false,
+            },
+          },
+          {
             id: 'b_tombstone', kind: 'task', rev: 4,
             payload: {
               key: 'declined', tombstone: { reason: 'not now' },
@@ -912,10 +919,16 @@ describe('WaveReportPage', () => {
             },
           },
         ],
-        taskDiagnostics: [{
-          blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
-          gateResult: null, workerCardId: 'card_worker',
-          diagnostics: [
+        taskDiagnostics: [
+          {
+            blockId: 'b_second', key: 'verify', schedulable: false, status: null,
+            gateResult: { passed: false, failing_step: 'lint' },
+            workerCardId: 'card_worker_second', diagnostics: [],
+          },
+          {
+            blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
+            gateResult: { passed: true }, workerCardId: 'card_worker_ship',
+            diagnostics: [
             {
               code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
               path: 'released_by_user', message: 'compat', action: 'release_task',
@@ -926,32 +939,45 @@ describe('WaveReportPage', () => {
               path: 'refs', message: 'compat', action: 'relink_reference',
             },
           ],
-        }],
+          },
+        ],
       },
       refetch,
     } as unknown as ReturnType<typeof useWaveReportQuery>);
     const updateBlock = vi.spyOn(api, 'updateWaveReportBlock').mockResolvedValue({});
     const deleteBlock = vi.spyOn(api, 'deleteWaveReportBlock').mockResolvedValue({});
     const updateWave = vi.spyOn(api, 'updateWave').mockResolvedValue({} as never);
-    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirm = vi.spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+
+    mockWaveFileContents({
+      'report.md': { content_type: 'text/markdown', content: '# Projected report' },
+    });
 
     render(<WaveReportPage wave={makeWave()} cards={[reportSlot('fallback')]} />);
 
     const task = screen.getByRole('region', { name: 'Task ship' });
     expect(within(task).getByText('Waiting to start')).toBeInTheDocument();
+    expect(within(task).getByText('Checks: passed')).toBeInTheDocument();
     const alerts = within(task).getAllByRole('alert');
     expect(alerts).toHaveLength(2);
     expect(alerts[0]).toHaveTextContent('AI-proposed tasks in this wave wait for you');
     expect(alerts[1]).toHaveTextContent('A referenced block changed after work started');
     expect(within(task).getByRole('link', { name: 'b_cafe' })).toHaveAttribute(
-      'href', '/wave/wave_1#b_cafe',
+      'href', '/wave/wave_2#b_cafe',
     );
     expect(within(task).getByRole('link', { name: 'referenced wave' })).toHaveAttribute(
       'href', '/wave/wave_2',
     );
     expect(within(task).getByRole('link', { name: 'Open worker output' })).toHaveAttribute(
-      'href', '/wave/wave_1#card_worker',
+      'href', '/wave/wave_1#card_worker_ship',
     );
+    const secondTask = screen.getByRole('region', { name: 'Task verify' });
+    expect(within(secondTask).getByText('Not queued')).toBeInTheDocument();
+    expect(within(secondTask).getByText('Checks: failed at lint')).toBeInTheDocument();
+    expect(within(secondTask).getByRole('link', { name: 'Open worker output' }))
+      .toHaveAttribute('href', '/wave/wave_1#card_worker_second');
 
     fireEvent.click(within(task).getByRole('button', { name: 'Allow this task' }));
     await waitFor(() => expect(updateBlock).toHaveBeenCalledWith('wave_1', 'b_task', {
@@ -960,17 +986,30 @@ describe('WaveReportPage', () => {
     }));
     fireEvent.click(within(task).getByRole('button', { name: 'Remove task' }));
     await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_task', 3));
+    expect(confirm).toHaveBeenLastCalledWith(
+      '要不要此后 spec 的任务都等你放行？\n\n“确定”= 要；“取消”= 只删这条',
+    );
+    expect(updateWave).not.toHaveBeenCalled();
     fireEvent.click(within(task).getByRole('button', { name: 'Restore automatic AI tasks' }));
     await waitFor(() => expect(updateWave).toHaveBeenCalledWith('wave_1', {
       automation_policy: 'auto-declare',
+    }));
+    fireEvent.click(within(secondTask).getByRole('button', { name: 'Remove task' }));
+    await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_second', 5));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenLastCalledWith(
+      '要不要此后 spec 的任务都等你放行？\n\n“确定”= 要；“取消”= 只删这条',
+    );
+    await waitFor(() => expect(updateWave).toHaveBeenCalledWith('wave_1', {
+      automation_policy: 'declare-and-wait',
     }));
 
     const tombstone = screen.getByRole('region', { name: 'Do not do declined' });
     fireEvent.click(within(tombstone).getByRole('button', { name: 'Allow this key again' }));
     await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_tombstone', 4));
     fireEvent.click(within(tombstone).getByRole('button', { name: 'Restore automatic AI tasks' }));
-    await waitFor(() => expect(updateWave).toHaveBeenCalledTimes(2));
-    expect(refetch).toHaveBeenCalledTimes(5);
+    await waitFor(() => expect(updateWave).toHaveBeenCalledTimes(3));
+    expect(refetch).toHaveBeenCalledTimes(6);
   });
 
   it('shows the duplicate banner and renders the lowest-sort report', () => {

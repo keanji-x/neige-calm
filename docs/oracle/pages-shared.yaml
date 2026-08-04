@@ -40,7 +40,7 @@
     calm.css 注释与 WaveReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
     (transition: grid-template-columns);测试 "opens the drawer without unmounting the report document"
     与 "keeps the draft alive when the drawer closes and reopens" 锁定"持久挂载"语义 —— 卸载会丢草稿。
-  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:871-875,1027-1042
+  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:873-880,1029-1044
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2123
   owner_slice: features/report/shell
   intentional_omission: false
@@ -110,7 +110,7 @@
   why: >
     折叠会 hidden 掉当前按钮,焦点会掉到 body;railFocusTransferPending ref 保证只有用户操作路径转移焦点,
     首屏 / localStorage 恢复不抢焦点。
-  source: web/src/pages/WaveReportPage.tsx:824-837,956-981
+  source: web/src/pages/WaveReportPage.tsx:829-842,958-983
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:1069-1098
   owner_slice: features/report/shell
   intentional_omission: false
@@ -817,12 +817,11 @@
   kind: invariant
   family: report-task
   statement: >
-    task 块只渲染"声明面"字段,不得渲染投影出来的状态或诊断信息。
+    task 块的状态与诊断只能渲染服务端读时投影；前端不得根据声明字段自行重算。
   why: >
-    测试名 "renders task declaration fields without projected status or diagnostics" —— 状态投影是服务端
-    (#985)的职责,前端重算会与之漂移。
-  source: web/src/pages/report-blocks/task.tsx:16-39
-  authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:717
+    状态投影是服务端 (#985) 的职责；前端重算会与服务端裁决漂移，但必须如实显示服务端投影。
+  source: web/src/pages/report-blocks/task.tsx:99-127
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:891
   owner_slice: features/report/blocks
   intentional_omission: true
   runtime_layer: features

@@ -86,3 +86,41 @@ TanStack Router。
 - `web` build：通过；test：85 files，1219/1219 通过，0 type errors。
 - `fe` lint：通过（74 ownership entries、86 modules / 187 dependencies）；build：通过；
   test：56 files passed、1 skipped，726/726 通过、1 skipped；wire diff 与 mock drift 均通过。
+
+## 修复轮 4：生产接缝收敛
+
+页面级链路测试改为成功读取 `report.md` 的 `text/markdown` 生产优先分支，并同时放入两个
+活 task 块、反序的两条 verdict 与墓碑块。断言分别固定两张卡的 status、gate、worker 链接，
+以及放行、删除、清墓碑、恢复自动化的完整组装。删除确认覆盖取消时不 PATCH 和确定时 PATCH
+`declare-and-wait`，并逐字固定确认文案。
+
+`useWaveReportQuery` 的生产消费者测试从 hook 捕获真实 queryFn；合法/畸形 verdict 分别交换
+位置，保证逐项校验。`wave.report_edited` 同时失效结构化 `wave-report`。冻结上下文诊断按
+`wave_id` 分组，跨 wave 的块链接不再误用当前 wave。未知诊断码保留服务端文案，未投影状态
+按 `ready` 两态降级；规格两处补齐 `Diagnostic.path`，过期 oracle 改为“只渲染服务端投影”。
+
+### 五个 BLOCKER 变异映射
+
+- 删除成功 markdown 分支的 `waveId` / `taskDiagnostics` / `taskAction` → 页面链路测试找不到 `Waiting to start`。
+- verdict join 改成 `taskDiagnostics?.[0]` → 页面链路测试把 `verify` verdict 错配给 `ship` 后变红。
+- delete 动作改派为 clear → 页面链路测试因确认框零调用变红。
+- 生产 hook 改回 inline `queryFn` → 两个 production-hook 畸形 verdict 用例都意外 resolve 而变红。
+- 只校验 `taskDiagnostics[0]` → 畸形项位于 index 1 的用例意外 resolve 而变红。
+
+### 三个额外接缝变异
+
+- release 改派为 delete → 页面链路测试因 `updateWaveReportBlock` 零调用变红。
+- `taskVerdict` 固定为 undefined → 页面链路测试因投影状态消失变红。
+- 成功 markdown 分支不传 blocks → 页面链路测试因整张 task 卡消失变红。
+
+以上八项均逐项运行目标测试看到红灯后，以 `git checkout -- <file>` 恢复暂存的正确版本。
+
+### 修复轮 4 CI 门
+
+- `cargo fmt --all --check`：通过，0 个格式差异。
+- `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings`：通过，0 warnings。
+- `cargo nextest run --workspace --locked --features calm-server/codex-e2e`：3238/3238 通过，89 skipped。
+- `web` API 生成与 diff 门：49/49、15/15、OpenAPI 1/1，通过且生成目录 0 diff。
+- `web` build：通过；test：85 files，1224/1224 通过，0 type errors。
+- `fe` lint：通过（74 ownership entries、86 modules / 187 dependencies）；build：通过；
+  test：56 files passed、1 skipped，726/726 通过、1 skipped；wire diff 与 mock drift 均通过。

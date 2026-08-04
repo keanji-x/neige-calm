@@ -202,24 +202,49 @@ pub async fn attach_task_read_state_tx(
             });
         verdict.worker_card_id = row.worker_card_id.clone();
         let related_context_blocks = || {
-            row.claim_context_json
+            let grouped = row
+                .claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|item| !item.is_root)
-                .map(|item| item.block_id)
+                .fold(
+                    BTreeMap::<String, Vec<String>>::new(),
+                    |mut grouped, item| {
+                        grouped
+                            .entry(item.wave_id.to_string())
+                            .or_default()
+                            .push(item.block_id);
+                        grouped
+                    },
+                );
+            if grouped.is_empty() {
+                return vec![(None, vec![])];
+            }
+            grouped
+                .into_iter()
+                .map(|(related_wave_id, block_ids)| {
+                    let related_wave_id = (related_wave_id != wave_id).then_some(related_wave_id);
+                    (related_wave_id, block_ids)
+                })
                 .collect::<Vec<_>>()
         };
         if row.context_closure_truncated != 0 {
-            verdict.diagnostics.push(Diagnostic::coded(
-                "reference_chain_too_large",
-                "refs",
-                BTreeMap::new(),
-                related_context_blocks(),
-                None,
-                Some("narrow_task_context".into()),
-            ));
+            verdict
+                .diagnostics
+                .extend(related_context_blocks().into_iter().map(
+                    |(related_wave_id, related_block_ids)| {
+                        Diagnostic::coded(
+                            "reference_chain_too_large",
+                            "refs",
+                            BTreeMap::new(),
+                            related_block_ids,
+                            related_wave_id,
+                            Some("narrow_task_context".into()),
+                        )
+                    },
+                ));
         }
         let already_declaration_stale = verdict.diagnostics.iter().any(|diagnostic| {
             matches!(
@@ -228,15 +253,20 @@ pub async fn attach_task_read_state_tx(
             )
         });
         if row.context_stale_at_ms.is_some() && !already_declaration_stale {
-            let related = related_context_blocks();
-            verdict.diagnostics.push(Diagnostic::coded(
-                "context_stale_reference",
-                "refs",
-                BTreeMap::new(),
-                related,
-                None,
-                Some("relink_reference".into()),
-            ));
+            verdict
+                .diagnostics
+                .extend(related_context_blocks().into_iter().map(
+                    |(related_wave_id, related_block_ids)| {
+                        Diagnostic::coded(
+                            "context_stale_reference",
+                            "refs",
+                            BTreeMap::new(),
+                            related_block_ids,
+                            related_wave_id,
+                            Some("relink_reference".into()),
+                        )
+                    },
+                ));
         }
         if !verdict.diagnostics.is_empty() {
             verdict.schedulable = false;
@@ -925,6 +955,47 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {code}"));
             assert_eq!(diagnostic.related_block_ids, ["b_feed"]);
         }
+    }
+
+    #[tokio::test]
+    async fn read_state_groups_related_context_links_by_wave() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "cross-wave", "pending").await;
+        let other_wave = "wave_remote".to_owned();
+        let claim_context = json!([
+            {"wave_id": wave, "block_id": "b_root", "rev": 1, "hash": "root", "is_root": true},
+            {"wave_id": wave, "block_id": "b_local", "rev": 2, "hash": "local", "is_root": false},
+            {"wave_id": other_wave, "block_id": "b_remote", "rev": 3, "hash": "remote", "is_root": false}
+        ]);
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='cross-wave'")
+            .bind(claim_context.to_string())
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let mut verdicts =
+            evaluate_schedulability_tx(&mut tx, &wave, &[declaration(0, "cross-wave")], &[vec![]])
+                .await
+                .unwrap();
+        attach_task_read_state_tx(&mut tx, &wave, &mut verdicts)
+            .await
+            .unwrap();
+
+        let stale = verdicts[0]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "context_stale_reference")
+            .collect::<Vec<_>>();
+        assert_eq!(stale.len(), 2);
+        assert!(stale.iter().any(|diagnostic| {
+            diagnostic.related_wave_id.is_none() && diagnostic.related_block_ids == ["b_local"]
+        }));
+        assert!(stale.iter().any(|diagnostic| {
+            diagnostic.related_wave_id.as_deref() == Some(other_wave.as_str())
+                && diagnostic.related_block_ids == ["b_remote"]
+        }));
     }
 
     #[tokio::test]

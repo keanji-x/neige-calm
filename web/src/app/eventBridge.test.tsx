@@ -686,7 +686,7 @@ describe('EventBridge', () => {
   // and run `npm run typecheck`. `definePolicies<T extends { [K in EventKind]:
   // InvalidationPolicy<K> }>` must make tsc reject the table with:
   // "Property 'wave.report_edited' is missing in type ... but required in type ..."
-  it('wave.report_edited invalidates wave file queries', () => {
+  it('wave.report_edited invalidates wave file and structured report queries', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -712,6 +712,9 @@ describe('EventBridge', () => {
     ).not.toThrow();
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['wave-files', 'wave_1'],
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-report', 'wave_1'],
     });
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['wave-backlinks'],

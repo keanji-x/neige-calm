@@ -807,6 +807,24 @@ describe('degraded blocks', () => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
   });
 
+  it('falls back to server copy for an unknown diagnostic code', () => {
+    expect(taskDiagnosticText({
+      code: 'not_a_real_code', messageArgs: {}, relatedBlockIds: [],
+      path: 'future', message: 'server text',
+    })).toBe('server text');
+  });
+
+  it.each([
+    [true, 'Ready to queue'],
+    [false, 'Not queued'],
+  ])('derives a new task without projected status from ready=%s', (ready, expected) => {
+    render(<ReportTaskBlock payload={{
+      key: `new-${String(ready)}`, kind: 'codex', goal: 'New task', ready,
+      declared_by: 'spec',
+    }} />);
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+
   it('keeps implementation vocabulary out of task UI copy', () => {
     const forbiddenTerms = [
       'origin', 'content_hash', 'closure_truncated', 'effective_policy',

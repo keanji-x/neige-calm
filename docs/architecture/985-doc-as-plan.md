@@ -1424,7 +1424,7 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 **缺它则 `declare-and-wait` 这一档在 UI 上无法放行**，而人在确认框里选「要」会把该 wave 切到这一档，**出口必须存在**。
 **每一类诊断都要有「人话 + 下一步动作」（§12.2 C 已裁决，全部采纳）**，
 `Diagnostic` 结构定死为
-`{ code, message_args, related_block_ids, related_wave_id?, action?, message }` ——
+`{ code, path, message_args, related_block_ids, related_wave_id?, action?, message }` ——
 重复 `key` / 环 / 被 ceiling 挤出 / 引用失效四类的原因都**不在当前块上**，
 没有相关块 id 就无法跳转。
 
@@ -1616,7 +1616,7 @@ UI 上没有任何标记，任务就是不跑。
 
 没有任何直觉能预测这件事，而目前没有任何文案要解释它。
 
-**同时 `Diagnostic` 的结构必须定死**：`{ code, message_args, related_block_ids,
+**同时 `Diagnostic` 的结构必须定死**：`{ code, path, message_args, related_block_ids,
 related_wave_id?, action?, message }`。`message` 是由前两项派生的兼容字段，不是第二真源。因为重复 `key` / 环 / 被 ceiling 挤出 / 引用失效
 **四类的原因都不在当前块上** —— 没有 `related_block_ids`，UI 只能渲染一句话，
 人得自己在文档里找。

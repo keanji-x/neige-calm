@@ -20,7 +20,7 @@ function RelatedBlocks({ diagnostic, waveId }: { diagnostic: Diagnostic; waveId?
     <span className="rb-task-related">
       {' '}{actionLabel}:{' '}
       {diagnostic.relatedBlockIds.map((id, index) => (
-        <span key={id}>{index > 0 && ', '}<ReportLink href={`neige://wave/${waveId ?? diagnostic.relatedWaveId ?? ''}#${id}`}>{id}</ReportLink></span>
+        <span key={id}>{index > 0 && ', '}<ReportLink href={`neige://wave/${diagnostic.relatedWaveId ?? waveId ?? ''}#${id}`}>{id}</ReportLink></span>
       ))}
       {diagnostic.relatedWaveId && (
         <>{diagnostic.relatedBlockIds.length > 0 && ', '}<ReportLink href={`neige://wave/${diagnostic.relatedWaveId}`}>referenced wave</ReportLink></>
