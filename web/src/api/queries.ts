@@ -28,6 +28,7 @@ import {
   type UseQueryOptions,
 } from '@tanstack/react-query';
 import * as api from './calm';
+import { taskBlockVerdictSchema } from './schemas';
 import type {
   CardPatchBody,
   CovePatchBody,
@@ -57,6 +58,7 @@ export const queryKeys = {
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveReport: (waveId: string) => ['wave-report', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   waveFiles: (waveId: string) => ['wave-files', waveId] as const,
   waveFileList: (waveId: string, path: string | null | undefined) =>
@@ -119,6 +121,18 @@ export const waveDetailQueryOptions = (waveId: string) => ({
 export const waveBacklinksQueryOptions = (waveId: string) => ({
   queryKey: queryKeys.waveBacklinks(waveId),
   queryFn: () => api.getWaveBacklinks(waveId),
+});
+
+export const waveReportQueryOptions = (waveId: string) => ({
+  queryKey: queryKeys.waveReport(waveId),
+  queryFn: async () => {
+    const report = await api.getWaveReport(waveId);
+    return {
+      ...report,
+      taskDiagnostics: report.taskDiagnostics.map((verdict) =>
+        taskBlockVerdictSchema.parse(verdict)),
+    } as api.WaveReportRead;
+  },
 });
 
 export const overlaysByKindQueryOptions = (entity_kind: 'wave' | 'card') => ({
@@ -234,6 +248,13 @@ export function useWaveFileContent(
     queryKey: waveFileContentQueryKey(waveId ?? '', path),
     queryFn: () => api.catWaveFile(waveId ?? '', path ?? ''),
     enabled: !!waveId && !!path && (opts?.enabled ?? true),
+  });
+}
+
+export function useWaveReportQuery(waveId: string | undefined | null) {
+  return useQuery<api.WaveReportRead, Error>({
+    ...waveReportQueryOptions(waveId ?? ''),
+    enabled: !!waveId,
   });
 }
 

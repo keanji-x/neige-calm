@@ -1,19 +1,23 @@
 import {
   fireEvent,
-  render,
+  render as testingLibraryRender,
   screen,
   waitFor,
   within,
 } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactElement, ReactNode } from 'react';
 import { WaveReportPage } from './WaveReportPage';
 import {
   useOverlaysByKindQuery,
   useWaveBacklinksQuery,
   useWaveFileContent,
   useWaveFileList,
+  useWaveReportQuery,
 } from '../api/queries';
 import { CalmApiError, type WaveFsContent, type WaveFsEntry } from '../api/calm';
+import * as api from '../api/calm';
 import type { Wave, WaveCardSlot } from '../types';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
 import { useSpecChatHistory } from './useSpecChatHistory';
@@ -24,6 +28,7 @@ vi.mock('../api/queries', () => ({
   useWaveBacklinksQuery: vi.fn(),
   useWaveFileList: vi.fn(),
   useWaveFileContent: vi.fn(),
+  useWaveReportQuery: vi.fn(),
 }));
 
 vi.mock('./useSpecChatHistory', () => ({
@@ -82,6 +87,17 @@ vi.mock('../cards/builtins/file-viewer-codemirror', () => ({
   ),
 }));
 
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  return testingLibraryRender(ui, {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
+
 // Chart blocks lazy-load lightweight-charts, which needs a real canvas.
 // Stub the v5 module surface; series assertions live in
 // `report-blocks/report-blocks.test.tsx`.
@@ -105,6 +121,7 @@ vi.mock('lightweight-charts', () => ({
 
 const mockUseWaveFileList = vi.mocked(useWaveFileList);
 const mockUseWaveFileContent = vi.mocked(useWaveFileContent);
+const mockUseWaveReportQuery = vi.mocked(useWaveReportQuery);
 const mockUseWaveBacklinksQuery = vi.mocked(useWaveBacklinksQuery);
 const mockUseOverlaysByKindQuery = vi.mocked(useOverlaysByKindQuery);
 const mockUseSpecChatHistory = vi.mocked(useSpecChatHistory);
@@ -221,6 +238,10 @@ afterEach(() => {
 
 describe('WaveReportPage', () => {
   beforeEach(() => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: undefined,
+      refetch: vi.fn(async () => ({ data: undefined })),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
     mockUseSpecChatHistory.mockReturnValue({
       entries: [],
       initialLoading: false,
@@ -859,6 +880,158 @@ describe('WaveReportPage', () => {
       within(outline).getByText('Outline unavailable for this report version.'),
     ).toBeInTheDocument();
     expect(within(outline).queryByRole('link')).toBeNull();
+  });
+
+  it('shows the version wall when a report API block is malformed', () => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 1,
+        summary: '',
+        body: '',
+        blocks: [{ id: 'b_bad', kind: 'task', rev: 1, payload: { key: 'missing-fields' } }],
+        taskDiagnostics: [],
+      },
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('fallback')]} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('版本不支持，请刷新');
+    expect(screen.queryByText('fallback')).not.toBeInTheDocument();
+  });
+
+  it('wires projected task UI and every task action through the page assembly', async () => {
+    const refetch = vi.fn(async () => ({ data: undefined }));
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 9,
+        summary: '',
+        body: '',
+        blocks: [
+          {
+            id: 'b_task', kind: 'task', rev: 3,
+            payload: {
+              key: 'ship', kind: 'codex', goal: 'Ship the fix', ready: true,
+              declared_by: 'spec', released_by_user: false,
+            },
+          },
+          {
+            id: 'b_second', kind: 'task', rev: 5,
+            payload: {
+              key: 'verify', kind: 'codex', goal: 'Verify the join', ready: false,
+              declared_by: 'spec', released_by_user: false,
+            },
+          },
+          {
+            id: 'b_tombstone', kind: 'task', rev: 4,
+            payload: {
+              key: 'declined', tombstone: { reason: 'not now' },
+              declared_by: 'spec', tombstoned_by: 'user',
+            },
+          },
+        ],
+        taskDiagnostics: [
+          {
+            blockId: 'b_second', key: 'verify', schedulable: false, status: null,
+            gateResult: { passed: false, failing_step: 'lint' },
+            workerCardId: 'card_worker_second', diagnostics: [],
+          },
+          {
+            blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
+            gateResult: { passed: true }, workerCardId: 'card_worker_ship',
+            diagnostics: [
+            {
+              code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+              relatedWaveId: undefined,
+              path: 'released_by_user', message: 'compat', action: 'release_task',
+            },
+            {
+              code: 'context_stale_reference', messageArgs: {},
+              relatedBlockIds: ['b_cafe'], relatedWaveId: 'wave_2',
+              path: 'refs', message: 'compat', action: 'relink_reference',
+            },
+          ],
+          },
+        ],
+      },
+      refetch,
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+    const updateBlock = vi.spyOn(api, 'updateWaveReportBlock').mockResolvedValue({});
+    const deleteBlock = vi.spyOn(api, 'deleteWaveReportBlock').mockResolvedValue({});
+    const updateWave = vi.spyOn(api, 'updateWave').mockResolvedValue({} as never);
+    const confirm = vi.spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+
+    mockWaveFileContents({
+      'report.md': { content_type: 'text/markdown', content: '# Projected report' },
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('fallback')]} />);
+
+    const task = screen.getByRole('region', { name: 'Task ship' });
+    expect(within(task).getByText('Waiting to start')).toBeInTheDocument();
+    expect(within(task).getByText('Checks: passed')).toBeInTheDocument();
+    const alerts = within(task).getAllByRole('alert');
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]).toHaveTextContent('AI-proposed tasks in this wave wait for you');
+    expect(alerts[1]).toHaveTextContent('A referenced block changed after work started');
+    expect(within(task).getByRole('link', { name: 'b_cafe' })).toHaveAttribute(
+      'href', '/wave/wave_2#b_cafe',
+    );
+    expect(within(task).getByRole('link', { name: 'referenced wave' })).toHaveAttribute(
+      'href', '/wave/wave_2',
+    );
+    expect(within(task).getByRole('link', { name: 'Open worker output' })).toHaveAttribute(
+      'href', '/wave/wave_1#card_worker_ship',
+    );
+    const secondTask = screen.getByRole('region', { name: 'Task verify' });
+    expect(within(secondTask).getByText('Not queued')).toBeInTheDocument();
+    expect(within(secondTask).getByText('Checks: failed at lint')).toBeInTheDocument();
+    expect(within(secondTask).getByRole('link', { name: 'Open worker output' }))
+      .toHaveAttribute('href', '/wave/wave_1#card_worker_second');
+
+    fireEvent.click(within(task).getByRole('button', { name: 'Allow this task' }));
+    await waitFor(() => expect(updateBlock).toHaveBeenCalledWith('wave_1', 'b_task', {
+      kind: 'task', ifBlockRev: 3,
+      payload: expect.objectContaining({ key: 'ship', released_by_user: true }),
+    }));
+    fireEvent.click(within(task).getByRole('button', { name: 'Remove task' }));
+    await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_task', 3));
+    expect(confirm).toHaveBeenLastCalledWith(
+      'Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
+    );
+    expect(updateWave).not.toHaveBeenCalled();
+    fireEvent.click(within(task).getByRole('button', { name: 'Restore automatic AI tasks' }));
+    await waitFor(() => expect(updateWave).toHaveBeenCalledWith('wave_1', {
+      automation_policy: 'auto-declare',
+    }));
+    fireEvent.click(within(secondTask).getByRole('button', { name: 'Remove task' }));
+    await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_second', 5));
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenLastCalledWith(
+      'Should future Spec tasks wait for your approval?\n\n“OK” = yes; “Cancel” = remove only this task.',
+    );
+    await waitFor(() => expect(updateWave).toHaveBeenCalledWith('wave_1', {
+      automation_policy: 'declare-and-wait',
+    }));
+
+    const tombstone = screen.getByRole('region', { name: 'Do not do declined' });
+    fireEvent.click(within(tombstone).getByRole('button', { name: 'Allow this key again' }));
+    await waitFor(() => expect(deleteBlock).toHaveBeenCalledWith('wave_1', 'b_tombstone', 4));
+    fireEvent.click(within(tombstone).getByRole('button', { name: 'Restore automatic AI tasks' }));
+    await waitFor(() => expect(updateWave).toHaveBeenCalledTimes(3));
+    expect(refetch).toHaveBeenCalledTimes(6);
+
+    deleteBlock.mockRejectedValueOnce(
+      new CalmApiError(409, 'stale_block_rev', 'The task card changed; refresh and try again.'),
+    );
+    fireEvent.click(within(tombstone).getByRole('button', { name: 'Allow this key again' }));
+    expect(await within(tombstone).findByRole('alert')).toHaveTextContent(
+      'Task action failed: The task card changed; refresh and try again.',
+    );
   });
 
   it('shows the duplicate banner and renders the lowest-sort report', () => {
@@ -2094,6 +2267,87 @@ describe('WaveReportPage', () => {
     );
 
     expect(screen.getByText('fallback').tagName).toBe('STRONG');
+  });
+
+  it('keeps projected task diagnostics and actions in the report.md error fallback', () => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 3,
+        summary: '',
+        body: 'Fallback with task',
+        blocks: [{
+          id: 'b_task', kind: 'task', rev: 2,
+          payload: {
+            key: 'ship', kind: 'codex', goal: 'Ship safely', ready: true,
+            declared_by: 'spec', released_by_user: false,
+          },
+        }],
+        taskDiagnostics: [{
+          blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
+          gateResult: null, workerCardId: null,
+          diagnostics: [{
+            code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+            relatedWaveId: undefined,
+            path: 'released_by_user', message: 'compat', action: 'release_task',
+          }],
+        }],
+      },
+      refetch: vi.fn(async () => ({ data: undefined })),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+    mockWaveFileContentForPath('report.md', {
+      error: new CalmApiError(500, 'file_read_failed', 'File read failed'),
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('legacy')]} />);
+
+    const task = screen.getByRole('region', { name: 'Task ship' });
+    expect(within(task).getByRole('alert')).toHaveTextContent(
+      'AI-proposed tasks in this wave wait for you',
+    );
+    expect(within(task).getByRole('button', { name: 'Allow this task' }))
+      .toBeEnabled();
+  });
+
+  it('keeps projected task diagnostics and actions in the report.md loading fallback', () => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 3,
+        summary: '',
+        body: 'Fallback with task',
+        blocks: [{
+          id: 'b_task', kind: 'task', rev: 2,
+          payload: {
+            key: 'ship', kind: 'codex', goal: 'Ship safely', ready: true,
+            declared_by: 'spec', released_by_user: false,
+          },
+        }],
+        taskDiagnostics: [{
+          blockId: 'b_task', key: 'ship', schedulable: false, status: 'pending',
+          gateResult: null, workerCardId: null,
+          diagnostics: [{
+            code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+            relatedWaveId: undefined,
+            path: 'released_by_user', message: 'compat', action: 'release_task',
+          }],
+        }],
+      },
+      refetch: vi.fn(async () => ({ data: undefined })),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+    mockWaveFileContentForPath('report.md', {
+      isLoading: true,
+      fetchStatus: 'fetching',
+    });
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('legacy')]} />);
+
+    const task = screen.getByRole('region', { name: 'Task ship' });
+    expect(within(task).getByRole('alert')).toHaveTextContent(
+      'AI-proposed tasks in this wave wait for you',
+    );
+    expect(within(task).getByRole('button', { name: 'Allow this task' }))
+      .toBeEnabled();
   });
 
   it('renders the conversation drawer closed by default with the report beside it', () => {

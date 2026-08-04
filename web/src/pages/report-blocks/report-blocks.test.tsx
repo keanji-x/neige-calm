@@ -1,8 +1,15 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
+import {
+  ReportTaskBlock,
+  taskDiagnosticCodes,
+  taskDiagnosticText,
+  type TaskVerdict,
+} from './task';
 import { ReportAppBlock } from './app';
 import {
   taskBlockPayloadSchema,
@@ -714,7 +721,8 @@ describe('degraded blocks', () => {
     );
   });
 
-  it('renders task declaration fields without projected status or diagnostics', () => {
+  it('renders task status, diagnostics and the release button without exposing ownership fields', async () => {
+    const release = vi.fn();
     render(
       <ReportBlockView block={{
         id: 'b_1234', kind: 'task', rev: 1,
@@ -724,16 +732,138 @@ describe('degraded blocks', () => {
           acceptance: 'All checks pass', depends_on: ['draft'],
           ready: true, declared_by: 'user',
         },
-      } as ReportBlock} />,
+      } as ReportBlock} taskVerdict={{
+        blockId: 'b_1234', key: 'review', schedulable: false,
+        status: 'running', gateResult: null,
+        workerCardId: 'card-worker', diagnostics: [{
+          code: 'declare_and_wait', messageArgs: {}, relatedBlockIds: [],
+          path: 'released_by_user', message: 'compat', action: 'release_task',
+        }],
+      }} taskActions={{ release, delete: vi.fn(), clearTombstone: vi.fn(), restoreAutomation: vi.fn() }} />,
     );
     expect(screen.getByRole('region', { name: 'Task review' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'source' })).toHaveAttribute(
       'href', '/wave/w2#b_abcd',
     );
     expect(screen.getByText('All checks pass')).toBeInTheDocument();
-    expect(screen.getByText('Depends on: draft')).toBeInTheDocument();
-    expect(screen.getByText('Declared by user · Ready')).toBeInTheDocument();
-    expect(screen.queryByText(/status|diagnostic/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Waits for: draft')).toBeInTheDocument();
+    expect(screen.getByText('In progress')).toBeInTheDocument();
+    expect(screen.getByText('Delivered · read only')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Remove task' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/declared by/i)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Allow this task' }));
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each(['user', 'spec'] as const)(
+    'renders a %s tombstone with independent clear and automation actions',
+    async (tombstonedBy) => {
+      const clearTombstone = vi.fn();
+      const restoreAutomation = vi.fn();
+      render(<ReportTaskBlock payload={{
+        key: 'declined', tombstone: { reason: 'not now' },
+        declared_by: 'spec', tombstoned_by: tombstonedBy,
+      }} onClearTombstone={clearTombstone} onRestoreAutomation={restoreAutomation} />);
+
+      expect(screen.getByText(tombstonedBy === 'user' ? /You left/ : /The AI left/)).toBeInTheDocument();
+      expect(screen.getByText(/The AI originally proposed it/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('button', { name: 'Allow this key again' }));
+      expect(clearTombstone).toHaveBeenCalledOnce();
+      expect(restoreAutomation).not.toHaveBeenCalled();
+      await userEvent.click(screen.getByRole('button', { name: 'Restore automatic AI tasks' }));
+      expect(restoreAutomation).toHaveBeenCalledOnce();
+      expect(clearTombstone).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('renders canceled as a terminal task state', () => {
+    render(<ReportTaskBlock payload={{
+      key: 'stopped', kind: 'codex', goal: 'Stop', ready: true, declared_by: 'spec',
+    }} verdict={{
+      blockId: 'b_stop', key: 'stopped', schedulable: false, status: 'canceled',
+      gateResult: null, workerCardId: null, diagnostics: [],
+    }} />);
+    expect(screen.getByText('Canceled')).toBeInTheDocument();
+    expect(screen.queryByText('Ready to queue')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['duplicate_key', { key: 'same' }, /Rename this card/],
+    ['dependency_cycle', { keys: 'a -> b -> a' }, /Break one dependency/],
+    ['unknown_dependency', { dependency: 'legacy-only' }, /older task row/],
+    ['gate_required', {}, /Add a check/],
+    ['spec_task_ceiling', { ceiling: 2, occupied: 1 }, /document order, then by key/],
+    ['spec_task_ceiling', { ceiling: 0, occupied: 0 }, /Raise the limit in wave settings before allowing AI tasks/],
+    ['reference_needs_block', { reference: 'neige:\/\/wave\/w' }, /exact block/],
+    ['reference_missing', { reference: 'neige:\/\/wave\/w#gone' }, /link an existing block/],
+    ['reference_cross_cove', { reference: 'neige:\/\/wave\/other#b' }, /another cove/],
+    ['reference_chain_too_large', {}, /fewer blocks/],
+    ['tombstone_blocks_redeclaration', {}, /keeps the rejection record/],
+    ['declare_and_wait', {}, /Allow this task/],
+    ['context_stale_reference', {}, /referenced block changed/],
+    ['context_stale_declaration', {}, /worker output is still available/],
+    ['declaration_changed_in_flight', {}, /worker output is still available/],
+    ['task_key_completed', {}, /already been delivered/],
+    ['invalid_declaration', {}, /incomplete or invalid/],
+  ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
+    expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
+  });
+
+  it('falls back to server copy for an unknown diagnostic code', () => {
+    expect(taskDiagnosticText({
+      code: 'not_a_real_code', messageArgs: {}, relatedBlockIds: [],
+      path: 'future', message: 'server text',
+    })).toBe('server text');
+  });
+
+  it.each([
+    [true, 'Ready to queue'],
+    [false, 'Not queued'],
+  ])('derives a new task without projected status from ready=%s', (ready, expected) => {
+    render(<ReportTaskBlock payload={{
+      key: `new-${String(ready)}`, kind: 'codex', goal: 'New task', ready,
+      declared_by: 'spec',
+    }} />);
+    expect(screen.getByText(expected)).toBeInTheDocument();
+  });
+
+  it('keeps implementation vocabulary out of task UI copy', () => {
+    const forbiddenTerms = [
+      'origin', 'content_hash', 'closure_truncated', 'effective_policy',
+      'if_doc_rev', 'if_block_rev', 'log_path', 'gate-infra',
+      '/private/server/gate.log', 'secret implementation output',
+    ];
+    const copy = taskDiagnosticCodes
+      .map((code) => taskDiagnosticText({ code, messageArgs: {}, relatedBlockIds: [], path: 'x', message: '' } as TaskVerdict['diagnostics'][number]))
+      .join(' ');
+    for (const forbidden of forbiddenTerms) expect(copy).not.toContain(forbidden);
+
+    const { container } = render(<ReportTaskBlock payload={{
+      key: 'safe-copy', kind: 'codex', goal: 'Ship it', ready: true, declared_by: 'spec',
+    }} verdict={{
+      blockId: 'b_1234', key: 'safe-copy', schedulable: false, status: 'verifying',
+      workerCardId: 'worker-card',
+      gateResult: {
+        passed: false, failing_step: 'tests', log_path: '/private/server/gate.log',
+        log_tail: 'secret implementation output', attempt: 7, status_detail: 'gate-infra',
+      },
+      diagnostics: taskDiagnosticCodes.map((code) => ({
+        code, messageArgs: {}, relatedBlockIds: ['b_abcd'], relatedWaveId: 'wave-safe',
+        path: 'refs', message: '', action: 'relink_reference',
+      })),
+    }} />);
+    const rendered = container.textContent ?? '';
+    expect(rendered).toContain('Checks: failed at tests');
+    for (const forbidden of forbiddenTerms) expect(rendered).not.toContain(forbidden);
+  });
+
+  it('keeps Rust diagnostic codes, FE copy keys, and the vocabulary sieve equal', () => {
+    const rust = readFileSync('../crates/calm-types/src/report_blocks/tasks.rs', 'utf8');
+    const declaration = rust.match(/pub const TASK_DIAGNOSTIC_CODES: &\[&str\] = &\[([\s\S]*?)\n\];/);
+    expect(declaration).not.toBeNull();
+    const rustCodes = [...(declaration?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect(new Set(rustCodes)).toEqual(new Set(taskDiagnosticCodes));
+    expect(taskDiagnosticCodes).toHaveLength(16);
   });
 
   it('keeps the task payload contract split between live declarations and tombstones', () => {

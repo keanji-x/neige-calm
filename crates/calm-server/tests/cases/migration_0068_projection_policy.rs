@@ -82,7 +82,7 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
         refs: vec![],
         declared_by: "spec".into(),
         released_by_user: false,
-        tombstoned_by_user: false,
+        tombstoned_by: None,
         ready: true,
         tombstone: false,
     };

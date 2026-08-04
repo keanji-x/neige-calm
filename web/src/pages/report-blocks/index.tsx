@@ -24,7 +24,7 @@ import { ReportTableBlock } from './table';
 import { ReportAppBlock } from './app';
 import { BLOCK_ID_PATTERN } from '../report-link-ids';
 import { reportHeadingId } from '../report-outline';
-import { ReportTaskBlock } from './task';
+import { ReportTaskBlock, type TaskVerdict } from './task';
 
 // lightweight-charts (~45KB gz) only loads when a report actually carries a
 // candle chart — same pattern as the lazily loaded CodeMirror pane.
@@ -93,8 +93,21 @@ export function ReportLink({
 
 export const ReportBlockView = memo(function ReportBlockView({
   block,
+  taskVerdict,
+  taskActions,
+  waveId,
 }: {
   block: ReportBlock;
+  taskVerdict?: TaskVerdict;
+  taskActions?: {
+    release(): void;
+    delete(): void;
+    clearTombstone(): void;
+    restoreAutomation(): void;
+    pending?: boolean;
+    error?: string;
+  };
+  waveId?: string;
 }) {
   switch (block.kind) {
     case 'prose': {
@@ -174,7 +187,12 @@ export const ReportBlockView = memo(function ReportBlockView({
       if (!parsed.success) return <UnsupportedBlock block={block} />;
       return (
         <div id={block.id} className="report-block report-block--breakout">
-          <ReportTaskBlock payload={parsed.data} />
+          <ReportTaskBlock payload={parsed.data} verdict={taskVerdict}
+            waveId={waveId}
+            onRelease={taskActions?.release} onDelete={taskActions?.delete}
+            onClearTombstone={taskActions?.clearTombstone}
+            onRestoreAutomation={taskActions?.restoreAutomation}
+            actionPending={taskActions?.pending} actionError={taskActions?.error} />
         </div>
       );
     }
