@@ -11,8 +11,10 @@ pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 
 /// Diagnostic paths that make a keyed task declaration unschedulable.
 ///
-/// Keep this exhaustive: the projection layer uses equality against this set
-/// when deciding whether an in-flight declaration needs a withdrawal warning.
+/// `path` is the §6.5 withdrawal predicate carrier, not a compatibility-only
+/// display field. Keep this exhaustive: the projection layer uses equality
+/// against this set when deciding whether an in-flight declaration needs a
+/// withdrawal warning.
 pub const TASK_BLOCKING_DIAGNOSTIC_PATHS: &[&str] =
     &["depends_on", "gate", "key", "payload", "refs"];
 

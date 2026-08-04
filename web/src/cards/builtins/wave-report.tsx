@@ -173,7 +173,7 @@ const blockCommon = {
   rev: z.number().int(),
 };
 
-const typedReportBlockSchema = z.discriminatedUnion('kind', [
+export const typedReportBlockSchema = z.discriminatedUnion('kind', [
   z.object({ ...blockCommon, kind: z.literal('prose'), payload: proseBlockPayloadSchema }),
   z.object({
     ...blockCommon,

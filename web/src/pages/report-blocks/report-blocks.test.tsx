@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReportBlockView } from './index';
-import { taskDiagnosticText, type TaskVerdict } from './task';
+import { ReportTaskBlock, taskDiagnosticText, type TaskVerdict } from './task';
 import { ReportAppBlock } from './app';
 import {
   taskBlockPayloadSchema,
@@ -741,7 +741,7 @@ describe('degraded blocks', () => {
     );
     expect(screen.getByText('All checks pass')).toBeInTheDocument();
     expect(screen.getByText('Waits for: draft')).toBeInTheDocument();
-    expect(screen.getByText('running · worker active')).toBeInTheDocument();
+    expect(screen.getByText('In progress')).toBeInTheDocument();
     expect(screen.queryByText(/declared by/i)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Allow this task' }));
     expect(release).toHaveBeenCalledOnce();
@@ -761,19 +761,48 @@ describe('degraded blocks', () => {
     ['declare_and_wait', {}, /Allow this task/],
     ['context_stale_reference', {}, /referenced block changed/],
     ['context_stale_declaration', {}, /worker output is still available/],
+    ['declaration_changed_in_flight', {}, /worker output is still available/],
+    ['task_key_completed', {}, /already been delivered/],
+    ['invalid_declaration', {}, /incomplete or invalid/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
   });
 
   it('keeps implementation vocabulary out of task UI copy', () => {
-    const source = [
+    const forbiddenTerms = [
       'origin', 'content_hash', 'closure_truncated', 'effective_policy',
-      'if_doc_rev', 'if_block_rev',
+      'if_doc_rev', 'if_block_rev', 'log_path', 'gate-infra',
     ];
-    const copy = ['reference_chain_too_large', 'declare_and_wait', 'context_stale_reference']
+    const codes = [
+      'duplicate_key', 'dependency_cycle', 'unknown_dependency', 'gate_required',
+      'spec_task_ceiling', 'reference_needs_block', 'reference_missing',
+      'reference_cross_cove', 'reference_chain_too_large',
+      'tombstone_blocks_redeclaration', 'declare_and_wait',
+      'context_stale_reference', 'context_stale_declaration',
+      'declaration_changed_in_flight', 'task_key_completed', 'invalid_declaration',
+    ];
+    const copy = codes
       .map((code) => taskDiagnosticText({ code, messageArgs: {}, relatedBlockIds: [], path: 'x', message: '' } as TaskVerdict['diagnostics'][number]))
       .join(' ');
-    for (const forbidden of source) expect(copy).not.toContain(forbidden);
+    for (const forbidden of forbiddenTerms) expect(copy).not.toContain(forbidden);
+
+    const { container } = render(<ReportTaskBlock payload={{
+      key: 'safe-copy', kind: 'codex', goal: 'Ship it', ready: true, declared_by: 'spec',
+    }} verdict={{
+      blockId: 'b_1234', key: 'safe-copy', schedulable: false, status: 'verifying',
+      statusDetail: 'gate-infra', workerCardId: 'worker-card',
+      gateResult: {
+        passed: false, failing_step: 'tests', log_path: '/private/server/gate.log',
+        log_tail: 'secret implementation output', attempt: 7, status_detail: 'gate-infra',
+      },
+      diagnostics: codes.map((code) => ({
+        code, messageArgs: {}, relatedBlockIds: ['b_abcd'], relatedWaveId: 'wave-safe',
+        path: 'refs', message: '', action: 'relink_reference',
+      })),
+    }} />);
+    const rendered = container.textContent ?? '';
+    expect(rendered).toContain('Checks: failed at tests');
+    for (const forbidden of forbiddenTerms) expect(rendered).not.toContain(forbidden);
   });
 
   it('keeps the task payload contract split between live declarations and tombstones', () => {

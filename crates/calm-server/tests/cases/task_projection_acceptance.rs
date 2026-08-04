@@ -1259,7 +1259,7 @@ async fn user_tombstone_does_not_derive_wait_and_policy_remains_independent() {
     let boot = new_boot().await;
     let (denied, denied_rev) = upsert(&boot, None, task("denied")).await;
     user_delete(&boot, &denied, denied_rev).await;
-    let (replacement, _) = upsert(&boot, None, task("replacement")).await;
+    upsert(&boot, None, task("replacement")).await;
     assert_eq!(keys(&boot).await, ["replacement"]);
     assert!(
         rest_read(&boot).await["blocks"]
@@ -1278,7 +1278,7 @@ async fn user_tombstone_does_not_derive_wait_and_policy_remains_independent() {
             .iter()
             .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
     );
-    assert!(!replacement.is_empty());
+    assert_eq!(keys(&boot).await, ["replacement"]);
 }
 
 #[tokio::test]

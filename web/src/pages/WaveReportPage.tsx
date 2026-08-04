@@ -27,6 +27,7 @@ import { useState } from '../shared/state';
 import { formatUpdatedAt } from '../shared/relativeTime';
 import {
   reportBlockSchema,
+  typedReportBlockSchema,
   type ReportBlock,
   type WaveReportCardData,
 } from '../cards/builtins/wave-report';
@@ -786,13 +787,20 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const railOpenButtonRef = useRef<HTMLButtonElement>(null);
   const railFocusTransferPending = useRef(false);
   const backlinksQ = useWaveBacklinksQuery(wave.id);
-  const reportBlocks = useMemo(() => {
+  const parsedReport = useMemo(() => {
     if (!reportQ.data) return reportCard?.blocks;
-    return reportQ.data.blocks.flatMap((block) => {
-      const parsed = reportBlockSchema.safeParse(block);
-      return parsed.success ? [parsed.data] : [];
-    });
+    const knownKinds = new Set(['prose', 'chart.candles', 'table', 'app', 'task']);
+    const blocks: ReportBlock[] = [];
+    for (const block of reportQ.data.blocks) {
+      const parsed = (knownKinds.has(block.kind) ? typedReportBlockSchema : reportBlockSchema)
+        .safeParse(block);
+      if (!parsed.success) return null;
+      blocks.push(parsed.data as ReportBlock);
+    }
+    return blocks;
   }, [reportQ.data, reportCard?.blocks]);
+  const reportBlocks = parsedReport ?? undefined;
+  const reportWireUnsupported = reportQ.data != null && parsedReport === null;
   const outline = useMemo(
     () => deriveOutline(reportBlocks),
     [reportBlocks],
@@ -887,7 +895,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
         >
           <OutlinePanel
             outline={outline}
-            unavailable={reportCard?.unsupportedVersion != null}
+            unavailable={reportCard?.unsupportedVersion != null || reportWireUnsupported}
             bodyOnly={hasReportCard && reportCard?.blocks == null}
           />
         </RailSection>
@@ -995,7 +1003,7 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
             <h1 className="report-title">{title}</h1>
             <ReportByline report={reportCard} />
             {selectedFilePath === 'report.md' &&
-            reportCard?.unsupportedVersion != null ? (
+            (reportCard?.unsupportedVersion != null || reportWireUnsupported) ? (
               <UnsupportedReportVersionState />
             ) : hasReportCard || selectedFilePath !== 'report.md' ? (
               <div className="report-body">

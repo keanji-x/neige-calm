@@ -868,6 +868,25 @@ describe('WaveReportPage', () => {
     expect(within(outline).queryByRole('link')).toBeNull();
   });
 
+  it('shows the version wall when a report API block is malformed', () => {
+    mockUseWaveReportQuery.mockReturnValue({
+      data: {
+        schemaVersion: 1,
+        docRev: 1,
+        summary: '',
+        body: '',
+        blocks: [{ id: 'b_bad', kind: 'task', rev: 1, payload: { key: 'missing-fields' } }],
+        taskDiagnostics: [],
+      },
+      refetch: vi.fn(),
+    } as unknown as ReturnType<typeof useWaveReportQuery>);
+
+    render(<WaveReportPage wave={makeWave()} cards={[reportSlot('fallback')]} />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('版本不支持，请刷新');
+    expect(screen.queryByText('fallback')).not.toBeInTheDocument();
+  });
+
   it('shows the duplicate banner and renders the lowest-sort report', () => {
     render(
       <WaveReportPage

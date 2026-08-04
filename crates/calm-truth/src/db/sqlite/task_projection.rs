@@ -191,12 +191,22 @@ pub async fn attach_task_read_state_tx(
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok());
         verdict.worker_card_id = row.worker_card_id.clone();
+        let related_context_blocks = || {
+            row.claim_context_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|item| !item.is_root)
+                .map(|item| item.block_id)
+                .collect::<Vec<_>>()
+        };
         if row.context_closure_truncated != 0 {
             verdict.diagnostics.push(Diagnostic::coded(
                 "reference_chain_too_large",
                 "refs",
                 BTreeMap::new(),
-                vec![],
+                related_context_blocks(),
                 None,
                 Some("narrow_task_context".into()),
             ));
@@ -208,15 +218,7 @@ pub async fn attach_task_read_state_tx(
             )
         });
         if row.context_stale_at_ms.is_some() && !already_declaration_stale {
-            let related = row
-                .claim_context_json
-                .as_deref()
-                .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|item| !item.is_root)
-                .map(|item| item.block_id)
-                .collect();
+            let related = related_context_blocks();
             verdict.diagnostics.push(Diagnostic::coded(
                 "context_stale_reference",
                 "refs",
@@ -225,6 +227,9 @@ pub async fn attach_task_read_state_tx(
                 None,
                 Some("relink_reference".into()),
             ));
+        }
+        if !verdict.diagnostics.is_empty() {
+            verdict.schedulable = false;
         }
     }
     Ok(())
@@ -425,7 +430,7 @@ pub async fn evaluate_schedulability_tx(
                     diagnostics.push(reference_diagnostic(
                         "reference_needs_block",
                         reference,
-                        None,
+                        parse_destination(reference).map(|value| value.0),
                     ));
                     continue;
                 };
@@ -443,9 +448,11 @@ pub async fn evaluate_schedulability_tx(
                 continue;
             };
             match target {
-                None => {
-                    diagnostics.push(reference_diagnostic("reference_missing", reference, None))
-                }
+                None => diagnostics.push(reference_diagnostic(
+                    "reference_missing",
+                    reference,
+                    parse_destination(reference).map(|value| value.0),
+                )),
                 Some((target_cove, target_kind, _))
                     if target_cove != source_cove && target_kind != "system" =>
                 {
@@ -627,7 +634,7 @@ pub async fn evaluate_schedulability_tx(
         )
     });
     let admitted: Vec<usize> = candidates.iter().copied().take(capacity).collect();
-    let admitted_ids: Vec<String> = declarations
+    let mut admitted_ids: Vec<String> = declarations
         .iter()
         .enumerate()
         .filter(|(index, declaration)| {
@@ -635,6 +642,13 @@ pub async fn evaluate_schedulability_tx(
         })
         .map(|(_, declaration)| declaration.block_id.clone())
         .collect();
+    if admitted_ids.is_empty() {
+        admitted_ids.extend(
+            candidates
+                .first()
+                .map(|index| declarations[*index].block_id.clone()),
+        );
+    }
     for index in candidates.into_iter().skip(capacity) {
         verdicts[index].diagnostics.push(Diagnostic::coded(
             "spec_task_ceiling",
@@ -867,6 +881,67 @@ mod tests {
         sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec','block',0,0)")
             .bind(format!("{wave}:{key}")).bind(wave).bind(key).bind(format!("goal {key}")).bind(status)
             .execute(&repo.pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_state_surfaces_truncated_and_stale_reference_diagnostics() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "read-state", "pending").await;
+        let claim_context = json!([
+            {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
+            {"wave_id": wave, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
+        ]);
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='read-state'")
+            .bind(claim_context.to_string())
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let mut verdicts =
+            evaluate_schedulability_tx(&mut tx, &wave, &[declaration(0, "read-state")], &[vec![]])
+                .await
+                .unwrap();
+        attach_task_read_state_tx(&mut tx, &wave, &mut verdicts)
+            .await
+            .unwrap();
+
+        let verdict = &verdicts[0];
+        assert!(!verdict.schedulable);
+        for code in ["reference_chain_too_large", "context_stale_reference"] {
+            let diagnostic = verdict
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code == code)
+                .unwrap_or_else(|| panic!("missing {code}"));
+            assert_eq!(diagnostic.related_block_ids, ["b_feed"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_ceiling_diagnostic_keeps_a_block_jump_target() {
+        let (repo, wave) = setup().await;
+        sqlx::query("UPDATE waves SET spec_task_ceiling=0 WHERE id=?1")
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability_tx(
+            &mut tx,
+            &wave,
+            &[declaration(0, "capacity-zero")],
+            &[vec![]],
+        )
+        .await
+        .unwrap();
+        let ceiling = verdicts[0]
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
+            .expect("ceiling diagnostic");
+        assert_eq!(ceiling.related_block_ids, ["b_0000"]);
     }
 
     #[tokio::test]

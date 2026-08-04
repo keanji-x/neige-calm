@@ -28,6 +28,7 @@ import {
   type UseQueryOptions,
 } from '@tanstack/react-query';
 import * as api from './calm';
+import { taskBlockVerdictSchema } from './schemas';
 import type {
   CardPatchBody,
   CovePatchBody,
@@ -241,7 +242,14 @@ export function useWaveFileContent(
 export function useWaveReportQuery(waveId: string | undefined | null) {
   return useQuery<api.WaveReportRead, Error>({
     queryKey: queryKeys.waveReport(waveId ?? ''),
-    queryFn: () => api.getWaveReport(waveId ?? ''),
+    queryFn: async () => {
+      const report = await api.getWaveReport(waveId ?? '');
+      return {
+        ...report,
+        taskDiagnostics: report.taskDiagnostics.map((verdict) =>
+          taskBlockVerdictSchema.parse(verdict)),
+      } as api.WaveReportRead;
+    },
     enabled: !!waveId,
   });
 }

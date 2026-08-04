@@ -2,7 +2,8 @@
 
 ## 契约取舍
 
-`Diagnostic` 采用 §12.2 C 的五项结构，同时保留既有 `path` / `message` 兼容字段。
+`Diagnostic` 采用 §12.2 C 的五项结构，同时保留既有 `message` 兼容字段。`path` 不是兼容
+字段：它是 §6.5 判断在飞任务是否需要产出撤回诊断的判据载体。
 理由是这两个字段已经由 `calm.report.read.taskDiagnostics` 暴露给 MCP spec agent，直接
 删除会造成计划未定价的契约破坏。`message` 不是第二份真源：所有生产者只提交 `code`
 与 `message_args`，统一由服务端 `render_diagnostic_message` 生成兼容文案。

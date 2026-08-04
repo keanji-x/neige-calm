@@ -13,15 +13,41 @@ function textArg(diagnostic: Diagnostic, key: string): string {
 }
 
 function RelatedBlocks({ diagnostic }: { diagnostic: Diagnostic }) {
-  if (diagnostic.relatedBlockIds.length === 0) return null;
+  const actionLabel = diagnostic.action === 'raise_spec_task_ceiling' ? 'Review capacity' : 'Open related item';
+  if (diagnostic.relatedBlockIds.length === 0 && !diagnostic.relatedWaveId) return null;
   return (
     <span className="rb-task-related">
-      {' '}See{' '}
+      {' '}{actionLabel}:{' '}
       {diagnostic.relatedBlockIds.map((id, index) => (
         <span key={id}>{index > 0 && ', '}<a href={`#${id}`}>{id}</a></span>
       ))}
+      {diagnostic.relatedWaveId && (
+        <>{diagnostic.relatedBlockIds.length > 0 && ', '}<a href={`/wave/${diagnostic.relatedWaveId}`}>referenced wave</a></>
+      )}
     </span>
   );
+}
+
+function taskStatusText(status: string | null | undefined, ready: boolean): string {
+  switch (status) {
+    case 'pending': return 'Waiting to start';
+    case 'dispatched': return 'Sent to a worker';
+    case 'running': return 'In progress';
+    case 'verifying': return 'Running checks';
+    case 'done': return 'Completed';
+    case 'failed': return 'Needs attention';
+    default: return ready ? 'Ready to queue' : 'Not queued';
+  }
+}
+
+function gateResultText(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || !('passed' in value)) return null;
+  const gate = value as { passed?: unknown; failing_step?: unknown };
+  if (gate.passed === true) return 'Checks: passed';
+  if (gate.passed !== false) return null;
+  return typeof gate.failing_step === 'string' && gate.failing_step.trim()
+    ? `Checks: failed at ${gate.failing_step}`
+    : 'Checks: not passed';
 }
 
 export function taskDiagnosticText(diagnostic: Diagnostic): string {
@@ -42,6 +68,7 @@ export function taskDiagnosticText(diagnostic: Diagnostic): string {
     case 'declaration_changed_in_flight':
     case 'context_stale_declaration': return 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.';
     case 'task_key_completed': return 'This task key has already been delivered. Create a new task card with a new key for more work.';
+    case 'invalid_declaration': return 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.';
     default: return diagnostic.message;
   }
 }
@@ -62,10 +89,11 @@ export function ReportTaskBlock({
   onRestoreAutomation?(): void;
 }) {
   if (payload.tombstone) {
+    const owner = payload.tombstoned_by === 'user' ? 'You left' : 'The AI left';
     return (
       <section className="rb-task rb-task--readonly" aria-label={`Do not do ${payload.key}`}>
         <strong>{payload.key}</strong>
-        <p>Do not do{payload.tombstone.reason ? `: ${payload.tombstone.reason}` : ''}. The AI cannot propose this key again.</p>
+        <p>{owner} this “do not do” record{payload.tombstone.reason ? `: ${payload.tombstone.reason}` : ''}. The AI cannot propose this key again.</p>
         <div className="rb-task-actions">
           <button type="button" onClick={onClearTombstone}>Allow this key again</button>
           <button type="button" onClick={onRestoreAutomation}>Restore automatic AI tasks</button>
@@ -75,14 +103,15 @@ export function ReportTaskBlock({
   }
   const delivered = verdict?.status != null && verdict.status !== 'pending';
   const waiting = verdict?.diagnostics.some((d) => d.code === 'declare_and_wait') ?? false;
+  const gateText = gateResultText(verdict?.gateResult);
   return (
     <section className={`rb-task ${delivered ? 'rb-task--readonly' : 'rb-task--draft'}`} aria-label={`Task ${payload.key}`}>
       <header><strong>{payload.key}</strong><span>{delivered ? 'Delivered · read only' : 'Draft · editable card'}</span></header>
-      <p className="rb-task-meta">{verdict?.status ?? (payload.ready ? 'Ready to queue' : 'Not queued')}{verdict?.statusDetail ? ` · ${verdict.statusDetail}` : ''}</p>
+      <p className="rb-task-meta">{taskStatusText(verdict?.status, payload.ready)}</p>
       <div className="calm-prose rb-task-goal"><ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={reportUrlTransform} components={{ a: ReportLink }}>{payload.goal}</ReactMarkdown></div>
       {payload.acceptance && <div className="rb-task-acceptance"><span>Done when</span><div className="calm-prose"><ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={reportUrlTransform} components={{ a: ReportLink }}>{payload.acceptance}</ReactMarkdown></div></div>}
       {payload.depends_on && payload.depends_on.length > 0 && <p>Waits for: {payload.depends_on.join(', ')}</p>}
-      {verdict?.gateResult != null && <p className="rb-task-meta">Checks: {JSON.stringify(verdict.gateResult)}</p>}
+      {gateText && <p className="rb-task-meta">{gateText}</p>}
       {verdict?.workerCardId && <p><a href={`#${verdict.workerCardId}`}>Open worker output</a></p>}
       {verdict?.diagnostics.map((diagnostic, index) => <p className="rb-task-diagnostic" role="alert" key={`${diagnostic.code}:${index}`}>{taskDiagnosticText(diagnostic)}<RelatedBlocks diagnostic={diagnostic} /></p>)}
       <div className="rb-task-actions">

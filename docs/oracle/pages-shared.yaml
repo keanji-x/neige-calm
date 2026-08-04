@@ -110,8 +110,8 @@
   why: >
     折叠会 hidden 掉当前按钮,焦点会掉到 body;railFocusTransferPending ref 保证只有用户操作路径转移焦点,
     首屏 / localStorage 恢复不抢焦点。
-  source: web/src/pages/WaveReportPage.tsx:816-829,941-967
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1050
+  source: web/src/pages/WaveReportPage.tsx:824-837,956-981
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1069-1098
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -231,7 +231,7 @@
     切换 spec 卡(specCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
-  source: web/src/pages/WaveReportPage.tsx:856-858
+  source: web/src/pages/WaveReportPage.tsx:864-866
   authoritative_test: NONE
   owner_slice: features/report/shell
   intentional_omission: false
@@ -283,8 +283,8 @@
     "版本不支持,请刷新",且大纲面板同步显示 "Outline unavailable for this report version."
   why: >
     前端渲染未来 schema 的块会静默出错;显式版本墙 + 大纲同步降级,避免用户以为报告是空的。
-  source: web/src/pages/WaveReportPage.tsx:301-307,524-530,997-1000
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:855
+  source: web/src/pages/WaveReportPage.tsx:302-307,525-530,1005-1008
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:855-888
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
