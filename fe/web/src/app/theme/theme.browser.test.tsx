@@ -8,6 +8,13 @@ import '../../styles/tokens.css';
 
 function Probe() { const { resolved } = useTheme(); return <output data-testid="resolved">{resolved}</output>; }
 function memoryStorage() { const values = new Map<string, string>(); return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } }; }
+function pixelLuminance(cssColor: string): number {
+  const canvas = document.createElement('canvas'); canvas.width = 1; canvas.height = 1;
+  const context = canvas.getContext('2d'); if (!context) throw new Error('2D canvas context unavailable');
+  context.fillStyle = cssColor; context.fillRect(0, 0, 1, 1);
+  const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
 afterEach(() => { delete document.documentElement.dataset.theme; history.replaceState(null, '', '/'); });
 
 describe('browser theme contracts', () => {
@@ -22,7 +29,8 @@ describe('browser theme contracts', () => {
     const target = document.createElement('div'); target.style.backgroundColor = 'var(--bg)'; document.body.append(target);
     document.documentElement.dataset.theme = 'light'; const light = getComputedStyle(target).backgroundColor;
     document.documentElement.dataset.theme = 'dark'; const dark = getComputedStyle(target).backgroundColor;
-    expect(light).not.toBe(dark); target.remove();
+    expect(light).not.toBe(dark);
+    expect(pixelLuminance(dark)).toBeLessThan(pixelLuminance(light) - 80); target.remove();
   });
 
   it('E2E-CAP-TERMTHEME-010 exports host tuples that the document channel selects', () => {

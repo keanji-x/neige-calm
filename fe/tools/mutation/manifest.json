@@ -140,6 +140,15 @@
     "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
   },
   {
+    "mutation_id": "app-theme-swap-light-dark-bg",
+    "defends": ["oracle:E2E-CAP-AXE-005"],
+    "target": "web/src/styles/tokens.css",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -10,1 +10,1 @@\n-    --bg: oklch(98.8% 0.003 240);\n+    --bg: oklch(16% 0.008 245);\n@@ -106,1 +106,1 @@\n-    --bg: oklch(16% 0.008 245);\n+    --bg: oklch(98.8% 0.003 240);\n",
+    "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
+    "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
+    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+  },
+  {
     "mutation_id": "app-providers-drift-idb-name",
     "defends": [
       "oracle:INV-APP-016",
