@@ -2,8 +2,14 @@
 
 `check-test-tier.mjs` validates the complete oracle schema, tracked fixture manifests, and Vitest
 project partition on every JavaScript lint run. It fails closed for unknown migration/tier values and
-malformed authoritative locations. Browser-tier migrated tests may be owned by either Vitest Browser
-or the Playwright `testDir`; jsdom-tier migrated tests are owned by the Vitest `web-dom` project.
+malformed authoritative locations. A tier states the minimum capability a test needs; the owning
+project may provide more capability, but never less:
+
+| `test_tier` | Allowed project |
+| --- | --- |
+| `browser` | `browser` or Playwright |
+| `jsdom` | `web-dom` or `browser` |
+| `static` / `none` | Any project |
 
 The tier/project agreement is intentionally enforced only after an entry changes to `migrated`.
 At the start of phase 2 the oracle contains 1119 `pending`, 8 `skipped`, and zero `migrated` entries,

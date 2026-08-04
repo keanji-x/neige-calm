@@ -16,7 +16,7 @@ export default defineConfig({
       {
         test: {
           name: 'web-dom',
-          environment: './tools/test-tier/jsdom-ssr-environment.ts',
+          environment: 'jsdom',
           include: ['web/src/**/*.test.{ts,tsx}'],
           exclude: ['**/*.browser.test.{ts,tsx}'],
         },
