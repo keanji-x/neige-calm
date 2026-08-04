@@ -4622,13 +4622,13 @@
     两处都是 #177 契约的实现面(spec daemon / 终端 daemon 首次绘制配色);缺省 dark 镜像服务端
     `RequestTheme::default_dark()`。**新架构应抽成一个共享 helper。**
   source: web/src/shared/components/NewTaskForm.tsx:1084-1089 + web/src/hooks/useTodayTerminal.ts:199-212
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme/host-rgb
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-DUP-008
   kind: invariant

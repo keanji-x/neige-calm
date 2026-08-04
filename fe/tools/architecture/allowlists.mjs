@@ -10,10 +10,14 @@
 export const moduleRuntimeStateAllowlist = [
   // App bootstrap must retain the browser mount node while composing React.
   'web/src/main.tsx',
+  // App provider composition requires one QueryClient and one immutable persistence descriptor for the process lifetime.
+  'web/src/app/providers/public.tsx',
 ];
 
 /** @type {ReadonlyArray<string>} */
 export const createContextAllowlist = [
+  // App theme is a cross-route concern whose single provider intentionally owns the document dataset mirror.
+  'web/src/app/theme/public.tsx',
   // Reason: issue #997 §4/§6 allow context in a primitive's own directory; consumers remain in ui, so no primitive-to-business reverse dependency is introduced.
   'web/src/ui/dialog/public.tsx',
 ];

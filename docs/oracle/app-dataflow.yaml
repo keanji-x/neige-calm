@@ -32,13 +32,13 @@
     cache；在 compat 检查跑完之前开 socket，等于让一个不兼容的前端去解析它读不懂的
     kernel 帧。issue #198 concern 1 明写此约束。
   source: web/src/app/providers.tsx:110-122,231-236
-  authoritative_test: web/src/app/providers.test.tsx:374,396
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-002
   kind: invariant
@@ -51,13 +51,13 @@
     同时又绝不能在 compat 裁决落地前尝试 WS 连接。两个诉求同时成立的唯一形状就是
     "children 渲染 + bridge 不挂"。
   source: web/src/app/providers.tsx:218-236
-  authoritative_test: web/src/app/providers.test.tsx:423
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-003
   kind: invariant
@@ -69,13 +69,13 @@
     路由内渲染的 plugin iframe 卡片会调 useTheme()；只有当 provider 高于整棵路由树，
     一次主题翻转才能被所有路由同时观测到。issue #22。
   source: web/src/app/providers.tsx:103-122
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-004
   kind: invariant
@@ -87,13 +87,13 @@
     （router.tsx 的 loader 直接 `import { queryClient }`）；persistOptions 若每次
     AppProviders 重渲染都重建，会反复重开 IndexedDB 连接。
   source: web/src/app/providers.tsx:84-97
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: architecture
   test_tier: none
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-005
   kind: invariant
@@ -104,13 +104,13 @@
     IndexedDB 快照回填期间渲染 children 会先画一遍空 cache 再被 hydrate 覆盖，
     产生可见闪烁；gate 的存在就是把第一帧推迟到 hydration 结束。
   source: web/src/app/providers.tsx:128-131
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 # ===========================================================================
 # 2. 版本兼容闸门  (family: app-compat-gate)
@@ -126,13 +126,13 @@
     issue #45 / docs/upgrade-stability.md Tier B：前后端 skew 时用户必须被明确阻断，
     并且运维式的 "compat v3 vs v1" 对照要一眼可见。
   source: web/src/app/providers.tsx:205-207,291-306
-  authoritative_test: web/src/app/providers.test.tsx:132,184
+  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
-  verification_owner: unit
+  verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-007
   kind: invariant
@@ -144,13 +144,13 @@
     这个查询的全部意义是"本次挂载的快照"；缓存值对新挂载没有意义，轮询也不在设计内
     （单次 mount 检查，见 providers.tsx 头部注释）。
   source: web/src/app/providers.tsx:158-170
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-008
   kind: invariant
@@ -162,13 +162,13 @@
     宁可让各查询自己的错误横幅暴露连通性问题，也不要因为一次瞬时 /api/version 失败
     把整个应用锁死；缺数据意味着没有可比对的东西，比对必须跳过。
   source: web/src/app/providers.tsx:150-155,177-179
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-009
   kind: invariant
@@ -180,13 +180,13 @@
     这是硬阻断态，没有"取消"语义；把 onClose 也指向 refresh 才不会出现"关掉弹窗后
     继续用不兼容前端"的漏口。同时复用共享 Dialog 以继承 focus trap / inert / focus restore。
   source: web/src/app/providers.tsx:291-304
-  authoritative_test: web/src/app/providers.test.tsx:151
+  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
-  verification_owner: unit
+  verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 # ===========================================================================
 # 3. dbInstanceId 缓存爆破  (family: app-cache-bust)
@@ -204,13 +204,13 @@
     被重建（`make dev RESET_DB=1`、迁移分支切换），持久化的 cache 与 cursor 里全是
     已不存在的行 id。
   source: web/src/app/providers.tsx:177-203
-  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:141
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-011
   kind: invariant
@@ -221,13 +221,13 @@
     没有任何客户端自有状态会丢（一切都在服务端），确认框是纯摩擦。代码注释明写
     "silently, because there's no client-owned state to lose"。
   source: web/src/app/providers.tsx:145-149
-  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:141
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: true
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-012
   kind: invariant
@@ -238,13 +238,13 @@
     对称防"爆破过度"回归：匹配路径上误删 cursor 会丢掉自启动以来的全部事件，
     误删 cache/IDB 会白掉首屏。
   source: web/src/app/providers.tsx:181,198-202
-  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:267
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-013
   kind: invariant
@@ -254,13 +254,13 @@
   why: >
     没有 previous 值就没有"变化"可言；把首访当成爆破会让每个新用户第一次打开就白屏刷新一次。
   source: web/src/app/providers.tsx:198-202
-  authoritative_test: web/src/app/providers.test.tsx:264
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-014
   kind: invariant
@@ -270,13 +270,13 @@
   why: >
     浏览器马上就要导航走；此刻渲染 children 会闪一帧"cache 已清空"的空态。
   source: web/src/app/providers.tsx:172-175,208-212
-  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:263
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-015
   kind: invariant
@@ -289,13 +289,13 @@
     全局 API 抛错或缺席。降级后最坏结果只是缓存爆破功能不生效（等同于本 PR 之前的行为），
     严格优于整个应用崩掉。
   source: web/src/app/providers.tsx:239-283
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-016
   kind: invariant
@@ -307,13 +307,13 @@
     issue #199：用 vi.fn() 桩掉 deleteDatabase 只能证明"调了"，不能证明库名对得上。
     名字漂移会让 blob 静默存活，旧行 id 继续上色。
   source: web/src/app/providers.tsx:192,277-283
-  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:248
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 # ===========================================================================
 # 4. 持久化 key 契约  (family: app-storage-keys)
@@ -1108,13 +1108,13 @@
     重试只会拖慢 SessionProvider 的 onUnauthorized 清理 → LoginPage 跳转
     （`api/calm.ts` 的 request() 已经发过信号了），期间还堆一个注定失败的第二请求。
   source: web/src/app/providers.tsx:50-64,89
-  authoritative_test: web/src/app/providers.test.tsx:241
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-060
   kind: invariant
@@ -1125,13 +1125,13 @@
     每个 per-query override 若各自重写 retry，就会绕开 401 不重试的约束，401 处理退化成
     "默认路径才对"。
   source: web/src/app/providers.tsx:58-64
-  authoritative_test: web/src/app/providers.test.tsx:241
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-061
   kind: invariant
@@ -1303,13 +1303,13 @@
     issue #22 验收条 4 的中心不变式：应用里任何其他需要知道主题的地方都必须调 `useTheme()`，
     不得直接读 `dataset.theme` 或 `prefers-color-scheme`。多处写入会让主题真值分叉。
   source: web/src/app/theme.tsx:11-17,157-162
-  authoritative_test: web/src/app/theme.test.tsx:93,127
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-071
   kind: invariant
@@ -1342,13 +1342,13 @@
   why: >
     异步读会在用户上次选 dark 时于 reload 后产生 light→dark 闪烁。
   source: web/src/app/theme.tsx:20-25,76-88,114-120
-  authoritative_test: web/src/app/theme.test.tsx:110
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-073
   kind: invariant
@@ -1359,13 +1359,13 @@
     跨域 iframe / private mode 下 localStorage 会抛。写失败时状态更新仍然生效，
     只是不跨 reload 存活 —— 这是刻意的降级取舍。
   source: web/src/app/theme.tsx:70-88,164-173
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-APP-074
   kind: capability
@@ -1377,13 +1377,13 @@
     用户显式选择就是显式退出 OS 跟踪；留着监听会有陈旧 `setSystemPref` 在用户已经
     opt-out 后仍然触发。
   source: web/src/app/theme.tsx:27-33,126-150
-  authoritative_test: web/src/app/theme.test.tsx:146,170
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-075
   kind: invariant
@@ -1393,13 +1393,13 @@
   why: >
     mount 与 effect 执行之间 OS 偏好可能已变（罕见但真实），只等事件会错过这一跳。
   source: web/src/app/theme.tsx:137-139
-  authoritative_test: web/src/app/theme.test.tsx:146
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-APP-076
   kind: capability
@@ -1411,13 +1411,13 @@
     issue #177 的 Playwright 仪器：e2e 需要在**不导航**的前提下翻主题 ——
     导航会卸载被观测的 wave 页 XtermView，整个观测就失效了。生产用户不应看到该全局。
   source: web/src/app/theme.tsx:180-195
-  authoritative_test: web/e2e/a11y-177-theme-toggle-no-remount.spec.ts:117-188
+  authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-077
   kind: invariant
@@ -1428,13 +1428,13 @@
   why: >
     Vitest/jsdom 角落场景与未来可能的 SSR pass 都要求 provider 不能因为全局缺席而崩。
   source: web/src/app/theme.tsx:35-40,79,92-103,160
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/app/theme/public.ssr.contract.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-078
   kind: invariant
@@ -1446,13 +1446,13 @@
     静默返回默认值会让"provider 装错位置"变成难查的视觉 bug；错误文案里带修复位置
     是刻意的可诊断性设计。
   source: web/src/app/theme.tsx:208-217
-  authoritative_test: web/src/app/theme.test.tsx:194
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 # ===========================================================================
 # 10. Trace ring buffer  (family: app-trace-buffer)

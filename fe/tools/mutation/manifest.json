@@ -104,5 +104,57 @@
     ],
     "selection_paths": ["tools/test-tier/checker.test.ts"],
     "why_more_than_one": "The browser and jsdom overlap cases must both detect multiple collection; any third red indicates capability matching changed."
+  },
+  {
+    "mutation_id": "app-providers-retry-401-as-400",
+    "defends": [
+      "oracle:INV-APP-059",
+      "oracle:INV-APP-060"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..3148cf4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -22,7 +22,7 @@ export interface ProviderRuntime {\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 400) return false;\n   return failureCount < 1;\n }\n \n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Only the shared retry-policy contract should turn red; more than one would mean unrelated provider behavior depends on error classification."
+  },
+  {
+    "mutation_id": "app-theme-accept-sepia-drop-system",
+    "defends": [
+      "oracle:INV-APP-073",
+      "oracle:E2E-CAP-THEME-011"
+    ],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 80cd803..d78d3ee 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -12,7 +12,7 @@ declare global { interface Window { __calmSetTheme?: (mode: ThemeMode) => void }\n const ThemeContext = createContext<ThemeContextValue | null>(null);\n \n export function parseThemeMode(raw: unknown): ThemeMode | null {\n-  return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : null;\n+  return raw === 'light' || raw === 'dark' || raw === 'sepia' ? raw : null;\n }\n \n export type ThemeStorage = Pick<Storage, 'getItem' | 'setItem'>;\n",
+    "selection_paths": [
+      "web/src/app/theme/public.contract.test.tsx",
+      "web/src/app/theme/public.test.tsx"
+    ],
+    "expected_red": [
+      "ThemeProvider behavior INV-APP-073 accepts valid persistence, rejects invalid values, and survives storage failures",
+      "app/theme contracts INV-APP-070 E2E-CAP-THEME-011 exposes exactly three parseable modes"
+    ],
+    "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
+  },
+  {
+    "mutation_id": "app-providers-drift-idb-name",
+    "defends": [
+      "oracle:INV-APP-016",
+      "oracle:CAP-APP-010"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..95c0d43 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -7,7 +7,7 @@ import { ThemeProvider } from '../theme/public.tsx';\n \n export const WEB_COMPAT_VERSION = 16;\n export const PERSIST_OPTIONS = Object.freeze({\n-  idbDatabaseName: 'neige-calm',\n+  idbDatabaseName: 'neige-calm-v2',\n   dbInstanceKey: DB_INSTANCE_ID_KEY,\n   syncCursorKey: SYNC_CURSOR_KEY,\n   maxAgeMs: 24 * 60 * 60 * 1000,\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx",
+      "web/src/app/providers/public.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-016 uses canonical storage and persistence identifiers",
+      "provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"
+    ],
+    "why_more_than_one": "The exported persistence descriptor and the actual bust call both turn red; any third failure would mean the storage name leaked into an unrelated behavior."
   }
 ]
