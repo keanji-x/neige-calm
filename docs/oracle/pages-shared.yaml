@@ -40,7 +40,7 @@
     calm.css 注释与 WaveReportPage 的 `report-page--conversation-open` class 组合表明布局靠列宽过渡
     (transition: grid-template-columns);测试 "opens the drawer without unmounting the report document"
     与 "keeps the draft alive when the drawer closes and reopens" 锁定"持久挂载"语义 —— 卸载会丢草稿。
-  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:853-860,1015-1037
+  source: web/src/calm.css:1704-1726 + web/src/pages/WaveReportPage.tsx:871-875,1027-1042
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2123
   owner_slice: features/report/shell
   intentional_omission: false
@@ -231,7 +231,7 @@
     切换 spec 卡(specCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
-  source: web/src/pages/WaveReportPage.tsx:864-866
+  source: web/src/pages/WaveReportPage.tsx:866-868
   authoritative_test: NONE
   owner_slice: features/report/shell
   intentional_omission: false
@@ -800,11 +800,12 @@
   family: report-task
   statement: >
     task 卡渲染目标、完成条件、排队/执行状态与诊断；等待人工放行时提供按钮。墓碑形态
-    显示「不做」记录，并把撤回记录与恢复自动化作为两个独立按钮。
+    显示「不做」记录及 declared_by + tombstoned_by 双署名审计线索，并把撤回记录与恢复
+    自动化作为两个独立按钮。
   why: >
     三句对外概念契约要求系统署名不成为输入或 UI 名词；状态来自读时投影，已交付卡只读。
-  source: web/src/pages/report-blocks/task.tsx:65-95
-  authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:718,779
+  source: web/src/pages/report-blocks/task.tsx:95-105
+  authoritative_test: web/src/pages/report-blocks/report-blocks.test.tsx:757
   owner_slice: features/report/blocks
   intentional_omission: false
   runtime_layer: features
@@ -1034,7 +1035,7 @@
   why: >
     "keeps the draft when the persistently mounted drawer closes and reopens" —— 用户打字到一半去看报告
     再回来,草稿没了是最刺痛的丢失。
-  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/WaveReportPage.tsx:1015-1037
+  source: web/src/pages/SpecConversation.tsx:336 + web/src/pages/WaveReportPage.tsx:1027-1042
   authoritative_test: web/src/pages/SpecConversation.test.tsx:579 + web/src/pages/WaveReportPage.test.tsx:2182
   owner_slice: features/spec/conversation
   intentional_omission: false

@@ -611,6 +611,9 @@ describe('EventBridge', () => {
       invalidate.mockClear();
       expect(() => fakeStream.emit(ev)).not.toThrow();
       expect(invalidate).toHaveBeenCalledWith({ queryKey });
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKey[1] ? ['wave-report', queryKey[1]] : ['wave-report'],
+      });
     }
 
     cleanup();

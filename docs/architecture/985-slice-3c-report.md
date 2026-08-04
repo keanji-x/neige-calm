@@ -8,6 +8,18 @@
 删除会造成计划未定价的契约破坏。`message` 不是第二份真源：所有生产者只提交 `code`
 与 `message_args`，统一由服务端 `render_diagnostic_message` 生成兼容文案。
 
+报告页继续选择“已知 kind 的任一块不符合当前 schema 时整篇进入版本墙”，卡片快照路径则
+保留逐块 `UnsupportedBlock`。两者不是同一读边界：前者是权威 HTTP 报告，拒绝把已知 kind
+的损坏数据伪装成未来扩展；后者是非权威的卡片快照，优先保住同卡其余内容。`knownKinds`
+必须从 `typedReportBlockSchema.options` 派生，避免新增判别项时把已知 kind 悄悄降级。
+
+墓碑 UI 保留 `declared_by + tombstoned_by` 双署名审计线索；系统仍负责写入这两个字段，用户
+看到的是“最初由谁提出、后来由谁留下不做记录”的自然语言，而不是可编辑的实现字段。
+
+容量为零时没有任何获准块，因此 ceiling 诊断的 `related_block_ids` 必须为空，只由
+`related_wave_id` 提供提高上限入口。此前测试要求 `b_0000` 的做法会制造指向被拒块自身的
+跳转；本轮明确把该断言从错误行为改为诚实的空列表。
+
 实现还纠正了一处代码与权威计划的偏差：读路径此前仍在未显式配置策略时根据用户墓碑
 推导 `declare-and-wait`，这与 §6.6 和 §12.2 B2 已删除自动派生分支的裁决不符。本片将
 生效条件收回为仅接受人显式 PATCH 的 `automation_policy`；墓碑与自动化策略恢复继续是

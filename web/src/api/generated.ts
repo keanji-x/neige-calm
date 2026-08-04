@@ -956,7 +956,6 @@ export interface components {
             key: string;
             schedulable: boolean;
             status?: string | null;
-            statusDetail?: string | null;
             workerCardId?: string | null;
         };
         Card: {

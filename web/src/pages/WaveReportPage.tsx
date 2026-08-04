@@ -789,7 +789,9 @@ export function WaveReportPage({ wave, cards }: WaveReportPageProps) {
   const backlinksQ = useWaveBacklinksQuery(wave.id);
   const parsedReport = useMemo(() => {
     if (!reportQ.data) return reportCard?.blocks;
-    const knownKinds = new Set(['prose', 'chart.candles', 'table', 'app', 'task']);
+    const knownKinds = new Set<string>(
+      typedReportBlockSchema.options.map((option) => option.shape.kind.value),
+    );
     const blocks: ReportBlock[] = [];
     for (const block of reportQ.data.blocks) {
       const parsed = (knownKinds.has(block.kind) ? typedReportBlockSchema : reportBlockSchema)

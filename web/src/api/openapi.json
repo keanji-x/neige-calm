@@ -4132,12 +4132,6 @@
               "null"
             ]
           },
-          "statusDetail": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "workerCardId": {
             "type": [
               "string",

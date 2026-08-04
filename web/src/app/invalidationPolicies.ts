@@ -87,12 +87,15 @@ function waveFilesDerivedEventKeys(
 ): QueryKey[] {
   const data = ev.data as { wave_id?: unknown; card_id?: unknown };
   if (typeof data.wave_id === 'string' && data.wave_id.length > 0) {
-    return [waveFilesKey(data.wave_id)];
+    return [waveFilesKey(data.wave_id), queryKeys.waveReport(data.wave_id)];
   }
   if (typeof data.card_id === 'string' && data.card_id.length > 0) {
-    return [waveFilesKey(ctx.findWaveOwningCard(data.card_id))];
+    const waveId = ctx.findWaveOwningCard(data.card_id);
+    return waveId
+      ? [waveFilesKey(waveId), queryKeys.waveReport(waveId)]
+      : [waveFilesKey(undefined), ['wave-report']];
   }
-  return [waveFilesKey(undefined)];
+  return [waveFilesKey(undefined), ['wave-report']];
 }
 
 function runtimeContextKeys(

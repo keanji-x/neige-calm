@@ -143,8 +143,6 @@ pub struct BlockVerdict {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub status_detail: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_card_id: Option<String>,
@@ -157,7 +155,6 @@ pub struct BlockVerdict {
 struct TaskReadState {
     key: String,
     status: String,
-    status_detail: Option<String>,
     gate_result_json: Option<String>,
     worker_card_id: Option<String>,
     context_stale_at_ms: Option<i64>,
@@ -174,7 +171,7 @@ pub async fn attach_task_read_state_tx(
     verdicts: &mut [BlockVerdict],
 ) -> Result<()> {
     let rows: Vec<TaskReadState> = sqlx::query_as(
-        "SELECT key,status,status_detail,gate_result_json,worker_card_id,context_stale_at_ms,context_closure_truncated,claim_context_json FROM tasks WHERE wave_id=?1",
+        "SELECT key,status,gate_result_json,worker_card_id,context_stale_at_ms,context_closure_truncated,claim_context_json FROM tasks WHERE wave_id=?1",
     )
     .bind(wave_id)
     .fetch_all(&mut **tx)
@@ -185,11 +182,24 @@ pub async fn attach_task_read_state_tx(
             continue;
         };
         verdict.status = Some(row.status.clone());
-        verdict.status_detail = row.status_detail.clone();
         verdict.gate_result = row
             .gate_result_json
             .as_deref()
-            .and_then(|json| serde_json::from_str(json).ok());
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|gate| {
+                let passed = gate.get("passed")?.as_bool()?;
+                let mut public = serde_json::Map::from_iter([(
+                    "passed".into(),
+                    serde_json::Value::Bool(passed),
+                )]);
+                if let Some(step) = gate.get("failing_step").and_then(serde_json::Value::as_str) {
+                    public.insert(
+                        "failing_step".into(),
+                        serde_json::Value::String(step.into()),
+                    );
+                }
+                Some(serde_json::Value::Object(public))
+            });
         verdict.worker_card_id = row.worker_card_id.clone();
         let related_context_blocks = || {
             row.claim_context_json
@@ -423,14 +433,16 @@ pub async fn evaluate_schedulability_tx(
         references.sort();
         references.dedup();
         for reference in &references {
+            let destination = parse_destination(reference);
+            let destination_wave = destination.as_ref().map(|(wave, _)| wave.clone());
             let target: Option<(String, String, i64)> = if let Some((dst_wave, dst_block)) =
-                parse_destination(reference)
+                destination
             {
                 let Some(dst_block) = dst_block else {
                     diagnostics.push(reference_diagnostic(
                         "reference_needs_block",
                         reference,
-                        parse_destination(reference).map(|value| value.0),
+                        Some(dst_wave),
                     ));
                     continue;
                 };
@@ -451,7 +463,7 @@ pub async fn evaluate_schedulability_tx(
                 None => diagnostics.push(reference_diagnostic(
                     "reference_missing",
                     reference,
-                    parse_destination(reference).map(|value| value.0),
+                    destination_wave.clone(),
                 )),
                 Some((target_cove, target_kind, _))
                     if target_cove != source_cove && target_kind != "system" =>
@@ -459,13 +471,13 @@ pub async fn evaluate_schedulability_tx(
                     diagnostics.push(reference_diagnostic(
                         "reference_cross_cove",
                         reference,
-                        parse_destination(reference).map(|v| v.0.to_owned()),
+                        destination_wave.clone(),
                     ));
                 }
                 Some((_, _, 0)) => diagnostics.push(reference_diagnostic(
                     "reference_missing",
                     reference,
-                    parse_destination(reference).map(|v| v.0.to_owned()),
+                    destination_wave,
                 )),
                 Some(_) => {}
             }
@@ -489,7 +501,6 @@ pub async fn evaluate_schedulability_tx(
             key: declaration.key.clone(),
             schedulable: declaration.ready && !declaration.tombstone && diagnostics.is_empty(),
             status: None,
-            status_detail: None,
             gate_result: None,
             worker_card_id: None,
             diagnostics,
@@ -606,7 +617,6 @@ pub async fn evaluate_schedulability_tx(
                 key,
                 schedulable: false,
                 status: Some(status),
-                status_detail: None,
                 gate_result: None,
                 worker_card_id: None,
                 withdrawal: None,
@@ -634,7 +644,7 @@ pub async fn evaluate_schedulability_tx(
         )
     });
     let admitted: Vec<usize> = candidates.iter().copied().take(capacity).collect();
-    let mut admitted_ids: Vec<String> = declarations
+    let admitted_ids: Vec<String> = declarations
         .iter()
         .enumerate()
         .filter(|(index, declaration)| {
@@ -642,13 +652,6 @@ pub async fn evaluate_schedulability_tx(
         })
         .map(|(_, declaration)| declaration.block_id.clone())
         .collect();
-    if admitted_ids.is_empty() {
-        admitted_ids.extend(
-            candidates
-                .first()
-                .map(|index| declarations[*index].block_id.clone()),
-        );
-    }
     for index in candidates.into_iter().skip(capacity) {
         verdicts[index].diagnostics.push(Diagnostic::coded(
             "spec_task_ceiling",
@@ -774,7 +777,6 @@ pub async fn project_tasks_tx(
                         diagnostics: vec![diagnostic],
                         schedulable: false,
                         status: Some(status.clone()),
-                        status_detail: None,
                         gate_result: None,
                         worker_card_id: None,
                         withdrawal: None,
@@ -859,7 +861,7 @@ mod tests {
             refs: Vec::new(),
             declared_by: "spec".into(),
             released_by_user: false,
-            tombstoned_by_user: false,
+            tombstoned_by: None,
             ready: true,
             tombstone: false,
         }
@@ -891,8 +893,9 @@ mod tests {
             {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
             {"wave_id": wave, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
         ]);
-        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='read-state'")
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1,gate_result_json=?2,worker_card_id='worker-output' WHERE wave_id=?3 AND key='read-state'")
             .bind(claim_context.to_string())
+            .bind(json!({"passed":false,"failing_step":"test","log_path":"/private/gate.log","log_tail":"raw output","attempt":7}).to_string())
             .bind(&wave)
             .execute(&repo.pool)
             .await
@@ -909,6 +912,11 @@ mod tests {
 
         let verdict = &verdicts[0];
         assert!(!verdict.schedulable);
+        assert_eq!(
+            verdict.gate_result,
+            Some(json!({"passed": false, "failing_step": "test"}))
+        );
+        assert_eq!(verdict.worker_card_id.as_deref(), Some("worker-output"));
         for code in ["reference_chain_too_large", "context_stale_reference"] {
             let diagnostic = verdict
                 .diagnostics
@@ -920,7 +928,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_ceiling_diagnostic_keeps_a_block_jump_target() {
+    async fn zero_ceiling_diagnostic_has_no_false_block_jump_target() {
         let (repo, wave) = setup().await;
         sqlx::query("UPDATE waves SET spec_task_ceiling=0 WHERE id=?1")
             .bind(&wave)
@@ -941,7 +949,8 @@ mod tests {
             .iter()
             .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
             .expect("ceiling diagnostic");
-        assert_eq!(ceiling.related_block_ids, ["b_0000"]);
+        assert!(ceiling.related_block_ids.is_empty());
+        assert_eq!(ceiling.related_wave_id.as_deref(), Some(wave.as_str()));
     }
 
     #[tokio::test]

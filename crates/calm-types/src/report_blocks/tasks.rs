@@ -18,6 +18,26 @@ pub const GATE_TIMEOUT_MAX_SECS: i64 = 7200;
 pub const TASK_BLOCKING_DIAGNOSTIC_PATHS: &[&str] =
     &["depends_on", "gate", "key", "payload", "refs"];
 
+/// Closed vocabulary shared by diagnostic producers and user-facing renderers.
+pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
+    "invalid_declaration",
+    "duplicate_key",
+    "dependency_cycle",
+    "tombstone_blocks_redeclaration",
+    "unknown_dependency",
+    "gate_required",
+    "reference_needs_block",
+    "reference_missing",
+    "reference_cross_cove",
+    "declare_and_wait",
+    "declaration_changed_in_flight",
+    "task_key_completed",
+    "context_stale_declaration",
+    "context_stale_reference",
+    "reference_chain_too_large",
+    "spec_task_ceiling",
+];
+
 pub fn json_eq(a: &str, b: &str) -> bool {
     match (
         serde_json::from_str::<Value>(a),
@@ -72,7 +92,7 @@ pub struct TaskDeclaration {
     pub refs: Vec<String>,
     pub declared_by: String,
     pub released_by_user: bool,
-    pub tombstoned_by_user: bool,
+    pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
 }
@@ -103,6 +123,10 @@ impl Diagnostic {
         action: Option<String>,
     ) -> Self {
         let code = code.into();
+        assert!(
+            TASK_DIAGNOSTIC_CODES.contains(&code.as_str()),
+            "unregistered task diagnostic code: {code}"
+        );
         let message = render_diagnostic_message(&code, &message_args);
         Self {
             code,
@@ -521,8 +545,10 @@ pub fn project_task_declarations(
                 .get("released_by_user")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            tombstoned_by_user: payload.get("tombstoned_by").and_then(Value::as_str)
-                == Some("user"),
+            tombstoned_by: payload
+                .get("tombstoned_by")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             ready: payload
                 .get("ready")
                 .and_then(Value::as_bool)
@@ -560,6 +586,11 @@ pub fn project_task_declarations(
         }
     }
     for key in &tombstoned {
+        let tombstoned_by = declarations
+            .iter()
+            .find(|declaration| declaration.key == *key && declaration.tombstone)
+            .and_then(|declaration| declaration.tombstoned_by.as_deref())
+            .expect("validated tombstone author");
         for (index, _block) in blocks.iter().enumerate().filter(|(_, block)| {
             block.kind == super::KIND_TASK
                 && block.payload.get("key").and_then(Value::as_str) == Some(key.as_str())
@@ -582,7 +613,7 @@ pub fn project_task_declarations(
                 "key",
                 diagnostic_args([
                     ("key", Value::String(key.clone())),
-                    ("tombstoned_by", Value::String("user".into())),
+                    ("tombstoned_by", Value::String(tombstoned_by.into())),
                 ]),
                 related,
                 None,
@@ -647,7 +678,7 @@ mod tests {
             refs: Vec::new(),
             declared_by: "spec".into(),
             released_by_user: false,
-            tombstoned_by_user: false,
+            tombstoned_by: None,
             ready: true,
             tombstone: false,
         }
@@ -717,6 +748,19 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "unregistered task diagnostic code")]
+    fn diagnostic_codes_fail_closed_until_registered() {
+        Diagnostic::coded(
+            "new_unregistered_code",
+            "key",
+            BTreeMap::new(),
+            vec![],
+            None,
+            None,
+        );
+    }
+
+    #[test]
     fn projection_is_pure_and_reports_document_level_diagnostics() {
         let blocks = vec![
             ReportBlock {
@@ -750,31 +794,34 @@ mod tests {
 
     #[test]
     fn projection_gives_redeclaration_the_tombstone_diagnostic() {
-        let blocks = vec![
-            ReportBlock {
-                id: "b_0001".into(),
-                kind: super::super::KIND_TASK.into(),
-                rev: 0,
-                payload: json!({"key":"removed","tombstone":{},"declared_by":"spec","tombstoned_by":"user"}),
-            },
-            ReportBlock {
-                id: "b_0002".into(),
-                kind: super::super::KIND_TASK.into(),
-                rev: 0,
-                payload: json!({"key":"removed","kind":"codex","goal":"again","ready":true,"declared_by":"spec"}),
-            },
-        ];
-        let (declarations, diagnostics) = project_task_declarations(&blocks);
-        assert_eq!(dup_keys(&declarations), vec!["removed"]);
-        assert!(diagnostics[0].is_empty());
-        assert_eq!(diagnostics[1].len(), 1);
-        assert_eq!(diagnostics[1][0].path, "key");
-        assert_eq!(diagnostics[1][0].code, "tombstone_blocks_redeclaration");
-        assert_eq!(diagnostics[1][0].related_block_ids, vec!["b_0001"]);
-        assert_eq!(
-            diagnostics[1][0].message,
-            "task key `removed` has an uncleared tombstone"
-        );
+        for author in ["user", "spec"] {
+            let blocks = vec![
+                ReportBlock {
+                    id: "b_0001".into(),
+                    kind: super::super::KIND_TASK.into(),
+                    rev: 0,
+                    payload: json!({"key":"removed","tombstone":{},"declared_by":"spec","tombstoned_by":author}),
+                },
+                ReportBlock {
+                    id: "b_0002".into(),
+                    kind: super::super::KIND_TASK.into(),
+                    rev: 0,
+                    payload: json!({"key":"removed","kind":"codex","goal":"again","ready":true,"declared_by":"spec"}),
+                },
+            ];
+            let (declarations, diagnostics) = project_task_declarations(&blocks);
+            assert_eq!(dup_keys(&declarations), vec!["removed"]);
+            assert!(diagnostics[0].is_empty());
+            assert_eq!(diagnostics[1].len(), 1);
+            assert_eq!(diagnostics[1][0].path, "key");
+            assert_eq!(diagnostics[1][0].code, "tombstone_blocks_redeclaration");
+            assert_eq!(diagnostics[1][0].message_args["tombstoned_by"], author);
+            assert_eq!(diagnostics[1][0].related_block_ids, vec!["b_0001"]);
+            assert_eq!(
+                diagnostics[1][0].message,
+                "task key `removed` has an uncleared tombstone"
+            );
+        }
     }
 
     #[test]

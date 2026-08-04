@@ -438,7 +438,7 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
         refs: Vec::new(),
         declared_by: "spec".into(),
         released_by_user: false,
-        tombstoned_by_user: false,
+        tombstoned_by: None,
         ready: true,
         tombstone: false,
     })

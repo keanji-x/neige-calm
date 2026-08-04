@@ -36,6 +36,7 @@ function taskStatusText(status: string | null | undefined, ready: boolean): stri
     case 'verifying': return 'Running checks';
     case 'done': return 'Completed';
     case 'failed': return 'Needs attention';
+    case 'canceled': return 'Canceled';
     default: return ready ? 'Ready to queue' : 'Not queued';
   }
 }
@@ -50,27 +51,30 @@ function gateResultText(value: unknown): string | null {
     : 'Checks: not passed';
 }
 
+const taskDiagnosticCopy = Object.freeze({
+  duplicate_key: (d: Diagnostic) => `Two task cards use “${textArg(d, 'key')}”. Rename this card or the other one.`,
+  dependency_cycle: (d: Diagnostic) => `These tasks wait on each other: ${textArg(d, 'keys')}. Break one dependency to continue.`,
+  unknown_dependency: (d: Diagnostic) => `“${textArg(d, 'dependency')}” is not a task card here. It may only exist as an older task row; link this card to a current task key.`,
+  gate_required: () => 'This wave requires checks. Add a check, or explain why this task does not need one.',
+  spec_task_ceiling: (d: Diagnostic) => `The AI-task limit is ${String(d.messageArgs.ceiling ?? '')}; ${String(d.messageArgs.occupied ?? '')} slots are already in use. Cards are admitted in document order, then by key, so an earlier card can push this one out. Raise the limit in wave settings or move this card earlier.`,
+  reference_needs_block: (d: Diagnostic) => `“${textArg(d, 'reference')}” points to a wave, not a block. Link the exact block this task needs.`,
+  reference_missing: (d: Diagnostic) => `“${textArg(d, 'reference')}” no longer resolves. Open the destination and link an existing block.`,
+  reference_cross_cove: (d: Diagnostic) => `“${textArg(d, 'reference')}” crosses into another cove. Copy the needed context here or link a block in this cove.`,
+  reference_chain_too_large: () => 'The reference chain is too deep or wide, so this task is treated as invalid to stay safe. Gather the needed context into fewer blocks.',
+  tombstone_blocks_redeclaration: (d: Diagnostic) => `A “do not do” record left by ${textArg(d, 'tombstoned_by') === 'user' ? 'you' : 'the AI'} blocks this task key. Remove that record to allow this key again; restoring automatic AI tasks is separate and keeps the rejection record.`,
+  declare_and_wait: () => 'AI-proposed tasks in this wave wait for you. Use “Allow this task” below, or restore automatic AI tasks for the wave.',
+  context_stale_reference: () => 'A referenced block changed after work started, so this run can no longer be checked safely. Relink the intended context and create a task with a new key.',
+  declaration_changed_in_flight: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
+  context_stale_declaration: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
+  task_key_completed: () => 'This task key has already been delivered. Create a new task card with a new key for more work.',
+  invalid_declaration: () => 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.',
+});
+
+export const taskDiagnosticCodes = Object.freeze(Object.keys(taskDiagnosticCopy));
+
 export function taskDiagnosticText(diagnostic: Diagnostic): string {
-  const arg = (key: string) => textArg(diagnostic, key);
-  switch (diagnostic.code) {
-    case 'duplicate_key': return `Two task cards use “${arg('key')}”. Rename this card or the other one.`;
-    case 'dependency_cycle': return `These tasks wait on each other: ${arg('keys')}. Break one dependency to continue.`;
-    case 'unknown_dependency': return `“${arg('dependency')}” is not a task card here. It may only exist as an older task row; link this card to a current task key.`;
-    case 'gate_required': return 'This wave requires checks. Add a check, or explain why this task does not need one.';
-    case 'spec_task_ceiling': return `The AI-task limit is ${String(diagnostic.messageArgs.ceiling ?? '')}; ${String(diagnostic.messageArgs.occupied ?? '')} slots are already in use. Cards are admitted in document order, then by key, so an earlier card can push this one out. Raise the limit in wave settings or move this card earlier.`;
-    case 'reference_needs_block': return `“${arg('reference')}” points to a wave, not a block. Link the exact block this task needs.`;
-    case 'reference_missing': return `“${arg('reference')}” no longer resolves. Open the destination and link an existing block.`;
-    case 'reference_cross_cove': return `“${arg('reference')}” crosses into another cove. Copy the needed context here or link a block in this cove.`;
-    case 'reference_chain_too_large': return 'The reference chain is too deep or wide, so this task is treated as invalid to stay safe. Gather the needed context into fewer blocks.';
-    case 'tombstone_blocks_redeclaration': return 'A “do not do” record blocks this task key. Remove that record to allow this key again; restoring automatic AI tasks is separate and keeps the rejection record.';
-    case 'declare_and_wait': return 'AI-proposed tasks in this wave wait for you. Use “Allow this task” below, or restore automatic AI tasks for the wave.';
-    case 'context_stale_reference': return 'A referenced block changed after work started, so this run can no longer be checked safely. Relink the intended context and create a task with a new key.';
-    case 'declaration_changed_in_flight':
-    case 'context_stale_declaration': return 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.';
-    case 'task_key_completed': return 'This task key has already been delivered. Create a new task card with a new key for more work.';
-    case 'invalid_declaration': return 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.';
-    default: return diagnostic.message;
-  }
+  const render = taskDiagnosticCopy[diagnostic.code as keyof typeof taskDiagnosticCopy];
+  return render ? render(diagnostic) : diagnostic.message;
 }
 
 export function ReportTaskBlock({
@@ -90,10 +94,11 @@ export function ReportTaskBlock({
 }) {
   if (payload.tombstone) {
     const owner = payload.tombstoned_by === 'user' ? 'You left' : 'The AI left';
+    const declarer = payload.declared_by === 'user' ? 'You originally proposed it.' : 'The AI originally proposed it.';
     return (
       <section className="rb-task rb-task--readonly" aria-label={`Do not do ${payload.key}`}>
         <strong>{payload.key}</strong>
-        <p>{owner} this “do not do” record{payload.tombstone.reason ? `: ${payload.tombstone.reason}` : ''}. The AI cannot propose this key again.</p>
+        <p>{owner} this “do not do” record{payload.tombstone.reason ? `: ${payload.tombstone.reason}` : ''}. {declarer} The AI cannot propose this key again.</p>
         <div className="rb-task-actions">
           <button type="button" onClick={onClearTombstone}>Allow this key again</button>
           <button type="button" onClick={onRestoreAutomation}>Restore automatic AI tasks</button>

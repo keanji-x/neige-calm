@@ -288,8 +288,9 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 
 ### 3.8 状态回显：读时合成，不进文档
 
-`task` 块渲染时，读路径把 `tasks` 行的状态（status / status_detail /
-gate_result / worker_card_id）贴在块上。这是**读时**行为，不产生文档写、
+`task` 块渲染时，读路径把 `tasks` 行的状态（status / gate_result /
+worker_card_id）贴在块上；`gate_result` 在服务端收窄为 `{passed, failing_step?}`，
+不向浏览器或 MCP spec agent 暴露日志路径与原始输出。这是**读时**行为，不产生文档写、
 不产生第三个写者。
 
 **一条弱约束**：状态回显**不得引入任何新的读时数据源抽象**，就是投影表的直读。
@@ -1423,7 +1424,7 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 **缺它则 `declare-and-wait` 这一档在 UI 上无法放行**，而人在确认框里选「要」会把该 wave 切到这一档，**出口必须存在**。
 **每一类诊断都要有「人话 + 下一步动作」（§12.2 C 已裁决，全部采纳）**，
 `Diagnostic` 结构定死为
-`{ code, message_args, related_block_ids, related_wave_id?, action? }` ——
+`{ code, message_args, related_block_ids, related_wave_id?, action?, message }` ——
 重复 `key` / 环 / 被 ceiling 挤出 / 引用失效四类的原因都**不在当前块上**，
 没有相关块 id 就无法跳转。
 
@@ -1435,7 +1436,7 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 | 依赖成环 | 环上的**完整 key 序列**（带跳转）|
 | 未知依赖 | key 不存在 / 只是一条 legacy 行（**存量库上线当天会冒出一批，必须预置文案**，§4.2 规则 3‴）|
 | 缺 gate / `no_gate_reason` | 该 wave 打开了 `require_task_gates`，二选一 |
-| 超 `spec_task_ceiling` | 当前 ceiling、当前占用、**你被谁挤出、为什么（块序 + `key` 升序）**、「提高上限」的入口 |
+| 超 `spec_task_ceiling` | 当前 ceiling、当前占用、容量大于零时**你被谁挤出、为什么（块序 + `key` 升序）**；容量为零时不得伪造关联块，只显示「提高上限」的 wave 入口 |
 | 越 cove / 引用解析失败 | 哪一条 `refs`、指向哪、怎么重新链接 |
 | `closure_truncated` | 「引用链过深/过宽，此任务将按最保守方式判失效；请把上下文收敛进更少的块」|
 | 墓碑挡住重声明 | 哪条墓碑、谁立的、**两个清除动作各自的后果**（删墓碑 = key 可重提；PATCH 策略 = 恢复自动化但保留否决记录）|
@@ -1455,7 +1456,8 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 `closure_truncated` / `if_doc_rev` vs `if_block_rev` / `effective_policy`
 **只以句子出现，从不以名词出现**。
 
-五项之外，`path` 是 §6.5 撤回判据的载体，不得按兼容展示字段删除。`action` 只作为
+六项之外，`path` 是 §6.5 撤回判据的载体，不得按兼容展示字段删除。`message` 是既有
+MCP 客户端的兼容文案，只能由服务端根据 `code + message_args` 派生，不得成为第二真源；`action` 只作为
 前端选择人话动作与跳转的提示，`relatedWaveId` 用于引用目标 wave 的跳转；二者都不直出
 字段名或枚举值。
 
@@ -1615,7 +1617,7 @@ UI 上没有任何标记，任务就是不跑。
 没有任何直觉能预测这件事，而目前没有任何文案要解释它。
 
 **同时 `Diagnostic` 的结构必须定死**：`{ code, message_args, related_block_ids,
-related_wave_id?, action? }`。因为重复 `key` / 环 / 被 ceiling 挤出 / 引用失效
+related_wave_id?, action?, message }`。`message` 是由前两项派生的兼容字段，不是第二真源。因为重复 `key` / 环 / 被 ceiling 挤出 / 引用失效
 **四类的原因都不在当前块上** —— 没有 `related_block_ids`，UI 只能渲染一句话，
 人得自己在文档里找。
 

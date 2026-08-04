@@ -11,7 +11,7 @@ use axum::http::Request;
 use axum::{Extension, Json};
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
-use calm_server::db::sqlite::project_tasks_tx;
+use calm_server::db::sqlite::{project_tasks_tx, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
@@ -27,6 +27,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::wave_report::{WaveReportPayload, persist_report, tasks_rebuild_tx};
 use calm_server::wave_report_doc::ReportDoc;
+use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::render_fence;
 use calm_types::wave_report::ReportBlock;
 use http_body_util::BodyExt;
@@ -210,6 +211,51 @@ fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
                     .is_some_and(|message| message.contains(needle))
             })
     })
+}
+
+#[tokio::test]
+async fn production_reads_attach_task_state_and_read_time_diagnostics() {
+    let boot = new_boot().await;
+    let (block_id, _) = upsert(&boot, None, task("read-boundary")).await;
+    let task_id: String =
+        sqlx::query_scalar("SELECT id FROM tasks WHERE wave_id=?1 AND key='read-boundary'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let context = [TaskContextRef {
+        wave_id: boot.wave_id.clone(),
+        block_id,
+        rev: 1,
+        hash: "frozen".into(),
+        is_root: false,
+    }];
+    let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &task_id, 42, &context, true)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    for (name, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let verdict = response["taskDiagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|verdict| verdict["key"] == "read-boundary")
+            .unwrap_or_else(|| panic!("{name} verdict"));
+        assert_eq!(verdict["status"], "dispatched", "{name} projected status");
+        assert!(
+            verdict["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "reference_chain_too_large"),
+            "{name} read-time diagnostic"
+        );
+    }
 }
 
 #[tokio::test]

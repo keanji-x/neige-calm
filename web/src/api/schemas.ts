@@ -30,7 +30,6 @@ export const taskBlockVerdictSchema = z.object({
   diagnostics: z.array(taskDiagnosticSchema),
   schedulable: z.boolean(),
   status: z.string().nullable().optional(),
-  statusDetail: z.string().nullable().optional(),
   gateResult: z.unknown().nullable().optional(),
   workerCardId: z.string().nullable().optional(),
 });
