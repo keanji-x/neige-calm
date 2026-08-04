@@ -1061,6 +1061,30 @@ async fn wave_report_edited_persisted_with_wave_and_card_scope_columns() {
 }
 
 #[tokio::test]
+async fn historical_task_context_advanced_payload_survives_events_since() {
+    let boot = boot().await;
+    sqlx::query(
+        "INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_wave) VALUES('task.context_advanced',?1,?2,1,12,'wave',?3)",
+    )
+    .bind(json!({"task_id":"historical-task","verdict":"material"}).to_string())
+    .bind(serde_json::to_string(&calm_server::ids::ActorId::Kernel).unwrap())
+    .bind(boot.wave_id.as_str())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+    let rows = boot.repo.events_since(0, i64::MAX).await.unwrap();
+    assert!(rows.iter().any(|(_, _, _, event)| matches!(
+        event,
+        Event::TaskContextAdvanced { task_id, wave_id, task_key, changed_refs, rationale, .. }
+            if task_id == "historical-task"
+                && wave_id.as_str().is_empty()
+                && task_key.is_empty()
+                && changed_refs.is_empty()
+                && rationale.is_empty()
+    )));
+}
+
+#[tokio::test]
 async fn write_preserves_summary_when_omitted() {
     let boot = boot().await;
     // First write sets a known summary.

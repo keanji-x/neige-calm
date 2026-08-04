@@ -5,17 +5,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use calm_types::event::TaskContextRef;
+use calm_types::event::{TaskContextChangedRef, TaskContextRef};
 use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::wave_report::ReportBlock;
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 
+use crate::db::sqlite::mark_context_material_tx;
 use crate::db::{Repo, write_in_tx_typed, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
-use crate::event::{Event, EventBus, EventScope};
-use crate::ids::{ActorId, WaveId};
+use crate::event::EventBus;
+use crate::ids::WaveId;
 use crate::model::now_ms;
 use crate::state::WriteContext;
 
@@ -23,6 +24,14 @@ pub const MAX_REF_DEPTH: usize = 3;
 pub const MAX_REF_NODES: usize = 64;
 pub const MAX_RERESOLVE_FANOUT: usize = 64;
 pub const MAX_SWEEP_NODES: usize = 4096;
+const VERIFY_FAILURE_LIMIT: i64 = 3;
+
+#[derive(Debug, PartialEq, Eq)]
+enum RefsMatch {
+    Same,
+    Mismatch(Vec<TaskContextChangedRef>, &'static str),
+    Retryable(String),
+}
 
 pub const ROOT_HASH_TASK_FIELDS: &[&str] = &[
     "kind",
@@ -389,39 +398,78 @@ impl TaskContextMonitor {
         Ok((cove, block))
     }
 
-    async fn refs_match(&self, task_wave_id: &str, refs: &[TaskContextRef]) -> bool {
+    async fn refs_match(&self, task_wave_id: &str, refs: &[TaskContextRef]) -> RefsMatch {
         let task_wave = match self.repo.wave_get(task_wave_id).await {
             Ok(Some(wave)) => wave,
-            _ => return false,
+            Ok(None) => return RefsMatch::Mismatch(Vec::new(), "referenced_wave_absent"),
+            Err(error) => return RefsMatch::Retryable(error.to_string()),
         };
-        let system = self.repo.cove_get_system().await.ok().flatten();
+        let system = match self.repo.cove_get_system().await {
+            Ok(system) => system,
+            Err(error) => return RefsMatch::Retryable(error.to_string()),
+        };
         for frozen in refs {
             let mut ignored_doc_revs = BTreeMap::new();
-            let Ok((cove, block)) = self
+            let loaded = self
                 .load_block(
                     frozen.wave_id.as_str(),
                     &frozen.block_id,
                     frozen.is_root,
                     &mut ignored_doc_revs,
                 )
-                .await
-            else {
-                return false;
+                .await;
+            let (cove, block) = match loaded {
+                Ok(value) => value,
+                Err(ResolveError::StorageUnavailable(error)) => return RefsMatch::Retryable(error),
+                Err(ResolveError::MalformedStoredReport(_)) => {
+                    return RefsMatch::Mismatch(Vec::new(), "malformed_stored_report");
+                }
+                Err(error) => {
+                    return RefsMatch::Mismatch(
+                        vec![TaskContextChangedRef {
+                            wave_id: frozen.wave_id.clone(),
+                            block_id: frozen.block_id.clone(),
+                            from_rev: frozen.rev,
+                            from_hash: frozen.hash.clone(),
+                            ..Default::default()
+                        }],
+                        error.variant(),
+                    );
+                }
             };
             if cove != task_wave.cove_id.as_str()
                 && system.as_ref().map(|c| c.id.as_str()) != Some(cove.as_str())
             {
-                return false;
+                return RefsMatch::Mismatch(
+                    vec![TaskContextChangedRef {
+                        wave_id: frozen.wave_id.clone(),
+                        block_id: frozen.block_id.clone(),
+                        from_rev: frozen.rev,
+                        from_hash: frozen.hash.clone(),
+                        ..Default::default()
+                    }],
+                    "cross_cove",
+                );
             }
             let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
             if current.wave_id != frozen.wave_id
                 || current.block_id != frozen.block_id
                 || current.hash != frozen.hash
             {
-                return false;
+                return RefsMatch::Mismatch(
+                    vec![TaskContextChangedRef {
+                        wave_id: frozen.wave_id.clone(),
+                        block_id: frozen.block_id.clone(),
+                        from_rev: frozen.rev,
+                        to_rev: current.rev,
+                        from_hash: frozen.hash.clone(),
+                        to_hash: current.hash,
+                    }],
+                    "content_changed",
+                );
             }
         }
-        true
+        RefsMatch::Same
     }
 
     pub async fn detect_wave_edit(&self, dst_wave_id: &str) -> Result<()> {
@@ -438,19 +486,34 @@ impl TaskContextMonitor {
         .fetch_add(1, Ordering::Relaxed);
         for (index, row) in rows.into_iter().enumerate() {
             self.metrics.detections.fetch_add(1, Ordering::Relaxed);
-            let material = if index >= MAX_RERESOLVE_FANOUT || row.closure_truncated {
-                true
+            let verdict = if index >= MAX_RERESOLVE_FANOUT {
+                Some((Vec::new(), "MAX_RERESOLVE_FANOUT budget exceeded"))
+            } else if row.closure_truncated {
+                Some((Vec::new(), "frozen reference closure was truncated"))
             } else if let Some(refs) = row
                 .claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
             {
-                !self.refs_match(&row.wave_id, &refs).await
+                match self.refs_match(&row.wave_id, &refs).await {
+                    RefsMatch::Mismatch(changed, variant) => {
+                        self.metrics.record_context_resolve_failure(variant);
+                        Some((changed, variant))
+                    }
+                    RefsMatch::Same => None,
+                    RefsMatch::Retryable(error) => {
+                        self.metrics
+                            .record_context_resolve_failure("storage_unavailable");
+                        tracing::warn!(task_id=%row.task_id, %error, "task context edit detection deferred after retryable resolution failure");
+                        None
+                    }
+                }
             } else {
-                true
+                Some((Vec::new(), "frozen reference set is missing or malformed"))
             };
-            if material {
-                self.mark_material(row.task_id, row.wave_id).await?;
+            if let Some((changed_refs, rationale)) = verdict {
+                self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
+                    .await?;
             }
         }
         Ok(())
@@ -507,20 +570,46 @@ impl TaskContextMonitor {
                 .claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok());
-            let material = match refs {
-                None => true,
-                Some(refs) if verified.saturating_add(refs.len()) > MAX_SWEEP_NODES => {
-                    capped = true;
-                    true
-                }
-                Some(refs) => {
-                    verified += refs.len();
-                    !self.refs_match(&row.wave_id, &refs).await
+            let verdict = if row.closure_truncated {
+                Some((Vec::new(), "frozen reference closure was truncated"))
+            } else {
+                match refs {
+                    None => Some((Vec::new(), "frozen reference set is missing or malformed")),
+                    Some(refs) if verified.saturating_add(refs.len()) > MAX_SWEEP_NODES => {
+                        capped = true;
+                        Some((Vec::new(), "MAX_SWEEP_NODES budget exceeded"))
+                    }
+                    Some(refs) => {
+                        verified += refs.len();
+                        match self.refs_match(&row.wave_id, &refs).await {
+                            RefsMatch::Same => {
+                                self.clear_verify_failures(&row.task_id).await?;
+                                None
+                            }
+                            RefsMatch::Mismatch(changed, variant) => {
+                                self.metrics.record_context_resolve_failure(variant);
+                                Some((changed, variant))
+                            }
+                            RefsMatch::Retryable(error) => {
+                                self.metrics
+                                    .record_context_resolve_failure("storage_unavailable");
+                                if self
+                                    .record_verify_failure(&row.task_id, &row.wave_id)
+                                    .await?
+                                {
+                                    tracing::warn!(task_id=%row.task_id, %error, "task context verification failed three consecutive sweeps; marking material");
+                                    hits += 1;
+                                }
+                                continue;
+                            }
+                        }
+                    }
                 }
             };
-            if material {
+            if let Some((changed_refs, rationale)) = verdict {
                 hits += 1;
-                self.mark_material(row.task_id, row.wave_id).await?;
+                self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
+                    .await?;
             }
         }
         self.cleanup_index().await?;
@@ -542,76 +631,80 @@ impl TaskContextMonitor {
         .await
     }
 
-    async fn mark_material(&self, task_id: String, wave_id: String) -> Result<()> {
-        let wave = self.repo.wave_get(&wave_id).await?;
-        let Some(wave) = wave else {
-            // Wave/cove deletion removes its tasks in the same transaction. A
-            // missing wave is therefore safe only because the task row is
-            // already gone; keep this coupling loud if either delete path changes.
-            let Some(pool) = self.repo.sqlite_pool() else {
-                tracing::warn!(%task_id, %wave_id, "task context monitor requires sqlite");
-                return Ok(());
-            };
-            let task_exists: bool =
-                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM tasks WHERE id = ?1)")
-                    .bind(&task_id)
-                    .fetch_one(&pool)
-                    .await?;
-            debug_assert!(!task_exists, "task survived deletion of its owning wave");
-            if task_exists {
-                tracing::warn!(%task_id, %wave_id, "task survived deletion of its owning wave");
+    async fn clear_verify_failures(&self, task_id: &str) -> Result<()> {
+        let task_id = task_id.to_string();
+        write_in_tx_typed(self.repo.as_ref(), move |tx| {
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE tasks SET context_verify_failures=0 WHERE id=?1 AND context_verify_failures!=0",
+                )
+                .bind(task_id)
+                .execute(&mut **tx)
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+    }
+
+    /// Returns true when this retryable failure crossed the escalation limit.
+    async fn record_verify_failure(&self, task_id: &str, wave_id: &str) -> Result<bool> {
+        let task_id = task_id.to_string();
+        let wave_id = wave_id.to_string();
+        let failures: Option<i64> = write_in_tx_typed(self.repo.as_ref(), {
+            let task_id = task_id.clone();
+            move |tx| {
+                Box::pin(async move {
+                    Ok(sqlx::query_scalar(
+                        "UPDATE tasks SET context_verify_failures=context_verify_failures+1 WHERE id=?1 AND status IN ('dispatched','running','verifying') AND context_stale_at_ms IS NULL RETURNING context_verify_failures",
+                    )
+                    .bind(task_id)
+                    .fetch_optional(&mut **tx)
+                    .await?)
+                })
             }
-            return Ok(());
-        };
-        let scope = EventScope::Wave {
-            wave: WaveId::from(wave_id),
-            cove: wave.cove_id,
-        };
-        let event_task_id = task_id.clone();
-        let result = write_with_actor_events_typed(
+        })
+        .await?;
+        let escalated = failures.is_some_and(|count| count >= VERIFY_FAILURE_LIMIT);
+        if escalated {
+            self.mark_material(
+                task_id,
+                wave_id,
+                Vec::new(),
+                "three consecutive context verification failures",
+            )
+            .await?;
+        }
+        Ok(escalated)
+    }
+
+    async fn mark_material(
+        &self,
+        task_id: String,
+        wave_id: String,
+        changed_refs: Vec<TaskContextChangedRef>,
+        rationale: &'static str,
+    ) -> Result<()> {
+        let ((changed,), _) = write_with_actor_events_typed(
             self.repo.as_ref(),
             None,
             &self.events,
             &self.write,
             move |tx| {
                 Box::pin(async move {
-                    let changed = sqlx::query(
-                        "UPDATE tasks SET context_stale_at_ms = ?1 \
-                         WHERE id = ?2 AND status IN ('dispatched','running','verifying') \
-                         AND context_stale_at_ms IS NULL",
-                    )
-                    .bind(now_ms())
-                    .bind(&task_id)
-                    .execute(&mut **tx)
-                    .await?
-                    .rows_affected()
-                        != 0;
-                    if !changed {
-                        return Err(CalmError::Conflict("context-already-stale".into()));
-                    }
-                    Ok((
-                        (),
-                        vec![(
-                            ActorId::Kernel,
-                            scope,
-                            Event::TaskContextAdvanced {
-                                task_id: event_task_id,
-                                verdict: "material".into(),
-                            },
-                        )],
-                    ))
+                    let events =
+                        mark_context_material_tx(tx, &task_id, &wave_id, changed_refs, rationale)
+                            .await?;
+                    let changed = !events.is_empty();
+                    Ok(((changed,), events))
                 })
             },
         )
-        .await;
-        match result {
-            Ok(_) => {
-                self.metrics.hits.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Err(CalmError::Conflict(message)) if message == "context-already-stale" => Ok(()),
-            Err(error) => Err(error),
+        .await?;
+        if changed {
+            self.metrics.hits.fetch_add(1, Ordering::Relaxed);
         }
+        Ok(())
     }
 }
 
@@ -685,11 +778,16 @@ mod tests {
         let metrics = ContextMetrics::default();
         metrics.last_success_ms.store(now_ms(), Ordering::Relaxed);
         metrics.consecutive_failures.store(3, Ordering::Relaxed);
+        metrics.record_context_resolve_failure("malformed_stored_report");
 
         let exported = metrics.export();
 
         assert_ne!(exported.last_success_age_seconds, u64::MAX);
         assert_eq!(exported.consecutive_failures, 3);
+        assert_eq!(
+            exported.context_resolve_failures["malformed_stored_report"], 1,
+            "the irreversible malformed-report verdict must have a named health bucket"
+        );
     }
 
     #[test]
@@ -708,6 +806,30 @@ mod tests {
     }
 
     #[test]
+    fn projection_drift_fields_equal_hashed_stored_fields() {
+        let hashed: BTreeSet<_> = ROOT_HASH_TASK_FIELDS.iter().copied().collect();
+        let drift: BTreeSet<_> = crate::db::sqlite::PROJECTION_DRIFT_TASK_FIELDS
+            .iter()
+            .copied()
+            .collect();
+        let expected = hashed
+            .difference(&BTreeSet::from(["refs", "no_gate_reason"]))
+            .copied()
+            .collect();
+        assert_eq!(drift, expected);
+    }
+
+    #[test]
+    fn withdrawal_diagnostic_paths_match_the_exhaustive_task_set() {
+        let actual: BTreeSet<_> = calm_types::report_blocks::tasks::TASK_BLOCKING_DIAGNOSTIC_PATHS
+            .iter()
+            .copied()
+            .collect();
+        let expected = BTreeSet::from(["depends_on", "gate", "key", "payload", "refs"]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn root_hash_only_tracks_included_fields_while_child_hashes_whole_block() {
         let block = ReportBlock {
             id: "b_root".into(),
@@ -723,6 +845,8 @@ mod tests {
             ("goal", serde_json::json!("new")),
             ("kind", serde_json::json!("terminal")),
             ("gate", serde_json::json!({"cmd": "cargo test"})),
+            ("refs", serde_json::json!(["neige://wave/w#b_child"])),
+            ("no_gate_reason", serde_json::json!("not required")),
         ] {
             let mut changed = block.clone();
             changed.payload[field] = value;

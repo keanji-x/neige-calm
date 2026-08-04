@@ -1700,8 +1700,12 @@ mod tests {
         let cache = CardRoleCache::new();
         let wcc = seeded_wcc();
         let event = Event::TaskContextAdvanced {
+            wave_id: Default::default(),
+            task_key: String::new(),
             task_id: "w:legacy".into(),
+            changed_refs: Vec::new(),
             verdict: "material".into(),
+            rationale: String::new(),
         };
         let err = enforce_role(
             &ActorId::Plugin("forger".into()),

@@ -108,8 +108,8 @@ pub use task::{
     wave_lifecycle_and_budget_tx, wave_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
-    BlockVerdict, TaskProjectionOutcome, evaluate_schedulability, project_tasks_tx,
-    task_delete_pending_tx,
+    BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
+    evaluate_schedulability, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_update_tx};
 

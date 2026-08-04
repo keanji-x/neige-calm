@@ -761,8 +761,19 @@ golden_test!(
     task_context_advanced_full,
     "task_context_advanced.full.json",
     Event::TaskContextAdvanced {
+        wave_id: WaveId::from("wave-01"),
+        task_key: "build-step".into(),
         task_id: "wave-01:build-step".into(),
+        changed_refs: vec![calm_types::event::TaskContextChangedRef {
+            wave_id: WaveId::from("wave-context"),
+            block_id: "block-01".into(),
+            from_rev: 7,
+            to_rev: 8,
+            from_hash: "sha256:before".into(),
+            to_hash: "sha256:after".into(),
+        }],
         verdict: "material".into(),
+        rationale: "referenced acceptance criteria changed".into(),
     }
 );
 
@@ -770,8 +781,12 @@ golden_test!(
     task_context_advanced_min,
     "task_context_advanced.min.json",
     Event::TaskContextAdvanced {
+        wave_id: Default::default(),
+        task_key: String::new(),
         task_id: "wave-01:legacy".into(),
+        changed_refs: Vec::new(),
         verdict: "material".into(),
+        rationale: String::new(),
     }
 );
 
