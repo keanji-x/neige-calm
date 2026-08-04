@@ -49,7 +49,6 @@ mod infra;
 mod out_of_domain;
 mod overlay;
 mod read;
-mod read_transaction;
 mod session_mirror;
 mod session_projection;
 mod session_repo_impl;
@@ -110,7 +109,7 @@ pub use task::{
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
-    evaluate_schedulability_tx, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
+    evaluate_schedulability, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_update_tx};
 
@@ -444,3 +443,18 @@ mod pool_memory_anchor_tests;
 
 #[cfg(test)]
 mod proposal_withdraw_upgrade_tests;
+
+// #1016 — `wave_detail` ships `cards` / `overlays` as
+// `json_group_array(json_object(…))`. The shape file pins what that buys
+// (escaping, NULL, bool, empty group, and the fact that a corrupt `payload`
+// errors instead of becoming card structure); the precision file pins
+// `cards.sort`, a REAL that `json_object` renders with only 15 significant
+// digits unless it goes through `printf('%!.17g', …)`.
+#[cfg(test)]
+mod wave_detail_json_shape_tests;
+#[cfg(test)]
+mod wave_detail_sort_precision_tests;
+// …and the order file pins what the aggregate does NOT give for free: its
+// input order is arbitrary, so both arrays state their own.
+#[cfg(test)]
+mod wave_detail_order_tests;

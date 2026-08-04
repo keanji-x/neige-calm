@@ -19,6 +19,8 @@ mod claude_ingest;
 mod cove_folders;
 #[path = "cases/cove_system_endpoint.rs"]
 mod cove_system_endpoint;
+#[path = "cases/deferred_read_tx_deadlock_repro.rs"]
+mod deferred_read_tx_deadlock_repro;
 #[path = "cases/dispatcher_real_auth_path.rs"]
 mod dispatcher_real_auth_path;
 #[path = "cases/dispatcher_role_scope.rs"]
