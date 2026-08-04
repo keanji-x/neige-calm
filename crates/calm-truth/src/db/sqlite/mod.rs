@@ -444,17 +444,17 @@ mod pool_memory_anchor_tests;
 #[cfg(test)]
 mod proposal_withdraw_upgrade_tests;
 
-// #1016 — `wave_detail` ships `cards` / `overlays` as hand-assembled JSON
-// (`printf` + `json_quote` + a raw `payload` splice). The shape file pins the
-// guarantees that assembly took over from `json_object` (escaping, NULL,
-// bool, empty group, and the write-side validity fence); the precision file
-// pins `cards.sort`, a REAL that `json_object` would have rendered with only
-// 15 significant digits.
+// #1016 — `wave_detail` ships `cards` / `overlays` as
+// `json_group_array(json_object(…))`. The shape file pins what that buys
+// (escaping, NULL, bool, empty group, and the fact that a corrupt `payload`
+// errors instead of becoming card structure); the precision file pins
+// `cards.sort`, a REAL that `json_object` renders with only 15 significant
+// digits unless it goes through `printf('%!.17g', …)`.
 #[cfg(test)]
 mod wave_detail_json_shape_tests;
 #[cfg(test)]
 mod wave_detail_sort_precision_tests;
-// …and the order file pins what `group_concat` does NOT give for free: an
-// aggregate's input order is arbitrary, so both arrays state their own.
+// …and the order file pins what the aggregate does NOT give for free: its
+// input order is arbitrary, so both arrays state their own.
 #[cfg(test)]
 mod wave_detail_order_tests;

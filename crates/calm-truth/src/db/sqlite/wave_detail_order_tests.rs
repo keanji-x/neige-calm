@@ -1,7 +1,7 @@
 //! #1016 — `wave_detail` must return `cards` and `overlays` in a DETERMINATE
 //! order.
 //!
-//! Both arrays are built with `group_concat`, and sqlite documents an
+//! Both arrays are built with `json_group_array`, and sqlite documents an
 //! aggregate's input order as *arbitrary* — not fixed by an ORDER BY in a
 //! subquery, and free to change between releases
 //! (`https://www.sqlite.org/lang_aggfunc.html`). `wave_detail` therefore

@@ -1,24 +1,20 @@
-//! #1016 — `wave_detail` assembles its `cards` / `overlays` arrays by hand
-//! (`printf` + `json_quote` + a raw `payload` splice) instead of through
-//! `json_object`, because sqlite's JSON constructors parse and re-render
-//! every payload — ~40% of the statement's cost on payload-heavy waves. See
-//! the cost note on `RepoRead::wave_detail`.
-//!
-//! Hand-assembly moves four guarantees out of `json_object` and onto this
-//! file, so each one is pinned here against the real statement:
+//! #1016 — `wave_detail` ships `cards` / `overlays` as
+//! `json_group_array(json_object(…))`, so the array is built by sqlite's JSON
+//! constructors rather than by string concatenation. This file pins the
+//! guarantees that choice buys, against the real statement:
 //!
 //!   * TEXT escaping — quotes, backslashes, newlines, control characters,
-//!     non-ASCII (`json_quote`),
-//!   * NULL `title` -> JSON `null` (`json_quote(NULL)`),
+//!     non-ASCII,
+//!   * NULL `title` -> JSON `null`,
 //!   * `deletable` as a JSON keyword, not sqlite's 0/1,
-//!   * an empty `cards` / `overlays` group rendering `[]`, not `null`.
+//!   * an empty `cards` / `overlays` group rendering `[]`, not `null`,
+//!   * every `payload` shape round-tripping unchanged,
+//!   * and the constructive safety property itself: a `payload` that is not
+//!     valid JSON makes the read FAIL, it can never turn into card
+//!     structure.
 //!
-//! Plus the fence the raw `payload` splice depends on: nothing re-validates
-//! on the read side, so migration 0070's triggers must refuse a write that
-//! stores anything but valid JSON — text that closes the card object and
-//! opens another one would otherwise be read back as card STRUCTURE.
-//!
-//! (`sort` precision has its own file, `wave_detail_sort_precision_tests`.)
+//! (`sort` precision has its own file, `wave_detail_sort_precision_tests`;
+//! ordering has `wave_detail_order_tests`.)
 
 use super::{SqlxRepo, card_create_tx, cove_create_tx, overlay_upsert_tx, wave_create_tx};
 use crate::card_role_cache::CardRoleCache;
@@ -74,9 +70,8 @@ async fn add_card(repo: &SqlxRepo, wave_id: &str, card: NewCard) -> String {
 }
 
 /// A wave with no cards and no overlays must come back as two EMPTY vectors.
-/// `group_concat` over zero rows is NULL, and the statement leans on `%s`
-/// rendering NULL as the empty string so `printf('[%s]', …)` still produces
-/// `[]` — a `null` there would fail to deserialize into `Vec<_>`.
+/// `json_group_array` over zero rows is `[]` rather than `null` — a `null`
+/// there would fail to deserialize into `Vec<_>`.
 #[tokio::test]
 async fn wave_detail_renders_empty_groups_as_empty_arrays() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -96,7 +91,7 @@ async fn wave_detail_renders_empty_groups_as_empty_arrays() {
     );
 }
 
-/// Every TEXT that crosses the hand-built JSON boundary — card `kind`,
+/// Every TEXT that crosses the aggregated-JSON boundary — card `kind`,
 /// `title`, overlay `kind`/`plugin_id`, and strings nested inside both
 /// `payload` columns — must round-trip byte-for-byte.
 #[tokio::test]
@@ -151,7 +146,7 @@ async fn wave_detail_round_trips_hostile_text_in_every_string_column() {
 }
 
 /// A NULL `title` column must render JSON `null` (i.e. `Option::None`), not
-/// an empty string and not a syntax error where the value belongs.
+/// an empty string.
 #[tokio::test]
 async fn wave_detail_renders_null_title_as_none() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
@@ -269,18 +264,22 @@ async fn wave_detail_round_trips_non_object_payloads() {
     assert_eq!(got, shapes, "payload must splice through byte-identically");
 }
 
-/// The fence the raw splice depends on (migration 0070): the database itself
-/// refuses a `payload` that is not valid JSON, on both tables and on both
-/// INSERT and UPDATE.
+/// The constructive-safety property of `json_object` / `json()`, and the
+/// reason the hand-assembled `printf` + raw-splice variant was reverted
+/// (#1016): a `payload` that is not valid JSON makes the read FAIL LOUDLY.
 ///
-/// The fixture writes the column directly — the way only a future writer that
-/// skipped `serde_json` serialization could — and the text is crafted to
-/// *close* the card object and open another one, the shape that would
-/// fabricate a card if it ever reached the read. Nothing on the read side
-/// re-validates, so this trigger is the whole guarantee: if it stops firing,
-/// `wave_detail` starts treating card bodies as card structure.
+/// The fixture writes the column directly, the way disk corruption, a
+/// hand-edited row or a restored bad backup would — no application writer is
+/// involved, so no write-side trigger could stand in the way. The text is
+/// crafted to *close* the card object and open another one, which is exactly
+/// what a raw splice would have obeyed: the array would have decoded into TWO
+/// cards, one of them fabricated, with no error anywhere. Because the
+/// statement routes `payload` through `json()`, sqlite parses it and the
+/// whole statement errors instead — the behaviour
+/// `spec_harness_wave_vcs::transcript_refresh_failure_from_corrupt_card_payload_does_not_wedge_harness`
+/// relies on to degrade gracefully.
 #[tokio::test]
-async fn payload_write_of_invalid_json_is_refused() {
+async fn corrupt_payload_fails_the_read_instead_of_fabricating_a_card() {
     const FORGERY: &str =
         r#"{}},{"id":"forged","wave_id":"forged","kind":"note","sort":9,"payload":{}"#;
 
@@ -299,173 +298,46 @@ async fn payload_write_of_invalid_json_is_refused() {
     )
     .await;
 
-    let err = sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
-        .bind(FORGERY)
-        .bind(&card_id)
-        .execute(repo.pool())
-        .await
-        .expect_err("UPDATE with a non-JSON payload must be refused");
-    assert!(
-        err.to_string().contains("cards.payload must be valid JSON"),
-        "unexpected error: {err}"
-    );
-
-    let err = sqlx::query(
-        "INSERT INTO cards (id, wave_id, kind, sort, payload, role, deletable, created_at, \
-         updated_at) VALUES ('forged-row', ?1, 'note', 9, ?2, 'worker', 1, 0, 0)",
-    )
-    .bind(&wave_id)
-    .bind(FORGERY)
-    .execute(repo.pool())
-    .await
-    .expect_err("INSERT with a non-JSON payload must be refused");
-    assert!(
-        err.to_string().contains("cards.payload must be valid JSON"),
-        "unexpected error: {err}"
-    );
-
-    let err = sqlx::query(
-        "INSERT INTO overlays (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at) \
-         VALUES ('forged-overlay', 'p', 'card', ?1, 'status', ?2, 0)",
-    )
-    .bind(&card_id)
-    .bind(FORGERY)
-    .execute(repo.pool())
-    .await
-    .expect_err("overlay INSERT with a non-JSON payload must be refused");
-    assert!(
-        err.to_string()
-            .contains("overlays.payload must be valid JSON"),
-        "unexpected error: {err}"
-    );
-
-    // The wave still reads back as exactly the one real card.
-    let detail = repo
-        .wave_detail(&wave_id)
-        .await
-        .expect("wave_detail")
-        .expect("wave exists");
-    assert_eq!(detail.cards.len(), 1);
-    assert_eq!(detail.cards[0].id.as_str(), card_id);
-    assert!(detail.overlays.is_empty());
-}
-
-/// The triggers above only guard writes made after they exist, so migration
-/// 0070 also SCANS the rows that were already there and aborts if any of them
-/// fails `json_valid`. This drives the real migration text — not a copy of it
-/// — against a database seeded with exactly the row the scan exists for.
-const MIGRATION_0070: &str = include_str!("../../../migrations/0070_payload_json_valid.sql");
-
-/// Replay the migration the way `sqlx::migrate` applies it: one transaction,
-/// rolled back whole if any statement aborts.
-async fn replay_0070(repo: &SqlxRepo) -> Result<(), sqlx::Error> {
-    let mut tx = repo.pool().begin().await.expect("begin");
-    let res = sqlx::raw_sql(MIGRATION_0070).execute(&mut *tx).await;
-    match res {
-        Ok(_) => {
-            tx.commit().await.expect("commit");
-            Ok(())
-        }
-        Err(e) => {
-            tx.rollback().await.expect("rollback");
-            Err(e)
-        }
-    }
-}
-
-/// Drop what migration 0070 creates so the real file can be replayed.
-async fn drop_0070_triggers(repo: &SqlxRepo) {
-    for name in [
-        "cards_payload_json_valid_insert",
-        "cards_payload_json_valid_update",
-        "overlays_payload_json_valid_insert",
-        "overlays_payload_json_valid_update",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER {name}"))
-            .execute(repo.pool())
-            .await
-            .expect("drop trigger");
-    }
-}
-
-#[tokio::test]
-async fn migration_0070_aborts_on_preexisting_invalid_payload() {
-    const FORGERY: &str =
-        r#"{}},{"id":"forged","wave_id":"forged","kind":"note","sort":9,"payload":{}"#;
-
-    let repo = SqlxRepo::open("sqlite::memory:").await.expect("open");
-    let wave_id = empty_wave(&repo).await;
-    let card_id = add_card(
-        &repo,
-        &wave_id,
-        NewCard {
-            wave_id: wave_id.clone().into(),
-            kind: "note".into(),
-            sort: Some(1.0),
-            payload: json!({}),
-            title: None,
-        },
-    )
-    .await;
-
-    // A clean database replays the migration end to end: the scan finds
-    // nothing, and the triggers come back.
-    drop_0070_triggers(&repo).await;
-    replay_0070(&repo)
-        .await
-        .expect("0070 must apply to a database whose payloads are all valid JSON");
-
-    // Now the row the scan exists for. It can only be written with the
-    // triggers gone — which is precisely the pre-0070 database this scan is
-    // the fence for.
-    drop_0070_triggers(&repo).await;
+    // Nothing stops the corrupt bytes from reaching the column ...
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = ?2")
         .bind(FORGERY)
         .bind(&card_id)
         .execute(repo.pool())
         .await
-        .expect("seed a pre-0070 invalid payload");
+        .expect("a raw column write is exactly what corruption looks like");
 
-    let err = replay_0070(&repo)
+    // ... and the read refuses to interpret them.
+    let err = repo
+        .wave_detail(&wave_id)
         .await
-        .expect_err("0070 must abort rather than install triggers over an invalid row");
-    let msg = err.to_string();
+        .expect_err("a corrupt card payload must surface as an error");
     assert!(
-        msg.contains("migration 0070 aborted") && msg.contains("cards.payload"),
-        "abort must name the offending table: {msg}"
+        err.to_string().to_lowercase().contains("json"),
+        "unexpected error: {err}"
     );
 
-    // Fail-closed: nothing was installed, so a later run cannot mistake this
-    // database for a scanned one.
-    let triggers: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%_payload_json_valid_%'")
-            .fetch_one(repo.pool())
-            .await
-            .expect("count triggers");
-    assert_eq!(triggers, 0, "aborted migration must not leave triggers");
-
-    // Same fence on the other table, with its own message.
-    sqlx::query("UPDATE cards SET payload = '{}' WHERE id = ?1")
+    // Same fence on the other table.
+    sqlx::query("UPDATE cards SET payload = \'{}\' WHERE id = ?1")
         .bind(&card_id)
         .execute(repo.pool())
         .await
         .expect("restore the card payload");
     sqlx::query(
         "INSERT INTO overlays (id, plugin_id, entity_kind, entity_id, kind, payload, updated_at) \
-         VALUES ('forged-overlay', 'p', 'card', ?1, 'status', ?2, 0)",
+         VALUES (\'forged-overlay\', \'p\', \'card\', ?1, \'status\', ?2, 0)",
     )
     .bind(&card_id)
     .bind(FORGERY)
     .execute(repo.pool())
     .await
-    .expect("seed a pre-0070 invalid overlay payload");
+    .expect("seed a corrupt overlay payload");
 
-    let err = replay_0070(&repo)
+    let err = repo
+        .wave_detail(&wave_id)
         .await
-        .expect_err("0070 must abort on an invalid overlay payload too");
-    let msg = err.to_string();
+        .expect_err("a corrupt overlay payload must surface as an error too");
     assert!(
-        msg.contains("migration 0070 aborted") && msg.contains("overlays.payload"),
-        "abort must name the offending table: {msg}"
+        err.to_string().to_lowercase().contains("json"),
+        "unexpected error: {err}"
     );
 }

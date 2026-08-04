@@ -1,6 +1,6 @@
 //! #1016 — `wave_detail` must carry `cards.sort` back **bit-exactly**.
 //!
-//! `wave_detail` is one statement that ships `cards` as an aggregated JSON
+//! `wave_detail` is one statement that ships `cards` as a `json_group_array`
 //! blob. `cards.sort` is a REAL column and `f64` in the model, so it crosses
 //! a decimal-text boundary that the previous three-SELECT shape did not have.
 //!
@@ -18,10 +18,9 @@
 //! reorder, turning a display-only rounding into an unlogged rewrite of
 //! stored data (and possibly a collision with another card's sort).
 //!
-//! The fix renders `sort` via `printf('%!.17g', …)`. These tests are the
-//! pin: they are RED against a plain `%s` / `json_object('sort', c.sort)`.
-//! (The hazard predates the switch to hand-assembled `printf` output — it is
-//! the reason `sort` had a `printf` wrapper even under `json_object`.)
+//! The fix renders `sort` via `printf('%!.17g', …)` and splices it in as a
+//! JSON number with `json()`. These tests are the pin. They are RED against
+//! a plain `'sort', c.sort`.
 //!
 //! Assertions compare `f64::to_bits`, not `==`: `==` on floats would still
 //! be the right verdict here, but bit comparison states the intent (and
