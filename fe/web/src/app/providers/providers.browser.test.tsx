@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render } from '@testing-library/react';
-import { page, userEvent } from '@vitest/browser/context';
+import { cleanup, render } from '@testing-library/react';
+import { page, userEvent } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RefreshRequiredOverlay, ServerCompatGate, WEB_COMPAT_VERSION, type ProviderRuntime } from './public.tsx';
 
@@ -9,7 +9,7 @@ const reload = vi.fn();
 const values = new Map<string, string>();
 const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
 const runtime: ProviderRuntime = { fetchVersion: () => Promise.resolve(incompatible), reload, deleteDatabase: vi.fn(), storage };
-afterEach(() => { reload.mockClear(); values.clear(); document.body.innerHTML = ''; });
+afterEach(() => { cleanup(); reload.mockClear(); values.clear(); });
 
 describe('browser provider contracts', () => {
   it('CAP-APP-006 hard-covers the tree, reports both versions, and captures hit testing', async () => {
