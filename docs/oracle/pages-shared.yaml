@@ -231,7 +231,7 @@
     切换 spec 卡(specCardId 变化)时必须清空 conversationTargetEntryId。
   why: >
     entry id 是 per-card 的自增 id,跨卡复用会滚到一条不相干的消息。
-  source: web/src/pages/WaveReportPage.tsx:866-868
+  source: web/src/pages/WaveReportPage.tsx:869-871
   authoritative_test: NONE
   owner_slice: features/report/shell
   intentional_omission: false
@@ -283,7 +283,7 @@
     "版本不支持,请刷新",且大纲面板同步显示 "Outline unavailable for this report version."
   why: >
     前端渲染未来 schema 的块会静默出错;显式版本墙 + 大纲同步降级,避免用户以为报告是空的。
-  source: web/src/pages/WaveReportPage.tsx:302-307,525-530,1005-1008
+  source: web/src/pages/WaveReportPage.tsx:302-307,528-533,1010-1013
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:855-888
   owner_slice: features/report/shell
   intentional_omission: false
@@ -913,8 +913,8 @@
     "does not scroll again when only the blocks array identity changes" —— 每次轮询回来的新数组引用会让
     页面反复自动跳走。同时 "scrolls when the hash target arrives after the report starts loading" 要求
     块 id 变化时能重跑一次。
-  source: web/src/pages/WaveReportPage.tsx:438-447
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2395,2428
+  source: web/src/pages/WaveReportPage.tsx:448-454
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2500,2533
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features

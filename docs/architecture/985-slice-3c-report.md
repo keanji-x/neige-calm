@@ -61,10 +61,28 @@ TanStack Router。
 `WaveReportPage > wires projected task UI and every task action through the page assembly`；每次均
 确认该测试变红后用 `git checkout --` 恢复：
 
-- （待验证）`taskActions` 整体断线。
-- （待验证）`taskVerdict` 整体断线。
-- （待验证）`RelatedBlocks` 直接返回 `null`。
-- （待验证）删除整行诊断渲染。
-- （待验证）删除 `Remove task` 按钮。
-- （待验证）删除 `Open worker output` 链接。
-- （待验证）页面级 `clearTombstone` 改为空函数。
+- `taskActions` 前加 `false &&` → `updateWaveReportBlock` 期望一次、实际零次。
+- `taskVerdict={undefined}` → 找不到状态文案 `Waiting to start`（实际退回 `Ready to queue`）。
+- `RelatedBlocks` 直接返回 `null` → 找不到相关块链接 `b_cafe`。
+- 删除整行诊断渲染 → 找不到任何 `role="alert"` 节点（期望两条）。
+- 删除 `Remove task` 按钮 → 找不到该按钮，删除动作无法进入。
+- 删除 `Open worker output` 链接 → 找不到同名 link。
+- 页面级 `clearTombstone` 改为空函数 → `deleteWaveReportBlock(wave_1, b_tombstone, 4)`
+  期望调用、实际只有活动任务删除调用。
+
+另做三项接线变异：分别删除 `task.dispatched`、`task.gate_result` 的
+`requiresContext` 后，各自的精确与宽 `wave-report` 失效用例同时变红；把
+`taskBlockVerdictSchema.parse` 换成恒等映射后，query 契约测试因畸形 verdict 意外 resolve
+而变红。所有变异后均用 `git checkout --` 恢复。
+
+## 修复轮 3 CI 门
+
+- `cargo fmt --all --check`：通过，0 个格式差异。
+- `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings`：
+  通过，0 warnings。
+- `cargo nextest run --workspace --locked --features calm-server/codex-e2e`：
+  3237/3237 通过，89 skipped。
+- `web` API 生成与 diff 门：ts-rs 49/49、15/15、OpenAPI 1/1，通过且生成目录 0 diff。
+- `web` build：通过；test：85 files，1219/1219 通过，0 type errors。
+- `fe` lint：通过（74 ownership entries、86 modules / 187 dependencies）；build：通过；
+  test：56 files passed、1 skipped，726/726 通过、1 skipped；wire diff 与 mock drift 均通过。
