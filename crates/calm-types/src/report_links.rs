@@ -6,6 +6,8 @@ use std::ops::Range;
 use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 
 const WAVE_LINK_PREFIX: &str = "neige://wave/";
+const UNSAFE_LINK_SOURCE_MAX_BYTES: usize = 256;
+const TRUNCATED_SOURCE_SUFFIX: &str = "…[truncated]";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportLinkRef {
@@ -38,7 +40,8 @@ struct PendingLink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsafeWaveLink {
     /// The exact destination when pulldown-cmark borrowed it from the source,
-    /// otherwise the smallest parser-provided source span containing it.
+    /// otherwise a bounded excerpt of the smallest parser-provided source span
+    /// containing it.
     pub source: String,
     pub decoded_destination: String,
 }
@@ -151,7 +154,9 @@ pub fn rewrite_wave_links(
                 } else {
                     let source_range = link.destination_range.unwrap_or(link.source_span);
                     unsafe_links.push(UnsafeWaveLink {
-                        source: markdown.get(source_range).unwrap_or_default().to_string(),
+                        source: truncate_unsafe_source(
+                            markdown.get(source_range).unwrap_or_default(),
+                        ),
                         decoded_destination: link.decoded_destination,
                     });
                 }
@@ -179,6 +184,18 @@ pub fn rewrite_wave_links(
         rewritten.replace_range(range, target_wave_id);
     }
     Ok(rewritten)
+}
+
+fn truncate_unsafe_source(source: &str) -> String {
+    if source.len() <= UNSAFE_LINK_SOURCE_MAX_BYTES {
+        return source.to_string();
+    }
+
+    let mut end = UNSAFE_LINK_SOURCE_MAX_BYTES - TRUNCATED_SOURCE_SUFFIX.len();
+    while !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{TRUNCATED_SOURCE_SUFFIX}", &source[..end])
 }
 
 fn borrowed_source_range(markdown: &str, destination: &CowStr<'_>) -> Option<Range<usize>> {
@@ -593,6 +610,19 @@ mod tests {
             errors[0].source.contains("neige://wave/sour&#99;e#b_1234"),
             "{errors:?}"
         );
+    }
+
+    #[test]
+    fn unsafe_source_span_is_bounded_and_marks_truncation() {
+        let long_label = "正文".repeat(200);
+        let markdown = format!("[{long_label}](neige://wave/sour&#99;e#b_1234)");
+        let errors =
+            rewrite_wave_links(&markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].source.len() <= UNSAFE_LINK_SOURCE_MAX_BYTES);
+        assert!(errors[0].source.ends_with(TRUNCATED_SOURCE_SUFFIX));
+        assert!(!errors[0].source.contains(&long_label));
     }
 
     #[test]

@@ -68,7 +68,6 @@ use crate::wave_report::{
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
-use crate::wave_report_task_guard::guard_forked_blocks;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -78,6 +77,10 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+
+mod fork_guard;
+
+use fork_guard::guard_forked_blocks;
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]

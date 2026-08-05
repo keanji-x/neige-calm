@@ -239,6 +239,24 @@ mod tests {
         (doc, task, body)
     }
 
+    fn assert_spec_cannot_create_user_tombstone(operation: ReportDocOp) {
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", ""));
+        let error = apply_report_op(&mut doc, &operation, EditAuthor::Spec).unwrap_err();
+        assert!(matches!(error, CalmError::BadRequest(_)));
+    }
+
+    fn forged_user_tombstone_fence() -> String {
+        render_fence(
+            KIND_TASK,
+            &json!({
+                "key": "build",
+                "tombstone": { "reason": null },
+                "declared_by": "spec",
+                "tombstoned_by": "user"
+            }),
+        )
+    }
+
     #[test]
     fn user_delete_of_spec_task_becomes_canonical_in_place_tombstone() {
         let payload = live("spec");
@@ -407,6 +425,36 @@ mod tests {
             let error = apply_report_op(&mut attempt, &operation, EditAuthor::Spec).unwrap_err();
             assert!(matches!(error, CalmError::BadRequest(_)));
         }
+    }
+
+    #[test]
+    fn replace_cannot_create_tombstone_attributed_to_another_author() {
+        assert_spec_cannot_create_user_tombstone(ReportDocOp::Replace {
+            summary: None,
+            body: forged_user_tombstone_fence(),
+            if_doc_rev: 0,
+        });
+    }
+
+    #[test]
+    fn write_markdown_cannot_create_tombstone_attributed_to_another_author() {
+        assert_spec_cannot_create_user_tombstone(ReportDocOp::WriteMarkdown {
+            summary: None,
+            body: forged_user_tombstone_fence(),
+            if_doc_rev: 0,
+        });
+    }
+
+    #[test]
+    fn upsert_block_cannot_create_tombstone_attributed_to_another_author() {
+        assert_spec_cannot_create_user_tombstone(ReportDocOp::UpsertBlock {
+            id: None,
+            kind: KIND_TASK.into(),
+            content: forged_user_tombstone_fence(),
+            if_rev: None,
+            if_doc_rev: Some(0),
+            position: None,
+        });
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::error::CalmError;
 /// Fork copies an existing snapshot into a new report, so copied task
 /// attribution is not a fresh declaration by the wave creator. This is the
 /// module's sole exported exemption semantic.
-pub(crate) fn guard_forked_blocks(
+pub(in crate::routes::waves) fn guard_forked_blocks(
     after: &[ReportBlock],
     author: EditAuthor,
 ) -> Result<(), CalmError> {
