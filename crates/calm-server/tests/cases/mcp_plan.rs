@@ -3,16 +3,15 @@
 //! Boots an in-memory `SqlxRepo` + `EventBus` + pre-seeded role caches,
 //! constructs an `AppContext` directly (no live MCP listener — the
 //! tools' contract is "given a `ToolCallIdentity` + `Value` args, do
-//! the right thing"), and drives `calm.plan.upsert` / `calm.plan.cancel`
-//! / `calm.plan.list` end-to-end against migration 0041.
+//! the right thing"), and drives the hidden `calm.plan.upsert` shim plus
+//! retained `calm.plan.cancel` / `calm.plan.list` end-to-end.
 //!
 //! Field-level validation details (key regex, kind vocabulary, gate
 //! shape, cycle paths, …) are pinned by the unit tests inside
-//! `tools/plan.rs`; this file covers the DB-visible behavior: rows,
-//! whole-batch atomicity, `plan.updated` emission, cancel semantics,
-//! role gating at the MCP entry, list projection, and the #644
-//! `WavePatch` fields.
+//! `tools/plan.rs`; this file covers shim zero-write behavior, cancel
+//! semantics, role gating, list projection, and the #644 `WavePatch` fields.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -21,13 +20,21 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::plan::{TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT};
+use calm_server::mcp_server::tools::plan::{
+    TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT, plan_cancel_after_pre_read_for_test,
+};
+use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch, now_ms};
+use calm_server::model::{
+    CardRole, NewCard, NewCove, NewWave, TaskStatus, WaveLifecycle, WavePatch, now_ms,
+};
+use calm_server::operation::spec_harness_start_adapter::render_spec_developer_instructions_for_test;
+use calm_server::plugin_host::Manifest;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
 };
+use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 
 struct Boot {
@@ -38,6 +45,7 @@ struct Boot {
     wave_id: WaveId,
     spec_card_id: CardId,
     worker_card_id: CardId,
+    report_card_id: CardId,
 }
 
 async fn boot() -> Boot {
@@ -88,11 +96,21 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    let report_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
 
     // PR-C activated rule 6 and new waves default `require_task_gates
     // = 1` (migration 0041 DB DEFAULT) — most of this suite plans
-    // ungated codex tasks, so the boot wave opts out; the dedicated
-    // rule-6 matrix test flips the flag back on.
+    // ungated codex tasks, so the boot wave opts out. The complete
+    // report-block admission matrix lives in task_projection_acceptance.
     repo.wave_update(
         wave.id.as_str(),
         WavePatch {
@@ -107,6 +125,11 @@ async fn boot() -> Boot {
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
+    card_role_cache.insert(
+        report_card.id.clone(),
+        CardRole::ReportCard,
+        wave.id.clone(),
+    );
     seed_runtime_session(
         &sqlx_repo,
         spec_card.id.as_str(),
@@ -114,6 +137,11 @@ async fn boot() -> Boot {
         "spec-thread",
     )
     .await;
+    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(wave.id.as_str())
+        .execute(sqlx_repo.pool())
+        .await
+        .expect("mark spec session as wave root");
     seed_runtime_session(
         &sqlx_repo,
         worker_card.id.as_str(),
@@ -150,6 +178,7 @@ async fn boot() -> Boot {
         wave_id: wave.id,
         spec_card_id: spec_card.id,
         worker_card_id: worker_card.id,
+        report_card_id: report_card.id,
     }
 }
 
@@ -235,19 +264,25 @@ async fn exec_sql(boot: &Boot, sql: &str) {
     sqlx::query(sql).execute(&pool).await.expect("exec sql");
 }
 
-fn upsert_args(tasks: Value) -> Value {
-    json!({ "tasks": tasks, "message": "test plan revision" })
-}
-
-async fn upsert_ok(boot: &Boot, tasks: Value) -> Value {
+async fn write_task_block(boot: &Boot, mut payload: Value) -> Value {
+    let object = payload.as_object_mut().expect("task payload object");
+    object.insert("ready".into(), json!(true));
+    object.insert("declared_by".into(), json!("spec"));
+    let report = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .expect("report card");
+    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
     call_tool(
         boot,
-        TOOL_PLAN_UPSERT,
+        TOOL_REPORT_BLOCKS_UPSERT,
         spec_identity(boot),
-        upsert_args(tasks),
+        json!({"kind": "task", "payload": payload, "if_doc_rev": report.doc_rev}),
     )
     .await
-    .expect("plan.upsert ok")
+    .expect("task block write")
 }
 
 /// Count surviving `tasks` rows for the boot wave directly — after a
@@ -276,18 +311,38 @@ async fn drain_events(
     seen
 }
 
-fn outcomes_of(resp: &Value) -> Vec<(String, String)> {
-    resp["results"]
-        .as_array()
-        .expect("results array")
-        .iter()
-        .map(|r| {
-            (
-                r["key"].as_str().unwrap().to_string(),
-                r["outcome"].as_str().unwrap().to_string(),
-            )
-        })
-        .collect()
+/// Snapshot every SQLite table, including CRDT/VCS/operational tables and
+/// sqlite_sequence. Values are losslessly represented with SQLite `quote()`;
+/// table and row order are deterministic for exact before/after comparison.
+async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("list persistent tables");
+    let mut snapshot = BTreeMap::new();
+    for table in tables {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                .bind(&table)
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("inspect table {table}: {error}"));
+        let quoted_columns = columns
+            .iter()
+            .map(|column| format!("quote(\"{}\")", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let quoted_table = table.replace('"', "\"\"");
+        let sql = format!("SELECT json_array({quoted_columns}) FROM \"{quoted_table}\" ORDER BY 1");
+        let rows = sqlx::query_scalar(&sql)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("snapshot table {table}: {error}"));
+        snapshot.insert(table, rows);
+    }
+    snapshot
 }
 
 // ---------------------------------------------------------------------------
@@ -378,399 +433,115 @@ async fn wave_patch_persists_task_budget_and_require_task_gates() {
 }
 
 // ---------------------------------------------------------------------------
-// calm.plan.upsert — happy path + idempotency + events
+// calm.plan.upsert hidden shim
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn upsert_creates_rows_and_emits_plan_updated() {
+async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
     let mut rx = boot.ctx.events.subscribe();
+    let before = all_persistent_rows(&boot).await;
 
-    let resp = upsert_ok(
-        &boot,
-        json!([
-            { "key": "write-spec", "kind": "codex", "goal": "write the spec" },
-            {
-                "key": "impl-parser",
-                "kind": "codex",
-                "goal": "implement the parser",
-                "depends_on": ["write-spec"],
-                "priority": 10,
-                "context": { "hint": "x" },
-                "acceptance_criteria": "tests pass"
-            },
-            { "key": "smoke", "kind": "terminal", "goal": "cargo test", "cwd": "/repo" }
-        ]),
-    )
-    .await;
-    assert_eq!(
-        outcomes_of(&resp),
-        vec![
-            ("write-spec".to_string(), "created".to_string()),
-            ("impl-parser".to_string(), "created".to_string()),
-            ("smoke".to_string(), "created".to_string()),
-        ]
-    );
-
-    // Rows persisted with pending status, composed ids, normalized deps.
-    let tasks = boot
-        .repo
-        .tasks_by_wave(boot.wave_id.as_str())
+    // Deliberately invalid under the legacy schema: the shim must not parse it.
+    let out = call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), json!(null))
         .await
-        .unwrap();
-    assert_eq!(tasks.len(), 3);
-    let parser = tasks.iter().find(|t| t.key == "impl-parser").unwrap();
-    assert_eq!(parser.id, format!("{}:impl-parser", boot.wave_id.as_str()));
-    assert_eq!(parser.priority, 10);
-    assert_eq!(parser.depends_on(), vec!["write-spec"]);
-    assert_eq!(parser.acceptance_criteria.as_deref(), Some("tests pass"));
-    assert!(parser.gate_json.is_none());
-    // Highest priority sorts first (scheduler order).
-    assert_eq!(tasks[0].key, "impl-parser");
+        .expect("registered compatibility shim");
 
-    // One plan.updated event, wave-scoped, AiSpec actor, all keys changed.
-    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    match envelope.event {
-        Event::PlanUpdated {
-            wave_id,
-            changed_keys,
-            agent_message,
-        } => {
-            assert_eq!(wave_id, boot.wave_id);
-            assert_eq!(changed_keys, vec!["write-spec", "impl-parser", "smoke"]);
-            assert_eq!(agent_message.as_deref(), Some("test plan revision"));
-        }
-        other => panic!("expected PlanUpdated, got {other:?}"),
-    }
-    match &envelope.actor {
-        calm_server::ids::ActorId::AiSpecSession(session_id) => {
-            assert_eq!(session_id.as_str(), "spec-session")
-        }
-        other => panic!("expected AiSpecSession actor; got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn upsert_accepts_claude_task_kind() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-
-    let resp = upsert_ok(
-        &boot,
-        json!([{ "key": "ask-claude", "kind": "claude", "goal": "implement it" }]),
-    )
-    .await;
-    assert_eq!(
-        outcomes_of(&resp),
-        vec![("ask-claude".to_string(), "created".to_string())]
-    );
-
-    let row = boot
-        .repo
-        .task_get(&format!("{}:ask-claude", boot.wave_id.as_str()))
-        .await
-        .unwrap()
-        .expect("claude task row");
-    assert_eq!(row.kind, calm_server::model::TaskKind::Claude);
-}
-
-#[tokio::test]
-async fn upsert_identical_batch_is_unchanged_and_emits_nothing() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    let tasks = json!([
-        { "key": "a", "kind": "codex", "goal": "g", "depends_on": [] },
-    ]);
-    upsert_ok(&boot, tasks.clone()).await;
-
-    let mut rx = boot.ctx.events.subscribe();
-    let resp = upsert_ok(&boot, tasks).await;
-    assert_eq!(
-        outcomes_of(&resp),
-        vec![("a".to_string(), "unchanged".to_string())]
-    );
-    let no_event = tokio::time::timeout(std::time::Duration::from_millis(150), rx.recv()).await;
+    assert!(out["error"].as_str().unwrap().contains("retired (#985)"));
+    assert_eq!(out["migration"]["use"], "calm.report.blocks.upsert");
     assert!(
-        no_event.is_err(),
-        "idempotent retry must not emit: {no_event:?}"
+        out["migration"]["shape"]
+            .as_str()
+            .unwrap()
+            .contains("ready: true")
     );
-}
-
-#[tokio::test]
-async fn upsert_revises_pending_row_and_reports_updated() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
-
-    let mut rx = boot.ctx.events.subscribe();
-    let resp = upsert_ok(
-        &boot,
-        json!([{ "key": "a", "kind": "codex", "goal": "revised goal", "priority": 5 }]),
-    )
-    .await;
     assert_eq!(
-        outcomes_of(&resp),
-        vec![("a".to_string(), "updated".to_string())]
+        all_persistent_rows(&boot).await,
+        before,
+        "spec shim changed a persistent table"
     );
-    let row = boot
-        .repo
-        .task_get(&format!("{}:a", boot.wave_id.as_str()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(row.goal, "revised goal");
-    assert_eq!(row.priority, 5);
-
-    let envelope = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
-        .await
-        .expect("bus delivers")
-        .expect("bus open");
-    match envelope.event {
-        Event::PlanUpdated { changed_keys, .. } => assert_eq!(changed_keys, vec!["a"]),
-        other => panic!("expected PlanUpdated, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn upsert_batch_is_atomic_one_bad_task_rolls_back_all() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-
-    let err = call_tool(
-        &boot,
-        TOOL_PLAN_UPSERT,
-        spec_identity(&boot),
-        upsert_args(json!([
-            { "key": "good", "kind": "codex", "goal": "fine" },
-            { "key": "bad", "kind": "codex", "goal": "dep missing", "depends_on": ["ghost"] }
-        ])),
-    )
-    .await
-    .expect_err("unknown dep rejects whole batch");
-    assert_eq!(err.code, -32602);
     assert!(
-        err.message.contains("unknown dependency `ghost`"),
-        "{err:?}"
+        drain_events(&mut rx).await.is_empty(),
+        "spec shim broadcast an EventBus envelope"
     );
-
-    let tasks = boot
-        .repo
-        .tasks_by_wave(boot.wave_id.as_str())
-        .await
-        .unwrap();
-    assert!(tasks.is_empty(), "no row from a failed batch: {tasks:?}");
 }
 
 #[tokio::test]
-async fn upsert_non_pending_same_payload_unchanged_different_payload_rejected() {
+async fn all_shipped_plan_template_items_round_trip_through_real_blocks_upsert_path() {
     let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    let tasks = json!([{ "key": "a", "kind": "codex", "goal": "g" }]);
-    upsert_ok(&boot, tasks.clone()).await;
-    exec_sql(&boot, "UPDATE tasks SET status = 'running' WHERE key = 'a'").await;
-
-    // Identical payload → idempotent `unchanged`.
-    let resp = upsert_ok(&boot, tasks).await;
+    let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+        .expect("shipped git-forge manifest");
+    let workflow = manifest
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == "issue-development")
+        .expect("issue-development workflow");
+    let rendered =
+        render_spec_developer_instructions_for_test("wave-template", Some(workflow), None);
+    let template_json = rendered
+        .split("## Bound Workflow Plan Template\n```json\n")
+        .nth(1)
+        .expect("bound plan heading")
+        .split("\n```")
+        .next()
+        .expect("bound plan JSON");
+    let items: Vec<Value> = serde_json::from_str(template_json).expect("rendered template JSON");
+    assert_eq!(items.len(), 8, "shipped workflow template size drifted");
+    let expected_payloads: Vec<Value> = workflow
+        .plan_template
+        .iter()
+        .map(calm_server::mcp_server::tools::plan::plan_template_task_block_payload)
+        .collect();
     assert_eq!(
-        outcomes_of(&resp),
-        vec![("a".to_string(), "unchanged".to_string())]
+        items, expected_payloads,
+        "rendered JSON changed the payloads"
     );
 
-    // Different payload → rule-5 mutability refusal.
-    let err = call_tool(
-        &boot,
-        TOOL_PLAN_UPSERT,
-        spec_identity(&boot),
-        upsert_args(json!([{ "key": "a", "kind": "codex", "goal": "different" }])),
-    )
-    .await
-    .expect_err("non-pending revise refused");
-    assert_eq!(err.code, -32602);
-    assert!(
-        err.message
-            .contains("task a already dispatched; insert a new task instead"),
-        "{err:?}"
-    );
-}
-
-#[tokio::test]
-async fn upsert_validation_errors_surface_as_invalid_params() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-
-    for (tasks, needle) in [
-        // Rule 1 — key regex.
-        (
-            json!([{ "key": "Bad-Key", "kind": "codex", "goal": "g" }]),
-            "invalid task key `Bad-Key`",
-        ),
-        // Rule 1 — duplicate key in batch.
-        (
-            json!([
-                { "key": "a", "kind": "codex", "goal": "g" },
-                { "key": "a", "kind": "codex", "goal": "g2" }
-            ]),
-            "duplicate key `a` in batch",
-        ),
-        // Rule 4 — cycle with path.
-        (
-            json!([
-                { "key": "a", "kind": "codex", "goal": "g", "depends_on": ["b"] },
-                { "key": "b", "kind": "codex", "goal": "g", "depends_on": ["a"] }
-            ]),
-            "dependency cycle: a -> b -> a",
-        ),
-        // Rule 7 — relative cwd.
-        (
-            json!([{ "key": "a", "kind": "terminal", "goal": "ls", "cwd": "rel/path" }]),
-            "must be an absolute path",
-        ),
-        // Rule 7 — control chars in gate cmd.
-        (
-            json!([{
-                "key": "a", "kind": "codex", "goal": "g",
-                "gate": { "steps": [ { "name": "t", "cmd": "cargo\u{0007}test" } ] }
-            }]),
-            "ASCII control",
-        ),
-        // Rule 7 — empty gate steps (rule 8 was deleted in PR-C; the
-        // shape contract still rejects degenerate gates).
-        (
-            json!([{
-                "key": "a", "kind": "codex", "goal": "g",
-                "gate": { "steps": [] }
-            }]),
-            "gate.steps must be non-empty",
-        ),
-    ] {
-        let err = call_tool(
+    for payload in &items {
+        let report = boot
+            .repo
+            .card_get(boot.report_card_id.as_str())
+            .await
+            .unwrap()
+            .expect("report card");
+        let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+        call_tool(
             &boot,
-            TOOL_PLAN_UPSERT,
+            TOOL_REPORT_BLOCKS_UPSERT,
             spec_identity(&boot),
-            upsert_args(tasks.clone()),
+            json!({"kind": "task", "payload": payload, "if_doc_rev": report.doc_rev}),
         )
         .await
-        .unwrap_err();
-        assert_eq!(err.code, -32602, "tasks={tasks}: {err:?}");
-        assert!(
-            err.message.contains(needle),
-            "tasks={tasks}: expected `{needle}` in {err:?}"
-        );
-        let rows = boot
-            .repo
-            .tasks_by_wave(boot.wave_id.as_str())
-            .await
-            .unwrap();
-        assert!(rows.is_empty(), "rejected batch left rows: {rows:?}");
+        .unwrap_or_else(|error| panic!("real upsert rejected {payload:#}: {error:?}"));
     }
-}
 
-#[tokio::test]
-async fn upsert_auto_promotes_draft_wave() {
-    let boot = boot().await;
-    // Wave starts in Draft; the first spec plan write auto-promotes to
-    // Planning in the same tx (parity with the other spec write tools).
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
-    let wave = boot
+    let projected = boot
         .repo
-        .wave_get(boot.wave_id.as_str())
+        .tasks_by_wave(boot.wave_id.as_str())
         .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Planning);
-}
-
-#[tokio::test]
-async fn upsert_all_unchanged_with_lifecycle_applies_lifecycle_without_plan_updated() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    let tasks = json!([{ "key": "a", "kind": "codex", "goal": "g" }]);
-    upsert_ok(&boot, tasks.clone()).await;
-
-    let mut rx = boot.ctx.events.subscribe();
-    let resp = call_tool(
-        &boot,
-        TOOL_PLAN_UPSERT,
-        spec_identity(&boot),
-        json!({ "tasks": tasks, "message": "plan is final", "lifecycle": "dispatching" }),
-    )
-    .await
-    .expect("all-unchanged upsert with lifecycle ok");
-    assert_eq!(
-        outcomes_of(&resp),
-        vec![("a".to_string(), "unchanged".to_string())]
-    );
-
-    // The lifecycle landed…
-    let wave = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
-
-    // …with its own events, but no `plan.updated` (the plan rows did
-    // not change; empty `changed_keys` must never be emitted).
-    let events = drain_events(&mut rx).await;
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::WaveLifecycleChanged { .. })),
-        "lifecycle event missing: {events:?}"
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|e| matches!(e, Event::PlanUpdated { .. })),
-        "all-unchanged batch emitted plan.updated: {events:?}"
-    );
-}
-
-/// Review round 3 (#656 F1): a spec retrying the exact same call —
-/// identical batch + `lifecycle` equal to the wave's current state —
-/// is fully idempotent. It must short-circuit to success (all
-/// `unchanged`, zero events) instead of reaching the tx with an empty
-/// event batch, which `write_with_actor_events` rejects as an internal
-/// error.
-#[tokio::test]
-async fn upsert_identical_batch_with_same_state_lifecycle_is_idempotent_success() {
-    let boot = boot().await;
-    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    let tasks = json!([{ "key": "a", "kind": "codex", "goal": "g" }]);
-    let args = json!({ "tasks": tasks, "message": "plan is final", "lifecycle": "dispatching" });
-    call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), args.clone())
-        .await
-        .expect("first upsert with lifecycle ok");
-
-    // Retry the exact same call: batch is identical, wave is already
-    // `dispatching`.
-    let mut rx = boot.ctx.events.subscribe();
-    let resp = call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), args)
-        .await
-        .expect("idempotent retry with same-state lifecycle must succeed");
-    assert_eq!(
-        outcomes_of(&resp),
-        vec![("a".to_string(), "unchanged".to_string())]
-    );
-
-    let wave = boot
-        .repo
-        .wave_get(boot.wave_id.as_str())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(wave.lifecycle, WaveLifecycle::Dispatching);
-
-    let events = drain_events(&mut rx).await;
-    assert!(
-        events.is_empty(),
-        "idempotent retry must emit nothing: {events:?}"
-    );
+        .expect("read projected tasks");
+    assert_eq!(projected.len(), 8, "every shipped item must project");
+    for input in &workflow.plan_template {
+        let row = boot
+            .repo
+            .task_get(&format!("{}:{}", boot.wave_id, input.key))
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{} did not project", input.key));
+        assert_eq!(row.goal, input.goal, "{} goal", input.key);
+        assert_eq!(
+            row.acceptance_criteria, input.acceptance_criteria,
+            "{} acceptance",
+            input.key
+        );
+        assert_eq!(
+            row.depends_on(),
+            input.depends_on,
+            "{} dependencies",
+            input.key
+        );
+        assert_eq!(row.declared_by, "spec", "{} author", input.key);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -781,7 +552,7 @@ async fn upsert_identical_batch_with_same_state_lifecycle_is_idempotent_success(
 async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
 
     let mut rx = boot.ctx.events.subscribe();
     let out = call_tool(
@@ -837,7 +608,7 @@ async fn cancel_pending_task_flips_row_and_emits_plan_updated() {
 async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_updated() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     call_tool(
         &boot,
         TOOL_PLAN_CANCEL,
@@ -901,7 +672,7 @@ async fn cancel_already_canceled_with_lifecycle_applies_lifecycle_without_plan_u
 async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     let args =
         json!({ "key": "a", "message": "plan empty, moving on", "lifecycle": "dispatching" });
     call_tool(&boot, TOOL_PLAN_CANCEL, spec_identity(&boot), args.clone())
@@ -942,7 +713,7 @@ async fn cancel_already_canceled_with_same_state_lifecycle_is_idempotent_success
 async fn cancel_in_flight_task_refused_with_409_text() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
 
     for status in ["dispatched", "running", "verifying"] {
         exec_sql(
@@ -971,10 +742,62 @@ async fn cancel_in_flight_task_refused_with_409_text() {
 }
 
 #[tokio::test]
+async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advance() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    write_task_block(
+        &boot,
+        json!({ "key": "race", "kind": "codex", "goal": "g" }),
+    )
+    .await;
+    let task_id = format!("{}:race", boot.wave_id);
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let task_id_for_hook = task_id.clone();
+    let mut rx = boot.ctx.events.subscribe();
+
+    let err = plan_cancel_after_pre_read_for_test(
+        boot.ctx.clone(),
+        spec_identity(&boot),
+        json!({"key": "race", "message": "too late", "lifecycle": "dispatching"}),
+        move || async move {
+            sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
+                .bind(task_id_for_hook)
+                .execute(&pool)
+                .await
+                .expect("advance task after cancel pre-read");
+        },
+    )
+    .await
+    .expect_err("in-tx pending guard must reject the advanced row");
+    assert_eq!(err.code, -32409, "{err:?}");
+    assert!(
+        err.message.contains("changed state concurrently"),
+        "{err:?}"
+    );
+
+    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_eq!(row.status, TaskStatus::Running);
+    assert!(row.finished_at_ms.is_none());
+    assert_eq!(
+        boot.repo
+            .wave_get(boot.wave_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        WaveLifecycle::Planning
+    );
+    assert!(
+        drain_events(&mut rx).await.is_empty(),
+        "rejected race must emit no event"
+    );
+}
+
+#[tokio::test]
 async fn cancel_terminal_or_unknown_task_rejected() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     exec_sql(&boot, "UPDATE tasks SET status = 'done' WHERE key = 'a'").await;
 
     let err = call_tool(
@@ -1008,12 +831,10 @@ async fn cancel_terminal_or_unknown_task_rejected() {
 async fn wave_delete_removes_plan_rows() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
+    write_task_block(
         &boot,
-        json!([
-            { "key": "a", "kind": "codex", "goal": "g" },
-            { "key": "b", "kind": "terminal", "goal": "cargo test" }
-        ]),
+        json!({ "key": "b", "kind": "terminal", "goal": "cargo test" }),
     )
     .await;
     assert_eq!(task_row_count(&boot).await, 2);
@@ -1033,7 +854,7 @@ async fn wave_delete_removes_plan_rows() {
 async fn cove_delete_removes_plan_rows() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(&boot, json!([{ "key": "a", "kind": "codex", "goal": "g" }])).await;
+    write_task_block(&boot, json!({ "key": "a", "kind": "codex", "goal": "g" })).await;
     assert_eq!(task_row_count(&boot).await, 1);
 
     boot.repo
@@ -1047,29 +868,6 @@ async fn cove_delete_removes_plan_rows() {
     );
 }
 
-/// The upsert tx re-checks the wave row in-tx (no FK backs it), so a
-/// wave deleted between the tool's resolve and the write surfaces as a
-/// conflict instead of inserting plan rows for a dead wave. Pinned at
-/// the tx layer — the tool layer can't interleave a delete mid-call.
-#[tokio::test]
-async fn upsert_wave_guard_refuses_deleted_wave_in_tx() {
-    let boot = boot().await;
-    boot.repo
-        .wave_delete(boot.wave_id.as_str())
-        .await
-        .expect("wave delete");
-
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let mut tx = pool.begin().await.expect("begin tx");
-    let err = calm_server::db::sqlite::require_wave_exists_tx(&mut tx, boot.wave_id.as_str())
-        .await
-        .expect_err("deleted wave refused");
-    assert!(
-        matches!(err, calm_server::error::CalmError::Conflict(_)),
-        "expected Conflict, got {err:?}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // calm.plan.list
 // ---------------------------------------------------------------------------
@@ -1078,19 +876,16 @@ async fn upsert_wave_guard_refuses_deleted_wave_in_tx() {
 async fn list_returns_plan_shape_without_gate_commands() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
-    upsert_ok(
+    write_task_block(
         &boot,
-        json!([
-            { "key": "a", "kind": "codex", "goal": "g" },
-            { "key": "b", "kind": "terminal", "goal": "cargo test", "depends_on": ["a"] }
-        ]),
+        json!({ "key": "a", "kind": "codex", "goal": "g",
+                "gate": {"steps": [{"name": "fmt", "cmd": "cargo fmt --check"},
+                                      {"name": "test", "cmd": "cargo test --secret"}]}}),
     )
     .await;
-    // Simulate a PR-C era row carrying a gate so the projection's
-    // no-command contract is pinned now.
-    exec_sql(
+    write_task_block(
         &boot,
-        r#"UPDATE tasks SET gate_json = '{"steps":[{"name":"fmt","cmd":"cargo fmt --check"},{"name":"test","cmd":"cargo test --secret"}],"timeout_secs":600}' WHERE key = 'a'"#,
+        json!({ "key": "b", "kind": "terminal", "goal": "cargo test", "depends_on": ["a"] }),
     )
     .await;
 
@@ -1131,10 +926,12 @@ async fn list_returns_plan_shape_without_gate_commands() {
 #[tokio::test]
 async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
     let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
+    let before = all_persistent_rows(&boot).await;
     for (tool, args) in [
         (
             TOOL_PLAN_UPSERT,
-            upsert_args(json!([{ "key": "a", "kind": "codex", "goal": "g" }])),
+            json!({"tasks": [{ "key": "a", "kind": "codex", "goal": "g" }], "message": "m"}),
         ),
         (TOOL_PLAN_CANCEL, json!({ "key": "a", "message": "m" })),
         (TOOL_PLAN_LIST, json!({})),
@@ -1145,173 +942,25 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
         assert_eq!(err.code, -32602, "{tool}: {err:?}");
         assert!(err.message.contains("Spec"), "{tool}: {err:?}");
     }
-    let tasks = boot
-        .repo
-        .tasks_by_wave(boot.wave_id.as_str())
-        .await
-        .unwrap();
-    assert!(tasks.is_empty(), "worker call wrote rows: {tasks:?}");
-}
-
-// ---------------------------------------------------------------------------
-// PR-C — rule 6 matrix (§4.1/§6.6) + gate acceptance (rule 8 deleted)
-// ---------------------------------------------------------------------------
-
-async fn set_require_gates(boot: &Boot, on: bool) {
-    boot.repo
-        .wave_update(
-            boot.wave_id.as_str(),
-            WavePatch {
-                require_task_gates: Some(on),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("set require_task_gates");
-}
-
-#[tokio::test]
-async fn rule6_matrix_require_task_gates() {
-    let boot = boot().await;
-
-    // Flag OFF — an ungated codex task is accepted (the suite default).
-    upsert_ok(
-        &boot,
-        json!([{ "key": "off-ok", "kind": "codex", "goal": "g" }]),
-    )
-    .await;
-
-    set_require_gates(&boot, true).await;
-
-    // Ungated codex task → rejected, whole batch atomic.
-    let err = call_tool(
-        &boot,
-        TOOL_PLAN_UPSERT,
-        spec_identity(&boot),
-        upsert_args(json!([
-            { "key": "gated", "kind": "codex", "goal": "g",
-              "gate": { "steps": [ { "name": "t", "cmd": "true" } ] } },
-            { "key": "naked", "kind": "codex", "goal": "g" }
-        ])),
-    )
-    .await
-    .expect_err("rule 6 rejects the ungated codex task");
-    assert!(err.message.contains("rule 6"), "{err:?}");
-    assert!(err.message.contains("naked"), "{err:?}");
-    let rows = boot
-        .repo
-        .tasks_by_wave(boot.wave_id.as_str())
-        .await
-        .unwrap();
     assert_eq!(
-        rows.len(),
-        1,
-        "rejected batch must not land its gated sibling either (atomic): {rows:?}"
+        all_persistent_rows(&boot).await,
+        before,
+        "unauthorized caller changed a persistent table"
     );
-
-    // Ungated claude task → same agent-worker gate requirement as codex.
-    let err = call_tool(
-        &boot,
-        TOOL_PLAN_UPSERT,
-        spec_identity(&boot),
-        upsert_args(json!([{ "key": "naked-claude", "kind": "claude", "goal": "g" }])),
-    )
-    .await
-    .expect_err("rule 6 rejects an ungated claude task");
-    assert!(err.message.contains("rule 6"), "{err:?}");
-    assert!(err.message.contains("naked-claude"), "{err:?}");
-
-    // codex + gate → accepted, gate_json stored canonically.
-    upsert_ok(
-        &boot,
-        json!([{ "key": "gated", "kind": "codex", "goal": "g",
-                 "gate": { "steps": [ { "name": "t", "cmd": "true" } ] } }]),
-    )
-    .await;
-    let row = boot
-        .repo
-        .task_get(&format!("{}:gated", boot.wave_id.as_str()))
-        .await
-        .unwrap()
-        .expect("gated row");
-    let gate_json = row.gate_json.expect("gate stored (rule 8 deleted)");
-    assert!(gate_json.contains("\"cmd\":\"true\""), "{gate_json}");
-
-    // codex + no_gate_reason → accepted; the reason rides context_json.
-    upsert_ok(
-        &boot,
-        json!([{ "key": "excused", "kind": "codex", "goal": "g",
-                 "no_gate_reason": "docs only" }]),
-    )
-    .await;
-    let row = boot
-        .repo
-        .task_get(&format!("{}:excused", boot.wave_id.as_str()))
-        .await
-        .unwrap()
-        .expect("excused row");
     assert!(
-        row.context_json.contains("docs only"),
-        "{}",
-        row.context_json
+        drain_events(&mut rx).await.is_empty(),
+        "unauthorized caller broadcast an EventBus envelope"
     );
-
-    // Round-3 review F2 — a blank escape hatch is not an escape
-    // hatch: empty/whitespace `no_gate_reason` is rejected instead of
-    // excusing the ungated codex task with an empty audit note.
-    for blank in ["", "  "] {
-        let err = call_tool(
-            &boot,
-            TOOL_PLAN_UPSERT,
-            spec_identity(&boot),
-            upsert_args(json!([
-                { "key": "blank-excuse", "kind": "codex", "goal": "g",
-                  "no_gate_reason": blank }
-            ])),
-        )
-        .await
-        .expect_err("blank no_gate_reason must be rejected");
-        assert!(
-            err.message
-                .contains("`no_gate_reason` must be a non-empty reason"),
-            "blank {blank:?}: {err:?}"
-        );
-    }
-    assert!(
-        boot.repo
-            .task_get(&format!("{}:blank-excuse", boot.wave_id.as_str()))
-            .await
-            .unwrap()
-            .is_none(),
-        "rejected blank-reason task must not land"
-    );
-
-    // terminal ungated → exempt.
-    upsert_ok(
-        &boot,
-        json!([{ "key": "term", "kind": "terminal", "goal": "true" }]),
-    )
-    .await;
-
-    // Unchanged passthrough: the pre-flag ungated codex row resubmitted
-    // byte-identically stays `unchanged` and is NOT re-policed —
-    // idempotent retries of older plans keep working.
-    let out = upsert_ok(
-        &boot,
-        json!([{ "key": "off-ok", "kind": "codex", "goal": "g" }]),
-    )
-    .await;
-    assert_eq!(out["results"][0]["outcome"], "unchanged", "{out}");
 }
 
 #[tokio::test]
 async fn plan_list_hides_gate_commands_but_shows_step_names() {
     let boot = boot().await;
-    upsert_ok(
+    write_task_block(
         &boot,
-        json!([{ "key": "gated", "kind": "codex", "goal": "g",
-                 "gate": { "steps": [ { "name": "fmt", "cmd": "cargo fmt --check" },
-                                       { "name": "test", "cmd": "cargo test -p secret" } ] } }]),
+        json!({ "key": "gated", "kind": "codex", "goal": "g",
+                "gate": { "steps": [ { "name": "fmt", "cmd": "cargo fmt --check" },
+                                      { "name": "test", "cmd": "cargo test -p secret" } ] } }),
     )
     .await;
     let out = call_tool(&boot, TOOL_PLAN_LIST, spec_identity(&boot), json!({}))

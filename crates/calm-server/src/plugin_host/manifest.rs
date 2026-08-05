@@ -224,16 +224,20 @@ pub struct ExposedTool {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkflowDescriptor {
     pub id: String,
+    /// Transitional Tier-A field while workflow plan prose moves into report
+    /// templates. Keep parsing and validation for installed manifests.
     #[serde(default)]
     pub plan_template: Vec<PlanTaskInput>,
-    /// Advisory, prompt-only gate guidance — NOT an executable contract.
+    /// Transitional Tier-A advisory gate guidance — NOT an executable contract.
     /// Rendered into the Spec prompt's `## Bound Workflow Gates` section
     /// (`operation::spec_harness_start_adapter`) and NEVER executed as a
     /// shell command nor wired into a task's `gate_json`/execution. The Spec
-    /// authors each task's real, re-runnable `gate` from the target repo's
-    /// toolchain via `calm.plan.upsert`.
+    /// authors each task block's real, re-runnable `gate` from the target
+    /// repo's toolchain via `calm.report.blocks.upsert`.
     #[serde(default)]
     pub gates: Vec<GateInput>,
+    /// Transitional Tier-A prompt text while workflow instructions move into
+    /// report templates. Keep parsing, validation, and prompt injection.
     #[serde(default)]
     pub spec_instructions: String,
     #[serde(default)]
@@ -704,6 +708,99 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const GIVE_UP_PROTOCOL_GOLDEN: &str = concat!(
+        "If n == cap and the round is non-approving, do not merge. Either GIVE-UP by recording ",
+        "the terminal rationale in the report with calm.report.write and lifecycle failed for ",
+        "reviewing->failed; OR ASK-HUMAN by first moving reviewing->working with the normal ",
+        "lifecycle arg, then call calm.ratify.request with reason:\"cap_exhausted\" for ",
+        "working->blocked. On ratify.resolved grant the wave is already back in working; resume ",
+        "working->reviewing and continue reviewing the exhausted subject with cap = previous cap ",
+        "+ 2 on its next round. The kernel accepts this raise at most once per subject per grant; ",
+        "a grant may authorize this for each subject that was already cap-exhausted when it was ",
+        "issued. If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN ",
+        "again."
+    );
+
+    const ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN: &str =
+        include_str!("../../tests/goldens/issue_development_spec_prompt.txt");
+
+    fn assert_full_golden_eq(expected: &str, actual: &str) {
+        assert!(
+            !expected.is_empty(),
+            "full golden degenerate state: expected golden must not be empty"
+        );
+        assert!(
+            !actual.is_empty(),
+            "full golden degenerate state: rendered output must not be empty"
+        );
+        if expected == actual {
+            return;
+        }
+
+        let first_difference = expected
+            .bytes()
+            .zip(actual.bytes())
+            .position(|(expected, actual)| expected != actual)
+            .unwrap_or_else(|| expected.len().min(actual.len()));
+        let mut context_offset = first_difference;
+        while !expected.is_char_boundary(context_offset) || !actual.is_char_boundary(context_offset)
+        {
+            context_offset -= 1;
+        }
+
+        fn line_context(text: &str, byte_offset: usize) -> String {
+            let line_start = text[..byte_offset].rfind('\n').map_or(0, |index| index + 1);
+            let line_end = text[byte_offset..]
+                .find('\n')
+                .map_or(text.len(), |index| byte_offset + index);
+            let line_number = text[..line_start]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count()
+                + 1;
+            let column = text[line_start..byte_offset].chars().count() + 1;
+            format!(
+                "line {line_number}, column {column}: {:?}",
+                &text[line_start..line_end]
+            )
+        }
+
+        panic!(
+            "full golden mismatch at byte {first_difference} (expected {} bytes, actual {} bytes)\n\
+             expected next {:?}; {}\n  actual next {:?}; {}",
+            expected.len(),
+            actual.len(),
+            expected[context_offset..].chars().next(),
+            line_context(expected, context_offset),
+            actual[context_offset..].chars().next(),
+            line_context(actual, context_offset)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "full golden degenerate state")]
+    fn full_golden_equality_rejects_empty_expected_and_actual() {
+        assert_full_golden_eq("", "");
+    }
+
+    fn validate_rendered_give_up_contract(rendered: &str) -> Result<(), String> {
+        crate::spec_card::validate_spec_prompt_contract(rendered)?;
+        let start = rendered
+            .find("If n == cap and the round is non-approving")
+            .ok_or_else(|| "GIVE-UP protocol paragraph is missing".to_string())?;
+        let remainder = &rendered[start..];
+        let end = remainder
+            .find("\n\nRecord root_cause")
+            .ok_or_else(|| "GIVE-UP protocol paragraph terminator is missing".to_string())?;
+        let actual = &remainder[..end];
+        if actual != GIVE_UP_PROTOCOL_GOLDEN {
+            return Err(format!(
+                "GIVE-UP protocol differs from golden\nexpected: {GIVE_UP_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
+            ));
+        }
+        Ok(())
+    }
+
     fn hello_world() -> &'static str {
         r#"{
             "manifest_version": 1,
@@ -1022,6 +1119,95 @@ mod tests {
         let merge_acceptance = merge.acceptance_criteria.as_deref().unwrap_or("");
         assert!(merge_acceptance.contains("policy-required ratify grant"));
         assert!(merge_acceptance.contains("no merge performed"));
+    }
+
+    #[test]
+    fn shipped_git_forge_give_up_uses_retained_lifecycle_tool() {
+        let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        let instructions = &manifest
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow")
+            .spec_instructions;
+        assert!(!instructions.contains("calm.plan.upsert"));
+        assert!(
+            instructions.contains(
+                "GIVE-UP by recording the terminal rationale in the report with \
+                 calm.report.write and lifecycle failed"
+            ),
+            "GIVE-UP must remain reachable through the retained report write: {instructions}"
+        );
+
+        let descriptor = crate::mcp_server::build_default_registry()
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "calm.report.write")
+            .expect("retained GIVE-UP tool descriptor");
+        assert!(
+            descriptor.input_schema["properties"]
+                .get("lifecycle")
+                .is_some(),
+            "GIVE-UP tool must carry lifecycle: {}",
+            descriptor.input_schema
+        );
+
+        let workflow = manifest
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow");
+        let rendered =
+            crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
+                "wave-give-up",
+                Some(workflow),
+                None,
+            );
+        validate_rendered_give_up_contract(&rendered).unwrap_or_else(|error| panic!("{error}"));
+    }
+
+    #[test]
+    fn shipped_issue_development_rendered_prompt_matches_full_golden() {
+        let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        let workflow = manifest
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow");
+
+        // The fixed fixture id is the explicit normalization rule for the
+        // per-wave substitution performed by the production renderer.
+        // This independent, fully populated fixture is a legal final state for
+        // the shipped schema and keeps every required and optional field in the
+        // full-prompt contract.
+        let workflow_input = json!({
+            "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
+            "repo": "neige-calm/neige-calm",
+            "issue_number": 985,
+            "merge_policy": "auto-merge",
+            "notes": "Full golden fixture covers every shipped workflow input field."
+        });
+        crate::plugin_host::workflow_input::validate_workflow_input(
+            workflow
+                .input_schema
+                .as_ref()
+                .expect("shipped issue-development input schema"),
+            &workflow_input,
+        )
+        .expect("full golden workflow_input satisfies the shipped schema");
+        let rendered =
+            crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
+                "wave-golden-985",
+                Some(workflow),
+                Some(&workflow_input),
+            );
+
+        let expected = ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN
+            .strip_suffix('\n')
+            .expect("text fixture has its repository newline");
+        assert_full_golden_eq(expected, &rendered);
     }
 
     #[test]

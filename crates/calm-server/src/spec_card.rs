@@ -53,11 +53,11 @@ Branches:
   * reviewing → failed        when the wave cannot be completed
   * (only the user may drive cancellation / reopen)
 
-Lifecycle transitions are a side effect of every write. Pass \
-`lifecycle=\"...\"` on `calm.plan.upsert`, `calm.plan.cancel`, \
-`calm.task.verdict`, `calm.report.write`, or `calm.report.edit` \
+Lifecycle transitions are available on retained stateful writes. Pass \
+`lifecycle=\"...\"` on `calm.plan.cancel`, `calm.task.verdict`, \
+`calm.report.write`, or `calm.report.edit` \
 to drive the wave state machine in the same atomic operation as your \
-action. Every write also requires `message`, a short human-readable \
+action. Those tools also require `message`, a short human-readable \
 rationale for the event. The kernel validates the (from → to, \
 actor=spec) edge; an illegal transition is rejected and nothing is \
 persisted. The kernel auto-drives `draft → planning` on your first \
@@ -88,21 +88,25 @@ writes are transactional.
    This is your ground truth — do NOT keep \
    a private model of wave state across turns.
 2. Decide what to do next and act:
-   * Maintain the task plan with `calm.plan.upsert`, `calm.plan.cancel`, \
-     and `calm.plan.list`. Use `calm.plan.upsert` to add or revise \
-     pending tasks. Each task needs a per-wave-unique `key`, `kind` \
-     (`codex`, `claude`, or `terminal`), `goal`, optional `depends_on` sibling \
-     keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
-     drop a pending task. Use `calm.plan.list` to inspect plan status.
+   * Maintain task declarations as report `task` blocks. Read the report with \
+     `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
+     replace passes the target block's `rev` as `if_rev`. Use \
+     `calm.report.blocks.upsert` for both operations. A live task payload needs a per-wave-unique \
+     `key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, \
+     and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` \
+     sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
+     cancel a pending projected task. Use `calm.plan.list` to inspect status.
    * Every codex or claude task should declare a verification `gate` with \
-     re-runnable commands (fmt/linters/tests as appropriate). Waves with \
-     `require_task_gates` reject ungated agent/code tasks unless you provide \
-     `no_gate_reason`; terminal tasks are exempt. Gate cwd defaults task cwd → wave cwd; set \
+     re-runnable commands (fmt/linters/tests as appropriate). On waves with \
+     `require_task_gates`, an ungated codex/claude block write still succeeds, \
+     but the read surface reports a `gate_required` diagnostic and the task is \
+     not projected or scheduled unless it provides `no_gate_reason`; terminal \
+     tasks are exempt. Gate cwd defaults task cwd → wave cwd; set \
      `gate.cwd` when the worker's checkout differs. Gates may run more \
      than once after kernel restarts, so declare only re-runnable commands.
    * When a gate fails, treat the `task.gate_result` as a machine fact, \
-     not a worker claim. Remediate by inserting a NEW task with a new \
-     key; retry policy is yours.
+     not a worker claim. Remediate by inserting a NEW `task` block with a \
+     new key; retry policy is yours.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the wave in the same write.
@@ -259,8 +263,9 @@ notification; the result lives in these views, not in `neige state`.
 The view is READ-ONLY. To act on what you read, call \
 `calm.task.verdict(idempotency_key=K, status=\"accepted\" | \
 \"rejected\")` to record a semantic verdict on top of a completed task, \
-and/or `calm.plan.upsert` to add follow-up work. Each write requires \
-`message` and can include `lifecycle=...`.
+and/or create a new `task` block with `calm.report.blocks.upsert` for \
+follow-up work. Lifecycle-capable writes require `message` and can include \
+`lifecycle=...`.
 
 Wave is implicit — derived from your card identity. Do NOT pass a \
 `wave_id` (these tools have no such parameter; cross-wave reads are \
@@ -410,6 +415,40 @@ pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
     template.replace("{wave_id}", wave_id)
 }
 
+#[cfg(test)]
+const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
+    "   * Maintain task declarations as report `task` blocks. Read the report with ",
+    "`calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while ",
+    "replace passes the target block's `rev` as `if_rev`. Use ",
+    "`calm.report.blocks.upsert` for both operations. A live task payload needs a per-wave-unique ",
+    "`key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, ",
+    "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
+    "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
+    "cancel a pending projected task. Use `calm.plan.list` to inspect status."
+);
+
+/// Exact paragraph oracle for the static task-block protocol. The shipped
+/// workflow's fully rendered prompt has a separate whole-document golden;
+/// free-text contradictions cannot be proved absent with a keyword list.
+#[cfg(test)]
+pub(crate) fn validate_spec_prompt_contract(prompt: &str) -> Result<(), String> {
+    let start = prompt
+        .find("   * Maintain task declarations as report `task` blocks.")
+        .ok_or_else(|| "task-block protocol paragraph is missing".to_string())?;
+    let remainder = &prompt[start..];
+    let end = remainder
+        .find("\n   * Every codex or claude task")
+        .ok_or_else(|| "task-block protocol paragraph terminator is missing".to_string())?;
+    let actual = &remainder[..end];
+    if actual != TASK_BLOCK_PROTOCOL_GOLDEN {
+        return Err(format!(
+            "task-block protocol differs from golden\nexpected: {TASK_BLOCK_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
+        ));
+    }
+
+    Ok(())
+}
+
 /// Test-only seam (#838 A1 e2e): render the rendered worker prompt for the
 /// provider under test. `codex=true` yields the native-MCP-completion body
 /// ([`WORKER_CODEX_SYSTEM_PROMPT`], what `codex_adapter` ships);
@@ -485,7 +524,10 @@ mod tests {
         let spec = render_system_prompt(SeededCardRole::Spec.prompt_template(), "wave-abc");
         assert!(spec.contains("You are the spec agent for wave `wave-abc`."));
         assert!(!spec.contains("calm.update_wave_state"));
-        assert!(spec.contains("calm.plan.upsert"));
+        assert!(!spec.contains("calm.plan.upsert"));
+        assert!(spec.contains("calm.report.blocks.upsert"));
+        assert!(spec.contains("`ready: true`"));
+        assert!(spec.contains("`declared_by: \"spec\"`"));
         assert!(spec.contains("calm.plan.list"));
         assert!(!spec.contains("calm.task.dispatch"));
         assert!(spec.contains("calm.task.verdict"));
@@ -510,6 +552,40 @@ mod tests {
         assert!(
             p.contains("terminal tasks are exempt"),
             "spec prompt must not imply terminal tasks require gates"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_pins_callable_task_block_protocol() {
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-contract");
+        validate_spec_prompt_contract(&p).unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            p.contains("block write still succeeds")
+                && p.contains("`gate_required` diagnostic")
+                && p.contains("not projected or scheduled")
+                && p.contains("unless it provides `no_gate_reason`")
+                && p.contains("terminal tasks are exempt"),
+            "prompt must describe diagnostic gate admission semantics"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_contract_rejects_negative_context() {
+        let prompt = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-contract");
+
+        let negated = prompt.replace(
+            TASK_BLOCK_PROTOCOL_GOLDEN,
+            &format!(
+                "Never follow this obsolete rule: {TASK_BLOCK_PROTOCOL_GOLDEN} Swap those anchors instead."
+            ),
+        );
+        assert_ne!(
+            negated, prompt,
+            "negative-context fixture must alter the prompt"
+        );
+        assert!(
+            validate_spec_prompt_contract(&negated).is_err(),
+            "correct tokens inside a negated paragraph must not satisfy the contract"
         );
     }
 
@@ -546,16 +622,17 @@ mod tests {
         // Reads go through the shell CLI; writes still go through MCP.
         assert!(
             p.contains("Run `neige state`")
-                && p.contains("calm.plan.upsert")
+                && p.contains("calm.report.blocks.upsert")
                 && p.contains("calm.plan.list"),
-            "prompt must read state via neige and maintain the plan via MCP"
+            "prompt must read state via neige and maintain task blocks via MCP"
         );
         assert!(
             !p.contains("calm.update_wave_state")
                 && !p.contains("calm.task.dispatch")
-                && p.contains("calm.plan.upsert")
+                && !p.contains("calm.plan.upsert")
                 && p.contains("calm.plan.cancel")
                 && p.contains("calm.plan.list")
+                && p.contains("calm.report.blocks.upsert")
                 && p.contains("calm.task.verdict")
                 && p.contains("calm.cove.outline")
                 && p.contains("calm.report.links.backlinks")

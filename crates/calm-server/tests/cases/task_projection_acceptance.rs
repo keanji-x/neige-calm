@@ -213,6 +213,84 @@ fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
     })
 }
 
+fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
+    read["taskDiagnostics"].as_array().unwrap().iter().any(|v| {
+        v["key"] == key
+            && v["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == code)
+    })
+}
+
+#[tokio::test]
+async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
+    for require_gates in [false, true] {
+        let boot = new_boot().await;
+        boot.repo
+            .wave_update(
+                boot.wave_id.as_str(),
+                calm_server::model::WavePatch {
+                    require_task_gates: Some(require_gates),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("set gate policy");
+
+        let mut cases = Vec::new();
+        for kind in ["codex", "claude"] {
+            cases.push((
+                format!("{kind}-gated"),
+                kind,
+                Some(json!({"steps": [{"name": "check", "cmd": "true"}]})),
+                None,
+                true,
+            ));
+            cases.push((
+                format!("{kind}-reason"),
+                kind,
+                None,
+                Some("verified externally"),
+                true,
+            ));
+            cases.push((format!("{kind}-missing"), kind, None, None, !require_gates));
+        }
+        cases.push(("terminal-missing".into(), "terminal", None, None, true));
+
+        for (key, kind, gate, no_gate_reason, should_project) in cases {
+            let mut payload = json!({
+                "key": key,
+                "kind": kind,
+                "goal": format!("exercise {key}"),
+                "ready": true,
+                "declared_by": "spec"
+            });
+            if let Some(gate) = gate {
+                payload["gate"] = gate;
+            }
+            if let Some(reason) = no_gate_reason {
+                payload["no_gate_reason"] = json!(reason);
+            }
+
+            upsert(&boot, None, payload).await;
+            let snapshot = read(&boot).await;
+            let row_exists = keys(&boot).await.iter().any(|candidate| candidate == &key);
+            let gate_required = has_diagnostic_code(&snapshot, &key, "gate_required");
+
+            assert_eq!(
+                row_exists, should_project,
+                "require_gates={require_gates}, kind={kind}, key={key}: projection"
+            );
+            assert_eq!(
+                gate_required, !should_project,
+                "require_gates={require_gates}, kind={kind}, key={key}: diagnostics"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn production_reads_attach_task_state_and_read_time_diagnostics() {
     let boot = new_boot().await;

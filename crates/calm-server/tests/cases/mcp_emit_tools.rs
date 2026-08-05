@@ -73,9 +73,9 @@ fn retired_dispatch_payload() -> serde_json::Value {
     json!({
         "error": "calm.task.dispatch was retired (#644); no task was dispatched",
         "migration": {
-            "use": "calm.plan.upsert",
-            "shape": "{ tasks: [{ key, kind, goal, depends_on?, priority?, gate? }], message }",
-            "notes": "The kernel schedules ready tasks and runs verification gates. Use calm.plan.list to see task status."
+            "use": "calm.report.blocks.upsert",
+            "shape": "{ kind: \"task\", payload: { key, kind, goal, acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",
+            "notes": "Read docRev with calm.report.read. The kernel schedules ready task blocks and runs verification gates; use calm.plan.list for status."
         }
     })
 }

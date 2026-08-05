@@ -206,7 +206,7 @@ pub struct SpecHarnessStartOperationPayload {
     pub force_new_thread: bool,
 }
 
-fn render_spec_developer_instructions(
+pub(crate) fn render_spec_developer_instructions(
     wave_id: &str,
     workflow_descriptor: Option<&WorkflowDescriptor>,
     workflow_input: Option<&serde_json::Value>,
@@ -229,8 +229,13 @@ fn render_spec_developer_instructions(
     if !workflow_descriptor.plan_template.is_empty() {
         instructions.push_str("\n\n## Bound Workflow Plan Template\n");
         instructions.push_str("```json\n");
-        let plan_template_json = serde_json::to_string_pretty(&workflow_descriptor.plan_template)
-            .expect("PlanTaskInput serializes");
+        let task_blocks: Vec<Value> = workflow_descriptor
+            .plan_template
+            .iter()
+            .map(crate::mcp_server::tools::plan::plan_template_task_block_payload)
+            .collect();
+        let plan_template_json =
+            serde_json::to_string_pretty(&task_blocks).expect("task-block payloads serialize");
         instructions.push_str(&plan_template_json);
         instructions.push_str("\n```");
     }
@@ -254,6 +259,16 @@ fn render_spec_developer_instructions(
         instructions.push_str("\n```");
     }
     instructions
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn render_spec_developer_instructions_for_test(
+    wave_id: &str,
+    workflow_descriptor: Option<&WorkflowDescriptor>,
+    workflow_input: Option<&serde_json::Value>,
+) -> String {
+    render_spec_developer_instructions(wave_id, workflow_descriptor, workflow_input)
 }
 
 #[async_trait]
@@ -1066,14 +1081,17 @@ mod tests {
         assert!(out.contains(r#""key": "review-a""#));
         assert!(out.contains(r#""goal": "do the thing""#));
         assert!(out.contains(r#""context": {"#));
-        assert!(out.contains(r#""acceptance_criteria": "passes the requested gates""#));
+        assert!(out.contains(r#""acceptance": "passes the requested gates""#));
         assert!(out.contains(r#""cwd": "/workspace/repo""#));
         assert!(out.contains(r#""priority": 10"#));
         assert!(out.contains(r#""depends_on": ["#));
         assert!(out.contains(r#""review-a""#));
         assert!(out.contains(r#""gate": {"#));
         assert!(out.contains(r#""timeout_secs": 120"#));
-        assert!(out.contains(r#""no_gate_reason": null"#));
+        assert!(out.contains(r#""ready": true"#));
+        assert!(out.contains(r#""declared_by": "spec""#));
+        assert!(!out.contains(r#""acceptance_criteria""#));
+        assert!(!out.contains(r#""no_gate_reason": null"#));
         assert!(out.contains("## Bound Workflow Gates"));
         assert!(out.contains(r#""name": "fmt""#));
         assert!(out.contains(r#""cmd": "cargo fmt --all --check""#));
@@ -1131,6 +1149,8 @@ mod tests {
         };
         let input = json!({
             "issue_url": "https://github.com/o/r/issues/1",
+            "repo": "o/r",
+            "issue_number": 1,
             "notes": "literal {wave_id} must survive"
         });
 
@@ -1142,11 +1162,18 @@ mod tests {
             .expect("workflow input section");
         let gates_at = out.find("## Bound Workflow Gates").expect("gates section");
         assert!(gates_at < input_at, "input section must follow gates");
-        assert!(out[input_at..].contains("```json"));
-        assert!(out[input_at..].contains(r#""issue_url": "https://github.com/o/r/issues/1""#));
+        let rendered_input = out[input_at..]
+            .strip_prefix("## Bound Workflow Input\n```json\n")
+            .and_then(|section| section.strip_suffix("\n```"))
+            .expect("workflow input section must be a trailing JSON fence");
+        let rendered_input: Value =
+            serde_json::from_str(rendered_input).expect("workflow input must be valid JSON");
+        assert_eq!(
+            rendered_input, input,
+            "workflow input must round-trip in full"
+        );
         // User JSON is injected verbatim — no `{wave_id}` template substitution
         // (the spec_instructions section above it IS substituted).
-        assert!(out[input_at..].contains("literal {wave_id} must survive"));
         assert!(out.contains("Follow workflow instructions for wave wave-abc."));
 
         // input = None renders no section at all.
