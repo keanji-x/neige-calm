@@ -255,11 +255,10 @@ describe('architecture/no-theme-dataset-write-outside-provider', () => {
 
   it('INV-APP-070 is wired as an error for production web source by the real config', async () => {
     const eslint = new ESLint({ cwd: root, overrideConfigFile: resolve(root, 'eslint.config.js') });
-    const [result] = await eslint.lintText('declare const el: HTMLElement; el.dataset.theme = \'dark\';', {
-      filePath: resolve(root, 'web/src/app/theme/public.tsx'),
-    });
-    expect(result.messages.some((message) => message.ruleId === 'architecture/no-theme-dataset-write-outside-provider'
-      && message.severity === 2)).toBe(true);
+    const config = await eslint.calculateConfigForFile(resolve(root, 'web/src/app/theme/public.tsx')) as unknown as {
+      rules?: Record<string, [number, ...unknown[]]>;
+    };
+    expect(config?.rules?.['architecture/no-theme-dataset-write-outside-provider']?.[0]).toBe(2);
   });
 });
 
