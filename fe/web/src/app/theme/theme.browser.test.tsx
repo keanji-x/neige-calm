@@ -18,7 +18,7 @@ function pixelLuminance(cssColor: string): number {
 afterEach(() => { delete document.documentElement.dataset.theme; history.replaceState(null, '', '/'); });
 
 describe('browser theme contracts', () => {
-  it('E2E-CAP-THEME-011 resolves all three modes through the real document channel', async () => {
+  it('E2E-CAP-THEME-011 resolves light and dark through the real document channel', async () => {
     const storage = memoryStorage(); storage.setItem(THEME_KEY, 'light'); const first = render(<ThemeProvider storage={storage}><Probe /></ThemeProvider>);
     await expect.element(page.getByTestId('resolved')).toHaveTextContent('light'); expect(document.documentElement.dataset.theme).toBe('light'); first.unmount();
     storage.setItem(THEME_KEY, 'dark'); render(<ThemeProvider storage={storage}><Probe /></ThemeProvider>);
