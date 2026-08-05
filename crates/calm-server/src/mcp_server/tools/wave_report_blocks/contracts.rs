@@ -361,6 +361,77 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
 #[cfg(test)]
 mod task_kind_contract_tests {
     use super::*;
+    use crate::mcp_server::tools::plan::{
+        GateInput, GateStepInput, PlanTaskInput, plan_template_task_block_payload,
+    };
+    use calm_types::report_blocks::TASK_FIELDS;
+    use std::collections::BTreeSet;
+
+    fn task_schema(table: &Value) -> &Value {
+        &table["kinds"]
+            .as_array()
+            .expect("kinds array")
+            .iter()
+            .find(|kind| kind["kind"] == "task")
+            .expect("task kind table entry")["schema"]
+    }
+
+    fn assert_required_fields(path: &str, value: &Value, schema: &Value) {
+        let object = value
+            .as_object()
+            .unwrap_or_else(|| panic!("{path}: expected object, got {value}"));
+        for field in schema["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|field| field.as_str().expect("required field name"))
+        {
+            assert!(
+                object.contains_key(field),
+                "{path}: missing required {field}"
+            );
+        }
+    }
+
+    fn assert_value_matches_published_schema(path: &str, value: &Value, schema: &Value) {
+        match schema["type"].as_str() {
+            Some("object") => {
+                let object = value
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{path}: expected object, got {value}"));
+                assert_required_fields(path, value, schema);
+                let properties = schema["properties"]
+                    .as_object()
+                    .expect("published object schema properties");
+                for (field, child) in object {
+                    let child_schema = properties
+                        .get(field)
+                        .unwrap_or_else(|| panic!("{path}.{field}: field is not published"));
+                    assert_value_matches_published_schema(
+                        &format!("{path}.{field}"),
+                        child,
+                        child_schema,
+                    );
+                }
+            }
+            Some("array") => {
+                let array = value
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{path}: expected array, got {value}"));
+                for (index, child) in array.iter().enumerate() {
+                    assert_value_matches_published_schema(
+                        &format!("{path}[{index}]"),
+                        child,
+                        &schema["items"],
+                    );
+                }
+            }
+            Some("string") => assert!(value.is_string(), "{path}: expected string, got {value}"),
+            Some("integer") => assert!(value.is_i64(), "{path}: expected integer, got {value}"),
+            Some("boolean") => assert!(value.is_boolean(), "{path}: expected boolean, got {value}"),
+            other => panic!("{path}: unsupported published schema type {other:?}"),
+        }
+    }
 
     #[test]
     fn task_is_advertised_by_both_block_tool_contracts() {
@@ -413,5 +484,46 @@ mod task_kind_contract_tests {
                 .iter()
                 .any(|kind| kind == "task")
         );
+    }
+
+    #[test]
+    fn task_schema_properties_equal_validator_field_vocabulary() {
+        let table = kinds_table();
+        let published: BTreeSet<&str> = task_schema(&table)["properties"]
+            .as_object()
+            .expect("task schema properties")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let validator: BTreeSet<&str> = TASK_FIELDS.iter().copied().collect();
+        assert_eq!(published, validator);
+    }
+
+    #[test]
+    fn minimal_template_gate_wire_matches_published_task_schema_field_by_field() {
+        let payload = plan_template_task_block_payload(&PlanTaskInput {
+            key: "minimal-gate".into(),
+            kind: "codex".into(),
+            goal: "exercise the published gate wire shape".into(),
+            context: None,
+            acceptance_criteria: None,
+            cwd: None,
+            depends_on: vec![],
+            priority: None,
+            gate: Some(GateInput {
+                cwd: None,
+                timeout_secs: None,
+                steps: vec![GateStepInput {
+                    name: "minimal".into(),
+                    cmd: "true".into(),
+                }],
+            }),
+            no_gate_reason: None,
+        });
+        let table = kinds_table();
+        let schema = task_schema(&table);
+
+        assert_required_fields("task", &payload, &schema["oneOf"][0]);
+        assert_value_matches_published_schema("task", &payload, schema);
     }
 }

@@ -585,7 +585,7 @@ impl RepoRead for SqlxRepo {
         let (declarations, local) =
             calm_types::report_blocks::tasks::project_task_declarations(blocks);
         let diagnostics =
-            super::evaluate_schedulability(&mut conn, wave_id, &declarations, &local).await?;
+            super::evaluate_schedulability(&mut conn, wave_id, &declarations, &local, true).await?;
         Ok(diagnostics)
     }
 

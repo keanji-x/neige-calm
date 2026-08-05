@@ -15,7 +15,7 @@ use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::harness::HarnessRegistry;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolRegistry, auth, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewPlugin, NewWave, now_ms};
 use calm_server::operation::codex_adapter::CodexWorkerAdapter;
@@ -112,6 +112,7 @@ pub struct Fixture {
     pub cove_id: CoveId,
     pub wave_id: WaveId,
     pub spec_card_id: CardId,
+    pub report_card_id: CardId,
     pub codex: Arc<CodexClient>,
     pub daemon: Arc<DaemonClient>,
     pub shared: Arc<SharedCodexAppServer>,
@@ -345,7 +346,8 @@ pub async fn boot_forge_e2e_fixture(
         // resolve identity via `card_identity_get_by_session`, which reads
         // `cards.role`. Production mints the spec card with
         // `card_create_with_id_tx(.., CardRole::Spec, ..)`; the test must mirror
-        // that or `calm.plan.upsert` fails the role-gate with `got=Worker`.
+        // that or the report task-block writer fails the role gate with
+        // `got=Worker`.
         sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
             .bind(spec_card.id.as_str())
             .execute(sqlx_repo.pool())
@@ -375,7 +377,7 @@ pub async fn boot_forge_e2e_fixture(
         wave.id.clone(),
     );
     if matches!(spec.plan_source, PlanSource::Injected) {
-        seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
+        seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
     }
 
     let plugin_host = boot_plugin_host(
@@ -540,6 +542,7 @@ pub async fn boot_forge_e2e_fixture(
         cove_id: cove.id,
         wave_id: wave.id,
         spec_card_id: spec_card.id,
+        report_card_id: report_card.id,
         codex,
         daemon,
         shared,
@@ -604,27 +607,37 @@ pub fn spawn_dispatcher_with_harness(fx: &Fixture) -> Dispatcher {
 
 pub async fn plan_codex_task(fx: &Fixture, key: &str, goal: &str) {
     fx.used_injected_plan.store(true, Ordering::SeqCst);
+    let report = fx
+        .repo_dyn
+        .card_get(fx.report_card_id.as_str())
+        .await
+        .expect("read report card")
+        .expect("report card");
+    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
     let handler = fx
         .registry
-        .lookup(TOOL_PLAN_UPSERT)
-        .expect("plan upsert registered");
+        .lookup(TOOL_REPORT_BLOCKS_UPSERT)
+        .expect("task block writer registered");
     handler(
         fx.ctx.clone(),
         spec_identity(fx),
         json!({
-            "tasks": [{
+            "kind": "task",
+            "if_doc_rev": report.doc_rev,
+            "payload": {
                 "key": key,
                 "kind": "codex",
                 "goal": goal,
                 "context": { "from": "codex-forge-e2e" },
-                "acceptance_criteria": "FORGE_E2E.md exists with exactly forge-e2e-ok",
-                "no_gate_reason": "real-codex forge E2E"
-            }],
-            "message": "plan real codex forge worker"
+                "acceptance": "FORGE_E2E.md exists with exactly forge-e2e-ok",
+                "no_gate_reason": "real-codex forge E2E",
+                "ready": true,
+                "declared_by": "spec"
+            }
         }),
     )
     .await
-    .expect("plan codex task");
+    .expect("write codex task block");
 }
 
 pub fn task_id(fx: &Fixture, key: &str) -> String {
@@ -1068,7 +1081,7 @@ pub async fn shutdown_shared_codex(shared: &Arc<SharedCodexAppServer>) {
     }
 }
 
-pub async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
+pub async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
     let mut tx = repo.pool().begin().await.expect("begin spec session tx");
     session_start_runtime_tx(
         &mut tx,
@@ -1089,6 +1102,12 @@ pub async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
     )
     .await
     .expect("seed spec session");
+    sqlx::query("UPDATE waves SET root_session_id = ?1 WHERE id = ?2")
+        .bind(SPEC_SESSION_ID)
+        .bind(wave_id)
+        .execute(&mut *tx)
+        .await
+        .expect("mark spec session as wave root");
     tx.commit().await.expect("commit spec session tx");
 }
 

@@ -41,7 +41,7 @@ use calm_server::dispatcher::Dispatcher;
 use calm_server::event::EventBus;
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, now_ms};
 use calm_server::session_projection_repo::{
@@ -50,6 +50,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
+use calm_server::wave_report::WaveReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -104,6 +105,7 @@ struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     spec_card_id: CardId,
+    report_card_id: CardId,
     _tmp: TempDir,
 }
 
@@ -144,11 +146,26 @@ async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    let report_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
     cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
-    seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
+    cache.insert(
+        report_card.id.clone(),
+        CardRole::ReportCard,
+        wave.id.clone(),
+    );
+    seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wcc).await.unwrap();
 
@@ -212,11 +229,12 @@ async fn boot() -> Boot {
         ctx,
         registry: Arc::new(registry),
         spec_card_id: spec_card.id,
+        report_card_id: report_card.id,
         _tmp: tmp,
     }
 }
 
-async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
+async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -237,6 +255,11 @@ async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
     )
     .await
     .unwrap();
+    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(wave_id)
+        .execute(&mut *tx)
+        .await
+        .expect("mark spec session as wave root");
     tx.commit().await.unwrap();
 }
 
@@ -303,28 +326,38 @@ fn spec_identity(boot: &Boot) -> ToolCallIdentity {
 /// into a real `codex-worker` operation → `CodexWorkerAdapter` →
 /// `spawn_codex_worker_via_shared_daemon` (the production worker path under
 /// test). This is identical to how the real spec agent schedules workers.
-async fn plan_codex_task(boot: &Boot, key: &str, goal: &str) {
+async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
+    let report = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .expect("report card");
+    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
     let handler = boot
         .registry
-        .lookup(TOOL_PLAN_UPSERT)
-        .expect("plan upsert registered");
+        .lookup(TOOL_REPORT_BLOCKS_UPSERT)
+        .expect("task block writer registered");
     handler(
         boot.ctx.clone(),
         spec_identity(boot),
         json!({
-            "tasks": [{
+            "kind": "task",
+            "if_doc_rev": report.doc_rev,
+            "payload": {
                 "key": key,
                 "kind": "codex",
                 "goal": goal,
                 "context": { "from": "worker-exec-shell-env-test" },
-                "acceptance_criteria": "finish",
-                "no_gate_reason": "worker exec-shell env regression coverage"
-            }],
-            "message": "plan worker exec-shell env task"
+                "acceptance": "finish",
+                "no_gate_reason": "worker exec-shell env regression coverage",
+                "ready": true,
+                "declared_by": "spec"
+            }
         }),
     )
     .await
-    .expect("plan codex task");
+    .expect("write codex task block");
 }
 
 /// Polls the fake-codex capture file for the WORKER `thread/start` request.
@@ -368,7 +401,7 @@ async fn worker_thread_start_carries_neige_mcp_exec_shell_env() {
     // spawn hits the config-injecting arm of the #836 fix. `server`/`_mcp_tmp`
     // own the bound MCP socket + must outlive the worker spawn.
     let (_dispatcher, server, _mcp_tmp) = spawn_dispatcher_with_mcp(&boot).await;
-    plan_codex_task(&boot, "worker-mcp-env-1", "prove worker exec-shell env").await;
+    write_codex_task_block(&boot, "worker-mcp-env-1", "prove worker exec-shell env").await;
 
     let thread_start = wait_for_worker_thread_start(&capture_file).await;
 

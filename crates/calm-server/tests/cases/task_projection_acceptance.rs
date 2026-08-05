@@ -11,7 +11,7 @@ use axum::http::Request;
 use axum::{Extension, Json};
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
-use calm_server::db::sqlite::project_tasks_tx;
+use calm_server::db::sqlite::{project_tasks_tx, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
@@ -27,6 +27,7 @@ use calm_server::state::{AppState, CodexClient, DaemonClient, RouteState};
 use calm_server::task_context::{ResolveError, TaskContextMonitor};
 use calm_server::wave_report::{WaveReportPayload, persist_report, tasks_rebuild_tx};
 use calm_server::wave_report_doc::ReportDoc;
+use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::render_fence;
 use calm_types::wave_report::ReportBlock;
 use http_body_util::BodyExt;
@@ -210,6 +211,155 @@ fn diagnostic_contains(read: &Value, key: &str, needle: &str) -> bool {
                     .is_some_and(|message| message.contains(needle))
             })
     })
+}
+
+fn has_diagnostic_code(read: &Value, key: &str, code: &str) -> bool {
+    read["taskDiagnostics"].as_array().unwrap().iter().any(|v| {
+        v["key"] == key
+            && v["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == code)
+    })
+}
+
+#[tokio::test]
+async fn report_blocks_gate_admission_matrix_pins_diagnostics_and_projection() {
+    for require_gates in [false, true] {
+        let boot = new_boot().await;
+        boot.repo
+            .wave_update(
+                boot.wave_id.as_str(),
+                calm_server::model::WavePatch {
+                    require_task_gates: Some(require_gates),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("set gate policy");
+
+        let mut cases = Vec::new();
+        for kind in ["codex", "claude"] {
+            cases.push((
+                format!("{kind}-gated"),
+                kind,
+                Some(json!({"steps": [{"name": "check", "cmd": "true"}]})),
+                None,
+                true,
+            ));
+            cases.push((
+                format!("{kind}-reason"),
+                kind,
+                None,
+                Some("verified externally"),
+                true,
+            ));
+            cases.push((format!("{kind}-missing"), kind, None, None, !require_gates));
+        }
+        cases.push(("terminal-missing".into(), "terminal", None, None, true));
+
+        for (key, kind, gate, no_gate_reason, should_project) in cases {
+            let mut payload = json!({
+                "key": key,
+                "kind": kind,
+                "goal": format!("exercise {key}"),
+                "ready": true,
+                "declared_by": "spec"
+            });
+            if let Some(gate) = gate {
+                payload["gate"] = gate;
+            }
+            if let Some(reason) = no_gate_reason {
+                payload["no_gate_reason"] = json!(reason);
+            }
+
+            upsert(&boot, None, payload).await;
+            let snapshot = read(&boot).await;
+            let row_exists = keys(&boot).await.iter().any(|candidate| candidate == &key);
+            let gate_required = has_diagnostic_code(&snapshot, &key, "gate_required");
+
+            assert_eq!(
+                row_exists, should_project,
+                "require_gates={require_gates}, kind={kind}, key={key}: projection"
+            );
+            assert_eq!(
+                gate_required, !should_project,
+                "require_gates={require_gates}, kind={kind}, key={key}: diagnostics"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn production_reads_attach_task_state_and_read_time_diagnostics() {
+    let boot = new_boot().await;
+    let (block_id, _) = upsert(&boot, None, task("read-boundary")).await;
+    let task_id: String =
+        sqlx::query_scalar("SELECT id FROM tasks WHERE wave_id=?1 AND key='read-boundary'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let context = [TaskContextRef {
+        wave_id: boot.wave_id.clone(),
+        block_id,
+        rev: 1,
+        hash: "frozen".into(),
+        is_root: false,
+    }];
+    let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &task_id, 42, &context, true)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+    sqlx::query("UPDATE tasks SET gate_result_json=?1 WHERE id=?2")
+        .bind(
+            json!({
+                "passed": false,
+                "failing_step": "tests",
+                "log_path": "/private/server/gate.log",
+                "log_tail": "secret implementation output",
+                "attempt": 1
+            })
+            .to_string(),
+        )
+        .bind(&task_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    for (name, response) in [("MCP", read(&boot).await), ("REST", rest_read(&boot).await)] {
+        let verdict = response["taskDiagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|verdict| verdict["key"] == "read-boundary")
+            .unwrap_or_else(|| panic!("{name} verdict"));
+        assert_eq!(verdict["status"], "dispatched", "{name} projected status");
+        let gate_result = verdict["gateResult"]
+            .as_object()
+            .expect("projected gate result");
+        assert!(
+            !gate_result.contains_key("log_path"),
+            "{name} hides gate log path"
+        );
+        assert!(
+            !gate_result.contains_key("log_tail"),
+            "{name} hides gate log tail"
+        );
+        assert!(
+            verdict["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "reference_chain_too_large"),
+            "{name} read-time diagnostic"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1255,20 +1405,11 @@ async fn deleting_dependency_converges_in_one_evaluation_and_rebuild_matches_rea
 }
 
 #[tokio::test]
-async fn uncleared_user_tombstone_derives_wait_and_explicit_auto_declare_recovers() {
+async fn user_tombstone_does_not_derive_wait_and_policy_remains_independent() {
     let boot = new_boot().await;
     let (denied, denied_rev) = upsert(&boot, None, task("denied")).await;
     user_delete(&boot, &denied, denied_rev).await;
-    let (replacement, _) = upsert(&boot, None, task("replacement")).await;
-    assert_diagnosed_on_both_reads(&boot, "replacement", "requires user release").await;
-    assert!(
-        rest_read(&boot).await["blocks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
-    );
-    patch_policy(&boot, "auto-declare").await;
+    upsert(&boot, None, task("replacement")).await;
     assert_eq!(keys(&boot).await, ["replacement"]);
     assert!(
         rest_read(&boot).await["blocks"]
@@ -1277,16 +1418,28 @@ async fn uncleared_user_tombstone_derives_wait_and_explicit_auto_declare_recover
             .iter()
             .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
     );
-    assert!(!replacement.is_empty());
+    patch_policy(&boot, "declare-and-wait").await;
+    assert_diagnosed_on_both_reads(&boot, "replacement", "requires user release").await;
+    patch_policy(&boot, "auto-declare").await;
+    assert!(
+        rest_read(&boot).await["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["id"] == denied && b["payload"]["tombstoned_by"] == "user")
+    );
+    assert_eq!(keys(&boot).await, ["replacement"]);
 }
 
 #[tokio::test]
-async fn user_veto_removes_other_unreleased_pending_rows_with_readable_reason() {
+async fn explicit_wait_policy_removes_unreleased_pending_rows_with_readable_reason() {
     let boot = new_boot().await;
     let (vetoed, vetoed_rev) = upsert(&boot, None, task("vetoed")).await;
     upsert(&boot, None, task("collateral")).await;
     assert_eq!(keys(&boot).await, ["collateral", "vetoed"]);
     user_delete(&boot, &vetoed, vetoed_rev).await;
+    assert_eq!(keys(&boot).await, ["collateral"]);
+    patch_policy(&boot, "declare-and-wait").await;
     assert_diagnosed_on_both_reads(&boot, "collateral", "requires user release").await;
 }
 

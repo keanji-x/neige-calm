@@ -2250,6 +2250,30 @@ select:-webkit-autofill {
   padding-top: var(--space-5);
   border-top: 1px solid var(--hairline);
 }
+.rb-task--readonly {
+  opacity: 0.78;
+  border-inline-start: 3px solid var(--text-4);
+  padding-inline-start: var(--space-5);
+}
+.rb-task--draft {
+  border-inline-start: 3px solid var(--accent);
+  padding-inline-start: var(--space-5);
+}
+.rb-task-diagnostic {
+  padding: var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--danger-muted);
+  color: var(--text);
+}
+.rb-task-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+.rb-task-actions button {
+  cursor: pointer;
+}
 
 /* ── chart.candles: no card frame — hairlines + breakout do the work ── */
 .rb-fig {

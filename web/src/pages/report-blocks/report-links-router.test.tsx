@@ -7,6 +7,7 @@ import {
   Outlet,
   RouterProvider,
 } from '@tanstack/react-router';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
 import type { ReportBlock } from '../../cards/builtins/wave-report';
 import type { WaveCardSlot } from '../../types';
@@ -29,6 +30,7 @@ vi.mock('../../api/queries', () => ({
     error: null,
     isLoading: false,
   })),
+  useWaveReportQuery: vi.fn(() => ({ data: undefined, refetch: vi.fn() })),
   useWavesByCoveQuery: vi.fn(() => ({ data: [] })),
 }));
 
@@ -69,7 +71,11 @@ describe('report links with the real router', () => {
     });
 
     await router.load();
-    render(<RouterProvider router={router} />);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
 
     expect(await screen.findByRole('link', { name: 'Target' })).toHaveAttribute(
       'href',
@@ -125,7 +131,11 @@ describe('report links with the real router', () => {
     });
 
     await router.load();
-    render(<RouterProvider router={router} />);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    );
 
     expect(
       await screen.findByRole('link', { name: 'Flat target' }),

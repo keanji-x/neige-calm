@@ -86,8 +86,9 @@ fn task_dispatch_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_TASK_DISPATCH.into(),
         description: "Deprecated compatibility shim: `calm.task.dispatch` was \
-             retired in #644. Use `calm.plan.upsert` to maintain the task plan; \
-             the kernel schedules ready tasks and runs gates."
+             retired in #644. Create `task` blocks with \
+             `calm.report.blocks.upsert`; the kernel schedules ready tasks and \
+             runs gates."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -117,9 +118,9 @@ async fn task_dispatch(
     Ok(json!({
         "error": "calm.task.dispatch was retired (#644); no task was dispatched",
         "migration": {
-            "use": "calm.plan.upsert",
-            "shape": "{ tasks: [{ key, kind, goal, depends_on?, priority?, gate? }], message }",
-            "notes": "The kernel schedules ready tasks and runs verification gates. Use calm.plan.list to see task status."
+            "use": "calm.report.blocks.upsert",
+            "shape": "{ kind: \"task\", payload: { key, kind, goal, acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",
+            "notes": "Read docRev with calm.report.read. The kernel schedules ready task blocks and runs verification gates; use calm.plan.list for status."
         }
     }))
 }

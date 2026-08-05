@@ -611,8 +611,49 @@ describe('EventBridge', () => {
       invalidate.mockClear();
       expect(() => fakeStream.emit(ev)).not.toThrow();
       expect(invalidate).toHaveBeenCalledWith({ queryKey });
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: queryKey[1] ? ['wave-report', queryKey[1]] : ['wave-report'],
+      });
     }
 
+    cleanup();
+  });
+
+  it.each([
+    ['task.dispatched', {
+      idempotency_key: 'idem-dispatched', kind: 'codex', wave_id: 'wave_1',
+    }],
+    ['task.gate_result', {
+      task_id: 'task_1', idempotency_key: 'idem-gate', passed: true,
+      log_tail: '', log_path: '/tmp/gate.log', attempt: 1, wave_id: 'wave_1',
+    }],
+  ] as const)('%s invalidates the owning wave report exactly', (eventKind, data) => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(<Wrapper><EventBridge syncEventVersion={1} /></Wrapper>);
+
+    fakeStream.emit({ ev: eventKind, data } as unknown as WireEvent);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-report', 'wave_1'] });
+    cleanup();
+  });
+
+  it.each([
+    ['task.dispatched', { idempotency_key: 'idem-dispatched', kind: 'codex' }],
+    ['task.gate_result', {
+      task_id: 'task_1', idempotency_key: 'idem-gate', passed: true,
+      log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
+    }],
+  ] as const)('%s broadly invalidates reports when its wave cannot be resolved', (eventKind, data) => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(<Wrapper><EventBridge syncEventVersion={1} /></Wrapper>);
+
+    fakeStream.emit({ ev: eventKind, data } as WireEvent);
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['wave-report'] });
     cleanup();
   });
 
@@ -645,7 +686,7 @@ describe('EventBridge', () => {
   // and run `npm run typecheck`. `definePolicies<T extends { [K in EventKind]:
   // InvalidationPolicy<K> }>` must make tsc reject the table with:
   // "Property 'wave.report_edited' is missing in type ... but required in type ..."
-  it('wave.report_edited invalidates wave file queries', () => {
+  it('wave.report_edited invalidates wave file and structured report queries', () => {
     const client = makeClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const Wrapper = wrap(client);
@@ -671,6 +712,9 @@ describe('EventBridge', () => {
     ).not.toThrow();
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['wave-files', 'wave_1'],
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['wave-report', 'wave_1'],
     });
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: ['wave-backlinks'],

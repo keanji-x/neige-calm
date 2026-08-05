@@ -1,0 +1,52 @@
+{
+  "type": "object",
+  "required": ["tasks", "message"],
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["key", "kind", "goal"],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+            "description": "Stable per-wave task key; also the completion correlation id."
+          },
+          "kind": { "type": "string", "enum": ["codex", "claude", "terminal"] },
+          "goal": { "type": "string", "minLength": 1, "description": "codex/claude: goal text; terminal: the command" },
+          "context": { "description": "Optional, any JSON; forwarded to the worker verbatim." },
+          "acceptance_criteria": { "type": ["string", "null"] },
+          "cwd": { "type": ["string", "null"], "description": "Absolute path; terminal worker cwd + gate default cwd." },
+          "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Sibling task keys that must be done first." },
+          "priority": { "type": "integer", "description": "Higher schedules first; default 0." },
+          "gate": {
+            "type": "object",
+            "required": ["steps"],
+            "description": "Verification the kernel runs after the worker reports done; declare one for every agent task. Steps run in order, first non-zero exit fails the gate, and steps must be re-runnable (kernel restarts re-run the gate).",
+            "properties": {
+              "steps": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["name", "cmd"],
+                  "properties": {
+                    "name": { "type": "string", "minLength": 1, "description": "Step label; the failing step is attributed in the gate result." },
+                    "cmd": { "type": "string", "minLength": 1, "description": "Shell command; must be re-runnable. Non-zero exit fails the gate." }
+                  }
+                }
+              },
+              "cwd": { "type": ["string", "null"], "description": "Absolute path; defaults to task.cwd, else the wave cwd." },
+              "timeout_secs": { "type": "integer", "minimum": 1, "maximum": 7200, "description": "Whole-gate timeout in seconds; default 1800, max 7200. Timeout fails the gate." }
+            }
+          },
+          "no_gate_reason": { "type": "string", "minLength": 1, "description": "Escape hatch: justifies an ungated agent task on a wave with `require_task_gates`; recorded into context for audit. Must be a non-empty reason (whitespace-only is rejected)." }
+        }
+      }
+    },
+    "message": { "type": "string", "minLength": 1, "description": "Required human-readable rationale for this write. The kernel persists it on the emitted event as agent_message and on WaveUpdated.agent_message when a lifecycle transition is requested." },
+    "lifecycle": { "type": "string", "enum": ["draft", "planning", "dispatching", "working", "blocked", "reviewing", "done", "canceled", "failed"], "description": "Optional wave lifecycle transition. Use planning after understanding the goal, dispatching when requesting workers, working when work is underway, blocked when user input is needed, reviewing when validating worker results, done after acceptance, or failed when completion is impossible. Omit to leave lifecycle unchanged." }
+  }
+}

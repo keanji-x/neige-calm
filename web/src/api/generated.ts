@@ -952,8 +952,11 @@ export interface components {
         BlockVerdict: {
             blockId: string;
             diagnostics: components["schemas"]["Diagnostic"][];
+            gateResult?: unknown;
             key: string;
             schedulable: boolean;
+            status?: string | null;
+            workerCardId?: string | null;
         };
         Card: {
             /** Format: int64 */
@@ -1208,8 +1211,19 @@ export interface components {
             ifBlockRev: number;
         };
         Diagnostic: {
+            action?: string | null;
+            code: string;
+            /**
+             * @description Compatibility fields for existing MCP clients. `message` is always
+             *     rendered from `code` + `message_args`; it is never a second source.
+             */
             message: string;
+            messageArgs: {
+                [key: string]: unknown;
+            };
             path: string;
+            relatedBlockIds: string[];
+            relatedWaveId?: string | null;
         };
         DirEntry: {
             is_dir: boolean;

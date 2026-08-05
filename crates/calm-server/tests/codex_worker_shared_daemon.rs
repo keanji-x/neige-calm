@@ -13,7 +13,7 @@ use calm_server::dispatcher::Dispatcher;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
+use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{McpServer, ToolCallIdentity, ToolRegistry, build_default_registry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
 use calm_server::operation::codex_adapter::{CodexWorkerAdapter, CodexWorkerOperationPayload};
@@ -29,6 +29,7 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, CodexClient, DaemonClient, WriteContext};
 use calm_server::terminal_renderer::TerminalRendererRegistry;
+use calm_server::wave_report::WaveReportPayload;
 use clap::Parser;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -110,6 +111,7 @@ struct Boot {
     ctx: Arc<AppContext>,
     registry: Arc<ToolRegistry>,
     spec_card_id: CardId,
+    report_card_id: CardId,
     _tmp: TempDir,
 }
 
@@ -150,11 +152,26 @@ async fn boot(start_shared: bool) -> Boot {
         })
         .await
         .unwrap();
+    let report_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap();
     let events = EventBus::new();
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
     cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
-    seed_spec_session(&sqlx_repo, spec_card.id.as_str()).await;
+    cache.insert(
+        report_card.id.clone(),
+        CardRole::ReportCard,
+        wave.id.clone(),
+    );
+    seed_spec_session(&sqlx_repo, wave.id.as_str(), spec_card.id.as_str()).await;
     let wcc = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wcc).await.unwrap();
 
@@ -236,11 +253,12 @@ async fn boot(start_shared: bool) -> Boot {
         ctx,
         registry: Arc::new(registry),
         spec_card_id: spec_card.id,
+        report_card_id: report_card.id,
         _tmp: tmp,
     }
 }
 
-async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
+async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &str) {
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -261,6 +279,11 @@ async fn seed_spec_session(repo: &SqlxRepo, spec_card_id: &str) {
     )
     .await
     .unwrap();
+    sqlx::query("UPDATE waves SET root_session_id = 'spec-session' WHERE id = ?1")
+        .bind(wave_id)
+        .execute(&mut *tx)
+        .await
+        .expect("mark spec session as wave root");
     tx.commit().await.unwrap();
 }
 
@@ -304,28 +327,47 @@ fn task_id(boot: &Boot, key: &str) -> String {
     format!("{}:{key}", boot.wave_id.as_str())
 }
 
-async fn plan_codex_task(boot: &Boot, key: &str, goal: &str) {
+async fn write_codex_task_block(boot: &Boot, key: &str, goal: &str) {
+    if boot
+        .repo
+        .task_get(&task_id(boot, key))
+        .await
+        .unwrap()
+        .is_some()
+    {
+        return;
+    }
+    let report = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .expect("report card");
+    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
     let handler = boot
         .registry
-        .lookup(TOOL_PLAN_UPSERT)
-        .expect("plan upsert registered");
+        .lookup(TOOL_REPORT_BLOCKS_UPSERT)
+        .expect("task block writer registered");
     handler(
         boot.ctx.clone(),
         spec_identity(boot),
         json!({
-            "tasks": [{
+            "kind": "task",
+            "if_doc_rev": report.doc_rev,
+            "payload": {
                 "key": key,
                 "kind": "codex",
                 "goal": goal,
                 "context": { "from": "worker-shared-test" },
-                "acceptance_criteria": "finish",
-                "no_gate_reason": "shared daemon spawn coverage"
-            }],
-            "message": "plan shared worker task"
+                "acceptance": "finish",
+                "no_gate_reason": "shared daemon spawn coverage",
+                "ready": true,
+                "declared_by": "spec"
+            }
         }),
     )
     .await
-    .expect("plan codex task");
+    .expect("write codex task block");
 }
 
 async fn wait_for<F, Fut, T>(timeout: Duration, mut f: F) -> Option<T>
@@ -891,8 +933,8 @@ async fn worker_via_shared_daemon_dedupes_same_idempotency_key() {
 
     let key = "shared-dup-key";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "dedup shared worker").await;
-    plan_codex_task(&boot, key, "dedup shared worker").await;
+    write_codex_task_block(&boot, key, "dedup shared worker").await;
+    write_codex_task_block(&boot, key, "dedup shared worker").await;
 
     wait_for(Duration::from_secs(5), || async {
         (worker_card_count_by_idem(&boot, &idempotency_key).await == 1).then_some(())
@@ -916,7 +958,7 @@ async fn worker_via_shared_daemon_dedupes_under_real_concurrent_race() {
 
     let key = "shared-race-key";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "race shared worker").await;
+    write_codex_task_block(&boot, key, "race shared worker").await;
     tokio::join!(
         async { dispatcher.scheduler().poke(boot.wave_id.clone()) },
         async { dispatcher.scheduler().poke(boot.wave_id.clone()) },
@@ -1220,7 +1262,7 @@ async fn worker_via_shared_daemon_semaphore_caps_concurrent_spawns() {
     let held_permit = sem.clone().acquire_owned().await.unwrap();
 
     for i in 0..2 {
-        plan_codex_task(&boot, &format!("shared-cap-{i}"), "cap shared worker").await;
+        write_codex_task_block(&boot, &format!("shared-cap-{i}"), "cap shared worker").await;
     }
 
     tokio::time::sleep(Duration::from_millis(250)).await;
@@ -1252,7 +1294,7 @@ async fn worker_via_shared_daemon_writes_runtime_and_projects_thread_id() {
     let _dispatcher = spawn_dispatcher(&boot);
     let key = "shared-worker-1";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "do shared worker thing").await;
+    write_codex_task_block(&boot, key, "do shared worker thing").await;
     let card = wait_for(Duration::from_secs(5), || async {
         let mut cards = boot
             .repo
@@ -1374,7 +1416,7 @@ async fn worker_shared_daemon_stopped_rolls_back_card() {
     let mut rx = boot.events.subscribe();
     let key = "shared-stopped-1";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "shared daemon stopped").await;
+    write_codex_task_block(&boot, key, "shared daemon stopped").await;
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
@@ -1415,7 +1457,7 @@ async fn worker_turn_start_failure_rolls_back_mapping_and_payload() {
     let mut rx = boot.events.subscribe();
     let key = "turn-fail-1";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "turn start should fail").await;
+    write_codex_task_block(&boot, key, "turn start should fail").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
@@ -1474,7 +1516,7 @@ async fn worker_spawn_fail_after_turn_start_interrupts_turn() {
     let mut rx = boot.events.subscribe();
     let key = "pty-fail-1";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "turn starts but pty fails").await;
+    write_codex_task_block(&boot, key, "turn starts but pty fails").await;
     let failed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let env = rx.recv().await.unwrap();
@@ -1543,7 +1585,7 @@ async fn worker_thread_start_carries_mcp_shell_environment_policy() {
     let (_dispatcher, server) = spawn_dispatcher_with_mcp(&boot);
     let key = "shared-worker-mcp-env";
     let idempotency_key = task_id(&boot, key);
-    plan_codex_task(&boot, key, "report task completion via neige CLI").await;
+    write_codex_task_block(&boot, key, "report task completion via neige CLI").await;
     wait_for(Duration::from_secs(5), || async {
         let mut cards = boot
             .repo

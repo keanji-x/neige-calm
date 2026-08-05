@@ -14,7 +14,6 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.cove.outline",
         "calm.plan.cancel",
         "calm.plan.list",
-        "calm.plan.upsert",
         "calm.ratify.request",
         "calm.report.blocks.delete",
         "calm.report.blocks.kinds",
@@ -83,6 +82,7 @@ async fn tools_list_for_spec_role_does_not_leak_aliases() {
         "calm.task_completed",
         "calm.task_failed",
         "calm.get_wave_state",
+        "calm.plan.upsert",
         "calm.update_task_meta",
     ] {
         assert!(
@@ -162,74 +162,37 @@ async fn tools_list_for_shared_daemon_without_thread_returns_role_union() {
         "daemon-trust tools/list without threadId must hide retired task.dispatch, got: {names:?}"
     );
     assert!(
+        !names.contains(&"calm.plan.upsert".to_string()),
+        "daemon-trust role union must hide retired plan.upsert, got: {names:?}"
+    );
+    assert!(
         names.contains(&"calm.report.write".to_string()),
         "daemon-trust tools/list without threadId must include report.write, got: {names:?}"
     );
     let _ = (&boot.server, &boot.repo);
 }
 
-/// PR #685 fix round 2, F3 — the `calm.plan.upsert` descriptor must
-/// advertise the ACCEPTED gate shape (steps/cwd/timeout_secs), the
-/// rule-6 gated-by-default policy, and the re-runnable contract — not
-/// the stale PR-A "gate is not yet accepted" text that steered agents
-/// into omitting gates or escaping via `no_gate_reason`.
 #[tokio::test]
-async fn plan_upsert_descriptor_advertises_gate_shape_and_policy() {
+async fn plan_upsert_hidden_shim_retains_original_input_schema() {
     let registry = calm_server::mcp_server::build_default_registry();
-    let descriptors = registry.descriptors_for_role(CardRole::Spec);
+    let descriptors = registry.descriptors();
     let upsert = descriptors
         .iter()
         .find(|d| d.name == "calm.plan.upsert")
         .expect("calm.plan.upsert descriptor");
 
     assert!(
-        !upsert.description.contains("not yet accepted"),
-        "stale PR-A gate text: {}",
+        upsert.description.contains("Deprecated compatibility shim"),
+        "shim migration description missing: {}",
         upsert.description
     );
-    for needle in [
-        "gate",
-        "require_task_gates",
-        "no_gate_reason",
-        "re-runnable",
-    ] {
-        assert!(
-            upsert.description.contains(needle),
-            "description must mention `{needle}`: {}",
-            upsert.description
-        );
-    }
+    assert!(upsert.visible_to_roles.is_empty());
 
-    let gate = &upsert.input_schema["properties"]["tasks"]["items"]["properties"]["gate"];
-    assert_eq!(gate["type"], "object", "{gate:#?}");
-    assert_eq!(gate["required"], serde_json::json!(["steps"]), "{gate:#?}");
-    let step_props = &gate["properties"]["steps"]["items"];
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/plan_upsert_input_schema.json"))
+            .expect("plan.upsert schema golden JSON");
     assert_eq!(
-        step_props["required"],
-        serde_json::json!(["name", "cmd"]),
-        "{gate:#?}"
-    );
-    let timeout = &gate["properties"]["timeout_secs"];
-    assert_eq!(timeout["maximum"], 7200, "{gate:#?}");
-    assert!(
-        timeout["description"]
-            .as_str()
-            .unwrap()
-            .contains("default 1800"),
-        "{gate:#?}"
-    );
-    assert!(
-        gate["properties"]["cwd"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("Absolute"),
-        "{gate:#?}"
-    );
-    assert!(
-        gate["description"]
-            .as_str()
-            .unwrap()
-            .contains("re-runnable"),
-        "{gate:#?}"
+        upsert.input_schema, golden,
+        "hidden shim must retain the complete legacy input schema"
     );
 }

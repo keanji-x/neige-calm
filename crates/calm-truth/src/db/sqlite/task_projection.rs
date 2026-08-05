@@ -3,8 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
 use calm_types::ids::{ActorId, WaveId};
 use calm_types::report_blocks::tasks::{
-    Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, gate_rule_violations,
-    json_eq, opt_json_eq, unknown_deps,
+    Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, diagnostic_args,
+    gate_rule_violations, json_eq, opt_json_eq, unknown_deps,
 };
 use calm_types::report_links::{parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
@@ -140,9 +140,128 @@ pub struct BlockVerdict {
     pub key: String,
     pub diagnostics: Vec<Diagnostic>,
     pub schedulable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_card_id: Option<String>,
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
+}
+
+#[derive(Deserialize)]
+struct TaskReadState {
+    key: String,
+    status: String,
+    gate_result_json: Option<String>,
+    worker_card_id: Option<String>,
+    context_stale_at_ms: Option<i64>,
+    context_closure_truncated: i64,
+    claim_context_json: Option<String>,
+}
+
+/// Attach the task-table state carried by `wave_projection_state`'s single
+/// statement. This deliberately stays beside the projection query instead of
+/// introducing a live block data-source abstraction.
+fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut [BlockVerdict]) {
+    let by_key: BTreeMap<_, _> = rows.iter().map(|row| (row.key.as_str(), row)).collect();
+    for verdict in verdicts {
+        let Some(row) = by_key.get(verdict.key.as_str()) else {
+            continue;
+        };
+        verdict.status = Some(row.status.clone());
+        verdict.gate_result = row
+            .gate_result_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|gate| {
+                let passed = gate.get("passed")?.as_bool()?;
+                let mut public = serde_json::Map::from_iter([(
+                    "passed".into(),
+                    serde_json::Value::Bool(passed),
+                )]);
+                if let Some(step) = gate.get("failing_step").and_then(serde_json::Value::as_str) {
+                    public.insert(
+                        "failing_step".into(),
+                        serde_json::Value::String(step.into()),
+                    );
+                }
+                Some(serde_json::Value::Object(public))
+            });
+        verdict.worker_card_id = row.worker_card_id.clone();
+        let related_context_blocks = || {
+            let grouped = row
+                .claim_context_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|item| !item.is_root)
+                .fold(
+                    BTreeMap::<String, Vec<String>>::new(),
+                    |mut grouped, item| {
+                        grouped
+                            .entry(item.wave_id.to_string())
+                            .or_default()
+                            .push(item.block_id);
+                        grouped
+                    },
+                );
+            if grouped.is_empty() {
+                return vec![(None, vec![])];
+            }
+            grouped
+                .into_iter()
+                .map(|(related_wave_id, block_ids)| {
+                    let related_wave_id = (related_wave_id != wave_id).then_some(related_wave_id);
+                    (related_wave_id, block_ids)
+                })
+                .collect::<Vec<_>>()
+        };
+        if row.context_closure_truncated != 0 {
+            verdict
+                .diagnostics
+                .extend(related_context_blocks().into_iter().map(
+                    |(related_wave_id, related_block_ids)| {
+                        Diagnostic::coded(
+                            "reference_chain_too_large",
+                            "refs",
+                            BTreeMap::new(),
+                            related_block_ids,
+                            related_wave_id,
+                            Some("narrow_task_context".into()),
+                        )
+                    },
+                ));
+        }
+        let already_declaration_stale = verdict.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.code.as_str(),
+                "context_stale_declaration" | "declaration_changed_in_flight"
+            )
+        });
+        if row.context_stale_at_ms.is_some() && !already_declaration_stale {
+            verdict
+                .diagnostics
+                .extend(related_context_blocks().into_iter().map(
+                    |(related_wave_id, related_block_ids)| {
+                        Diagnostic::coded(
+                            "context_stale_reference",
+                            "refs",
+                            BTreeMap::new(),
+                            related_block_ids,
+                            related_wave_id,
+                            Some("relink_reference".into()),
+                        )
+                    },
+                ));
+        }
+        if !verdict.diagnostics.is_empty() {
+            verdict.schedulable = false;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -206,11 +325,31 @@ pub async fn mark_context_material_tx(
 }
 
 fn withdrawal_diagnostic(key: &str, status: &str) -> Diagnostic {
-    Diagnostic::new(
+    Diagnostic::coded(
+        "context_stale_declaration",
         "key",
-        format!(
-            "task `{key}` is in flight ({status}) and cannot be withdrawn immediately; its declaration context is now stale, so any gate operation that has not started will be rejected"
-        ),
+        diagnostic_args([
+            ("key", serde_json::Value::String(key.into())),
+            ("status", serde_json::Value::String(status.into())),
+        ]),
+        vec![],
+        None,
+        Some("open_worker_output".into()),
+    )
+}
+
+fn reference_diagnostic(code: &str, reference: &str, wave_id: Option<String>) -> Diagnostic {
+    let related_block_ids = parse_destination(reference)
+        .and_then(|(_, block)| block)
+        .into_iter()
+        .collect();
+    Diagnostic::coded(
+        code,
+        "refs",
+        diagnostic_args([("reference", serde_json::Value::String(reference.into()))]),
+        related_block_ids,
+        wave_id,
+        Some("relink_reference".into()),
     )
 }
 
@@ -235,6 +374,7 @@ struct WaveProjectionState {
     /// cross-cove reference check.
     source_cove: String,
     inflight: Vec<InflightTaskRow>,
+    task_read_state: Vec<TaskReadState>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -244,6 +384,7 @@ struct WaveProjectionStateRow {
     require_task_gates: i64,
     cove_id: String,
     inflight_json: String,
+    task_read_state_json: String,
 }
 
 /// Reads the wave's projection policy, its cove, and every in-flight task
@@ -267,20 +408,40 @@ struct WaveProjectionStateRow {
 async fn wave_projection_state(
     conn: &mut SqliteConnection,
     wave_id: &str,
+    include_read_state: bool,
 ) -> Result<WaveProjectionState> {
-    let row: Option<WaveProjectionStateRow> = sqlx::query_as(
+    let sql = if include_read_state {
         r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'declared_by', t.declared_by, 'origin', t.origin))
                    FROM tasks t
                    WHERE t.wave_id = w.id
-                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json
-           FROM waves w WHERE w.id = ?1"#,
-    )
-    .bind(wave_id)
-    .fetch_optional(&mut *conn)
-    .await?;
+                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
+                  (SELECT json_group_array(json_object(
+                       'key', t.key, 'status', t.status,
+                       'gate_result_json', t.gate_result_json,
+                       'worker_card_id', t.worker_card_id,
+                       'context_stale_at_ms', t.context_stale_at_ms,
+                       'context_closure_truncated', t.context_closure_truncated,
+                       'claim_context_json', t.claim_context_json))
+                   FROM tasks t WHERE t.wave_id = w.id) AS task_read_state_json
+           FROM waves w WHERE w.id = ?1"#
+    } else {
+        r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
+                  (SELECT json_group_array(json_object(
+                       'key', t.key, 'status', t.status,
+                       'declared_by', t.declared_by, 'origin', t.origin))
+                   FROM tasks t
+                   WHERE t.wave_id = w.id
+                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
+                  '[]' AS task_read_state_json
+           FROM waves w WHERE w.id = ?1"#
+    };
+    let row: Option<WaveProjectionStateRow> = sqlx::query_as(sql)
+        .bind(wave_id)
+        .fetch_optional(&mut *conn)
+        .await?;
     let row = row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
     Ok(WaveProjectionState {
         policy: row.automation_policy,
@@ -291,6 +452,7 @@ async fn wave_projection_state(
         require_gates: row.require_task_gates != 0,
         source_cove: row.cove_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
+        task_read_state: serde_json::from_str(&row.task_read_state_json)?,
     })
 }
 
@@ -358,14 +520,14 @@ pub async fn evaluate_schedulability(
     wave_id: &str,
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
+    include_read_state: bool,
 ) -> Result<Vec<BlockVerdict>> {
-    let state = wave_projection_state(&mut *conn, wave_id).await?;
+    let state = wave_projection_state(&mut *conn, wave_id, include_read_state).await?;
     let configured_policy = state.policy;
     let ceiling = state.ceiling;
     let require_gates = state.require_gates;
     let source_cove = state.source_cove;
-    let effective_wait = configured_policy.as_deref() == Some("declare-and-wait")
-        || (configured_policy.is_none() && declarations.iter().any(|d| d.tombstoned_by_user));
+    let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
     // unknown_deps knows every in-flight key in the wave, including rows
     // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
@@ -390,15 +552,23 @@ pub async fn evaluate_schedulability(
             .cloned()
             .unwrap_or_default();
         for (_, dependency) in unknown.iter().filter(|(key, _)| key == &declaration.key) {
-            diagnostics.push(Diagnostic::new(
+            diagnostics.push(Diagnostic::coded(
+                "unknown_dependency",
                 "depends_on",
-                format!("unknown dependency `{dependency}`"),
+                diagnostic_args([("dependency", serde_json::Value::String(dependency.clone()))]),
+                vec![],
+                None,
+                Some("edit_dependencies".into()),
             ));
         }
         if gate_bad.contains(&declaration.key) {
-            diagnostics.push(Diagnostic::new(
+            diagnostics.push(Diagnostic::coded(
+                "gate_required",
                 "gate",
-                "task requires a gate or no_gate_reason",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some("add_gate_or_reason".into()),
             ));
         }
         let mut references = declaration.refs.clone();
@@ -417,13 +587,16 @@ pub async fn evaluate_schedulability(
         references.sort();
         references.dedup();
         for reference in &references {
+            let destination = parse_destination(reference);
+            let destination_wave = destination.as_ref().map(|(wave, _)| wave.clone());
             let target: Option<(String, String, i64)> = if let Some((dst_wave, dst_block)) =
-                parse_destination(reference)
+                destination
             {
                 let Some(dst_block) = dst_block else {
-                    diagnostics.push(Diagnostic::new(
-                        "refs",
-                        format!("reference `{reference}` must identify a block"),
+                    diagnostics.push(reference_diagnostic(
+                        "reference_needs_block",
+                        reference,
+                        Some(dst_wave),
                     ));
                     continue;
                 };
@@ -441,21 +614,24 @@ pub async fn evaluate_schedulability(
                 continue;
             };
             match target {
-                None => diagnostics.push(Diagnostic::new(
-                    "refs",
-                    format!("reference target `{reference}` does not exist"),
+                None => diagnostics.push(reference_diagnostic(
+                    "reference_missing",
+                    reference,
+                    destination_wave.clone(),
                 )),
                 Some((target_cove, target_kind, _))
                     if target_cove != source_cove && target_kind != "system" =>
                 {
-                    diagnostics.push(Diagnostic::new(
-                        "refs",
-                        format!("cross-cove reference `{reference}` is not schedulable"),
+                    diagnostics.push(reference_diagnostic(
+                        "reference_cross_cove",
+                        reference,
+                        destination_wave.clone(),
                     ));
                 }
-                Some((_, _, 0)) => diagnostics.push(Diagnostic::new(
-                    "refs",
-                    format!("reference target `{reference}` does not exist"),
+                Some((_, _, 0)) => diagnostics.push(reference_diagnostic(
+                    "reference_missing",
+                    reference,
+                    destination_wave,
                 )),
                 Some(_) => {}
             }
@@ -465,15 +641,22 @@ pub async fn evaluate_schedulability(
             && !declaration.released_by_user
             && !declaration.tombstone
         {
-            diagnostics.push(Diagnostic::new(
+            diagnostics.push(Diagnostic::coded(
+                "declare_and_wait",
                 "released_by_user",
-                "this wave requires user release before spec tasks are queued",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some("release_task".into()),
             ));
         }
         verdicts.push(BlockVerdict {
             block_id: declaration.block_id.clone(),
             key: declaration.key.clone(),
             schedulable: declaration.ready && !declaration.tombstone && diagnostics.is_empty(),
+            status: None,
+            gate_result: None,
+            worker_card_id: None,
             diagnostics,
             withdrawal: None,
         });
@@ -535,13 +718,24 @@ pub async fn evaluate_schedulability(
             None
         };
         if changed || !matches!(status.as_str(), "dispatched" | "running" | "verifying") {
-            verdict.diagnostics.push(Diagnostic::new(
-                "key",
+            verdict.diagnostics.push(Diagnostic::coded(
                 if changed {
-                    "task is already executing; declaration changes were not applied"
+                    "declaration_changed_in_flight"
                 } else {
-                    "task key has already completed; declare a new key instead"
+                    "task_key_completed"
                 },
+                "key",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some(
+                    if changed {
+                        "open_worker_output"
+                    } else {
+                        "create_task_with_new_key"
+                    }
+                    .into(),
+                ),
             ));
             verdict.schedulable = false;
         }
@@ -572,6 +766,9 @@ pub async fn evaluate_schedulability(
                 diagnostics: vec![withdrawal_diagnostic(&row.key, &row.status)],
                 key: row.key.clone(),
                 schedulable: false,
+                status: Some(row.status.clone()),
+                gate_result: None,
+                worker_card_id: None,
                 withdrawal: None,
             });
         }
@@ -596,12 +793,35 @@ pub async fn evaluate_schedulability(
             declarations[*i].key.clone(),
         )
     });
+    let admitted: Vec<usize> = candidates.iter().copied().take(capacity).collect();
+    let admitted_ids: Vec<String> = declarations
+        .iter()
+        .enumerate()
+        .filter(|(index, declaration)| {
+            admitted.contains(index) || inflight_key_set.contains(declaration.key.as_str())
+        })
+        .map(|(_, declaration)| declaration.block_id.clone())
+        .collect();
     for index in candidates.into_iter().skip(capacity) {
-        verdicts[index].diagnostics.push(Diagnostic::new(
+        verdicts[index].diagnostics.push(Diagnostic::coded(
+            "spec_task_ceiling",
             "key",
-            format!("spec task ceiling of {ceiling} is reached"),
+            diagnostic_args([
+                ("ceiling", serde_json::Value::from(ceiling)),
+                ("occupied", serde_json::Value::from(occupied)),
+                (
+                    "admission_order",
+                    serde_json::Value::String("document order, then key".into()),
+                ),
+            ]),
+            admitted_ids.clone(),
+            Some(wave_id.into()),
+            Some("raise_spec_task_ceiling".into()),
         ));
         verdicts[index].schedulable = false;
+    }
+    if include_read_state {
+        attach_task_read_state(&state.task_read_state, wave_id, &mut verdicts);
     }
     Ok(verdicts)
 }
@@ -622,7 +842,8 @@ pub async fn project_tasks_tx(
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<TaskProjectionOutcome> {
-    let verdicts = evaluate_schedulability(tx, wave_id, declarations, block_local_diags).await?;
+    let verdicts =
+        evaluate_schedulability(tx, wave_id, declarations, block_local_diags, false).await?;
     let schedulable_by_key: BTreeMap<_, _> = verdicts
         .iter()
         .filter(|v| !v.key.is_empty())
@@ -709,6 +930,9 @@ pub async fn project_tasks_tx(
                         key: key.clone(),
                         diagnostics: vec![diagnostic],
                         schedulable: false,
+                        status: Some(status.clone()),
+                        gate_result: None,
+                        worker_card_id: None,
                         withdrawal: None,
                     });
                 }
@@ -791,7 +1015,7 @@ mod tests {
             refs: Vec::new(),
             declared_by: "spec".into(),
             released_by_user: false,
-            tombstoned_by_user: false,
+            tombstoned_by: None,
             ready: true,
             tombstone: false,
         }
@@ -816,6 +1040,186 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_state_surfaces_truncated_and_stale_reference_diagnostics() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "read-state", "pending").await;
+        let claim_context = json!([
+            {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
+            {"wave_id": wave, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
+        ]);
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1,gate_result_json=?2,worker_card_id='worker-output' WHERE wave_id=?3 AND key='read-state'")
+            .bind(claim_context.to_string())
+            .bind(json!({"passed":false,"failing_step":"test","log_path":"/private/gate.log","log_tail":"raw output","attempt":7}).to_string())
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "read-state")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let verdict = &verdicts[0];
+        assert!(!verdict.schedulable);
+        assert_eq!(
+            verdict.gate_result,
+            Some(json!({"passed": false, "failing_step": "test"}))
+        );
+        assert_eq!(verdict.worker_card_id.as_deref(), Some("worker-output"));
+        for code in ["reference_chain_too_large", "context_stale_reference"] {
+            let diagnostic = verdict
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code == code)
+                .unwrap_or_else(|| panic!("missing {code}"));
+            assert_eq!(diagnostic.related_block_ids, ["b_feed"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn read_state_root_only_context_remains_fail_closed() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "root-only", "pending").await;
+        let claim_context = json!([
+            {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true}
+        ]);
+        sqlx::query("UPDATE tasks SET context_closure_truncated=1,context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='root-only'")
+            .bind(claim_context.to_string())
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "root-only")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let verdict = &verdicts[0];
+        assert!(!verdict.schedulable);
+        for code in ["reference_chain_too_large", "context_stale_reference"] {
+            let diagnostic = verdict
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.code == code)
+                .unwrap_or_else(|| panic!("missing {code}"));
+            assert!(diagnostic.related_block_ids.is_empty());
+            assert!(diagnostic.related_wave_id.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn declare_and_wait_diagnostic_does_not_link_to_its_own_wave() {
+        let (repo, wave) = setup().await;
+        sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "approval-needed")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+        let diagnostic = verdicts[0]
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "declare_and_wait")
+            .expect("declare-and-wait diagnostic");
+        assert!(diagnostic.related_wave_id.is_none());
+        assert!(diagnostic.related_block_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_state_groups_related_context_links_by_wave() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "cross-wave", "pending").await;
+        let other_wave = "wave_remote".to_owned();
+        let claim_context = json!([
+            {"wave_id": wave, "block_id": "b_root", "rev": 1, "hash": "root", "is_root": true},
+            {"wave_id": wave, "block_id": "b_local", "rev": 2, "hash": "local", "is_root": false},
+            {"wave_id": other_wave, "block_id": "b_remote", "rev": 3, "hash": "remote", "is_root": false}
+        ]);
+        sqlx::query("UPDATE tasks SET context_stale_at_ms=42,claim_context_json=?1 WHERE wave_id=?2 AND key='cross-wave'")
+            .bind(claim_context.to_string())
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "cross-wave")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let stale = verdicts[0]
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "context_stale_reference")
+            .collect::<Vec<_>>();
+        assert_eq!(stale.len(), 2);
+        assert!(stale.iter().any(|diagnostic| {
+            diagnostic.related_wave_id.is_none() && diagnostic.related_block_ids == ["b_local"]
+        }));
+        assert!(stale.iter().any(|diagnostic| {
+            diagnostic.related_wave_id.as_deref() == Some(other_wave.as_str())
+                && diagnostic.related_block_ids == ["b_remote"]
+        }));
+    }
+
+    #[tokio::test]
+    async fn zero_ceiling_diagnostic_has_no_false_block_jump_target() {
+        let (repo, wave) = setup().await;
+        sqlx::query("UPDATE waves SET spec_task_ceiling=0 WHERE id=?1")
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "capacity-zero")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+        let ceiling = verdicts[0]
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
+            .expect("ceiling diagnostic");
+        assert!(ceiling.related_block_ids.is_empty());
+        assert_eq!(ceiling.related_wave_id.as_deref(), Some(wave.as_str()));
+    }
+
+    #[tokio::test]
     async fn ceiling_i_a_inflight_is_input_and_holds_the_upper_bound() {
         let (repo, wave) = setup().await;
         insert_block_task(&repo, &wave, "k1", "dispatched").await;
@@ -825,6 +1229,11 @@ mod tests {
             .await
             .unwrap();
         tx.commit().await.unwrap();
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let diagnostics =
+            evaluate_schedulability(&mut conn, &wave, &declarations, &[vec![], vec![]], true)
+                .await
+                .unwrap();
         assert!(!outcome.diagnostics[0].schedulable);
         assert!(
             outcome.diagnostics[0]
@@ -833,6 +1242,7 @@ mod tests {
                 .any(|d| d.message.contains("ceiling"))
         );
         assert!(outcome.diagnostics[1].schedulable);
+        assert_eq!(diagnostics[1].status.as_deref(), Some("dispatched"));
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND status IN ('pending','dispatched','running','verifying')")
             .bind(&wave).fetch_one(&repo.pool).await.unwrap();
         assert_eq!(
@@ -846,7 +1256,7 @@ mod tests {
         let (repo, wave) = setup().await;
         insert_block_task(&repo, &wave, "k1", "pending").await;
         let declarations = vec![declaration(0, "k1"), declaration(1, "k2")];
-        let local = vec![vec![Diagnostic::new("key", "broken")], vec![]];
+        let local = vec![vec![Diagnostic::new("payload", "broken")], vec![]];
         for _ in 0..2 {
             let mut tx = repo.pool.begin().await.unwrap();
             let outcome = project_tasks_tx(&mut tx, &wave, &declarations, &local)

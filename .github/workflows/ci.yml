@@ -162,6 +162,145 @@ jobs:
           fi
           echo "OK: no raw_repo escape in production"
 
+      - name: pgid escape gate (#1013 T11)
+        # The `pgid-escape-probe` feature compiles a module whose only job is to
+        # read `pgid_lease::Pgid`'s private field from outside the module. The
+        # build MUST fail with E0616. Asserting only "it failed" would be a fake
+        # gate — any typo makes a build fail — so both the error code AND the
+        # specific diagnostic (field `0` of struct `Pgid` is private, in
+        # calm-proc-supervisor/src/lib.rs) are asserted.
+        #
+        # What this step proves, exactly — ONE thing: the `Pgid` tuple field is
+        # not readable outside `pgid_lease`. It proves nothing else. The probe
+        # only reads `p.0`, so an added `pub(super) fn raw2()` or an added
+        # `#[derive(Debug)]` leaves `p.0` private and this step stays green.
+        # The next step (a grep ratchet) catches *some* of those shapes; it is
+        # defense-in-depth against accidental drift, NOT a proof — see its own
+        # comment. The primary guarantee here is the type system, not either
+        # gate: reviewers wrote and compiled seven distinct escape attempts, and
+        # only `unsafe` transmutes, the acknowledged destructure/re-wrap seam
+        # (pgid_lease regulation 5), and writing a fresh `libc::kill` succeeded.
+        #
+        # NOTE: this crate can never be built with `--all-features` (that turns
+        # this feature on). That is by design; see crates/calm-proc-supervisor/Cargo.toml.
+        # The other direction (default build green, probe absent) is covered by
+        # the clippy step below, which builds this crate without the feature.
+        run: |
+          set -uo pipefail
+          out="$(cargo check -p calm-proc-supervisor --features pgid-escape-probe 2>&1)" && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::pgid-escape-probe compiled successfully — the Pgid tuple field is readable outside pgid_lease again"
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -qF 'error[E0616]: field `0` of struct `Pgid` is private'; then
+            echo "::error::pgid-escape-probe failed, but not with E0616 on Pgid's field — the probe is broken, not the invariant. (One real-invariant case also lands here: if the number was flattened back into the enum variants, p.0 applies to a bare pid_t and rustc emits E0609. Check the variants before believing this message.)"
+            exit 1
+          fi
+          if ! printf '%s' "$out" | grep -qF 'crates/calm-proc-supervisor/src/lib.rs'; then
+            echo "::error::the E0616 did not point at crates/calm-proc-supervisor/src/lib.rs — it is not the probe's expression that failed"
+            exit 1
+          fi
+          echo "OK: probe fails with E0616 on Pgid's private field, in calm-proc-supervisor/src/lib.rs"
+
+      - name: pgid accessor ratchet (#1013 T11 companion)
+        # DEFENSE IN DEPTH, NOT A PROOF. Read this before trusting it.
+        #
+        # The compile-fail probe above pins exactly one thing: `Pgid`'s tuple
+        # field is not readable outside `pgid_lease`. It cannot see an added
+        # accessor or derive (it only reads `p.0`). This grep catches the
+        # accessor/derive SHAPES listed below, inside `mod pgid_lease`'s own
+        # text. It is a text scan, so it can never be complete: a determined
+        # author can still route the number out (e.g. through a type that is not
+        # named `Pgid` here, or through code outside this module). The claim
+        # "the accessor and derive cases are covered by the ratchet" was written
+        # twice and defeated twice — do not restore it.
+        #
+        # The primary guarantee is the type system. Two review channels wrote
+        # and compiled seven distinct escapes against this design; only `unsafe`
+        # transmutes, the acknowledged destructure/re-wrap seam (regulation 5),
+        # and writing a fresh `libc::kill` succeeded. This step exists to make
+        # accidental drift loud, and each pattern below is there because a
+        # reviewer defeated the previous version of this step with it:
+        #   * a second method on `impl Pgid`, or a `pub`/`pub(super)` one;
+        #   * ANY `pub(super) fn` in the module returning a `pid_t` — including
+        #     a free function, or a method on `GroupSignalTarget`, neither of
+        #     which lives in the `impl Pgid` block;
+        #   * a trait impl with `Pgid` on EITHER side of `for`
+        #     (`impl Display for Pgid` and `impl From<Pgid> for pid_t` both);
+        #   * a `derive` anywhere in the module.
+        # Whitespace is normalized to one line before the signature/trait scans
+        # so a multiline `impl\n Display\nfor Pgid` cannot evade a line-by-line
+        # regex (it did). `[^!{;]` keeps each match inside one impl header;
+        # `[^!]`-style exclusion of `!` keeps negative impls out.
+        #
+        # Scoped to `mod pgid_lease`'s own text so it says nothing about the
+        # rest of the crate. Whole-line `//` comments are stripped first: the
+        # module's prose talks *about* `pub(super)` and accessors, and matching
+        # that text would make this a self-tripping gate.
+        run: |
+          set -euo pipefail
+          src=crates/calm-proc-supervisor/src/lib.rs
+          region="$(awk '/^mod pgid_lease \{$/,/^\}$/' "$src" | grep -v '^[[:space:]]*//' || true)"
+          if [ -z "$region" ]; then
+            echo "::error::could not locate 'mod pgid_lease { .. }' in $src — this ratchet is scanning nothing"
+            exit 1
+          fi
+          # Whitespace-normalized single line: multiline signatures and multiline
+          # `impl` headers must not be able to hide from the scans below.
+          flat="$(printf '%s\n' "$region" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+          impl_block="$(printf '%s\n' "$region" | awk '/^    impl Pgid \{$/,/^    \}$/')"
+          if [ -z "$impl_block" ]; then
+            echo "::error::could not locate 'impl Pgid { .. }' — the ratchet is scanning nothing"
+            exit 1
+          fi
+          # Exactly one method on Pgid, and it is the module-private `raw`.
+          n_fns="$(printf '%s\n' "$impl_block" | grep -c 'fn ' || true)"
+          if [ "$n_fns" != "1" ]; then
+            echo "::error::impl Pgid has $n_fns methods, expected exactly 1 (fn raw). A second method is an accessor escape the E0616 probe cannot see."
+            printf '%s\n' "$impl_block"
+            exit 1
+          fi
+          if ! printf '%s\n' "$impl_block" | grep -qF 'fn raw(&self) -> libc::pid_t {'; then
+            echo "::error::impl Pgid's single method is not the expected module-private 'fn raw(&self) -> libc::pid_t'"
+            printf '%s\n' "$impl_block"
+            exit 1
+          fi
+          if printf '%s\n' "$impl_block" | grep -qE '\bpub(\(|\s)'; then
+            echo "::error::impl Pgid contains a pub/pub(super) method — the number is readable outside pgid_lease"
+            printf '%s\n' "$impl_block"
+            exit 1
+          fi
+          # The `impl Pgid` block is not the only place an accessor can live: a
+          # free `pub(super) fn raw2(p: &Pgid) -> pid_t` in the module, or a
+          # `pub(super) fn raw_pgid(&self) -> pid_t` on `impl GroupSignalTarget`,
+          # both hand the number to the parent module while leaving `p.0`
+          # private and the `impl Pgid` block untouched. Both defeated the
+          # previous version of this step with CI green.
+          if printf '%s\n' "$flat" | grep -oE 'pub\(super\)[[:space:]]+fn[^;{]*->[^;{]*pid_t'; then
+            echo "::error::a pub(super) fn in mod pgid_lease returns a pid_t — the number is readable outside the module (the E0616 probe only sees p.0)"
+            exit 1
+          fi
+          # No trait impls involving Pgid and no derives anywhere in the module:
+          # a Display/Debug that prints a decimal pgid is an accessor in text,
+          # and `impl From<Pgid> for libc::pid_t` is one with the conversion
+          # spelled out. Both sides of `for` are checked — the old `for Pgid`
+          # pattern missed the `From<Pgid>` direction, where Pgid is the source.
+          if printf '%s\n' "$flat" | grep -oE 'impl[^!{;]*[[:space:]]for[[:space:]]+Pgid[^[:alnum:]_]'; then
+            echo "::error::a trait is implemented for Pgid — Debug/Display/Deref all leak the number"
+            exit 1
+          fi
+          if printf '%s\n' "$flat" | grep -oE 'impl[^!{;]*Pgid[^!{;]*[[:space:]]for[[:space:]]'; then
+            echo "::error::a trait is implemented with Pgid on the impl-type side (e.g. From<Pgid> for pid_t) — that is an accessor"
+            exit 1
+          fi
+          if printf '%s\n' "$region" | grep -q 'derive'; then
+            echo "::error::a derive appeared inside mod pgid_lease — Pgid must have no derives (see the struct's doc comment)"
+            printf '%s\n' "$region" | grep -n 'derive'
+            exit 1
+          fi
+          echo "OK: none of the accessor/derive shapes this ratchet knows about are present (this is drift detection, not a completeness proof)"
+
       - name: cargo clippy --workspace --all-targets -- -D warnings
         run: cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings
 

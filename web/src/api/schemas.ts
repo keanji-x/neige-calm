@@ -14,6 +14,26 @@
 
 import { z } from 'zod';
 
+export const taskDiagnosticSchema = z.object({
+  code: z.string(),
+  messageArgs: z.record(z.string(), z.unknown()),
+  relatedBlockIds: z.array(z.string()),
+  relatedWaveId: z.string().nullable().optional(),
+  action: z.string().nullable().optional(),
+  path: z.string(),
+  message: z.string(),
+});
+
+export const taskBlockVerdictSchema = z.object({
+  blockId: z.string(),
+  key: z.string(),
+  diagnostics: z.array(taskDiagnosticSchema),
+  schedulable: z.boolean(),
+  status: z.string().nullable().optional(),
+  gateResult: z.unknown().nullable().optional(),
+  workerCardId: z.string().nullable().optional(),
+});
+
 // ---------------- Entity schemas (mirror model.rs) ----------------
 
 /**
