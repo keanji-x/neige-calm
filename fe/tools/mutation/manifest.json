@@ -104,5 +104,143 @@
     ],
     "selection_paths": ["tools/test-tier/checker.test.ts"],
     "why_more_than_one": "The browser and jsdom overlap cases must both detect multiple collection; any third red indicates capability matching changed."
+  },
+  {
+    "mutation_id": "app-providers-retry-401-as-400",
+    "defends": [
+      "oracle:INV-APP-059"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..3148cf4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -22,7 +22,7 @@ export interface ProviderRuntime {\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 400) return false;\n   return failureCount < 1;\n }\n \n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Only the shared retry-policy contract should turn red; more than one would mean unrelated provider behavior depends on error classification."
+  },
+  {
+    "mutation_id": "app-providers-stop-exporting-retry-policy",
+    "defends": [
+      "oracle:INV-APP-060"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..51cb5f3f 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -15,7 +15,7 @@ export interface ProviderRuntime {\n   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;\n }\n \n-export function retryUnless401(failureCount: number, error: unknown): boolean {\n+function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n   return failureCount < 1;\n }\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Measured: removing the export only breaks the direct named-import retry-policy contract; the source-AST assertion remains green because export visibility is outside its semantics. Any additional red indicates unrelated provider behavior changed."
+  },
+  {
+    "mutation_id": "app-providers-replace-query-retry-policy-with-count",
+    "defends": ["oracle:INV-APP-059"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -39,7 +39,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n   children: ReactNode; runtime: ProviderRuntime; client: QueryClient; renderEventBridge?: (syncEventVersion: number) => ReactNode;\n }) {\n   const [busted, setBusted] = useState(false);\n-  const query = useQuery({ queryKey: ['server-version'], queryFn: () => runtime.fetchVersion(), staleTime: 0, gcTime: 0, retry: retryUnless401, refetchInterval: false }, client);\n+  const query = useQuery({ queryKey: ['server-version'], queryFn: () => runtime.fetchVersion(), staleTime: 0, gcTime: 0, retry: 3, refetchInterval: false }, client);\n \n   useEffect(() => {\n     const id = query.data?.dbInstanceId;\n",
+    "selection_paths": ["web/src/app/providers/public.contract.test.tsx"],
+    "expected_red": ["app/providers contracts ServerCompatGate passes retryUnless401 as its query retry option"],
+    "why_more_than_one": "Review measured exactly this one source-shape assertion turning red; the orchestrator still needs to rerun and confirm the recorded red set."
+  },
+  {
+    "mutation_id": "app-theme-accept-sepia-drop-system",
+    "defends": [
+      "oracle:INV-APP-073",
+      "oracle:E2E-CAP-THEME-011"
+    ],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 80cd803..d78d3ee 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -12,7 +12,7 @@ declare global { interface Window { __calmSetTheme?: (mode: ThemeMode) => void }\n const ThemeContext = createContext<ThemeContextValue | null>(null);\n \n export function parseThemeMode(raw: unknown): ThemeMode | null {\n-  return raw === 'light' || raw === 'dark' || raw === 'system' ? raw : null;\n+  return raw === 'light' || raw === 'dark' || raw === 'sepia' ? raw : null;\n }\n \n export type ThemeStorage = Pick<Storage, 'getItem' | 'setItem'>;\n",
+    "selection_paths": [
+      "web/src/app/theme/public.contract.test.tsx",
+      "web/src/app/theme/public.test.tsx"
+    ],
+    "expected_red": [
+      "ThemeProvider behavior INV-APP-073 accepts valid persistence, rejects invalid values, and survives storage failures",
+      "app/theme contracts E2E-CAP-THEME-011 exposes exactly three parseable modes"
+    ],
+    "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
+  },
+  {
+    "mutation_id": "app-theme-swap-light-dark-bg",
+    "defends": ["oracle:E2E-CAP-AXE-005"],
+    "target": "web/src/styles/tokens.css",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex 95e58ace..eee489d5 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -7,7 +7,7 @@\n     --font-numeric: var(--font-sans);\n     --font-code: var(--font-mono);\n \n-    --bg: oklch(98.8% 0.003 240);\n+    --bg: oklch(16% 0.008 245);\n     --paper: oklch(99.5% 0.002 240);\n     --hairline: oklch(92% 0.005 240);\n     --hairline-strong: oklch(86% 0.006 240);\n@@ -103,7 +103,7 @@\n   }\n \n   [data-theme=\"dark\"] {\n-    --bg: oklch(16% 0.008 245);\n+    --bg: oklch(98.8% 0.003 240);\n     --paper: oklch(19% 0.009 245);\n     --hairline: oklch(28% 0.01 245);\n     --hairline-strong: oklch(36% 0.012 245);\n",
+    "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
+    "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
+    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+  },
+  {
+    "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
+    "defends": ["oracle:E2E-CAP-THEME-011"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..a80a76e0 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -42,7 +42,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n-  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, [resolved]);\n+  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, []);\n \n   const setMode = useCallback((next: ThemeMode) => {\n     setModeState(next);\n",
+    "selection_paths": ["web/src/app/theme/public.test.tsx", "web/src/app/theme/public.contract.test.tsx"],
+    "expected_red": ["ThemeProvider behavior E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset", "app/theme contracts theme dataset writes are driven by an effect keyed only by resolved"],
+    "why_more_than_one": "One implementation change is independently caught by E2E-CAP-THEME-011's behavioral mirror assertion and a local structural assertion; the latter does not claim INV-APP-070's unique-writer contract."
+  },
+  {
+    "mutation_id": "app-providers-drop-busted-state",
+    "defends": ["oracle:CAP-APP-010", "oracle:INV-APP-011", "oracle:INV-APP-014"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..8af9d20d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -45,7 +45,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n     if (previous && previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n-      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n+      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); runtime.reload(); return;\n     }\n     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);\n   }, [client, query.data?.dbInstanceId, runtime]);\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "expected_red": ["provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"],
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the consolidated blast-path contract failed because cleanup and reload still occurred, but children were no longer hidden."
+  },
+  {
+    "mutation_id": "app-providers-bust-first-visit",
+    "defends": ["oracle:INV-APP-012", "oracle:INV-APP-013"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..6a0efb31 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -43,7 +43,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel", "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"],
+    "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it."
+  },
+  {
+    "mutation_id": "app-theme-drop-match-media-unsubscribe",
+    "defends": ["oracle:CAP-APP-074"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..ed28a80e 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -38,7 +38,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n     setSystemPreference(media.matches ? 'dark' : 'light');\n     const change = (event: MediaQueryListEvent) => setSystemPreference(event.matches ? 'dark' : 'light');\n     media.addEventListener('change', change);\n-    return () => media.removeEventListener('change', change);\n+    return undefined;\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n",
+    "selection_paths": ["web/src/app/theme/public.test.tsx"],
+    "expected_red": ["ThemeProvider behavior CAP-APP-074 INV-APP-075 tracks system immediately and unsubscribes in explicit mode"],
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the listener-ownership contract failed when the stale listener remained registered."
+  },
+  {
+    "mutation_id": "app-theme-drop-ssr-window-guard",
+    "defends": ["oracle:INV-APP-077"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..94d4a413 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -23,7 +23,7 @@ function readPersistedMode(storage: ThemeStorage | undefined): ThemeMode {\n }\n \n function readSystemPreference(): ResolvedTheme {\n-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light';\n+  if (typeof window.matchMedia !== 'function') return 'light';\n   try { return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch { return 'light'; }\n }\n \n",
+    "selection_paths": ["web/src/app/theme/public.ssr.contract.test.tsx"],
+    "expected_red": ["ThemeProvider server contract INV-APP-077 renders without window, matchMedia, or document and has a positive light fallback"],
+    "why_more_than_one": "Only the SSR contract fails because it alone evaluates ThemeProvider with window absent; the single failure shows the window guard has a deliberately narrow server-rendering responsibility."
+  },
+  {
+    "mutation_id": "app-theme-drop-provider-remediation-path",
+    "defends": ["oracle:INV-APP-078"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..c02973a7 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -64,6 +64,6 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n \n export function useTheme(): ThemeContextValue {\n   const value = useContext(ThemeContext);\n-  if (!value) throw new Error('useTheme() requires <ThemeProvider>; mount it from web/src/app/providers/public.tsx.');\n+  if (!value) throw new Error('useTheme() requires <ThemeProvider>.');\n   return value;\n }\n",
+    "selection_paths": ["web/src/app/theme/public.test.tsx"],
+    "expected_red": ["ThemeProvider behavior INV-APP-078 fails descriptively outside the provider"],
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the diagnostic-path assertion depended on the remediation text."
+  },
+  {
+    "mutation_id": "app-providers-drop-bridge-data-guard",
+    "defends": ["oracle:INV-APP-001", "oracle:INV-APP-002"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..1e49b33d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -52,7 +52,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n \n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{query.data && renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n+  return <>{renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "expected_red": ["provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain"],
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the pending-version contract exercised renderEventBridge before query data existed."
+  },
+  {
+    "mutation_id": "app-providers-remove-refresh-modal",
+    "defends": ["oracle:CAP-APP-006"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..4d3139e4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -56,10 +56,10 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n-  return <Dialog open title=\"Please refresh\" onClose={reload} hideTitleRow>\n+  return <section aria-label=\"Please refresh\">\n     <section aria-label=\"Please refresh\">\n-      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}; this browser provides compat v{WEB_COMPAT_VERSION}.</p>\n+      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}.</p>\n       <button type=\"button\" onClick={reload}>Refresh now</button>\n     </section>\n-  </Dialog>;\n+  </section>;\n }\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx", "web/src/app/providers/providers.browser.test.tsx"],
+    "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "browser provider contracts INV-APP-009 routes button and Escape through the same reload handler", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel"],
+    "why_more_than_one": "Removing Dialog and the client-version text simultaneously removes initial modal focus and dual-version reporting; the button still calls reload directly, but Escape no longer reaches the same handler, so the consolidated button-and-Escape routing contract also fails."
   }
 ]

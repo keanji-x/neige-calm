@@ -2,4 +2,6 @@ node_modules/
 web/dist/
 playwright-report/
 test-results/
+.vitest-attachments/
+__screenshots__/
 *.tsbuildinfo

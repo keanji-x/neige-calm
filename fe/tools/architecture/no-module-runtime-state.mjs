@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, extname, resolve } from 'node:path';
+import * as tsParser from '@typescript-eslint/parser';
+
 /**
  * Reject module-evaluation object graphs that can retain runtime state.
  *
@@ -84,28 +88,58 @@ function isSchemaCall(node, schemaBindings) {
   return (object.type === 'Identifier' && schemaBindings.has(object.name)) || isSchemaCall(object, schemaBindings);
 }
 
-/** @param {any} node @param {boolean} [allowContainer] @returns {boolean} */
-function isStaticData(node, allowContainer = false) {
+/** @param {any} node @param {boolean} [allowContainer] @param {Set<string>} [importedStaticBindings] @returns {boolean} */
+function isStaticData(node, allowContainer = false, importedStaticBindings = new Set()) {
   node = unwrap(node);
   if (!node) return true;
   if (isFunction(node)) return true;
-  if (['Literal', 'TemplateLiteral', 'Identifier'].includes(node.type)) return node.type !== 'Identifier' || ['undefined', 'NaN', 'Infinity'].includes(node.name);
-  if (node.type === 'UnaryExpression') return ['-', '+', '!', '~', 'void', 'typeof'].includes(node.operator) && isStaticData(node.argument);
-  if (isVerifiedFreeze(node)) return true;
-  if (node.type === 'ArrayExpression') return allowContainer && node.elements.every((/** @type {any} */ element) => element?.type !== 'SpreadElement' && isStaticData(element));
-  if (node.type === 'ObjectExpression') return allowContainer && node.properties.every((/** @type {any} */ property) => property.type === 'Property' && property.kind === 'init' && !property.computed && isStaticData(property.value));
+  if (['Literal', 'TemplateLiteral', 'Identifier'].includes(node.type)) return node.type !== 'Identifier' || ['undefined', 'NaN', 'Infinity'].includes(node.name) || importedStaticBindings.has(node.name);
+  if (node.type === 'UnaryExpression') return ['-', '+', '!', '~', 'void', 'typeof'].includes(node.operator) && isStaticData(node.argument, false, importedStaticBindings);
+  if (isVerifiedFreeze(node, importedStaticBindings)) return true;
+  if (node.type === 'ArrayExpression') return allowContainer && node.elements.every((/** @type {any} */ element) => element?.type !== 'SpreadElement' && isStaticData(element, false, importedStaticBindings));
+  if (node.type === 'ObjectExpression') return allowContainer && node.properties.every((/** @type {any} */ property) => property.type === 'Property' && property.kind === 'init' && !property.computed && isStaticData(property.value, false, importedStaticBindings));
   if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression' &&
     node.callee.object.type === 'Identifier' && node.callee.object.name === 'Object' &&
     freezableObjectFactories.has(memberName(node.callee))) return true;
   return false;
 }
 
-/** @param {any} node */
-function isVerifiedFreeze(node) {
+/** @param {any} node @param {Set<string>} [importedStaticBindings] */
+function isVerifiedFreeze(node, importedStaticBindings = new Set()) {
   node = unwrap(node);
   return node?.type === 'CallExpression' && node.callee.type === 'MemberExpression' &&
     node.callee.object.type === 'Identifier' && node.callee.object.name === 'Object' &&
-    memberName(node.callee) === 'freeze' && node.arguments.length === 1 && isStaticData(node.arguments[0], true);
+    memberName(node.callee) === 'freeze' && node.arguments.length === 1 && isStaticData(node.arguments[0], true, importedStaticBindings);
+}
+
+/** @param {any} initializer */
+function isExportedStaticInitializer(initializer) {
+  initializer = unwrap(initializer);
+  return initializer?.type !== 'ObjectExpression' && initializer?.type !== 'ArrayExpression' &&
+    (isStaticData(initializer) || isVerifiedFreeze(initializer));
+}
+
+const parsedImportCache = new Map();
+
+/** @param {string} importer @param {string} source @param {string} importedName */
+function importedConstIsStatic(importer, source, importedName) {
+  if (!source.startsWith('.')) return false;
+  const unresolved = resolve(dirname(importer), source);
+  const candidates = extname(unresolved) ? [unresolved] : [unresolved, `${unresolved}.ts`, `${unresolved}.tsx`, `${unresolved}.js`, `${unresolved}.mjs`];
+  const target = candidates.find((candidate) => existsSync(candidate));
+  if (!target) return false;
+  let program = parsedImportCache.get(target);
+  if (!program) {
+    try { program = tsParser.parse(readFileSync(target, 'utf8'), { sourceType: 'module' }); } catch { return false; }
+    parsedImportCache.set(target, program);
+  }
+  for (const statement of program.body) {
+    if (statement.type !== 'ExportNamedDeclaration' || statement.declaration?.type !== 'VariableDeclaration' || statement.declaration.kind !== 'const') continue;
+    for (const declaration of statement.declaration.declarations) {
+      if (declaration.id.type === 'Identifier' && declaration.id.name === importedName) return isExportedStaticInitializer(declaration.init);
+    }
+  }
+  return false;
 }
 
 /** @param {any} node @param {{schemaBindings:Set<string>,reactBindings:Set<string>,reactObjects:Set<string>,routerBindings:Map<string,string>}} bindings */
@@ -135,7 +169,7 @@ function isAllowedRouterFactory(node, routerBindings, allowed) {
 /** @param {any} node @param {any} bindings @returns {boolean} */
 function isMutableValue(node, bindings) {
   node = unwrap(node);
-  if (!node || isFunction(node) || isSchemaCall(node, bindings.schemaBindings) || isPureFactory(node, bindings) || isVerifiedFreeze(node)) return false;
+  if (!node || isFunction(node) || isSchemaCall(node, bindings.schemaBindings) || isPureFactory(node, bindings) || isVerifiedFreeze(node, bindings.importedStaticBindings)) return false;
   if (['Literal', 'TemplateLiteral', 'Identifier', 'MetaProperty'].includes(node.type)) return false;
   if (node.type === 'ObjectExpression' || node.type === 'ArrayExpression') return true;
   if (node.type === 'NewExpression') return node.callee.type !== 'Identifier' || !immutableConstructors.has(node.callee.name);
@@ -162,7 +196,7 @@ export const noModuleRuntimeState = {
     },
   },
   create(context) {
-    const bindings = { schemaBindings: new Set(), reactBindings: new Set(), reactObjects: new Set(), routerBindings: new Map() };
+    const bindings = { schemaBindings: new Set(), reactBindings: new Set(), reactObjects: new Set(), routerBindings: new Map(), importedStaticBindings: new Set() };
     const allowedRouterFactories = new Set(context.options[0]?.allowRouterFactories ?? []);
     const report = (/** @type {any} */ node) => {
       const raw = node.type === 'VariableDeclarator' ? node.init : node;
@@ -185,6 +219,7 @@ export const noModuleRuntimeState = {
             if (specifier.type === 'ImportNamespaceSpecifier' || specifier.type === 'ImportDefaultSpecifier') bindings.reactObjects.add(specifier.local.name);
           }
           if (source === '@tanstack/react-router' && specifier.type === 'ImportSpecifier' && ['createRouter', 'createFileRoute'].includes(specifier.imported.name)) bindings.routerBindings.set(specifier.local.name, specifier.imported.name);
+          if (specifier.type === 'ImportSpecifier' && importedConstIsStatic(context.physicalFilename, source, specifier.imported.name)) bindings.importedStaticBindings.add(specifier.local.name);
         }
       },
       VariableDeclarator(/** @type {any} */ node) {

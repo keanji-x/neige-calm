@@ -2156,13 +2156,13 @@
     `[data-theme="dark"]` selectors in calm.css consume it; the effect only re-fires on React
     state change, so a direct write is not clobbered mid-scan.
   source: web/e2e/a11y-axe.spec.ts:84-107
-  authoritative_test: web/e2e/a11y-axe.spec.ts:84
+  authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 - id: E2E-CAP-AXE-006
   kind: capability
@@ -4460,13 +4460,13 @@
     a11y-axe.spec.ts:72-83 — the dataset attribute is the single integration point for CSS,
     xterm theming and axe scanning.
   source: web/e2e/tui-theme-protocol.spec.ts:6,48-67
-  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:62
+  authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 # =============================================================================
 # SECTION 14 — Wheel / scroll routing

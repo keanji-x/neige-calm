@@ -580,6 +580,9 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      - name: Install Chromium with system dependencies
+        run: npx playwright install --with-deps chromium
+
       - name: Run mutation evidence selected by PR target intersection
         if: github.event_name == 'pull_request'
         run: npm run test:mutation -- --base "$BASE_SHA" --report /tmp/mutation-report.json
