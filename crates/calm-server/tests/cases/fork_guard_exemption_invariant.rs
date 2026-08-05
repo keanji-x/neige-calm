@@ -1,7 +1,259 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
-use crate::deferred_write_tx_invariant::{normalize_source, production_lines, rust_files};
+use syn::parse::Parser;
+use syn::visit::{self, Visit};
+use syn::{Expr, Item, ItemEnum, ItemFn, ItemImpl, ItemMod, ItemType, ItemUse, Meta, UseTree};
+
+use crate::deferred_write_tx_invariant::rust_files;
+
+const EXEMPTION_TYPE: &str = "TaskGuardRule1Exemption";
+
+fn ident_name(ident: &syn::Ident) -> String {
+    let name = ident.to_string();
+    name.strip_prefix("r#").unwrap_or(&name).to_string()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CfgValue {
+    AlwaysFalse,
+    AlwaysTrue,
+    Unknown,
+}
+
+fn cfg_value(meta: &Meta) -> CfgValue {
+    match meta {
+        Meta::Path(path) if path.is_ident("test") => CfgValue::AlwaysFalse,
+        Meta::Path(_) | Meta::NameValue(_) => CfgValue::Unknown,
+        Meta::List(list) => {
+            let Ok(children) = list.parse_args_with(
+                syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return CfgValue::Unknown;
+            };
+            if list.path.is_ident("all") {
+                if children
+                    .iter()
+                    .any(|child| cfg_value(child) == CfgValue::AlwaysFalse)
+                {
+                    CfgValue::AlwaysFalse
+                } else if children
+                    .iter()
+                    .all(|child| cfg_value(child) == CfgValue::AlwaysTrue)
+                {
+                    CfgValue::AlwaysTrue
+                } else {
+                    CfgValue::Unknown
+                }
+            } else if list.path.is_ident("any") {
+                if children
+                    .iter()
+                    .any(|child| cfg_value(child) == CfgValue::AlwaysTrue)
+                {
+                    CfgValue::AlwaysTrue
+                } else if children
+                    .iter()
+                    .all(|child| cfg_value(child) == CfgValue::AlwaysFalse)
+                {
+                    CfgValue::AlwaysFalse
+                } else {
+                    CfgValue::Unknown
+                }
+            } else if list.path.is_ident("not") && children.len() == 1 {
+                match cfg_value(&children[0]) {
+                    CfgValue::AlwaysFalse => CfgValue::AlwaysTrue,
+                    CfgValue::AlwaysTrue => CfgValue::AlwaysFalse,
+                    CfgValue::Unknown => CfgValue::Unknown,
+                }
+            } else {
+                CfgValue::Unknown
+            }
+        }
+    }
+}
+
+fn is_test_gated(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .parse_args::<Meta>()
+                .is_ok_and(|meta| cfg_value(&meta) == CfgValue::AlwaysFalse)
+    })
+}
+
+fn collect_use_aliases(tree: &UseTree, aliases: &mut HashSet<String>) {
+    match tree {
+        UseTree::Path(path) => collect_use_aliases(&path.tree, aliases),
+        UseTree::Name(name) if ident_name(&name.ident) == EXEMPTION_TYPE => {
+            aliases.insert(EXEMPTION_TYPE.into());
+        }
+        UseTree::Rename(rename) if ident_name(&rename.ident) == EXEMPTION_TYPE => {
+            aliases.insert(ident_name(&rename.rename));
+        }
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_aliases(item, aliases);
+            }
+        }
+        UseTree::Name(_) | UseTree::Rename(_) | UseTree::Glob(_) => {}
+    }
+}
+
+struct AliasCollector {
+    aliases: HashSet<String>,
+}
+
+impl<'ast> Visit<'ast> for AliasCollector {
+    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+        if !is_test_gated(&node.attrs) {
+            visit::visit_item_mod(self, node);
+        }
+    }
+
+    fn visit_item_use(&mut self, node: &'ast ItemUse) {
+        if !is_test_gated(&node.attrs) {
+            collect_use_aliases(&node.tree, &mut self.aliases);
+        }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        if !is_test_gated(&node.attrs) {
+            visit::visit_item_fn(self, node);
+        }
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        if !is_test_gated(&node.attrs) {
+            visit::visit_item_impl(self, node);
+        }
+    }
+
+    fn visit_item_type(&mut self, node: &'ast ItemType) {
+        if is_test_gated(&node.attrs) {
+            return;
+        }
+        if let syn::Type::Path(path) = &*node.ty
+            && path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| self.aliases.contains(&ident_name(&segment.ident)))
+        {
+            self.aliases.insert(ident_name(&node.ident));
+        }
+        visit::visit_item_type(self, node);
+    }
+}
+
+struct GuardAstScan<'a> {
+    rel: &'a str,
+    aliases: &'a HashSet<String>,
+    in_exemption_impl: usize,
+    enum_variants: Option<BTreeSet<String>>,
+    fork_calls: Vec<String>,
+    exemption_uses: Vec<String>,
+    saw_regular_guard_call: bool,
+}
+
+impl GuardAstScan<'_> {
+    fn path_is_exemption_type(&self, path: &syn::Path) -> bool {
+        path.segments
+            .last()
+            .is_some_and(|segment| self.aliases.contains(&ident_name(&segment.ident)))
+    }
+}
+
+impl<'ast> Visit<'ast> for GuardAstScan<'_> {
+    fn visit_item_mod(&mut self, node: &'ast ItemMod) {
+        if !is_test_gated(&node.attrs) {
+            visit::visit_item_mod(self, node);
+        }
+    }
+
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        if !is_test_gated(&node.attrs) {
+            visit::visit_item_fn(self, node);
+        }
+    }
+
+    fn visit_item_enum(&mut self, node: &'ast ItemEnum) {
+        if is_test_gated(&node.attrs) {
+            return;
+        }
+        if ident_name(&node.ident) == EXEMPTION_TYPE {
+            assert!(
+                self.enum_variants.is_none(),
+                "duplicate {EXEMPTION_TYPE} enum"
+            );
+            self.enum_variants = Some(
+                node.variants
+                    .iter()
+                    .map(|variant| ident_name(&variant.ident))
+                    .collect(),
+            );
+        }
+        visit::visit_item_enum(self, node);
+    }
+
+    fn visit_item_impl(&mut self, node: &'ast ItemImpl) {
+        if is_test_gated(&node.attrs) {
+            return;
+        }
+        let targets_exemption = match &*node.self_ty {
+            syn::Type::Path(path) => self.path_is_exemption_type(&path.path),
+            _ => false,
+        };
+        self.in_exemption_impl += usize::from(targets_exemption);
+        visit::visit_item_impl(self, node);
+        self.in_exemption_impl -= usize::from(targets_exemption);
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let Expr::Path(path) = &*node.func
+            && let Some(function) = path.path.segments.last()
+        {
+            match ident_name(&function.ident).as_str() {
+                "guard_fork_task_declarations" => self.fork_calls.push(self.rel.into()),
+                "guard_task_declarations" if self.rel == "src/wave_report.rs" => {
+                    self.saw_regular_guard_call = true;
+                }
+                _ => {}
+            }
+        }
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_path(&mut self, node: &'ast syn::ExprPath) {
+        let segments: Vec<_> = node.path.segments.iter().collect();
+        let variant = segments.last().map(|segment| ident_name(&segment.ident));
+        let qualifier = segments
+            .get(segments.len().saturating_sub(2))
+            .map(|segment| ident_name(&segment.ident));
+        let qualified = qualifier
+            .as_ref()
+            .is_some_and(|name| self.aliases.contains(name));
+        let self_qualified = self.in_exemption_impl > 0 && qualifier.as_deref() == Some("Self");
+        if (qualified || self_qualified)
+            && let Some(variant) = variant
+        {
+            self.exemption_uses.push(format!("{variant}@{}", self.rel));
+        }
+        visit::visit_expr_path(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &'ast syn::Macro) {
+        // `matches!(self, Self::Fork)` stores its arguments as tokens in the
+        // outer AST. Re-parse expression-shaped macro arguments with syn so
+        // qualified variants inside them remain syntax, not searched text.
+        let parser = syn::punctuated::Punctuated::<Expr, syn::Token![,]>::parse_terminated;
+        if let Ok(expressions) = parser.parse2(node.tokens.clone()) {
+            for expression in &expressions {
+                self.visit_expr(expression);
+            }
+        }
+        visit::visit_macro(self, node);
+    }
+}
 
 #[test]
 fn task_guard_rule_one_exemption_has_exactly_one_production_call_site() {
@@ -14,7 +266,7 @@ fn task_guard_rule_one_exemption_has_exactly_one_production_call_site() {
     let mut saw_wave_route = false;
     let mut saw_regular_guard_call = false;
     let mut fork_calls = Vec::new();
-    let mut exemption_variants = Vec::new();
+    let mut exemption_uses = Vec::new();
     let mut enum_variants = None;
 
     for path in rust_files(&root) {
@@ -28,71 +280,40 @@ fn task_guard_rule_one_exemption_has_exactly_one_production_call_site() {
         saw_wave_route |= rel == "src/routes/waves.rs";
         let source =
             std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {rel}: {error}"));
-        let normalized = normalize_source(&source);
-        if rel == "src/wave_report_task_guard.rs" {
-            let declaration = "enum TaskGuardRule1Exemption";
-            let enum_start = normalized
-                .find(declaration)
-                .expect("TaskGuardRule1Exemption enum definition vanished");
-            let body_start = normalized[enum_start..]
-                .find('{')
-                .map(|offset| enum_start + offset + 1)
-                .expect("TaskGuardRule1Exemption enum body vanished");
-            let body_end = normalized[body_start..]
-                .find('}')
-                .map(|offset| body_start + offset)
-                .expect("TaskGuardRule1Exemption enum body is unclosed");
-            let members = normalized[body_start..body_end]
-                .split(',')
-                .filter_map(|member| {
-                    member
-                        .split_whitespace()
-                        .find(|token| token.chars().next().is_some_and(char::is_uppercase))
-                        .map(|token| {
-                            token.trim_matches(|character: char| {
-                                !character.is_alphanumeric() && character != '_'
-                            })
-                        })
-                        .filter(|token| !token.is_empty())
-                        .map(str::to_string)
-                })
-                .collect::<BTreeSet<_>>();
-            enum_variants = Some(members);
-        }
-        for (line_number, line) in production_lines(&normalized) {
-            let trimmed = line.trim();
-            if trimmed.contains("guard_fork_task_declarations(")
-                && !trimmed.starts_with("pub(crate) fn guard_fork_task_declarations")
-            {
-                fork_calls.push(format!("{rel}:{line_number}"));
-            }
-            if rel == "src/wave_report.rs"
-                && trimmed.contains("guard_task_declarations(")
-                && !trimmed.starts_with("pub(crate) fn guard_task_declarations")
-            {
-                saw_regular_guard_call = true;
-            }
-            let mut rest = line;
-            let prefixes: &[&str] = if rel == "src/wave_report_task_guard.rs" {
-                &["TaskGuardRule1Exemption::", "Self::"]
-            } else {
-                &["TaskGuardRule1Exemption::"]
-            };
-            while let Some((index, prefix)) = prefixes
-                .iter()
-                .copied()
-                .filter_map(|prefix| rest.find(prefix).map(|index| (index, prefix)))
-                .min_by_key(|(index, _)| *index)
-            {
-                let suffix = &rest[index + prefix.len()..];
-                let variant: String = suffix
-                    .chars()
-                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
-                    .collect();
-                exemption_variants.push(format!("{variant}@{rel}:{line_number}"));
-                rest = &suffix[variant.len()..];
+        let syntax =
+            syn::parse_file(&source).unwrap_or_else(|error| panic!("parse {rel}: {error}"));
+        let mut aliases = HashSet::from([EXEMPTION_TYPE.to_string()]);
+        // Resolve `use ... as Alias` (and simple `type Alias = ...`) before
+        // scanning expressions; Rust item order does not constrain aliases.
+        loop {
+            let before = aliases.len();
+            let mut collector = AliasCollector { aliases };
+            collector.visit_file(&syntax);
+            aliases = collector.aliases;
+            if aliases.len() == before {
+                break;
             }
         }
+        let mut file_scan = GuardAstScan {
+            rel: &rel,
+            aliases: &aliases,
+            in_exemption_impl: 0,
+            enum_variants: None,
+            fork_calls: Vec::new(),
+            exemption_uses: Vec::new(),
+            saw_regular_guard_call: false,
+        };
+        file_scan.visit_file(&syntax);
+        if file_scan.enum_variants.is_some() {
+            assert!(
+                enum_variants.is_none(),
+                "duplicate {EXEMPTION_TYPE} definition"
+            );
+            enum_variants = file_scan.enum_variants;
+        }
+        fork_calls.extend(file_scan.fork_calls);
+        exemption_uses.extend(file_scan.exemption_uses);
+        saw_regular_guard_call |= file_scan.saw_regular_guard_call;
     }
 
     assert!(
@@ -104,32 +325,84 @@ fn task_guard_rule_one_exemption_has_exactly_one_production_call_site() {
     assert_eq!(
         enum_variants,
         Some(BTreeSet::from(["Fork".to_string(), "None".to_string()])),
-        "TaskGuardRule1Exemption definition must contain exactly None and Fork"
+        "{EXEMPTION_TYPE} definition must contain exactly None and Fork"
     );
     assert!(
         saw_regular_guard_call,
-        "ordinary guard call in wave_report.rs disappeared from the production scan"
+        "ordinary guard call in wave_report.rs disappeared from the production AST"
     );
     assert_eq!(
         fork_calls.len(),
         1,
         "fork rule-1 exemption must have exactly one production caller: {fork_calls:?}"
     );
-    assert!(
-        fork_calls[0].starts_with("src/routes/waves.rs:"),
+    assert_eq!(
+        fork_calls[0], "src/routes/waves.rs",
         "the sole fork exemption caller must be the wave-create route: {fork_calls:?}"
     );
     assert_eq!(
-        exemption_variants.len(),
+        exemption_uses.len(),
         2,
-        "exemption variant uses must contain only Self::Fork and the one qualified Fork call: {exemption_variants:?}"
+        "exemption variant uses must contain only Self::Fork and the one qualified Fork call: {exemption_uses:?}"
     );
     assert!(
-        exemption_variants
+        exemption_uses
             .iter()
-            .all(|variant| { variant.starts_with("Fork@src/wave_report_task_guard.rs:") }),
-        "unexpected exemption variant use: {exemption_variants:?}"
+            .all(|usage| usage == "Fork@src/wave_report_task_guard.rs"),
+        "unexpected exemption variant use: {exemption_uses:?}"
     );
+}
+
+struct CallNames {
+    names: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for CallNames {
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let Expr::Path(path) = &*node.func
+            && let Some(function) = path.path.segments.last()
+        {
+            self.names.push(ident_name(&function.ident));
+        }
+        visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_closure(&mut self, _node: &'ast syn::ExprClosure) {}
+}
+
+struct ForkWriteBranch {
+    call_orders: Vec<(usize, usize)>,
+}
+
+impl<'ast> Visit<'ast> for ForkWriteBranch {
+    fn visit_expr_if(&mut self, node: &'ast syn::ExprIf) {
+        let mut cache_write = None;
+        let mut projection = None;
+        for (statement_index, statement) in node.then_branch.stmts.iter().enumerate() {
+            let mut calls = CallNames { names: Vec::new() };
+            calls.visit_stmt(statement);
+            if calls
+                .names
+                .iter()
+                .any(|name| name == "card_update_with_crdt_tx")
+            {
+                assert!(
+                    cache_write.replace(statement_index).is_none(),
+                    "duplicate cache write"
+                );
+            }
+            if calls.names.iter().any(|name| name == "project_tasks_tx") {
+                assert!(
+                    projection.replace(statement_index).is_none(),
+                    "duplicate projection"
+                );
+            }
+        }
+        if let (Some(cache_write), Some(projection)) = (cache_write, projection) {
+            self.call_orders.push((cache_write, projection));
+        }
+        visit::visit_expr_if(self, node);
+    }
 }
 
 #[test]
@@ -138,20 +411,26 @@ fn fork_report_cache_write_precedes_task_projection() {
     let route = manifest_dir.join("src/routes/waves.rs");
     let source = std::fs::read_to_string(&route)
         .unwrap_or_else(|error| panic!("read {}: {error}", route.display()));
-    let start = source
-        .find("if let Some((payload, mut doc, declarations, diagnostics)) = fork_snapshot")
-        .expect("fork snapshot write branch vanished");
-    let end = source[start..]
-        .find("let wave_scope = EventScope::Wave")
-        .map(|offset| start + offset)
-        .expect("fork snapshot write branch boundary vanished");
-    let branch = &source[start..end];
-    let cache_write = branch
-        .find("card_update_with_crdt_tx(")
-        .expect("fork report cache/CRDT write vanished");
-    let projection = branch
-        .find("project_tasks_tx(")
-        .expect("fork task projection vanished");
+    let syntax = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", route.display()));
+    let create = syntax.items.iter().find_map(|item| match item {
+        Item::Fn(function) if function.sig.ident == "create_wave_with_spec_harness" => {
+            Some(function)
+        }
+        _ => None,
+    });
+    let create = create.expect("create_wave_with_spec_harness function vanished");
+    let mut branch = ForkWriteBranch {
+        call_orders: Vec::new(),
+    };
+    branch.visit_block(&create.block);
+    assert_eq!(
+        branch.call_orders.len(),
+        1,
+        "cache write and task projection must coexist in exactly one statement block: {:?}",
+        branch.call_orders
+    );
+    let (cache_write, projection) = branch.call_orders[0];
     assert!(
         cache_write < projection,
         "fork task projection ran before its reference-existence cache write"

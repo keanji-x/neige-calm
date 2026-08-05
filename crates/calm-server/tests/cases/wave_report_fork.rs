@@ -518,6 +518,14 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
     assert_eq!(status, StatusCode::OK);
     let source_truth = block_index(&source_report);
     assert_eq!(source_truth.len(), 8);
+    let source_markdown = source_report["blocks"][0]["payload"]["markdown"]
+        .as_str()
+        .unwrap();
+    assert!(
+        source_markdown.len() >= 9 * 1024,
+        "source markdown fixture shrank below 9 KiB: {} bytes",
+        source_markdown.len()
+    );
     let internal_block_id = source_truth[2].0.clone();
 
     let (status, target_wave) = request_json(
@@ -647,6 +655,12 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
         }),
     ];
     let actual_blocks = target_report["blocks"].as_array().unwrap();
+    let target_markdown = actual_blocks[0]["payload"]["markdown"].as_str().unwrap();
+    assert!(
+        target_markdown.len() >= 9 * 1024,
+        "target markdown fixture shrank below 9 KiB: {} bytes",
+        target_markdown.len()
+    );
     assert_eq!(actual_blocks.len(), expected_blocks.len());
     for (index, (actual, expected)) in actual_blocks.iter().zip(&expected_blocks).enumerate() {
         assert_eq!(actual, expected, "forked block {index} drifted");
@@ -718,22 +732,16 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
 #[tokio::test]
 async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_source_write() {
     let boot = boot().await;
-    let chart = json!({
-        "symbol": "LEGACY",
-        "candles": [[1, 1, 2, 0, 1], [2, 2, 3, 1, 2]],
-        "caption": "legacy chart"
-    });
-    let legacy_body = format!(
-        "# Legacy\n\nlegacy block\n{}",
-        render_fence("chart.candles", &chart)
-    );
-    let legacy_payload = WaveReportPayload::new("legacy summary", &legacy_body);
+    // Frozen schema-v1 wire payload. `docRev` and `blocks` did not exist in
+    // that schema; constructing this through today's WaveReportPayload would
+    // manufacture an unreachable v3+NULL combination.
+    const LEGACY_V1_PAYLOAD_JSON: &str =
+        r##"{"schemaVersion":1,"summary":"legacy summary","body":"# Legacy\n\nlegacy block\n"}"##;
     let report_id = boot.source_report_id.clone();
-    let serialized = serde_json::to_string(&legacy_payload).unwrap();
     calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
             sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE id=?2")
-                .bind(serialized)
+                .bind(LEGACY_V1_PAYLOAD_JSON)
                 .bind(report_id)
                 .execute(&mut **tx)
                 .await?;
@@ -774,7 +782,8 @@ async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_
     .await;
     assert_eq!(status, StatusCode::OK);
     let source_truth = block_index(&source_report);
-    assert_eq!(source_truth.len(), 2);
+    assert_eq!(source_truth.len(), 1);
+    assert_eq!(source_report["schemaVersion"], 1);
 
     let (status, target_wave) = request_json(
         &boot.app,
@@ -811,13 +820,8 @@ async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_
     assert_eq!(target_report["summary"], "legacy summary");
     assert_eq!(
         target_report["blocks"],
-        json!([
-            {"id": source_truth[0].0, "kind": "prose", "rev": source_truth[0].1,
-             "payload": {"markdown": "# Legacy\n\nlegacy block\n"}},
-            {"id": source_truth[1].0, "kind": "chart.candles", "rev": source_truth[1].1,
-             "payload": {"symbol": "LEGACY", "candles": [[1,1,2,0,1],[2,2,3,1,2]],
-                         "caption": "legacy chart"}}
-        ])
+        json!([{"id": source_truth[0].0, "kind": "prose", "rev": source_truth[0].1,
+                "payload": {"markdown": "# Legacy\n\nlegacy block\n"}}])
     );
     let raw_after: (String, Option<Vec<u8>>) =
         calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
@@ -838,6 +842,199 @@ async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_
     assert_eq!(
         raw_after, raw_before,
         "legacy fork wrote back to its source"
+    );
+}
+
+#[tokio::test]
+async fn canonical_fresh_null_crdt_source_forks_through_the_rest_path() {
+    let boot = boot().await;
+    let (status, source_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "canonical fresh source",
+            "sort": null,
+            "cwd": format!("{}-canonical-source", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {source_wave}");
+    let source_id = source_wave["id"].as_str().unwrap();
+    let source_card = boot
+        .repo
+        .cards_by_wave(source_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    let raw_source = boot
+        .repo
+        .card_get_with_body_crdt(source_card.id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        raw_source.0.payload,
+        serde_json::to_value(WaveReportPayload::initial()).unwrap()
+    );
+    assert!(raw_source.1.is_none(), "fresh report unexpectedly had CRDT");
+
+    let (status, source_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{source_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, target_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "canonical fresh target",
+            "sort": null,
+            "cwd": format!("{}-canonical-target", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": source_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_id = target_wave["id"].as_str().unwrap();
+    let (status, target_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(target_report["schemaVersion"], 3);
+    assert_eq!(target_report["docRev"], 0);
+    assert_eq!(target_report["summary"], source_report["summary"]);
+    assert_eq!(target_report["body"], source_report["body"]);
+    assert_eq!(target_report["blocks"], source_report["blocks"]);
+}
+
+#[tokio::test]
+async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
+    let boot = boot().await;
+    let (status, source_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "empty source",
+            "sort": null,
+            "cwd": format!("{}-empty-source", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {source_wave}");
+    let source_id = source_wave["id"].as_str().unwrap();
+    let (status, fresh_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{source_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let seed = &fresh_report["blocks"][0];
+    let (status, empty_write) = request_json(
+        &boot.app,
+        "DELETE",
+        format!(
+            "/api/waves/{source_id}/report/blocks/{}",
+            seed["id"].as_str().unwrap()
+        ),
+        &boot.cookie,
+        Some(json!({"ifBlockRev": seed["rev"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "empty report write: {empty_write}");
+    let (status, source_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{source_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(source_report["blocks"], json!([]));
+
+    let (status, target_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "empty target",
+            "sort": null,
+            "cwd": format!("{}-empty-target", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": source_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_id = target_wave["id"].as_str().unwrap();
+    let target_card = boot
+        .repo
+        .cards_by_wave(target_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .unwrap();
+    assert_eq!(
+        target_card.payload,
+        json!({
+            "schemaVersion": 3,
+            "docRev": 0,
+            "summary": "",
+            "body": "",
+            "blocks": [],
+        })
+    );
+    let (_, target_crdt) = boot
+        .repo
+        .card_get_with_body_crdt(target_card.id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let target_doc = calm_server::wave_report_doc::ReportDoc::from_bytes(
+        target_crdt.as_deref().expect("fork target CRDT missing"),
+    )
+    .unwrap();
+    assert_eq!(target_doc.doc_rev().unwrap(), 0);
+    assert_eq!(
+        target_doc.project().unwrap(),
+        (String::new(), String::new())
+    );
+    assert_eq!(
+        target_doc.blocks_snapshot().unwrap(),
+        Vec::<calm_types::wave_report::ReportBlock>::new()
     );
 }
 

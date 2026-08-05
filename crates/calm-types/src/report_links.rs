@@ -169,23 +169,19 @@ fn wave_segment_range(
     link_type: LinkType,
 ) -> Option<Range<usize>> {
     let source = markdown.get(source_span.clone())?;
-    // The parser span covers the entire inline link or reference definition,
-    // including labels and optional titles. Narrow to the parsed destination
-    // first so URI-looking label/title text can never be edited by mistake.
-    let destination_floor = match link_type {
-        LinkType::Inline => source.rfind("](").map_or(0, |start| start + 2),
+    // pulldown-cmark deliberately exposes the span of the complete link, not
+    // the destination's span. Parse that span with the CommonMark destination
+    // grammar: labels and titles are independent syntactic regions and must
+    // never be searched for URI-looking punctuation.
+    let destination = match link_type {
+        LinkType::Inline => inline_destination_range(source),
         LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut => {
-            source.find(":").map_or(0, |start| start + 1)
+            reference_destination_range(source)
         }
-        LinkType::Autolink => 0,
-        _ => return None,
-    };
-    let after_floor = source.get(destination_floor..)?;
-    let whitespace = after_floor.len() - after_floor.trim_start().len();
-    let mut destination_start = destination_floor + whitespace;
-    if source.get(destination_start..)?.starts_with('<') {
-        destination_start += 1;
-    }
+        LinkType::Autolink => angle_destination_range(source, 0).map(|(range, _)| range),
+        _ => None,
+    }?;
+    let destination_start = destination.start;
     if !source
         .get(destination_start..)?
         .starts_with(WAVE_LINK_PREFIX)
@@ -198,6 +194,204 @@ fn wave_segment_range(
         return None;
     }
     Some(source_span.start + wave_start..source_span.start + wave_end)
+}
+
+fn inline_destination_range(source: &str) -> Option<Range<usize>> {
+    let bytes = source.as_bytes();
+    if bytes.first() != Some(&b'[') {
+        return None;
+    }
+    let mut brackets = vec![false];
+    let mut cursor = 1;
+    while let Some(byte) = bytes.get(cursor).copied() {
+        match byte {
+            b'\\' if bytes.get(cursor + 1).is_some() => cursor += 2,
+            b'`' => cursor = code_span_end(source, cursor).unwrap_or(cursor + 1),
+            b'[' => {
+                brackets.push(cursor > 0 && bytes[cursor - 1] == b'!');
+                cursor += 1;
+            }
+            b']' => {
+                if brackets.len() == 1 {
+                    if bytes.get(cursor + 1) == Some(&b'(')
+                        && let Some((destination, end)) = parse_inline_tail(source, cursor + 2)
+                        && end == source.len()
+                    {
+                        return Some(destination);
+                    }
+                    // The enclosing pulldown-cmark event proves this span is
+                    // an inline link. A `]` that cannot begin its complete
+                    // destination suffix belongs to label syntax (for
+                    // example raw HTML), not to the destination boundary.
+                    cursor += 1;
+                    continue;
+                }
+                let image = brackets.pop()?;
+                cursor += 1;
+                // An image is allowed inside link text. Consume its complete
+                // destination/title grammar so brackets inside that nested
+                // syntax cannot close the outer link label.
+                if image && bytes.get(cursor) == Some(&b'(') {
+                    let (_, end) = parse_inline_tail(source, cursor + 1)?;
+                    cursor = end;
+                }
+            }
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn parse_inline_tail(source: &str, after_open: usize) -> Option<(Range<usize>, usize)> {
+    let destination_start = skip_whitespace(source, after_open);
+    let (destination, after_destination) = destination_range(source, destination_start)?;
+    let after_space = skip_whitespace(source, after_destination);
+    let had_space = after_space != after_destination;
+    let bytes = source.as_bytes();
+
+    let closing = if bytes.get(after_space) == Some(&b')') {
+        after_space
+    } else {
+        // A title is permitted only when whitespace separates it from the
+        // destination. Its contents are consumed as a quoted region, never
+        // searched for another apparent `](` delimiter.
+        if !had_space {
+            return None;
+        }
+        let after_title = title_end(source, after_space)?;
+        let closing = skip_whitespace(source, after_title);
+        (bytes.get(closing) == Some(&b')')).then_some(closing)?
+    };
+    Some((destination, closing + 1))
+}
+
+fn code_span_end(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let ticks = bytes[start..]
+        .iter()
+        .take_while(|byte| **byte == b'`')
+        .count();
+    let mut cursor = start + ticks;
+    while cursor < bytes.len() {
+        if bytes[cursor] != b'`' {
+            cursor += 1;
+            continue;
+        }
+        let closing = bytes[cursor..]
+            .iter()
+            .take_while(|byte| **byte == b'`')
+            .count();
+        if closing == ticks {
+            return Some(cursor + closing);
+        }
+        cursor += closing;
+    }
+    None
+}
+
+fn reference_destination_range(source: &str) -> Option<Range<usize>> {
+    let bytes = source.as_bytes();
+    let mut cursor = 0;
+    while matches!(bytes.get(cursor), Some(b' ' | b'\t')) {
+        cursor += 1;
+    }
+    if bytes.get(cursor) != Some(&b'[') {
+        return None;
+    }
+    cursor += 1;
+    loop {
+        match bytes.get(cursor).copied()? {
+            b'\\' => cursor = cursor.checked_add(2)?,
+            b']' => {
+                cursor += 1;
+                break;
+            }
+            b'[' => return None,
+            _ => cursor += 1,
+        }
+    }
+    if bytes.get(cursor) != Some(&b':') {
+        return None;
+    }
+    let destination_start = skip_whitespace(source, cursor + 1);
+    destination_range(source, destination_start).map(|(range, _)| range)
+}
+
+fn destination_range(source: &str, start: usize) -> Option<(Range<usize>, usize)> {
+    if source.as_bytes().get(start) == Some(&b'<') {
+        return angle_destination_range(source, start);
+    }
+    bare_destination_range(source, start)
+}
+
+fn angle_destination_range(source: &str, start: usize) -> Option<(Range<usize>, usize)> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) != Some(&b'<') {
+        return None;
+    }
+    let mut cursor = start + 1;
+    while let Some(byte) = bytes.get(cursor).copied() {
+        match byte {
+            b'\\' if bytes.get(cursor + 1).is_some() => cursor += 2,
+            b'>' => return Some((start + 1..cursor, cursor + 1)),
+            b'<' | b'\n' | b'\r' => return None,
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn bare_destination_range(source: &str, start: usize) -> Option<(Range<usize>, usize)> {
+    let bytes = source.as_bytes();
+    let mut cursor = start;
+    let mut parentheses = 0usize;
+    while let Some(byte) = bytes.get(cursor).copied() {
+        match byte {
+            b'\\' if bytes.get(cursor + 1).is_some() => cursor += 2,
+            b'(' => {
+                parentheses += 1;
+                cursor += 1;
+            }
+            b')' if parentheses > 0 => {
+                parentheses -= 1;
+                cursor += 1;
+            }
+            b')' | b' ' | b'\t' | b'\n' | b'\r' if parentheses == 0 => break,
+            0..=0x1f | 0x7f => return None,
+            _ => cursor += 1,
+        }
+    }
+    (cursor > start && parentheses == 0).then_some((start..cursor, cursor))
+}
+
+fn title_end(source: &str, start: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let open = bytes.get(start).copied()?;
+    let close = match open {
+        b'\'' => b'\'',
+        b'"' => b'"',
+        b'(' => b')',
+        _ => return None,
+    };
+    let mut cursor = start + 1;
+    while let Some(byte) = bytes.get(cursor).copied() {
+        match byte {
+            b'\\' if bytes.get(cursor + 1).is_some() => cursor += 2,
+            byte if byte == close => return Some(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn skip_whitespace(source: &str, mut cursor: usize) -> usize {
+    while matches!(
+        source.as_bytes().get(cursor),
+        Some(b' ' | b'\t' | b'\n' | b'\r')
+    ) {
+        cursor += 1;
+    }
+    cursor
 }
 
 fn targets_copied_block(
@@ -448,6 +642,65 @@ mod tests {
                 "[neige://wave/source label](neige://wave/target#b_1234 ",
                 "\"neige://wave/source title\")\n",
             )
+        );
+    }
+
+    #[test]
+    fn rewrite_reference_definition_label_may_contain_a_colon() {
+        let markdown = concat!(
+            "[use][a:b]\n\n",
+            "[a:b]: <neige://wave/source#b_1234> \"definition title\"\n",
+        );
+        assert_eq!(
+            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])),
+            concat!(
+                "[use][a:b]\n\n",
+                "[a:b]: <neige://wave/target#b_1234> \"definition title\"\n",
+            )
+        );
+    }
+
+    #[test]
+    fn rewrite_inline_title_may_contain_a_destination_delimiter_decoy() {
+        let markdown = "[x](neige://wave/source#b_1234 \"title ]( decoy\")";
+        assert_eq!(
+            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])),
+            "[x](neige://wave/target#b_1234 \"title ]( decoy\")"
+        );
+    }
+
+    #[test]
+    fn rewrite_destination_parser_preserves_commonmark_edge_cases() {
+        let markdown = concat!(
+            "[escaped \\]](<neige://wave/source#b_1234>)\n",
+            "[![nested](image.png)](neige://wave/source#b_1234)\n",
+            "[balanced [label]](neige://wave/source#b_1234)\n",
+            "[balanced destination](neige://wave/source(and)#b_abcd)\n",
+            "[space](neige://wave/source#b_1234\\ escaped)\n",
+            "[shared][] [shared][]\n\n",
+            "[shared]: <neige://wave/source#b_1234> 'shared title'\n",
+        );
+        assert_eq!(
+            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234", "b_abcd"]),),
+            concat!(
+                "[escaped \\]](<neige://wave/target#b_1234>)\n",
+                "[![nested](image.png)](neige://wave/target#b_1234)\n",
+                "[balanced [label]](neige://wave/target#b_1234)\n",
+                "[balanced destination](neige://wave/source(and)#b_abcd)\n",
+                "[space](neige://wave/source#b_1234\\ escaped)\n",
+                "[shared][] [shared][]\n\n",
+                "[shared]: <neige://wave/target#b_1234> 'shared title'\n",
+            )
+        );
+
+        assert_eq!(
+            rewrite_wave_links(
+                "[balanced](neige://wave/source(and)#b_abcd)",
+                "source(and)",
+                "target",
+                &copied(&["b_abcd"]),
+            ),
+            "[balanced](neige://wave/target#b_abcd)"
         );
     }
 
