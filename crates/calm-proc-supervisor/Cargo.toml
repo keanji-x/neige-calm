@@ -17,6 +17,21 @@ path = "tests/fixtures/ready-sleeper/main.rs"
 [features]
 default = []
 test-support = []
+# #1013 T11 — gate-only, and DELIBERATELY UNCOMPILABLE.
+#
+# !!! `cargo check/test/build -p calm-proc-supervisor --all-features` CAN NEVER
+# !!! SUCCEED, BY DESIGN. `--all-features` turns this feature on, and this
+# !!! feature exists in order to make the crate fail to compile. If you reached
+# !!! this comment from a red `--all-features` build: that is the intended
+# !!! behaviour, not a broken crate. Enable features explicitly instead
+# !!! (`--features test-support`). No workflow in this repo uses
+# !!! `--all-features`, and none may start.
+#
+# Enabling this feature compiles `mod pgid_escape_probe`, which tries to read
+# `pgid_lease::Pgid`'s private field from outside the module. The crate MUST
+# fail to build with `error[E0616]`; a successful build means the pgid escaped
+# its module again. The CI gate is the "pgid escape gate (#1013 T11)" step.
+pgid-escape-probe = []
 
 [dependencies]
 anyhow = "1"
