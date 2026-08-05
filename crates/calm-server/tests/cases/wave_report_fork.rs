@@ -39,18 +39,17 @@ fn long_fixture_text() -> String {
     "long-fixture-segment-".repeat(450)
 }
 
-fn encoded_fragment(block_id: &str) -> String {
-    let (first, rest) = block_id.split_at(3);
-    format!("{}&#{};{}", &first[..2], first.as_bytes()[2], rest)
+fn entity_encode_first(value: &str) -> String {
+    let first = value.chars().next().unwrap();
+    format!("&#{};{}", u32::from(first), &value[first.len_utf8()..])
 }
 
 fn fixture_prose(source_wave_id: &str, internal_block_id: &str) -> String {
-    let entity_fragment = encoded_fragment(internal_block_id);
     format!(
         concat!(
             "# Fixture\n\n{long}\n\n",
             "[inline](neige://wave/{0}#{1})\n",
-            "[entity](neige://wave/{0}#{2})\n",
+            "[second-inline](neige://wave/{0}#{1})\n",
             "[reference][same]\n",
             "<neige://wave/{0}#{1}>\n",
             "[dangling](neige://wave/{0}#b_dead)\n",
@@ -61,7 +60,6 @@ fn fixture_prose(source_wave_id: &str, internal_block_id: &str) -> String {
         ),
         source_wave_id,
         internal_block_id,
-        entity_fragment,
         long = long_fixture_text(),
     )
 }
@@ -564,18 +562,17 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
         concat!(
             "# Fixture\n\n{long}\n\n",
             "[inline](neige://wave/{0}#{1})\n",
-            "[entity](neige://wave/{0}#{2})\n",
+            "[second-inline](neige://wave/{0}#{1})\n",
             "[reference][same]\n",
             "<neige://wave/{0}#{1}>\n",
-            "[dangling](neige://wave/{3}#b_dead)\n",
-            "`[code](neige://wave/{3}#b_dead)`\n",
-            "```markdown\n[fenced](neige://wave/{3}#b_dead)\n```\n",
+            "[dangling](neige://wave/{2}#b_dead)\n",
+            "`[code](neige://wave/{2}#b_dead)`\n",
+            "```markdown\n[fenced](neige://wave/{2}#b_dead)\n```\n",
             "[external](neige://wave/external-wave#b_4444)\n",
             "\n[same]: neige://wave/{0}#{1}\n",
         ),
         target_wave_id,
         internal_block_id,
-        encoded_fragment(&internal_block_id),
         boot.source_wave_id,
         long = long_fixture_text(),
     );
@@ -1082,4 +1079,100 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
+}
+
+#[tokio::test]
+async fn unsafe_markdown_destinations_fail_fork_with_block_and_source() {
+    let boot = boot().await;
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{}/report", boot.source_wave_id),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let target_block_id = report["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|block| block["kind"] == "prose")
+        .nth(1)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let entity_destination = format!(
+        "neige://wave/{}#{target_block_id}",
+        entity_encode_first(&boot.source_wave_id)
+    );
+    let escaped_destination = format!("neige\\://wave/{}#{target_block_id}", boot.source_wave_id);
+    let html_destination = format!("neige://wave/{}#{target_block_id}", boot.source_wave_id);
+    let cases = [
+        format!("[entity]({entity_destination})"),
+        format!("[escaped]({escaped_destination})"),
+        format!(r#"[<span title="[">label</span>]({html_destination})"#),
+    ];
+
+    for (index, (markdown, destination)) in cases
+        .into_iter()
+        .zip([entity_destination, escaped_destination, html_destination])
+        .enumerate()
+    {
+        let (status, report) = request_json(
+            &boot.app,
+            "GET",
+            format!("/api/waves/{}/report", boot.source_wave_id),
+            &boot.cookie,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let prose = report["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["kind"] == "prose")
+            .unwrap();
+        let prose_id = prose["id"].as_str().unwrap();
+        let (status, response) = request_json(
+            &boot.app,
+            "PATCH",
+            format!(
+                "/api/waves/{}/report/blocks/{prose_id}",
+                boot.source_wave_id
+            ),
+            &boot.cookie,
+            Some(json!({
+                "kind": "prose",
+                "markdown": markdown,
+                "ifBlockRev": prose["rev"]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "fixture update: {response}");
+
+        let (status, body) = request_json(
+            &boot.app,
+            "POST",
+            "/api/waves".into(),
+            &boot.cookie,
+            Some(json!({
+                "cove_id": boot.cove_id,
+                "title": format!("unsafe fork {index}"),
+                "sort": null,
+                "cwd": format!("{}-unsafe-{index}", boot.target_cwd),
+                "attach_folder": true,
+                "theme": routes::theme::RequestTheme::default_dark(),
+                "fork_report_from": boot.source_wave_id,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains(prose_id), "{error}");
+        assert!(error.contains(&destination), "{error}");
+        assert!(error.contains("plain form"), "{error}");
+    }
 }

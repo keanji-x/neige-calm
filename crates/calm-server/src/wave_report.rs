@@ -146,8 +146,8 @@ pub async fn tasks_rebuild_tx(
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
     Ok(project_tasks_tx(tx, wave_id, &declarations, &diagnostics).await?)
 }
+use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
-use crate::wave_report_task_guard::{guard_task_declarations, normalize_report_op};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`

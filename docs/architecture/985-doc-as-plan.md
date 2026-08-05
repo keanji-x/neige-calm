@@ -1128,8 +1128,12 @@ fork 复制文本 ⇒ 文本里的 `neige://wave/<源 wave>#b_xxxx` 会**指回�
 
 `scan_links` 不足以做原位改写：`ScannedLink.label_start/label_end` 是剥离 Markdown
 后的 plain 文本标签 offset，不是源 Markdown destination 的 offset。fork 必须使用
-source-aware helper，借 parser 的源范围改写 inline / reference-style / autolink 的
-destination；code span 与 fenced code 仍按 parser 语义忽略。覆盖集合只包括 prose 的
+source-aware helper 改写 inline / reference-style / autolink 的 destination；只有当
+`pulldown-cmark` 的 destination 直接借用源 Markdown 字节（即原始 destination 与解码值
+逐字节相同），且 link label 不含 inline HTML 时才允许改写。字符实体、反斜杠转义或
+label 内 inline HTML 会让 `POST /api/waves` fail-closed 返回 400；错误逐条列出块 id、
+字段与无法安全定位的 destination 源文本，并提示先改成普通形式再重试，绝不静默漏改。
+code span 与 fenced code 仍按 parser 语义忽略。覆盖集合只包括 prose 的
 `markdown`、task 的 `goal` 与可选 `acceptance`，以及 task `refs[]` 中的裸 URI；
 不扫描 canonical fence JSON、`context`、gate 或 tombstone reason。只改目标 wave 等于
 源 wave 的引用，外部引用逐字节不变。这里**错了是静默的**：指回模板原文的链接仍是

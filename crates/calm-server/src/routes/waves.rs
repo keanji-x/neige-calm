@@ -31,7 +31,7 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    card_create_with_id_tx, card_update_with_crdt_tx, cove_folder_create_tx,
+    TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx, cove_folder_create_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
     project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
@@ -41,7 +41,7 @@ use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{
-    CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
+    Card, CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
     NewWave, RequestTheme, Wave, WaveDetail, WavePatch, new_id,
 };
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
@@ -68,7 +68,7 @@ use crate::wave_report::{
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
-use crate::wave_report_task_guard::guard_fork_task_declarations;
+use crate::wave_report_task_guard::guard_forked_blocks;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -759,30 +759,19 @@ async fn create_wave_with_spec_harness(
                             "wave_create: serialize forked wave-report payload: {error}"
                         ))
                     })?;
-                    report_card = card_update_with_crdt_tx(
+                    let (persisted_report, projection) =
+                        persist_fork_report_and_project_tasks_tx(
                         tx,
                         report_card.id.as_str(),
-                        CardPatch {
-                            title: None,
-                            kind: None,
-                            sort: None,
-                            payload: Some(payload),
-                            deletable: None,
-                        },
-                        doc.to_bytes(),
-                    )
-                    .await?;
-                    // Ref existence reads the report cache, so the exact JSON +
-                    // CRDT snapshot must land before task projection.
-                    fork_projection = Some(
-                        project_tasks_tx(
-                            tx,
-                            wave_id.as_str(),
-                            &declarations,
-                            &diagnostics,
+                        wave_id.as_str(),
+                        payload,
+                        &mut doc,
+                        &declarations,
+                        &diagnostics,
                         )
-                        .await?,
-                    );
+                        .await?;
+                    report_card = persisted_report;
+                    fork_projection = Some(projection);
                 }
 
                 let wave_scope = EventScope::Wave {
@@ -943,6 +932,34 @@ type ForkReportSnapshot = (
     Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
 );
 
+async fn persist_fork_report_and_project_tasks_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    report_card_id: &str,
+    wave_id: &str,
+    payload: serde_json::Value,
+    doc: &mut ReportDoc,
+    declarations: &[calm_types::report_blocks::tasks::TaskDeclaration],
+    diagnostics: &[Vec<calm_types::report_blocks::tasks::Diagnostic>],
+) -> Result<(Card, TaskProjectionOutcome)> {
+    let report_card = card_update_with_crdt_tx(
+        tx,
+        report_card_id,
+        CardPatch {
+            title: None,
+            kind: None,
+            sort: None,
+            payload: Some(payload),
+            deletable: None,
+        },
+        doc.to_bytes(),
+    )
+    .await?;
+    // Projection resolves block refs through this cache, so both effects are
+    // deliberately one production operation with one fixed internal order.
+    let projection = project_tasks_tx(tx, wave_id, declarations, diagnostics).await?;
+    Ok((report_card, projection))
+}
+
 fn prepare_fork_report(
     summary: String,
     mut blocks: Vec<ReportBlock>,
@@ -953,20 +970,25 @@ fn prepare_fork_report(
     use std::collections::HashSet;
 
     use calm_types::report_blocks::{KIND_PROSE, KIND_TASK, flat_text, validate_payload};
-    use calm_types::report_links::{rewrite_wave_destination, rewrite_wave_links};
+    use calm_types::report_links::{UnsafeWaveLink, rewrite_wave_destination, rewrite_wave_links};
 
     let copied_block_ids: HashSet<String> = blocks.iter().map(|block| block.id.clone()).collect();
+    let mut unsafe_links: Vec<(String, &'static str, UnsafeWaveLink)> = Vec::new();
     for block in &mut blocks {
+        let block_id = block.id.clone();
         if block.kind == KIND_PROSE {
             if let Some(markdown) = block.payload.get_mut("markdown")
                 && let Some(source) = markdown.as_str()
             {
-                *markdown = serde_json::Value::String(rewrite_wave_links(
-                    source,
-                    source_wave_id,
-                    target_wave_id,
-                    &copied_block_ids,
-                ));
+                match rewrite_wave_links(source, source_wave_id, target_wave_id, &copied_block_ids)
+                {
+                    Ok(rewritten) => *markdown = serde_json::Value::String(rewritten),
+                    Err(errors) => unsafe_links.extend(
+                        errors
+                            .into_iter()
+                            .map(|error| (block_id.clone(), "markdown", error)),
+                    ),
+                }
             }
             continue;
         }
@@ -978,12 +1000,19 @@ fn prepare_fork_report(
                 if let Some(value) = payload.get_mut(field)
                     && let Some(source) = value.as_str()
                 {
-                    *value = serde_json::Value::String(rewrite_wave_links(
+                    match rewrite_wave_links(
                         source,
                         source_wave_id,
                         target_wave_id,
                         &copied_block_ids,
-                    ));
+                    ) {
+                        Ok(rewritten) => *value = serde_json::Value::String(rewritten),
+                        Err(errors) => unsafe_links.extend(
+                            errors
+                                .into_iter()
+                                .map(|error| (block_id.clone(), field, error)),
+                        ),
+                    }
                 }
             }
             if let Some(serde_json::Value::Array(references)) = payload.get_mut("refs") {
@@ -1020,7 +1049,24 @@ fn prepare_fork_report(
         })?;
     }
 
-    guard_fork_task_declarations(&blocks, author)?;
+    if !unsafe_links.is_empty() {
+        let details = unsafe_links
+            .into_iter()
+            .map(|(block_id, field, link)| {
+                format!(
+                    "- block {block_id} field {field}: destination source `{}` (decoded `{}`)",
+                    link.source, link.decoded_destination
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(CalmError::BadRequest(format!(
+            "wave create: cannot safely rewrite fork link destinations:\n{details}\n\
+             Write each link target in plain form (without character entities or backslash escapes, and without inline HTML in its label) and retry."
+        )));
+    }
+
+    guard_forked_blocks(&blocks, author)?;
     let doc = ReportDoc::from_blocks_exact(&summary, &blocks).map_err(|error| {
         CalmError::BadRequest(format!(
             "wave create: invalid fork report snapshot: {error}"
@@ -1664,9 +1710,16 @@ pub(crate) async fn update_wave_report(
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_fork_report, spec_harness_layout_payload};
+    use super::{
+        persist_fork_report_and_project_tasks_tx, prepare_fork_report, spec_harness_layout_payload,
+    };
+    use crate::db::prelude::*;
+    use crate::db::sqlite::SqlxRepo;
     use crate::event::EditAuthor;
-    use crate::wave_report::ReportBlock;
+    use crate::model::{NewCard, NewCove, NewWave};
+    use crate::routes::theme::RequestTheme;
+    use crate::wave_report::{ReportBlock, WaveReportPayload};
+    use crate::wave_report_doc::ReportDoc;
     use serde_json::json;
 
     #[test]
@@ -1693,6 +1746,116 @@ mod tests {
         .err()
         .expect("invalid copied task must abort fork");
         assert!(error.to_string().contains("invalid forked report block"));
+    }
+
+    #[tokio::test]
+    async fn fork_persist_helper_writes_cache_crdt_and_projection_together() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "fork-helper".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                cove_id: cove.id,
+                title: "fork helper".into(),
+                sort: None,
+                cwd: "/tmp/fork-helper".into(),
+                workflow_id: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let report = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "wave-report".into(),
+                sort: Some(-1.0),
+                payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        let blocks = vec![
+            ReportBlock {
+                id: "b_1234".into(),
+                kind: "prose".into(),
+                rev: 1,
+                payload: json!({"markdown": "projection target"}),
+            },
+            ReportBlock {
+                id: "b_abcd".into(),
+                kind: "task".into(),
+                rev: 1,
+                payload: json!({
+                    "key": "projected",
+                    "kind": "codex",
+                    "goal": "project the fork",
+                    "refs": [format!("neige://wave/{}#b_1234", wave.id)],
+                    "no_gate_reason": "covered by helper behavior test",
+                    "ready": true,
+                    "released_by_user": true,
+                    "declared_by": "spec"
+                }),
+            },
+        ];
+        let mut doc = ReportDoc::from_blocks_exact("forked", &blocks).unwrap();
+        let (summary, body) = doc.project().unwrap();
+        let mut payload = WaveReportPayload::new(summary, body);
+        payload.blocks = Some(blocks.clone());
+        let payload_value = serde_json::to_value(payload).unwrap();
+        let (declarations, diagnostics) =
+            calm_types::report_blocks::tasks::project_task_declarations(&blocks);
+
+        let pool = repo.sqlite_pool().unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let (updated, projection) = persist_fork_report_and_project_tasks_tx(
+            &mut tx,
+            report.id.as_str(),
+            wave.id.as_str(),
+            payload_value.clone(),
+            &mut doc,
+            &declarations,
+            &diagnostics,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(updated.payload, payload_value);
+        let persisted: (String, bool) =
+            sqlx::query_as("SELECT json(payload),body_crdt IS NOT NULL FROM cards WHERE id=?1")
+                .bind(report.id.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&persisted.0).unwrap(),
+            payload_value
+        );
+        assert!(persisted.1, "fork helper omitted CRDT bytes");
+        assert!(
+            projection
+                .diagnostics
+                .iter()
+                .flat_map(|verdict| &verdict.diagnostics)
+                .all(|diagnostic| diagnostic.code != "reference_missing"),
+            "fork projection diagnostics: {:?}",
+            projection.diagnostics
+        );
+        let task_key: String =
+            sqlx::query_scalar("SELECT key FROM tasks WHERE wave_id=?1 AND key='projected'")
+                .bind(wave.id.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(task_key, "projected");
+        tx.rollback().await.unwrap();
     }
 
     /// Pins the full-write assumption the events retention pruner's
