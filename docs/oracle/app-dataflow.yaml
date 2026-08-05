@@ -1307,7 +1307,7 @@
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
-  verification_owner: unit
+  verification_owner: architecture
   test_tier: jsdom
   migration: migrated
 
@@ -1433,7 +1433,7 @@
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
+  test_tier: static
   migration: migrated
 
 - id: INV-APP-078
@@ -1441,7 +1441,7 @@
   family: app-theme
   statement: >
     `useTheme()` 在 ThemeProvider 之外调用必须抛出**指名 ThemeProvider 与
-    app/providers.tsx 的**描述性错误。
+    app/providers/public.tsx 的**描述性错误。
   why: >
     静默返回默认值会让"provider 装错位置"变成难查的视觉 bug；错误文案里带修复位置
     是刻意的可诊断性设计。

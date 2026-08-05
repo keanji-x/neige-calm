@@ -30,7 +30,8 @@ describe('browser theme contracts', () => {
     document.documentElement.dataset.theme = 'light'; const light = getComputedStyle(target).backgroundColor;
     document.documentElement.dataset.theme = 'dark'; const dark = getComputedStyle(target).backgroundColor;
     expect(light).not.toBe(dark);
-    expect(pixelLuminance(dark)).toBeLessThan(pixelLuminance(light) - 80); target.remove();
+    expect(pixelLuminance(dark)).toBeLessThan(pixelLuminance(light) - 80);
+    expect(pixelLuminance(dark)).toBeLessThan(80); target.remove();
   });
 
   it('E2E-CAP-TERMTHEME-010 exports host tuples that the document channel selects', () => {
@@ -40,10 +41,12 @@ describe('browser theme contracts', () => {
     document.documentElement.dataset.theme = 'dark'; expect(readHostThemeRgb(document.documentElement)).toBe(DARK_THEME_RGB);
   });
 
-  it('INV-APP-071 keeps a synchronous public dataset channel for non-subscribing consumers', () => {
-    const storage = memoryStorage(); storage.setItem(THEME_KEY, 'dark'); render(<ThemeProvider storage={storage}><Probe /></ThemeProvider>);
+  it('E2E-CAP-AXE-005 preserves an external dataset write across an unrelated provider re-render', () => {
+    const storage = memoryStorage(); storage.setItem(THEME_KEY, 'dark');
+    const view = render(<ThemeProvider storage={storage}><Probe /></ThemeProvider>);
     expect(document.documentElement.dataset.theme).toBe('dark');
     document.documentElement.dataset.theme = 'light';
+    view.rerender(<ThemeProvider storage={storage}><><Probe /><span>unrelated</span></></ThemeProvider>);
     expect(document.documentElement.dataset.theme).toBe('light');
   });
 

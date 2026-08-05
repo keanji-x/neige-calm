@@ -14,6 +14,9 @@ function runtime(overrides: Partial<ProviderRuntime> = {}): ProviderRuntime {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('provider behavior', () => {
+  it('pins the public web compatibility protocol version', () => {
+    expect(WEB_COMPAT_VERSION).toBe(16);
+  });
   it('INV-APP-003 places one ThemeProvider above the complete children tree', () => {
     function ThemeConsumer() {
       const { resolved } = requireTheme();

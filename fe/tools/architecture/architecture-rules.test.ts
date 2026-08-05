@@ -216,6 +216,26 @@ describe('architecture/no-class-dom-query', () => {
   });
 });
 
+describe('architecture/no-theme-dataset-write-outside-provider', () => {
+  for (const fixture of [
+    'theme-dataset/property-write.ts',
+    'theme-dataset/element-write.ts',
+    'theme-dataset/set-attribute.ts',
+    'theme-dataset/object-assign.ts',
+  ] as const) {
+    it(`rejects ${fixture}`, async () => {
+      const messages = await lintFixture('no-theme-dataset-write-outside-provider', fixture);
+      expect(messages).toHaveLength(1);
+      expect(messages.at(0)?.messageId).toBe('write');
+    });
+  }
+  for (const fixture of ['theme-dataset/read.ts', 'web/src/app/theme/public.tsx'] as const) {
+    it(`accepts ${fixture}`, async () => {
+      expect(await lintFixture('no-theme-dataset-write-outside-provider', fixture)).toHaveLength(0);
+    });
+  }
+});
+
 describe('architecture/no-core-platform-escape', () => {
   it('rejects globalThis.fetch', async () => {
     expect(await lintFixture('no-core-platform-escape', 'core-escape/global-this-fetch.ts')).toHaveLength(1);

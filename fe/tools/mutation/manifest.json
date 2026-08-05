@@ -147,5 +147,44 @@
     "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
     "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+  },
+  {
+    "mutation_id": "app-providers-drop-busted-state",
+    "defends": ["oracle:CAP-APP-010", "oracle:INV-APP-011", "oracle:INV-APP-014"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..8af9d20d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -45,7 +45,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n     if (previous && previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n-      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n+      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); runtime.reload(); return;\n     }\n     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);\n   }, [client, query.data?.dbInstanceId, runtime]);\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "expected_red": ["provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"],
+    "why_more_than_one": "Prediction: only the consolidated blast-path contract should fail because cleanup and reload still occur, but children are no longer hidden."
+  },
+  {
+    "mutation_id": "app-providers-bust-first-visit",
+    "defends": ["oracle:INV-APP-012", "oracle:INV-APP-013"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..6a0efb31 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -43,7 +43,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "expected_red": ["provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"],
+    "why_more_than_one": "Prediction: the table-driven first-visit/matching-id contract is the sole failure; only its null-prior branch is mutated."
+  },
+  {
+    "mutation_id": "app-theme-drop-match-media-unsubscribe",
+    "defends": ["oracle:CAP-APP-074"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..ed28a80e 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -38,7 +38,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n     setSystemPreference(media.matches ? 'dark' : 'light');\n     const change = (event: MediaQueryListEvent) => setSystemPreference(event.matches ? 'dark' : 'light');\n     media.addEventListener('change', change);\n-    return () => media.removeEventListener('change', change);\n+    return undefined;\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n",
+    "selection_paths": ["web/src/app/theme/public.test.tsx"],
+    "expected_red": ["ThemeProvider behavior CAP-APP-074 INV-APP-075 tracks system immediately and unsubscribes in explicit mode"],
+    "why_more_than_one": "Prediction: only the listener-ownership contract should fail when the stale listener remains registered."
+  },
+  {
+    "mutation_id": "no-theme-dataset-write-drop-assignment-detection",
+    "defends": ["oracle:INV-APP-070"],
+    "target": "tools/architecture/no-theme-dataset-write-outside-provider.mjs",
+    "patch": "diff --git a/tools/architecture/no-theme-dataset-write-outside-provider.mjs b/tools/architecture/no-theme-dataset-write-outside-provider.mjs\nindex 53336536..969f2420 100644\n--- a/tools/architecture/no-theme-dataset-write-outside-provider.mjs\n+++ b/tools/architecture/no-theme-dataset-write-outside-provider.mjs\n@@ -36,9 +36,7 @@ export const noThemeDatasetWriteOutsideProvider = {\n     if (filename.endsWith('/web/src/app/theme/public.tsx')) return {};\n     const report = (/** @type {any} */ node) => context.report({ node, messageId: 'write' });\n     return {\n-      AssignmentExpression(node) {\n-        if (isDatasetTheme(node.left)) report(node);\n-      },\n+      AssignmentExpression() {},\n       CallExpression(node) {\n         if (node.callee.type === 'MemberExpression' && staticName(node.callee) === 'setAttribute'\n           && node.arguments[0]?.type === 'Literal' && node.arguments[0].value === 'data-theme') report(node);\n",
+    "selection_paths": ["tools/architecture/architecture-rules.test.ts"],
+    "expected_red": [
+      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/property-write.ts",
+      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/element-write.ts"
+    ],
+    "why_more_than_one": "Prediction: the shared AssignmentExpression branch intentionally covers both dot and bracket writes; both and only both fixtures should turn red."
   }
 ]

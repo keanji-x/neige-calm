@@ -41,6 +41,14 @@ describe('ThemeProvider behavior', () => {
     expect(screen.getByRole('button').textContent).toBe('dark:dark');
   });
 
+  it('INV-APP-073 falls back to system when persistence reads throw', () => {
+    const storage = memoryStorage();
+    storage.getItem = () => { throw new Error('blocked'); };
+    const media = createMatchMedia(false); vi.stubGlobal('matchMedia', media.matchMedia);
+    render(<ThemeProvider storage={storage}><Probe /></ThemeProvider>);
+    expect(screen.getByRole('button').textContent).toBe('system:light');
+  });
+
   it('CAP-APP-074 INV-APP-075 tracks system immediately and unsubscribes in explicit mode', () => {
     const media = createMatchMedia(true); vi.stubGlobal('matchMedia', media.matchMedia);
     render(<ThemeProvider storage={memoryStorage()}><Probe /></ThemeProvider>);
@@ -54,7 +62,7 @@ describe('ThemeProvider behavior', () => {
 
   it('INV-APP-078 fails descriptively outside the provider', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    expect(() => render(<Probe />)).toThrow(/ThemeProvider.*app\/providers\.tsx/u);
+    expect(() => render(<Probe />)).toThrow(/ThemeProvider.*app\/providers\/public\.tsx/u);
   });
 
   it('CAP-APP-076 only owns and conditionally removes its test driver', () => {

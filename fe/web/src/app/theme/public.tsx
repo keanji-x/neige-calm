@@ -64,6 +64,6 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor
 
 export function useTheme(): ThemeContextValue {
   const value = useContext(ThemeContext);
-  if (!value) throw new Error('useTheme() requires <ThemeProvider>; mount it from web/src/app/providers.tsx.');
+  if (!value) throw new Error('useTheme() requires <ThemeProvider>; mount it from web/src/app/providers/public.tsx.');
   return value;
 }
