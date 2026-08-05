@@ -268,7 +268,7 @@ impl ReportDoc {
     /// Splits `new_body`, aligns the slices against the current block
     /// map via `calm_types::report_blocks::reassign_ids`, and lands
     /// the result at block granularity: changed blocks get a
-    /// character-level `update_text` splice + `rev + 1`, new blocks
+    /// a fresh linear-write Text child + `rev + 1`, new blocks
     /// get a fresh map entry (`rev = 1`), vanished blocks are deleted,
     /// and `order` is rewritten when it changed. Byte-identical
     /// content is a doc-level no-op (revs untouched, zero text ops).
@@ -550,9 +550,7 @@ impl ReportDoc {
                 self.0
                     .put(&entry, KEY_REV, u64::from(next_rev))
                     .context("put rev")?;
-                self.0
-                    .update_text(&text_id, content)
-                    .context("update block text")?;
+                replace_text_object(&mut self.0, &entry, content).context("replace block text")?;
                 Ok((id.to_string(), next_rev))
             }
             None => {
@@ -664,12 +662,10 @@ impl ReportDoc {
                             .context("put block rev")?;
                     }
                     if flat_text(old) != content {
-                        let text_id = self
-                            .typed_at(&entry, KEY_TEXT, ObjType::Text)?
+                        self.typed_at(&entry, KEY_TEXT, ObjType::Text)?
                             .context("doc invariant: block entry has a text field")?;
-                        self.0
-                            .update_text(&text_id, &content)
-                            .context("update block text")?;
+                        replace_text_object(&mut self.0, &entry, &content)
+                            .context("replace block text")?;
                     }
                 }
                 None => {
@@ -867,6 +863,24 @@ impl ReportDoc {
     fn entry_at(&self, blocks_id: &automerge::ObjId, id: &str) -> Result<Option<automerge::ObjId>> {
         self.typed_at(blocks_id, id, ObjType::Map)
     }
+}
+
+/// Replace a block's Text object without Automerge's general Myers diff.
+/// Report writes are serialized and revision-checked before reaching this
+/// helper, so replacing the child object preserves the same visible text while
+/// keeping work linear for large repetitive input.
+fn replace_text_object(
+    doc: &mut AutoCommit,
+    entry: &automerge::ObjId,
+    replacement: &str,
+) -> Result<()> {
+    doc.delete(entry, KEY_TEXT)
+        .context("delete superseded block text object")?;
+    let text_id = doc
+        .put_object(entry, KEY_TEXT, ObjType::Text)
+        .context("create replacement block text object")?;
+    doc.update_text(&text_id, replacement)
+        .context("write replacement block text")
 }
 
 #[cfg(test)]
@@ -1180,6 +1194,31 @@ changed.
         assert_eq!(
             reloaded.block_index().unwrap(),
             vec![(id_a, "prose".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn large_repetitive_block_replacement_has_linear_time_bound() {
+        let markdown = format!(
+            "# Fixture\n\n{}\n\ncapture pending\n",
+            "long-fixture-segment-".repeat(450)
+        );
+        assert!(markdown.len() > 9_000, "fixture must retain its scale");
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &markdown));
+        let id = doc.block_index().unwrap()[0].0.clone();
+
+        let started = std::time::Instant::now();
+        doc.upsert_block(Some(&id), "prose", "[entity](neige://wave/source#b_target)")
+            .unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "9 KB replacement regressed beyond the linear-time budget: {elapsed:?}"
+        );
+        assert_eq!(
+            doc.project().unwrap().1,
+            "[entity](neige://wave/source#b_target)"
         );
     }
 
