@@ -298,7 +298,7 @@ fn verify_test_registration_gated(
 /// content is exactly `BEGIN IMMEDIATE` is kept verbatim so the
 /// `begin_with(` first-argument check can tell the one allowed statement
 /// apart from deferred ones in disguise.
-fn normalize_source(src: &str) -> String {
+pub(crate) fn normalize_source(src: &str) -> String {
     let b: Vec<char> = src.chars().collect();
     let n = b.len();
     let mut out = String::with_capacity(src.len());
@@ -482,7 +482,7 @@ fn consume_char_literal(b: &[char], start: usize) -> Option<usize> {
 /// test-gated item (see `is_test_gated_cfg`). Runs on NORMALIZED text, so
 /// braces in strings/chars/comments can no longer desync the tracking.
 /// Rustfmt (a CI gate) keeps attributes on their own line — the skip relies on it.
-fn production_lines(src: &str) -> Vec<(usize, &str)> {
+pub(crate) fn production_lines(src: &str) -> Vec<(usize, &str)> {
     let mut out = Vec::new();
     let mut lines = src.lines().enumerate();
     while let Some((idx, line)) = lines.next() {
@@ -669,7 +669,7 @@ fn begin_with_first_arg_is_immediate(flat: &[(char, usize)], open_paren: usize) 
 
 // ---- file walk --------------------------------------------------------------
 
-fn rust_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn rust_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     visit_rust_files(root, &mut out);
     out

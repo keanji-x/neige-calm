@@ -43,8 +43,8 @@ use crate::routes::wave_report_blocks::{
     UpdateReportBlockBody,
 };
 use crate::routes::waves::{
-    UpdateWaveReportBody, WaveBacklink, WaveBacklinksResponse, WaveFsCatQuery, WaveFsLsQuery,
-    WavesWindowQuery,
+    CreateWaveRequest, UpdateWaveReportBody, WaveBacklink, WaveBacklinksResponse, WaveFsCatQuery,
+    WaveFsLsQuery, WavesWindowQuery,
 };
 use crate::wave_fs_dto::{
     WaveFsCardMeta, WaveFsHookEvent, WaveFsRunDetail, WaveFsRunEventRef, WaveFsRunEvents,
@@ -154,6 +154,7 @@ use utoipa::OpenApi;
         ResolveQuery,
         Wave,
         NewWave,
+        CreateWaveRequest,
         WavePatch,
         TodayLaunchpad,
         WavesWindowQuery,

@@ -2729,7 +2729,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/NewWave"
+                "$ref": "#/components/schemas/CreateWaveRequest"
               }
             }
           },
@@ -4509,6 +4509,59 @@
               "null"
             ],
             "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateWaveRequest": {
+        "type": "object",
+        "required": [
+          "cove_id",
+          "title",
+          "cwd",
+          "theme"
+        ],
+        "properties": {
+          "attach_folder": {
+            "type": "boolean"
+          },
+          "cove_id": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "fork_report_from": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One-time creation instruction: copy this wave's report snapshot into\nthe new report inside the wave-create transaction."
+          },
+          "sort": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "theme": {
+            "$ref": "#/components/schemas/RequestTheme"
+          },
+          "title": {
+            "type": "string"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflow_input": {
+            "type": [
+              "object",
+              "null"
+            ]
           }
         },
         "additionalProperties": false

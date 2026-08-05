@@ -4,6 +4,8 @@ mod support;
 mod boot_invariants;
 #[path = "cases/deferred_write_tx_invariant.rs"]
 mod deferred_write_tx_invariant;
+#[path = "cases/fork_guard_exemption_invariant.rs"]
+mod fork_guard_exemption_invariant;
 #[path = "cases/inv_02_killpg.rs"]
 mod inv_02_killpg;
 #[path = "cases/inv_05_pid_ownership_strong.rs"]

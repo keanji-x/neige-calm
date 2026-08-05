@@ -102,7 +102,7 @@ export type CovePatchBody = Schemas['CovePatch'];
  * `#[ts(type = "unknown")]` → `unknown`) and no consumer reads it off the
  * OpenAPI `Wave` shape today.
  */
-export type NewWaveBody   = Omit<Schemas['NewWave'], 'workflow_input'> & {
+export type NewWaveBody   = Omit<Schemas['CreateWaveRequest'], 'workflow_input'> & {
   workflow_input?: unknown;
 };
 export type WavePatchBody = Schemas['WavePatch'];

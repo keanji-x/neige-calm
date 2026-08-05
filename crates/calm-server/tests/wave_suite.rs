@@ -17,5 +17,7 @@ mod wave_delete_forge_fence;
 mod wave_fsm_golden;
 #[path = "cases/wave_pin.rs"]
 mod wave_pin;
+#[path = "cases/wave_report_fork.rs"]
+mod wave_report_fork;
 #[path = "cases/wave_vcs.rs"]
 mod wave_vcs;

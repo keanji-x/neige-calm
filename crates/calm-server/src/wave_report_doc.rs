@@ -19,8 +19,12 @@
 //! [`ReportDoc::project`] concatenates each block's `text` in `order`
 //! order, which by the `flatten(blocks) == body` invariant of
 //! `calm_types::report_blocks` reproduces the flat markdown byte for
-//! byte. Prose markdown is stored as `Text` so character-level edit
-//! history (and future concurrent merges) stay meaningful.
+//! byte. Prose markdown is stored as `Text`, but changed block text is
+//! replaced with a fresh child object to keep writes linear. That replacement
+//! loses one side when two replicas concurrently edit the same block; it is
+//! safe only while production never merges two `body_crdt` documents (the
+//! frontend holds no CRDT, there is no offline sync, `wave_vcs` stores text,
+//! replay uses the event write path, and writes are serialized + rev-checked).
 //!
 //! #960 PR3 — a non-prose block's `text` holds its **canonical
 //! `neige-block` fence** (`calm_types::report_blocks::fence`), i.e.
@@ -114,6 +118,48 @@ impl ReportDoc {
         );
         Self::write_blocks_layout(&mut doc, &blocks);
         Self(doc)
+    }
+
+    /// Seed a report doc from an already-authoritative ordered block snapshot.
+    pub fn from_blocks_exact(summary: &str, blocks: &[ReportBlock]) -> Result<Self> {
+        let mut seen = HashSet::new();
+        for block in blocks {
+            ensure!(
+                seen.insert(block.id.as_str()),
+                "duplicate block id {} in exact report snapshot",
+                block.id
+            );
+        }
+
+        let mut doc = AutoCommit::new();
+        let summary_id = doc
+            .put_object(&ROOT, FIELD_SUMMARY, ObjType::Text)
+            .context("create exact report summary")?;
+        doc.update_text(&summary_id, summary)
+            .context("write exact report summary")?;
+        // Deliberately do not route this authoritative snapshot through
+        // `write_blocks_layout`: that defensive seeding helper may remint a
+        // duplicate id. The uniqueness check above is the fork boundary, and
+        // every id below is written byte-for-byte as supplied.
+        let blocks_id = doc
+            .put_object(&ROOT, FIELD_BLOCKS, ObjType::Map)
+            .context("create exact report blocks map")?;
+        let order_id = doc
+            .put_object(&ROOT, FIELD_ORDER, ObjType::List)
+            .context("create exact report order list")?;
+        for (index, block) in blocks.iter().enumerate() {
+            Self::insert_block_entry(
+                &mut doc,
+                &blocks_id,
+                &block.id,
+                &block.kind,
+                block.rev,
+                &flat_text(block),
+            );
+            doc.insert(&order_id, index, block.id.as_str())
+                .context("write exact report order entry")?;
+        }
+        Ok(Self(doc))
     }
 
     /// Read the authoritative document revision from the CRDT root.
@@ -226,7 +272,7 @@ impl ReportDoc {
     /// Splits `new_body`, aligns the slices against the current block
     /// map via `calm_types::report_blocks::reassign_ids`, and lands
     /// the result at block granularity: changed blocks get a
-    /// character-level `update_text` splice + `rev + 1`, new blocks
+    /// fresh linear-write Text child + `rev + 1`, new blocks
     /// get a fresh map entry (`rev = 1`), vanished blocks are deleted,
     /// and `order` is rewritten when it changed. Byte-identical
     /// content is a doc-level no-op (revs untouched, zero text ops).
@@ -508,9 +554,7 @@ impl ReportDoc {
                 self.0
                     .put(&entry, KEY_REV, u64::from(next_rev))
                     .context("put rev")?;
-                self.0
-                    .update_text(&text_id, content)
-                    .context("update block text")?;
+                replace_text_object(&mut self.0, &entry, content).context("replace block text")?;
                 Ok((id.to_string(), next_rev))
             }
             None => {
@@ -622,12 +666,10 @@ impl ReportDoc {
                             .context("put block rev")?;
                     }
                     if flat_text(old) != content {
-                        let text_id = self
-                            .typed_at(&entry, KEY_TEXT, ObjType::Text)?
+                        self.typed_at(&entry, KEY_TEXT, ObjType::Text)?
                             .context("doc invariant: block entry has a text field")?;
-                        self.0
-                            .update_text(&text_id, &content)
-                            .context("update block text")?;
+                        replace_text_object(&mut self.0, &entry, &content)
+                            .context("replace block text")?;
                     }
                 }
                 None => {
@@ -825,6 +867,24 @@ impl ReportDoc {
     fn entry_at(&self, blocks_id: &automerge::ObjId, id: &str) -> Result<Option<automerge::ObjId>> {
         self.typed_at(blocks_id, id, ObjType::Map)
     }
+}
+
+/// Replace a block's Text object without Automerge's general Myers diff.
+/// Report writes are serialized and revision-checked before reaching this
+/// helper, so replacing the child object preserves the same visible text while
+/// keeping work linear for large repetitive input.
+fn replace_text_object(
+    doc: &mut AutoCommit,
+    entry: &automerge::ObjId,
+    replacement: &str,
+) -> Result<()> {
+    doc.delete(entry, KEY_TEXT)
+        .context("delete superseded block text object")?;
+    let text_id = doc
+        .put_object(entry, KEY_TEXT, ObjType::Text)
+        .context("create replacement block text object")?;
+    doc.update_text(&text_id, replacement)
+        .context("write replacement block text")
 }
 
 #[cfg(test)]
@@ -1142,6 +1202,45 @@ changed.
     }
 
     #[test]
+    fn large_repetitive_block_replacement_has_linear_time_bound() {
+        let markdown = format!(
+            "# Fixture\n\n{}\n\ncapture pending\n",
+            "long-fixture-segment-".repeat(450)
+        );
+        assert!(markdown.len() > 9_000, "fixture must retain its scale");
+        let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &markdown));
+        let id = doc.block_index().unwrap()[0].0.clone();
+        let blocks_id = doc.blocks_map().unwrap().unwrap();
+        let entry_id = doc.entry_at(&blocks_id, &id).unwrap().unwrap();
+        let text_id_before = doc
+            .typed_at(&entry_id, KEY_TEXT, ObjType::Text)
+            .unwrap()
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        doc.upsert_block(Some(&id), "prose", "[entity](neige://wave/source#b_target)")
+            .unwrap();
+        let elapsed = started.elapsed();
+        let text_id_after = doc
+            .typed_at(&entry_id, KEY_TEXT, ObjType::Text)
+            .unwrap()
+            .unwrap();
+
+        assert_ne!(
+            text_id_before, text_id_after,
+            "changed block text must be replaced with a fresh Text object"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "9 KB replacement regressed beyond the smoke-test budget: {elapsed:?}"
+        );
+        assert_eq!(
+            doc.project().unwrap().1,
+            "[entity](neige://wave/source#b_target)"
+        );
+    }
+
+    #[test]
     fn identical_update_is_a_noop_at_byte_level() {
         // Re-asserting the same content produces zero text ops and no
         // rev movement; bound the saved-size growth as a smoke check
@@ -1209,6 +1308,8 @@ changed.
         // block via the wholesale `update` path; merge them and both
         // edits must survive. Block-granular storage is what makes
         // this clean — the edits land in two independent Text objects.
+        // This does not cover same-block edits; the known lossy semantics
+        // for that case are pinned by the next test.
         let payload = WaveReportPayload::new("shared", "# A\n\nalpha\n\n# B\n\nbeta\n");
         let mut origin = ReportDoc::from_payload(&payload);
         let bytes = origin.to_bytes();
@@ -1233,6 +1334,40 @@ changed.
         assert!(
             merged_body.contains("BETA"),
             "replica B's edit survived: body = {merged_body:?}"
+        );
+    }
+
+    #[test]
+    fn same_block_concurrent_merge_loses_one_edit_without_a_production_merge_path() {
+        // This is a known semantic of replacing a changed block's Text object:
+        // concurrent edits to the same block conflict, so one side is lost.
+        // It is currently safe because production never merges two `body_crdt`
+        // docs: the frontend holds no CRDT, there is no offline sync, `wave_vcs`
+        // stores only text, replay uses the event write path, and server writes
+        // are serialized + rev-checked.
+        //
+        // If CRDT sync or multi-replica merge is introduced, this test is the
+        // tripwire: preserve the Text object's identity and splice characters,
+        // or implement custom character edits with a complexity bound.
+        let payload = WaveReportPayload::new("shared", "# A\n\nalpha beta\n");
+        let mut origin = ReportDoc::from_payload(&payload);
+        let bytes = origin.to_bytes();
+
+        let mut replica_a = ReportDoc::from_bytes(&bytes).unwrap();
+        let mut replica_b = ReportDoc::from_bytes(&bytes).unwrap();
+        replica_a.0.set_actor(automerge::ActorId::from([1_u8]));
+        replica_b.0.set_actor(automerge::ActorId::from([2_u8]));
+
+        replica_a.update("shared", "# A\n\nALPHA beta\n").unwrap();
+        replica_b
+            .update("shared", "# A\n\nalpha beta GAMMA\n")
+            .unwrap();
+
+        replica_a.0.merge(&mut replica_b.0).expect("merge replicas");
+        assert_eq!(
+            replica_a.project().unwrap().1,
+            "# A\n\nalpha beta GAMMA\n",
+            "object replacement currently resolves the conflict by losing replica A's edit"
         );
     }
 
@@ -1632,5 +1767,61 @@ changed.
         assert_eq!(ids[0], "b_dupe");
         assert_ne!(ids[1], "b_dupe");
         assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+    }
+
+    #[test]
+    fn from_blocks_exact_preserves_order_ids_revs_and_payloads() {
+        let blocks = vec![
+            ReportBlock {
+                id: "b_0001".into(),
+                kind: "prose".into(),
+                rev: 7,
+                payload: json!({ "markdown": "# A\n\nalpha\n\n" }),
+            },
+            ReportBlock {
+                id: "b_0002".into(),
+                kind: "app".into(),
+                rev: 11,
+                payload: json!({ "src": "/apps/x" }),
+            },
+        ];
+
+        let doc = ReportDoc::from_blocks_exact("summary", &blocks).unwrap();
+        assert_eq!(doc.doc_rev().unwrap(), 0);
+        assert_eq!(doc.blocks_snapshot().unwrap(), blocks);
+        assert_eq!(doc.project().unwrap().0, "summary");
+    }
+
+    #[test]
+    fn from_blocks_exact_accepts_consistent_empty_snapshot() {
+        let doc = ReportDoc::from_blocks_exact("", &[]).unwrap();
+        assert_eq!(doc.doc_rev().unwrap(), 0);
+        assert_eq!(doc.blocks_snapshot().unwrap(), Vec::<ReportBlock>::new());
+        assert_eq!(doc.block_index().unwrap(), Vec::new());
+        assert_eq!(doc.project().unwrap(), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn from_blocks_exact_rejects_duplicate_ids_before_layout_write() {
+        let blocks = vec![
+            ReportBlock {
+                id: "b_dupe".into(),
+                kind: "prose".into(),
+                rev: 3,
+                payload: json!({ "markdown": "first\n" }),
+            },
+            ReportBlock {
+                id: "b_dupe".into(),
+                kind: "prose".into(),
+                rev: 9,
+                payload: json!({ "markdown": "second\n" }),
+            },
+        ];
+
+        let error = match ReportDoc::from_blocks_exact("summary", &blocks) {
+            Ok(_) => panic!("duplicate ids must fail before the layout writer can remint them"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("duplicate block id b_dupe"));
     }
 }

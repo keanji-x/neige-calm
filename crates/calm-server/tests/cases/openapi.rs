@@ -64,6 +64,7 @@ fn document_contains_every_wire_model() {
         "CovePatch",
         "Wave",
         "NewWave",
+        "CreateWaveRequest",
         "WavePatch",
         "WaveDetail",
         "Card",

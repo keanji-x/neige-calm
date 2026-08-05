@@ -61,6 +61,55 @@ use crate::state::WriteContext;
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use crate::wave_report_doc::ReportDoc;
 
+/// Read the report snapshot from the caller's transaction. A missing report
+/// card is an invariant violation: every wave eligible for fork has one.
+pub(crate) async fn report_blocks_snapshot_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wave_id: &str,
+) -> crate::error::Result<(String, Vec<ReportBlock>)> {
+    let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
+        "SELECT json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
+    )
+    .bind(wave_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((payload, body_crdt)) = report else {
+        return Err(CalmError::Internal(format!(
+            "wave_report: wave {wave_id} is missing its report card"
+        )));
+    };
+    let payload: WaveReportPayload = serde_json::from_str(&payload).map_err(|error| {
+        CalmError::Internal(format!(
+            "wave_report: decode report payload for fork snapshot: {error}"
+        ))
+    })?;
+    let mut doc = match body_crdt {
+        Some(bytes) => ReportDoc::from_bytes(&bytes).map_err(|error| {
+            CalmError::Internal(format!(
+                "wave_report: load report CRDT for fork snapshot: {error}"
+            ))
+        })?,
+        None => ReportDoc::from_payload(&payload),
+    };
+    doc.ensure_blocks_layout(payload.blocks.as_deref())
+        .map_err(|error| {
+            CalmError::Internal(format!(
+                "wave_report: migrate report CRDT for fork snapshot: {error}"
+            ))
+        })?;
+    let (summary, _) = doc.project().map_err(|error| {
+        CalmError::Internal(format!(
+            "wave_report: project report CRDT for fork snapshot: {error}"
+        ))
+    })?;
+    let blocks = doc.blocks_snapshot().map_err(|error| {
+        CalmError::Internal(format!(
+            "wave_report: snapshot report CRDT for fork: {error}"
+        ))
+    })?;
+    Ok((summary, blocks))
+}
+
 /// Re-evaluate the task projection from the report CRDT inside the caller's
 /// write transaction. `payload` is used only to seed rows whose CRDT has not
 /// been initialized yet; once `body_crdt` exists it is the sole source.
@@ -97,8 +146,8 @@ pub async fn tasks_rebuild_tx(
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
     Ok(project_tasks_tx(tx, wave_id, &declarations, &diagnostics).await?)
 }
+use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
-use crate::wave_report_task_guard::{guard_task_declarations, normalize_report_op};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
