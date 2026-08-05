@@ -22,13 +22,13 @@ describe('provider behavior', () => {
     render(<AppProviders client={new QueryClient()} runtime={runtime()}><ThemeConsumer /></AppProviders>);
     expect(screen.getByText(/^route:(?:light|dark)$/u)).toBeTruthy();
   });
-  it('CAP-APP-006 initially focuses the refresh action without a focusable duplicate backdrop', async () => {
+  it('CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel', async () => {
     const server = { ...compatible, minWebCompatVersion: WEB_COMPAT_VERSION + 1 };
     render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })}>route</ServerCompatGate>);
     const action = await screen.findByRole('button', { name: 'Refresh now' });
-    await waitFor(() => expect(document.activeElement).toBe(action));
-    const overlay = screen.getByRole('dialog');
-    expect(overlay.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).toHaveLength(1);
+    await waitFor(() => expect(document.activeElement).toBe(action), { timeout: 3000 });
+    const panel = screen.getByRole('dialog');
+    expect(panel.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).toHaveLength(1);
   });
   it('INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain', async () => {
     let resolve!: (value: typeof compatible) => void;

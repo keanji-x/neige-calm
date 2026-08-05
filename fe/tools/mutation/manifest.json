@@ -134,7 +134,7 @@
     ],
     "expected_red": [
       "ThemeProvider behavior INV-APP-073 accepts valid persistence, rejects invalid values, and survives storage failures",
-      "app/theme contracts INV-APP-070 E2E-CAP-THEME-011 exposes exactly three parseable modes"
+      "app/theme contracts E2E-CAP-THEME-011 exposes exactly three parseable modes"
     ],
     "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
   },
@@ -149,11 +149,11 @@
   },
   {
     "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
-    "defends": ["oracle:INV-APP-070"],
+    "defends": ["oracle:E2E-CAP-THEME-011"],
     "target": "web/src/app/theme/public.tsx",
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..a80a76e0 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -42,7 +42,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n-  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, [resolved]);\n+  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, []);\n \n   const setMode = useCallback((next: ThemeMode) => {\n     setModeState(next);\n",
     "selection_paths": ["web/src/app/theme/public.test.tsx"],
-    "expected_red": ["ThemeProvider behavior INV-APP-070 mirrors every explicit mode change to the document dataset", "app/theme contracts INV-APP-070 has one structured dataset writer in an effect keyed only by resolved"],
+    "expected_red": ["ThemeProvider behavior E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset", "app/theme contracts E2E-CAP-THEME-011 has one data-theme writer in an effect keyed only by resolved"],
     "why_more_than_one": "One implementation change is independently caught by behavioral and structural assertions, showing that both halves of the contract—mirroring changes and being driven only by resolved—are locked."
   },
   {
@@ -203,7 +203,7 @@
   },
   {
     "mutation_id": "app-providers-drop-bridge-data-guard",
-    "defends": ["oracle:INV-APP-002"],
+    "defends": ["oracle:INV-APP-001", "oracle:INV-APP-002"],
     "target": "web/src/app/providers/public.tsx",
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..1e49b33d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -52,7 +52,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n \n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{query.data && renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n+  return <>{renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
     "selection_paths": ["web/src/app/providers/public.test.tsx"],

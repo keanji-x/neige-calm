@@ -36,12 +36,12 @@ describe('ThemeProvider behavior', () => {
     expect(document.documentElement.dataset.theme).toBe('dark');
   });
 
-  it('INV-APP-070 mirrors every explicit mode change to the document dataset', () => {
+  it('E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset', () => {
     render(<ThemeProvider storage={memoryStorage()}><ModeControls /></ThemeProvider>);
-    act(() => screen.getByRole('button', { name: 'Light' }).click());
-    expect(document.documentElement.dataset.theme).toBe('light');
     act(() => screen.getByRole('button', { name: 'Dark' }).click());
     expect(document.documentElement.dataset.theme).toBe('dark');
+    act(() => screen.getByRole('button', { name: 'Light' }).click());
+    expect(document.documentElement.dataset.theme).toBe('light');
   });
 
   it('INV-APP-073 accepts valid persistence, rejects invalid values, and survives storage failures', () => {

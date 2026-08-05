@@ -99,3 +99,13 @@
 ## INV-APP-008 fail-open 正向证据缺口
 
 现有测试只在 `/api/version` 失败落定前确认 children 存在，落定后仅断言未清 cache；因此把 error 分支改成隐藏 children 仍无法稳定打红，不能登记为有效变异。后续应让 rejected query 明确落定（例如等待 error 状态的可观察信号），再正向断言 children 仍在且 overlay 不存在；靶向变异应只把 error 分支改为返回 `null`，并只打红这条 fail-open 测试。
+
+## INV-APP-070 descope：主题镜像与唯一写入者
+
+该契约退回 `pending`，整条规则及 22 个 fixture 已撤。原 AST 形状式谓词两个方向同时失效：已验证绕过包括伪 `ThemeProvider` 命名（豁免无路径条件）、`'data-' + 'theme'` / 模板字面量 / 变量名（`setAttribute` 名字 fail-open，而 dataset 动态 key fail-closed，不对称）、跨函数传 dataset、`Object.defineProperty(el.dataset, 'theme', ...)`、`attributes.setNamedItem`、JSX `<html data-theme={m}>`；已验证误杀包括 `button.setAttribute('data-theme', ...)` 与 `card.outerHTML = '<article data-theme=...>'`，因为规则不校验 receiver。接线探针把 `files` 从 `web/src/**` 收窄成 `web/src/app/theme/**` 后仍全绿。
+
+候选谓词应改为模块归属式（文件路径 + 标识符），而非 AST 形状式；且禁的是“写”而不是“引用”：`INV-APP-071` 明确允许非订阅方同步读 dataset，一刀切禁止引用 `document.documentElement` 会与它冲突。建议把“resolved 变化必行为镜像”和“仓库唯一写入者”拆成不同契约/门禁，避免一条契约继续承载两种语义。本轮仅以 `app/theme/public.tsx` 单文件计数断言守住模块内唯一写入者。
+
+## INV-APP-059 descope：React Query 默认 retry
+
+该契约退回 `pending`：statement 约束 React Query 的默认 retry 策略，但 `fe/` 的 `AppProviders` 接收注入的 `client`，全树没有 `defaultOptions`。解锁条件是 QueryClient 构造点随持久化/router 切片迁入后，再与默认策略一并处理。

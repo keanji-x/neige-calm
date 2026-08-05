@@ -7,13 +7,33 @@ import { DARK_THEME_RGB, LIGHT_THEME_RGB, readHostThemeRgb } from './host-rgb.ts
 import { THEME_MODES, parseThemeMode } from './public.tsx';
 
 describe('app/theme contracts', () => {
-  it('INV-APP-070 has one structured dataset writer in an effect keyed only by resolved', () => {
+  it('E2E-CAP-THEME-011 has one data-theme writer in an effect keyed only by resolved', () => {
     const source = ts.createSourceFile('public.tsx', readFileSync(resolve(import.meta.dirname, 'public.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    const writes: ts.BinaryExpression[] = [];
+    const isText = (node: ts.Node | undefined, value: string) => node !== undefined
+      && (ts.isStringLiteralLike(node) || ts.isIdentifier(node)) && node.text === value;
+    const isDataset = (node: ts.Node | undefined) => node !== undefined
+      && ((ts.isPropertyAccessExpression(node) && node.name.text === 'dataset')
+        || (ts.isElementAccessExpression(node) && isText(node.argumentExpression, 'dataset')));
+    const isDatasetTheme = (node: ts.Node | undefined) => node !== undefined
+      && ((ts.isPropertyAccessExpression(node) && node.name.text === 'theme' && isDataset(node.expression))
+        || (ts.isElementAccessExpression(node) && isText(node.argumentExpression, 'theme') && isDataset(node.expression)));
+    const writes: ts.Node[] = [];
     function visit(node: ts.Node): void {
       if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        && ts.isPropertyAccessExpression(node.left) && node.left.name.text === 'theme'
-        && ts.isPropertyAccessExpression(node.left.expression) && node.left.expression.name.text === 'dataset') writes.push(node);
+        && (isDatasetTheme(node.left) || ((ts.isPropertyAccessExpression(node.left) && node.left.name.text === 'outerHTML')
+          && ts.isStringLiteralLike(node.right) && node.right.text.includes('data-theme')))) writes.push(node);
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
+        const method = ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
+        if ((method === 'setAttribute' && isText(node.arguments[0], 'data-theme'))
+          || (method === 'setAttributeNS' && isText(node.arguments[1], 'data-theme'))
+          || (method === 'set' && ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
+            && callee.expression.text === 'Reflect' && isDataset(node.arguments[0]) && isText(node.arguments[1], 'theme'))
+          || (method === 'assign' && ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
+            && callee.expression.text === 'Object' && isDataset(node.arguments[0]) && node.arguments.slice(1).some((argument) =>
+              ts.isObjectLiteralExpression(argument) && argument.properties.some((property) =>
+                ts.isPropertyAssignment(property) && isText(property.name, 'theme'))))) writes.push(node);
+      }
       ts.forEachChild(node, visit);
     }
     visit(source);
@@ -26,7 +46,7 @@ describe('app/theme contracts', () => {
       ? dependencies.elements.map((element) => ts.isIdentifier(element) ? element.text : null) : null).toEqual(['resolved']);
   });
 
-  it('INV-APP-070 E2E-CAP-THEME-011 exposes exactly three parseable modes', () => {
+  it('E2E-CAP-THEME-011 exposes exactly three parseable modes', () => {
     expect(THEME_MODES).toEqual(['light', 'dark', 'system']);
     expect(THEME_MODES.map(parseThemeMode)).toEqual(THEME_MODES);
     expect(parseThemeMode('sepia')).toBeNull();
