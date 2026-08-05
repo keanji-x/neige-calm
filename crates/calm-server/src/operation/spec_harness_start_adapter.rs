@@ -1162,11 +1162,18 @@ mod tests {
             .expect("workflow input section");
         let gates_at = out.find("## Bound Workflow Gates").expect("gates section");
         assert!(gates_at < input_at, "input section must follow gates");
-        assert!(out[input_at..].contains("```json"));
-        assert!(out[input_at..].contains(r#""issue_url": "https://github.com/o/r/issues/1""#));
+        let rendered_input = out[input_at..]
+            .strip_prefix("## Bound Workflow Input\n```json\n")
+            .and_then(|section| section.strip_suffix("\n```"))
+            .expect("workflow input section must be a trailing JSON fence");
+        let rendered_input: Value =
+            serde_json::from_str(rendered_input).expect("workflow input must be valid JSON");
+        assert_eq!(
+            rendered_input, input,
+            "workflow input must round-trip in full"
+        );
         // User JSON is injected verbatim — no `{wave_id}` template substitution
         // (the spec_instructions section above it IS substituted).
-        assert!(out[input_at..].contains("literal {wave_id} must survive"));
         assert!(out.contains("Follow workflow instructions for wave wave-abc."));
 
         // input = None renders no section at all.

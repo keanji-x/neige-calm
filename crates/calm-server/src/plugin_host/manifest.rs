@@ -725,6 +725,14 @@ mod tests {
         include_str!("../../tests/goldens/issue_development_spec_prompt.txt");
 
     fn assert_full_golden_eq(expected: &str, actual: &str) {
+        assert!(
+            !expected.is_empty(),
+            "full golden degenerate state: expected golden must not be empty"
+        );
+        assert!(
+            !actual.is_empty(),
+            "full golden degenerate state: rendered output must not be empty"
+        );
         if expected == actual {
             return;
         }
@@ -767,6 +775,12 @@ mod tests {
             actual[context_offset..].chars().next(),
             line_context(actual, context_offset)
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "full golden degenerate state")]
+    fn full_golden_equality_rejects_empty_expected_and_actual() {
+        assert_full_golden_eq("", "");
     }
 
     fn validate_rendered_give_up_contract(rendered: &str) -> Result<(), String> {
