@@ -27,7 +27,8 @@ describe('provider behavior', () => {
     render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })}>route</ServerCompatGate>);
     const action = await screen.findByRole('button', { name: 'Refresh now' });
     await waitFor(() => expect(document.activeElement).toBe(action));
-    expect(screen.queryByRole('button', { name: 'Refresh backdrop' })).toBeNull();
+    const overlay = screen.getByRole('dialog');
+    expect(overlay.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).toHaveLength(1);
   });
   it('INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain', async () => {
     let resolve!: (value: typeof compatible) => void;

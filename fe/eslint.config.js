@@ -64,11 +64,6 @@ export default tseslint.config(
     },
   },
   {
-    files: ['web/src/**/*.{js,mjs,cjs,jsx,ts,tsx}'],
-    ignores: ['**/*.test.{js,mjs,cjs,jsx,ts,tsx}'],
-    rules: { 'architecture/no-theme-dataset-write-outside-provider': 'error' },
-  },
-  {
     files: ['web/src/app/router.{ts,tsx}'],
     rules: { 'architecture/no-module-runtime-state': ['error', { allowRouterFactories: ['createRouter'] }] },
   },

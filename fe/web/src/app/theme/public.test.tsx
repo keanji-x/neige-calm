@@ -11,6 +11,11 @@ function Probe() {
   return <button type="button" onClick={() => theme.setMode(theme.mode === 'dark' ? 'light' : 'dark')}>{theme.mode}:{theme.resolved}</button>;
 }
 
+function ModeControls() {
+  const { setMode } = useTheme();
+  return <><button type="button" onClick={() => setMode('light')}>Light</button><button type="button" onClick={() => setMode('dark')}>Dark</button></>;
+}
+
 function createMatchMedia(initial: boolean) {
   let matches = initial;
   const listeners = new Set<(event: MediaQueryListEvent) => void>();
@@ -28,6 +33,14 @@ describe('ThemeProvider behavior', () => {
     const storage = memoryStorage(); storage.setItem(THEME_KEY, 'dark');
     render(<ThemeProvider storage={storage}><Probe /></ThemeProvider>);
     expect(screen.getByRole('button').textContent).toBe('dark:dark');
+    expect(document.documentElement.dataset.theme).toBe('dark');
+  });
+
+  it('INV-APP-070 mirrors every explicit mode change to the document dataset', () => {
+    render(<ThemeProvider storage={memoryStorage()}><ModeControls /></ThemeProvider>);
+    act(() => screen.getByRole('button', { name: 'Light' }).click());
+    expect(document.documentElement.dataset.theme).toBe('light');
+    act(() => screen.getByRole('button', { name: 'Dark' }).click());
     expect(document.documentElement.dataset.theme).toBe('dark');
   });
 

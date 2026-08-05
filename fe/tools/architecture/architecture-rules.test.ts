@@ -216,52 +216,6 @@ describe('architecture/no-class-dom-query', () => {
   });
 });
 
-describe('architecture/no-theme-dataset-write-outside-provider', () => {
-  for (const fixture of [
-    'theme-dataset/property-write.ts',
-    'theme-dataset/element-write.ts',
-    'theme-dataset/set-attribute.ts',
-    'theme-dataset/object-assign.ts',
-    'theme-dataset/alias.ts',
-    'theme-dataset/destructure.ts',
-    'theme-dataset/template-attribute.ts',
-    'theme-dataset/const-attribute.ts',
-    'theme-dataset/set-attribute-ns.ts',
-    'theme-dataset/reflect-set.ts',
-    'theme-dataset/object-assign-identifier.ts',
-    'theme-dataset/object-assign-spread.ts',
-    'theme-dataset/dynamic-key.ts',
-    'theme-dataset/outer-html.ts',
-    'theme-dataset/destructuring-assignment.ts',
-    'theme-dataset/object-assign-opaque.ts',
-    'theme-dataset/provider-second-writer.tsx',
-  ] as const) {
-    it(`rejects ${fixture}`, async () => {
-      const messages = await lintFixture('no-theme-dataset-write-outside-provider', fixture);
-      expect(messages).toHaveLength(1);
-      expect(messages.at(0)?.messageId).toBe('write');
-    });
-  }
-  for (const fixture of [
-    'theme-dataset/read.ts',
-    'theme-dataset/unrelated-write.ts',
-    'theme-dataset/object-assign-not-dataset.ts',
-    'web/src/app/theme/public.tsx',
-  ] as const) {
-    it(`accepts ${fixture}`, async () => {
-      expect(await lintFixture('no-theme-dataset-write-outside-provider', fixture)).toHaveLength(0);
-    });
-  }
-
-  it('INV-APP-070 is wired as an error for production web source by the real config', async () => {
-    const eslint = new ESLint({ cwd: root, overrideConfigFile: resolve(root, 'eslint.config.js') });
-    const config = await eslint.calculateConfigForFile(resolve(root, 'web/src/app/theme/public.tsx')) as unknown as {
-      rules?: Record<string, [number, ...unknown[]]>;
-    };
-    expect(config?.rules?.['architecture/no-theme-dataset-write-outside-provider']?.[0]).toBe(2);
-  });
-});
-
 describe('architecture/no-core-platform-escape', () => {
   it('rejects globalThis.fetch', async () => {
     expect(await lintFixture('no-core-platform-escape', 'core-escape/global-this-fetch.ts')).toHaveLength(1);

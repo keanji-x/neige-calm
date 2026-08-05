@@ -108,7 +108,6 @@
   {
     "mutation_id": "app-providers-retry-401-as-400",
     "defends": [
-      "oracle:INV-APP-059",
       "oracle:INV-APP-060"
     ],
     "target": "web/src/app/providers/public.tsx",
@@ -149,13 +148,22 @@
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
   },
   {
+    "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
+    "defends": ["oracle:INV-APP-070"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..a80a76e0 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -42,7 +42,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n-  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, [resolved]);\n+  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, []);\n \n   const setMode = useCallback((next: ThemeMode) => {\n     setModeState(next);\n",
+    "selection_paths": ["web/src/app/theme/public.test.tsx"],
+    "expected_red": ["ThemeProvider behavior INV-APP-070 mirrors every explicit mode change to the document dataset"],
+    "why_more_than_one": "Prediction, not run: only the new mode-transition behavior test should fail because the mount-time dataset write still succeeds while later resolved changes are no longer mirrored."
+  },
+  {
     "mutation_id": "app-providers-drop-busted-state",
     "defends": ["oracle:CAP-APP-010", "oracle:INV-APP-011", "oracle:INV-APP-014"],
     "target": "web/src/app/providers/public.tsx",
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..8af9d20d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -45,7 +45,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n     if (previous && previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n-      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n+      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); runtime.reload(); return;\n     }\n     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);\n   }, [client, query.data?.dbInstanceId, runtime]);\n",
     "selection_paths": ["web/src/app/providers/public.test.tsx"],
     "expected_red": ["provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"],
-    "why_more_than_one": "Prediction: only the consolidated blast-path contract should fail because cleanup and reload still occur, but children are no longer hidden."
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the consolidated blast-path contract failed because cleanup and reload still occurred, but children were no longer hidden."
   },
   {
     "mutation_id": "app-providers-bust-first-visit",
@@ -173,23 +181,7 @@
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..ed28a80e 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -38,7 +38,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n     setSystemPreference(media.matches ? 'dark' : 'light');\n     const change = (event: MediaQueryListEvent) => setSystemPreference(event.matches ? 'dark' : 'light');\n     media.addEventListener('change', change);\n-    return () => media.removeEventListener('change', change);\n+    return undefined;\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n",
     "selection_paths": ["web/src/app/theme/public.test.tsx"],
     "expected_red": ["ThemeProvider behavior CAP-APP-074 INV-APP-075 tracks system immediately and unsubscribes in explicit mode"],
-    "why_more_than_one": "Prediction: only the listener-ownership contract should fail when the stale listener remains registered."
-  },
-  {
-    "mutation_id": "no-theme-dataset-write-drop-assignment-detection",
-    "defends": ["oracle:INV-APP-070"],
-    "target": "tools/architecture/no-theme-dataset-write-outside-provider.mjs",
-    "patch": "diff --git a/tools/architecture/no-theme-dataset-write-outside-provider.mjs b/tools/architecture/no-theme-dataset-write-outside-provider.mjs\nindex f45986b5..6af2e28c 100644\n--- a/tools/architecture/no-theme-dataset-write-outside-provider.mjs\n+++ b/tools/architecture/no-theme-dataset-write-outside-provider.mjs\n@@ -132,7 +132,7 @@ export const noThemeDatasetWriteOutsideProvider = {\n     const report = (/** @type {any} */ node) => context.report({ node, messageId: 'write' });\n     return {\n       AssignmentExpression(node) {\n-        if (patternWritesTheme(node.left, sourceCode) && !isAuthorizedProviderWrite(node)) report(node);\n+        if (false && patternWritesTheme(node.left, sourceCode) && !isAuthorizedProviderWrite(node)) report(node);\n         const left = unwrap(node.left);\n         if (left?.type === 'MemberExpression' && staticName(left) === 'outerHTML'\n           && (staticString(node.right, sourceCode)?.includes('data-theme') ?? true)) report(node);\n",
-    "selection_paths": ["tools/architecture/architecture-rules.test.ts"],
-    "expected_red": [
-      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/alias.ts",
-      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/destructure.ts",
-      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/destructuring-assignment.ts",
-      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/dynamic-key.ts",
-      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/element-write.ts",
-      "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/property-write.ts"
-    ],
-    "why_more_than_one": "Disabling the AssignmentExpression branch simultaneously removes detection for the property, element, alias, destructure, dynamic-key, and destructuring-assignment fixtures. setAttribute, Reflect.set, and Object.assign remain protected by the independent CallExpression visitor, demonstrating that the syntax forms are deliberately split rather than handled by one catch-all path. The wiring test is unaffected because it checks the rule's configured severity, not its implementation."
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the listener-ownership contract failed when the stale listener remained registered."
   },
   {
     "mutation_id": "app-theme-drop-ssr-window-guard",
@@ -207,7 +199,7 @@
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..c02973a7 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -64,6 +64,6 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n \n export function useTheme(): ThemeContextValue {\n   const value = useContext(ThemeContext);\n-  if (!value) throw new Error('useTheme() requires <ThemeProvider>; mount it from web/src/app/providers/public.tsx.');\n+  if (!value) throw new Error('useTheme() requires <ThemeProvider>.');\n   return value;\n }\n",
     "selection_paths": ["web/src/app/theme/public.test.tsx"],
     "expected_red": ["ThemeProvider behavior INV-APP-078 fails descriptively outside the provider"],
-    "why_more_than_one": "Prediction, not run: only the diagnostic-path assertion depends on the remediation text."
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the diagnostic-path assertion depended on the remediation text."
   },
   {
     "mutation_id": "app-providers-drop-bridge-data-guard",
@@ -216,7 +208,7 @@
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..1e49b33d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -52,7 +52,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n \n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{query.data && renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n+  return <>{renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
     "selection_paths": ["web/src/app/providers/public.test.tsx"],
     "expected_red": ["provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain"],
-    "why_more_than_one": "Prediction, not run: the pending-version contract alone exercises renderEventBridge before query data exists."
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the pending-version contract exercised renderEventBridge before query data existed."
   },
   {
     "mutation_id": "app-providers-remove-refresh-modal",

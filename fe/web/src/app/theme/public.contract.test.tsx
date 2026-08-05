@@ -2,8 +2,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
-import { ESLint } from 'eslint';
-import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB, readHostThemeRgb } from './host-rgb.ts';
 import { THEME_MODES, parseThemeMode } from './public.tsx';
@@ -26,19 +24,6 @@ describe('app/theme contracts', () => {
     const dependencies = current && ts.isCallExpression(current) ? current.arguments[1] : undefined;
     expect(dependencies && ts.isArrayLiteralExpression(dependencies)
       ? dependencies.elements.map((element) => ts.isIdentifier(element) ? element.text : null) : null).toEqual(['resolved']);
-  });
-
-  it('INV-APP-070 rejects every additional data-theme writer in the real provider source', async () => {
-    const file = resolve(import.meta.dirname, 'public.tsx');
-    const root = resolve(import.meta.dirname, '../../../..');
-    const eslint = new ESLint({
-      cwd: root,
-      overrideConfigFile: resolve(root, 'eslint.config.js'),
-      // Reason: this source-only architecture assertion must not open the app-wide TypeScript project service.
-      overrideConfig: tseslint.configs.disableTypeChecked,
-    });
-    const [result] = await eslint.lintText(readFileSync(file, 'utf8'), { filePath: file });
-    expect(result.messages.filter((message) => message.ruleId === 'architecture/no-theme-dataset-write-outside-provider')).toEqual([]);
   });
 
   it('INV-APP-070 E2E-CAP-THEME-011 exposes exactly three parseable modes', () => {

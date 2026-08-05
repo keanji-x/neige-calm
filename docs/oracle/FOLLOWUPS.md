@@ -95,3 +95,7 @@
 ## CAP-APP-006 / INV-APP-009 overlay 几何契约欠债
 
 `CAP-APP-006` 与 `INV-APP-009` 退回 `pending`：`ui/dialog` 的 scrim/panel 样式尚未迁入 `fe/`，当前无法锁定 overlay 的视口几何与 hit-testing。解锁条件：将 `ui/dialog` 的 scrim/panel 样式迁入 `fe/` 并登记进 `web/src/styles/global-classes.yaml`；届时恢复几何与 hit-testing 断言，并将两条契约翻回 `migrated`。
+
+## INV-APP-008 fail-open 正向证据缺口
+
+现有测试只在 `/api/version` 失败落定前确认 children 存在，落定后仅断言未清 cache；因此把 error 分支改成隐藏 children 仍无法稳定打红，不能登记为有效变异。后续应让 rejected query 明确落定（例如等待 error 状态的可观察信号），再正向断言 children 仍在且 overlay 不存在；靶向变异应只把 error 分支改为返回 `null`，并只打红这条 fail-open 测试。
