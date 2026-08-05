@@ -239,9 +239,12 @@ mod tests {
         (doc, task, body)
     }
 
-    fn assert_spec_cannot_create_user_tombstone(operation: ReportDocOp) {
+    fn assert_cannot_create_tombstone_as_another_author(
+        operation: ReportDocOp,
+        author: EditAuthor,
+    ) {
         let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", ""));
-        let error = apply_report_op(&mut doc, &operation, EditAuthor::Spec).unwrap_err();
+        let error = apply_report_op(&mut doc, &operation, author).unwrap_err();
         assert!(matches!(error, CalmError::BadRequest(_)));
     }
 
@@ -253,6 +256,18 @@ mod tests {
                 "tombstone": { "reason": null },
                 "declared_by": "spec",
                 "tombstoned_by": "user"
+            }),
+        )
+    }
+
+    fn forged_spec_tombstone_fence() -> String {
+        render_fence(
+            KIND_TASK,
+            &json!({
+                "key": "build",
+                "tombstone": { "reason": null },
+                "declared_by": "user",
+                "tombstoned_by": "spec"
             }),
         )
     }
@@ -429,32 +444,80 @@ mod tests {
 
     #[test]
     fn replace_cannot_create_tombstone_attributed_to_another_author() {
-        assert_spec_cannot_create_user_tombstone(ReportDocOp::Replace {
-            summary: None,
-            body: forged_user_tombstone_fence(),
-            if_doc_rev: 0,
-        });
+        assert_cannot_create_tombstone_as_another_author(
+            ReportDocOp::Replace {
+                summary: None,
+                body: forged_user_tombstone_fence(),
+                if_doc_rev: 0,
+            },
+            EditAuthor::Spec,
+        );
     }
 
     #[test]
     fn write_markdown_cannot_create_tombstone_attributed_to_another_author() {
-        assert_spec_cannot_create_user_tombstone(ReportDocOp::WriteMarkdown {
-            summary: None,
-            body: forged_user_tombstone_fence(),
-            if_doc_rev: 0,
-        });
+        assert_cannot_create_tombstone_as_another_author(
+            ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: forged_user_tombstone_fence(),
+                if_doc_rev: 0,
+            },
+            EditAuthor::Spec,
+        );
     }
 
     #[test]
     fn upsert_block_cannot_create_tombstone_attributed_to_another_author() {
-        assert_spec_cannot_create_user_tombstone(ReportDocOp::UpsertBlock {
-            id: None,
-            kind: KIND_TASK.into(),
-            content: forged_user_tombstone_fence(),
-            if_rev: None,
-            if_doc_rev: Some(0),
-            position: None,
-        });
+        assert_cannot_create_tombstone_as_another_author(
+            ReportDocOp::UpsertBlock {
+                id: None,
+                kind: KIND_TASK.into(),
+                content: forged_user_tombstone_fence(),
+                if_rev: None,
+                if_doc_rev: Some(0),
+                position: None,
+            },
+            EditAuthor::Spec,
+        );
+    }
+
+    #[test]
+    fn replace_cannot_create_spec_tombstone_as_user() {
+        assert_cannot_create_tombstone_as_another_author(
+            ReportDocOp::Replace {
+                summary: None,
+                body: forged_spec_tombstone_fence(),
+                if_doc_rev: 0,
+            },
+            EditAuthor::User,
+        );
+    }
+
+    #[test]
+    fn write_markdown_cannot_create_spec_tombstone_as_user() {
+        assert_cannot_create_tombstone_as_another_author(
+            ReportDocOp::WriteMarkdown {
+                summary: None,
+                body: forged_spec_tombstone_fence(),
+                if_doc_rev: 0,
+            },
+            EditAuthor::User,
+        );
+    }
+
+    #[test]
+    fn upsert_block_cannot_create_spec_tombstone_as_user() {
+        assert_cannot_create_tombstone_as_another_author(
+            ReportDocOp::UpsertBlock {
+                id: None,
+                kind: KIND_TASK.into(),
+                content: forged_spec_tombstone_fence(),
+                if_rev: None,
+                if_doc_rev: Some(0),
+                position: None,
+            },
+            EditAuthor::User,
+        );
     }
 
     #[test]

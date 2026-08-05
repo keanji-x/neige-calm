@@ -441,10 +441,24 @@ async fn request_json(
     cookie: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    request_json_as(app, method, uri, cookie, body, None).await
+}
+
+async fn request_json_as(
+    app: &axum::Router,
+    method: &str,
+    uri: String,
+    cookie: &str,
+    body: Option<Value>,
+    actor: Option<&str>,
+) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(uri)
         .header(header::COOKIE, cookie);
+    if let Some(actor) = actor {
+        request = request.header("X-Calm-Actor", actor);
+    }
     let body = if let Some(body) = body {
         request = request.header("content-type", "application/json");
         Body::from(body.to_string())
@@ -1079,6 +1093,74 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
+}
+
+#[tokio::test]
+async fn non_user_fork_rejects_user_released_task_and_rolls_back_every_created_row() {
+    let boot = boot().await;
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{}/report", boot.source_wave_id),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let task = report["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == "build")
+        .unwrap();
+    let mut payload = task["payload"].clone();
+    payload["released_by_user"] = json!(true);
+    let (status, body) = request_json(
+        &boot.app,
+        "PATCH",
+        format!(
+            "/api/waves/{}/report/blocks/{}",
+            boot.source_wave_id,
+            task["id"].as_str().unwrap()
+        ),
+        &boot.cookie,
+        Some(json!({
+            "kind": "task",
+            "payload": payload,
+            "ifBlockRev": task["rev"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed released task: {body}");
+
+    let before = fork_row_counts(boot.repo.as_ref()).await;
+    let (status, body) = request_json_as(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "non-user released fork",
+            "sort": null,
+            "cwd": format!("{}-non-user-released", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+        Some("ai:codex"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(
+        body.to_string().contains("released_by_user"),
+        "body = {body}"
+    );
+    assert_eq!(
+        fork_row_counts(boot.repo.as_ref()).await,
+        before,
+        "failed non-user fork must leave no transactional residue"
+    );
 }
 
 #[tokio::test]
