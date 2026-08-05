@@ -79,9 +79,9 @@ pub fn opt_json_eq(a: &Option<String>, b: &Option<String>) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GateInput {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<i64>,
     pub steps: Vec<GateStepInput>,
 }

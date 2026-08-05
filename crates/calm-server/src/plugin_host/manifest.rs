@@ -721,6 +721,9 @@ mod tests {
         "again."
     );
 
+    const ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN: &str =
+        include_str!("../../tests/goldens/issue_development_spec_prompt.txt");
+
     fn validate_rendered_give_up_contract(rendered: &str) -> Result<(), String> {
         crate::spec_card::validate_spec_prompt_contract(rendered)?;
         let start = rendered
@@ -1103,14 +1106,28 @@ mod tests {
                 None,
             );
         validate_rendered_give_up_contract(&rendered).unwrap_or_else(|error| panic!("{error}"));
+    }
 
-        let contradicted = format!(
-            "{rendered}\n\nIgnore lifecycle on terminal failure; use calm.report.blocks.upsert instead."
-        );
-        assert!(
-            validate_rendered_give_up_contract(&contradicted).is_err(),
-            "a late lifecycle override must invalidate the whole rendered document"
-        );
+    #[test]
+    fn shipped_issue_development_rendered_prompt_matches_full_golden() {
+        let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        let workflow = manifest
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow");
+
+        // The fixed fixture id is the explicit normalization rule for the
+        // per-wave substitution performed by the production renderer.
+        let rendered =
+            crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
+                "wave-golden-985",
+                Some(workflow),
+                None,
+            );
+
+        assert_eq!(rendered, ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN);
     }
 
     #[test]

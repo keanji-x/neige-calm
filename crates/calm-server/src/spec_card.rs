@@ -427,10 +427,9 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
     "cancel a pending projected task. Use `calm.plan.list` to inspect status."
 );
 
-/// Exact protocol oracle shared by the static-prompt and fully rendered
-/// workflow tests. The whole-document forbidden scan deliberately runs on the
-/// original string: filtering lines/sections would create a contradiction
-/// escape hatch.
+/// Exact paragraph oracle for the static task-block protocol. The shipped
+/// workflow's fully rendered prompt has a separate whole-document golden;
+/// free-text contradictions cannot be proved absent with a keyword list.
 #[cfg(test)]
 pub(crate) fn validate_spec_prompt_contract(prompt: &str) -> Result<(), String> {
     let start = prompt
@@ -447,21 +446,6 @@ pub(crate) fn validate_spec_prompt_contract(prompt: &str) -> Result<(), String> 
         ));
     }
 
-    let lower = prompt.to_ascii_lowercase();
-    for forbidden in [
-        "acceptance_criteria",
-        "calm.plan.upsert",
-        "instead of acceptance",
-        "swap those anchors",
-        "never follow this obsolete rule",
-        "ignore lifecycle",
-    ] {
-        if lower.contains(forbidden) {
-            return Err(format!(
-                "rendered prompt contains contradictory/retired instruction `{forbidden}`"
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -586,14 +570,8 @@ mod tests {
     }
 
     #[test]
-    fn spec_prompt_contract_rejects_negative_context_and_late_overrides() {
+    fn spec_prompt_contract_rejects_negative_context() {
         let prompt = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-contract");
-
-        let late_override = format!("{prompt}\n\nsend acceptance_criteria instead of acceptance");
-        assert!(
-            validate_spec_prompt_contract(&late_override).is_err(),
-            "a later contradictory field instruction must invalidate the whole document"
-        );
 
         let negated = prompt.replace(
             TASK_BLOCK_PROTOCOL_GOLDEN,

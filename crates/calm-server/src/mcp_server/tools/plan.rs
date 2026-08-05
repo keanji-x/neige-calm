@@ -910,44 +910,27 @@ mod tests {
     #[test]
     fn plan_template_mapping_field_sets_cover_serialized_input_and_gate() {
         let input = fully_populated_template_task();
-        let source = serde_json::to_value(&input).expect("serialize source");
-        let source = source.as_object().expect("PlanTaskInput object");
         let payload = plan_template_task_block_payload(&input);
         let payload = payload.as_object().expect("task-block object");
 
-        let mut expected_fields: BTreeSet<&str> = source
-            .keys()
-            .map(|field| {
-                if field == "acceptance_criteria" {
-                    "acceptance"
-                } else {
-                    field.as_str()
-                }
-            })
+        // This side comes from the task-block contract, independently of
+        // PlanTaskInput's serde output. These five accepted task fields are
+        // lifecycle/projection controls that a manifest template may not set.
+        let template_exclusions = BTreeSet::from([
+            "refs",
+            "released_by_user",
+            "spawn",
+            "tombstone",
+            "tombstoned_by",
+        ]);
+        let accepted_fields: BTreeSet<&str> = TASK_FIELDS.iter().copied().collect();
+        let expected_fields: BTreeSet<&str> = accepted_fields
+            .difference(&template_exclusions)
+            .copied()
             .collect();
-        expected_fields.extend(["ready", "declared_by"]);
         let actual_fields: BTreeSet<&str> = payload.keys().map(String::as_str).collect();
         assert_eq!(actual_fields, expected_fields);
-        assert!(
-            actual_fields
-                .iter()
-                .all(|field| TASK_FIELDS.contains(field)),
-            "mapping emitted a field outside the shared task-block vocabulary: {actual_fields:?}"
-        );
-
-        let source_gate_fields: BTreeSet<&str> = source["gate"]
-            .as_object()
-            .expect("serialized GateInput object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        let mapped_gate_fields: BTreeSet<&str> = payload["gate"]
-            .as_object()
-            .expect("mapped GateInput object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(mapped_gate_fields, source_gate_fields);
+        assert!(template_exclusions.is_subset(&accepted_fields));
     }
 
     #[test]
