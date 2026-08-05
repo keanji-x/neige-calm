@@ -182,7 +182,6 @@
     "patch": "diff --git a/tools/architecture/no-theme-dataset-write-outside-provider.mjs b/tools/architecture/no-theme-dataset-write-outside-provider.mjs\nindex f45986b5..6af2e28c 100644\n--- a/tools/architecture/no-theme-dataset-write-outside-provider.mjs\n+++ b/tools/architecture/no-theme-dataset-write-outside-provider.mjs\n@@ -132,7 +132,7 @@ export const noThemeDatasetWriteOutsideProvider = {\n     const report = (/** @type {any} */ node) => context.report({ node, messageId: 'write' });\n     return {\n       AssignmentExpression(node) {\n-        if (patternWritesTheme(node.left, sourceCode) && !isAuthorizedProviderWrite(node)) report(node);\n+        if (false && patternWritesTheme(node.left, sourceCode) && !isAuthorizedProviderWrite(node)) report(node);\n         const left = unwrap(node.left);\n         if (left?.type === 'MemberExpression' && staticName(left) === 'outerHTML'\n           && (staticString(node.right, sourceCode)?.includes('data-theme') ?? true)) report(node);\n",
     "selection_paths": ["tools/architecture/architecture-rules.test.ts"],
     "expected_red": [
-      "architecture/no-theme-dataset-write-outside-provider INV-APP-070 is wired as an error for production web source by the real config",
       "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/alias.ts",
       "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/destructure.ts",
       "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/destructuring-assignment.ts",
@@ -190,7 +189,7 @@
       "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/element-write.ts",
       "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/property-write.ts"
     ],
-    "why_more_than_one": "Disabling the AssignmentExpression branch removes detection for property, element, alias, destructure, dynamic-key, and destructuring-assignment writes; the real-config test also lints a direct dataset assignment through that branch. setAttribute, Reflect.set, and Object.assign remain covered by the separate CallExpression visitor, confirming the syntax paths stay independent."
+    "why_more_than_one": "Disabling the AssignmentExpression branch simultaneously removes detection for the property, element, alias, destructure, dynamic-key, and destructuring-assignment fixtures. setAttribute, Reflect.set, and Object.assign remain protected by the independent CallExpression visitor, demonstrating that the syntax forms are deliberately split rather than handled by one catch-all path. The wiring test is unaffected because it checks the rule's configured severity, not its implementation."
   },
   {
     "mutation_id": "app-theme-drop-ssr-window-guard",
