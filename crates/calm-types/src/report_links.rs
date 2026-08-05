@@ -584,22 +584,27 @@ mod tests {
     }
 
     #[test]
-    fn rewrite_fails_closed_when_source_and_decoded_destination_diverge() {
-        for (markdown, raw) in [
-            (
-                "[entity](neige://wave/sour&#99;e#b_1234)",
-                "neige://wave/sour&#99;e#b_1234",
-            ),
-            (
-                r"[escaped](neige\://wave/source#b_1234)",
-                r"neige\://wave/source#b_1234",
-            ),
-        ] {
-            let errors =
-                rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
-            assert_eq!(errors.len(), 1);
-            assert!(errors[0].source.contains(raw), "{errors:?}");
-        }
+    fn rewrite_fails_closed_for_character_entity_destination() {
+        let markdown = "[entity](neige://wave/sour&#99;e#b_1234)";
+        let errors =
+            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].source.contains("neige://wave/sour&#99;e#b_1234"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn rewrite_fails_closed_for_backslash_escaped_destination() {
+        let markdown = r"[escaped](neige\://wave/source#b_1234)";
+        let errors =
+            rewrite_wave_links(markdown, "source", "target", &copied(&["b_1234"])).unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].source.contains(r"neige\://wave/source#b_1234"),
+            "{errors:?}"
+        );
     }
 
     #[test]
