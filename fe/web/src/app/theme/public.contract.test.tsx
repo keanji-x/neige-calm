@@ -7,38 +7,27 @@ import { DARK_THEME_RGB, LIGHT_THEME_RGB, readHostThemeRgb } from './host-rgb.ts
 import { THEME_MODES, parseThemeMode } from './public.tsx';
 
 describe('app/theme contracts', () => {
-  it('E2E-CAP-THEME-011 has one data-theme writer in an effect keyed only by resolved', () => {
+  it('INV-APP-070 has one document root handle in an effect keyed only by resolved', () => {
     const source = ts.createSourceFile('public.tsx', readFileSync(resolve(import.meta.dirname, 'public.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    const isText = (node: ts.Node | undefined, value: string) => node !== undefined
-      && (ts.isStringLiteralLike(node) || ts.isIdentifier(node)) && node.text === value;
-    const isDataset = (node: ts.Node | undefined) => node !== undefined
-      && ((ts.isPropertyAccessExpression(node) && node.name.text === 'dataset')
-        || (ts.isElementAccessExpression(node) && isText(node.argumentExpression, 'dataset')));
-    const isDatasetTheme = (node: ts.Node | undefined) => node !== undefined
-      && ((ts.isPropertyAccessExpression(node) && node.name.text === 'theme' && isDataset(node.expression))
-        || (ts.isElementAccessExpression(node) && isText(node.argumentExpression, 'theme') && isDataset(node.expression)));
-    const writes: ts.Node[] = [];
+    const rootHandles: ts.Node[] = [];
+    const invalidDocumentUses: ts.Identifier[] = [];
     function visit(node: ts.Node): void {
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-        && (isDatasetTheme(node.left) || ((ts.isPropertyAccessExpression(node.left) && node.left.name.text === 'outerHTML')
-          && ts.isStringLiteralLike(node.right) && node.right.text.includes('data-theme')))) writes.push(node);
-      if (ts.isCallExpression(node)) {
-        const callee = node.expression;
-        const method = ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
-        if ((method === 'setAttribute' && isText(node.arguments[0], 'data-theme'))
-          || (method === 'setAttributeNS' && isText(node.arguments[1], 'data-theme'))
-          || (method === 'set' && ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
-            && callee.expression.text === 'Reflect' && isDataset(node.arguments[0]) && isText(node.arguments[1], 'theme'))
-          || (method === 'assign' && ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
-            && callee.expression.text === 'Object' && isDataset(node.arguments[0]) && node.arguments.slice(1).some((argument) =>
-              ts.isObjectLiteralExpression(argument) && argument.properties.some((property) =>
-                ts.isPropertyAssignment(property) && isText(property.name, 'theme'))))) writes.push(node);
+      if (ts.isIdentifier(node) && node.text === 'document') {
+        const parent = node.parent;
+        if (ts.isTypeOfExpression(parent)) { /* existence checks are allowed */ }
+        else if (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'documentElement') rootHandles.push(parent);
+        else if (ts.isElementAccessExpression(parent) && parent.expression === node
+          && ts.isStringLiteralLike(parent.argumentExpression) && parent.argumentExpression.text === 'documentElement') rootHandles.push(parent);
+        else invalidDocumentUses.push(node);
       }
+      if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node))
+        && ts.isIdentifier(node.tagName) && node.tagName.text === 'html') rootHandles.push(node);
       ts.forEachChild(node, visit);
     }
     visit(source);
-    expect(writes).toHaveLength(1);
-    let current: ts.Node | undefined = writes[0];
+    expect(invalidDocumentUses).toEqual([]);
+    expect(rootHandles).toHaveLength(1);
+    let current: ts.Node | undefined = rootHandles[0];
     while (current && !ts.isCallExpression(current)) current = current.parent;
     expect(current && ts.isIdentifier(current.expression) ? current.expression.text : null).toBe('useEffect');
     const dependencies = current && ts.isCallExpression(current) ? current.arguments[1] : undefined;

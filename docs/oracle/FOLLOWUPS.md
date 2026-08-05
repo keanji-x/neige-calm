@@ -90,7 +90,7 @@
 
 ## CAP-APP-076 拆条欠债
 
-`CAP-APP-076` 当前包含两半可分语义：仅在 `?testMounts=1` 时暴露 theme driver，以及卸载时仅删除仍由自身持有的 driver。现有权威 browser 路径 `fe/web/src/app/theme/theme.browser.test.tsx:53` 覆盖前半（条件暴露）；后半由 jsdom successor 保护测试 `fe/web/src/app/theme/public.test.tsx:68` 覆盖。后续应在 oracle 层拆成两条契约，各自保留单一 tier、单一权威证据路径；本轮保持 `CAP-APP-076` 的 browser `authoritative_test` 不变。
+`CAP-APP-076` 当前包含两半可分语义：仅在 `?testMounts=1` 时暴露 theme driver，以及卸载时仅删除仍由自身持有的 driver。现有权威 browser 路径 `fe/web/src/app/theme/theme.browser.test.tsx:53` 覆盖前半（条件暴露）；后半由 jsdom successor 保护测试 `fe/web/src/app/theme/public.test.tsx:68` 覆盖。后续应在 oracle 层拆成两条契约，各自保留单一 tier、单一权威证据路径；本轮保持 `CAP-APP-076` 的 browser `authoritative_test` 不变。该 migrated 契约目前没有登记的靶向变异证据，拆条时需分别补齐。
 
 ## CAP-APP-006 / INV-APP-009 overlay 几何契约欠债
 
@@ -102,10 +102,14 @@
 
 ## INV-APP-070 descope：主题镜像与唯一写入者
 
-该契约退回 `pending`，整条规则及 22 个 fixture 已撤。原 AST 形状式谓词两个方向同时失效：已验证绕过包括伪 `ThemeProvider` 命名（豁免无路径条件）、`'data-' + 'theme'` / 模板字面量 / 变量名（`setAttribute` 名字 fail-open，而 dataset 动态 key fail-closed，不对称）、跨函数传 dataset、`Object.defineProperty(el.dataset, 'theme', ...)`、`attributes.setNamedItem`、JSX `<html data-theme={m}>`；已验证误杀包括 `button.setAttribute('data-theme', ...)` 与 `card.outerHTML = '<article data-theme=...>'`，因为规则不校验 receiver。接线探针把 `files` 从 `web/src/**` 收窄成 `web/src/app/theme/**` 后仍全绿。
+该契约保持 `pending`，整条旧规则及 22 个 fixture 已撤。原 AST 拼写枚举谓词两个方向同时失效；动态 key 也会绕过保留下来的旧单文件计数。绕过语料包括：局部 `dataset` 变量、变量属性名、拼接属性名、模板 `outerHTML`、动态 dataset key、`Object.defineProperty`、对象 patch + `Object.assign`、别名 + `Reflect.set`、`attributes.setNamedItem`、绑定后的 `setAttribute`、`insertAdjacentHTML`、JSX `<html data-theme>`。旧谓词还会误杀与 theme 无关的动态 key 和局部元素写入。
 
-候选谓词应改为模块归属式（文件路径 + 标识符），而非 AST 形状式；且禁的是“写”而不是“引用”：`INV-APP-071` 明确允许非订阅方同步读 dataset，一刀切禁止引用 `document.documentElement` 会与它冲突。建议把“resolved 变化必行为镜像”和“仓库唯一写入者”拆成不同契约/门禁，避免一条契约继续承载两种语义。本轮仅以 `app/theme/public.tsx` 单文件计数断言守住模块内唯一写入者。
+当前单文件契约用封闭集合断言：`public.tsx` 内所有 `document` 用途除 `typeof document` 外，恰好只有一次 `document.documentElement` 根句柄，并位于仅依赖 `resolved` 的 effect；JSX `<html>` 也作为根句柄计入。它不枚举写入拼写，也不误杀不经 `document` 的局部元素操作。后续建议拆成「模块内唯一写入者」（可 migrated、jsdom、authoritative 指向本文件）与「仓库唯一写入者」（pending、需模块归属式谓词）。
 
 ## INV-APP-059 descope：React Query 默认 retry
 
-该契约退回 `pending`：statement 约束 React Query 的默认 retry 策略，但 `fe/` 的 `AppProviders` 接收注入的 `client`，全树没有 `defaultOptions`。解锁条件是 QueryClient 构造点随持久化/router 切片迁入后，再与默认策略一并处理。
+`INV-APP-059` 的实质（401 完全不重试、其余失败只重试一次）已由 contract test 覆盖并恢复 migrated；尚未覆盖的是默认 QueryClient options 的形状，等 QueryClient 构造点迁入时补。`INV-APP-060` 的导出性目前没有靶向变异证据，需补“移除 export”变异并验证调用点无法复用。
+
+## E2E-CAP-THEME-011 system 模式 browser 证据缺口
+
+权威 browser 测试目前只覆盖 `light` / `dark`，statement 明写的 `system` 尚未覆盖；后续应在 browser project 补 system 跟随 `matchMedia` 且镜像到根 dataset 的断言。

@@ -108,7 +108,7 @@
   {
     "mutation_id": "app-providers-retry-401-as-400",
     "defends": [
-      "oracle:INV-APP-060"
+      "oracle:INV-APP-059"
     ],
     "target": "web/src/app/providers/public.tsx",
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..3148cf4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -22,7 +22,7 @@ export interface ProviderRuntime {\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 400) return false;\n   return failureCount < 1;\n }\n \n",
@@ -149,11 +149,11 @@
   },
   {
     "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
-    "defends": ["oracle:E2E-CAP-THEME-011"],
+    "defends": ["oracle:E2E-CAP-THEME-011", "oracle:INV-APP-070"],
     "target": "web/src/app/theme/public.tsx",
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..a80a76e0 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -42,7 +42,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n-  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, [resolved]);\n+  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, []);\n \n   const setMode = useCallback((next: ThemeMode) => {\n     setModeState(next);\n",
-    "selection_paths": ["web/src/app/theme/public.test.tsx"],
-    "expected_red": ["ThemeProvider behavior E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset", "app/theme contracts E2E-CAP-THEME-011 has one data-theme writer in an effect keyed only by resolved"],
+    "selection_paths": ["web/src/app/theme/public.test.tsx", "web/src/app/theme/public.contract.test.tsx"],
+    "expected_red": ["ThemeProvider behavior E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset", "app/theme contracts INV-APP-070 has one document root handle in an effect keyed only by resolved"],
     "why_more_than_one": "One implementation change is independently caught by behavioral and structural assertions, showing that both halves of the contract—mirroring changes and being driven only by resolved—are locked."
   },
   {

@@ -11,7 +11,7 @@ function memoryStorage() { const values = new Map<string, string>(); return { va
 function runtime(overrides: Partial<ProviderRuntime> = {}): ProviderRuntime {
   return { fetchVersion: () => Promise.resolve(compatible), reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'neige-calm', storage: memoryStorage(), ...overrides };
 }
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('provider behavior', () => {
   it('INV-APP-003 places one ThemeProvider above the complete children tree', () => {
@@ -23,10 +23,11 @@ describe('provider behavior', () => {
     expect(screen.getByText(/^route:(?:light|dark)$/u)).toBeTruthy();
   });
   it('CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
     const server = { ...compatible, minWebCompatVersion: WEB_COMPAT_VERSION + 1 };
     render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })}>route</ServerCompatGate>);
     const action = await screen.findByRole('button', { name: 'Refresh now' });
-    await waitFor(() => expect(document.activeElement).toBe(action), { timeout: 3000 });
+    expect(document.activeElement).toBe(action);
     const panel = screen.getByRole('dialog');
     expect(panel.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).toHaveLength(1);
   });

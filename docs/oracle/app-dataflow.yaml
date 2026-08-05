@@ -1108,13 +1108,13 @@
     重试只会拖慢 SessionProvider 的 onUnauthorized 清理 → LoginPage 跳转
     （`api/calm.ts` 的 request() 已经发过信号了），期间还堆一个注定失败的第二请求。
   source: web/src/app/providers.tsx:50-64,89
-  authoritative_test: web/src/app/providers.test.tsx:241
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:5
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-060
   kind: invariant
