@@ -114,6 +114,8 @@
 
 `INV-APP-059` 退回 `pending`：statement 主语是 React Query 的默认 retry 策略，但 `fe/` 尚无 `defaultOptions`；`retryUnless401` 只作为 `ServerCompatGate` 的 per-query option 使用。当前既保留纯函数真值表，也断言该 query 传入同一个函数，但这些证据不能迁移“默认策略”契约。`INV-APP-060` 已补“移除 export”的靶向变异条目。
 
+R15 新增的 `ServerCompatGate passes retryUnless401 as its query retry option` 是源码 AST 级断言，并非运行时引用验证。它封住的是 `retry` 被换成别的值或删除这一类退化；其直接动机是曾将该项改为 `retry: 3`，全库 210 passed、零红。已知局限是：即使别名仍指向同一个函数，断言也会误红；这是 fail-closed，当前可接受，但会挡住合法重构。更好的形态（本轮不实现）是行为化断言：注入一个恒返回 401 的 `fetchVersion`，断言它只调用一次；该方案与引用或别名无关，直接验证真实重试行为，但**未经实测**，采用前必须先主动证伪。它只补“策略确实被挂上”这一独立于契约状态的证据洞，不改变 `INV-APP-059` 仍为 `pending`：statement 讲的是默认策略，而 `fe/` 无 `defaultOptions`。
+
 ## E2E-CAP-THEME-011 system 模式 browser 证据缺口
 
 权威 browser 测试目前只覆盖 `light` / `dark`，statement 明写的 `system` 尚未覆盖；后续应在 browser project 补 system 跟随 `matchMedia` 且镜像到根 dataset 的断言。
