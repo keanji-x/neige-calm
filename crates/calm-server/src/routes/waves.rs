@@ -31,18 +31,18 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    card_create_with_id_tx, cove_folder_create_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx, terminal_delete_tx, wave_create_tx,
-    wave_delete_tx, wave_update_tx,
+    card_create_with_id_tx, card_update_with_crdt_tx, cove_folder_create_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
+    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
-use crate::db::{write_with_actor_events_typed, write_with_events_typed};
+use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
-use crate::ids::{ActorId, CardId};
+use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{
-    CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay, NewWave, Wave,
-    WaveDetail, WavePatch, new_id,
+    CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
+    NewWave, RequestTheme, Wave, WaveDetail, WavePatch, new_id,
 };
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
@@ -61,11 +61,14 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
-use crate::wave_lifecycle::validate_transition;
+use crate::wave_lifecycle::{validate_transition, wave_get_tx};
 use crate::wave_report::{
-    WaveReportPayload, persist_report, resolve_report_for_wave, tasks_rebuild_tx,
+    ReportBlock, WaveReportPayload, persist_report, report_blocks_snapshot_tx,
+    resolve_report_for_wave, tasks_rebuild_tx,
 };
+use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
+use crate::wave_report_task_guard::guard_fork_task_declarations;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -75,6 +78,46 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateWaveRequest {
+    #[schema(value_type = String)]
+    pub cove_id: crate::ids::CoveId,
+    pub title: String,
+    pub sort: Option<f64>,
+    pub cwd: String,
+    #[serde(default)]
+    pub workflow_id: Option<String>,
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub workflow_input: Option<serde_json::Value>,
+    #[serde(default)]
+    pub attach_folder: bool,
+    pub theme: RequestTheme,
+    /// One-time creation instruction: copy this wave's report snapshot into
+    /// the new report inside the wave-create transaction.
+    #[serde(default)]
+    pub fork_report_from: Option<String>,
+}
+
+impl CreateWaveRequest {
+    fn into_parts(self) -> (NewWave, Option<String>) {
+        (
+            NewWave {
+                cove_id: self.cove_id,
+                title: self.title,
+                sort: self.sort,
+                cwd: self.cwd,
+                workflow_id: self.workflow_id,
+                workflow_input: self.workflow_input,
+                attach_folder: self.attach_folder,
+                theme: self.theme,
+            },
+            self.fork_report_from,
+        )
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -315,7 +358,7 @@ pub(crate) async fn get_wave_detail(
     post,
     path = "/api/waves",
     tag = "waves",
-    request_body = NewWave,
+    request_body = CreateWaveRequest,
     responses(
         (status = 201, description = "Wave created", body = Wave),
         (status = 500, description = "Internal error", body = ErrorBody),
@@ -325,8 +368,9 @@ pub(crate) async fn get_wave_detail(
 pub(crate) async fn create_wave(
     State(s): State<RouteState>,
     actor: Actor,
-    Json(mut p): Json<NewWave>,
+    Json(request): Json<CreateWaveRequest>,
 ) -> Result<Response> {
+    let (mut p, fork_report_from) = request.into_parts();
     // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
     // codex card alongside the wave row. Both rows commit in one tx
     // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
@@ -492,12 +536,15 @@ pub(crate) async fn create_wave(
         s,
         actor,
         p,
-        attach_folder,
-        body_cove_id,
-        normalized_cwd,
-        AttachRepoIdentity {
-            identity: repo_identity,
-            probed_at: repo_identity_probed_at,
+        CreateWaveOptions {
+            attach_folder,
+            body_cove_id,
+            normalized_cwd,
+            repo_identity: AttachRepoIdentity {
+                identity: repo_identity,
+                probed_at: repo_identity_probed_at,
+            },
+            fork_report_from,
         },
     )
     .await
@@ -569,20 +616,33 @@ struct AttachRepoIdentity {
     probed_at: Option<i64>,
 }
 
+struct CreateWaveOptions {
+    attach_folder: bool,
+    body_cove_id: String,
+    normalized_cwd: String,
+    repo_identity: AttachRepoIdentity,
+    fork_report_from: Option<String>,
+}
+
 #[allow(deprecated)]
 async fn create_wave_with_spec_harness(
     s: RouteState,
     actor: Actor,
     p: NewWave,
-    attach_folder: bool,
-    body_cove_id: String,
-    normalized_cwd: String,
-    repo_identity: AttachRepoIdentity,
+    options: CreateWaveOptions,
 ) -> Result<Response> {
+    let CreateWaveOptions {
+        attach_folder,
+        body_cove_id,
+        normalized_cwd,
+        repo_identity,
+        fork_report_from,
+    } = options;
     let spec_card_id = new_id();
     let report_card_id = new_id();
     let actor_for_hash = actor.as_str().to_string();
     let actor_id = actor.to_actor_id();
+    let actor_id_for_tx = actor_id.clone();
     let write_for_tx = s.write.clone();
     let spec_card_id_for_tx = spec_card_id.clone();
     let report_card_id_for_tx = report_card_id.clone();
@@ -590,9 +650,13 @@ async fn create_wave_with_spec_harness(
     let normalized_cwd_for_tx = normalized_cwd;
     let repo_identity_for_tx = repo_identity.identity;
     let repo_identity_probed_at = repo_identity.probed_at;
-    let ((wave,), _event_ids) = write_with_events_typed(
+    let fork_author = if actor.as_str() == Actor::DEFAULT {
+        EditAuthor::User
+    } else {
+        EditAuthor::Spec
+    };
+    let ((wave,), _event_ids) = write_with_actor_events_typed(
         s.repo.as_ref(),
-        actor_id.clone(),
         None,
         &s.events,
         &s.write,
@@ -613,6 +677,43 @@ async fn create_wave_with_spec_harness(
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
                 let goal = wave.title.trim().to_string();
+
+                let fork_snapshot = if let Some(source_wave_id) = fork_report_from.as_deref() {
+                    let source_id = WaveId::from(source_wave_id.to_string());
+                    let source_wave = wave_get_tx(tx, &source_id).await.map_err(|error| {
+                        if matches!(error, CalmError::NotFound(_)) {
+                            CalmError::BadRequest(format!(
+                                "wave create: fork source wave `{source_wave_id}` does not exist"
+                            ))
+                        } else {
+                            error
+                        }
+                    })?;
+                    let source_cove_kind: String =
+                        sqlx::query_scalar("SELECT kind FROM coves WHERE id=?1")
+                            .bind(source_wave.cove_id.as_str())
+                            .fetch_one(&mut **tx)
+                            .await?;
+                    if source_wave.cove_id != cove_id
+                        && source_cove_kind != CoveKind::System.as_db_str()
+                    {
+                        return Err(CalmError::BadRequest(format!(
+                            "wave create: fork source wave `{source_wave_id}` must be in the target cove or the system cove"
+                        )));
+                    }
+                    let (summary, blocks) =
+                        report_blocks_snapshot_tx(tx, source_wave_id).await?;
+                    Some(prepare_fork_report(
+                        summary,
+                        blocks,
+                        source_wave_id,
+                        wave_id.as_str(),
+                        fork_author,
+                    )?)
+                } else {
+                    None
+                };
+
                 let spec_card = card_create_with_id_tx(
                     tx,
                     spec_card_id_for_tx.clone(),
@@ -635,7 +736,7 @@ async fn create_wave_with_spec_harness(
                             "wave_create: serialize wave-report payload: {e}"
                         ))
                     })?;
-                let report_card = card_create_with_id_tx(
+                let mut report_card = card_create_with_id_tx(
                     tx,
                     report_card_id_for_tx.clone(),
                     NewCard {
@@ -650,6 +751,39 @@ async fn create_wave_with_spec_harness(
                     write_for_tx.role_cache(),
                 )
                 .await?;
+
+                let mut fork_projection = None;
+                if let Some((payload, mut doc, declarations, diagnostics)) = fork_snapshot {
+                    let payload = serde_json::to_value(payload).map_err(|error| {
+                        CalmError::Internal(format!(
+                            "wave_create: serialize forked wave-report payload: {error}"
+                        ))
+                    })?;
+                    report_card = card_update_with_crdt_tx(
+                        tx,
+                        report_card.id.as_str(),
+                        CardPatch {
+                            title: None,
+                            kind: None,
+                            sort: None,
+                            payload: Some(payload),
+                            deletable: None,
+                        },
+                        doc.to_bytes(),
+                    )
+                    .await?;
+                    // Ref existence reads the report cache, so the exact JSON +
+                    // CRDT snapshot must land before task projection.
+                    fork_projection = Some(
+                        project_tasks_tx(
+                            tx,
+                            wave_id.as_str(),
+                            &declarations,
+                            &diagnostics,
+                        )
+                        .await?,
+                    );
+                }
 
                 let wave_scope = EventScope::Wave {
                     wave: wave_id.clone(),
@@ -679,18 +813,48 @@ async fn create_wave_with_spec_harness(
                     },
                 )
                 .await?;
-                let events = vec![
+                let mut events = vec![
                     (
+                        actor_id_for_tx.clone(),
                         wave_scope.clone(),
                         Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(
                             wave.clone(),
                             None,
                         )),
                     ),
-                    (spec_card_scope, Event::CardAdded(spec_card)),
-                    (report_card_scope, Event::CardAdded(report_card)),
-                    (wave_scope, Event::OverlaySet(layout_overlay)),
+                    (
+                        actor_id_for_tx.clone(),
+                        spec_card_scope,
+                        Event::CardAdded(spec_card),
+                    ),
+                    (
+                        actor_id_for_tx.clone(),
+                        report_card_scope,
+                        Event::CardAdded(report_card),
+                    ),
+                    (
+                        actor_id_for_tx.clone(),
+                        wave_scope,
+                        Event::OverlaySet(layout_overlay),
+                    ),
                 ];
+                if let Some(projection) = fork_projection {
+                    if !projection.changed_keys.is_empty() {
+                        events.push((
+                            actor_id_for_tx.clone(),
+                            EventScope::Wave {
+                                wave: wave_id.clone(),
+                                cove: cove_id.clone(),
+                            },
+                            Event::PlanUpdated {
+                                wave_id,
+                                changed_keys: projection.changed_keys,
+                                agent_message: None,
+                            },
+                        ));
+                    }
+                    events.extend(projection.kernel_events);
+                }
                 Ok(((wave,), events))
             })
         },
@@ -770,6 +934,110 @@ async fn create_wave_with_spec_harness(
     }
 
     Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+type ForkReportSnapshot = (
+    WaveReportPayload,
+    ReportDoc,
+    Vec<calm_types::report_blocks::tasks::TaskDeclaration>,
+    Vec<Vec<calm_types::report_blocks::tasks::Diagnostic>>,
+);
+
+fn prepare_fork_report(
+    summary: String,
+    mut blocks: Vec<ReportBlock>,
+    source_wave_id: &str,
+    target_wave_id: &str,
+    author: EditAuthor,
+) -> Result<ForkReportSnapshot> {
+    use calm_types::report_blocks::{KIND_PROSE, KIND_TASK, flat_text, validate_payload};
+    use calm_types::report_links::{rewrite_wave_destination, rewrite_wave_links};
+
+    for block in &mut blocks {
+        if block.kind == KIND_PROSE {
+            if let Some(markdown) = block.payload.get_mut("markdown")
+                && let Some(source) = markdown.as_str()
+            {
+                *markdown = serde_json::Value::String(rewrite_wave_links(
+                    source,
+                    source_wave_id,
+                    target_wave_id,
+                ));
+            }
+            continue;
+        }
+
+        if block.kind == KIND_TASK
+            && let Some(payload) = block.payload.as_object_mut()
+        {
+            for field in ["goal", "acceptance"] {
+                if let Some(value) = payload.get_mut(field)
+                    && let Some(source) = value.as_str()
+                {
+                    *value = serde_json::Value::String(rewrite_wave_links(
+                        source,
+                        source_wave_id,
+                        target_wave_id,
+                    ));
+                }
+            }
+            if let Some(serde_json::Value::Array(references)) = payload.get_mut("refs") {
+                for reference in references {
+                    if let Some(source) = reference.as_str() {
+                        *reference = serde_json::Value::String(rewrite_wave_destination(
+                            source,
+                            source_wave_id,
+                            target_wave_id,
+                        ));
+                    }
+                }
+            }
+            let tombstone = payload
+                .get("tombstone")
+                .is_some_and(|value| !value.is_null());
+            payload.insert(
+                "declared_by".into(),
+                serde_json::Value::String("spec".into()),
+            );
+            if tombstone {
+                payload.remove("ready");
+            } else {
+                payload.insert("ready".into(), serde_json::Value::Bool(false));
+            }
+        }
+
+        validate_payload(&block.kind, &block.payload).map_err(|error| {
+            CalmError::BadRequest(format!(
+                "wave create: invalid forked report block {}: {error}",
+                block.id
+            ))
+        })?;
+    }
+
+    guard_fork_task_declarations(&blocks, author)?;
+    let doc = ReportDoc::from_blocks_exact(&summary, &blocks).map_err(|error| {
+        CalmError::BadRequest(format!(
+            "wave create: invalid fork report snapshot: {error}"
+        ))
+    })?;
+    let (summary, body) = doc.project().map_err(|error| {
+        CalmError::Internal(format!("wave create: project fork report CRDT: {error}"))
+    })?;
+    let (declarations, diagnostics) =
+        calm_types::report_blocks::tasks::project_task_declarations(&blocks);
+    let mut payload = WaveReportPayload::new(summary, body);
+    payload.blocks = Some(blocks);
+    debug_assert_eq!(
+        payload.body,
+        payload
+            .blocks
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(flat_text)
+            .collect::<String>()
+    );
+    Ok((payload, doc, declarations, diagnostics))
 }
 
 fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
@@ -1390,7 +1658,36 @@ pub(crate) async fn update_wave_report(
 
 #[cfg(test)]
 mod tests {
-    use super::spec_harness_layout_payload;
+    use super::{prepare_fork_report, spec_harness_layout_payload};
+    use crate::event::EditAuthor;
+    use crate::wave_report::ReportBlock;
+    use serde_json::json;
+
+    #[test]
+    fn fork_revalidates_every_fence_payload() {
+        let invalid = ReportBlock {
+            id: "b_0001".into(),
+            kind: "task".into(),
+            rev: 4,
+            payload: json!({
+                "key": "build",
+                "kind": "not-a-worker-kind",
+                "goal": "build",
+                "ready": true,
+                "declared_by": "user"
+            }),
+        };
+        let error = prepare_fork_report(
+            "summary".into(),
+            vec![invalid],
+            "source",
+            "target",
+            EditAuthor::User,
+        )
+        .err()
+        .expect("invalid copied task must abort fork");
+        assert!(error.to_string().contains("invalid forked report block"));
+    }
 
     /// Pins the full-write assumption the events retention pruner's
     /// keep-latest `overlay.set` carve-out depends on (#854 slice 2):

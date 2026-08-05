@@ -1,6 +1,8 @@
 //! Extraction of typed `neige://` links from report markdown.
 
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
+
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 
 const WAVE_LINK_PREFIX: &str = "neige://wave/";
 
@@ -66,6 +68,122 @@ pub fn scan_links(markdown: &str) -> LinkScan {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS;
     scan_links_with_options(markdown, opts)
+}
+
+/// Rewrite links that target `source_wave_id` so they target `target_wave_id`.
+///
+/// Unlike [`scan_links`], this operates on Markdown source ranges: the offsets
+/// in [`ScannedLink`] belong to the rendered plain-text label and cannot be
+/// used to edit link destinations in the source document.
+pub fn rewrite_wave_links(markdown: &str, source_wave_id: &str, target_wave_id: &str) -> String {
+    if source_wave_id == target_wave_id || source_wave_id.is_empty() {
+        return markdown.to_string();
+    }
+
+    let opts = Options::ENABLE_TABLES
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+    let definitions_parser = Parser::new_ext(markdown, opts);
+    let definitions = definitions_parser.reference_definitions();
+    let parser = Parser::new_ext(markdown, opts);
+    let mut replacements = Vec::new();
+
+    for (event, span) in parser.into_offset_iter() {
+        let Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            id,
+            ..
+        }) = event
+        else {
+            continue;
+        };
+        if !matches!(parse_destination(&dest_url), Some((wave_id, _)) if wave_id == source_wave_id)
+        {
+            continue;
+        }
+
+        let source_location = match link_type {
+            LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut => definitions
+                .get(&id)
+                .filter(|definition| {
+                    matches!(parse_destination(&definition.dest), Some((wave_id, _)) if wave_id == source_wave_id)
+                })
+                .map(|definition| (definition.span.clone(), definition.dest.as_ref())),
+            LinkType::Inline | LinkType::Autolink => Some((span, dest_url.as_ref())),
+            _ => None,
+        };
+        if let Some((source_span, destination)) = source_location
+            && let Some(range) = wave_segment_range(
+                markdown,
+                source_span,
+                destination,
+                source_wave_id,
+                link_type,
+            )
+        {
+            replacements.push(range);
+        }
+    }
+
+    replacements.sort_unstable_by_key(|range| range.start);
+    replacements.dedup_by(|later, earlier| later.start < earlier.end);
+    for pair in replacements.windows(2) {
+        debug_assert!(
+            pair[0].end <= pair[1].start,
+            "link destination ranges overlap"
+        );
+    }
+
+    let mut rewritten = markdown.to_string();
+    for range in replacements.into_iter().rev() {
+        rewritten.replace_range(range, target_wave_id);
+    }
+    rewritten
+}
+
+/// Rewrite one bare `neige://wave/...` destination while preserving every
+/// byte outside the wave-id segment, including the fragment.
+pub fn rewrite_wave_destination(
+    destination: &str,
+    source_wave_id: &str,
+    target_wave_id: &str,
+) -> String {
+    if !matches!(parse_destination(destination), Some((wave_id, _)) if wave_id == source_wave_id) {
+        return destination.to_string();
+    }
+    let start = WAVE_LINK_PREFIX.len();
+    let end = start + source_wave_id.len();
+    let mut rewritten = destination.to_string();
+    rewritten.replace_range(start..end, target_wave_id);
+    rewritten
+}
+
+fn wave_segment_range(
+    markdown: &str,
+    source_span: Range<usize>,
+    destination: &str,
+    source_wave_id: &str,
+    link_type: LinkType,
+) -> Option<Range<usize>> {
+    let source = markdown.get(source_span.clone())?;
+    // The parser span covers the entire inline link or reference definition,
+    // including labels and optional titles. Narrow to the parsed destination
+    // first so URI-looking label/title text can never be edited by mistake.
+    let destination_floor = match link_type {
+        LinkType::Inline => source.rfind("](").map_or(0, |start| start + 2),
+        LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut => {
+            source.find(":").map_or(0, |start| start + 1)
+        }
+        LinkType::Autolink => 0,
+        _ => return None,
+    };
+    let destination_start =
+        destination_floor + source.get(destination_floor..)?.find(destination)?;
+    let wave_start = destination_start + WAVE_LINK_PREFIX.len();
+    let wave_end = wave_start + source_wave_id.len();
+    Some(source_span.start + wave_start..source_span.start + wave_end)
 }
 
 fn scan_links_with_options(markdown: &str, opts: Options) -> LinkScan {
@@ -213,6 +331,76 @@ mod tests {
                 dst_block_id: None,
                 label: "neige://wave/w1".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn rewrite_wave_links_is_source_aware_and_preserves_fragments() {
+        let markdown = concat!(
+            "[inline](neige://wave/source#b_1f3a)\n",
+            "[reference][same] and [again][same]\n",
+            "<neige://wave/source#b_ab12>\n",
+            "`[code](neige://wave/source#b_2222)`\n",
+            "```markdown\n[fenced](neige://wave/source#b_3333)\n```\n",
+            "[external](neige://wave/other#b_4444)\n",
+            "\n[same]: neige://wave/source#b_5e6f\n",
+        );
+
+        assert_eq!(
+            rewrite_wave_links(markdown, "source", "target"),
+            concat!(
+                "[inline](neige://wave/target#b_1f3a)\n",
+                "[reference][same] and [again][same]\n",
+                "<neige://wave/target#b_ab12>\n",
+                "`[code](neige://wave/source#b_2222)`\n",
+                "```markdown\n[fenced](neige://wave/source#b_3333)\n```\n",
+                "[external](neige://wave/other#b_4444)\n",
+                "\n[same]: neige://wave/target#b_5e6f\n",
+            )
+        );
+    }
+
+    #[test]
+    fn rewrite_wave_destination_changes_only_internal_wave_segment() {
+        assert_eq!(
+            rewrite_wave_destination("neige://wave/source#b_1f3a", "source", "target"),
+            "neige://wave/target#b_1f3a"
+        );
+        assert_eq!(
+            rewrite_wave_destination("neige://wave/other#b_1f3a", "source", "target"),
+            "neige://wave/other#b_1f3a"
+        );
+    }
+
+    #[test]
+    fn rewrite_reference_variants_use_each_definition_span_once() {
+        let markdown = concat!(
+            "[collapsed][] [SHORTCUT] [collapsed][]\n\n",
+            "[collapsed]: neige://wave/source#b_1234\n",
+            "[shortcut]: <neige://wave/source#b_abcd>\n",
+        );
+        assert_eq!(
+            rewrite_wave_links(markdown, "source", "target"),
+            concat!(
+                "[collapsed][] [SHORTCUT] [collapsed][]\n\n",
+                "[collapsed]: neige://wave/target#b_1234\n",
+                "[shortcut]: <neige://wave/target#b_abcd>\n",
+            )
+        );
+    }
+
+    #[test]
+    fn rewrite_never_edits_uri_text_in_the_link_label_or_title() {
+        let markdown = concat!(
+            "[neige://wave/source label](neige://wave/source#b_1234 ",
+            "\"neige://wave/source title\")\n",
+        );
+        assert_eq!(
+            rewrite_wave_links(markdown, "source", "target"),
+            concat!(
+                "[neige://wave/source label](neige://wave/target#b_1234 ",
+                "\"neige://wave/source title\")\n",
+            )
         );
     }
 

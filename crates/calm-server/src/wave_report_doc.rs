@@ -116,6 +116,48 @@ impl ReportDoc {
         Self(doc)
     }
 
+    /// Seed a report doc from an already-authoritative ordered block snapshot.
+    pub fn from_blocks_exact(summary: &str, blocks: &[ReportBlock]) -> Result<Self> {
+        let mut seen = HashSet::new();
+        for block in blocks {
+            ensure!(
+                seen.insert(block.id.as_str()),
+                "duplicate block id {} in exact report snapshot",
+                block.id
+            );
+        }
+
+        let mut doc = AutoCommit::new();
+        let summary_id = doc
+            .put_object(&ROOT, FIELD_SUMMARY, ObjType::Text)
+            .context("create exact report summary")?;
+        doc.update_text(&summary_id, summary)
+            .context("write exact report summary")?;
+        // Deliberately do not route this authoritative snapshot through
+        // `write_blocks_layout`: that defensive seeding helper may remint a
+        // duplicate id. The uniqueness check above is the fork boundary, and
+        // every id below is written byte-for-byte as supplied.
+        let blocks_id = doc
+            .put_object(&ROOT, FIELD_BLOCKS, ObjType::Map)
+            .context("create exact report blocks map")?;
+        let order_id = doc
+            .put_object(&ROOT, FIELD_ORDER, ObjType::List)
+            .context("create exact report order list")?;
+        for (index, block) in blocks.iter().enumerate() {
+            Self::insert_block_entry(
+                &mut doc,
+                &blocks_id,
+                &block.id,
+                &block.kind,
+                block.rev,
+                &flat_text(block),
+            );
+            doc.insert(&order_id, index, block.id.as_str())
+                .context("write exact report order entry")?;
+        }
+        Ok(Self(doc))
+    }
+
     /// Read the authoritative document revision from the CRDT root.
     /// Missing (legacy) fields are revision zero.
     pub fn doc_rev(&self) -> Result<u64> {
@@ -1632,5 +1674,52 @@ changed.
         assert_eq!(ids[0], "b_dupe");
         assert_ne!(ids[1], "b_dupe");
         assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+    }
+
+    #[test]
+    fn from_blocks_exact_preserves_order_ids_revs_and_payloads() {
+        let blocks = vec![
+            ReportBlock {
+                id: "b_0001".into(),
+                kind: "prose".into(),
+                rev: 7,
+                payload: json!({ "markdown": "# A\n\nalpha\n\n" }),
+            },
+            ReportBlock {
+                id: "b_0002".into(),
+                kind: "app".into(),
+                rev: 11,
+                payload: json!({ "src": "/apps/x" }),
+            },
+        ];
+
+        let doc = ReportDoc::from_blocks_exact("summary", &blocks).unwrap();
+        assert_eq!(doc.doc_rev().unwrap(), 0);
+        assert_eq!(doc.blocks_snapshot().unwrap(), blocks);
+        assert_eq!(doc.project().unwrap().0, "summary");
+    }
+
+    #[test]
+    fn from_blocks_exact_rejects_duplicate_ids_before_layout_write() {
+        let blocks = vec![
+            ReportBlock {
+                id: "b_dupe".into(),
+                kind: "prose".into(),
+                rev: 3,
+                payload: json!({ "markdown": "first\n" }),
+            },
+            ReportBlock {
+                id: "b_dupe".into(),
+                kind: "prose".into(),
+                rev: 9,
+                payload: json!({ "markdown": "second\n" }),
+            },
+        ];
+
+        let error = match ReportDoc::from_blocks_exact("summary", &blocks) {
+            Ok(_) => panic!("duplicate ids must fail before the layout writer can remint them"),
+            Err(error) => error,
+        };
+        assert!(format!("{error:#}").contains("duplicate block id b_dupe"));
     }
 }

@@ -1206,6 +1206,22 @@ export interface components {
             payload?: unknown;
             position?: number | null;
         };
+        CreateWaveRequest: {
+            attach_folder?: boolean;
+            cove_id: string;
+            cwd: string;
+            /**
+             * @description One-time creation instruction: copy this wave's report snapshot into
+             *     the new report inside the wave-create transaction.
+             */
+            fork_report_from?: string | null;
+            /** Format: double */
+            sort?: number | null;
+            theme: components["schemas"]["RequestTheme"];
+            title: string;
+            workflow_id?: string | null;
+            workflow_input?: Record<string, never> | null;
+        };
         DeleteReportBlockBody: {
             /** Format: int32 */
             ifBlockRev: number;
@@ -4508,7 +4524,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["NewWave"];
+                "application/json": components["schemas"]["CreateWaveRequest"];
             };
         };
         responses: {

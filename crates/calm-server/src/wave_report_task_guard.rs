@@ -39,6 +39,19 @@ fn author_name(author: EditAuthor) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum TaskGuardRule1Exemption {
+    #[default]
+    None,
+    Fork,
+}
+
+impl TaskGuardRule1Exemption {
+    fn exempts_rule_one(self) -> bool {
+        matches!(self, Self::Fork)
+    }
+}
+
 /// Turn a user's block-level deletion of a live task into an in-place tombstone.
 pub(crate) fn normalize_report_op(
     doc: &ReportDoc,
@@ -88,25 +101,46 @@ pub(crate) fn guard_task_declarations(
     after: &[ReportBlock],
     author: EditAuthor,
 ) -> Result<(), CalmError> {
+    guard_task_declarations_with_rule1(before, after, author, Default::default())
+}
+
+/// Fork copies an existing snapshot into a new report, so copied task
+/// attribution is not a fresh declaration by the wave creator. All other
+/// task guard rules, especially user-only release, still apply.
+pub(crate) fn guard_fork_task_declarations(
+    after: &[ReportBlock],
+    author: EditAuthor,
+) -> Result<(), CalmError> {
+    guard_task_declarations_with_rule1(&[], after, author, TaskGuardRule1Exemption::Fork)
+}
+
+fn guard_task_declarations_with_rule1(
+    before: &[ReportBlock],
+    after: &[ReportBlock],
+    author: EditAuthor,
+    rule1_exemption: TaskGuardRule1Exemption,
+) -> Result<(), CalmError> {
     let before_by_id: HashMap<_, _> = before.iter().map(|block| (&block.id, block)).collect();
     let after_by_id: HashMap<_, _> = after.iter().map(|block| (&block.id, block)).collect();
 
     for new in after.iter().filter(|block| is_task(block)) {
         let Some(old) = before_by_id.get(&new.id).filter(|block| is_task(block)) else {
-            let expected = author_name(author)
-                .ok_or_else(|| bad(format!("{author:?} may not create task blocks")))?;
-            if string_field(new, "declared_by") != Some(expected)
-                || (is_tombstone(new) && string_field(new, "tombstoned_by") != Some(expected))
-            {
-                return Err(bad(format!(
-                    "new task block {} must attribute declared_by{} to {expected}",
-                    new.id,
-                    if is_tombstone(new) {
-                        " and tombstoned_by"
-                    } else {
-                        ""
-                    }
-                )));
+            if !rule1_exemption.exempts_rule_one() {
+                let expected = author_name(author)
+                    .ok_or_else(|| bad(format!("{author:?} may not create task blocks")))?;
+                if string_field(new, "declared_by") != Some(expected)
+                    || (is_tombstone(new) && string_field(new, "tombstoned_by") != Some(expected))
+                {
+                    return Err(bad(format!(
+                        "new task block {} must attribute declared_by{} to {expected}",
+                        new.id,
+                        if is_tombstone(new) {
+                            " and tombstoned_by"
+                        } else {
+                            ""
+                        }
+                    )));
+                }
             }
             if author != EditAuthor::User
                 && field(new, "released_by_user").is_some_and(|value| value != &Value::Bool(false))
@@ -216,6 +250,17 @@ mod tests {
             "ready": true,
             "declared_by": declared_by
         })
+    }
+
+    #[test]
+    fn fork_guard_exempts_rule_one_but_still_enforces_rule_five() {
+        let copied = block("b_0001", live("spec"));
+        guard_fork_task_declarations(std::slice::from_ref(&copied), EditAuthor::User).unwrap();
+
+        let mut released = copied;
+        released.payload["released_by_user"] = Value::Bool(true);
+        let error = guard_fork_task_declarations(&[released], EditAuthor::Spec).unwrap_err();
+        assert!(error.to_string().contains("released_by_user"));
     }
 
     fn block(id: &str, payload: Value) -> ReportBlock {

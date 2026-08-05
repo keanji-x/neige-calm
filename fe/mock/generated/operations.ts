@@ -4516,6 +4516,7 @@ export const schemaWireTypes = {
   "CoveResolve": "CoveResolve",
   "CreateCardBody": null,
   "CreateReportBlockBody": null,
+  "CreateWaveRequest": null,
   "DeleteReportBlockBody": null,
   "Diagnostic": null,
   "DirEntry": null,

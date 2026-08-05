@@ -1095,7 +1095,10 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 
 不新建「模板 wave」实体、不给 cove 加文档载体。wave 创建时可选
 `fork_report_from: "<wave_id>"`：在创建事务内，用源 wave 的 report 卡的块快照
-（改写过引用之后）播种新报告，**块 id 逐个保留、`rev` 从源承接、零 `mint_id` 调用**。
+（改写过引用之后）播种新报告，**块 id 逐个保留、`rev` 从源承接**。源 snapshot
+一旦确定，引用改写、目标 doc 构造与写入全程**零 remint**；无持久 block snapshot
+的 legacy 源在首次读取时仍会按既有读路径派生 id，这批派生 id 原样成为目标持久 id，
+源 wave 不写回。
 
 「这是一个模板」是一个 **kernel overlay 标记**（`entity_kind: "view"` /
 `kind: "template"`），沿用 layout overlay 的先例。**零新表、零新权限面、
@@ -1111,8 +1114,9 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 
 **fork 强制改写两个字段**：
 
-- **`ready` 降为 `false`** —— 没有任何东西是在「这次」被决定要做的；
+- **live task 的 `ready` 降为 `false`** —— 没有任何东西是在「这次」被决定要做的；
   这也让「wave 创建事务里意外派发」在结构上不可能。
+- **墓碑 task 不写 `ready`** —— 墓碑 schema 禁止该字段。
 - **`declared_by` 改写为 `"spec"`** —— 模板里的任务不是**这个人**为**这个 wave**
   提的；标成 `spec` 把它们纳入 §8 的预算（若标 `user`，模板就成了绕过预算的后门）。
 
@@ -1121,6 +1125,15 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 fork 复制文本 ⇒ 文本里的 `neige://wave/<源 wave>#b_xxxx` 会**指回模板原文**。
 必须在 fork 的同一事务里把 wave 段重写为新 wave，**`#b_x` 那一半原样不动**
 （依赖块 id 被保留，见 §7.2）。
+
+`scan_links` 不足以做原位改写：`ScannedLink.label_start/label_end` 是剥离 Markdown
+后的 plain 文本标签 offset，不是源 Markdown destination 的 offset。fork 必须使用
+source-aware helper，借 parser 的源范围改写 inline / reference-style / autolink 的
+destination；code span 与 fenced code 仍按 parser 语义忽略。覆盖集合只包括 prose 的
+`markdown`、task 的 `goal` 与可选 `acceptance`，以及 task `refs[]` 中的裸 URI；
+不扫描 canonical fence JSON、`context`、gate 或 tombstone reason。只改目标 wave 等于
+源 wave 的引用，外部引用逐字节不变。这里**错了是静默的**：指回模板原文的链接仍是
+合法链接，只有内部/外部两侧都钉死的硬测试才能检出。
 
 ### 7.4 复制，不是引用
 
@@ -1939,7 +1952,8 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 **切片 5**：fork 的引用重写**硬测试**（内部引用指向新 wave id、
 **外部引用逐字节未变** —— 错了是静默的）；fork 强制 `ready:false` +
 `declared_by:"spec"`；fork 自跑 `validate_payload` 与 guard；
-**规则 1 豁免点的枚举测试**（全仓只有 fork 与物化工具两处）；
+**规则 1 豁免点的枚举测试**（本片全仓恰好一处：`Fork`；切片 7 物化工具落地后
+再扩成 `{Fork, Materialize}` 两处）；
 `calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。
 
 **切片 6**：树预算与深度上限的拒绝路径；**`spawn` 移入哈希纳入集的前置重裁**。
