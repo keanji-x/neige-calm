@@ -131,10 +131,9 @@
       "web/src/app/providers/public.contract.test.tsx"
     ],
     "expected_red": [
-      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once",
-      "app/providers contracts ServerCompatGate passes retryUnless401 as its query retry option"
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
     ],
-    "why_more_than_one": "Predicted, not run: removing the export prevents the contract module's named import from loading, so both tests in that selected contract suite are expected to be unavailable."
+    "why_more_than_one": "Measured: removing the export only breaks the direct named-import retry-policy contract; the source-AST assertion remains green because export visibility is outside its semantics. Any additional red indicates unrelated provider behavior changed."
   },
   {
     "mutation_id": "app-theme-accept-sepia-drop-system",
