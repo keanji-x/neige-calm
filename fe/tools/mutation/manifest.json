@@ -143,7 +143,7 @@
     "mutation_id": "app-theme-swap-light-dark-bg",
     "defends": ["oracle:E2E-CAP-AXE-005"],
     "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -10,1 +10,1 @@\n-    --bg: oklch(98.8% 0.003 240);\n+    --bg: oklch(16% 0.008 245);\n@@ -106,1 +106,1 @@\n-    --bg: oklch(16% 0.008 245);\n+    --bg: oklch(98.8% 0.003 240);\n",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex 95e58ace..eee489d5 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -7,7 +7,7 @@\n     --font-numeric: var(--font-sans);\n     --font-code: var(--font-mono);\n \n-    --bg: oklch(98.8% 0.003 240);\n+    --bg: oklch(16% 0.008 245);\n     --paper: oklch(99.5% 0.002 240);\n     --hairline: oklch(92% 0.005 240);\n     --hairline-strong: oklch(86% 0.006 240);\n@@ -103,7 +103,7 @@\n   }\n \n   [data-theme=\"dark\"] {\n-    --bg: oklch(16% 0.008 245);\n+    --bg: oklch(98.8% 0.003 240);\n     --paper: oklch(19% 0.009 245);\n     --hairline: oklch(28% 0.01 245);\n     --hairline-strong: oklch(36% 0.012 245);\n",
     "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
     "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
