@@ -53,11 +53,11 @@ Branches:
   * reviewing → failed        when the wave cannot be completed
   * (only the user may drive cancellation / reopen)
 
-Lifecycle transitions are a side effect of every write. Pass \
-`lifecycle=\"...\"` on `calm.plan.upsert`, `calm.plan.cancel`, \
-`calm.task.verdict`, `calm.report.write`, or `calm.report.edit` \
+Lifecycle transitions are available on retained stateful writes. Pass \
+`lifecycle=\"...\"` on `calm.plan.cancel`, `calm.task.verdict`, \
+`calm.report.write`, or `calm.report.edit` \
 to drive the wave state machine in the same atomic operation as your \
-action. Every write also requires `message`, a short human-readable \
+action. Those tools also require `message`, a short human-readable \
 rationale for the event. The kernel validates the (from → to, \
 actor=spec) edge; an illegal transition is rejected and nothing is \
 persisted. The kernel auto-drives `draft → planning` on your first \
@@ -88,12 +88,14 @@ writes are transactional.
    This is your ground truth — do NOT keep \
    a private model of wave state across turns.
 2. Decide what to do next and act:
-   * Maintain the task plan with `calm.plan.upsert`, `calm.plan.cancel`, \
-     and `calm.plan.list`. Use `calm.plan.upsert` to add or revise \
-     pending tasks. Each task needs a per-wave-unique `key`, `kind` \
-     (`codex`, `claude`, or `terminal`), `goal`, optional `depends_on` sibling \
-     keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
-     drop a pending task. Use `calm.plan.list` to inspect plan status.
+   * Maintain task declarations as report `task` blocks. Read the report with \
+     `calm.report.read`, then use `calm.report.blocks.upsert` to create or \
+     replace one block with the required concurrency anchor (`if_doc_rev` for \
+     create, `if_rev` for replace). A live task payload needs a per-wave-unique \
+     `key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, \
+     and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` \
+     sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
+     cancel a pending projected task. Use `calm.plan.list` to inspect status.
    * Every codex or claude task should declare a verification `gate` with \
      re-runnable commands (fmt/linters/tests as appropriate). Waves with \
      `require_task_gates` reject ungated agent/code tasks unless you provide \
@@ -101,8 +103,8 @@ writes are transactional.
      `gate.cwd` when the worker's checkout differs. Gates may run more \
      than once after kernel restarts, so declare only re-runnable commands.
    * When a gate fails, treat the `task.gate_result` as a machine fact, \
-     not a worker claim. Remediate by inserting a NEW task with a new \
-     key; retry policy is yours.
+     not a worker claim. Remediate by inserting a NEW `task` block with a \
+     new key; retry policy is yours.
    * Record verdicts via `calm.task.verdict(status=...)` when worker \
      output is ready to validate. Required args include `message`; \
      optional `lifecycle` advances the wave in the same write.
@@ -259,8 +261,9 @@ notification; the result lives in these views, not in `neige state`.
 The view is READ-ONLY. To act on what you read, call \
 `calm.task.verdict(idempotency_key=K, status=\"accepted\" | \
 \"rejected\")` to record a semantic verdict on top of a completed task, \
-and/or `calm.plan.upsert` to add follow-up work. Each write requires \
-`message` and can include `lifecycle=...`.
+and/or create a new `task` block with `calm.report.blocks.upsert` for \
+follow-up work. Lifecycle-capable writes require `message` and can include \
+`lifecycle=...`.
 
 Wave is implicit — derived from your card identity. Do NOT pass a \
 `wave_id` (these tools have no such parameter; cross-wave reads are \
@@ -485,7 +488,10 @@ mod tests {
         let spec = render_system_prompt(SeededCardRole::Spec.prompt_template(), "wave-abc");
         assert!(spec.contains("You are the spec agent for wave `wave-abc`."));
         assert!(!spec.contains("calm.update_wave_state"));
-        assert!(spec.contains("calm.plan.upsert"));
+        assert!(!spec.contains("calm.plan.upsert"));
+        assert!(spec.contains("calm.report.blocks.upsert"));
+        assert!(spec.contains("`ready: true`"));
+        assert!(spec.contains("`declared_by: \"spec\"`"));
         assert!(spec.contains("calm.plan.list"));
         assert!(!spec.contains("calm.task.dispatch"));
         assert!(spec.contains("calm.task.verdict"));
@@ -546,16 +552,17 @@ mod tests {
         // Reads go through the shell CLI; writes still go through MCP.
         assert!(
             p.contains("Run `neige state`")
-                && p.contains("calm.plan.upsert")
+                && p.contains("calm.report.blocks.upsert")
                 && p.contains("calm.plan.list"),
-            "prompt must read state via neige and maintain the plan via MCP"
+            "prompt must read state via neige and maintain task blocks via MCP"
         );
         assert!(
             !p.contains("calm.update_wave_state")
                 && !p.contains("calm.task.dispatch")
-                && p.contains("calm.plan.upsert")
+                && !p.contains("calm.plan.upsert")
                 && p.contains("calm.plan.cancel")
                 && p.contains("calm.plan.list")
+                && p.contains("calm.report.blocks.upsert")
                 && p.contains("calm.task.verdict")
                 && p.contains("calm.cove.outline")
                 && p.contains("calm.report.links.backlinks")

@@ -41,7 +41,6 @@ use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
-use calm_server::mcp_server::tools::plan::TOOL_PLAN_UPSERT;
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_WRITE_MARKDOWN;
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -4361,19 +4360,27 @@ async fn planning_wave_promotes_to_working_on_claim() {
         })],
     );
 
-    // `calm.plan.upsert` WITHOUT a lifecycle arg: draft auto-promotes
-    // to Planning and stays there — the F5 scenario.
-    call_tool(
+    // Writing a ready report task block without a lifecycle arg auto-promotes
+    // Draft to Planning and leaves the wave there — the F5 scenario.
+    insert_report_payload(
         &boot,
-        TOOL_PLAN_UPSERT,
-        spec_identity(&boot),
-        json!({
-            "tasks": [{ "key": "p1", "kind": "codex", "goal": "do p1" }],
-            "message": "plan ready"
-        }),
+        "report-planning-claim",
+        serde_json::to_value(WaveReportPayload::initial()).unwrap(),
     )
-    .await
-    .expect("plan upsert");
+    .await;
+    edit_report_blocks(
+        &boot,
+        &[(
+            "b_planning_task",
+            "task",
+            json!({
+                "key": "p1", "kind": "codex", "goal": "do p1",
+                "ready": true, "declared_by": "spec"
+            }),
+        )],
+        0,
+    )
+    .await;
     let wave = boot
         .repo
         .wave_get(boot.wave_id.as_str())
@@ -4383,7 +4390,7 @@ async fn planning_wave_promotes_to_working_on_claim() {
     assert_eq!(
         wave.lifecycle,
         WaveLifecycle::Planning,
-        "upsert with no lifecycle arg leaves the wave Planning"
+        "task block write with no lifecycle arg leaves the wave Planning"
     );
 
     scheduler.schedule_wave(boot.wave_id.clone()).await;

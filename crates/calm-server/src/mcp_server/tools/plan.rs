@@ -1,18 +1,14 @@
 //! `calm.plan.*` — the spec card's durable per-wave task plan
 //! (issue #644, PR-A).
 //!
-//! The plan lives in the `tasks` table (migration 0041) and is the
-//! source of truth for the kernel scheduler (PR-B) and verification
-//! gate (PR-C). Specs write durable task rows here; the scheduler
-//! claims ready rows, emits `task.dispatched`, and drives worker
-//! operations. `calm.task.dispatch` is now a hidden compatibility shim.
+//! Task declarations live in report `task` blocks; the `tasks` table is
+//! their scheduler projection. The kernel claims ready rows, emits
+//! `task.dispatched`, and drives worker operations.
 //!
 //! ## Tool surface
 //!
-//! * `calm.plan.upsert` — Spec-only batch write. Whole-batch atomic in
-//!   one immediate eventized tx: every task validates (design §4.1
-//!   rules 1-5, 7, 8) or nothing lands. Per-key outcomes are
-//!   `created` / `updated` / `unchanged`.
+//! * `calm.plan.upsert` — hidden, zero-write compatibility shim for old
+//!   threads. New declarations use `calm.report.blocks.upsert`.
 //! * `calm.plan.cancel` — Spec-only, pending-only (`§3.1`): canceling
 //!   an already-`canceled` task is idempotent success; an in-flight
 //!   task returns the 409-style refusal.
@@ -21,18 +17,11 @@
 //!   see gate bodies, and the listing layer enforces that shape even
 //!   for spec callers so a future role widening can't leak them (§6.7).
 //!
-//! ## Gate policy (PR-C, §4.1 rules 6-8 / §6.6)
+//! ## Transitional manifest validation
 //!
-//! * Rule 8 (the PR-A slice guard that rejected every declared gate) is
-//!   DELETED — the task-verify runner enforces declared gates now.
-//!   Gates are stored canonically in `gate_json` (rule-7 shape).
-//! * Rule 6 is enforced in the upsert tx: when
-//!   `waves.require_task_gates = 1`, a created/updated **agent** task
-//!   must declare a `gate` or record a `no_gate_reason` (terminal
-//!   tasks are exempt; `unchanged` rows pass through so idempotent
-//!   retries of pre-flag plans keep working). `no_gate_reason` must be
-//!   a trimmed-non-empty reason (round-3 review F2) and is recorded
-//!   trimmed into `context_json` for auditability, as before.
+//! `PlanTaskInput` and `validate_new_plan_batch` remain because installed
+//! workflow manifests still parse and validate the transitional
+//! `plan_template` Tier-A field. They no longer back an MCP write path.
 //!
 //! ## Scope construction
 //!
@@ -41,10 +30,7 @@
 //! event is wave-scoped with actor `AiSpec`; the in-tx role gate
 //! refuses it from worker actors (`role_gate.rs` section 2.5).
 
-use crate::db::sqlite::{
-    require_wave_exists_tx, task_cancel_tx, task_get_tx, task_insert_tx, task_update_pending_tx,
-    tasks_by_wave_tx, wave_require_task_gates_tx,
-};
+use crate::db::sqlite::{task_cancel_tx, task_get_tx};
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
 use crate::event::{Event, EventScope};
@@ -60,15 +46,14 @@ use crate::mcp_server::tools::lifecycle_args::{
 use crate::model::{CardRole, Task, TaskKind, TaskStatus, Wave, now_ms};
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
 use calm_types::report_blocks::tasks::{
-    GATE_TIMEOUT_MAX_SECS, TaskDeclaration, dup_keys, find_cycle, gate_rule_violations, json_eq,
-    opt_json_eq, unknown_deps,
+    GATE_TIMEOUT_MAX_SECS, TaskDeclaration, dup_keys, find_cycle, unknown_deps,
 };
 pub use calm_types::report_blocks::tasks::{
     GateInput, GateStepInput, key_is_valid, validate_gate_shape,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const TOOL_PLAN_UPSERT: &str = "calm.plan.upsert";
@@ -120,18 +105,13 @@ pub struct PlanTaskInput {
     pub no_gate_reason: Option<String>,
 }
 
-/// A batch entry after field-level validation + normalization. The
-/// stored row is a pure function of this struct, which is what makes
-/// the rule-5 "byte-identical normalized payload" idempotency check
-/// well-defined.
+/// A transitional manifest entry after field-level validation and
+/// normalization.
 #[derive(Debug, Clone)]
 struct NormalizedTask {
     key: String,
     kind: TaskKind,
     goal: String,
-    /// Canonical serialization (`serde_json` sorts object keys), with
-    /// `no_gate_reason` folded in when supplied.
-    context_json: String,
     acceptance_criteria: Option<String>,
     cwd: Option<String>,
     /// Sorted + deduped — dependency order is set semantics.
@@ -141,8 +121,7 @@ struct NormalizedTask {
     /// shape = `task_verify_adapter::GateSpec`). Deterministic per
     /// input, so the rule-5 idempotency check covers gates too.
     gate_json: Option<String>,
-    /// Rule 6 escape hatch was supplied (the reason itself is folded
-    /// into `context_json` for the audit trail).
+    /// Rule 6 escape hatch was supplied.
     has_no_gate_reason: bool,
 }
 
@@ -230,19 +209,12 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
     };
     let has_no_gate_reason = no_gate_reason.is_some();
 
-    // Rule 6 escape-hatch bookkeeping: `no_gate_reason` is recorded
-    // into `context_json` so the audit trail carries it (the policy
-    // check itself runs in the upsert tx, where the wave's
-    // `require_task_gates` flag is read).
+    // Preserve the transitional field-shape contract: a reason may only
+    // accompany object context (or omitted context).
     let context = input.context.unwrap_or(Value::Null);
-    let context = match no_gate_reason {
-        None => context,
-        Some(reason) => match context {
-            Value::Null => json!({ "no_gate_reason": reason }),
-            Value::Object(mut map) => {
-                map.insert("no_gate_reason".into(), Value::String(reason));
-                Value::Object(map)
-            }
+    if no_gate_reason.is_some() {
+        match context {
+            Value::Null | Value::Object(_) => {}
             other => {
                 return Err(format!(
                     "task {key}: `no_gate_reason` requires `context` to be an object \
@@ -250,10 +222,8 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
                     crate::mcp_server::tools::lifecycle_args::shape_of(&other)
                 ));
             }
-        },
-    };
-    let context_json =
-        serde_json::to_string(&context).map_err(|e| format!("task {key}: context: {e}"))?;
+        }
+    }
 
     let mut depends_on = input.depends_on;
     depends_on.sort();
@@ -263,7 +233,6 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
         key,
         kind,
         goal,
-        context_json,
         acceptance_criteria: input.acceptance_criteria,
         cwd,
         depends_on,
@@ -275,16 +244,15 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
 
 /// Validate a workflow/template batch as a fresh plan. This intentionally
 /// reuses the same normalization and dependency resolver that
-/// `calm.plan.upsert` uses before writes, so manifest-declared plan
-/// templates cannot drift weaker than the install path.
+/// the retired `calm.plan.upsert` accepted, so transitional manifest
+/// plan templates retain their Tier-A validation contract.
 pub(crate) fn validate_new_plan_batch(inputs: &[PlanTaskInput]) -> Result<(), String> {
     let batch: Vec<NormalizedTask> = inputs
         .iter()
         .cloned()
         .map(normalize_task_input)
         .collect::<Result<_, _>>()?;
-    resolve_plan_batch(&[], &batch)?;
-    Ok(())
+    validate_new_batch(&batch)
 }
 
 /// Rule 7 + canonicalization: validate the gate shape and render the
@@ -317,35 +285,10 @@ fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Batch resolution (rules 1 uniqueness, 3, 4, 5)
+// Transitional manifest batch validation (rules 1, 3, 4)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlanOutcome {
-    Created,
-    Updated,
-    Unchanged,
-}
-
-impl PlanOutcome {
-    fn as_str(self) -> &'static str {
-        match self {
-            PlanOutcome::Created => "created",
-            PlanOutcome::Updated => "updated",
-            PlanOutcome::Unchanged => "unchanged",
-        }
-    }
-}
-
-/// Pure resolver for one upsert batch against the wave's current plan.
-/// Returns per-entry outcomes in batch order, or the first validation
-/// error. Called twice on the write path — once outside the tx for the
-/// all-`unchanged` no-write short-circuit, once inside the tx against
-/// in-tx state — which is exactly why it must stay side-effect-free.
-fn resolve_plan_batch(
-    existing: &[Task],
-    batch: &[NormalizedTask],
-) -> Result<Vec<PlanOutcome>, String> {
+fn validate_new_batch(batch: &[NormalizedTask]) -> Result<(), String> {
     // Rule 1 (uniqueness half) — duplicate keys within the batch.
     let batch_declarations: Vec<TaskDeclaration> = batch
         .iter()
@@ -355,59 +298,24 @@ fn resolve_plan_batch(
         return Err(format!("duplicate key `{key}` in batch"));
     }
 
-    let existing_by_key: HashMap<&str, &Task> =
-        existing.iter().map(|t| (t.key.as_str(), t)).collect();
-
-    // Rule 3 — unknown deps: every dep names an existing wave task or a
-    // task in the same batch.
-    // Only persisted task-row keys are known here. Tombstones never project a
-    // row, so they cannot accidentally satisfy a dependency through this input.
-    let existing_keys: Vec<String> = existing.iter().map(|task| task.key.clone()).collect();
-    if let Some((key, dependency)) = unknown_deps(&batch_declarations, &existing_keys).first() {
+    // Transitional manifest templates are fresh batches, so every dependency
+    // must name a sibling in this same batch.
+    if let Some((key, dependency)) = unknown_deps(&batch_declarations, &[]).first() {
         return Err(format!(
             "task {key}: unknown dependency `{dependency}` (must name an existing wave \
-             task or a task in this batch)"
+             task in this template)"
         ));
     }
 
-    // Rule 5 — mutability: pending rows are freely revisable; a
-    // non-pending row only tolerates a byte-identical normalized
-    // payload (idempotent retry).
-    let mut outcomes = Vec::with_capacity(batch.len());
-    for t in batch {
-        let outcome = match existing_by_key.get(t.key.as_str()) {
-            None => PlanOutcome::Created,
-            Some(row) => {
-                if task_payload_equal(row, t) {
-                    PlanOutcome::Unchanged
-                } else if row.status == TaskStatus::Pending {
-                    PlanOutcome::Updated
-                } else {
-                    return Err(format!(
-                        "task {} already dispatched; insert a new task instead",
-                        t.key
-                    ));
-                }
-            }
-        };
-        outcomes.push(outcome);
-    }
-
-    // Rule 4 — cycle detection over the post-upsert view: existing
-    // tasks' frozen deps plus the batch's (which override same-key
-    // pending rows).
-    let mut graph: BTreeMap<String, Vec<String>> = existing
+    let graph: BTreeMap<String, Vec<String>> = batch
         .iter()
-        .map(|t| (t.key.clone(), t.depends_on()))
+        .map(|t| (t.key.clone(), t.depends_on.clone()))
         .collect();
-    for t in batch {
-        graph.insert(t.key.clone(), t.depends_on.clone());
-    }
     if let Some(cycle) = find_cycle(&graph) {
         return Err(format!("dependency cycle: {}", cycle.join(" -> ")));
     }
 
-    Ok(outcomes)
+    Ok(())
 }
 
 fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration, String> {
@@ -444,27 +352,10 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
     })
 }
 
-/// Rule 5 equality: the stored row vs. the candidate's normalized
-/// payload. JSON columns compare as parsed `Value`s so formatting can
-/// never produce a spurious `updated`.
-fn task_payload_equal(row: &Task, cand: &NormalizedTask) -> bool {
-    let mut row_deps = row.depends_on();
-    row_deps.sort();
-    row_deps.dedup();
-
-    row.kind == cand.kind
-        && row.goal == cand.goal
-        && json_eq(&row.context_json, &cand.context_json)
-        && row.acceptance_criteria == cand.acceptance_criteria
-        && row.cwd == cand.cwd
-        && row_deps == cand.depends_on
-        && row.priority == cand.priority
-        && opt_json_eq(&row.gate_json, &cand.gate_json)
-}
-
 /// Build the fresh-row form of a normalized batch entry. Updates reuse
 /// the same struct and let `task_update_pending_tx` pick the revisable
 /// columns out of it.
+#[cfg(test)]
 fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task {
     Task {
         id: format!("{wave_id}:{}", t.key),
@@ -472,7 +363,7 @@ fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task
         key: t.key.clone(),
         kind: t.kind,
         goal: t.goal.clone(),
-        context_json: t.context_json.clone(),
+        context_json: "null".into(),
         acceptance_criteria: t.acceptance_criteria.clone(),
         cwd: t.cwd.clone(),
         depends_on_json: serde_json::to_string(&t.depends_on).unwrap_or_else(|_| "[]".into()),
@@ -503,19 +394,10 @@ fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task
 fn plan_upsert_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_PLAN_UPSERT.into(),
-        description: "Spec-only: create or revise tasks in the wave's durable plan. \
-             Batch is whole-batch atomic: every task validates or nothing lands. \
-             Tasks are editable while `pending`; re-sending an identical task is an \
-             idempotent `unchanged`. `depends_on` names sibling task keys; the kernel \
-             schedules ready tasks itself. Declare a `gate` on every agent task: the \
-             kernel runs its steps after the worker finishes and the verdict \
-             (`task.gate_result`) is a machine fact, not a worker claim. Waves with \
-             `require_task_gates` (the default for new waves) reject an ungated agent \
-             task unless it carries `no_gate_reason`; terminal tasks are exempt. \
-             Gates may run more than once (kernel restarts re-run them) — declare \
-             only re-runnable commands. `message` is required and persisted as \
-             `agent_message` on the `plan.updated` event. Optional `lifecycle` \
-             drives the wave state machine in the same atomic write."
+        description: "Deprecated compatibility shim: `calm.plan.upsert` was retired in \
+             #985. Create or replace `task` blocks with \
+             `calm.report.blocks.upsert`; the kernel projects ready declarations, \
+             schedules tasks, and runs verification gates."
             .into(),
         input_schema: json!({
             "type": "object",
@@ -570,232 +452,24 @@ fn plan_upsert_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        visible_to_roles: &[],
     }
 }
 
 async fn plan_upsert(
-    ctx: Arc<AppContext>,
+    _ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
-    args: Value,
+    _args: Value,
 ) -> Result<Value, RpcError> {
     require_role(&identity, CardRole::Spec)?;
-    let write_args = parse_write_args(&args, "plan_upsert")?;
-
-    let raw_tasks = args
-        .get("tasks")
-        .and_then(Value::as_array)
-        .filter(|a| !a.is_empty())
-        .ok_or_else(|| {
-            RpcError::invalid_params("plan_upsert: `tasks` must be a non-empty array")
-        })?;
-
-    let mut batch: Vec<NormalizedTask> = Vec::with_capacity(raw_tasks.len());
-    for (i, raw) in raw_tasks.iter().enumerate() {
-        let input: PlanTaskInput = serde_json::from_value(raw.clone())
-            .map_err(|e| RpcError::invalid_params(format!("plan_upsert: tasks[{i}]: {e}")))?;
-        let normalized = normalize_task_input(input)
-            .map_err(|m| RpcError::invalid_params(format!("plan_upsert: {m}")))?;
-        batch.push(normalized);
-    }
-
-    let (_card, wave) = resolve_wave_for_identity(&ctx, &identity).await?;
-    let wave_id_str = wave.id.as_str().to_string();
-
-    // Pre-tx resolve: validates the batch against current state and
-    // short-circuits a pure idempotent retry (all `unchanged`, no
-    // effective lifecycle request) without writing a row or emitting an
-    // event. A `lifecycle` equal to the wave's current state counts as
-    // "no request": `validate_transition` blesses same-state asks from
-    // lifecycle-authorized actors (spec-only tool, so always here) and
-    // `apply_requested_transition_in_tx` would return `None` — entering
-    // the tx anyway would hand `write_with_actor_events` an empty
-    // batch, which it rejects as an internal error (#656 round 3, F1).
-    // The tx below re-resolves against in-tx state, so this read is a
-    // fast path, not the correctness boundary.
-    let existing = ctx
-        .repo
-        .tasks_by_wave(&wave_id_str)
-        .await
-        .map_err(|e| RpcError::internal(format!("plan_upsert: tasks_by_wave: {e}")))?;
-    let pre_outcomes = resolve_plan_batch(&existing, &batch)
-        .map_err(|m| RpcError::invalid_params(format!("plan_upsert: {m}")))?;
-    let lifecycle_is_noop = write_args
-        .lifecycle
-        .is_none_or(|target| target == wave.lifecycle);
-    if lifecycle_is_noop && pre_outcomes.iter().all(|o| *o == PlanOutcome::Unchanged) {
-        return Ok(results_json(&batch, &pre_outcomes));
-    }
-
-    let actor = identity.to_actor_id();
-    let scope = EventScope::Wave {
-        wave: wave.id.clone(),
-        cove: wave.cove_id.clone(),
-    };
-    let wave_id_typed = wave.id.clone();
-    let message = write_args.message.clone();
-    let lifecycle = write_args.lifecycle;
-
-    let result = write_with_actor_events_typed::<Vec<PlanOutcome>, _>(
-        ctx.repo.as_ref(),
-        None,
-        &ctx.events,
-        &ctx.write,
-        move |tx| {
-            let batch = batch.clone();
-            let wave_id_str = wave_id_str.clone();
-            let wave_id_typed = wave_id_typed.clone();
-            let actor = actor.clone();
-            let scope = scope.clone();
-            let message = message.clone();
-            Box::pin(async move {
-                // `tasks.wave_id` has no FK to `waves` (design §2), so
-                // re-check the wave row in-tx: a wave deleted between
-                // the resolve above and this tx must not regrow plan
-                // rows.
-                require_wave_exists_tx(tx, &wave_id_str).await?;
-                // Re-resolve against in-tx state — the whole batch
-                // validates against the rows it is about to join, and a
-                // concurrent writer between the pre-check and this tx
-                // surfaces as a clean rollback, never a half-applied
-                // batch.
-                let existing = tasks_by_wave_tx(tx, &wave_id_str).await?;
-                let outcomes =
-                    resolve_plan_batch(&existing, &batch).map_err(CalmError::BadRequest)?;
-
-                // Rule 6 (§4.1/§6.6, PR-C): when the wave requires
-                // gates, every agent task this batch actually WRITES
-                // must declare one or record `no_gate_reason`.
-                // Terminal tasks are exempt (their exit code is the
-                // verdict); `unchanged` rows pass through so an
-                // idempotent retry of a pre-flag plan keeps working.
-                // In-tx read so the policy and the rows it admitted
-                // commit atomically.
-                if wave_require_task_gates_tx(tx, &wave_id_str).await? {
-                    let changed: Vec<TaskDeclaration> = batch
-                        .iter()
-                        .zip(&outcomes)
-                        .filter(|(_, outcome)| {
-                            matches!(outcome, PlanOutcome::Created | PlanOutcome::Updated)
-                        })
-                        .map(|(task, _)| declaration_from_normalized(task))
-                        .collect::<Result<_, _>>()
-                        .map_err(CalmError::BadRequest)?;
-                    if let Some(key) = gate_rule_violations(&changed, true).first() {
-                        return Err(CalmError::BadRequest(format!(
-                            "task {key}: this wave requires verification gates for agent \
-                             tasks (rule 6); declare `gate` or record `no_gate_reason`"
-                        )));
-                    }
-                }
-
-                let now = now_ms();
-                let mut changed_keys: Vec<String> = Vec::new();
-                for (t, outcome) in batch.iter().zip(&outcomes) {
-                    let row = task_row_from_normalized(&wave_id_str, t, now);
-                    match outcome {
-                        PlanOutcome::Created => {
-                            task_insert_tx(tx, &row).await?;
-                            changed_keys.push(t.key.clone());
-                        }
-                        PlanOutcome::Updated => {
-                            task_update_pending_tx(tx, &row).await?;
-                            changed_keys.push(t.key.clone());
-                        }
-                        PlanOutcome::Unchanged => {}
-                    }
-                }
-
-                let mut events = Vec::new();
-                if let Some(auto_events) = auto_promote_draft_in_tx(tx, &wave_id_typed).await? {
-                    events.extend(
-                        auto_events
-                            .into_iter()
-                            .map(|event| (ActorId::Kernel, scope.clone(), event)),
-                    );
-                }
-                if let Some(target) = lifecycle
-                    && let Some(lifecycle_events) = apply_requested_transition_in_tx(
-                        tx,
-                        &wave_id_typed,
-                        target,
-                        &actor,
-                        message.clone(),
-                    )
-                    .await?
-                {
-                    events.extend(
-                        lifecycle_events
-                            .into_iter()
-                            .map(|event| (actor.clone(), scope.clone(), event)),
-                    );
-                }
-                // An all-`unchanged` batch that entered the tx only to
-                // apply a `lifecycle` changed no plan row — emitting a
-                // `plan.updated` with empty `changed_keys` would be a
-                // spurious wake-up for plan subscribers.
-                if !changed_keys.is_empty() {
-                    events.push((
-                        actor,
-                        scope,
-                        Event::PlanUpdated {
-                            wave_id: wave_id_typed,
-                            changed_keys,
-                            agent_message: Some(message),
-                        },
-                    ));
-                }
-                // Race-only guard: the pre-tx short-circuit already
-                // returns deterministic no-ops (identical batch +
-                // same-state lifecycle) before this tx, so an empty
-                // batch here means a concurrent writer turned the
-                // request into a no-op mid-flight. The tx wrote nothing
-                // (no row change, no lifecycle flip), and
-                // `write_with_actor_events` rejects empty batches as an
-                // internal error — surface a retryable conflict
-                // instead; the retry resolves via the short-circuit.
-                if events.is_empty() {
-                    return Err(CalmError::Conflict(
-                        "wave or plan changed concurrently; retry".into(),
-                    ));
-                }
-                Ok((outcomes, events))
-            })
-        },
-    )
-    .await;
-
-    match result {
-        Ok((outcomes, _ids)) => Ok(results_json_from_owned(&outcomes, raw_tasks)),
-        Err(e) => Err(map_plan_error("plan_upsert", e)),
-    }
-}
-
-/// Render `{ results: [{key, outcome}] }` in batch order.
-fn results_json(batch: &[NormalizedTask], outcomes: &[PlanOutcome]) -> Value {
-    let results: Vec<Value> = batch
-        .iter()
-        .zip(outcomes)
-        .map(|(t, o)| json!({ "key": t.key, "outcome": o.as_str() }))
-        .collect();
-    json!({ "results": results })
-}
-
-/// Variant of [`results_json`] for the post-tx path, where the
-/// normalized batch was moved into the closure. Keys are re-read from
-/// the raw input (already validated; same order).
-fn results_json_from_owned(outcomes: &[PlanOutcome], raw_tasks: &[Value]) -> Value {
-    let results: Vec<Value> = raw_tasks
-        .iter()
-        .zip(outcomes)
-        .map(|(raw, o)| {
-            json!({
-                "key": raw.get("key").and_then(Value::as_str).unwrap_or_default(),
-                "outcome": o.as_str(),
-            })
-        })
-        .collect();
-    json!({ "results": results })
+    Ok(json!({
+        "error": "calm.plan.upsert was retired (#985); no task declaration was written",
+        "migration": {
+            "use": "calm.report.blocks.upsert",
+            "shape": "{ kind: \"task\", payload: { key, kind, goal, acceptance?, depends_on?, priority?, gate?, ready: true, declared_by: \"spec\" }, if_doc_rev }",
+            "notes": "Read docRev with calm.report.read. The kernel projects ready task blocks, schedules tasks, and runs verification gates; use calm.plan.list for status."
+        }
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,7 +877,7 @@ mod tests {
     #[test]
     fn duplicate_key_in_batch_rejected() {
         let batch = vec![normalized("a", &[]), normalized("a", &[])];
-        let err = resolve_plan_batch(&[], &batch).expect_err("dup key");
+        let err = validate_new_batch(&batch).expect_err("dup key");
         assert!(err.contains("duplicate key `a`"), "err = {err}");
     }
 
@@ -1265,19 +939,12 @@ mod tests {
     // -------------------------------------------------------- rule 3: deps
 
     #[test]
-    fn unknown_dep_rejected_and_batch_or_existing_deps_accepted() {
-        let existing = vec![pending_row("old", &[])];
-        let err =
-            resolve_plan_batch(&existing, &[normalized("a", &["ghost"])]).expect_err("unknown dep");
+    fn unknown_dep_rejected_and_same_batch_dep_accepted() {
+        let err = validate_new_batch(&[normalized("a", &["ghost"])]).expect_err("unknown dep");
         assert!(err.contains("unknown dependency `ghost`"), "err = {err}");
 
-        // Dep on an existing wave task and on a same-batch sibling both pass.
-        let outcomes = resolve_plan_batch(
-            &existing,
-            &[normalized("a", &["old", "b"]), normalized("b", &[])],
-        )
-        .expect("valid deps");
-        assert_eq!(outcomes, vec![PlanOutcome::Created, PlanOutcome::Created]);
+        validate_new_batch(&[normalized("a", &["b"]), normalized("b", &[])])
+            .expect("same-batch sibling dependency");
     }
 
     // -------------------------------------------------------- rule 4: cycles
@@ -1289,7 +956,7 @@ mod tests {
             normalized("b", &["c"]),
             normalized("c", &["a"]),
         ];
-        let err = resolve_plan_batch(&[], &batch).expect_err("cycle");
+        let err = validate_new_batch(&batch).expect_err("cycle");
         assert!(err.contains("dependency cycle:"), "err = {err}");
         // The path names every participant and closes the loop.
         for k in ["a", "b", "c"] {
@@ -1300,19 +967,8 @@ mod tests {
 
     #[test]
     fn self_dependency_is_a_cycle() {
-        let err = resolve_plan_batch(&[], &[normalized("a", &["a"])]).expect_err("self dep");
+        let err = validate_new_batch(&[normalized("a", &["a"])]).expect_err("self dep");
         assert!(err.contains("dependency cycle: a -> a"), "err = {err}");
-    }
-
-    #[test]
-    fn cycle_through_existing_rows_detected() {
-        // Existing pending row `old` depends on batch task `new`; the
-        // batch makes `new` depend on `old` → cycle across the
-        // post-upsert view.
-        let existing = vec![pending_row("old", &["new"])];
-        let err = resolve_plan_batch(&existing, &[normalized("new", &["old"])])
-            .expect_err("cross-set cycle");
-        assert!(err.contains("dependency cycle:"), "err = {err}");
     }
 
     #[test]
@@ -1342,7 +998,7 @@ mod tests {
                     }).collect();
                     let diagnostics = project_task_declarations(&blocks).1;
                     assert_eq!(
-                        resolve_plan_batch(&[], &batch).is_err(),
+                        validate_new_batch(&batch).is_err(),
                         diagnostics.iter().any(|items| !items.is_empty()),
                         "dependencies={dependencies:?}"
                     );
@@ -1355,7 +1011,7 @@ mod tests {
     fn resolver_reports_the_first_duplicate_in_batch_order() {
         let batch = ["z", "z", "a", "a"].map(|key| normalized(key, &[]));
         assert_eq!(
-            resolve_plan_batch(&[], &batch).unwrap_err(),
+            validate_new_batch(&batch).unwrap_err(),
             "duplicate key `z` in batch"
         );
     }
@@ -1370,65 +1026,6 @@ mod tests {
         task.gate_json = Some("{".into());
         let error = declaration_from_normalized(&task).unwrap_err();
         assert!(error.contains("invalid normalized gate_json"), "{error}");
-    }
-
-    #[test]
-    fn resolver_refactor_preserves_legacy_error_order_and_outcomes() {
-        let cases = [
-            (
-                vec![normalized("a", &[]), normalized("a", &[])],
-                "duplicate key `a` in batch",
-            ),
-            (
-                vec![normalized("a", &["missing"])],
-                "task a: unknown dependency `missing`",
-            ),
-            (
-                vec![normalized("a", &["b"]), normalized("b", &["a"])],
-                "dependency cycle: a -> b -> a",
-            ),
-        ];
-        for (batch, legacy_error) in cases {
-            let error = resolve_plan_batch(&[], &batch).expect_err("legacy-invalid batch");
-            assert!(error.starts_with(legacy_error), "{error}");
-        }
-        assert_eq!(
-            resolve_plan_batch(&[], &[normalized("a", &[])]),
-            Ok(vec![PlanOutcome::Created])
-        );
-    }
-
-    // -------------------------------------------------------- rule 5: mutability
-
-    #[test]
-    fn pending_row_revisable_and_identical_is_unchanged() {
-        let existing = vec![pending_row("a", &[])];
-
-        let identical = resolve_plan_batch(&existing, &[normalized("a", &[])]).expect("ok");
-        assert_eq!(identical, vec![PlanOutcome::Unchanged]);
-
-        let mut revised = normalized("a", &[]);
-        revised.goal = "do the other thing".into();
-        let updated = resolve_plan_batch(&existing, &[revised]).expect("ok");
-        assert_eq!(updated, vec![PlanOutcome::Updated]);
-    }
-
-    #[test]
-    fn non_pending_identical_unchanged_and_different_rejected() {
-        let mut row = pending_row("a", &[]);
-        row.status = TaskStatus::Running;
-        let existing = vec![row];
-
-        let identical = resolve_plan_batch(&existing, &[normalized("a", &[])]).expect("ok");
-        assert_eq!(identical, vec![PlanOutcome::Unchanged]);
-
-        let mut revised = normalized("a", &[]);
-        revised.priority = 9;
-        let err = resolve_plan_batch(&existing, &[revised]).expect_err("immutable");
-        assert!(
-            err.contains("task a already dispatched; insert a new task instead"),
-            "err = {err}"
-        );
     }
 
     // -------------------------------------------------------- goal
@@ -1580,21 +1177,15 @@ mod tests {
     // -------------------------------------------------------- no_gate_reason
 
     #[test]
-    fn no_gate_reason_recorded_into_context_json() {
+    fn no_gate_reason_requires_object_or_omitted_context() {
         let mut t = raw_task("a");
         t.context = Some(json!({ "hint": "x" }));
         t.no_gate_reason = Some("docs-only change".into());
-        let n = normalize_task_input(t).expect("normalize");
-        let ctx: Value = serde_json::from_str(&n.context_json).unwrap();
-        assert_eq!(ctx["no_gate_reason"], "docs-only change");
-        assert_eq!(ctx["hint"], "x");
+        normalize_task_input(t).expect("object context");
 
-        // Missing context still records the reason.
         let mut t = raw_task("a");
         t.no_gate_reason = Some("r".into());
-        let n = normalize_task_input(t).expect("normalize");
-        let ctx: Value = serde_json::from_str(&n.context_json).unwrap();
-        assert_eq!(ctx["no_gate_reason"], "r");
+        normalize_task_input(t).expect("omitted context");
 
         // Non-object context cannot carry the reason — rejected loud.
         let mut t = raw_task("a");
@@ -1610,7 +1201,7 @@ mod tests {
     /// Round-3 review F2 — the rule-6 escape hatch must be a real
     /// reason: empty/whitespace is rejected (it would otherwise count
     /// as "present" and skip the gate with a blank audit note); a
-    /// valid reason is accepted and recorded trimmed.
+    /// valid reason is accepted.
     #[test]
     fn no_gate_reason_blank_rejected_valid_reason_trimmed() {
         for blank in ["", " ", "  \t\n "] {
@@ -1627,26 +1218,16 @@ mod tests {
         t.no_gate_reason = Some("  docs-only change  ".into());
         let n = normalize_task_input(t).expect("normalize");
         assert!(n.has_no_gate_reason);
-        let ctx: Value = serde_json::from_str(&n.context_json).unwrap();
-        assert_eq!(ctx["no_gate_reason"], "docs-only change");
     }
 
     // -------------------------------------------------------- normalization
 
     #[test]
-    fn depends_on_sorted_and_deduped_for_idempotency() {
-        let stored = {
-            let n = normalized("a", &["c", "b", "c"]);
-            assert_eq!(n.depends_on, vec!["b", "c"]);
-            task_row_from_normalized("wave-1", &n, 1)
-        };
-        // Re-sending the same deps in a different order is `unchanged`.
-        let outcomes = resolve_plan_batch(
-            &[pending_row("b", &[]), pending_row("c", &[]), stored],
-            &[normalized("a", &["b", "c"])],
-        )
-        .expect("ok");
-        assert_eq!(outcomes, vec![PlanOutcome::Unchanged]);
+    fn depends_on_sorted_and_deduped_for_manifest_validation() {
+        let n = normalized("a", &["c", "b", "c"]);
+        assert_eq!(n.depends_on, vec!["b", "c"]);
+        validate_new_batch(&[n, normalized("b", &[]), normalized("c", &[])])
+            .expect("normalized sibling dependencies");
     }
 
     #[test]

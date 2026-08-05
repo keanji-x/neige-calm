@@ -148,7 +148,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 
     // Each test boots an isolated fixture/DB. This test's fixture sees NO
     // scripted `call_tool` for any `gh.*` or `git.commit` (its only direct
-    // tool call is `TOOL_PLAN_UPSERT` via the spec identity inside
+    // tool call is the report task-block writer via the spec identity inside
     // `plan_codex_task`; the d2 merge test scripts `gh.pr.create`/
     // `gh.pr.checks` only against its own separate fixture). Therefore the
     // ONLY thing that can emit `forge.pr.opened` / `forge.pr.checks` here is
@@ -2401,12 +2401,12 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          - Attach the bound workflow gate (exactly its cmd) to every task you plan; do not use \
          no_gate_reason.\n\
          - The kernel REJECTS any task whose depends_on names a task that does not exist yet, \
-         so plan in three batches: (1) inspect-issue, review-design-a, review-design-b and \
-         implement-change first; (2) add open-pr only after implement-change completes, \
-         embedding the implement worker's actual branch name in its goal; (3) add review-pr-a, \
-         review-pr-b AND merge together in ONE calm.plan.upsert batch only after open-pr \
-         completes, embedding the literal repo, pr number, base sha, head sha and reviewed \
-         slice_id values in each of their goals.\n\
+         so create report task blocks in dependency order: (1) inspect-issue, then \
+         review-design-a, review-design-b and implement-change; (2) add open-pr only after \
+         implement-change completes, embedding the implement worker's actual branch name in \
+         its goal; (3) after open-pr completes, add review-pr-a and review-pr-b, then add merge \
+         after both review task blocks exist, embedding the literal repo, pr number, base sha, \
+         head sha and reviewed slice_id values in each of their goals.\n\
          - implement-change goal: implement exactly what the issue asks by editing src/lib.rs \
          in the worker's own working directory, then call the MCP tool whose name ends in \
          `git.commit` (arguments: a commit message and a non-empty idem) and note the branch \
@@ -2659,7 +2659,7 @@ async fn capstone_oracle(
         );
     }
 
-    // No-cargo audit (checker pin d): the spec copied gates into plan.upsert;
+    // No-cargo audit (checker pin d): the spec copied gates into task blocks;
     // no stored task gate may invoke cargo.
     let gate_jsons: Vec<Option<String>> = sqlx::query_scalar("SELECT gate_json FROM tasks")
         .fetch_all(fx.repo.pool())

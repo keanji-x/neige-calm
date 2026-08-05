@@ -224,16 +224,20 @@ pub struct ExposedTool {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkflowDescriptor {
     pub id: String,
+    /// Transitional Tier-A field while workflow plan prose moves into report
+    /// templates. Keep parsing and validation for installed manifests.
     #[serde(default)]
     pub plan_template: Vec<PlanTaskInput>,
-    /// Advisory, prompt-only gate guidance — NOT an executable contract.
+    /// Transitional Tier-A advisory gate guidance — NOT an executable contract.
     /// Rendered into the Spec prompt's `## Bound Workflow Gates` section
     /// (`operation::spec_harness_start_adapter`) and NEVER executed as a
     /// shell command nor wired into a task's `gate_json`/execution. The Spec
-    /// authors each task's real, re-runnable `gate` from the target repo's
-    /// toolchain via `calm.plan.upsert`.
+    /// authors each task block's real, re-runnable `gate` from the target
+    /// repo's toolchain via `calm.report.blocks.upsert`.
     #[serde(default)]
     pub gates: Vec<GateInput>,
+    /// Transitional Tier-A prompt text while workflow instructions move into
+    /// report templates. Keep parsing, validation, and prompt injection.
     #[serde(default)]
     pub spec_instructions: String,
     #[serde(default)]
@@ -1022,6 +1026,39 @@ mod tests {
         let merge_acceptance = merge.acceptance_criteria.as_deref().unwrap_or("");
         assert!(merge_acceptance.contains("policy-required ratify grant"));
         assert!(merge_acceptance.contains("no merge performed"));
+    }
+
+    #[test]
+    fn shipped_git_forge_give_up_uses_retained_lifecycle_tool() {
+        let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        let instructions = &manifest
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow")
+            .spec_instructions;
+        assert!(!instructions.contains("calm.plan.upsert"));
+        assert!(
+            instructions.contains(
+                "GIVE-UP by recording the terminal rationale in the report with \
+                 calm.report.write and lifecycle failed"
+            ),
+            "GIVE-UP must remain reachable through the retained report write: {instructions}"
+        );
+
+        let descriptor = crate::mcp_server::build_default_registry()
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.name == "calm.report.write")
+            .expect("retained GIVE-UP tool descriptor");
+        assert!(
+            descriptor.input_schema["properties"]
+                .get("lifecycle")
+                .is_some(),
+            "GIVE-UP tool must carry lifecycle: {}",
+            descriptor.input_schema
+        );
     }
 
     #[test]
