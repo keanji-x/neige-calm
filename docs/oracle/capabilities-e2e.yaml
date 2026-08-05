@@ -4441,13 +4441,13 @@
     in the suite carries the dark sentinel, and the tui-theme spec imports the real constants so a
     palette change cannot silently desync spec from app.
   source: web/e2e/tui-theme-protocol.spec.ts:4
-  authoritative_test: fe/web/src/app/theme/theme.browser.test.tsx:1
+  authoritative_test: web/e2e/tui-theme-protocol.spec.ts:167
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: migrated
+  migration: pending
 
 - id: E2E-CAP-THEME-011
   kind: capability

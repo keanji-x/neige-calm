@@ -69,13 +69,13 @@
     路由内渲染的 plugin iframe 卡片会调 useTheme()；只有当 provider 高于整棵路由树，
     一次主题翻转才能被所有路由同时观测到。issue #22。
   source: web/src/app/providers.tsx:103-122
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: NONE
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-004
   kind: invariant
@@ -87,13 +87,13 @@
     （router.tsx 的 loader 直接 `import { queryClient }`）；persistOptions 若每次
     AppProviders 重渲染都重建，会反复重开 IndexedDB 连接。
   source: web/src/app/providers.tsx:84-97
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: NONE
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: architecture
   test_tier: none
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-005
   kind: invariant
@@ -104,13 +104,13 @@
     IndexedDB 快照回填期间渲染 children 会先画一遍空 cache 再被 hydrate 覆盖，
     产生可见闪烁；gate 的存在就是把第一帧推迟到 hydration 结束。
   source: web/src/app/providers.tsx:128-131
-  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1
+  authoritative_test: NONE
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: migrated
+  migration: pending
 
 # ===========================================================================
 # 2. 版本兼容闸门  (family: app-compat-gate)
@@ -144,13 +144,13 @@
     这个查询的全部意义是"本次挂载的快照"；缓存值对新挂载没有意义，轮询也不在设计内
     （单次 mount 检查，见 providers.tsx 头部注释）。
   source: web/src/app/providers.tsx:158-170
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: NONE
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-008
   kind: invariant
@@ -289,13 +289,13 @@
     全局 API 抛错或缺席。降级后最坏结果只是缓存爆破功能不生效（等同于本 PR 之前的行为），
     严格优于整个应用崩掉。
   source: web/src/app/providers.tsx:239-283
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: NONE
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-016
   kind: invariant
@@ -307,13 +307,13 @@
     issue #199：用 vi.fn() 桩掉 deleteDatabase 只能证明"调了"，不能证明库名对得上。
     名字漂移会让 blob 静默存活，旧行 id 继续上色。
   source: web/src/app/providers.tsx:192,277-283
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: web/src/app/cache-bust-db-instance-id.test.tsx:248
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 # ===========================================================================
 # 4. 持久化 key 契约  (family: app-storage-keys)
@@ -1342,13 +1342,13 @@
   why: >
     异步读会在用户上次选 dark 时于 reload 后产生 light→dark 闪烁。
   source: web/src/app/theme.tsx:20-25,76-88,114-120
-  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
+  authoritative_test: web/src/app/theme.test.tsx:110
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-073
   kind: invariant
@@ -1393,13 +1393,13 @@
   why: >
     mount 与 effect 执行之间 OS 偏好可能已变（罕见但真实），只等事件会错过这一跳。
   source: web/src/app/theme.tsx:137-139
-  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
+  authoritative_test: web/src/app/theme.test.tsx:146
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 - id: CAP-APP-076
   kind: capability

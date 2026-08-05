@@ -10,8 +10,6 @@
 export const moduleRuntimeStateAllowlist = [
   // App bootstrap must retain the browser mount node while composing React.
   'web/src/main.tsx',
-  // App provider composition requires one QueryClient and one immutable persistence descriptor for the process lifetime.
-  'web/src/app/providers/public.tsx',
 ];
 
 /** @type {ReadonlyArray<string>} */

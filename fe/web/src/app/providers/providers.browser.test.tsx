@@ -8,7 +8,7 @@ const incompatible = { webCompatVersion: 9, minWebCompatVersion: WEB_COMPAT_VERS
 const reload = vi.fn();
 const values = new Map<string, string>();
 const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
-const runtime: ProviderRuntime = { fetchVersion: () => Promise.resolve(incompatible), reload, deleteDatabase: vi.fn(), storage };
+const runtime: ProviderRuntime = { fetchVersion: () => Promise.resolve(incompatible), reload, deleteDatabase: vi.fn(), idbDatabaseName: 'neige-calm', storage };
 afterEach(() => { cleanup(); reload.mockClear(); values.clear(); });
 
 describe('browser provider contracts', () => {
@@ -29,9 +29,4 @@ describe('browser provider contracts', () => {
     await userEvent.click(page.getByTestId('refresh-overlay'), { position: { x: 2, y: 2 } }); expect(reload).toHaveBeenCalledTimes(3); view.unmount();
   });
 
-  it('INV-APP-005 browser branch removes restoring children and restores them positively', () => {
-    const client = new QueryClient(); const { rerender } = render(<QueryClientProvider client={client}><ServerCompatGate client={client} runtime={runtime} restoring>child</ServerCompatGate></QueryClientProvider>);
-    expect(document.body.textContent).not.toContain('child'); rerender(<QueryClientProvider client={client}><ServerCompatGate client={client} runtime={runtime} restoring={false}>child</ServerCompatGate></QueryClientProvider>);
-    expect(document.body.textContent).toContain('child');
-  });
 });

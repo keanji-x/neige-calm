@@ -3,13 +3,13 @@ import { QueryClient } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DB_INSTANCE_ID_KEY, SYNC_CURSOR_KEY } from '../../../../core/keys/storage.ts';
-import { AppProviders, QueryRestoreGate, ServerCompatGate, WEB_COMPAT_VERSION, type ProviderRuntime } from './public.tsx';
+import { AppProviders, ServerCompatGate, WEB_COMPAT_VERSION, type ProviderRuntime } from './public.tsx';
 import { useTheme as requireTheme } from '../theme/public.tsx';
 
 const compatible = { webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 2, dbInstanceId: 'db-a' };
 function memoryStorage() { const values = new Map<string, string>(); return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } }; }
 function runtime(overrides: Partial<ProviderRuntime> = {}): ProviderRuntime {
-  return { fetchVersion: () => Promise.resolve(compatible), reload: vi.fn(), deleteDatabase: vi.fn(), storage: memoryStorage(), ...overrides };
+  return { fetchVersion: () => Promise.resolve(compatible), reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'neige-calm', storage: memoryStorage(), ...overrides };
 }
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -19,29 +19,21 @@ describe('provider behavior', () => {
       const { resolved } = requireTheme();
       return <span>route:{resolved}</span>;
     }
-    render(<AppProviders client={new QueryClient()} runtime={runtime()} restoring><ThemeConsumer /></AppProviders>);
-    cleanup();
     render(<AppProviders client={new QueryClient()} runtime={runtime()}><ThemeConsumer /></AppProviders>);
     expect(screen.getByText(/^route:(?:light|dark)$/u)).toBeTruthy();
   });
-  it('INV-APP-005 QueryRestoreGate has symmetric restoring and restored branches', () => {
-    const { rerender } = render(<QueryRestoreGate restoring><span>child</span></QueryRestoreGate>);
-    expect(screen.queryByText('child')).toBeNull(); rerender(<QueryRestoreGate restoring={false}><span>child</span></QueryRestoreGate>);
-    expect(screen.getByText('child')).toBeTruthy();
-  });
-
   it('INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain', async () => {
     let resolve!: (value: typeof compatible) => void;
     const fetchVersion = () => new Promise<typeof compatible>((done) => { resolve = done; });
-    render(<AppProviders runtime={runtime({ fetchVersion })} renderEventBridge={() => <i>bridge</i>}><b>route</b></AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })} renderEventBridge={() => <i>bridge</i>}><b>route</b></AppProviders>);
     expect(screen.getByText('route')).toBeTruthy(); expect(screen.queryByText('bridge')).toBeNull();
     resolve(compatible); await waitFor(() => expect(screen.getByText('bridge')).toBeTruthy());
   });
 
   it('INV-APP-007 checks once per mount without retaining the version query', async () => {
-    const fetchVersion = vi.fn(() => Promise.resolve(compatible)); const first = render(<AppProviders runtime={runtime({ fetchVersion })}>ok</AppProviders>);
+    const fetchVersion = vi.fn(() => Promise.resolve(compatible)); const first = render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })}>ok</AppProviders>);
     await waitFor(() => expect(fetchVersion).toHaveBeenCalledTimes(1)); first.unmount();
-    render(<AppProviders runtime={runtime({ fetchVersion })}>ok</AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })}>ok</AppProviders>);
     await waitFor(() => expect(fetchVersion).toHaveBeenCalledTimes(2));
   });
 
@@ -75,7 +67,7 @@ describe('provider behavior', () => {
 
   it('INV-APP-015 degrades when storage and indexedDB adapters throw', async () => {
     const broken = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => { throw new Error('blocked'); }, clear: vi.fn(), key: () => null, length: 0 } satisfies Storage;
-    render(<AppProviders runtime={runtime({ storage: broken, deleteDatabase: () => { throw new Error('blocked'); } })}>route</AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime({ storage: broken, deleteDatabase: () => { throw new Error('blocked'); } })}>route</AppProviders>);
     expect(screen.getByText('route')).toBeTruthy(); await new Promise((done) => setTimeout(done, 0)); expect(screen.getByText('route')).toBeTruthy();
   });
 });

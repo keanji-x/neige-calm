@@ -82,6 +82,7 @@ describe('architecture/no-module-runtime-state', () => {
     ['top-level-object-assign.ts', 'cache: new Map'],
     ['destructured-array.ts', 'Module runtime state'],
     ['schema-value.ts', 'z.object({}).parse(x)'],
+    ['imported-mutable.ts', 'Object.freeze'],
   ] as const;
   for (const [fixture, entity] of rejected) {
     it(`rejects ${fixture}`, async () => {
@@ -91,7 +92,7 @@ describe('architecture/no-module-runtime-state', () => {
     });
   }
 
-  const accepted = ['primitive.ts', 'function-declaration.ts', 'frozen-static-data.ts', 'frozen-nested-static-data.ts', 'frozen-functions.ts', 'safe-class-and-call.ts', 'declare-module.ts', 'schema.ts', 'schema-chained.ts', 'pure-factories.tsx'] as const;
+  const accepted = ['primitive.ts', 'function-declaration.ts', 'frozen-static-data.ts', 'frozen-nested-static-data.ts', 'frozen-functions.ts', 'imported-static.ts', 'safe-class-and-call.ts', 'declare-module.ts', 'schema.ts', 'schema-chained.ts', 'pure-factories.tsx'] as const;
   for (const fixture of accepted) {
     it(`accepts ${fixture}`, async () => {
       expect(await lintFixture('no-module-runtime-state', fixture)).toHaveLength(0);
