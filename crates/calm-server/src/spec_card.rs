@@ -415,6 +415,56 @@ pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
     template.replace("{wave_id}", wave_id)
 }
 
+#[cfg(test)]
+const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
+    "   * Maintain task declarations as report `task` blocks. Read the report with ",
+    "`calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while ",
+    "replace passes the target block's `rev` as `if_rev`. Use ",
+    "`calm.report.blocks.upsert` for both operations. A live task payload needs a per-wave-unique ",
+    "`key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, ",
+    "and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` ",
+    "sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to ",
+    "cancel a pending projected task. Use `calm.plan.list` to inspect status."
+);
+
+/// Exact protocol oracle shared by the static-prompt and fully rendered
+/// workflow tests. The whole-document forbidden scan deliberately runs on the
+/// original string: filtering lines/sections would create a contradiction
+/// escape hatch.
+#[cfg(test)]
+pub(crate) fn validate_spec_prompt_contract(prompt: &str) -> Result<(), String> {
+    let start = prompt
+        .find("   * Maintain task declarations as report `task` blocks.")
+        .ok_or_else(|| "task-block protocol paragraph is missing".to_string())?;
+    let remainder = &prompt[start..];
+    let end = remainder
+        .find("\n   * Every codex or claude task")
+        .ok_or_else(|| "task-block protocol paragraph terminator is missing".to_string())?;
+    let actual = &remainder[..end];
+    if actual != TASK_BLOCK_PROTOCOL_GOLDEN {
+        return Err(format!(
+            "task-block protocol differs from golden\nexpected: {TASK_BLOCK_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
+        ));
+    }
+
+    let lower = prompt.to_ascii_lowercase();
+    for forbidden in [
+        "acceptance_criteria",
+        "calm.plan.upsert",
+        "instead of acceptance",
+        "swap those anchors",
+        "never follow this obsolete rule",
+        "ignore lifecycle",
+    ] {
+        if lower.contains(forbidden) {
+            return Err(format!(
+                "rendered prompt contains contradictory/retired instruction `{forbidden}`"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Test-only seam (#838 A1 e2e): render the rendered worker prompt for the
 /// provider under test. `codex=true` yields the native-MCP-completion body
 /// ([`WORKER_CODEX_SYSTEM_PROMPT`], what `codex_adapter` ships);
@@ -523,17 +573,8 @@ mod tests {
 
     #[test]
     fn spec_prompt_pins_callable_task_block_protocol() {
-        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
-
-        assert!(
-            p.contains("Read the report with `calm.report.read`")
-                && p.contains("for create, pass its `docRev` as `if_doc_rev`")
-                && p.contains("replace passes the target block's `rev` as `if_rev`"),
-            "prompt must distinguish document and block concurrency anchors"
-        );
-        for field in ["`acceptance`", "`ready: true`", "`declared_by: \"spec\"`"] {
-            assert!(p.contains(field), "task-block wire field missing: {field}");
-        }
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-contract");
+        validate_spec_prompt_contract(&p).unwrap_or_else(|error| panic!("{error}"));
         assert!(
             p.contains("block write still succeeds")
                 && p.contains("`gate_required` diagnostic")
@@ -541,6 +582,32 @@ mod tests {
                 && p.contains("unless it provides `no_gate_reason`")
                 && p.contains("terminal tasks are exempt"),
             "prompt must describe diagnostic gate admission semantics"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_contract_rejects_negative_context_and_late_overrides() {
+        let prompt = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-contract");
+
+        let late_override = format!("{prompt}\n\nsend acceptance_criteria instead of acceptance");
+        assert!(
+            validate_spec_prompt_contract(&late_override).is_err(),
+            "a later contradictory field instruction must invalidate the whole document"
+        );
+
+        let negated = prompt.replace(
+            TASK_BLOCK_PROTOCOL_GOLDEN,
+            &format!(
+                "Never follow this obsolete rule: {TASK_BLOCK_PROTOCOL_GOLDEN} Swap those anchors instead."
+            ),
+        );
+        assert_ne!(
+            negated, prompt,
+            "negative-context fixture must alter the prompt"
+        );
+        assert!(
+            validate_spec_prompt_contract(&negated).is_err(),
+            "correct tokens inside a negated paragraph must not satisfy the contract"
         );
     }
 

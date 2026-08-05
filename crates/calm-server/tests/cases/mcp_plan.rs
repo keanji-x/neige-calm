@@ -439,6 +439,7 @@ async fn wave_patch_persists_task_budget_and_require_task_gates() {
 #[tokio::test]
 async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
     let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
     let before = all_persistent_rows(&boot).await;
 
     // Deliberately invalid under the legacy schema: the shim must not parse it.
@@ -459,10 +460,14 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
         before,
         "spec shim changed a persistent table"
     );
+    assert!(
+        drain_events(&mut rx).await.is_empty(),
+        "spec shim broadcast an EventBus envelope"
+    );
 }
 
 #[tokio::test]
-async fn rendered_plan_template_item_is_valid_on_real_blocks_upsert_path() {
+async fn all_shipped_plan_template_items_round_trip_through_real_blocks_upsert_path() {
     let boot = boot().await;
     let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
         .expect("shipped git-forge manifest");
@@ -481,49 +486,62 @@ async fn rendered_plan_template_item_is_valid_on_real_blocks_upsert_path() {
         .next()
         .expect("bound plan JSON");
     let items: Vec<Value> = serde_json::from_str(template_json).expect("rendered template JSON");
-    let payload = items.first().expect("first template task").clone();
-
-    let report = boot
-        .repo
-        .card_get(boot.report_card_id.as_str())
-        .await
-        .unwrap()
-        .expect("report card");
-    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
-    call_tool(
-        &boot,
-        TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(&boot),
-        json!({"kind": "task", "payload": payload.clone(), "if_doc_rev": report.doc_rev}),
-    )
-    .await
-    .expect("rendered task-block payload must pass the real upsert path");
-    assert!(payload["acceptance"].is_string(), "{payload:#}");
-    assert_eq!(payload["ready"], true, "{payload:#}");
-    assert_eq!(payload["declared_by"], "spec", "{payload:#}");
-    for legacy_or_null in [
-        "acceptance_criteria",
-        "cwd",
-        "gate",
-        "priority",
-        "no_gate_reason",
-    ] {
-        assert!(
-            payload.get(legacy_or_null).is_none(),
-            "optional/legacy field must be omitted: {payload:#}"
-        );
-    }
-    let row = boot
-        .repo
-        .task_get(&format!("{}:inspect-issue", boot.wave_id))
-        .await
-        .unwrap()
-        .expect("rendered template projected");
+    assert_eq!(items.len(), 8, "shipped workflow template size drifted");
+    let expected_payloads: Vec<Value> = workflow
+        .plan_template
+        .iter()
+        .map(calm_server::mcp_server::tools::plan::plan_template_task_block_payload)
+        .collect();
     assert_eq!(
-        row.acceptance_criteria.as_deref(),
-        workflow.plan_template[0].acceptance_criteria.as_deref()
+        items, expected_payloads,
+        "rendered JSON changed the payloads"
     );
-    assert_eq!(row.declared_by, "spec");
+
+    for payload in &items {
+        let report = boot
+            .repo
+            .card_get(boot.report_card_id.as_str())
+            .await
+            .unwrap()
+            .expect("report card");
+        let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+        call_tool(
+            &boot,
+            TOOL_REPORT_BLOCKS_UPSERT,
+            spec_identity(&boot),
+            json!({"kind": "task", "payload": payload, "if_doc_rev": report.doc_rev}),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("real upsert rejected {payload:#}: {error:?}"));
+    }
+
+    let projected = boot
+        .repo
+        .tasks_by_wave(boot.wave_id.as_str())
+        .await
+        .expect("read projected tasks");
+    assert_eq!(projected.len(), 8, "every shipped item must project");
+    for input in &workflow.plan_template {
+        let row = boot
+            .repo
+            .task_get(&format!("{}:{}", boot.wave_id, input.key))
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{} did not project", input.key));
+        assert_eq!(row.goal, input.goal, "{} goal", input.key);
+        assert_eq!(
+            row.acceptance_criteria, input.acceptance_criteria,
+            "{} acceptance",
+            input.key
+        );
+        assert_eq!(
+            row.depends_on(),
+            input.depends_on,
+            "{} dependencies",
+            input.key
+        );
+        assert_eq!(row.declared_by, "spec", "{} author", input.key);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -908,6 +926,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
 #[tokio::test]
 async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
     let boot = boot().await;
+    let mut rx = boot.ctx.events.subscribe();
     let before = all_persistent_rows(&boot).await;
     for (tool, args) in [
         (
@@ -927,6 +946,10 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
         all_persistent_rows(&boot).await,
         before,
         "unauthorized caller changed a persistent table"
+    );
+    assert!(
+        drain_events(&mut rx).await.is_empty(),
+        "unauthorized caller broadcast an EventBus envelope"
     );
 }
 

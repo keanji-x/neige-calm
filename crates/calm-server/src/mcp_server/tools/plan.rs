@@ -110,45 +110,21 @@ pub struct PlanTaskInput {
 /// are omitted instead of serialized as JSON null; readiness and authorship are
 /// explicit because projection only admits ready spec declarations.
 pub fn plan_template_task_block_payload(input: &PlanTaskInput) -> Value {
-    let mut payload = serde_json::Map::from_iter([
-        ("key".into(), json!(input.key)),
-        ("kind".into(), json!(input.kind)),
-        ("goal".into(), json!(input.goal)),
-        ("depends_on".into(), json!(input.depends_on)),
-        ("ready".into(), json!(true)),
-        ("declared_by".into(), json!("spec")),
-    ]);
-    let gate = input.gate.as_ref().map(|gate| {
-        let mut wire = serde_json::Map::from_iter([("steps".into(), json!(gate.steps))]);
-        if let Some(cwd) = &gate.cwd {
-            wire.insert("cwd".into(), json!(cwd));
-        }
-        if let Some(timeout_secs) = gate.timeout_secs {
-            wire.insert("timeout_secs".into(), json!(timeout_secs));
-        }
-        Value::Object(wire)
-    });
-    for (name, value) in [
-        (
-            "context",
-            input.context.clone().filter(|value| !value.is_null()),
-        ),
-        (
-            "acceptance",
-            input.acceptance_criteria.clone().map(Value::String),
-        ),
-        ("cwd", input.cwd.clone().map(Value::String)),
-        ("priority", input.priority.map(Into::into)),
-        ("gate", gate),
-        (
-            "no_gate_reason",
-            input.no_gate_reason.clone().map(Value::String),
-        ),
-    ] {
-        if let Some(value) = value {
-            payload.insert(name.into(), value);
-        }
+    let Value::Object(mut payload) =
+        serde_json::to_value(input).expect("PlanTaskInput must serialize")
+    else {
+        unreachable!("PlanTaskInput must serialize as an object");
+    };
+
+    // The manifest vocabulary and task-block vocabulary intentionally differ
+    // at exactly one field. Keep the conversion mechanical so newly added
+    // PlanTaskInput or nested GateInput fields cannot silently disappear.
+    payload.retain(|_, value| !value.is_null());
+    if let Some(acceptance) = payload.remove("acceptance_criteria") {
+        payload.insert("acceptance".into(), acceptance);
     }
+    payload.insert("ready".into(), json!(true));
+    payload.insert("declared_by".into(), json!("spec"));
     Value::Object(payload)
 }
 
@@ -900,6 +876,107 @@ async fn resolve_wave_for_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_types::report_blocks::TASK_FIELDS;
+    use std::collections::BTreeSet;
+
+    fn fully_populated_template_task() -> PlanTaskInput {
+        PlanTaskInput {
+            key: "all-fields".into(),
+            kind: "codex".into(),
+            goal: "exercise every template field".into(),
+            context: Some(json!({"ticket": 985, "slice": "5a"})),
+            acceptance_criteria: Some("all assertions pass".into()),
+            cwd: Some("/workspace/task".into()),
+            depends_on: vec!["design-a".into(), "design-b".into()],
+            priority: Some(17),
+            gate: Some(GateInput {
+                cwd: Some("/workspace/gate".into()),
+                timeout_secs: Some(321),
+                steps: vec![
+                    GateStepInput {
+                        name: "fmt".into(),
+                        cmd: "cargo fmt --all --check".into(),
+                    },
+                    GateStepInput {
+                        name: "test".into(),
+                        cmd: "cargo test --workspace".into(),
+                    },
+                ],
+            }),
+            no_gate_reason: Some("documented exception".into()),
+        }
+    }
+
+    #[test]
+    fn plan_template_mapping_field_sets_cover_serialized_input_and_gate() {
+        let input = fully_populated_template_task();
+        let source = serde_json::to_value(&input).expect("serialize source");
+        let source = source.as_object().expect("PlanTaskInput object");
+        let payload = plan_template_task_block_payload(&input);
+        let payload = payload.as_object().expect("task-block object");
+
+        let mut expected_fields: BTreeSet<&str> = source
+            .keys()
+            .map(|field| {
+                if field == "acceptance_criteria" {
+                    "acceptance"
+                } else {
+                    field.as_str()
+                }
+            })
+            .collect();
+        expected_fields.extend(["ready", "declared_by"]);
+        let actual_fields: BTreeSet<&str> = payload.keys().map(String::as_str).collect();
+        assert_eq!(actual_fields, expected_fields);
+        assert!(
+            actual_fields
+                .iter()
+                .all(|field| TASK_FIELDS.contains(field)),
+            "mapping emitted a field outside the shared task-block vocabulary: {actual_fields:?}"
+        );
+
+        let source_gate_fields: BTreeSet<&str> = source["gate"]
+            .as_object()
+            .expect("serialized GateInput object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mapped_gate_fields: BTreeSet<&str> = payload["gate"]
+            .as_object()
+            .expect("mapped GateInput object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(mapped_gate_fields, source_gate_fields);
+    }
+
+    #[test]
+    fn plan_template_mapping_preserves_complete_populated_json() {
+        assert_eq!(
+            plan_template_task_block_payload(&fully_populated_template_task()),
+            json!({
+                "key": "all-fields",
+                "kind": "codex",
+                "goal": "exercise every template field",
+                "context": {"ticket": 985, "slice": "5a"},
+                "acceptance": "all assertions pass",
+                "cwd": "/workspace/task",
+                "depends_on": ["design-a", "design-b"],
+                "priority": 17,
+                "gate": {
+                    "cwd": "/workspace/gate",
+                    "timeout_secs": 321,
+                    "steps": [
+                        {"name": "fmt", "cmd": "cargo fmt --all --check"},
+                        {"name": "test", "cmd": "cargo test --workspace"}
+                    ]
+                },
+                "no_gate_reason": "documented exception",
+                "ready": true,
+                "declared_by": "spec"
+            })
+        );
+    }
 
     fn raw_task(key: &str) -> PlanTaskInput {
         PlanTaskInput {

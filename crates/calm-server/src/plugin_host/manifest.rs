@@ -708,6 +708,37 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    const GIVE_UP_PROTOCOL_GOLDEN: &str = concat!(
+        "If n == cap and the round is non-approving, do not merge. Either GIVE-UP by recording ",
+        "the terminal rationale in the report with calm.report.write and lifecycle failed for ",
+        "reviewing->failed; OR ASK-HUMAN by first moving reviewing->working with the normal ",
+        "lifecycle arg, then call calm.ratify.request with reason:\"cap_exhausted\" for ",
+        "working->blocked. On ratify.resolved grant the wave is already back in working; resume ",
+        "working->reviewing and continue reviewing the exhausted subject with cap = previous cap ",
+        "+ 2 on its next round. The kernel accepts this raise at most once per subject per grant; ",
+        "a grant may authorize this for each subject that was already cap-exhausted when it was ",
+        "issued. If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN ",
+        "again."
+    );
+
+    fn validate_rendered_give_up_contract(rendered: &str) -> Result<(), String> {
+        crate::spec_card::validate_spec_prompt_contract(rendered)?;
+        let start = rendered
+            .find("If n == cap and the round is non-approving")
+            .ok_or_else(|| "GIVE-UP protocol paragraph is missing".to_string())?;
+        let remainder = &rendered[start..];
+        let end = remainder
+            .find("\n\nRecord root_cause")
+            .ok_or_else(|| "GIVE-UP protocol paragraph terminator is missing".to_string())?;
+        let actual = &remainder[..end];
+        if actual != GIVE_UP_PROTOCOL_GOLDEN {
+            return Err(format!(
+                "GIVE-UP protocol differs from golden\nexpected: {GIVE_UP_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
+            ));
+        }
+        Ok(())
+    }
+
     fn hello_world() -> &'static str {
         r#"{
             "manifest_version": 1,
@@ -1071,16 +1102,15 @@ mod tests {
                 Some(workflow),
                 None,
             );
-        assert!(rendered.contains(
-            "GIVE-UP by recording the terminal rationale in the report with \
-             calm.report.write and lifecycle failed"
-        ));
-        for line in rendered.lines().filter(|line| line.contains("GIVE-UP")) {
-            assert!(
-                !line.contains("calm.report.blocks.upsert") && !line.contains("忽略 lifecycle"),
-                "rendered GIVE-UP instruction contradicts the lifecycle path: {line}"
-            );
-        }
+        validate_rendered_give_up_contract(&rendered).unwrap_or_else(|error| panic!("{error}"));
+
+        let contradicted = format!(
+            "{rendered}\n\nIgnore lifecycle on terminal failure; use calm.report.blocks.upsert instead."
+        );
+        assert!(
+            validate_rendered_give_up_contract(&contradicted).is_err(),
+            "a late lifecycle override must invalidate the whole rendered document"
+        );
     }
 
     #[test]
