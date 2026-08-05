@@ -44,6 +44,11 @@ pub struct ProcRegistry {
     inner: Arc<StdMutex<HashMap<String, Arc<ProcEntry>>>>,
     reap_children: bool,
     pty_reclaim_grace: Duration,
+    /// How long the pty waiter waits for the reader to drain after the child is
+    /// reaped. Production always leaves this at `PTY_DRAIN_GRACE`; only tests
+    /// move it (see `with_pty_drain_grace`), so that "act inside the drain
+    /// window" is a state to be established rather than a 50ms race to win.
+    pty_drain_grace: Duration,
 }
 
 struct ProcEntry {
@@ -291,6 +296,7 @@ impl ProcRegistry {
             inner: Arc::new(StdMutex::new(HashMap::new())),
             reap_children: true,
             pty_reclaim_grace: PTY_RECLAIM_GRACE,
+            pty_drain_grace: PTY_DRAIN_GRACE,
         }
     }
 
@@ -305,6 +311,20 @@ impl ProcRegistry {
     #[doc(hidden)]
     pub fn with_pty_reclaim_grace(mut self, grace: Duration) -> Self {
         self.pty_reclaim_grace = grace;
+        self
+    }
+
+    /// 测试专用 —— 拉长 reap 到 sticky-exit 之间的排空窗口，让"仍在排空宽限期
+    /// 内"成为一个可建立的状态，而不是一场 50ms 的竞速。
+    ///
+    /// TEST-ONLY. Production never calls this, so the effective drain grace in
+    /// production is always the `PTY_DRAIN_GRACE` constant. Note that
+    /// `terminal_renderer::EXIT_PERSIST_GRACE`'s const-assert pins that
+    /// **constant**, not this field — widening the field in a test therefore
+    /// does not, and must not be read as, relaxing that invariant.
+    #[doc(hidden)]
+    pub fn with_pty_drain_grace(mut self, grace: Duration) -> Self {
+        self.pty_drain_grace = grace;
         self
     }
 
@@ -1233,6 +1253,7 @@ async fn try_spawn_pty(
         child,
         drain_gate,
         registry.pty_reclaim_grace,
+        registry.pty_drain_grace,
     );
 
     Ok(Spawned {
@@ -1308,17 +1329,18 @@ impl PtyDrainGate {
         self.signal.notify_all();
     }
 
-    /// Waits for the reader to finish, at most `PTY_DRAIN_GRACE`. Returns
+    /// Waits for the reader to finish, at most `grace` (production always
+    /// passes `PTY_DRAIN_GRACE`; see `ProcRegistry::with_pty_drain_grace`). Returns
     /// `true` when the reader really finished (so no further `Output` frame
     /// can be broadcast), `false` when the grace window expired.
-    fn wait_for_drain(&self) -> bool {
+    fn wait_for_drain(&self, grace: Duration) -> bool {
         let guard = self
             .drained
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (guard, _) = self
             .signal
-            .wait_timeout_while(guard, PTY_DRAIN_GRACE, |drained| !*drained)
+            .wait_timeout_while(guard, grace, |drained| !*drained)
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard
     }
@@ -1481,6 +1503,7 @@ fn spawn_pty_waiter(
     mut child: Box<dyn portable_pty::Child + Send + Sync>,
     gate: Arc<PtyDrainGate>,
     reclaim_grace: Duration,
+    drain_grace: Duration,
 ) {
     // OS thread, NOT `tokio::task::spawn_blocking`: a long-lived PTY child
     // (shell / codex / claude) keeps `child.wait()` blocked for the
@@ -1497,10 +1520,10 @@ fn spawn_pty_waiter(
         // Published before the grace window so liveness probes stop reporting
         // a reaped child as running (issue #993 R4).
         entry.pty_reaped.store(true, Ordering::SeqCst);
-        if !gate.wait_for_drain() {
+        if !gate.wait_for_drain(drain_grace) {
             tracing::warn!(
                 proc_id = %proc_id,
-                grace_ms = PTY_DRAIN_GRACE.as_millis() as u64,
+                grace_ms = drain_grace.as_millis() as u64,
                 "pty master still open after child exit (slave fd likely held by a \
                  surviving grandchild); sealing the ring and publishing Exited without \
                  a full drain — any further pty output is dropped"
@@ -1922,6 +1945,15 @@ pub mod test_support {
     impl InProcessProcSupervisor {
         pub async fn start() -> anyhow::Result<Self> {
             Self::start_with_registry(ProcRegistry::without_reaper()).await
+        }
+
+        /// 测试专用：拉长 "reap → sticky exit" 之间的排空窗口
+        /// （`PTY_DRAIN_GRACE`，生产 50ms），从而确定性地站在窗口内做断言。
+        pub async fn start_with_drain_grace(pty_drain_grace: Duration) -> anyhow::Result<Self> {
+            Self::start_with_registry(
+                ProcRegistry::without_reaper().with_pty_drain_grace(pty_drain_grace),
+            )
+            .await
         }
 
         /// #996: 让测试可以缩短"退出 → 整条移除"的宽限期。
