@@ -724,6 +724,51 @@ mod tests {
     const ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN: &str =
         include_str!("../../tests/goldens/issue_development_spec_prompt.txt");
 
+    fn assert_full_golden_eq(expected: &str, actual: &str) {
+        if expected == actual {
+            return;
+        }
+
+        let first_difference = expected
+            .bytes()
+            .zip(actual.bytes())
+            .position(|(expected, actual)| expected != actual)
+            .unwrap_or_else(|| expected.len().min(actual.len()));
+        let mut context_offset = first_difference;
+        while !expected.is_char_boundary(context_offset) || !actual.is_char_boundary(context_offset)
+        {
+            context_offset -= 1;
+        }
+
+        fn line_context(text: &str, byte_offset: usize) -> String {
+            let line_start = text[..byte_offset].rfind('\n').map_or(0, |index| index + 1);
+            let line_end = text[byte_offset..]
+                .find('\n')
+                .map_or(text.len(), |index| byte_offset + index);
+            let line_number = text[..line_start]
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count()
+                + 1;
+            let column = text[line_start..byte_offset].chars().count() + 1;
+            format!(
+                "line {line_number}, column {column}: {:?}",
+                &text[line_start..line_end]
+            )
+        }
+
+        panic!(
+            "full golden mismatch at byte {first_difference} (expected {} bytes, actual {} bytes)\n\
+             expected next {:?}; {}\n  actual next {:?}; {}",
+            expected.len(),
+            actual.len(),
+            expected[context_offset..].chars().next(),
+            line_context(expected, context_offset),
+            actual[context_offset..].chars().next(),
+            line_context(actual, context_offset)
+        );
+    }
+
     fn validate_rendered_give_up_contract(rendered: &str) -> Result<(), String> {
         crate::spec_card::validate_spec_prompt_contract(rendered)?;
         let start = rendered
@@ -1120,14 +1165,35 @@ mod tests {
 
         // The fixed fixture id is the explicit normalization rule for the
         // per-wave substitution performed by the production renderer.
+        // This independent, fully populated fixture is a legal final state for
+        // the shipped schema and keeps every required and optional field in the
+        // full-prompt contract.
+        let workflow_input = json!({
+            "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
+            "repo": "neige-calm/neige-calm",
+            "issue_number": 985,
+            "merge_policy": "auto-merge",
+            "notes": "Full golden fixture covers every shipped workflow input field."
+        });
+        crate::plugin_host::workflow_input::validate_workflow_input(
+            workflow
+                .input_schema
+                .as_ref()
+                .expect("shipped issue-development input schema"),
+            &workflow_input,
+        )
+        .expect("full golden workflow_input satisfies the shipped schema");
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-golden-985",
                 Some(workflow),
-                None,
+                Some(&workflow_input),
             );
 
-        assert_eq!(rendered, ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN);
+        let expected = ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN
+            .strip_suffix('\n')
+            .expect("text fixture has its repository newline");
+        assert_full_golden_eq(expected, &rendered);
     }
 
     #[test]

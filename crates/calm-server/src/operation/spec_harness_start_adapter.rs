@@ -1149,6 +1149,8 @@ mod tests {
         };
         let input = json!({
             "issue_url": "https://github.com/o/r/issues/1",
+            "repo": "o/r",
+            "issue_number": 1,
             "notes": "literal {wave_id} must survive"
         });
 
