@@ -1700,6 +1700,15 @@ changed.
     }
 
     #[test]
+    fn from_blocks_exact_accepts_consistent_empty_snapshot() {
+        let doc = ReportDoc::from_blocks_exact("", &[]).unwrap();
+        assert_eq!(doc.doc_rev().unwrap(), 0);
+        assert_eq!(doc.blocks_snapshot().unwrap(), Vec::<ReportBlock>::new());
+        assert_eq!(doc.block_index().unwrap(), Vec::new());
+        assert_eq!(doc.project().unwrap(), (String::new(), String::new()));
+    }
+
+    #[test]
     fn from_blocks_exact_rejects_duplicate_ids_before_layout_write() {
         let blocks = vec![
             ReportBlock {

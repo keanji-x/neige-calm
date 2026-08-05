@@ -35,6 +35,103 @@ struct Boot {
     _tmp: TempDir,
 }
 
+fn long_fixture_text() -> String {
+    "long-fixture-segment-".repeat(450)
+}
+
+fn encoded_fragment(block_id: &str) -> String {
+    let (first, rest) = block_id.split_at(3);
+    format!("{}&#{};{}", &first[..2], first.as_bytes()[2], rest)
+}
+
+fn fixture_prose(source_wave_id: &str, internal_block_id: &str) -> String {
+    let entity_fragment = encoded_fragment(internal_block_id);
+    format!(
+        concat!(
+            "# Fixture\n\n{long}\n\n",
+            "[inline](neige://wave/{0}#{1})\n",
+            "[entity](neige://wave/{0}#{2})\n",
+            "[reference][same]\n",
+            "<neige://wave/{0}#{1}>\n",
+            "[dangling](neige://wave/{0}#b_dead)\n",
+            "`[code](neige://wave/{0}#b_dead)`\n",
+            "```markdown\n[fenced](neige://wave/{0}#b_dead)\n```\n",
+            "[external](neige://wave/external-wave#b_4444)\n",
+            "\n[same]: neige://wave/{0}#{1}\n",
+        ),
+        source_wave_id,
+        internal_block_id,
+        entity_fragment,
+        long = long_fixture_text(),
+    )
+}
+
+fn primary_task_payload(source_wave_id: &str, internal_block_id: &str) -> Value {
+    json!({
+        "key": "build",
+        "kind": "codex",
+        "goal": format!("Goal [internal](neige://wave/{source_wave_id}#{internal_block_id})"),
+        "acceptance": format!("Accept <neige://wave/{source_wave_id}#{internal_block_id}>") ,
+        "refs": [format!("neige://wave/{source_wave_id}#{internal_block_id}")],
+        "ready": true,
+        "declared_by": "user"
+    })
+}
+
+fn seed_fixture_body() -> String {
+    let prose = format!("# Fixture\n\n{}\n\ncapture pending\n", long_fixture_text());
+    let chart = json!({
+        "symbol": "985.TEST",
+        "period": "day",
+        "candles": [[1719800000000_i64, 10, 12, 9, 11, 100], [1719886400000_i64, 11, 13, 10, 12, 120]],
+        "overlays": ["ma20", "ma60"],
+        "caption": "fixture chart"
+    });
+    let table = json!({
+        "columns": [
+            {"key": "name", "label": "Name", "align": "left"},
+            {"key": "value", "label": "Value", "align": "right"}
+        ],
+        "rows": [{"name": "alpha", "value": 1}, {"name": "beta", "value": null}],
+        "caption": "fixture table",
+        "highlight": "alpha"
+    });
+    let app = json!({"src": "/apps/fork-fixture?mode=deep", "title": "Fixture app", "height": 640});
+    let primary_task = json!({
+        "key": "build",
+        "kind": "codex",
+        "goal": "Goal pending source REST id capture",
+        "acceptance": "Acceptance pending source REST id capture",
+        "refs": [],
+        "ready": true,
+        "declared_by": "user"
+    });
+    let duplicate_task = json!({
+        "key": "build",
+        "kind": "terminal",
+        "goal": "Second declaration with the same key",
+        "acceptance": "Second declaration remains exact",
+        "refs": [],
+        "ready": true,
+        "declared_by": "user"
+    });
+    let tombstone = json!({
+        "key": "rejected",
+        "tombstone": { "reason": "not now" },
+        "declared_by": "user",
+        "tombstoned_by": "user"
+    });
+    format!(
+        "{prose}{}# Anchor\n\nanchor payload\n{}{}{}{}{}",
+        render_fence("chart.candles", &chart),
+        render_fence("table", &table),
+        render_fence("app", &app),
+        render_fence("task", &primary_task),
+        render_fence("task", &duplicate_task),
+        render_fence("task", &tombstone),
+    )
+}
+
 async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -128,41 +225,7 @@ async fn boot() -> Boot {
         .merge(auth::router().with_state(auth_state));
 
     let source_id = source.id.to_string();
-    let prose = format!(
-        concat!(
-            "[inline](neige://wave/{0}#b_1f3a)\n",
-            "[reference][same]\n",
-            "<neige://wave/{0}#b_ab12>\n",
-            "`[code](neige://wave/{0}#b_2222)`\n",
-            "```markdown\n[fenced](neige://wave/{0}#b_3333)\n```\n",
-            "[external](neige://wave/external-wave#b_4444)\n",
-            "\n[same]: neige://wave/{0}#b_5e6f\n",
-        ),
-        source_id
-    );
-    let task = json!({
-        "key": "build",
-        "kind": "codex",
-        "goal": format!("Goal [internal](neige://wave/{source_id}#b_1f3a) [external](neige://wave/external-wave#b_4444)"),
-        "acceptance": format!("Accept <neige://wave/{source_id}#b_ab12>"),
-        "refs": [
-            format!("neige://wave/{source_id}#b_1f3a"),
-            "neige://wave/external-wave#b_4444"
-        ],
-        "ready": true,
-        "declared_by": "user"
-    });
-    let tombstone = json!({
-        "key": "rejected",
-        "tombstone": { "reason": "not now" },
-        "declared_by": "user",
-        "tombstoned_by": "user"
-    });
-    let body = format!(
-        "{prose}{}{}",
-        render_fence("task", &task),
-        render_fence("task", &tombstone)
-    );
+    let cookie = login(&app).await;
     persist_report(
         repo.as_ref(),
         &state.events,
@@ -172,7 +235,7 @@ async fn boot() -> Boot {
         source.clone(),
         report.clone(),
         WaveReportPayload::initial(),
-        WaveReportPayload::new("fork source", body),
+        WaveReportPayload::new("fork source summary", seed_fixture_body()),
         0,
         None,
         None,
@@ -180,8 +243,64 @@ async fn boot() -> Boot {
     )
     .await
     .unwrap();
-
-    let cookie = login(&app).await;
+    let (status, seeded_report) = request_json(
+        &app,
+        "GET",
+        format!("/api/waves/{source_id}/report"),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let seeded_blocks = seeded_report["blocks"].as_array().unwrap();
+    let internal_block_id = seeded_blocks
+        .iter()
+        .filter(|block| block["kind"] == "prose")
+        .nth(1)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let prose_block = seeded_blocks
+        .iter()
+        .find(|block| block["kind"] == "prose")
+        .unwrap();
+    let (status, response) = request_json(
+        &app,
+        "PATCH",
+        format!(
+            "/api/waves/{source_id}/report/blocks/{}",
+            prose_block["id"].as_str().unwrap()
+        ),
+        &cookie,
+        Some(json!({
+            "kind": "prose",
+            "markdown": fixture_prose(&source_id, &internal_block_id),
+            "ifBlockRev": prose_block["rev"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update fixture prose: {response}");
+    let task_block = seeded_blocks
+        .iter()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == "build")
+        .unwrap();
+    let (status, response) = request_json(
+        &app,
+        "PATCH",
+        format!(
+            "/api/waves/{source_id}/report/blocks/{}",
+            task_block["id"].as_str().unwrap()
+        ),
+        &cookie,
+        Some(json!({
+            "kind": "task",
+            "payload": primary_task_payload(&source_id, &internal_block_id),
+            "ifBlockRev": task_block["rev"]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update fixture task: {response}");
     Boot {
         app,
         state,
@@ -359,6 +478,32 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
+async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64) {
+    calm_server::db::write_in_tx_typed(repo, |tx| {
+        Box::pin(async move {
+            let waves = sqlx::query_scalar("SELECT COUNT(*) FROM waves")
+                .fetch_one(&mut **tx)
+                .await?;
+            let folders = sqlx::query_scalar("SELECT COUNT(*) FROM cove_folders")
+                .fetch_one(&mut **tx)
+                .await?;
+            let spec_cards = sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role='spec'")
+                .fetch_one(&mut **tx)
+                .await?;
+            let report_cards =
+                sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE role='reportcard'")
+                    .fetch_one(&mut **tx)
+                    .await?;
+            let overlays = sqlx::query_scalar("SELECT COUNT(*) FROM overlays")
+                .fetch_one(&mut **tx)
+                .await?;
+            Ok((waves, folders, spec_cards, report_cards, overlays))
+        })
+    })
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
     let boot = boot().await;
@@ -372,7 +517,8 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let source_truth = block_index(&source_report);
-    assert_eq!(source_truth.len(), 3);
+    assert_eq!(source_truth.len(), 8);
+    let internal_block_id = source_truth[2].0.clone();
 
     let (status, target_wave) = request_json(
         &boot.app,
@@ -403,57 +549,116 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(block_index(&target_report), source_truth);
+    assert_eq!(target_report["summary"], "fork source summary");
+    assert_eq!(target_report["docRev"], 0);
 
-    let blocks = target_report["blocks"].as_array().unwrap();
-    let prose = blocks
-        .iter()
-        .find(|block| block["kind"] == "prose")
-        .unwrap();
-    let markdown = prose["payload"]["markdown"].as_str().unwrap();
-    assert!(markdown.contains(&format!("[inline](neige://wave/{target_wave_id}#b_1f3a)")));
-    assert!(markdown.contains(&format!("[same]: neige://wave/{target_wave_id}#b_5e6f")));
-    assert!(markdown.contains(&format!("<neige://wave/{target_wave_id}#b_ab12>")));
-    assert!(markdown.contains(&format!(
-        "`[code](neige://wave/{}#b_2222)`",
-        boot.source_wave_id
-    )));
-    assert!(markdown.contains(&format!(
-        "[fenced](neige://wave/{}#b_3333)",
-        boot.source_wave_id
-    )));
-    assert!(markdown.contains("[external](neige://wave/external-wave#b_4444)"));
-
-    let live = blocks
-        .iter()
-        .find(|block| block["payload"]["key"] == "build")
-        .unwrap();
-    assert_eq!(live["payload"]["ready"], false);
-    assert_eq!(live["payload"]["declared_by"], "spec");
+    let expected_markdown = format!(
+        concat!(
+            "# Fixture\n\n{long}\n\n",
+            "[inline](neige://wave/{0}#{1})\n",
+            "[entity](neige://wave/{0}#{2})\n",
+            "[reference][same]\n",
+            "<neige://wave/{0}#{1}>\n",
+            "[dangling](neige://wave/{3}#b_dead)\n",
+            "`[code](neige://wave/{3}#b_dead)`\n",
+            "```markdown\n[fenced](neige://wave/{3}#b_dead)\n```\n",
+            "[external](neige://wave/external-wave#b_4444)\n",
+            "\n[same]: neige://wave/{0}#{1}\n",
+        ),
+        target_wave_id,
+        internal_block_id,
+        encoded_fragment(&internal_block_id),
+        boot.source_wave_id,
+        long = long_fixture_text(),
+    );
+    let expected_blocks = vec![
+        json!({
+            "id": source_truth[0].0,
+            "kind": "prose",
+            "rev": source_truth[0].1,
+            "payload": {"markdown": expected_markdown}
+        }),
+        json!({
+            "id": source_truth[1].0,
+            "kind": "chart.candles",
+            "rev": source_truth[1].1,
+            "payload": {
+                "symbol": "985.TEST", "period": "day",
+                "candles": [[1719800000000_i64, 10, 12, 9, 11, 100], [1719886400000_i64, 11, 13, 10, 12, 120]],
+                "overlays": ["ma20", "ma60"], "caption": "fixture chart"
+            }
+        }),
+        json!({
+            "id": source_truth[2].0,
+            "kind": "prose",
+            "rev": source_truth[2].1,
+            "payload": {"markdown": "# Anchor\n\nanchor payload\n"}
+        }),
+        json!({
+            "id": source_truth[3].0,
+            "kind": "table",
+            "rev": source_truth[3].1,
+            "payload": {
+                "columns": [
+                    {"key": "name", "label": "Name", "align": "left"},
+                    {"key": "value", "label": "Value", "align": "right"}
+                ],
+                "rows": [{"name": "alpha", "value": 1}, {"name": "beta", "value": null}],
+                "caption": "fixture table", "highlight": "alpha"
+            }
+        }),
+        json!({
+            "id": source_truth[4].0,
+            "kind": "app",
+            "rev": source_truth[4].1,
+            "payload": {"src": "/apps/fork-fixture?mode=deep", "title": "Fixture app", "height": 640}
+        }),
+        json!({
+            "id": source_truth[5].0,
+            "kind": "task",
+            "rev": source_truth[5].1,
+            "payload": {
+                "key": "build", "kind": "codex",
+                "goal": format!("Goal [internal](neige://wave/{target_wave_id}#{internal_block_id})"),
+                "acceptance": format!("Accept <neige://wave/{target_wave_id}#{internal_block_id}>") ,
+                "refs": [format!("neige://wave/{target_wave_id}#{internal_block_id}")],
+                "ready": false, "declared_by": "spec"
+            }
+        }),
+        json!({
+            "id": source_truth[6].0,
+            "kind": "task",
+            "rev": source_truth[6].1,
+            "payload": {
+                "key": "build", "kind": "terminal",
+                "goal": "Second declaration with the same key",
+                "acceptance": "Second declaration remains exact",
+                "refs": [], "ready": false, "declared_by": "spec"
+            }
+        }),
+        json!({
+            "id": source_truth[7].0,
+            "kind": "task",
+            "rev": source_truth[7].1,
+            "payload": {
+                "key": "rejected", "tombstone": {"reason": "not now"},
+                "declared_by": "spec", "tombstoned_by": "user"
+            }
+        }),
+    ];
+    let actual_blocks = target_report["blocks"].as_array().unwrap();
+    assert_eq!(actual_blocks.len(), expected_blocks.len());
+    for (index, (actual, expected)) in actual_blocks.iter().zip(&expected_blocks).enumerate() {
+        assert_eq!(actual, expected, "forked block {index} drifted");
+    }
+    let diagnostics = target_report["taskDiagnostics"].as_array().unwrap();
     assert!(
-        live["payload"]["goal"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("neige://wave/{target_wave_id}#b_1f3a"))
+        diagnostics
+            .iter()
+            .flat_map(|verdict| verdict["diagnostics"].as_array().unwrap())
+            .all(|diagnostic| diagnostic["code"] != "reference_missing"),
+        "fork projection observed a missing copied-block reference: {diagnostics:?}"
     );
-    assert!(
-        live["payload"]["goal"]
-            .as_str()
-            .unwrap()
-            .contains("neige://wave/external-wave#b_4444")
-    );
-    assert_eq!(
-        live["payload"]["refs"],
-        json!([
-            format!("neige://wave/{target_wave_id}#b_1f3a"),
-            "neige://wave/external-wave#b_4444"
-        ])
-    );
-    let tombstone = blocks
-        .iter()
-        .find(|block| block["payload"]["key"] == "rejected")
-        .unwrap();
-    assert_eq!(tombstone["payload"]["declared_by"], "spec");
-    assert!(tombstone["payload"].get("ready").is_none());
 
     let report_card = boot
         .repo
@@ -489,20 +694,195 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        block_index(&crdt_report),
-        source_truth,
-        "CRDT fallback must preserve the source-captured (id, rev) pairs"
-    );
+    assert_eq!(crdt_report["blocks"], Value::Array(expected_blocks));
+    assert_eq!(crdt_report["summary"], "fork source summary");
 
     // Keep fixture fields load-bearing: the source card stayed untouched and
     // the app state remained alive through the post-create operation wait.
-    assert!(
-        boot.repo
-            .card_get(&boot.source_report_id)
-            .await
-            .unwrap()
-            .is_some()
+    let (status, source_after) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{}/report", boot.source_wave_id),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        source_after, source_report,
+        "fork mutated its source report"
     );
     let _ = &boot.state;
+}
+
+#[tokio::test]
+async fn legacy_source_without_crdt_or_block_cache_forks_once_without_remint_or_source_write() {
+    let boot = boot().await;
+    let chart = json!({
+        "symbol": "LEGACY",
+        "candles": [[1, 1, 2, 0, 1], [2, 2, 3, 1, 2]],
+        "caption": "legacy chart"
+    });
+    let legacy_body = format!(
+        "# Legacy\n\nlegacy block\n{}",
+        render_fence("chart.candles", &chart)
+    );
+    let legacy_payload = WaveReportPayload::new("legacy summary", &legacy_body);
+    let report_id = boot.source_report_id.clone();
+    let serialized = serde_json::to_string(&legacy_payload).unwrap();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE id=?2")
+                .bind(serialized)
+                .bind(report_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    let raw_before: (String, Option<Vec<u8>>) =
+        calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
+            let report_id = boot.source_report_id.clone();
+            move |tx| {
+                Box::pin(async move {
+                    Ok(
+                        sqlx::query_as("SELECT json(payload),body_crdt FROM cards WHERE id=?1")
+                            .bind(report_id)
+                            .fetch_one(&mut **tx)
+                            .await?,
+                    )
+                })
+            }
+        })
+        .await
+        .unwrap();
+    assert!(raw_before.1.is_none());
+    assert!(
+        serde_json::from_str::<Value>(&raw_before.0).unwrap()["blocks"].is_null(),
+        "legacy source must exercise absent payload.blocks"
+    );
+    let (status, source_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{}/report", boot.source_wave_id),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let source_truth = block_index(&source_report);
+    assert_eq!(source_truth.len(), 2);
+
+    let (status, target_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "legacy fork target",
+            "sort": null,
+            "cwd": format!("{}-legacy", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_id = target_wave["id"].as_str().unwrap();
+    let (status, target_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        block_index(&target_report),
+        source_truth,
+        "legacy ids reminted"
+    );
+    assert_eq!(target_report["summary"], "legacy summary");
+    assert_eq!(
+        target_report["blocks"],
+        json!([
+            {"id": source_truth[0].0, "kind": "prose", "rev": source_truth[0].1,
+             "payload": {"markdown": "# Legacy\n\nlegacy block\n"}},
+            {"id": source_truth[1].0, "kind": "chart.candles", "rev": source_truth[1].1,
+             "payload": {"symbol": "LEGACY", "candles": [[1,1,2,0,1],[2,2,3,1,2]],
+                         "caption": "legacy chart"}}
+        ])
+    );
+    let raw_after: (String, Option<Vec<u8>>) =
+        calm_server::db::write_in_tx_typed(boot.repo.as_ref(), {
+            let report_id = boot.source_report_id.clone();
+            move |tx| {
+                Box::pin(async move {
+                    Ok(
+                        sqlx::query_as("SELECT json(payload),body_crdt FROM cards WHERE id=?1")
+                            .bind(report_id)
+                            .fetch_one(&mut **tx)
+                            .await?,
+                    )
+                })
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        raw_after, raw_before,
+        "legacy fork wrote back to its source"
+    );
+}
+
+#[tokio::test]
+async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
+    let boot = boot().await;
+    let invalid_body = render_fence("app", &json!({"src": "https://example.invalid/app"}));
+    let invalid_payload = WaveReportPayload::new("invalid fork source", invalid_body);
+    let report_id = boot.source_report_id.clone();
+    let serialized = serde_json::to_string(&invalid_payload).unwrap();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE id=?2")
+                .bind(serialized)
+                .bind(report_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let before = fork_row_counts(boot.repo.as_ref()).await;
+    let (status, body) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "invalid payload target",
+            "sort": null,
+            "cwd": format!("{}-invalid-payload", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(body.to_string().contains("src: required same-origin path"));
+    let after = fork_row_counts(boot.repo.as_ref()).await;
+    assert_eq!(after.0, before.0, "failed fork left a waves row");
+    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.3, before.3, "failed fork left a report card");
+    assert_eq!(after.4, before.4, "failed fork left an overlay");
 }

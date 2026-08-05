@@ -950,9 +950,12 @@ fn prepare_fork_report(
     target_wave_id: &str,
     author: EditAuthor,
 ) -> Result<ForkReportSnapshot> {
+    use std::collections::HashSet;
+
     use calm_types::report_blocks::{KIND_PROSE, KIND_TASK, flat_text, validate_payload};
     use calm_types::report_links::{rewrite_wave_destination, rewrite_wave_links};
 
+    let copied_block_ids: HashSet<String> = blocks.iter().map(|block| block.id.clone()).collect();
     for block in &mut blocks {
         if block.kind == KIND_PROSE {
             if let Some(markdown) = block.payload.get_mut("markdown")
@@ -962,6 +965,7 @@ fn prepare_fork_report(
                     source,
                     source_wave_id,
                     target_wave_id,
+                    &copied_block_ids,
                 ));
             }
             continue;
@@ -978,6 +982,7 @@ fn prepare_fork_report(
                         source,
                         source_wave_id,
                         target_wave_id,
+                        &copied_block_ids,
                     ));
                 }
             }
@@ -988,6 +993,7 @@ fn prepare_fork_report(
                             source,
                             source_wave_id,
                             target_wave_id,
+                            &copied_block_ids,
                         ));
                     }
                 }
