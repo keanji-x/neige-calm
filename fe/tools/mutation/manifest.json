@@ -163,8 +163,8 @@
     "target": "web/src/app/providers/public.tsx",
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..6a0efb31 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -43,7 +43,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
     "selection_paths": ["web/src/app/providers/public.test.tsx"],
-    "expected_red": ["provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"],
-    "why_more_than_one": "Prediction: the table-driven first-visit/matching-id contract is the sole failure; only its null-prior branch is mutated."
+    "expected_red": ["browser provider contracts CAP-APP-006 hard-covers the tree, reports both versions, and captures hit testing", "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"],
+    "why_more_than_one": "The first-visit contract turns red because a missing prior id must only be recorded, while CAP-APP-006 also turns red because its incompatible-server first visit depends on not reloading so the overlay tree can render and report both versions."
   },
   {
     "mutation_id": "app-theme-drop-match-media-unsubscribe",

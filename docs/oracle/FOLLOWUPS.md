@@ -87,3 +87,7 @@
 归属：阶段 2 `tooling/mutation-evidence`，采用方案 1 前不得把自报变异表当作唯一验收证据。本 slice 仍按 brief 使用私有 `scratchpad/mut-p8b1.sh`，并以 `cmp -s` 守卫每次变异确实生效。
 
 其余三项均归阶段 2 `styles/layer-audit`：统一 `@layer ui { @layer {} }` 与 media 内匿名层判定；合并重复的 layer-import fixtures；把例外文件中 fail-closed 的无 layer import 独立命名为 `import-without-layer`。
+
+## CAP-APP-076 拆条欠债
+
+`CAP-APP-076` 当前包含两半可分语义：仅在 `?testMounts=1` 时暴露 theme driver，以及卸载时仅删除仍由自身持有的 driver。现有权威 browser 路径 `fe/web/src/app/theme/theme.browser.test.tsx:53` 覆盖前半（条件暴露）；后半由 jsdom successor 保护测试 `fe/web/src/app/theme/public.test.tsx:68` 覆盖。后续应在 oracle 层拆成两条契约，各自保留单一 tier、单一权威证据路径；本轮保持 `CAP-APP-076` 的 browser `authoritative_test` 不变。
