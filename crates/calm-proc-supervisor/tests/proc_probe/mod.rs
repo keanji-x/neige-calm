@@ -18,7 +18,23 @@
 //! So `alive()` here means *schedulable*: the process exists **and** is not a
 //! zombie. `/proc/<pid>` being absent is dead; state `Z` is dead.
 //!
-//! `awaited_reaped()` is the deliberately different predicate — see its doc.
+//! # Why there is no `await_reaped()` any more (#1013 PR-B)
+//!
+//! This module used to export `await_reaped(pid)` = `kill(pid, 0) != 0`, i.e.
+//! "the pid has been released". **Do not reintroduce it for a supervised pty
+//! leader.** Under #1013 the supervisor observes the leader's exit with
+//! `waitid(.., WNOWAIT)` and reaps only in `Drop for ProcEntry`, so the leader
+//! is a zombie *this process owns* for the entry's whole registry lifetime:
+//! `kill(zombie, 0) == 0` for all of it, and any test polling for the opposite
+//! hard-fails on its deadline instead of proceeding to the behaviour it meant
+//! to check. That is exactly what happened to
+//! `terminate_all_kills_grandchild_in_drain_grace.rs`, whose migration to a
+//! state probe (`debug_entry_stats(..).exit_observed`) shipped with the pin.
+//!
+//! If you need "the waiter has seen the exit", read that bit. If you need "the
+//! process is over", use `await_death` / `alive` — a zombie counts as dead
+//! there, which is the right answer for a *grandchild* nobody in this test is
+//! pinning.
 #![allow(dead_code)]
 
 use std::time::{Duration, Instant};
@@ -53,18 +69,6 @@ pub fn process_group_of(pid: u32) -> Option<u32> {
 /// Polls until `pid` is no longer a live, non-zombie process.
 pub fn await_death(pid: u32, budget: Duration) -> bool {
     poll_until(budget, || !alive(pid))
-}
-
-/// Polls until `pid` has been **reaped** — the pid released, not merely the
-/// process stopped.
-///
-/// This is intentionally *not* `!alive()`: it is the externally observable form
-/// of "our waiter thread's `child.wait()` returned", which is what the
-/// drain-grace test needs in order to establish that it is standing inside the
-/// post-reap drain window. A zombie leader has not been reaped yet, and
-/// `kill(pid, 0)` correctly still answers "yes, that pid is mine".
-pub fn await_reaped(pid: u32, budget: Duration) -> bool {
-    poll_until(budget, || unsafe { libc::kill(pid as libc::pid_t, 0) != 0 })
 }
 
 fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {

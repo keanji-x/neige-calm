@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::unix::AsyncFd;
 use tokio::net::{UnixListener, UnixStream};
@@ -49,6 +49,36 @@ pub struct ProcRegistry {
     /// move it (see `with_pty_drain_grace`), so that "act inside the drain
     /// window" is a state to be established rather than a 50ms race to win.
     pty_drain_grace: Duration,
+    /// #1013 (PR-B): how many un-reaped pty leader `Child` handles this
+    /// registry currently owns — i.e. how many pids it is pinning.
+    ///
+    /// **It is registry-scoped on purpose, and must not become a crate-level
+    /// `static`** (design C2). `cargo test` runs the test functions of one
+    /// integration binary as threads of a *single process*, and
+    /// `pty_entry_reclaim.rs` alone has five pty-spawning tests, two of which
+    /// deliberately hold a retained entry for their whole body. A process-global
+    /// counter would make T1 (`== 1`), T2 (`-> 0`), T4 (`-> 0`) and T10 (`== 2`)
+    /// redden each other deterministically on a multicore box — not a flake, a
+    /// guaranteed failure. **No process-global mutable state is introduced by
+    /// this design; any counter a test asserts on hangs off `ProcRegistry`.**
+    ///
+    /// **Paired with the `Option<Box<dyn Child>>`, not with "observed an exit"**
+    /// (design M3): `+1` where `leader = Some(child)` is installed in
+    /// `try_spawn_pty`, `-1` wherever a `leader.take()` yields `Some` (today
+    /// only `Drop for ProcEntry`). Counting from exit instead would (a) never
+    /// decrement on the two fail-loud `Drop` arms, (b) underflow `AtomicUsize`
+    /// to `usize::MAX` on the `Unexpected` waiter arm, and (c) measure the wrong
+    /// quantity, since a *running* leader also consumes an `RLIMIT_NPROC` slot.
+    ///
+    /// It is deliberately **not** derived from the registry `HashMap` (design
+    /// D2): `try_spawn_pty` overwrites same-`proc_id` entries, and the displaced
+    /// entry keeps its own clone of this `Arc` until its own `Drop` — so an
+    /// orphaned, permanently-retained entry is still counted. T10 locks that.
+    pin_count: Arc<AtomicUsize>,
+    /// #1013 (PR-B): how many pty leaders this registry has *lost the pin on*
+    /// (the kernel answered `ECHILD`, §2.4). Registry-scoped for the same
+    /// reason as `pin_count`.
+    pin_lost_count: Arc<AtomicUsize>,
 }
 
 struct ProcEntry {
@@ -65,22 +95,94 @@ struct ProcEntry {
     cursor_tail: AtomicU64,
     cursor_head: AtomicU64,
     exit: StdMutex<Option<ProcExit>>,
-    /// Pty only: set by the waiter the instant `child.wait()` returns, i.e.
-    /// *before* the drain grace and the sticky `exit` write. Liveness probes
-    /// must consult it, otherwise a reaped child looks alive for the whole
-    /// grace window and `EnsureProc` hands out a dead pid (issue #993 R4).
-    pty_reaped: AtomicBool,
+    /// Pty only: set by the waiter the instant it *observes* the leader's exit,
+    /// i.e. *before* the drain grace and the sticky `exit` write. Liveness
+    /// probes must consult it, otherwise an exited child looks alive for the
+    /// whole grace window and `EnsureProc` hands out a dead pid (issue #993 R4).
+    ///
+    /// **#1013 (PR-B) renamed this from `pty_reaped`, and the rename is the
+    /// point**: the waiter now uses `waitid(P_PID, .., WEXITED | WNOWAIT)`,
+    /// which observes the exit *without reaping*. Reaping happens exactly once,
+    /// in `Drop for ProcEntry`. So "observed" and "reaped" are two different
+    /// instants for the first time and the old name would now be a lie. The
+    /// semantics of the bit itself are unchanged — same instant, same readers.
+    exit_observed: AtomicBool,
+    /// #1013 (PR-B, design M2): the pty waiter did not run to completion — it
+    /// panicked or returned early between observing the exit and its `disarm()`.
+    /// Set by `WaiterCompletion::drop`, which also seals/publishes a degraded
+    /// exit and schedules removal so the pinned leader can still be reaped.
+    /// Visible in `debug_entry_stats` so the degraded state is diagnosable.
+    waiter_degraded: AtomicBool,
     /// #996: 这条 entry 最早可以在什么时刻被清扫掉。`None` = 尚未退出。
     /// 唯一的回收簿记 —— 没有墓碑位、没有字段级降级开关。
     remove_after: StdMutex<Option<std::time::Instant>>,
     broadcast_tx: broadcast::Sender<DataFrame>,
+    /// #1013 (PR-B): this entry's clone of its registry's pin counter. See
+    /// `ProcRegistry::pin_count` for why it is registry-scoped and why it is
+    /// paired with the `Option<Box<dyn Child>>` rather than with an exit.
+    /// Pipe entries carry it but never touch it — they install no leader.
+    pin_count: Arc<AtomicUsize>,
+}
+
+/// #1013 (PR-B): the crate's **only** reap of a pty leader.
+///
+/// The waiter observes the exit with `WNOWAIT` and never reaps, so the leader
+/// stays a zombie — and therefore its pid, and the pgid numerically equal to
+/// it, stay allocated to us — for as long as any `Arc<ProcEntry>` lives
+/// (INV-1013-PTY). This `Drop` is where that pin is finally released.
+///
+/// **Ordering is implicit and load-bearing**: `Drop::drop` runs *before* the
+/// struct's fields are dropped, so this `try_wait()` is guaranteed to run
+/// before `UnixMasterWriter::drop`'s blocking `write_all` on the master fd
+/// (portable-pty-0.9/src/unix.rs:393-405). Correct, but not visible without
+/// this comment.
+///
+/// `try_wait()` is `waitpid(pid, WNOHANG)`: it **never blocks**, at any of the
+/// eight `Drop` trigger points enumerated on `sweep_expired_entries` —
+/// including the one that is still inside the registry lock and the ones on a
+/// tokio worker.
+impl Drop for ProcEntry {
+    fn drop(&mut self) {
+        // **Pipe is an explicit arm, not an accident** (design D6). A Pipe
+        // entry is the same struct, and its child is owned by tokio (plus the
+        // by-pid blocking `waitpid` in `await_ready_phase`). Gating only on
+        // `exit_observed`/`leader.is_some()` happens to be safe today purely
+        // because nothing sets those for Pipe; the day someone does, this
+        // becomes the double reap §2.3 exists to prevent.
+        let ProcRuntime::Pty { leader, .. } = &self.runtime else {
+            return;
+        };
+        let taken = leader
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        // Idempotence is ownership, not bookkeeping: `Option::take` is what
+        // makes "reap at most once" a property of the type system rather than
+        // of an `AtomicBool` someone can forget to check.
+        let Some(mut child) = taken else {
+            return;
+        };
+        // Structurally paired with the `take()` above, per design M3 — this is
+        // the *only* place the count can go down, and it goes down on every
+        // path below including the two fail-loud ones.
+        self.pin_count.fetch_sub(1, Ordering::SeqCst);
+        match child.try_wait() {
+            Ok(Some(_)) => {}
+            Ok(None) => tracing::error!(
+                pid = self.pid,
+                "entry dropped while its pty leader is still running; the leader is now \
+                 unreapable by this process"
+            ),
+            Err(e) => tracing::error!(pid = self.pid, %e, "reaping the pty leader failed"),
+        }
+    }
 }
 
 impl ProcEntry {
     /// Whether the pty child is still running. `false` as soon as the child is
     /// reaped, without waiting for the drain grace / sticky `exit` write.
     fn pty_running(&self) -> bool {
-        !self.pty_reaped.load(Ordering::SeqCst)
+        !self.exit_observed.load(Ordering::SeqCst)
             && self.exit.lock().map(|exit| exit.is_none()).unwrap_or(false)
     }
 
@@ -170,6 +272,35 @@ enum ProcRuntime {
         /// reader 在 `read() == Ok(0)` 时置位，是清扫谓词的安全闸
         /// （见 `ProcEntry::removable`）。
         eof_reached: Arc<AtomicBool>,
+        /// #1013 (PR-B): the leader's `Child` handle, and its **only** owner.
+        /// `Some` = not reaped, `None` = reaped.
+        ///
+        /// This is not a bookkeeping bit, it *is* the ownership: the waiter
+        /// never holds the handle (it gets a bare `u32`), and `Option::take()`
+        /// in `Drop for ProcEntry` makes "reaped at most once" a type-system
+        /// property. Holding the handle costs nothing — `portable-pty` puts no
+        /// `Drop` on it and `std::process::Child` has none either, so dropping
+        /// it would not reap and keeping it does not consume anything beyond
+        /// the zombie the `WNOWAIT` observation deliberately retains.
+        leader: StdMutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>,
+        /// #1013 (PR-B, §2.4): `waitid` answered `ECHILD` — the kernel told us
+        /// this pid is no longer our child, i.e. the pin is *proven* broken
+        /// (something set `SIGCHLD` to be auto-reaping, so the child never
+        /// became our zombie).
+        ///
+        /// **Best-effort detection, NOT fail-closed, and the difference
+        /// matters.** The kernel decides auto-reaping at the moment the child
+        /// *exits* and frees the number right then; a userspace flag set when
+        /// our `waitid` returns is strictly after the fact and cannot close
+        /// that window. What it buys: this entry stops offering `entry.pid` as
+        /// a group signal target from here on, plus an ERROR to diagnose from.
+        /// What it does not buy: the release→flag gap (§6.4), which no
+        /// userspace mechanism can cover.
+        ///
+        /// Monotonic and per-entry: an already-pinned zombie is *not* taken
+        /// away by a later auto-reap setting (measured, design E4c), so only
+        /// *future* exits can lose their pin and nothing ever needs undoing.
+        pin_lost: AtomicBool,
     },
 }
 
@@ -287,7 +418,22 @@ impl ByteRing {
 #[derive(Debug, Clone, Copy)]
 pub struct EntryDebugStats {
     pub buffered_bytes: usize,
-    pub exited: bool,
+    /// The sticky `exit` slot has been stamped. **#1013 (PR-B) renamed this
+    /// from `exited`**: with `exit_observed` next to it, one unqualified
+    /// "exited" for two genuinely different instants is exactly the confusion
+    /// the rename exists to remove.
+    pub exit_recorded: bool,
+    /// The waiter has *observed* the leader's exit (`waitid(.., WNOWAIT)`
+    /// returned) — earlier than `exit_recorded`, which additionally waits out
+    /// the drain grace. Under the #1013 pin the leader is a retained zombie at
+    /// this point, so `kill(leader, 0) == 0` forever: tests that need "the exit
+    /// has happened" must poll this bit, never pid liberation.
+    pub exit_observed: bool,
+    /// Pty only: the kernel answered `ECHILD`, so this entry's pin is proven
+    /// broken and it refuses to be a group signal target (§2.4).
+    pub pin_lost: bool,
+    /// The pty waiter did not run to completion (design M2).
+    pub waiter_degraded: bool,
 }
 
 #[derive(Debug)]
@@ -303,6 +449,8 @@ impl ProcRegistry {
             reap_children: true,
             pty_reclaim_grace: PTY_RECLAIM_GRACE,
             pty_drain_grace: PTY_DRAIN_GRACE,
+            pin_count: Arc::new(AtomicUsize::new(0)),
+            pin_lost_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -351,12 +499,38 @@ impl ProcRegistry {
                 .lock()
                 .map(|ring| ring.buffered_len())
                 .unwrap_or(0),
-            exited: entry
+            exit_recorded: entry
                 .exit
                 .lock()
                 .map(|exit| exit.is_some())
                 .unwrap_or(false),
+            exit_observed: entry.exit_observed.load(Ordering::SeqCst),
+            pin_lost: match &entry.runtime {
+                ProcRuntime::Pty { pin_lost, .. } => pin_lost.load(Ordering::SeqCst),
+                ProcRuntime::Pipe { .. } => false,
+            },
+            waiter_degraded: entry.waiter_degraded.load(Ordering::SeqCst),
         })
+    }
+
+    /// #1013 (PR-B): how many un-reaped pty leader handles **this registry**
+    /// owns — i.e. how many pids it is currently pinning. See the field's doc
+    /// for why it is registry-scoped (C2) and why it counts handles rather than
+    /// observed exits (M3).
+    ///
+    /// Deliberately reads the counter and not the registry map: an entry that
+    /// was displaced by a same-`proc_id` respawn has left the map but still
+    /// owns its handle, and T10 exists to keep that visible.
+    #[doc(hidden)]
+    pub fn debug_pin_count(&self) -> usize {
+        self.pin_count.load(Ordering::SeqCst)
+    }
+
+    /// #1013 (PR-B): how many pty leaders **this registry** has lost the pin on
+    /// (`waitid` answered `ECHILD`, §2.4).
+    #[doc(hidden)]
+    pub fn debug_pin_lost_count(&self) -> usize {
+        self.pin_lost_count.load(Ordering::SeqCst)
     }
 
     /// #996: 测试用故障注入 —— 把 pty master 置为 `O_NONBLOCK`，于是 reader 的
@@ -500,6 +674,39 @@ impl ProcRegistry {
     /// Per `pgid_lease` regulation 1 the leases come from cloned
     /// `Arc<ProcEntry>`s, never from the registry guard: that guard is released
     /// before a single `kill` runs.
+    ///
+    /// # #1013 PR-B: the `exit.is_none()` filter was **deleted**, not replaced
+    ///
+    /// Until PR-B this loop skipped every entry whose sticky exit had already
+    /// been stamped, because in that state the leader had already been reaped
+    /// and its pgid was recyclable — signalling it was the #1013 defect. Under
+    /// the pin the leader is a retained zombie for the entry's whole registry
+    /// lifetime, so that state is no longer dangerous, and skipping it leaked
+    /// grandchildren that outlived a recorded exit. **T5b
+    /// (`terminate_all_after_exit_recorded.rs`) is the lock**: it establishes
+    /// exactly the newly-covered state and its mutation is putting the filter
+    /// back. This deletion is only safe *with* the pin, which is why it could
+    /// not ship in PR-A.
+    ///
+    /// **Do not "replace it with a narrower predicate".** Twice in review the
+    /// proposal was some form of `Pty && !pin_lost`; both times that would drop
+    /// **Pipe** out of the shutdown group-SIGTERM and break #388, because Pipe
+    /// is not Pty. After the deletion the only filtering left is
+    /// `filter_map(|e| group_target(e).ok())`, and each of its arms is already
+    /// what we want: `Err(PinLost)` drops entries whose pgid the kernel has
+    /// proven is no longer ours, `Err(MasterPoisoned)` matches the pre-#1013
+    /// behaviour, and `Ok(PipeBestEffort)` keeps Pipe in verbatim.
+    ///
+    /// No *unpinned* `Foreground` target is newly admitted by the widening: the
+    /// newly covered state requires the sticky exit to be recorded, i.e. the
+    /// session leader has exited, and then the kernel's `disassociate_ctty` has
+    /// already cleared `tty->ctrl.pgrp`, so `process_group_leader()` is `None`
+    /// and `group_target` necessarily yields the pinned `Leader` variant.
+    ///
+    /// Registered consequence (deliberate, and a narrowing versus pre-PR-B):
+    /// a `pin_lost` entry is now excluded here too, so its grandchildren get no
+    /// group SIGTERM on shutdown. That pgid has been proven by the kernel not
+    /// to be ours any more; signalling it *is* #1013.
     pub fn terminate_all_process_groups_sync(&self) {
         let entries: Vec<Arc<ProcEntry>> = self
             .inner
@@ -508,13 +715,6 @@ impl ProcRegistry {
             .unwrap_or_default();
         let targets: Vec<pgid_lease::GroupSignalTarget<'_>> = entries
             .iter()
-            .filter(|entry| {
-                entry
-                    .exit
-                    .lock()
-                    .map(|exit| exit.is_none())
-                    .unwrap_or(false)
-            })
             .filter_map(|entry| pgid_lease::group_target(entry).ok())
             .collect();
         for target in &targets {
@@ -1042,7 +1242,7 @@ async fn handle_signal(
 ///    **lint- and review-enforced only**, exactly like regulation 2's spirit
 ///    but not reachable by the same `'static`-in-a-signature ban.
 mod pgid_lease {
-    use super::{ProcEntry, ProcRuntime};
+    use super::{Ordering, ProcEntry, ProcRuntime};
     use std::io;
     use std::marker::PhantomData;
 
@@ -1068,9 +1268,11 @@ mod pgid_lease {
 
     /// A signal target computed from — and borrowing — one `&ProcEntry`.
     pub(super) enum GroupSignalTarget<'a> {
-        /// Target = the leader's pgid (numerically `entry.pid`). Pinned by the
-        /// leader zombie **once PR-B lands** (INV-1013-PTY). In PR-A this
-        /// variant only records that the target's *source* is the leader.
+        /// Target = the leader's pgid (numerically `entry.pid`). **Pinned by
+        /// the leader zombie** (INV-1013-PTY): the waiter observes the exit
+        /// with `WNOWAIT` and only `Drop for ProcEntry` reaps, so while any
+        /// `Arc<ProcEntry>` is alive this number is still allocated to us and
+        /// cannot have been handed to an unrelated process group.
         Leader(Pgid, PhantomData<&'a ProcEntry>),
         /// Target = the foreground job group returned by `tcgetpgrp(master)`.
         /// **Never pinned** — it is a different process group's number and the
@@ -1112,11 +1314,10 @@ mod pgid_lease {
         /// Produced **only** by `require_addressable_by_signal_rpc` — see
         /// regulation 4.
         PipeNotSignalable,
-        /// Produced only by `group_target`'s Pty branch, and only once PR-B
-        /// lands the `pin_lost` mechanism. PR-A carries the variant so that the
-        /// error mapping in `handle_signal` is already exhaustive and stable;
-        /// nothing constructs it yet, hence the allow.
-        #[allow(dead_code, reason = "constructed by PR-B's pin_lost mechanism")]
+        /// Produced only by `group_target`'s Pty branch, once the waiter has
+        /// recorded `pin_lost` (the kernel answered `ECHILD`, §2.4). It must
+        /// stay textually distinguishable from `Kill(ESRCH)`: T6 can only be
+        /// reddened by its own mutation because those two render differently.
         PinLost,
         /// The pty master mutex is poisoned — the same situation in which the
         /// pre-#1013 `current_process_group` returned `Err`.
@@ -1126,8 +1327,8 @@ mod pgid_lease {
     }
 
     /// The only constructor. `Err` is only ever possible on the **Pty** branch
-    /// (`MasterPoisoned` today, `PinLost` once PR-B lands). See regulation 4:
-    /// the Pipe branch must always be `Ok(PipeBestEffort)`.
+    /// (`PinLost` or `MasterPoisoned`). See regulation 4: the Pipe branch must
+    /// always be `Ok(PipeBestEffort)`.
     pub(super) fn group_target(
         entry: &ProcEntry,
     ) -> Result<GroupSignalTarget<'_>, GroupSignalError> {
@@ -1136,7 +1337,18 @@ mod pgid_lease {
                 Pgid(entry.pid as libc::pid_t),
                 PhantomData,
             )),
-            ProcRuntime::Pty { master, .. } => {
+            ProcRuntime::Pty {
+                master, pin_lost, ..
+            } => {
+                // #1013 PR-B §2.4. Deliberately one deletable line: T6's second
+                // mutation is deleting it, and T6 then has to notice by message
+                // prefix that it got `Kill(ESRCH)` instead of `PinLost`.
+                // Deliberately NOT `anyhow::ensure!` — this function returns
+                // `Result<_, GroupSignalError>` and `ensure!` always produces
+                // `anyhow::Error`, so that spelling does not compile (E0308).
+                if pin_lost.load(Ordering::SeqCst) {
+                    return Err(GroupSignalError::PinLost);
+                }
                 let master = master
                     .lock()
                     .map_err(|_| GroupSignalError::MasterPoisoned)?;
@@ -1263,7 +1475,11 @@ fn group_signal_error_reply(
         pgid_lease::GroupSignalError::PinLost => ControlReply::Error {
             kind: ControlErrorKind::Internal,
             message: format!(
-                "pty leader pin lost for proc {proc_id} (kernel reported ECHILD); refusing to use its pgid as a signal target"
+                // The cause is deliberately generic: `pin_lost` is set on two
+                // waiter arms, only one of which is `ECHILD`. Naming ECHILD
+                // unconditionally would mis-diagnose an operator reading this
+                // reply after a `waitid` failure that proved nothing.
+                "pty leader pin lost for proc {proc_id} (kernel reported ECHILD or waitid failed); refusing to use its pgid as a signal target"
             ),
         },
         pgid_lease::GroupSignalError::MasterPoisoned => ControlReply::Error {
@@ -1335,7 +1551,7 @@ async fn handle_cleanup(
     // #996: `Cleanup` = "我不要这条了"，于是把回收时刻提前到"立刻"，然后就地
     // 扫一次。跳过的是宽限期，**不是**安全闸：`ProcEntry::removable` 依然要求
     // sticky exit 已落定、master 已 EOF，所以
-    //   * 一个落在 `pty_reaped=true` 与 seal 之间的 cleanup 不会把退出状态提前
+    //   * 一个落在 `exit_observed=true` 与 seal 之间的 cleanup 不会把退出状态提前
     //     丢掉（#993 R2/F6 的老坑）——它只会在下一轮清扫时生效；
     //   * 孙子进程还攥着 slave 时不会 drop writer，也就不会注入 `\n`+VEOF。
     //
@@ -1532,9 +1748,14 @@ async fn try_spawn_pipe(
                 cursor_tail: AtomicU64::new(0),
                 cursor_head: AtomicU64::new(0),
                 exit: StdMutex::new(None),
-                pty_reaped: AtomicBool::new(false),
+                exit_observed: AtomicBool::new(false),
+                waiter_degraded: AtomicBool::new(false),
                 remove_after: StdMutex::new(None),
                 broadcast_tx,
+                // Pipe entries carry the counter but never touch it: they
+                // install no leader handle, so `Drop for ProcEntry` returns on
+                // its explicit Pipe arm before any `fetch_sub`.
+                pin_count: registry.pin_count.clone(),
             }),
         )
     };
@@ -1588,7 +1809,7 @@ async fn try_spawn_pty(
         error: format!("take pty writer for {}: {e}", request.proc_id),
         child_already_reaped: false,
     })?;
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| EnsureProcFailure {
@@ -1603,22 +1824,23 @@ async fn try_spawn_pty(
     // `Some(nonzero)`, so this is unreachable today; it is here so that the
     // unreachable case cannot silently become a self-inflicted killpg.
     //
-    // FOLLOW-UP (#1013, deliberately not fixed in PR-A): the `child.kill()`
-    // below has the same theoretical shape as the pipe guard's did — for a
-    // stored pid of 0 a `kill()` is `kill(0, SIGKILL)`, the supervisor's own
-    // process group. The pipe site was fixed (it dropped the kill entirely);
-    // this one predates that round and is left alone to keep the diff scoped.
+    // #1013 PR-B folds in the PR-A follow-up that was left here: the guard used
+    // to `child.kill()` before bailing, and `portable_pty`'s `ChildKiller` does
+    // `kill(stored_pid, ..)` — for a stored pid of 0 that is `kill(0, SIGKILL)`,
+    // i.e. the supervisor's **own process group**, the exact self-inflicted
+    // killpg this branch exists to prevent. The pipe guard was fixed the same
+    // way: signal nothing, and tell the caller the child was not reaped so the
+    // caller does not assume it was. We have no usable pid, so there is nothing
+    // safe to signal or wait for.
     let pid = match child.process_id() {
         Some(pid) if pid != 0 => pid,
         observed => {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(EnsureProcFailure {
                 error: format!(
                     "pty child for {} reported no usable pid ({observed:?}); refusing to register an entry whose group signal target would be 0",
                     request.proc_id
                 ),
-                child_already_reaped: true,
+                child_already_reaped: observed.is_none(),
             });
         }
     };
@@ -1639,15 +1861,30 @@ async fn try_spawn_pty(
             master: master.clone(),
             writer,
             eof_reached: eof_reached.clone(),
+            // #1013 PR-B: the handle moves into the entry **at spawn**, before
+            // the waiter exists. The waiter is handed the bare `pid` and can
+            // therefore never reap, panic-or-not.
+            leader: StdMutex::new(Some(child)),
+            pin_lost: AtomicBool::new(false),
         },
         byte_ring: StdMutex::new(ByteRing::new(replay_bytes)),
         cursor_tail: AtomicU64::new(0),
         cursor_head: AtomicU64::new(0),
         exit: StdMutex::new(None),
-        pty_reaped: AtomicBool::new(false),
+        exit_observed: AtomicBool::new(false),
+        waiter_degraded: AtomicBool::new(false),
         remove_after: StdMutex::new(None),
         broadcast_tx: broadcast_tx.clone(),
+        pin_count: registry.pin_count.clone(),
     });
+    // #1013 PR-B (design M3): the increment is structurally paired with
+    // installing the handle above, and the only decrement is the matching
+    // `leader.take()` in `Drop for ProcEntry`. Counting from "observed an exit"
+    // instead would leave the two fail-loud `Drop` arms never decrementing,
+    // could underflow this `AtomicUsize` to `usize::MAX` on the waiter's
+    // `Unexpected` arm, and would measure the wrong quantity anyway — a running
+    // leader occupies an `RLIMIT_NPROC` slot just as a zombie one does.
+    registry.pin_count.fetch_add(1, Ordering::SeqCst);
     // #1013 (D7 #2): `insert` returns the entry it displaced, and a same-`proc_id`
     // respawn inside the reclaim grace makes the registry's `Arc` the *last* one
     // — so dropping the returned value drops `ProcEntry`, and with it
@@ -1673,10 +1910,11 @@ async fn try_spawn_pty(
     spawn_pty_waiter(
         request.proc_id.clone(),
         entry,
-        child,
+        pid,
         drain_gate,
         registry.pty_reclaim_grace,
         registry.pty_drain_grace,
+        registry.pin_lost_count.clone(),
     );
 
     Ok(Spawned {
@@ -1917,16 +2155,281 @@ fn spawn_pty_reader_task(
 ///   "running" forever; both the waiter and the reader emit a WARN when it
 ///   happens.
 ///
+/// #1013 PR-B: the degraded `(status, signalled)` pair — "the process is over,
+/// we could not learn how". Identical in shape to the pre-#1013 `None` arm that
+/// covered `child.wait()` failing, so no reader sees a new shape.
+const DEGRADED_EXIT_PARTS: (Option<i32>, bool) = (None, false);
+
+/// What one `waitid(P_PID, pid, WEXITED | WNOWAIT)` told us.
+enum PtyExitObservation {
+    /// The child terminated and is **still waitable** — i.e. it is now a zombie
+    /// we own, which is what pins its pid and pgid (INV-1013-PTY).
+    Observed { si_code: i32, si_status: i32 },
+    /// `ECHILD`: the kernel says this pid is not our child. Something in this
+    /// process made `SIGCHLD` auto-reaping, so the child never became our
+    /// zombie and its number was released the instant it exited (§2.4).
+    PinLost,
+    /// Any other error. Not retried and not swallowed.
+    Unexpected(io::Error),
+}
+
+/// Observes the pty leader's exit **without reaping it**.
+///
+/// `WEXITED | WNOWAIT` is the whole mechanism of #1013: `waitid` blocks until
+/// the child terminates and fills in `siginfo_t`, but per `man 2 waitid` leaves
+/// the child "in a waitable state" — a zombie. A zombie still occupies its pid,
+/// and pid numbers are only returned to the allocator when the last task
+/// detaches (i.e. on reap), so retaining it is the *only* mechanism that keeps
+/// a pid number from being recycled. No pidfd, tty reference or other handle
+/// can do this.
+///
+/// **The four arms are written out one by one on purpose**, and in particular
+/// `ECHILD` is its own arm:
+///
+/// * `Ok` — done, the pin now exists.
+/// * `EINTR` — the one and only retry arm.
+/// * `ECHILD` — **must not** fall into the retry arm. `waitid` would answer
+///   `ECHILD` forever, the waiter would spin forever, and the terminal would
+///   never publish `Exited`: a hang, which is strictly worse than the bug this
+///   design fixes. This arm is what T6's first mutation attacks.
+/// * anything else — also not retried; publish a degraded exit and move on, so
+///   the terminal still terminates.
+fn observe_pty_exit(pid: u32) -> PtyExitObservation {
+    loop {
+        // SAFETY: `info` is a live, zeroed `siginfo_t` we own for the duration
+        // of the call; `waitid` only writes into it.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            // `si_code` is a plain public field on gnu targets; `si_status()`
+            // reads a union and is therefore an `unsafe fn`.
+            return PtyExitObservation::Observed {
+                si_code: info.si_code,
+                si_status: unsafe { info.si_status() },
+            };
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::ECHILD) => return PtyExitObservation::PinLost,
+            _ => return PtyExitObservation::Unexpected(err),
+        }
+    }
+}
+
+/// #1013 PR-B: the **only** conversion from a `siginfo_t` pair to the
+/// `(exit status, signalled)` shape the rest of the crate speaks, and
+/// `spawn_pty_waiter` is its **only** caller.
+///
+/// It is one function rather than an inline `match` in the waiter so that T3
+/// can assert on production wiring instead of on a re-composition of it. If the
+/// test had to rebuild `raw status -> ExitStatusExt::from_raw ->
+/// portable_pty::ExitStatus -> (status, signalled)` itself, then reverting the
+/// waiter to an inline `si_code` match would leave T3 green while the
+/// `CLD_DUMPED` regression came straight back. Consequently the waiter must not
+/// mention `si_code`, `ExitStatusExt` or `portable_pty::ExitStatus` anywhere.
+///
+/// Step 1 (synthesising a `wait(2)` status word) is the only genuinely new
+/// logic; steps 2 and 3 are the pre-#1013 mapping, unchanged, so that a
+/// `WNOWAIT` observation and a `child.wait()` produce identical `ProcExit`s.
+///
+/// `CLD_DUMPED` has its own arm and it is load-bearing: a core dump has
+/// `WIFSIGNALED = 1` (measured: `abort` under `ulimit -c unlimited` gives
+/// `si_code = CLD_DUMPED`, `si_status = 6`, `WIFSIGNALED = 1`). A
+/// `CLD_KILLED`-only match would synthesise a *normal exit* word and persist
+/// the crash as "exited with code 6".
+fn proc_exit_parts_from_siginfo(si_code: i32, si_status: i32) -> (Option<i32>, bool) {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let raw = match si_code {
+        libc::CLD_EXITED => (si_status & 0xff) << 8,
+        libc::CLD_KILLED => si_status & 0x7f,
+        libc::CLD_DUMPED => (si_status & 0x7f) | 0x80,
+        other => {
+            // `WEXITED` alone can only report termination, so `CLD_STOPPED` /
+            // `CLD_CONTINUED` / anything else here means our understanding of
+            // the call is wrong. Fail loud rather than synthesise a status word
+            // from a code we do not understand.
+            tracing::error!(
+                si_code = other,
+                si_status,
+                "waitid returned an si_code that WEXITED should not produce; publishing a \
+                 degraded exit"
+            );
+            return DEGRADED_EXIT_PARTS;
+        }
+    };
+    let status = portable_pty::ExitStatus::from(std::process::ExitStatus::from_raw(raw));
+    match status.signal() {
+        Some(_) => (None, true),
+        None => (Some(status.exit_code() as i32), false),
+    }
+}
+
+/// #1013 PR-B (design C7): the #993 R2 critical section, extracted verbatim so
+/// it has exactly **one** implementation — seal the ring, sample the final
+/// cursor, stamp the sticky slot, broadcast `Exited`.
+///
+/// **The whole crate writes the sticky exit here and broadcasts `Exited` here,
+/// nowhere else.** That atomicity is what makes `Exited` provably the last
+/// frame: the reader takes the same ring lock around append+broadcast, so a
+/// second writer outside this section would leave the ring unsealed (output
+/// after the exit), never broadcast `Exited` (attached clients hang instead of
+/// degrading), and would have to invent a `cursor` — which `handle_attach`'s
+/// fast path then compares against `snapshot_tail`.
+///
+/// **Stamps only if absent.** A sticky slot that already has a value is
+/// returned as-is: no re-stamp, and *no second `Exited` frame*, because no
+/// reader has a contract for a duplicate terminal frame. `ByteRing::seal()` is
+/// idempotent, so the re-entry from `WaiterCompletion::drop` after a normal
+/// path has already run is a safe no-op.
+fn seal_and_publish_exit(entry: &ProcEntry, proc_id: &str, parts: (Option<i32>, bool)) -> ProcExit {
+    let mut ring = match entry.byte_ring.lock() {
+        Ok(ring) => ring,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let cursor = ring.seal();
+    entry.cursor_tail.store(cursor, Ordering::SeqCst);
+    let (status, signalled) = parts;
+    let exit = ProcExit {
+        status,
+        signalled,
+        cursor,
+    };
+    // The sticky slot must hold exactly the broadcast value and must be
+    // visible no later than the frame: `handle_attach`'s fast path decides
+    // correctness with `exit.cursor <= snapshot_tail`. Lock order here
+    // (byte_ring → exit) matches `handle_attach`'s.
+    // 中毒也必须写：`ProcEntry::removable` 要求 sticky exit 已落定，
+    // 跳过这一次写入就等于让这条 entry 永远不可回收（#996 review E）。
+    // 与本文件其它 `exit` 访问同一个风格：`poisoned.into_inner()`。
+    let already = {
+        let mut slot = entry
+            .exit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match slot.clone() {
+            Some(existing) => Some(existing),
+            None => {
+                *slot = Some(exit.clone());
+                None
+            }
+        }
+    };
+    if let Some(existing) = already {
+        tracing::debug!(
+            proc_id = %proc_id,
+            "sticky exit already present; not re-stamping and not broadcasting a second \
+             Exited frame"
+        );
+        return existing;
+    }
+    let _ = entry.broadcast_tx.send(DataFrame::Exited(exit.clone()));
+    exit
+}
+
+/// #1013 PR-B (design M2): an RAII guard that makes "the pty waiter did not run
+/// to completion" a recoverable state instead of a permanently pinned zombie.
+///
+/// Under the pin, a waiter that observes the exit and then panics (or returns
+/// early) before stamping the sticky exit and scheduling removal leaves an
+/// entry that `ProcEntry::removable` will *never* accept — so the last `Arc`
+/// never drops, `Drop for ProcEntry` never runs, and the leader stays a zombie
+/// holding an `RLIMIT_NPROC` slot until the supervisor exits. Before PR-B the
+/// same panic was cheaper: `child.wait()` had already reaped.
+///
+/// The guard therefore fills in exactly the two preconditions `removable`
+/// needs, **through the one function that owns them** — never a second write
+/// path (see `seal_and_publish_exit` for why a separate degraded write would
+/// leave the ring unsealed and never broadcast `Exited`).
+///
+/// What it buys: the entry becomes reclaimable and the zombie is reaped on the
+/// normal schedule. What it does not buy: `removable`'s third condition
+/// (`eof_reached`) is untouched, so a grandchild holding the slave keeps the
+/// entry alive exactly as it does on the happy path — this downgrades
+/// *permanent* retention to *normal* retention, it does not remove retention.
+///
+/// **Implicit prerequisite**: `panic = "abort"` would skip `Drop` entirely and
+/// this guard with it. The workspace uses the default unwind profile; nothing
+/// pins that, so it is written down here.
+struct WaiterCompletion {
+    entry: Arc<ProcEntry>,
+    proc_id: String,
+    armed: bool,
+}
+
+impl WaiterCompletion {
+    fn new(entry: Arc<ProcEntry>, proc_id: String) -> Self {
+        Self {
+            entry,
+            proc_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WaiterCompletion {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        tracing::error!(
+            proc_id = %self.proc_id,
+            "pty waiter did not run to completion (panic or early return); marking the \
+             entry degraded and scheduling reclaim so its pinned leader can be reaped"
+        );
+        self.entry.waiter_degraded.store(true, Ordering::SeqCst);
+        seal_and_publish_exit(&self.entry, &self.proc_id, DEGRADED_EXIT_PARTS);
+        self.entry.schedule_removal(std::time::Instant::now());
+    }
+}
+
+/// #1013 PR-B: the **only** way to declare a pty leader's pin lost — the
+/// per-entry flag and the registry counter are written here together, never
+/// apart.
+///
+/// It is a function rather than two inline statements because the two waiter
+/// arms that reach it (`ECHILD` and `Unexpected`) were written independently
+/// and drifted: the `Unexpected` arm set the flag and skipped the counter, so
+/// an entry could report `stats.pin_lost == true` while `debug_pin_lost_count()
+/// still read 0. T6 asserts the two together and would not have noticed,
+/// because it only ever exercises the `ECHILD` arm. Structural pairing is the
+/// same remedy design M3 applies to `pin_count`.
+///
+/// Both arms are deliberately included: `Unexpected` has not *proven* the pin
+/// lost (the leader may well still be our unreaped child), but the waiter has
+/// lost its ability to say either way, and every downstream reader of this flag
+/// is fail-safe in the "refuse to use the pgid" direction. The cost of that
+/// conservatism on the `Unexpected` arm is recorded in §6.4.
+fn mark_pin_lost(entry: &ProcEntry, pin_lost_count: &AtomicUsize) {
+    if let ProcRuntime::Pty { pin_lost, .. } = &entry.runtime {
+        pin_lost.store(true, Ordering::SeqCst);
+    }
+    pin_lost_count.fetch_add(1, Ordering::SeqCst);
+}
+
 /// The grace is *not* load-bearing for ordering; shortening or lengthening it
 /// only changes how much genuinely in-flight output the degraded path is
 /// willing to wait for.
 fn spawn_pty_waiter(
     proc_id: String,
     entry: Arc<ProcEntry>,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
+    pid: u32,
     gate: Arc<PtyDrainGate>,
     reclaim_grace: Duration,
     drain_grace: Duration,
+    pin_lost_count: Arc<AtomicUsize>,
 ) {
     // OS thread, NOT `tokio::task::spawn_blocking`: a long-lived PTY child
     // (shell / codex / claude) keeps `child.wait()` blocked for the
@@ -1939,10 +2442,48 @@ fn spawn_pty_waiter(
     // body is sync-only (Mutex / atomic / broadcast::Sender::send /
     // tracing) — no `.await`, no tokio context required.
     std::thread::spawn(move || {
-        let status = child.wait().ok();
+        // #1013 PR-B (design M2): from here on, every exit path from this
+        // thread must either run to `disarm()` or leave the entry in a state
+        // where it can still be reclaimed — otherwise the leader zombie is
+        // pinned until the supervisor exits. Constructed *before* the
+        // observation, so a panic anywhere in this body is covered.
+        let completion = WaiterCompletion::new(entry.clone(), proc_id.clone());
+        let parts = match observe_pty_exit(pid) {
+            PtyExitObservation::Observed { si_code, si_status } => {
+                proc_exit_parts_from_siginfo(si_code, si_status)
+            }
+            PtyExitObservation::PinLost => {
+                mark_pin_lost(&entry, &pin_lost_count);
+                tracing::error!(
+                    proc_id = %proc_id,
+                    pid,
+                    "waitid reported ECHILD for the pty leader: the kernel auto-reaped it, \
+                     i.e. something in this process made the SIGCHLD disposition one under \
+                     which our children never become zombies. Its pid was therefore \
+                     released the instant it exited and the #1013 pin is gone. This entry \
+                     will refuse to use its pgid as a group signal target from now on. \
+                     Detection is after the fact: it cannot close the window between the \
+                     kernel freeing the number and this line."
+                );
+                DEGRADED_EXIT_PARTS
+            }
+            PtyExitObservation::Unexpected(e) => {
+                mark_pin_lost(&entry, &pin_lost_count);
+                tracing::error!(
+                    proc_id = %proc_id,
+                    pid,
+                    %e,
+                    "waitid on the pty leader failed unexpectedly; publishing a degraded exit \
+                     and refusing to use this entry's pgid as a group signal target"
+                );
+                DEGRADED_EXIT_PARTS
+            }
+        };
         // Published before the grace window so liveness probes stop reporting
-        // a reaped child as running (issue #993 R4).
-        entry.pty_reaped.store(true, Ordering::SeqCst);
+        // a child that has exited as running (issue #993 R4). The name says
+        // *observed*, not *reaped*, because under `WNOWAIT` those are two
+        // different instants — the reap is `Drop for ProcEntry`'s.
+        entry.exit_observed.store(true, Ordering::SeqCst);
         if !gate.wait_for_drain(drain_grace) {
             tracing::warn!(
                 proc_id = %proc_id,
@@ -1952,51 +2493,7 @@ fn spawn_pty_waiter(
                  a full drain — any further pty output is dropped"
             );
         }
-        // One critical section: seal, sample the final cursor, stamp the
-        // sticky slot, broadcast. The reader takes the same lock around
-        // append+broadcast, so this is what makes `Exited` the provably last
-        // frame on both the drained and the timed-out path (issue #993 R2).
-        let exit = {
-            let mut ring = match entry.byte_ring.lock() {
-                Ok(ring) => ring,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            let cursor = ring.seal();
-            entry.cursor_tail.store(cursor, Ordering::SeqCst);
-            let exit = match status.as_ref() {
-                Some(status) if status.signal().is_some() => ProcExit {
-                    status: None,
-                    signalled: true,
-                    cursor,
-                },
-                Some(status) => ProcExit {
-                    status: Some(status.exit_code() as i32),
-                    signalled: false,
-                    cursor,
-                },
-                None => ProcExit {
-                    status: None,
-                    signalled: false,
-                    cursor,
-                },
-            };
-            // The sticky slot must hold exactly the broadcast value and must be
-            // visible no later than the frame: `handle_attach`'s fast path decides
-            // correctness with `exit.cursor <= snapshot_tail`. Lock order here
-            // (byte_ring → exit) matches `handle_attach`'s.
-            // 中毒也必须写：`ProcEntry::removable` 要求 sticky exit 已落定，
-            // 跳过这一次写入就等于让这条 entry 永远不可回收（#996 review E）。
-            // 与本文件其它 `exit` 访问同一个风格：`poisoned.into_inner()`。
-            {
-                let mut slot = entry
-                    .exit
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                *slot = Some(exit.clone());
-            }
-            let _ = entry.broadcast_tx.send(DataFrame::Exited(exit.clone()));
-            exit
-        };
+        let exit = seal_and_publish_exit(&entry, &proc_id, parts);
         tracing::info!(
             proc_id = %proc_id,
             status = ?exit.status,
@@ -2024,6 +2521,10 @@ fn spawn_pty_waiter(
                 "pty reclaim grace overflows Instant; entry will not be scheduled for removal"
             ),
         }
+        // Ran the whole way through: the entry has a sticky exit and a
+        // scheduled removal, so it will become reclaimable and its pinned
+        // leader will be reaped by `Drop for ProcEntry`. Only now disarm.
+        completion.disarm();
     });
 }
 
@@ -2433,6 +2934,297 @@ pub mod test_support {
 }
 
 #[cfg(test)]
+mod wnowait_tests {
+    use super::*;
+
+    /// T3 — the siginfo → `(status, signalled)` table, asserted on **the
+    /// production function the waiter actually calls**.
+    ///
+    /// The earlier shape of this test asserted on a `raw_wait_status` helper and
+    /// re-composed `from_raw` → `portable_pty::ExitStatus` → `(status,
+    /// signalled)` itself. That proves the helper, not the wiring: reverting the
+    /// waiter to an inline `si_code` match leaves such a test green while the
+    /// `CLD_DUMPED` regression is back. So the whole chain is one function, the
+    /// waiter is its only caller, and this case asserts the function's output.
+    ///
+    /// Hermetic: no process, no fixture, no environment dependency. That is why
+    /// this — not the integration case in
+    /// `exit_status_survives_the_wnowait_split.rs` — is the load-bearing lock
+    /// for the core-dump row.
+    #[test]
+    fn proc_exit_parts_from_siginfo_maps_every_wexited_code() {
+        // The triples are measured, not assumed: `exit 42`, `SIGKILL` and
+        // `abort` under `ulimit -c unlimited` produce exactly these on
+        // Linux 6.1 / glibc.
+        assert_eq!(
+            proc_exit_parts_from_siginfo(libc::CLD_EXITED, 42),
+            (Some(42), false),
+            "a normal exit carries its code and is not signalled"
+        );
+        assert_eq!(
+            proc_exit_parts_from_siginfo(libc::CLD_KILLED, libc::SIGKILL),
+            (None, true),
+            "a killed child is signalled and has no exit code"
+        );
+        // The row that pays for this test. A core dump has WIFSIGNALED = 1, so
+        // it must land in the signalled column. A CLD_KILLED-only match
+        // synthesises a normal-exit status word instead, and the crash gets
+        // persisted as "exited with code 6".
+        assert_eq!(
+            proc_exit_parts_from_siginfo(libc::CLD_DUMPED, libc::SIGABRT),
+            (None, true),
+            "a core-dumping child is signalled, not an exit with code 6"
+        );
+        // `WEXITED` alone cannot report these; if one shows up, our reading of
+        // the call is wrong and the function must degrade loudly rather than
+        // synthesise a status word from a code it does not understand.
+        for code in [libc::CLD_STOPPED, libc::CLD_CONTINUED, libc::CLD_TRAPPED] {
+            assert_eq!(
+                proc_exit_parts_from_siginfo(code, 19),
+                DEGRADED_EXIT_PARTS,
+                "si_code {code} is not reachable under WEXITED and must degrade"
+            );
+        }
+    }
+
+    /// T6b — `group_target` refuses to hand out the leader pgid once the pin is
+    /// proven lost, and still hands it out otherwise.
+    ///
+    /// The companion to `pin_lost_on_autoreap.rs`: that one proves the
+    /// *production wiring* sets `pin_lost` (no fixture re-implementing the
+    /// check), this one proves the decision itself and does not depend on the
+    /// environment's `SIGCHLD` disposition.
+    ///
+    /// Note the positive assertion discriminates the **variant** and never
+    /// reads the number — outside `pgid_lease` the number is `E0616`, and
+    /// `matches!` is exactly the capability the T11 gate must not have removed.
+    #[tokio::test]
+    async fn group_target_refuses_the_leader_target_after_pin_loss() {
+        // A pty pair whose leader has already exited; the entry is the minimal
+        // shape `group_target` needs. `process_group_leader()` is `None` once
+        // the session leader is gone (the kernel clears `tty->ctrl.pgrp`), so
+        // this is the `Leader` branch — the pinned one.
+        let pair = native_pty_system()
+            .openpty(PtPtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("exit 0");
+        let mut child = pair.slave.spawn_command(cmd).expect("spawn");
+        let pid = child.process_id().expect("pid");
+        child.wait().expect("wait");
+        drop(pair.slave);
+
+        let (broadcast_tx, _) = broadcast::channel(1);
+        let entry = ProcEntry {
+            pid,
+            io_mode: IoMode::Pty { cols: 80, rows: 24 },
+            runtime: ProcRuntime::Pty {
+                master: Arc::new(StdMutex::new(pair.master)),
+                writer: Arc::new(StdMutex::new(Box::new(std::io::sink()))),
+                eof_reached: Arc::new(AtomicBool::new(false)),
+                // Already reaped above, deliberately: this case is about
+                // `group_target`'s decision, and leaving a handle here would
+                // make `Drop for ProcEntry` reap a pid that is already gone.
+                leader: StdMutex::new(None),
+                pin_lost: AtomicBool::new(false),
+            },
+            byte_ring: StdMutex::new(ByteRing::new(64)),
+            cursor_tail: AtomicU64::new(0),
+            cursor_head: AtomicU64::new(0),
+            exit: StdMutex::new(None),
+            exit_observed: AtomicBool::new(true),
+            waiter_degraded: AtomicBool::new(false),
+            remove_after: StdMutex::new(None),
+            broadcast_tx,
+            pin_count: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let Ok(target) = pgid_lease::group_target(&entry) else {
+            panic!("an intact pin must yield a target")
+        };
+        assert!(
+            matches!(target, pgid_lease::GroupSignalTarget::Leader(..)),
+            "an exited pty leader yields the pinned Leader target, kind = {}",
+            target.kind()
+        );
+        // The lease borrows `entry`, so it has to go out of scope before we
+        // mutate through `&entry.runtime` below.
+        let _ = target;
+
+        let ProcRuntime::Pty { pin_lost: flag, .. } = &entry.runtime else {
+            unreachable!("constructed as Pty")
+        };
+        flag.store(true, Ordering::SeqCst);
+
+        let Err(err) = pgid_lease::group_target(&entry) else {
+            panic!("a lost pin must refuse to produce a target")
+        };
+        match group_signal_error_reply("p", None, err) {
+            ControlReply::Error { kind, message } => {
+                assert_eq!(kind, ControlErrorKind::Internal);
+                assert!(
+                    message.starts_with("pty leader pin lost for proc p"),
+                    "must be distinguishable from Kill(ESRCH), got: {message}"
+                );
+            }
+            other => panic!("expected ControlReply::Error, got {other:?}"),
+        }
+    }
+
+    /// A pty entry with no leader handle installed, for the two cases below.
+    ///
+    /// No child is spawned: `leader: None` means `Drop for ProcEntry` takes
+    /// `None` and reaps nothing, so neither case depends on a process, a pid,
+    /// or the environment's `SIGCHLD` disposition. Only `openpty` is needed —
+    /// `ProcRuntime::Pty` owns a real master, and `seal_and_publish_exit` /
+    /// `WaiterCompletion` never touch it.
+    fn leaderless_pty_entry(
+        exit_observed: bool,
+    ) -> (ProcEntry, broadcast::Receiver<DataFrame>, Arc<AtomicUsize>) {
+        let pair = native_pty_system()
+            .openpty(PtPtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("openpty");
+        let (broadcast_tx, rx) = broadcast::channel(8);
+        let pin_count = Arc::new(AtomicUsize::new(0));
+        let entry = ProcEntry {
+            pid: 0,
+            io_mode: IoMode::Pty { cols: 80, rows: 24 },
+            runtime: ProcRuntime::Pty {
+                master: Arc::new(StdMutex::new(pair.master)),
+                writer: Arc::new(StdMutex::new(Box::new(std::io::sink()))),
+                eof_reached: Arc::new(AtomicBool::new(false)),
+                leader: StdMutex::new(None),
+                pin_lost: AtomicBool::new(false),
+            },
+            byte_ring: StdMutex::new(ByteRing::new(64)),
+            cursor_tail: AtomicU64::new(0),
+            cursor_head: AtomicU64::new(0),
+            exit: StdMutex::new(None),
+            exit_observed: AtomicBool::new(exit_observed),
+            waiter_degraded: AtomicBool::new(false),
+            remove_after: StdMutex::new(None),
+            broadcast_tx,
+            pin_count: pin_count.clone(),
+        };
+        (entry, rx, pin_count)
+    }
+
+    /// `seal_and_publish_exit` has **two** callers — the waiter's normal path
+    /// and `WaiterCompletion::drop` — so "stamp only if absent" is the entire
+    /// reason `Exited` is still provably-once after PR-B. §6.4 previously
+    /// claimed this branch was uncovered by construction; it is not, and
+    /// removing the guard is a one-line mutation that the rest of the suite
+    /// (`--lib` plus all the integration cases) does not notice.
+    ///
+    /// Mutation: replace the stamp-if-absent `match` with an unconditional
+    /// `*slot = Some(exit.clone()); None` → both the return-value assertion and
+    /// the "no second frame" assertion go red. That mutant is exactly the #993
+    /// duplicate-terminal-frame shape coming back.
+    #[test]
+    fn seal_and_publish_exit_stamps_and_broadcasts_exactly_once() {
+        let (entry, mut rx, _pin_count) = leaderless_pty_entry(true);
+
+        let first = seal_and_publish_exit(&entry, "p", (Some(7), false));
+        // The re-entry `WaiterCompletion::drop` performs after a normal path
+        // has already sealed: same entry, degraded parts.
+        let second = seal_and_publish_exit(&entry, "p", DEGRADED_EXIT_PARTS);
+
+        assert_eq!(
+            (second.status, second.signalled),
+            (first.status, first.signalled),
+            "the re-entry from WaiterCompletion::drop must return the recorded exit, not \
+             overwrite it"
+        );
+        assert_eq!(
+            entry
+                .exit
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_ref()
+                .map(|exit| (exit.status, exit.signalled)),
+            Some((Some(7), false)),
+            "the sticky slot must still hold the first exit"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(DataFrame::Exited(e)) if e.status == Some(7)),
+            "the first call must broadcast Exited"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a second Exited frame was broadcast; no reader has a contract for a duplicate \
+             terminal frame"
+        );
+    }
+
+    /// The `WaiterCompletion` guard (design M2), asserted on the guard itself
+    /// rather than on the argument for it. §6.4 previously claimed this path
+    /// had no injection point in production code; it does not need one — the
+    /// guard is a plain RAII type and a panicking thread is a legitimate
+    /// fixture for "the waiter did not run to completion".
+    ///
+    /// All four post-conditions are load-bearing and each is named in its own
+    /// assertion, because a guard that sets only some of them still leaves the
+    /// leader pinned forever.
+    ///
+    /// Mutation: no-op the body of `Drop for WaiterCompletion` → red on the
+    /// first of the four.
+    #[test]
+    fn waiter_completion_guard_makes_a_panicked_waiter_reclaimable() {
+        let (entry, mut rx, _pin_count) = leaderless_pty_entry(false);
+        let entry = Arc::new(entry);
+
+        let joined = {
+            let entry = entry.clone();
+            std::thread::spawn(move || {
+                let _completion = WaiterCompletion::new(entry, "p".into());
+                // Stands in for a panic anywhere between the `waitid`
+                // observation and `disarm()`.
+                panic!("waiter panicked before disarm");
+            })
+            .join()
+        };
+
+        assert!(joined.is_err(), "the fixture must actually panic");
+        assert!(
+            entry.waiter_degraded.load(Ordering::SeqCst),
+            "must mark the entry degraded"
+        );
+        assert!(
+            entry
+                .exit
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some(),
+            "must stamp a sticky exit, or `removable` can never accept the entry and the \
+             pinned leader is never reaped"
+        );
+        assert!(
+            entry
+                .remove_after
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some(),
+            "must schedule removal"
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(DataFrame::Exited(_))),
+            "must publish Exited, or attached clients hang instead of degrading"
+        );
+    }
+}
+
+#[cfg(test)]
 mod pgid_lease_tests {
     use super::*;
 
@@ -2473,9 +3265,11 @@ mod pgid_lease_tests {
             cursor_tail: AtomicU64::new(0),
             cursor_head: AtomicU64::new(0),
             exit: StdMutex::new(None),
-            pty_reaped: AtomicBool::new(false),
+            exit_observed: AtomicBool::new(false),
+            waiter_degraded: AtomicBool::new(false),
             remove_after: StdMutex::new(None),
             broadcast_tx,
+            pin_count: Arc::new(AtomicUsize::new(0)),
         };
 
         let target = match pgid_lease::group_target(&entry) {
@@ -2524,7 +3318,7 @@ mod pgid_lease_tests {
             (
                 pgid_lease::GroupSignalError::PinLost,
                 ControlErrorKind::Internal,
-                "pty leader pin lost for proc p (kernel reported ECHILD);",
+                "pty leader pin lost for proc p (kernel reported ECHILD or waitid failed);",
             ),
             (
                 pgid_lease::GroupSignalError::MasterPoisoned,

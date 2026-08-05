@@ -5,26 +5,49 @@
 //! This file locks the half that actually discriminates between the right
 //! guard and the tempting wrong one.
 //!
-//! The three cases the #1013 guard distinguishes are:
+//! # The taxonomy changed with #1013 PR-B — there is no "reaped" case any more
+//!
+//! Before PR-B the three states were `!reaped` / `reaped && exit.is_none()` /
+//! `exit.is_some()`, and "reaped" meant the waiter's `child.wait()` had
+//! released the leader's pid. Under PR-B the waiter observes the exit with
+//! `waitid(.., WNOWAIT)` and **never reaps**; the leader stays a zombie this
+//! process owns until `Drop for ProcEntry`. So "reaped, but the entry is still
+//! registered" is no longer a reachable state — that is the entire point of
+//! #1013 — and the axis that remains is *what the waiter has published*:
 //!
 //! ```text
-//! 1. !reaped                  -> leader still a group member  -> signal
-//! 2. reaped && exit.is_none() -> inside the drain grace; a grandchild holds
-//!                                the slave, group non-empty    -> signal
-//! 3. exit.is_some()           -> drained, group empty, pid recyclable
-//!                                                              -> refuse
+//! 1. !exit_observed                  -> the waiter has not seen the exit yet;
+//!                                       the leader is a live group member
+//!                                                                    -> signal
+//! 2. exit_observed && !exit_recorded -> inside the drain grace; a grandchild
+//!                                       holds the slave, the group still has
+//!                                       real members, the leader is a pinned
+//!                                       zombie                       -> signal
+//! 3. exit_recorded                   -> drained; the group may contain only
+//!                                       the pinned zombie, but the pgid is
+//!                                       still ours and cannot have been
+//!                                       recycled                     -> signal
 //! ```
 //!
-//! Case 1 is the other test. Case 3 is `signal_rejects_reaped_pty.rs`. **This
-//! test is case 2** — and it is the only one that goes red if the guard is
-//! narrowed to `pty_running()` (which is `!reaped && exit.is_none()`, i.e.
-//! false here) or to `process_group_leader().is_some()`. Either narrowing
-//! reintroduces the #993 grandchild leak; this test is the detector.
+//! Case 1 is `terminate_all_kills_grandchild.rs`. **This test is case 2.**
+//! Case 3 is `terminate_all_after_exit_recorded.rs` (T5b), which is new in
+//! PR-B: before the pin, case 3 was the one state where signalling was
+//! genuinely unsafe, and `terminate_all_process_groups_sync` filtered it out.
+//! The pin is what makes signalling safe there, and deleting that filter is
+//! PR-B's behaviour change. (The pre-PR-B header pointed case 3 at
+//! `signal_rejects_reaped_pty.rs`, a file that has never existed on `main`.)
+//!
+//! This test is the one that goes red if the predicate is narrowed to
+//! `pty_running()` (= `!exit_observed && exit.is_none()`, false here) or to
+//! `process_group_leader().is_some()`. Either narrowing reintroduces the #993
+//! grandchild leak. It is **not** the lock on PR-B's filter deletion: standing
+//! inside the drain grace, `exit.is_none()` is true, so this test is green
+//! under both the old and the new predicate. That job is T5b's.
 //!
 //! Determinism: case 2 is a window, and in production that window is
 //! `PTY_DRAIN_GRACE` = 50ms — far too tight to *race* into from a test. So we
 //! do not race: `start_with_drain_grace` widens the window to 5s, and we then
-//! *establish* the state (leader reaped, grandchild alive, no sticky exit yet)
+//! *establish* the state (exit observed, grandchild alive, no sticky exit yet)
 //! by assertion before acting. Nothing here sleeps as a synchronisation
 //! primitive; every wait polls a real condition with a deadline.
 //!
@@ -63,7 +86,7 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 
 mod proc_probe;
-use proc_probe::{alive, await_death, await_reaped, process_group_of};
+use proc_probe::{alive, await_death, process_group_of};
 
 /// The fixture, as a `sh` script.
 ///
@@ -134,16 +157,26 @@ async fn terminate_all_kills_grandchild_inside_drain_grace() {
 
     // --- Establish case 2, do not assume it. -----------------------------
     //
-    // Deliberately `await_reaped`, not `await_death`: until `child.wait()`
-    // returns, the leader is either running or a zombie, and `kill(pid, 0)`
-    // succeeds in both states. Only once the waiter reaps it is the pid
-    // released and `kill` gives ESRCH — and it is the *reap* that opens the
-    // drain window this test stands inside. A `/proc`-state probe would
-    // report the zombie leader as dead and let us proceed too early.
+    // Poll the entry's own `exit_observed` bit, i.e. "the waiter's
+    // `waitid(.., WNOWAIT)` has returned". That is precisely the event that
+    // opens the drain window this test stands inside, observed directly rather
+    // than inferred from the pid.
+    //
+    // It cannot be a pid probe any more, and not just as a matter of taste.
+    // The pre-PR-B version waited for `await_reaped`, i.e. `kill(pid, 0) != 0`.
+    // Under the #1013 pin the leader is a retained zombie for the entry's whole
+    // registry lifetime, so `kill(zombie, 0) == 0` **forever**: that condition
+    // can never become true and the test would hard-fail here, before ever
+    // reaching the `terminate_all_process_groups_sync` it exists to exercise.
+    // `await_reaped` was deleted from `proc_probe` for the same reason.
+    //
+    // A `/proc`-state probe is equally wrong in the other direction: it would
+    // report the zombie leader as dead and let us proceed before the waiter had
+    // seen anything.
     assert!(
-        await_reaped(leader, Duration::from_secs(5)),
-        "leader {leader} was never reaped; the test never reached the drain \
-         window it exists to cover"
+        await_exit_observed(supervisor.registry(), proc_id, Duration::from_secs(5)).await,
+        "the waiter never observed leader {leader}'s exit; the test never reached \
+         the drain window it exists to cover"
     );
     assert!(
         alive(grandchild),
@@ -159,7 +192,7 @@ async fn terminate_all_kills_grandchild_inside_drain_grace() {
         .debug_entry_stats(proc_id)
         .expect("entry still registered inside the drain grace");
     assert!(
-        !stats.exited,
+        !stats.exit_recorded,
         "expected to be INSIDE the drain grace (no sticky exit yet) — with a {}s \
          grace this should not be reachable; the test would otherwise be \
          exercising case 3, which is a different contract",
@@ -182,6 +215,32 @@ async fn terminate_all_kills_grandchild_inside_drain_grace() {
         !alive(grandchild),
         "grandchild {grandchild} must be gone at the end of the test"
     );
+}
+
+/// Polls until the waiter has *observed* the leader's exit.
+///
+/// This replaces the pid-liberation probe the pre-#1013 version used; see the
+/// call site for why a pid probe cannot work under the pin. Polls a real
+/// condition with a deadline — nothing here sleeps as a synchronisation
+/// primitive.
+async fn await_exit_observed(
+    registry: &calm_proc_supervisor::ProcRegistry,
+    proc_id: &str,
+    budget: Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if registry
+            .debug_entry_stats(proc_id)
+            .is_some_and(|stats| stats.exit_observed)
+        {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// Belt-and-braces cleanup: a `sleep 300` must never outlive this test, not

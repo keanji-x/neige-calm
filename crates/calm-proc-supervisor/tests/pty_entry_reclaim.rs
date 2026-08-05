@@ -15,7 +15,8 @@
 //!   在 read 错误 / panic 上也会落闸）。于是 `portable-pty`
 //!   `UnixMasterWriter::drop` 注入的 `\n`+VEOF 绝不会打到活着的孙子进程 stdin
 //!   上。两条测试分工：
-//!   `entry_survives_while_a_grandchild_holds_the_pty` 锁资源追踪，
+//!   `entry_removal_reaps_even_when_the_grandchild_holds_the_pty` 锁资源追踪
+//!   （并在 #1013 之后一并锁「最坏滞留场景下 leader 僵尸终会被收」），
 //!   `no_eof_is_injected_when_the_pty_reader_dies_without_eof` 锁注入本身
 //!   （reader 已死 ⇒ 所有权层不再兜底，断言真能证伪）。
 
@@ -58,7 +59,7 @@ async fn replay_and_sticky_exit_survive_within_grace() {
         .registry()
         .debug_entry_stats(proc_id)
         .expect("宽限期内 entry 必须仍在 registry");
-    assert!(stats.exited, "退出状态应已落定");
+    assert!(stats.exit_recorded, "退出状态应已落定");
     assert!(stats.buffered_bytes > 0, "宽限期内 replay 字节不得被释放");
 
     let (attached, frames) = attach_and_drain(supervisor.sock(), proc_id).await;
@@ -177,11 +178,16 @@ async fn expired_pty_entries_are_removed_and_release_ring_and_fds() {
 /// 真正能证伪注入的场景是"reader 已死 + slave 仍被持有"，见下面那条
 /// `no_eof_is_injected_when_the_pty_reader_dies_without_eof`。
 ///
-/// 断言分两段：
+/// 断言分三段（第 3 段是 #1013 T4 加的）：
 /// 1. 远超宽限期后，entry 仍在（谓词没有把"进程退出"当成"可以撒手"）；
-/// 2. 杀掉孙子进程后 master EOF，entry 随即被清扫掉 —— 第 1 段不是永久泄漏。
+/// 2. 杀掉孙子进程后 master EOF，entry 随即被清扫掉 —— 第 1 段不是永久泄漏；
+/// 3. **entry 一走，被钉住的 leader 僵尸也被收掉、pin 计数归零。**
+///
+/// 第 3 段为什么挂在这条测试上：这是本仓里滞留最久的那个场景 —— 孙子进程攥着
+/// slave 时 entry 可以留到 supervisor 退出为止，于是"僵尸也留那么久"是 #1013
+/// 最贵的一格成本。锁住"最坏滞留场景下也终会收尸"，才谈得上这不是泄漏。
 #[tokio::test]
-async fn entry_survives_while_a_grandchild_holds_the_pty() {
+async fn entry_removal_reaps_even_when_the_grandchild_holds_the_pty() {
     let grace = Duration::from_millis(300);
     let supervisor = InProcessProcSupervisor::start_with_grace(grace)
         .await
@@ -190,7 +196,7 @@ async fn entry_survives_while_a_grandchild_holds_the_pty() {
     let pid_file = temp.path().join("grandchild.pid");
     let proc_id = "pty-grandchild-holds-slave";
 
-    ensure_pty(
+    let leader = ensure_pty(
         supervisor.sock(),
         proc_id,
         &["-c", &grandchild_script(&pid_file)],
@@ -213,10 +219,54 @@ async fn entry_survives_while_a_grandchild_holds_the_pty() {
         supervisor.registry().debug_entry_stats(proc_id).is_some(),
         "孙子进程仍持有 pty 时 entry 不得被移除（移除会 drop writer 并注入 \\n+VEOF）"
     );
+    // #1013 T4 的建立步：entry 被保留期间，leader 必须是一个仍属于本进程的僵尸。
+    // 没有这一条，下面第 3 段可能因为"pid 早就被释放了"而假绿。
+    assert_eq!(
+        proc_state(leader).as_deref(),
+        Some("Z"),
+        "entry 仍被保留时，leader {leader} 必须仍是本进程未收尸的僵尸 —— \
+         waiter 用 waitid(.., WNOWAIT) 只观测不收尸"
+    );
 
     // 孙子进程一走，master EOF，reader 结束，下一次清扫收掉 entry：不是泄漏。
     kill_pid(grandchild);
     await_entry_gone(supervisor.registry(), proc_id).await;
+
+    // #1013 T4 主断言：entry 没了 ⇒ 僵尸也没了 ⇒ pin 计数归零。
+    // 轮询而不是即时断言，理由与 T2 相同：registry 撒手的那一瞬，reader 线程与
+    // 清扫器的 doomed vec 还各持一份 Arc，`Drop for ProcEntry` 尚未跑。
+    assert!(
+        poll_until(Duration::from_secs(5), || {
+            supervisor.registry().debug_pin_count() == 0
+                && proc_state(leader).as_deref() != Some("Z")
+        })
+        .await,
+        "entry 被回收后 leader {leader} 的僵尸仍未被收：pin_count = {}, state = {:?}",
+        supervisor.registry().debug_pin_count(),
+        proc_state(leader)
+    );
+}
+
+/// `/proc/<pid>/stat` 的 state 字段（第 3 个）。`comm` 可能含空格与括号，
+/// 唯一安全的切分点是**最后一个** `')'`。
+fn proc_state(pid: i32) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().next().map(str::to_owned)
+}
+
+/// **`async` + `tokio::time::sleep` 是必须的**：`#[tokio::test]` 是
+/// current-thread runtime，阻塞这根线程等于把 supervisor 的 serve 循环
+/// （含周期性清扫器）一并冻住，条件永远不会成立。
+async fn poll_until(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    cond()
 }
 
 /// 真正可证伪的那条：**reader 已死，slave 仍被孙子进程持有**。
@@ -407,7 +457,9 @@ async fn ensure_noisy_pty(sock: &Path, proc_id: &str) {
     .await;
 }
 
-async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usize) {
+/// 返回 `Spawned.pid`（= pty leader 的 pid）。#1013 T4 需要它去看
+/// `/proc/<leader>` 的状态。
+async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usize) -> i32 {
     let mut stream = UnixStream::connect(sock).await.expect("connect ensure");
     write_frame(
         &mut stream,
@@ -424,14 +476,15 @@ async fn ensure_pty(sock: &Path, proc_id: &str, args: &[&str], replay_bytes: usi
     )
     .await
     .expect("write ensure");
-    match read_frame(&mut stream).await.expect("read spawned") {
-        ControlReply::Spawned { .. } => {}
+    let pid = match read_frame(&mut stream).await.expect("read spawned") {
+        ControlReply::Spawned { pid } => pid as i32,
         other => panic!("unexpected ensure reply: {other:?}"),
-    }
+    };
     match read_frame(&mut stream).await.expect("read ready") {
         ControlReply::Ready => {}
         other => panic!("unexpected ready reply: {other:?}"),
     }
+    pid
 }
 
 async fn write_stdin(sock: &Path, proc_id: &str, bytes: &[u8]) {
