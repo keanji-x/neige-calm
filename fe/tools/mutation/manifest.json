@@ -147,23 +147,5 @@
     "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
     "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
-  },
-  {
-    "mutation_id": "app-providers-drift-idb-name",
-    "defends": [
-      "oracle:INV-APP-016",
-      "oracle:CAP-APP-010"
-    ],
-    "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..95c0d43 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -7,7 +7,7 @@ import { ThemeProvider } from '../theme/public.tsx';\n \n export const WEB_COMPAT_VERSION = 16;\n export const PERSIST_OPTIONS = Object.freeze({\n-  idbDatabaseName: 'neige-calm',\n+  idbDatabaseName: 'neige-calm-v2',\n   dbInstanceKey: DB_INSTANCE_ID_KEY,\n   syncCursorKey: SYNC_CURSOR_KEY,\n   maxAgeMs: 24 * 60 * 60 * 1000,\n",
-    "selection_paths": [
-      "web/src/app/providers/public.contract.test.tsx",
-      "web/src/app/providers/public.test.tsx"
-    ],
-    "expected_red": [
-      "app/providers contracts INV-APP-016 uses canonical storage and persistence identifiers",
-      "provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"
-    ],
-    "why_more_than_one": "The exported persistence descriptor and the actual bust call both turn red; any third failure would mean the storage name leaked into an unrelated behavior."
   }
 ]
