@@ -1059,6 +1059,28 @@ mod tests {
             "GIVE-UP tool must carry lifecycle: {}",
             descriptor.input_schema
         );
+
+        let workflow = manifest
+            .workflows
+            .iter()
+            .find(|workflow| workflow.id == "issue-development")
+            .expect("issue-development workflow");
+        let rendered =
+            crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
+                "wave-give-up",
+                Some(workflow),
+                None,
+            );
+        assert!(rendered.contains(
+            "GIVE-UP by recording the terminal rationale in the report with \
+             calm.report.write and lifecycle failed"
+        ));
+        for line in rendered.lines().filter(|line| line.contains("GIVE-UP")) {
+            assert!(
+                !line.contains("calm.report.blocks.upsert") && !line.contains("忽略 lifecycle"),
+                "rendered GIVE-UP instruction contradicts the lifecycle path: {line}"
+            );
+        }
     }
 
     #[test]

@@ -11,6 +11,7 @@
 //! `tools/plan.rs`; this file covers shim zero-write behavior, cancel
 //! semantics, role gating, list projection, and the #644 `WavePatch` fields.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use calm_server::card_role_cache::CardRoleCache;
@@ -19,10 +20,16 @@ use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
-use calm_server::mcp_server::tools::plan::{TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT};
+use calm_server::mcp_server::tools::plan::{
+    TOOL_PLAN_CANCEL, TOOL_PLAN_LIST, TOOL_PLAN_UPSERT, plan_cancel_after_pre_read_for_test,
+};
 use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_BLOCKS_UPSERT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
-use calm_server::model::{CardRole, NewCard, NewCove, NewWave, WaveLifecycle, WavePatch, now_ms};
+use calm_server::model::{
+    CardRole, NewCard, NewCove, NewWave, TaskStatus, WaveLifecycle, WavePatch, now_ms,
+};
+use calm_server::operation::spec_harness_start_adapter::render_spec_developer_instructions_for_test;
+use calm_server::plugin_host::Manifest;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -102,8 +109,8 @@ async fn boot() -> Boot {
 
     // PR-C activated rule 6 and new waves default `require_task_gates
     // = 1` (migration 0041 DB DEFAULT) — most of this suite plans
-    // ungated codex tasks, so the boot wave opts out; the dedicated
-    // rule-6 matrix test flips the flag back on.
+    // ungated codex tasks, so the boot wave opts out. The complete
+    // report-block admission matrix lives in task_projection_acceptance.
     repo.wave_update(
         wave.id.as_str(),
         WavePatch {
@@ -304,31 +311,38 @@ async fn drain_events(
     seen
 }
 
-async fn task_rows(boot: &Boot) -> Vec<String> {
+/// Snapshot every SQLite table, including CRDT/VCS/operational tables and
+/// sqlite_sequence. Values are losslessly represented with SQLite `quote()`;
+/// table and row order are deterministic for exact before/after comparison.
+async fn all_persistent_rows(boot: &Boot) -> BTreeMap<String, Vec<String>> {
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    sqlx::query_scalar(
-        "SELECT json_array(id, wave_id, key, kind, goal, context_json, \
-         acceptance_criteria, cwd, depends_on_json, priority, gate_json, status, \
-         status_detail, worker_card_id, gate_result_json, gate_attempt, gate_pid, \
-         gate_pid_starttime, gate_pid_boot_id, running_deadline_ms, context_stale_at_ms, \
-         declared_by, origin, created_at_ms, updated_at_ms, finished_at_ms) \
-         FROM tasks ORDER BY id",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("snapshot task rows")
-}
-
-async fn event_rows(boot: &Boot) -> Vec<String> {
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    sqlx::query_scalar(
-        "SELECT json_array(id, kind, payload, actor, at, correlation, event_version, \
-         scope_kind, scope_cove, scope_wave, scope_card) \
-         FROM events ORDER BY id",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("snapshot event rows")
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("list persistent tables");
+    let mut snapshot = BTreeMap::new();
+    for table in tables {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+                .bind(&table)
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("inspect table {table}: {error}"));
+        let quoted_columns = columns
+            .iter()
+            .map(|column| format!("quote(\"{}\")", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let quoted_table = table.replace('"', "\"\"");
+        let sql = format!("SELECT json_array({quoted_columns}) FROM \"{quoted_table}\" ORDER BY 1");
+        let rows = sqlx::query_scalar(&sql)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("snapshot table {table}: {error}"));
+        snapshot.insert(table, rows);
+    }
+    snapshot
 }
 
 // ---------------------------------------------------------------------------
@@ -425,8 +439,7 @@ async fn wave_patch_persists_task_budget_and_require_task_gates() {
 #[tokio::test]
 async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
     let boot = boot().await;
-    let tasks_before = task_rows(&boot).await;
-    let events_before = event_rows(&boot).await;
+    let before = all_persistent_rows(&boot).await;
 
     // Deliberately invalid under the legacy schema: the shim must not parse it.
     let out = call_tool(&boot, TOOL_PLAN_UPSERT, spec_identity(&boot), json!(null))
@@ -441,8 +454,76 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
             .unwrap()
             .contains("ready: true")
     );
-    assert_eq!(task_rows(&boot).await, tasks_before, "task rows changed");
-    assert_eq!(event_rows(&boot).await, events_before, "event rows changed");
+    assert_eq!(
+        all_persistent_rows(&boot).await,
+        before,
+        "spec shim changed a persistent table"
+    );
+}
+
+#[tokio::test]
+async fn rendered_plan_template_item_is_valid_on_real_blocks_upsert_path() {
+    let boot = boot().await;
+    let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+        .expect("shipped git-forge manifest");
+    let workflow = manifest
+        .workflows
+        .iter()
+        .find(|workflow| workflow.id == "issue-development")
+        .expect("issue-development workflow");
+    let rendered =
+        render_spec_developer_instructions_for_test("wave-template", Some(workflow), None);
+    let template_json = rendered
+        .split("## Bound Workflow Plan Template\n```json\n")
+        .nth(1)
+        .expect("bound plan heading")
+        .split("\n```")
+        .next()
+        .expect("bound plan JSON");
+    let items: Vec<Value> = serde_json::from_str(template_json).expect("rendered template JSON");
+    let payload = items.first().expect("first template task").clone();
+
+    let report = boot
+        .repo
+        .card_get(boot.report_card_id.as_str())
+        .await
+        .unwrap()
+        .expect("report card");
+    let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(&boot),
+        json!({"kind": "task", "payload": payload.clone(), "if_doc_rev": report.doc_rev}),
+    )
+    .await
+    .expect("rendered task-block payload must pass the real upsert path");
+    assert!(payload["acceptance"].is_string(), "{payload:#}");
+    assert_eq!(payload["ready"], true, "{payload:#}");
+    assert_eq!(payload["declared_by"], "spec", "{payload:#}");
+    for legacy_or_null in [
+        "acceptance_criteria",
+        "cwd",
+        "gate",
+        "priority",
+        "no_gate_reason",
+    ] {
+        assert!(
+            payload.get(legacy_or_null).is_none(),
+            "optional/legacy field must be omitted: {payload:#}"
+        );
+    }
+    let row = boot
+        .repo
+        .task_get(&format!("{}:inspect-issue", boot.wave_id))
+        .await
+        .unwrap()
+        .expect("rendered template projected");
+    assert_eq!(
+        row.acceptance_criteria.as_deref(),
+        workflow.plan_template[0].acceptance_criteria.as_deref()
+    );
+    assert_eq!(row.declared_by, "spec");
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +724,58 @@ async fn cancel_in_flight_task_refused_with_409_text() {
 }
 
 #[tokio::test]
+async fn cancel_rechecks_pending_inside_transaction_after_concurrent_state_advance() {
+    let boot = boot().await;
+    set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
+    write_task_block(
+        &boot,
+        json!({ "key": "race", "kind": "codex", "goal": "g" }),
+    )
+    .await;
+    let task_id = format!("{}:race", boot.wave_id);
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    let task_id_for_hook = task_id.clone();
+    let mut rx = boot.ctx.events.subscribe();
+
+    let err = plan_cancel_after_pre_read_for_test(
+        boot.ctx.clone(),
+        spec_identity(&boot),
+        json!({"key": "race", "message": "too late", "lifecycle": "dispatching"}),
+        move || async move {
+            sqlx::query("UPDATE tasks SET status='running' WHERE id=?1")
+                .bind(task_id_for_hook)
+                .execute(&pool)
+                .await
+                .expect("advance task after cancel pre-read");
+        },
+    )
+    .await
+    .expect_err("in-tx pending guard must reject the advanced row");
+    assert_eq!(err.code, -32409, "{err:?}");
+    assert!(
+        err.message.contains("changed state concurrently"),
+        "{err:?}"
+    );
+
+    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_eq!(row.status, TaskStatus::Running);
+    assert!(row.finished_at_ms.is_none());
+    assert_eq!(
+        boot.repo
+            .wave_get(boot.wave_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle,
+        WaveLifecycle::Planning
+    );
+    assert!(
+        drain_events(&mut rx).await.is_empty(),
+        "rejected race must emit no event"
+    );
+}
+
+#[tokio::test]
 async fn cancel_terminal_or_unknown_task_rejected() {
     let boot = boot().await;
     set_wave_lifecycle(&boot, WaveLifecycle::Planning).await;
@@ -775,6 +908,7 @@ async fn list_returns_plan_shape_without_gate_commands() {
 #[tokio::test]
 async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
     let boot = boot().await;
+    let before = all_persistent_rows(&boot).await;
     for (tool, args) in [
         (
             TOOL_PLAN_UPSERT,
@@ -789,12 +923,11 @@ async fn plan_tools_refuse_worker_callers_at_mcp_entry() {
         assert_eq!(err.code, -32602, "{tool}: {err:?}");
         assert!(err.message.contains("Spec"), "{tool}: {err:?}");
     }
-    let tasks = boot
-        .repo
-        .tasks_by_wave(boot.wave_id.as_str())
-        .await
-        .unwrap();
-    assert!(tasks.is_empty(), "worker call wrote rows: {tasks:?}");
+    assert_eq!(
+        all_persistent_rows(&boot).await,
+        before,
+        "unauthorized caller changed a persistent table"
+    );
 }
 
 #[tokio::test]

@@ -2004,8 +2004,8 @@ async fn wait_for_impl_review_round_on_subject(
 //
 // Steering vs autonomy: the wave goal carries environment facts (repo
 // selector = the CLONE gitdir, issue number, base sha — `forge_pr_goal`
-// precedent) plus descriptor-legal planning steering (deferred-task batches:
-// plan.upsert rule 3 REJECTS deps naming nonexistent tasks, so review-pr-a/b
+// precedent) plus descriptor-legal planning steering (deferred task blocks:
+// unknown dependencies stay diagnostic-only, so review-pr-a/b
 // AND merge are added together in ONE batch once the PR coordinates exist —
 // checker pin b; open-pr is likewise deferred until the implement branch is
 // known, killing the goal-rewrite dispatch race). Round counts, fix loops,
@@ -2379,8 +2379,8 @@ async fn latest_impl_round_before_merge(
 
 /// Wave goal for the capstone: environment facts (forge_pr_goal precedent —
 /// repo selector, issue number, base sha are facts only the fixture knows)
-/// plus descriptor-legal planning steering (deferred batches per plan.upsert
-/// rule 3 + P5's dispatch-race analysis; GIVE-UP failure terminator per P3).
+/// plus descriptor-legal planning steering (dependency-ordered task blocks
+/// per P5's dispatch-race analysis; GIVE-UP failure terminator per P3).
 /// The PR coordinates themselves must flow through observations/runs — they
 /// do not exist when this goal is written.
 fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
@@ -2400,8 +2400,9 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          Planning constraints (all within the bound workflow):\n\
          - Attach the bound workflow gate (exactly its cmd) to every task you plan; do not use \
          no_gate_reason.\n\
-         - The kernel REJECTS any task whose depends_on names a task that does not exist yet, \
-         so create report task blocks in dependency order: (1) inspect-issue, then \
+         - A task block whose depends_on names a task that does not exist yet is written but \
+         receives an unknown_dependency diagnostic and is not projected, so create report task \
+         blocks in dependency order: (1) inspect-issue, then \
          review-design-a, review-design-b and implement-change; (2) add open-pr only after \
          implement-change completes, embedding the implement worker's actual branch name in \
          its goal; (3) after open-pr completes, add review-pr-a and review-pr-b, then add merge \

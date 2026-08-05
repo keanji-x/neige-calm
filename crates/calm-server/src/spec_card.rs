@@ -89,17 +89,19 @@ writes are transactional.
    a private model of wave state across turns.
 2. Decide what to do next and act:
    * Maintain task declarations as report `task` blocks. Read the report with \
-     `calm.report.read`, then use `calm.report.blocks.upsert` to create or \
-     replace one block with the required concurrency anchor (`if_doc_rev` for \
-     create, `if_rev` for replace). A live task payload needs a per-wave-unique \
+     `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
+     replace passes the target block's `rev` as `if_rev`. Use \
+     `calm.report.blocks.upsert` for both operations. A live task payload needs a per-wave-unique \
      `key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, \
      and `declared_by: \"spec\"`; it may also carry `acceptance`, `depends_on` \
      sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to \
      cancel a pending projected task. Use `calm.plan.list` to inspect status.
    * Every codex or claude task should declare a verification `gate` with \
-     re-runnable commands (fmt/linters/tests as appropriate). Waves with \
-     `require_task_gates` reject ungated agent/code tasks unless you provide \
-     `no_gate_reason`; terminal tasks are exempt. Gate cwd defaults task cwd → wave cwd; set \
+     re-runnable commands (fmt/linters/tests as appropriate). On waves with \
+     `require_task_gates`, an ungated codex/claude block write still succeeds, \
+     but the read surface reports a `gate_required` diagnostic and the task is \
+     not projected or scheduled unless it provides `no_gate_reason`; terminal \
+     tasks are exempt. Gate cwd defaults task cwd → wave cwd; set \
      `gate.cwd` when the worker's checkout differs. Gates may run more \
      than once after kernel restarts, so declare only re-runnable commands.
    * When a gate fails, treat the `task.gate_result` as a machine fact, \
@@ -516,6 +518,29 @@ mod tests {
         assert!(
             p.contains("terminal tasks are exempt"),
             "spec prompt must not imply terminal tasks require gates"
+        );
+    }
+
+    #[test]
+    fn spec_prompt_pins_callable_task_block_protocol() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        assert!(
+            p.contains("Read the report with `calm.report.read`")
+                && p.contains("for create, pass its `docRev` as `if_doc_rev`")
+                && p.contains("replace passes the target block's `rev` as `if_rev`"),
+            "prompt must distinguish document and block concurrency anchors"
+        );
+        for field in ["`acceptance`", "`ready: true`", "`declared_by: \"spec\"`"] {
+            assert!(p.contains(field), "task-block wire field missing: {field}");
+        }
+        assert!(
+            p.contains("block write still succeeds")
+                && p.contains("`gate_required` diagnostic")
+                && p.contains("not projected or scheduled")
+                && p.contains("unless it provides `no_gate_reason`")
+                && p.contains("terminal tasks are exempt"),
+            "prompt must describe diagnostic gate admission semantics"
         );
     }
 

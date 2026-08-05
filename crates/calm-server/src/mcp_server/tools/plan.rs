@@ -105,6 +105,53 @@ pub struct PlanTaskInput {
     pub no_gate_reason: Option<String>,
 }
 
+/// Convert the retained manifest template vocabulary to the report task-block
+/// wire vocabulary the spec agent can actually submit. Optional legacy fields
+/// are omitted instead of serialized as JSON null; readiness and authorship are
+/// explicit because projection only admits ready spec declarations.
+pub fn plan_template_task_block_payload(input: &PlanTaskInput) -> Value {
+    let mut payload = serde_json::Map::from_iter([
+        ("key".into(), json!(input.key)),
+        ("kind".into(), json!(input.kind)),
+        ("goal".into(), json!(input.goal)),
+        ("depends_on".into(), json!(input.depends_on)),
+        ("ready".into(), json!(true)),
+        ("declared_by".into(), json!("spec")),
+    ]);
+    let gate = input.gate.as_ref().map(|gate| {
+        let mut wire = serde_json::Map::from_iter([("steps".into(), json!(gate.steps))]);
+        if let Some(cwd) = &gate.cwd {
+            wire.insert("cwd".into(), json!(cwd));
+        }
+        if let Some(timeout_secs) = gate.timeout_secs {
+            wire.insert("timeout_secs".into(), json!(timeout_secs));
+        }
+        Value::Object(wire)
+    });
+    for (name, value) in [
+        (
+            "context",
+            input.context.clone().filter(|value| !value.is_null()),
+        ),
+        (
+            "acceptance",
+            input.acceptance_criteria.clone().map(Value::String),
+        ),
+        ("cwd", input.cwd.clone().map(Value::String)),
+        ("priority", input.priority.map(Into::into)),
+        ("gate", gate),
+        (
+            "no_gate_reason",
+            input.no_gate_reason.clone().map(Value::String),
+        ),
+    ] {
+        if let Some(value) = value {
+            payload.insert(name.into(), value);
+        }
+    }
+    Value::Object(payload)
+}
+
 /// A transitional manifest entry after field-level validation and
 /// normalization.
 #[derive(Debug, Clone)]
@@ -352,9 +399,8 @@ fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration,
     })
 }
 
-/// Build the fresh-row form of a normalized batch entry. Updates reuse
-/// the same struct and let `task_update_pending_tx` pick the revisable
-/// columns out of it.
+/// Build the legacy fresh-row form of a normalized batch entry for validation
+/// tests. Production declarations are projected from report task blocks.
 #[cfg(test)]
 fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task {
     Task {
@@ -505,6 +551,19 @@ async fn plan_cancel(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
+    plan_cancel_impl(ctx, identity, args, || async {}).await
+}
+
+async fn plan_cancel_impl<F, Fut>(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+    after_pre_read: F,
+) -> Result<Value, RpcError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     require_role(&identity, CardRole::Spec)?;
     let write_args = parse_write_args(&args, "plan_cancel")?;
 
@@ -571,6 +630,10 @@ async fn plan_cancel(
             )));
         }
     }
+
+    // Deterministic fixtures can advance the row here to exercise the real
+    // guarded UPDATE below. Production supplies a zero-cost no-op future.
+    after_pre_read().await;
 
     let actor = identity.to_actor_id();
     let scope = EventScope::Wave {
@@ -678,6 +741,22 @@ async fn plan_cancel(
         Ok(_) => Ok(json!({ "ok": true })),
         Err(e) => Err(map_plan_error("plan_cancel", e)),
     }
+}
+
+/// Fixtures-only deterministic seam for the cancel pre-read/write race.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn plan_cancel_after_pre_read_for_test<F, Fut>(
+    ctx: Arc<AppContext>,
+    identity: ToolCallIdentity,
+    args: Value,
+    after_pre_read: F,
+) -> Result<Value, RpcError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    plan_cancel_impl(ctx, identity, args, after_pre_read).await
 }
 
 // ---------------------------------------------------------------------------

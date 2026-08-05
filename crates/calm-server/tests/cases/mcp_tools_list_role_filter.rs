@@ -188,36 +188,11 @@ async fn plan_upsert_hidden_shim_retains_original_input_schema() {
     );
     assert!(upsert.visible_to_roles.is_empty());
 
-    let gate = &upsert.input_schema["properties"]["tasks"]["items"]["properties"]["gate"];
-    assert_eq!(gate["type"], "object", "{gate:#?}");
-    assert_eq!(gate["required"], serde_json::json!(["steps"]), "{gate:#?}");
-    let step_props = &gate["properties"]["steps"]["items"];
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/plan_upsert_input_schema.json"))
+            .expect("plan.upsert schema golden JSON");
     assert_eq!(
-        step_props["required"],
-        serde_json::json!(["name", "cmd"]),
-        "{gate:#?}"
-    );
-    let timeout = &gate["properties"]["timeout_secs"];
-    assert_eq!(timeout["maximum"], 7200, "{gate:#?}");
-    assert!(
-        timeout["description"]
-            .as_str()
-            .unwrap()
-            .contains("default 1800"),
-        "{gate:#?}"
-    );
-    assert!(
-        gate["properties"]["cwd"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("Absolute"),
-        "{gate:#?}"
-    );
-    assert!(
-        gate["description"]
-            .as_str()
-            .unwrap()
-            .contains("re-runnable"),
-        "{gate:#?}"
+        upsert.input_schema, golden,
+        "hidden shim must retain the complete legacy input schema"
     );
 }
