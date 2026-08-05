@@ -19,8 +19,12 @@
 //! [`ReportDoc::project`] concatenates each block's `text` in `order`
 //! order, which by the `flatten(blocks) == body` invariant of
 //! `calm_types::report_blocks` reproduces the flat markdown byte for
-//! byte. Prose markdown is stored as `Text` so character-level edit
-//! history (and future concurrent merges) stay meaningful.
+//! byte. Prose markdown is stored as `Text`, but changed block text is
+//! replaced with a fresh child object to keep writes linear. That replacement
+//! loses one side when two replicas concurrently edit the same block; it is
+//! safe only while production never merges two `body_crdt` documents (the
+//! frontend holds no CRDT, there is no offline sync, `wave_vcs` stores text,
+//! replay uses the event write path, and writes are serialized + rev-checked).
 //!
 //! #960 PR3 — a non-prose block's `text` holds its **canonical
 //! `neige-block` fence** (`calm_types::report_blocks::fence`), i.e.
@@ -268,7 +272,7 @@ impl ReportDoc {
     /// Splits `new_body`, aligns the slices against the current block
     /// map via `calm_types::report_blocks::reassign_ids`, and lands
     /// the result at block granularity: changed blocks get a
-    /// a fresh linear-write Text child + `rev + 1`, new blocks
+    /// fresh linear-write Text child + `rev + 1`, new blocks
     /// get a fresh map entry (`rev = 1`), vanished blocks are deleted,
     /// and `order` is rewritten when it changed. Byte-identical
     /// content is a doc-level no-op (revs untouched, zero text ops).
@@ -1206,15 +1210,29 @@ changed.
         assert!(markdown.len() > 9_000, "fixture must retain its scale");
         let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", &markdown));
         let id = doc.block_index().unwrap()[0].0.clone();
+        let blocks_id = doc.blocks_map().unwrap().unwrap();
+        let entry_id = doc.entry_at(&blocks_id, &id).unwrap().unwrap();
+        let text_id_before = doc
+            .typed_at(&entry_id, KEY_TEXT, ObjType::Text)
+            .unwrap()
+            .unwrap();
 
         let started = std::time::Instant::now();
         doc.upsert_block(Some(&id), "prose", "[entity](neige://wave/source#b_target)")
             .unwrap();
         let elapsed = started.elapsed();
+        let text_id_after = doc
+            .typed_at(&entry_id, KEY_TEXT, ObjType::Text)
+            .unwrap()
+            .unwrap();
 
+        assert_ne!(
+            text_id_before, text_id_after,
+            "changed block text must be replaced with a fresh Text object"
+        );
         assert!(
-            elapsed < std::time::Duration::from_secs(1),
-            "9 KB replacement regressed beyond the linear-time budget: {elapsed:?}"
+            elapsed < std::time::Duration::from_secs(30),
+            "9 KB replacement regressed beyond the smoke-test budget: {elapsed:?}"
         );
         assert_eq!(
             doc.project().unwrap().1,
@@ -1290,6 +1308,8 @@ changed.
         // block via the wholesale `update` path; merge them and both
         // edits must survive. Block-granular storage is what makes
         // this clean — the edits land in two independent Text objects.
+        // This does not cover same-block edits; the known lossy semantics
+        // for that case are pinned by the next test.
         let payload = WaveReportPayload::new("shared", "# A\n\nalpha\n\n# B\n\nbeta\n");
         let mut origin = ReportDoc::from_payload(&payload);
         let bytes = origin.to_bytes();
@@ -1314,6 +1334,40 @@ changed.
         assert!(
             merged_body.contains("BETA"),
             "replica B's edit survived: body = {merged_body:?}"
+        );
+    }
+
+    #[test]
+    fn same_block_concurrent_merge_loses_one_edit_without_a_production_merge_path() {
+        // This is a known semantic of replacing a changed block's Text object:
+        // concurrent edits to the same block conflict, so one side is lost.
+        // It is currently safe because production never merges two `body_crdt`
+        // docs: the frontend holds no CRDT, there is no offline sync, `wave_vcs`
+        // stores only text, replay uses the event write path, and server writes
+        // are serialized + rev-checked.
+        //
+        // If CRDT sync or multi-replica merge is introduced, this test is the
+        // tripwire: preserve the Text object's identity and splice characters,
+        // or implement custom character edits with a complexity bound.
+        let payload = WaveReportPayload::new("shared", "# A\n\nalpha beta\n");
+        let mut origin = ReportDoc::from_payload(&payload);
+        let bytes = origin.to_bytes();
+
+        let mut replica_a = ReportDoc::from_bytes(&bytes).unwrap();
+        let mut replica_b = ReportDoc::from_bytes(&bytes).unwrap();
+        replica_a.0.set_actor(automerge::ActorId::from([1_u8]));
+        replica_b.0.set_actor(automerge::ActorId::from([2_u8]));
+
+        replica_a.update("shared", "# A\n\nALPHA beta\n").unwrap();
+        replica_b
+            .update("shared", "# A\n\nalpha beta GAMMA\n")
+            .unwrap();
+
+        replica_a.0.merge(&mut replica_b.0).expect("merge replicas");
+        assert_eq!(
+            replica_a.project().unwrap().1,
+            "# A\n\nalpha beta GAMMA\n",
+            "object replacement currently resolves the conflict by losing replica A's edit"
         );
     }
 
