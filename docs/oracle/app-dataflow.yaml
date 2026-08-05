@@ -162,7 +162,7 @@
     宁可让各查询自己的错误横幅暴露连通性问题，也不要因为一次瞬时 /api/version 失败
     把整个应用锁死；缺数据意味着没有可比对的东西，比对必须跳过。
   source: web/src/app/providers.tsx:150-155,177-179
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: fe/web/src/app/providers/public.test.tsx:50
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
@@ -1108,13 +1108,13 @@
     重试只会拖慢 SessionProvider 的 onUnauthorized 清理 → LoginPage 跳转
     （`api/calm.ts` 的 request() 已经发过信号了），期间还堆一个注定失败的第二请求。
   source: web/src/app/providers.tsx:50-64,89
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:5
+  authoritative_test: web/src/app/providers.test.tsx:241
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-060
   kind: invariant
@@ -1125,7 +1125,7 @@
     每个 per-query override 若各自重写 retry，就会绕开 401 不重试的约束，401 处理退化成
     "默认路径才对"。
   source: web/src/app/providers.tsx:58-64
-  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:1 + fe/web/src/app/providers/public.test.tsx:1
+  authoritative_test: fe/web/src/app/providers/public.contract.test.tsx:8
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
@@ -1303,7 +1303,7 @@
     issue #22 验收条 4 的中心不变式：应用里任何其他需要知道主题的地方都必须调 `useTheme()`，
     不得直接读 `dataset.theme` 或 `prefers-color-scheme`。多处写入会让主题真值分叉。
   source: web/src/app/theme.tsx:11-17,157-162
-  authoritative_test: web/src/app/theme.test.tsx:93,127
+  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:10
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app

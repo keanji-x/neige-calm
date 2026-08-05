@@ -96,20 +96,26 @@
 
 `CAP-APP-006` 与 `INV-APP-009` 退回 `pending`：`ui/dialog` 的 scrim/panel 样式尚未迁入 `fe/`，当前无法锁定 overlay 的视口几何与 hit-testing。解锁条件：将 `ui/dialog` 的 scrim/panel 样式迁入 `fe/` 并登记进 `web/src/styles/global-classes.yaml`；届时恢复几何与 hit-testing 断言，并将两条契约翻回 `migrated`。
 
+此外，`CAP-APP-006` 的“面板内恰好一个可聚焦出口”尚无独立变异证据：三个既有变异中，去掉 `hideTitleRow` 会先红在焦点断言，未执行到 `toHaveLength(1)`。后续需用只增加第二个可聚焦出口的靶向变异验证这一半。
+
 ## INV-APP-008 fail-open 正向证据缺口
 
 现有测试只在 `/api/version` 失败落定前确认 children 存在，落定后仅断言未清 cache；因此把 error 分支改成隐藏 children 仍无法稳定打红，不能登记为有效变异。后续应让 rejected query 明确落定（例如等待 error 状态的可观察信号），再正向断言 children 仍在且 overlay 不存在；靶向变异应只把 error 分支改为返回 `null`，并只打红这条 fail-open 测试。
 
 ## INV-APP-070 descope：主题镜像与唯一写入者
 
-该契约保持 `pending`，整条旧规则及 22 个 fixture 已撤。原 AST 拼写枚举谓词两个方向同时失效；动态 key 也会绕过保留下来的旧单文件计数。绕过语料包括：局部 `dataset` 变量、变量属性名、拼接属性名、模板 `outerHTML`、动态 dataset key、`Object.defineProperty`、对象 patch + `Object.assign`、别名 + `Reflect.set`、`attributes.setNamedItem`、绑定后的 `setAttribute`、`insertAdjacentHTML`、JSX `<html data-theme>`。旧谓词还会误杀与 theme 无关的动态 key 和局部元素写入。
+该契约保持 `pending`，整条旧规则及 22 个 fixture 已撤。前三次 AST 谓词都在实测中同时 fail-open 和误报。绕过语料包括：局部 `dataset` 变量、变量属性名、拼接属性名、模板 `outerHTML`、动态 dataset key、`Object.defineProperty`、对象 patch + `Object.assign`、别名 + `Reflect.set`、`attributes.setNamedItem`、绑定后的 `setAttribute`、`insertAdjacentHTML`、JSX `<html data-theme>`；第三次还可被一个根句柄写 N 次、`window['document']`、`globalThis['docu' + 'ment']`、ref/event 的 `ownerDocument`、`parentElement` 上溯和 import helper 返回句柄绕过，标识符不出现即完全 fail-open。
 
-当前单文件契约用封闭集合断言：`public.tsx` 内所有 `document` 用途除 `typeof document` 外，恰好只有一次 `document.documentElement` 根句柄，并位于仅依赖 `resolved` 的 effect；JSX `<html>` 也作为根句柄计入。它不枚举写入拼写，也不误杀不经 `document` 的局部元素操作。后续建议拆成「模块内唯一写入者」（可 migrated、jsdom、authoritative 指向本文件）与「仓库唯一写入者」（pending、需模块归属式谓词）。
+第三次谓词还误报 `document.addEventListener`、`document.querySelector`、只读 `document.documentElement.dataset.theme`（与 `INV-APP-071` 明确允许的同步读直接冲突），以及把写入抽成模块级函数再由 effect 调用的纯重构。本轮因此删除“唯一写入者”断言，只保留不宣称唯一性的局部 effect 形状检查。
+
+后续推荐先对结果下断言：在 jsdom 用 `MutationObserver` 观察 `documentElement` 的 `data-theme`，验证一次 `resolved` 变化恰好产生一次 attribute mutation、卸载后不再产生；别名、`window['document']`、`ownerDocument` 和延迟写都应由结果暴露。跨文件部分再配模块归属式 eslint 规则。该方案由 review 提出但**未经实测**，后续独立切片必须先主动证伪再采用，不能作为既定施工前提。
 
 ## INV-APP-059 descope：React Query 默认 retry
 
-`INV-APP-059` 的实质（401 完全不重试、其余失败只重试一次）已由 contract test 覆盖并恢复 migrated；尚未覆盖的是默认 QueryClient options 的形状，等 QueryClient 构造点迁入时补。`INV-APP-060` 的导出性目前没有靶向变异证据，需补“移除 export”变异并验证调用点无法复用。
+`INV-APP-059` 退回 `pending`：statement 主语是 React Query 的默认 retry 策略，但 `fe/` 尚无 `defaultOptions`；`retryUnless401` 只作为 `ServerCompatGate` 的 per-query option 使用。当前既保留纯函数真值表，也断言该 query 传入同一个函数，但这些证据不能迁移“默认策略”契约。`INV-APP-060` 已补“移除 export”的靶向变异条目。
 
 ## E2E-CAP-THEME-011 system 模式 browser 证据缺口
 
 权威 browser 测试目前只覆盖 `light` / `dark`，statement 明写的 `system` 尚未覆盖；后续应在 browser project 补 system 跟随 `matchMedia` 且镜像到根 dataset 的断言。
+
+另有证据层级错位：`E2E-CAP-THEME-011` 的 `test_tier` 是 browser，authoritative 指向 `theme.browser.test.tsx:1`（import 行而非断言）；两条 defends 它的变异，其 `selection_paths` 与 `expected_red` 却全部落在 jsdom 文件，权威 browser 路径从未被变异验证。后续需修到真实 browser 断言行，并对该路径补靶向变异。

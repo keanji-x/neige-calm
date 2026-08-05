@@ -7,32 +7,45 @@ import { DARK_THEME_RGB, LIGHT_THEME_RGB, readHostThemeRgb } from './host-rgb.ts
 import { THEME_MODES, parseThemeMode } from './public.tsx';
 
 describe('app/theme contracts', () => {
-  it('INV-APP-070 has one document root handle in an effect keyed only by resolved', () => {
+  it('theme dataset writes are driven by an effect keyed only by resolved', () => {
     const source = ts.createSourceFile('public.tsx', readFileSync(resolve(import.meta.dirname, 'public.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    const rootHandles: ts.Node[] = [];
-    const invalidDocumentUses: ts.Identifier[] = [];
+    const writes: ts.Node[] = [];
+    const effects: ts.CallExpression[] = [];
     function visit(node: ts.Node): void {
-      if (ts.isIdentifier(node) && node.text === 'document') {
-        const parent = node.parent;
-        if (ts.isTypeOfExpression(parent)) { /* existence checks are allowed */ }
-        else if (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'documentElement') rootHandles.push(parent);
-        else if (ts.isElementAccessExpression(parent) && parent.expression === node
-          && ts.isStringLiteralLike(parent.argumentExpression) && parent.argumentExpression.text === 'documentElement') rootHandles.push(parent);
-        else invalidDocumentUses.push(node);
-      }
-      if ((ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node))
-        && ts.isIdentifier(node.tagName) && node.tagName.text === 'html') rootHandles.push(node);
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        && ts.isPropertyAccessExpression(node.left) && node.left.name.text === 'theme'
+        && ts.isPropertyAccessExpression(node.left.expression) && node.left.expression.name.text === 'dataset') writes.push(node);
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'useEffect'
+        && ts.isArrayLiteralExpression(node.arguments[1])
+        && node.arguments[1].elements.length === 1 && ts.isIdentifier(node.arguments[1].elements[0])
+        && node.arguments[1].elements[0].text === 'resolved') effects.push(node);
       ts.forEachChild(node, visit);
     }
     visit(source);
-    expect(invalidDocumentUses).toEqual([]);
-    expect(rootHandles).toHaveLength(1);
-    let current: ts.Node | undefined = rootHandles[0];
-    while (current && !ts.isCallExpression(current)) current = current.parent;
-    expect(current && ts.isIdentifier(current.expression) ? current.expression.text : null).toBe('useEffect');
-    const dependencies = current && ts.isCallExpression(current) ? current.arguments[1] : undefined;
-    expect(dependencies && ts.isArrayLiteralExpression(dependencies)
-      ? dependencies.elements.map((element) => ts.isIdentifier(element) ? element.text : null) : null).toEqual(['resolved']);
+    const contains = (parent: ts.Node, child: ts.Node) => child.pos >= parent.pos && child.end <= parent.end;
+    const helperNames = new Set(writes.map((write) => {
+      let current: ts.Node | undefined = write.parent;
+      while (current && !ts.isFunctionDeclaration(current)) current = current.parent;
+      return current?.name?.text;
+    }).filter((name): name is string => name !== undefined));
+    const effectCallsHelper = (effect: ts.CallExpression, name: string) => {
+      let found = false;
+      const findCall = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) found = true;
+        ts.forEachChild(node, findCall);
+      };
+      findCall(effect.arguments[0]);
+      return found;
+    };
+    const invalidWrites = writes.filter((write) => !effects.some((effect) => contains(effect.arguments[0], write))
+      && ![...helperNames].some((name) => {
+        let current: ts.Node | undefined = write.parent;
+        while (current && !ts.isFunctionDeclaration(current)) current = current.parent;
+        return current?.name?.text === name && effects.some((effect) => effectCallsHelper(effect, name));
+      }));
+    const location = (node: ts.Node) => `${node.getText(source)} (line ${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1})`;
+    expect(writes.map(location)).not.toEqual([]);
+    expect(invalidWrites.map(location)).toEqual([]);
   });
 
   it('E2E-CAP-THEME-011 exposes exactly three parseable modes', () => {

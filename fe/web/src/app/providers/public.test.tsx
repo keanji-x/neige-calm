@@ -24,6 +24,7 @@ describe('provider behavior', () => {
   });
   it('CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel', async () => {
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
+    vi.stubGlobal('cancelAnimationFrame', vi.fn());
     const server = { ...compatible, minWebCompatVersion: WEB_COMPAT_VERSION + 1 };
     render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })}>route</ServerCompatGate>);
     const action = await screen.findByRole('button', { name: 'Refresh now' });
