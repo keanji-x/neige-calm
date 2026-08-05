@@ -2,13 +2,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
+import { ESLint } from 'eslint';
 import { describe, expect, it } from 'vitest';
 import { DARK_THEME_RGB, LIGHT_THEME_RGB, readHostThemeRgb } from './host-rgb.ts';
 import { THEME_MODES, parseThemeMode } from './public.tsx';
 
 describe('app/theme contracts', () => {
   it('INV-APP-070 has one structured dataset writer in an effect keyed only by resolved', () => {
-    const source = ts.createSourceFile('public.tsx', readFileSync(resolve(process.cwd(), 'web/src/app/theme/public.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const source = ts.createSourceFile('public.tsx', readFileSync(resolve(import.meta.dirname, 'public.tsx'), 'utf8'), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     const writes: ts.BinaryExpression[] = [];
     function visit(node: ts.Node): void {
       if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
@@ -26,14 +27,22 @@ describe('app/theme contracts', () => {
       ? dependencies.elements.map((element) => ts.isIdentifier(element) ? element.text : null) : null).toEqual(['resolved']);
   });
 
+  it('INV-APP-070 rejects every additional data-theme writer in the real provider source', async () => {
+    const file = resolve(import.meta.dirname, 'public.tsx');
+    const root = resolve(import.meta.dirname, '../../../..');
+    const eslint = new ESLint({ cwd: root, overrideConfigFile: resolve(root, 'eslint.config.js') });
+    const [result] = await eslint.lintText(readFileSync(file, 'utf8'), { filePath: file });
+    expect(result.messages.filter((message) => message.ruleId === 'architecture/no-theme-dataset-write-outside-provider')).toEqual([]);
+  });
+
   it('INV-APP-070 E2E-CAP-THEME-011 exposes exactly three parseable modes', () => {
     expect(THEME_MODES).toEqual(['light', 'dark', 'system']);
     expect(THEME_MODES.map(parseThemeMode)).toEqual(THEME_MODES);
     expect(parseThemeMode('sepia')).toBeNull();
   });
 
-  it('E2E-CAP-TERMTHEME-010 matches the Rust default rather than a duplicated expectation', () => {
-    const rust = readFileSync(resolve(process.cwd(), '../../../../crates/calm-truth/src/model.rs'), 'utf8');
+  it('matches the Rust dark default; Rust has no independent light default', () => {
+    const rust = readFileSync(resolve(import.meta.dirname, '../../../../../crates/calm-truth/src/model.rs'), 'utf8');
     const block = /pub fn default_dark\(\) -> Self \{(?<body>[\s\S]*?)\n {4}\}/u.exec(rust)?.groups?.body;
     const tuple = (name: 'fg' | 'bg') => {
       const values = new RegExp(`${name}: \\((\\d+), (\\d+), (\\d+)\\)`, 'u').exec(block ?? '');

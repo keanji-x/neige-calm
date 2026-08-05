@@ -119,6 +119,8 @@ function isExportedStaticInitializer(initializer) {
     (isStaticData(initializer) || isVerifiedFreeze(initializer));
 }
 
+const parsedImportCache = new Map();
+
 /** @param {string} importer @param {string} source @param {string} importedName */
 function importedConstIsStatic(importer, source, importedName) {
   if (!source.startsWith('.')) return false;
@@ -126,8 +128,11 @@ function importedConstIsStatic(importer, source, importedName) {
   const candidates = extname(unresolved) ? [unresolved] : [unresolved, `${unresolved}.ts`, `${unresolved}.tsx`, `${unresolved}.js`, `${unresolved}.mjs`];
   const target = candidates.find((candidate) => existsSync(candidate));
   if (!target) return false;
-  let program;
-  try { program = tsParser.parse(readFileSync(target, 'utf8'), { sourceType: 'module' }); } catch { return false; }
+  let program = parsedImportCache.get(target);
+  if (!program) {
+    try { program = tsParser.parse(readFileSync(target, 'utf8'), { sourceType: 'module' }); } catch { return false; }
+    parsedImportCache.set(target, program);
+  }
   for (const statement of program.body) {
     if (statement.type !== 'ExportNamedDeclaration' || statement.declaration?.type !== 'VariableDeclaration' || statement.declaration.kind !== 'const') continue;
     for (const declaration of statement.declaration.declarations) {

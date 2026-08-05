@@ -57,9 +57,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge 
 
 export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {
   return <Dialog open title="Please refresh" onClose={reload} hideTitleRow>
-    <button type="button" aria-label="Refresh backdrop" data-testid="refresh-overlay" data-nc-refresh-overlay onClick={reload}
-      style={{ position: 'fixed', inset: 0, zIndex: 1000, border: 0, background: 'var(--overlay-scrim, rgb(0 0 0 / 55%))' }} />
-    <section aria-label="Please refresh" style={{ position: 'fixed', zIndex: 1001, top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 'min(36rem, calc(100vw - 48px))', padding: 24, borderRadius: 8, background: 'var(--paper, Canvas)', color: 'var(--text, CanvasText)' }}>
+    <section aria-label="Please refresh">
       <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}; this browser provides compat v{WEB_COMPAT_VERSION}.</p>
       <button type="button" onClick={reload}>Refresh now</button>
     </section>

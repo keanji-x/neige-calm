@@ -91,3 +91,7 @@
 ## CAP-APP-076 拆条欠债
 
 `CAP-APP-076` 当前包含两半可分语义：仅在 `?testMounts=1` 时暴露 theme driver，以及卸载时仅删除仍由自身持有的 driver。现有权威 browser 路径 `fe/web/src/app/theme/theme.browser.test.tsx:53` 覆盖前半（条件暴露）；后半由 jsdom successor 保护测试 `fe/web/src/app/theme/public.test.tsx:68` 覆盖。后续应在 oracle 层拆成两条契约，各自保留单一 tier、单一权威证据路径；本轮保持 `CAP-APP-076` 的 browser `authoritative_test` 不变。
+
+## CAP-APP-006 / INV-APP-009 overlay 几何契约欠债
+
+`CAP-APP-006` 与 `INV-APP-009` 退回 `pending`：`ui/dialog` 的 scrim/panel 样式尚未迁入 `fe/`，当前无法锁定 overlay 的视口几何与 hit-testing。解锁条件：将 `ui/dialog` 的 scrim/panel 样式迁入 `fe/` 并登记进 `web/src/styles/global-classes.yaml`；届时恢复几何与 hit-testing 断言，并将两条契约翻回 `migrated`。

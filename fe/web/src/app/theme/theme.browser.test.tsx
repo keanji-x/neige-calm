@@ -34,7 +34,7 @@ describe('browser theme contracts', () => {
     expect(pixelLuminance(dark)).toBeLessThan(80); target.remove();
   });
 
-  it('E2E-CAP-TERMTHEME-010 exports host tuples that the document channel selects', () => {
+  it('exports host tuples that the document channel selects', () => {
     expect(DARK_THEME_RGB).toEqual({ fg: [216, 219, 226], bg: [15, 20, 24] });
     expect(LIGHT_THEME_RGB).toEqual({ fg: [42, 47, 58], bg: [252, 254, 255] });
     document.documentElement.dataset.theme = 'light'; expect(readHostThemeRgb(document.documentElement)).toBe(LIGHT_THEME_RGB);

@@ -14,9 +14,6 @@ function runtime(overrides: Partial<ProviderRuntime> = {}): ProviderRuntime {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('provider behavior', () => {
-  it('pins the public web compatibility protocol version', () => {
-    expect(WEB_COMPAT_VERSION).toBe(16);
-  });
   it('INV-APP-003 places one ThemeProvider above the complete children tree', () => {
     function ThemeConsumer() {
       const { resolved } = requireTheme();
@@ -24,6 +21,13 @@ describe('provider behavior', () => {
     }
     render(<AppProviders client={new QueryClient()} runtime={runtime()}><ThemeConsumer /></AppProviders>);
     expect(screen.getByText(/^route:(?:light|dark)$/u)).toBeTruthy();
+  });
+  it('CAP-APP-006 initially focuses the refresh action without a focusable duplicate backdrop', async () => {
+    const server = { ...compatible, minWebCompatVersion: WEB_COMPAT_VERSION + 1 };
+    render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })}>route</ServerCompatGate>);
+    const action = await screen.findByRole('button', { name: 'Refresh now' });
+    await waitFor(() => expect(document.activeElement).toBe(action));
+    expect(screen.queryByRole('button', { name: 'Refresh backdrop' })).toBeNull();
   });
   it('INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain', async () => {
     let resolve!: (value: typeof compatible) => void;

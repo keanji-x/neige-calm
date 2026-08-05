@@ -126,13 +126,13 @@
     issue #45 / docs/upgrade-stability.md Tier B：前后端 skew 时用户必须被明确阻断，
     并且运维式的 "compat v3 vs v1" 对照要一眼可见。
   source: web/src/app/providers.tsx:205-207,291-306
-  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1
+  authoritative_test: web/src/app/providers.test.tsx:132,184
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: migrated
+  migration: pending
 
 - id: INV-APP-007
   kind: invariant
@@ -180,13 +180,13 @@
     这是硬阻断态，没有"取消"语义；把 onClose 也指向 refresh 才不会出现"关掉弹窗后
     继续用不兼容前端"的漏口。同时复用共享 Dialog 以继承 focus trap / inert / focus restore。
   source: web/src/app/providers.tsx:291-304
-  authoritative_test: fe/web/src/app/providers/providers.browser.test.tsx:1
+  authoritative_test: web/src/app/providers.test.tsx:151
   owner_slice: app/providers
   intentional_omission: false
   runtime_layer: app
   verification_owner: e2e
   test_tier: browser
-  migration: migrated
+  migration: pending
 
 # ===========================================================================
 # 3. dbInstanceId 缓存爆破  (family: app-cache-bust)
@@ -1303,12 +1303,12 @@
     issue #22 验收条 4 的中心不变式：应用里任何其他需要知道主题的地方都必须调 `useTheme()`，
     不得直接读 `dataset.theme` 或 `prefers-color-scheme`。多处写入会让主题真值分叉。
   source: web/src/app/theme.tsx:11-17,157-162
-  authoritative_test: fe/web/src/app/theme/public.contract.test.tsx:1 + fe/web/src/app/theme/public.test.tsx:1
+  authoritative_test: fe/tools/architecture/architecture-rules.test.ts:1
   owner_slice: app/theme
   intentional_omission: false
   runtime_layer: app
   verification_owner: architecture
-  test_tier: jsdom
+  test_tier: static
   migration: migrated
 
 - id: INV-APP-071
@@ -1433,7 +1433,7 @@
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: static
+  test_tier: jsdom
   migration: migrated
 
 - id: INV-APP-078

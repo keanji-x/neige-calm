@@ -222,6 +222,19 @@ describe('architecture/no-theme-dataset-write-outside-provider', () => {
     'theme-dataset/element-write.ts',
     'theme-dataset/set-attribute.ts',
     'theme-dataset/object-assign.ts',
+    'theme-dataset/alias.ts',
+    'theme-dataset/destructure.ts',
+    'theme-dataset/template-attribute.ts',
+    'theme-dataset/const-attribute.ts',
+    'theme-dataset/set-attribute-ns.ts',
+    'theme-dataset/reflect-set.ts',
+    'theme-dataset/object-assign-identifier.ts',
+    'theme-dataset/object-assign-spread.ts',
+    'theme-dataset/dynamic-key.ts',
+    'theme-dataset/outer-html.ts',
+    'theme-dataset/destructuring-assignment.ts',
+    'theme-dataset/object-assign-opaque.ts',
+    'theme-dataset/provider-second-writer.tsx',
   ] as const) {
     it(`rejects ${fixture}`, async () => {
       const messages = await lintFixture('no-theme-dataset-write-outside-provider', fixture);
@@ -229,11 +242,25 @@ describe('architecture/no-theme-dataset-write-outside-provider', () => {
       expect(messages.at(0)?.messageId).toBe('write');
     });
   }
-  for (const fixture of ['theme-dataset/read.ts', 'web/src/app/theme/public.tsx'] as const) {
+  for (const fixture of [
+    'theme-dataset/read.ts',
+    'theme-dataset/unrelated-write.ts',
+    'theme-dataset/object-assign-not-dataset.ts',
+    'web/src/app/theme/public.tsx',
+  ] as const) {
     it(`accepts ${fixture}`, async () => {
       expect(await lintFixture('no-theme-dataset-write-outside-provider', fixture)).toHaveLength(0);
     });
   }
+
+  it('INV-APP-070 is wired as an error for production web source by the real config', async () => {
+    const eslint = new ESLint({ cwd: root, overrideConfigFile: resolve(root, 'eslint.config.js') });
+    const [result] = await eslint.lintText('declare const el: HTMLElement; el.dataset.theme = \'dark\';', {
+      filePath: resolve(root, 'web/src/app/theme/public.tsx'),
+    });
+    expect(result.messages.some((message) => message.ruleId === 'architecture/no-theme-dataset-write-outside-provider'
+      && message.severity === 2)).toBe(true);
+  });
 });
 
 describe('architecture/no-core-platform-escape', () => {

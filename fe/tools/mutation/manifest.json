@@ -186,5 +186,41 @@
       "architecture/no-theme-dataset-write-outside-provider rejects theme-dataset/element-write.ts"
     ],
     "why_more_than_one": "Prediction: the shared AssignmentExpression branch intentionally covers both dot and bracket writes; both and only both fixtures should turn red."
+  },
+  {
+    "mutation_id": "app-theme-drop-ssr-window-guard",
+    "defends": ["oracle:INV-APP-077"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -27,7 +27,7 @@ function readPersistedMode(storage: ThemeStorage | undefined): ThemeMode {\n }\n \n function readSystemPreference(): ResolvedTheme {\n-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light';\n+  if (typeof window.matchMedia !== 'function') return 'light';\n   try { return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch { return 'light'; }\n }\n",
+    "selection_paths": ["web/src/app/theme/public.ssr.contract.test.tsx"],
+    "expected_red": ["ThemeProvider SSR contract INV-APP-077 renders without window, matchMedia, or document and has a positive light fallback"],
+    "why_more_than_one": "Prediction, not run: only the isolated SSR contract evaluates the provider with window absent."
+  },
+  {
+    "mutation_id": "app-theme-drop-provider-remediation-path",
+    "defends": ["oracle:INV-APP-078"],
+    "target": "web/src/app/theme/public.tsx",
+    "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -66,7 +66,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n export function useTheme(): ThemeContextValue {\n   const value = useContext(ThemeContext);\n-  if (!value) throw new Error('useTheme() requires <ThemeProvider>; mount it from web/src/app/providers/public.tsx.');\n+  if (!value) throw new Error('useTheme() requires <ThemeProvider>.');\n   return value;\n }\n",
+    "selection_paths": ["web/src/app/theme/public.test.tsx"],
+    "expected_red": ["ThemeProvider behavior INV-APP-078 fails descriptively outside the provider"],
+    "why_more_than_one": "Prediction, not run: only the diagnostic-path assertion depends on the remediation text."
+  },
+  {
+    "mutation_id": "app-providers-drop-bridge-data-guard",
+    "defends": ["oracle:INV-APP-002"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -53,7 +53,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{query.data && renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n+  return <>{renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n }\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "expected_red": ["provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain"],
+    "why_more_than_one": "Prediction, not run: the pending-version contract alone exercises renderEventBridge before query data exists."
+  },
+  {
+    "mutation_id": "app-providers-remove-refresh-modal",
+    "defends": ["oracle:CAP-APP-006"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -58,9 +58,9 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n-  return <Dialog open title=\"Please refresh\" onClose={reload} hideTitleRow>\n+  return <section aria-label=\"Please refresh\">\n     <section aria-label=\"Please refresh\">\n-      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}; this browser provides compat v{WEB_COMPAT_VERSION}.</p>\n+      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}.</p>\n       <button type=\"button\" onClick={reload}>Refresh now</button>\n     </section>\n-  </Dialog>;\n+  </section>;\n }\n",
+    "selection_paths": ["web/src/app/providers/public.test.tsx", "web/src/app/providers/providers.browser.test.tsx"],
+    "expected_red": ["provider behavior CAP-APP-006 initially focuses the refresh action without a focusable duplicate backdrop", "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree"],
+    "why_more_than_one": "Prediction, not run: jsdom catches loss of modal focus and browser catches the missing client version; geometry and hit-testing are intentionally not claimed until the shared Dialog CSS migrates."
   }
 ]
