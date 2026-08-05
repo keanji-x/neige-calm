@@ -72,6 +72,33 @@ async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
     let same_pid = ensure(&control_sock, request).await;
     assert_eq!(same_pid, pid, "EnsureProc must be idempotent by proc_id");
 
+    // #1013 — the elapsed assertion below is the load-bearing half of case 3.
+    //
+    // `assert!(!pid_alive(pid))` alone is near-tautological here: `src/main.rs`
+    // is `#[tokio::main]`, so runtime drop waits on the in-flight
+    // `spawn_blocking(move || waitpid(pid))` that `reap_children` started. The
+    // supervisor process therefore *cannot* exit before the pipe child does,
+    // and `supervisor.wait()` above already implies the child is gone. If
+    // `pgid_lease::group_target` ever returns `Err` for a Pipe entry — which
+    // drops every Pipe entry out of `terminate_all_process_groups_sync` via its
+    // `filter_map(.. .ok())` and re-breaks #388 — this test does not go red, it
+    // **hangs** until the fixture's own 30s self-exit releases the waitpid.
+    // Measured: baseline 0.23s; with that mutation 30.03s, still "ok".
+    //
+    // So measure the SIGTERM→teardown latency instead. Budget rationale:
+    //   * fixture self-exits at 30s (tests/fixtures/ready-sleeper/main.rs) —
+    //     10s leaves a 20s margin, i.e. the mutated run trips this, not the
+    //     fixture;
+    //   * baseline is ~0.23s — 10s is a ~40x margin, so this is not a
+    //     hand-tuned deadline and a slow CI runner will not flake it.
+    // Deliberately NOT done: raising the fixture's sleep to widen the gap.
+    // `try_spawn_pipe` sets `kill_on_drop(false)`, so a failing run would leak
+    // a process for the whole sleep, on a box that also runs production.
+    //
+    // The primary gate for the Pipe-`Err` rule is the `--lib` test
+    // `pgid_lease_tests::pipe_target_is_ok_kind_readable_and_refused_by_the_signal_rpc`.
+    // This is the secondary, end-to-end one.
+    let t0 = std::time::Instant::now();
     unsafe {
         libc::kill(
             supervisor.id().expect("supervisor pid") as libc::pid_t,
@@ -79,14 +106,34 @@ async fn proc_outlives_client_disconnect_and_dies_with_supervisor() {
         );
     }
     let _ = supervisor.wait().await.expect("wait supervisor");
+    let mut died = false;
     for _ in 0..20 {
         if !pid_alive(pid) {
-            return;
+            died = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert!(!pid_alive(pid), "child should die when supervisor exits");
+    // The loop checks at t≈0,50,..,950ms and then sleeps a 20th time; without
+    // this the last observation is at 950ms and the final sleep is wasted.
+    let died = died || !pid_alive(pid);
+    let elapsed = t0.elapsed();
+    assert!(died, "child should die when supervisor exits");
+    assert!(
+        elapsed < TEARDOWN_BUDGET,
+        "supervisor took {elapsed:?} (> {TEARDOWN_BUDGET:?}) to SIGTERM its pipe procs and exit. \
+         The child did eventually die, but not because the supervisor killed its process group — \
+         most likely it self-exited at the fixture's 30s mark while the supervisor's \
+         `#[tokio::main]` runtime drop blocked on the reap_children waitpid. Check that \
+         `pgid_lease::group_target` still returns `Ok(PipeBestEffort)` for Pipe entries \
+         (regulation 4) so `terminate_all_process_groups_sync` does not filter them out."
+    );
 }
+
+/// Upper bound on SIGTERM(supervisor) → pipe child dead → supervisor exited.
+/// Unlike `LIVENESS_BUDGET` this one **is** an asserted claim about promptness;
+/// see the rationale at its use site.
+const TEARDOWN_BUDGET: Duration = Duration::from_secs(10);
 
 async fn ensure(control_sock: &Path, request: EnsureProcRequest) -> u32 {
     let mut stream = UnixStream::connect(control_sock)

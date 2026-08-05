@@ -52,6 +52,12 @@ pub struct ProcRegistry {
 }
 
 struct ProcEntry {
+    /// #1013: with `live_pids()` gone, this number has exactly two readers in
+    /// the crate — `existing_live_pid` (whose only destination is the
+    /// cross-process `ControlReply::Spawned { pid }`, out of scope for
+    /// INV-1013-PTY, §5.3) and `pgid_lease` internals. Adding a third reader
+    /// that turns it into a signal target is the defect #1013 is about: route
+    /// it through `pgid_lease::group_target` instead.
     pid: u32,
     io_mode: IoMode,
     runtime: ProcRuntime,
@@ -416,6 +422,27 @@ impl ProcRegistry {
     /// 攥着 registry 全局锁做同步 I/O —— 整个 supervisor 陪葬。所以：retain 时
     /// 只把被移除的 `Arc` 收进 `doomed`，先 `drop(entries)` 放锁，再让 `doomed`
     /// 离开作用域。
+    ///
+    /// **#1013 (D7)：这条"析构严格在锁外"的约束并非在所有 `Drop` 触发点上都成立，
+    /// 完整枚举如下，供下一个人核对，不要以为只有本函数需要小心：**
+    ///
+    /// | # | 触发点 | 线程 | 锁 |
+    /// |---|---|---|---|
+    /// | 1 | 本函数的 `drop(doomed)` | serve select 循环 | 锁外（先 `drop(entries)`） |
+    /// | 2 | `try_spawn_pty` 同名 `proc_id` 覆盖插入 | 请求 handler | **曾在锁内**；#1013 PR-A 把 `insert` 的返回值绑定出来后再 drop |
+    /// | 2b | `try_spawn_pipe` 同名 `proc_id` 覆盖插入 | 请求 handler | **与 #2 同形状，同样曾在锁内**。被覆盖的旧 entry 可以是 **Pty**：`existing_live_pid` 的 Pty 分支对"已退出但还在宽限期"的 entry 故意不就地移除、直接返回 `None`，随后一次 `io_mode: Pipe` 的 `EnsureProc` 就会走到这里把它顶掉，于是 `UnixMasterWriter::drop` 的阻塞写落在 registry 锁内。同样绑定返回值后再 drop |
+    /// | 3 | `existing_live_pid` 的 Pipe 分支 `remove` | 请求 handler | **结构上安全**：`.map(\|mut entries\| entries.remove(..))` 把 guard **move 进闭包**，闭包体结束时 guard 先析构，被移除的 `Arc` 作为返回值离开闭包后才在语句末尾析构 —— 天然锁外。不是 #2 那个形状（早先的表把它写成"与 #2 同形状"，是错的） |
+    /// | 4a | `await_ready_phase` 的 **readiness 失败** `remove` | 请求 handler 任务（`await_ready_phase` 自己） | 同 #3：`.map(\|mut entries\| entries.remove(..))`，guard 在闭包内先析构，结构上锁外 |
+    /// | 4b | `await_ready_phase` 里 **`reap_children` 那个 `tokio::spawn`** 的 `remove` | 被 spawn 出来的 tokio 任务（不是 handler） | 同 #3 的形状，结构上锁外。**单列一行**：早先的表把 4a/4b 合成一行，线程列写的是 4b 的线程、位置指的却是两处 —— 这张表宣称"完整枚举"，这一行已经因为同样的合并被纠正过两次 |
+    /// | 5 | `handle_cleanup` → `sweep_expired_entries` | tokio worker | 锁外 |
+    /// | 6 | 各 handler 里 `lookup_proc` 克隆出去的那份 `Arc` | tokio worker | 锁外，**但在 tokio worker 上**：`UnixMasterWriter::drop` 的阻塞写今天就可能落在 worker 线程上。既有缺陷，本次不修（Q8） |
+    /// | 7 | reader / waiter 线程结束 | 各自的 OS 线程 | 锁外 |
+    /// | 8 | `Drop for InProcessProcSupervisor` / 进程退出 | 测试线程 | 锁外 |
+    ///
+    /// **同一个理由派生出 `pgid_lease` 的规约 1**（M8）：signal lease 只能从
+    /// **克隆出来的 `Arc<ProcEntry>`** 上取，绝不能从 registry 的 `MutexGuard`
+    /// 上取 —— 否则那次 `libc::kill` 就跑在 registry 全局锁里，与本段要避免的
+    /// 阻塞式 `write_all` 是同一类事故。
     fn sweep_expired_entries(&self) -> usize {
         let now = std::time::Instant::now();
         let mut entries = match self.inner.lock() {
@@ -438,24 +465,48 @@ impl ProcRegistry {
         removed
     }
 
-    pub async fn live_pids(&self) -> Vec<u32> {
-        self.inner
-            .lock()
-            .map(|entries| entries.values().map(|entry| entry.pid).collect())
-            .unwrap_or_default()
-    }
-
     pub async fn terminate_all_process_groups(&self) {
         self.terminate_all_process_groups_sync();
     }
 
+    /// #388's "supervisor death drops procs": group-SIGTERM every registered
+    /// proc on the way out. **Pipe entries are in scope and must stay in
+    /// scope** — `try_spawn_pipe` does `cmd.process_group(0)`, there is no
+    /// PDEATHSIG, and this is the *only* mechanism that kills a pipe daemon
+    /// when the supervisor dies.
+    ///
+    /// **The gate is the `--lib` test
+    /// `pgid_lease_tests::pipe_target_is_ok_kind_readable_and_refused_by_the_signal_rpc`**,
+    /// not `server_restart_survives.rs`. If `group_target` starts returning
+    /// `Err` for Pipe, `server_restart_survives` **hangs rather than fails**:
+    /// `src/main.rs` is `#[tokio::main]`, so runtime drop blocks on the
+    /// in-flight `spawn_blocking(move || waitpid(pid))` that `reap_children`
+    /// started, which means the supervisor process cannot exit before the pipe
+    /// child does. The test's `child should die when supervisor exits`
+    /// assertion is therefore near-tautological on the happy path, and on the
+    /// violating path it just waits out the child. Measured on the PR-A branch
+    /// before the elapsed assertion existed: baseline `ok, 0.23s`; with the
+    /// Pipe-`Err` mutation still `ok`, at `30.03s` — i.e. exactly the fixture's
+    /// own 30s self-exit, which is the tell that nothing killed the child.
+    /// `server_restart_survives` now also asserts *elapsed* after the SIGTERM
+    /// so that it is a real (if secondary) gate — see the comment there.
+    ///
+    /// The collect-then-kill shape is kept, but the collected type is now
+    /// `Vec<GroupSignalTarget<'_>>`, which **borrows** `entries`. Before
+    /// #1013 this loop was safe only because `entries`' drop scope happened to
+    /// reach the end of the function; now the borrow checker enforces it
+    /// (inserting `drop(entries)` before the kill loop is `E0505`).
+    ///
+    /// Per `pgid_lease` regulation 1 the leases come from cloned
+    /// `Arc<ProcEntry>`s, never from the registry guard: that guard is released
+    /// before a single `kill` runs.
     pub fn terminate_all_process_groups_sync(&self) {
         let entries: Vec<Arc<ProcEntry>> = self
             .inner
             .lock()
             .map(|entries| entries.values().cloned().collect())
             .unwrap_or_default();
-        let pgids: Vec<i32> = entries
+        let targets: Vec<pgid_lease::GroupSignalTarget<'_>> = entries
             .iter()
             .filter(|entry| {
                 entry
@@ -464,13 +515,10 @@ impl ProcRegistry {
                     .map(|exit| exit.is_none())
                     .unwrap_or(false)
             })
-            .filter_map(|entry| current_process_group(entry).ok())
+            .filter_map(|entry| pgid_lease::group_target(entry).ok())
             .collect();
-        for pgid in pgids {
-            #[cfg(unix)]
-            unsafe {
-                let _ = libc::kill(-(pgid as libc::pid_t), libc::SIGTERM);
-            }
+        for target in &targets {
+            let _ = pgid_lease::kill_group(target, libc::SIGTERM);
         }
     }
 }
@@ -921,39 +969,336 @@ async fn handle_signal(
         ProcSignal::Kill => libc::SIGKILL,
         ProcSignal::Hup => libc::SIGHUP,
     };
-    let pgid = current_process_group(&entry)?;
-    let rc = unsafe { libc::kill(-(pgid as libc::pid_t), sig) };
-    if rc == 0 {
-        write_frame(stream, &ControlReply::SignalOk).await?;
-    } else {
-        write_frame(
-            stream,
-            &ControlReply::Error {
-                kind: ControlErrorKind::Internal,
-                message: format!(
-                    "signal proc {} pgid {}: {}",
-                    request.proc_id,
-                    pgid,
-                    io::Error::last_os_error()
-                ),
-            },
-        )
-        .await?;
-    }
+    let reply = signal_group_reply(&entry, &request.proc_id, sig);
+    write_frame(stream, &reply).await?;
     Ok(())
 }
 
-fn current_process_group(entry: &ProcEntry) -> anyhow::Result<i32> {
-    match &entry.runtime {
-        ProcRuntime::Pipe { .. } => Ok(entry.pid as i32),
-        ProcRuntime::Pty { master, .. } => {
-            let master = master
-                .lock()
-                .map_err(|_| anyhow::anyhow!("pty master mutex poisoned"))?;
-            Ok(master
-                .process_group_leader()
-                .unwrap_or(entry.pid as libc::pid_t))
+/// #1013 §1.2 — the **only** place in this crate that may compute a "group
+/// signal target", and the **only** place that calls `libc::kill(-pgid, ..)`.
+///
+/// Three claims, three different enforcement mechanisms. All three are stated
+/// here because the weaker prose versions of them were broken three times in
+/// review:
+///
+/// * **The number is unreadable — enforced by the compiler.** The pgid lives in
+///   `struct Pgid(pid_t)`, whose field is private to this module; reading it
+///   from outside is `error[E0616]`. The negative sample that proves this is
+///   `mod pgid_escape_probe` (T11), gated behind the `pgid-escape-probe`
+///   feature: `cargo check --features pgid-escape-probe` must fail with E0616.
+/// * **The computation is borrow-checked — for as long as the value keeps its
+///   original lifetime.** A `GroupSignalTarget<'a>` produced by `group_target`
+///   borrows the `&'a ProcEntry` it was derived from, so *that value* cannot
+///   outlive the borrow. It is **not** true that the target "cannot be stashed
+///   in anything longer-lived": the parent module can destructure and re-wrap
+///   it, and doing so relabels the lifetime without touching the number. See
+///   regulation 5 — that seam is lint/review-enforced, not borrow-checked.
+/// * **"Do not bypass the computation" is lint-enforced only.** Nothing here
+///   stops someone from writing another `libc::kill(-n, sig)`, or from
+///   conjuring a number out of `Spawned { pid }` / a `/proc` scan / the pid in
+///   the database. Note this list enumerates only *fresh-number* bypasses; the
+///   re-wrap seam of regulation 5 needs no new number at all. That layer is T7
+///   plus code review, and nothing more.
+///
+/// ## Module regulations (five; do not delete them, each one has a scar)
+///
+/// 1. **A lease may only be taken from a cloned `Arc<ProcEntry>`, never from
+///    the registry's `MutexGuard`** (M8). Taking one from the guard is the
+///    shortest way to satisfy borrowck, and it puts a `kill` syscall inside the
+///    global registry lock — exactly the hazard `sweep_expired_entries` spends
+///    a paragraph avoiding. Both consumers comply today: `lookup_proc` clones
+///    and then releases the lock, and `terminate_all_process_groups_sync`
+///    collects a `Vec<Arc<_>>` before dropping the guard.
+/// 2. **No function here may return `GroupSignalTarget<'static>`** (M11).
+///    `Box::leak(Box::new(entry))` yields a `&'static ProcEntry` and hence a
+///    lease that never expires. It happens to be harmless today (a leaked entry
+///    is never dropped, so the pin really is eternal), but that is a
+///    coincidence, not an argument.
+/// 3. **Only `Leader` is covered by INV-1013-PTY** (and only once PR-B lands).
+///    See the per-variant docs.
+/// 4. **`group_target` must NEVER return `Err` for a Pipe entry.**
+///    `terminate_all_process_groups_sync` collects targets with
+///    `filter_map(|e| group_target(e).ok())`, so any `Err` escaping from the
+///    Pipe branch silently removes Pipe entries from the shutdown path — which
+///    is the #388 "supervisor death drops procs" breakage. **The gate that
+///    goes red is the `--lib` test
+///    `pgid_lease_tests::pipe_target_is_ok_kind_readable_and_refused_by_the_signal_rpc`.**
+///    `server_restart_survives` does *not* fail on this violation — it
+///    **hangs**: `src/main.rs` is `#[tokio::main]`, so runtime drop waits on
+///    the in-flight `spawn_blocking(move || waitpid(pid))` that `reap_children`
+///    started, and the supervisor therefore cannot exit before the pipe child
+///    does. Measured: baseline `ok, 0.23s`, mutated `ok, 30.03s` (the fixture's
+///    own 30s self-exit — the tell that nothing killed the child). That
+///    test now carries an elapsed assertion so it is at least a secondary gate.
+///    Pipe is excluded from the **`Signal` RPC only**, and `PipeNotSignalable`
+///    may only ever be produced by `require_addressable_by_signal_rpc`.
+/// 5. **Do not move a `GroupSignalTarget` out of its variant and re-wrap it**
+///    (#1013 review). Because enum variant fields inherit the enum's
+///    visibility, the parent module can write
+///    `match t { GroupSignalTarget::Leader(p, _) => GroupSignalTarget::Leader(p, PhantomData), .. }`
+///    and get a `GroupSignalTarget<'static>` carrying the same, possibly
+///    already-stale, pgid past the entry's drop — no new number required, and
+///    it compiles. `PhantomData` pins nothing on its own, so this seam is
+///    **lint- and review-enforced only**, exactly like regulation 2's spirit
+///    but not reachable by the same `'static`-in-a-signature ban.
+mod pgid_lease {
+    use super::{ProcEntry, ProcRuntime};
+    use std::io;
+    use std::marker::PhantomData;
+
+    /// A **struct, not an enum field**: enum variants and their fields always
+    /// inherit the enum's visibility (`error[E0449]: visibility qualifiers are
+    /// not permitted here`), so a variant field can never be "kind public,
+    /// number private". Only a newtype with a private field can.
+    /// **Do not flatten this back into the variants** — that restores the
+    /// original defect in one line (`let GroupSignalTarget::Leader(pgid, ..)`
+    /// would copy the `i32` straight out of the borrow).
+    ///
+    /// No `Copy`, no `Clone`, no `Display`/`Debug`, no accessor. A `Display`
+    /// that prints a decimal pgid is an `i32` accessor spelled in text.
+    pub(super) struct Pgid(libc::pid_t);
+
+    impl Pgid {
+        /// Deliberately module-private (not `pub(super)`): this is the one
+        /// place the number is legible, and `kill_group` is its only caller.
+        fn raw(&self) -> libc::pid_t {
+            self.0
         }
+    }
+
+    /// A signal target computed from — and borrowing — one `&ProcEntry`.
+    pub(super) enum GroupSignalTarget<'a> {
+        /// Target = the leader's pgid (numerically `entry.pid`). Pinned by the
+        /// leader zombie **once PR-B lands** (INV-1013-PTY). In PR-A this
+        /// variant only records that the target's *source* is the leader.
+        Leader(Pgid, PhantomData<&'a ProcEntry>),
+        /// Target = the foreground job group returned by `tcgetpgrp(master)`.
+        /// **Never pinned** — it is a different process group's number and the
+        /// leader's zombie does not hold it. This is the remaining face of
+        /// #1013 (§5.4 / Q1).
+        Foreground(Pgid, PhantomData<&'a ProcEntry>),
+        /// Target = the pipe daemon's pgid (`try_spawn_pipe` does
+        /// `cmd.process_group(0)`, so the daemon leads its own group).
+        /// **Never pinned** — the child belongs to tokio. Only
+        /// `terminate_all_process_groups_sync` may use it (#388 payload);
+        /// `handle_signal` must refuse it, see
+        /// `require_addressable_by_signal_rpc`.
+        PipeBestEffort(Pgid, PhantomData<&'a ProcEntry>),
+    }
+
+    impl GroupSignalTarget<'_> {
+        /// The variant name, for diagnostics. **Never the number** (R6).
+        pub(super) fn kind(&self) -> &'static str {
+            match self {
+                GroupSignalTarget::Leader(..) => "Leader",
+                GroupSignalTarget::Foreground(..) => "Foreground",
+                GroupSignalTarget::PipeBestEffort(..) => "PipeBestEffort",
+            }
+        }
+
+        fn pgid(&self) -> &Pgid {
+            match self {
+                GroupSignalTarget::Leader(pgid, _)
+                | GroupSignalTarget::Foreground(pgid, _)
+                | GroupSignalTarget::PipeBestEffort(pgid, _) => pgid,
+            }
+        }
+    }
+
+    /// The stable error shape the tests assert on. Rendered by
+    /// `super::group_signal_error_reply` — proc_id and target *kind*, never a
+    /// decimal pgid.
+    pub(super) enum GroupSignalError {
+        /// Produced **only** by `require_addressable_by_signal_rpc` — see
+        /// regulation 4.
+        PipeNotSignalable,
+        /// Produced only by `group_target`'s Pty branch, and only once PR-B
+        /// lands the `pin_lost` mechanism. PR-A carries the variant so that the
+        /// error mapping in `handle_signal` is already exhaustive and stable;
+        /// nothing constructs it yet, hence the allow.
+        #[allow(dead_code, reason = "constructed by PR-B's pin_lost mechanism")]
+        PinLost,
+        /// The pty master mutex is poisoned — the same situation in which the
+        /// pre-#1013 `current_process_group` returned `Err`.
+        MasterPoisoned,
+        /// `kill_group`'s `libc::kill` returned -1.
+        Kill(io::Error),
+    }
+
+    /// The only constructor. `Err` is only ever possible on the **Pty** branch
+    /// (`MasterPoisoned` today, `PinLost` once PR-B lands). See regulation 4:
+    /// the Pipe branch must always be `Ok(PipeBestEffort)`.
+    pub(super) fn group_target(
+        entry: &ProcEntry,
+    ) -> Result<GroupSignalTarget<'_>, GroupSignalError> {
+        match &entry.runtime {
+            ProcRuntime::Pipe { .. } => Ok(GroupSignalTarget::PipeBestEffort(
+                Pgid(entry.pid as libc::pid_t),
+                PhantomData,
+            )),
+            ProcRuntime::Pty { master, .. } => {
+                let master = master
+                    .lock()
+                    .map_err(|_| GroupSignalError::MasterPoisoned)?;
+                // `process_group_leader()` is `tcgetpgrp(master)` and returns
+                // `Some` only for pid > 0 (portable-pty-0.9 unix.rs:374-379),
+                // so this is the pre-#1013 `unwrap_or(entry.pid)` verbatim,
+                // with the two sources kept apart by variant instead of merged
+                // into one anonymous `i32`.
+                match master.process_group_leader() {
+                    Some(foreground) => {
+                        Ok(GroupSignalTarget::Foreground(Pgid(foreground), PhantomData))
+                    }
+                    None => Ok(GroupSignalTarget::Leader(
+                        Pgid(entry.pid as libc::pid_t),
+                        PhantomData,
+                    )),
+                }
+            }
+        }
+    }
+
+    /// The `Signal` RPC's admission gate. Its own function so that T9's
+    /// mutation is exactly one line at the call site.
+    ///
+    /// Pipe procs are not group-signalable via the `Signal` RPC; group
+    /// termination for pipe procs happens only through supervisor shutdown
+    /// (`terminate_all_process_groups_sync`, the #388 payload).
+    pub(super) fn require_addressable_by_signal_rpc(
+        target: &GroupSignalTarget<'_>,
+    ) -> Result<(), GroupSignalError> {
+        match target {
+            GroupSignalTarget::PipeBestEffort(..) => Err(GroupSignalError::PipeNotSignalable),
+            GroupSignalTarget::Leader(..) | GroupSignalTarget::Foreground(..) => Ok(()),
+        }
+    }
+
+    /// The crate's only `libc::kill(-pgid, ..)`. Only this module can read
+    /// `Pgid`'s field.
+    pub(super) fn kill_group(target: &GroupSignalTarget<'_>, sig: libc::c_int) -> io::Result<()> {
+        let rc = unsafe { libc::kill(-target.pgid().raw(), sig) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+
+/// T11's compile-time negative sample. **This module exists in order to fail
+/// to compile.** The gate asserts that
+/// `cargo check -p calm-proc-supervisor --features pgid-escape-probe`
+/// exits non-zero *and* prints `E0616`.
+///
+/// **What a green (i.e. failing-to-compile) gate does and does not claim.** The
+/// probe reads exactly one thing, `p.0`, so T11 pins exactly one property: *the
+/// `Pgid` tuple field is not readable outside `pgid_lease`*. It does **not**
+/// catch an added `pub(super) fn raw2()` or an added `#[derive(Debug)]` — both
+/// leave `p.0` private and the gate stays green. Flattening the number back
+/// into the variants is caught only *indirectly*: `p.0` then applies to a bare
+/// `libc::pid_t` and rustc emits `E0609`, not `E0616`, so CI fails with the
+/// misleading "the probe is broken, not the invariant" message. Red is red, but
+/// do not read that message literally without checking the variants first.
+///
+/// **Where the real guarantee comes from: the type system, not this gate and
+/// not the grep next to it.** Two review channels wrote and *compiled* seven
+/// distinct escape attempts against this design. Only three succeeded: an
+/// `unsafe` transmute, the acknowledged destructure/re-wrap seam (regulation 5
+/// above), and simply writing a fresh `libc::kill(-n, sig)` from a number
+/// obtained elsewhere. Everything else was a compile error.
+///
+/// **The grep ratchet next to the T11 step in CI is defense-in-depth against
+/// accidental drift, not a proof.** It catches the shapes enumerated in its own
+/// comment — a second or `pub` method on `impl Pgid`, any `pub(super) fn` in
+/// the module returning a `pid_t` (free function or method on another type), a
+/// trait impl with `Pgid` on either side of `for`, and any `derive` — and a
+/// determined author can still route the number out past it, because a text
+/// scan can never be complete. Do **not** rewrite this paragraph into "the
+/// accessor and derive cases are covered by the grep ratchet": that sentence
+/// was written twice and a reviewer defeated it twice, both times with CI
+/// green.
+///
+/// **This crate can never be built with `--all-features`**: the whole point of
+/// the `pgid-escape-probe` feature is that enabling it makes the crate fail to
+/// compile, so `cargo check/test --all-features` necessarily fails at this
+/// module. No workflow uses `--all-features` today; if you type it by hand,
+/// this is why. Enable features explicitly.
+///
+/// It cannot be a trybuild case or a `compile_fail` doctest: both compile the
+/// sample as an **external** crate, where `pgid_lease` (all `pub(super)`) is
+/// not even nameable, so the sample would "fail" on an unresolved path and the
+/// gate would pass vacuously. The property under test is crate-internal,
+/// module-external visibility, so the sample must live inside the crate.
+#[cfg(feature = "pgid-escape-probe")]
+mod pgid_escape_probe {
+    pub(super) fn read_the_number(t: &super::pgid_lease::GroupSignalTarget<'_>) -> libc::pid_t {
+        let super::pgid_lease::GroupSignalTarget::Leader(p, _) = t else {
+            return 0;
+        };
+        p.0 // ← must be error[E0616]: field `0` of struct `Pgid` is private
+    }
+}
+
+/// Renders a `GroupSignalError` into the one `ControlReply` frame the client
+/// gets. **Exhaustive on purpose**: `handle_signal` must never `?` a
+/// `GroupSignalError` into `anyhow`, because that writes no frame at all and
+/// the client just sees the connection close.
+///
+/// These four messages are an asserted interface, not log wording (§1.2).
+/// Note the deliberate narrowing versus the pre-#1013 text: the `Kill` message
+/// used to carry the decimal pgid, which was a textual escape hatch for the
+/// number; it now names the target *kind*.
+fn group_signal_error_reply(
+    proc_id: &str,
+    kind: Option<&'static str>,
+    err: pgid_lease::GroupSignalError,
+) -> ControlReply {
+    match err {
+        pgid_lease::GroupSignalError::PipeNotSignalable => ControlReply::Error {
+            kind: ControlErrorKind::WrongState,
+            message: format!(
+                "pipe runtime is not group-signalable via the Signal RPC: proc {proc_id}"
+            ),
+        },
+        pgid_lease::GroupSignalError::PinLost => ControlReply::Error {
+            kind: ControlErrorKind::Internal,
+            message: format!(
+                "pty leader pin lost for proc {proc_id} (kernel reported ECHILD); refusing to use its pgid as a signal target"
+            ),
+        },
+        pgid_lease::GroupSignalError::MasterPoisoned => ControlReply::Error {
+            kind: ControlErrorKind::Internal,
+            message: format!("pty master mutex poisoned: proc {proc_id}"),
+        },
+        pgid_lease::GroupSignalError::Kill(e) => ControlReply::Error {
+            kind: ControlErrorKind::Internal,
+            message: format!(
+                "signal proc {proc_id} ({} target): {e}",
+                kind.unwrap_or("unresolved")
+            ),
+        },
+    }
+}
+
+/// The `Signal` RPC's whole decision, as a synchronous function so that the
+/// lease never crosses an `.await`. Per module regulation 1 the lease is taken
+/// from a cloned `Arc<ProcEntry>` (`lookup_proc` already released the registry
+/// lock), never from a registry guard.
+fn signal_group_reply(entry: &ProcEntry, proc_id: &str, sig: libc::c_int) -> ControlReply {
+    let target = match pgid_lease::group_target(entry) {
+        Ok(target) => target,
+        Err(err) => return group_signal_error_reply(proc_id, None, err),
+    };
+    if let Err(err) = pgid_lease::require_addressable_by_signal_rpc(&target) {
+        return group_signal_error_reply(proc_id, Some(target.kind()), err);
+    }
+    match pgid_lease::kill_group(&target, sig) {
+        Ok(()) => ControlReply::SignalOk,
+        Err(e) => group_signal_error_reply(
+            proc_id,
+            Some(target.kind()),
+            pgid_lease::GroupSignalError::Kill(e),
+        ),
     }
 }
 
@@ -1121,10 +1466,56 @@ async fn try_spawn_pipe(
         child_already_reaped: false,
     })?;
     drop(ready_writer);
-    let pid = child.id().unwrap_or_default();
+
+    // #1013: the same hard-fail `try_spawn_pty` does, for the same reason, on
+    // the runtime that the group-signal path actually still signals. A pid of 0
+    // becomes `Pgid(0)` and `terminate_all_process_groups_sync` would then run
+    // `kill(-0, SIGTERM)` — i.e. SIGTERM the supervisor's own process group.
+    // Pipe is precisely the variant that path must keep signalling (#388), so
+    // leaving `unwrap_or_default()` here while hard-failing the pty branch was
+    // asymmetric hardening. On unix `Child::id()` is `Some(nonzero)` until the
+    // child is reaped, so this is unreachable today; it is here so the
+    // unreachable case cannot silently become a self-inflicted killpg.
+    let pid = match child.id() {
+        Some(pid) if pid != 0 => pid,
+        observed => {
+            // Deliberately **no kill here**, and this is the whole point of the
+            // guard. `None` means tokio already reaped the child (`id()` is
+            // `None` only for `FusedChild::Done`), so there is nothing to
+            // signal. And for a stored pid of `0`, `Child::kill()` bottoms out
+            // in `libc::kill(self.pid, SIGKILL)` (tokio-1.52.3
+            // process/mod.rs:1326 → process/unix/mod.rs:170 → std
+            // sys/process/unix/unix.rs:990-1003) — i.e. `kill(0, SIGKILL)`,
+            // which signals the **supervisor's own process group**. That is a
+            // strictly worse version of the very self-killpg this guard exists
+            // to prevent. Leaking a child in an unreachable branch beats
+            // SIGKILLing the supervisor.
+            //
+            // `child_already_reaped` is therefore only true for `None`; for
+            // `Some(0)` the child is neither reaped nor killed, and the caller
+            // must not be told otherwise.
+            return Err(EnsureProcFailure {
+                error: format!(
+                    "pipe child for {} reported no usable pid ({observed:?}); refusing to register an entry whose group signal target would be 0",
+                    request.proc_id
+                ),
+                child_already_reaped: observed.is_none(),
+            });
+        }
+    };
     let child = Arc::new(Mutex::new(child));
     let (broadcast_tx, _) = broadcast::channel(2048);
-    {
+    // #1013 (D7 #2b): the sibling of the `try_spawn_pty` site below, and it is
+    // reachable with a **Pty** victim: `existing_live_pid`'s Pty branch
+    // deliberately does not remove a dead-but-in-grace entry and returns
+    // `None`, so a following `EnsureProc` for the same `proc_id` with
+    // `io_mode: Pipe` lands here and displaces that Pty entry. If the registry
+    // held the last `Arc`, dropping it drops `UnixMasterWriter`, whose `Drop`
+    // does a **blocking** `write_all(&[b'\n', VEOF])` on the master fd. As a
+    // bare statement `entries.insert(..)`'s returned `Option<Arc<ProcEntry>>`
+    // is a statement temporary that drops *before* the `MutexGuard`, i.e.
+    // inside the registry lock. Bind it, release the lock, then drop.
+    let displaced = {
         let mut entries = registry.inner.lock().map_err(|_| EnsureProcFailure {
             error: "proc registry mutex poisoned".into(),
             child_already_reaped: false,
@@ -1145,8 +1536,9 @@ async fn try_spawn_pipe(
                 remove_after: StdMutex::new(None),
                 broadcast_tx,
             }),
-        );
-    }
+        )
+    };
+    drop(displaced);
     Ok(Spawned {
         proc_id: request.proc_id,
         pid,
@@ -1196,7 +1588,7 @@ async fn try_spawn_pty(
         error: format!("take pty writer for {}: {e}", request.proc_id),
         child_already_reaped: false,
     })?;
-    let child = pair
+    let mut child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| EnsureProcFailure {
@@ -1205,7 +1597,31 @@ async fn try_spawn_pty(
         })?;
     drop(pair.slave);
 
-    let pid = child.process_id().unwrap_or_default();
+    // #1013: hard-fail instead of `unwrap_or_default()`. A pid of 0 makes
+    // `kill(-0, sig)` signal *the supervisor's own process group* — i.e. the
+    // supervisor and every proc it owns. On unix `process_id()` is always
+    // `Some(nonzero)`, so this is unreachable today; it is here so that the
+    // unreachable case cannot silently become a self-inflicted killpg.
+    //
+    // FOLLOW-UP (#1013, deliberately not fixed in PR-A): the `child.kill()`
+    // below has the same theoretical shape as the pipe guard's did — for a
+    // stored pid of 0 a `kill()` is `kill(0, SIGKILL)`, the supervisor's own
+    // process group. The pipe site was fixed (it dropped the kill entirely);
+    // this one predates that round and is left alone to keep the diff scoped.
+    let pid = match child.process_id() {
+        Some(pid) if pid != 0 => pid,
+        observed => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(EnsureProcFailure {
+                error: format!(
+                    "pty child for {} reported no usable pid ({observed:?}); refusing to register an entry whose group signal target would be 0",
+                    request.proc_id
+                ),
+                child_already_reaped: true,
+            });
+        }
+    };
     let master = Arc::new(StdMutex::new(pair.master));
     let writer = Arc::new(StdMutex::new(writer));
     let drain_gate = Arc::new(PtyDrainGate::new());
@@ -1232,14 +1648,21 @@ async fn try_spawn_pty(
         remove_after: StdMutex::new(None),
         broadcast_tx: broadcast_tx.clone(),
     });
-    registry
-        .inner
-        .lock()
-        .map_err(|_| EnsureProcFailure {
+    // #1013 (D7 #2): `insert` returns the entry it displaced, and a same-`proc_id`
+    // respawn inside the reclaim grace makes the registry's `Arc` the *last* one
+    // — so dropping the returned value drops `ProcEntry`, and with it
+    // `UnixMasterWriter`, whose `Drop` does a **blocking** `write_all` on the
+    // master fd. As a bare statement the returned temporary is dropped before
+    // the `MutexGuard`, i.e. inside the registry lock: the exact hazard
+    // `sweep_expired_entries` documents. Bind it, release the lock, then drop.
+    let displaced = {
+        let mut entries = registry.inner.lock().map_err(|_| EnsureProcFailure {
             error: "proc registry mutex poisoned".into(),
             child_already_reaped: false,
-        })?
-        .insert(request.proc_id.clone(), entry.clone());
+        })?;
+        entries.insert(request.proc_id.clone(), entry.clone())
+    };
+    drop(displaced);
     spawn_pty_reader_task(
         request.proc_id.clone(),
         entry.clone(),
@@ -2005,6 +2428,131 @@ pub mod test_support {
                 let _ = shutdown.send(());
             }
             self.task.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod pgid_lease_tests {
+    use super::*;
+
+    /// Two properties in one case, both load-bearing for #1013 PR-A:
+    ///
+    /// 1. **`group_target` never returns `Err` for a Pipe entry**
+    ///    (`pgid_lease` regulation 4). If it did,
+    ///    `terminate_all_process_groups_sync`'s `filter_map(...ok())` would
+    ///    silently drop every Pipe entry from the shutdown path and #388 would
+    ///    break. **This case is that rule's primary gate.**
+    ///    `server_restart_survives` is not: on this violation it *hangs*
+    ///    rather than fails (the supervisor's `#[tokio::main]` runtime drop
+    ///    blocks on the `reap_children` `waitpid`, so it cannot exit before the
+    ///    pipe child's own 30s self-exit; measured 0.23s → 30.03s, still "ok").
+    ///    That test now carries an elapsed assertion, making it a secondary
+    ///    gate, but this `--lib` case is the one that goes red deterministically.
+    /// 2. **The parent module can still discriminate the target's *kind*
+    ///    without reading its number.** `matches!(t, GroupSignalTarget::Leader(..))`
+    ///    must keep compiling here: `require_addressable_by_signal_rpc` and
+    ///    T9b's shape both depend on it, and it is the property that T11's
+    ///    `E0616` gate must *not* have taken away.
+    #[tokio::test]
+    async fn pipe_target_is_ok_kind_readable_and_refused_by_the_signal_rpc() {
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn pipe child");
+        let pid = child.id().expect("pipe child pid");
+        let (broadcast_tx, _) = broadcast::channel(1);
+        let entry = ProcEntry {
+            pid,
+            io_mode: IoMode::Pipe,
+            runtime: ProcRuntime::Pipe {
+                child: Arc::new(Mutex::new(child)),
+            },
+            byte_ring: StdMutex::new(ByteRing::new(64)),
+            cursor_tail: AtomicU64::new(0),
+            cursor_head: AtomicU64::new(0),
+            exit: StdMutex::new(None),
+            pty_reaped: AtomicBool::new(false),
+            remove_after: StdMutex::new(None),
+            broadcast_tx,
+        };
+
+        let target = match pgid_lease::group_target(&entry) {
+            Ok(target) => target,
+            Err(_) => panic!(
+                "group_target must never return Err for a Pipe entry: \
+                 terminate_all_process_groups_sync filters on .ok() and would \
+                 drop Pipe from the #388 shutdown path"
+            ),
+        };
+        assert!(
+            matches!(target, pgid_lease::GroupSignalTarget::PipeBestEffort(..)),
+            "pipe entries map to PipeBestEffort"
+        );
+        assert!(
+            !matches!(target, pgid_lease::GroupSignalTarget::Leader(..)),
+            "the parent module must still be able to discriminate Leader"
+        );
+        assert_eq!(target.kind(), "PipeBestEffort");
+
+        let err = pgid_lease::require_addressable_by_signal_rpc(&target)
+            .expect_err("the Signal RPC must refuse a Pipe target");
+        match group_signal_error_reply("proc-a", Some(target.kind()), err) {
+            ControlReply::Error { kind, message } => {
+                assert_eq!(kind, ControlErrorKind::WrongState);
+                assert!(
+                    message.starts_with("pipe runtime is not group-signalable via the Signal RPC"),
+                    "stable message prefix, got: {message}"
+                );
+            }
+            other => panic!("expected ControlReply::Error, got {other:?}"),
+        }
+    }
+
+    /// The stable kind/message distinctions the error table pins down. The
+    /// `PinLost` vs `Kill` pair matters most: PR-B's T6 can only be reddened by
+    /// its own mutation if those two are distinguishable.
+    #[test]
+    fn group_signal_error_replies_are_distinguishable_by_kind_and_prefix() {
+        let cases = [
+            (
+                pgid_lease::GroupSignalError::PipeNotSignalable,
+                ControlErrorKind::WrongState,
+                "pipe runtime is not group-signalable via the Signal RPC: proc p",
+            ),
+            (
+                pgid_lease::GroupSignalError::PinLost,
+                ControlErrorKind::Internal,
+                "pty leader pin lost for proc p (kernel reported ECHILD);",
+            ),
+            (
+                pgid_lease::GroupSignalError::MasterPoisoned,
+                ControlErrorKind::Internal,
+                "pty master mutex poisoned: proc p",
+            ),
+            (
+                pgid_lease::GroupSignalError::Kill(io::Error::from_raw_os_error(libc::ESRCH)),
+                ControlErrorKind::Internal,
+                "signal proc p (Leader target):",
+            ),
+        ];
+        for (err, want_kind, want_prefix) in cases {
+            match group_signal_error_reply("p", Some("Leader"), err) {
+                ControlReply::Error { kind, message } => {
+                    assert_eq!(kind, want_kind, "kind for {want_prefix:?}");
+                    assert!(
+                        message.starts_with(want_prefix),
+                        "want prefix {want_prefix:?}, got {message:?}"
+                    );
+                    // Note what the `Kill` prefix pins: the pre-#1013 message
+                    // was `signal proc {id} pgid {decimal}: {e}` — a textual
+                    // `i32` accessor. The asserted prefix now ends at
+                    // `(Leader target):`, so a decimal pgid cannot reappear
+                    // before the io::Error without reddening this case.
+                }
+                other => panic!("expected ControlReply::Error, got {other:?}"),
+            }
         }
     }
 }
