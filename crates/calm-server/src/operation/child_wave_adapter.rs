@@ -106,6 +106,14 @@ async fn root_and_depth(tx: &mut Tx<'_>, parent_wave_id: &str) -> Result<(String
     match rows.as_slice() {
         [(root, depth)] => Ok((root.clone(), *depth)),
         [] => {
+            let parent_exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM waves WHERE id=?1)")
+                    .bind(parent_wave_id)
+                    .fetch_one(&mut **tx)
+                    .await?;
+            if !parent_exists {
+                return Err(CalmError::NotFound(format!("wave {parent_wave_id}")));
+            }
             let path: Vec<(String, i64)> = sqlx::query_as(WAVE_BOUNDED_PATH_SQL)
                 .bind(parent_wave_id)
                 .bind(MAX_WAVE_TREE_DEPTH + 1)
@@ -736,11 +744,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn acceptance_8_missing_root_fails_closed() {
+    async fn acceptance_8_missing_parent_is_not_misreported_as_depth_exhaustion() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let mut tx = repo.pool().begin().await.unwrap();
         let error = root_and_depth(&mut tx, "missing").await.unwrap_err();
-        assert!(error.to_string().contains("sub-wave-depth-exceeded"));
+        assert!(
+            matches!(&error, CalmError::NotFound(message) if message == "wave missing"),
+            "missing parent must retain its diagnostic reason, got {error}"
+        );
     }
 
     #[tokio::test]

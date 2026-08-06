@@ -6153,6 +6153,32 @@ async fn acceptance_18_success_flip_rechecks_done_after_its_snapshot() {
 }
 
 #[tokio::test]
+async fn acceptance_18_production_reconcile_keeps_the_child_guard_wired() {
+    let boot = boot().await;
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    let (task_id, child) =
+        seed_child_parent(&boot, "production-guard", WaveLifecycle::Done, None).await;
+
+    // This drives the real reconcile_child_wave_task entry and changes the child
+    // after its advisory snapshot but before the production flip call. Today both
+    // happen in one BEGIN IMMEDIATE transaction, so concurrent writers cannot make
+    // this guard load-bearing. If a future refactor splits the snapshot and flip
+    // across transactions, the guard becomes the correctness boundary immediately;
+    // this fixture also ensures removing it from the production call site fails now.
+    scheduler.reopen_child_after_reconcile_snapshot_for_test();
+    scheduler
+        .reconcile_child_wave_for_test(&child)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+        TaskStatus::Running,
+        "the production guarded flip must reject the stale Done snapshot"
+    );
+}
+
+#[tokio::test]
 async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;

@@ -566,6 +566,8 @@ pub struct Scheduler {
     context_metrics: Arc<ContextMetrics>,
     claim_fence_test_hook: std::sync::Mutex<Option<ClaimFenceTestHook>>,
     post_claim_drive_test_hook: std::sync::Mutex<Option<PostClaimDriveTestHook>>,
+    #[cfg(feature = "fixtures")]
+    reconcile_child_reopen_after_snapshot_test_hook: AtomicBool,
 }
 
 /// Deterministic integration-test rendezvous after closure resolution and
@@ -647,6 +649,8 @@ impl Scheduler {
             context_metrics: Arc::new(ContextMetrics::default()),
             claim_fence_test_hook: std::sync::Mutex::new(None),
             post_claim_drive_test_hook: std::sync::Mutex::new(None),
+            #[cfg(feature = "fixtures")]
+            reconcile_child_reopen_after_snapshot_test_hook: AtomicBool::new(false),
         })
     }
 
@@ -664,6 +668,13 @@ impl Scheduler {
             .post_claim_drive_test_hook
             .lock()
             .expect("post-claim drive hook lock") = Some(hook);
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn reopen_child_after_reconcile_snapshot_for_test(&self) {
+        self.reconcile_child_reopen_after_snapshot_test_hook
+            .store(true, Ordering::SeqCst);
     }
 
     pub fn claim_fence_race_lost_count(&self) -> u64 {
@@ -777,6 +788,10 @@ impl Scheduler {
 
     async fn reconcile_child_wave_task(&self, child_wave_id: &str) -> Result<()> {
         let child_wave_id = child_wave_id.to_string();
+        #[cfg(feature = "fixtures")]
+        let reopen_child_after_snapshot = self
+            .reconcile_child_reopen_after_snapshot_test_hook
+            .swap(false, Ordering::SeqCst);
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -808,6 +823,13 @@ impl Scheduler {
                     let Some(snapshot) = snapshot else {
                         return Err(race_lost_err());
                     };
+                    #[cfg(feature = "fixtures")]
+                    if reopen_child_after_snapshot {
+                        sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
+                            .bind(&snapshot.child_wave_id)
+                            .execute(&mut **tx)
+                            .await?;
+                    }
                     let scope = EventScope::Wave {
                         wave: WaveId::from(snapshot.parent_wave_id.clone()),
                         cove: snapshot.parent_cove_id.clone().into(),

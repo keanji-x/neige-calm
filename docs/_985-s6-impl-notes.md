@@ -53,6 +53,24 @@
 | fe `npm run build` | exit 0；14 modules transformed。 |
 | fe `npm run test` | 首跑 61 files / 758 tests 通过但 mock drift 正确指出新增 409 未生成；按门要求运行 `npm run mock:generate` 后全门复跑：**61 files passed / 1 skipped；758 tests passed / 1 skipped**，`test:wire` 与 `test:mock-drift` 均 exit 0。 |
 
+### 修复轮 4 最终门
+
+门在已 re-merge `origin/main` 的 `10862a57` 基线上执行，保持 `NEIGE_CODEX_BIN` 未设置、
+`CARGO_BUILD_JOBS=6`，Rust PATH 含指定 `.local-bin`；命令均为设计 §9 原样命令。
+
+| 门 | 修复轮 4 实际结果 |
+|---|---|
+| `cargo fmt --all --check` | exit 0。 |
+| `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | exit 0，0 warnings / 0 errors，1m14s。 |
+| `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3345 passed / 0 failed / 89 skipped**，34.087s（编译 1m27s）。 |
+| web `npm run gen:api` | exit 0；生成测试 49 + 15 + 1 = **65 passed / 0 failed**，其余生成 crate 目标均为 0 run、仅 filtered。 |
+| web 生成物 `git diff --exit-code` | 指定 5 组路径零漂移，exit 0。 |
+| web `npm run build` | exit 0；849 modules transformed；仅保留既有 `::highlight` 与 chunk-size warning。 |
+| web `npm run test` | **85 files passed；1227 tests passed / 0 failed；0 type errors**。 |
+| fe `npm run lint` | exit 0；ownership 74 entries 完整；dependency cruise 102 modules / 232 dependencies，0 violations。 |
+| fe `npm run build` | exit 0；14 modules transformed。 |
+| fe `npm run test` | **61 files passed / 1 skipped；758 tests passed / 1 skipped**；`test:wire` 与 `test:mock-drift` 均 exit 0。无漂移，未运行 `mock:generate`。 |
+
 针对本轮原始失败另跑过精确验证：`migration_backfills_preexisting_task_and_block_declaration_adopts_it` 为 1 passed / 0 failed / 2289 skipped。
 
 真实 Codex e2e 没有启动：命令均显式 `env -u NEIGE_CODEX_BIN`；这些入口只解析该变量，未解析时走 `skip!`，另有显式 `#[ignore]` 用例。全门没有启动嵌套 app-server。
@@ -128,8 +146,10 @@
   cascade 删除同 cove 树，确定性 writer barrier 负责证明写事务不跨外部 IO；card 写口原有的
   owner-wave typed `NotFound` 由纯 existence check 继续购买，不再依赖 marker guard 顺带提供。
 - 已知安全竞态：route 前检通过后、最终删除前若新建 child，teardown 已发生，最终事务返回
-  409。该形状罕见、不损坏数据、可重试；若要消除它需要两阶段持久删除，另开 issue，
-  不在切片 6 PR-A 内扩面。
+  409。事务回滚后 `terminals` / `worker_sessions` 行仍保留 active 状态，但 terminal 进程已被
+  杀、spec harness 已退出 registry（shutdown 不改 session 行），因此读端会暂时显示 live、
+  实际运行时已死，直到用户重试删除或进程重启后恢复/清理。该形状罕见，不产生孤儿或越权写；
+  若要消除它需要两阶段持久删除，另开 issue，不在切片 6 PR-A 内扩面。
 - M4 枚举出 **3 个** child-flip 权威复核点：success、Done+pending incomplete、
   deleted/failed/canceled 三理由共用 terminal helper。前两者沿用各自 delete/reopen oracle；
   第三处抽为 `guarded_child_terminal_flip_tx`，新增行为 oracle 分别制造 Deleted 后复活、
@@ -139,3 +159,18 @@
   Conflict 分层、actor 恢复），随机制整体删除而消失；没有剩余的非 0072 MINOR 需要延期。
 - 修复轮 3 逐变异没有仍绿项，且均已复原；恢复态定向集合为
   **8 passed / 0 failed / 3424 skipped，0.435s**。完整证据见 mutation-map「修复轮 3」。
+
+## 修复轮 4：四条 MINOR 收尾
+
+- m1：`root_and_depth` 的零根分支先区分 parent 是否存在；不存在返回 typed `NotFound`，
+  存在但无根才继续诊断 cycle / depth。对应负例精确拒绝 reason-code 误报。
+- m2：impl-notes 与权威架构 §12.1 均补全 409 回滚后的另一半残留态：terminal/session 行
+  仍 active，但进程与 harness registry 已 teardown，读端暂时显示 live、实际已死，直至重试
+  删除或进程重启后恢复/清理。
+- m3：新增 acceptance_18 经真实 `reconcile_child_wave_task` 入口，在 snapshot 后、生产 flip
+  前于同一 `BEGIN IMMEDIATE` 内 reopen child；无 guard 的生产调用点变异会把 parent 错误推进
+  `Done`。测试旁明确记录当前同事务事实与未来拆事务时 guard 会成为活承重点。
+- m4：保留 `TxCommitted` 入口统一读取 `required_output` 的 fail-closed 收紧，并在共享 driver
+  旁注明 child-wave 这类直接进入 `SpawnStarted` 的 adapter 也刻意受该约束；未引入新机制。
+- 四条变异均已复原；m1/m3 为行为测试红，m2/m4 为文字契约检查红。逐项证据见
+  mutation-map「修复轮 4」，最终全门数字见本文件「修复轮 4 最终门」。

@@ -109,3 +109,18 @@
 恢复态定向集合覆盖 success / incomplete / terminal 三个复核点、route / Repo / cove
 三个删除入口、拒删全不变和锁外 teardown：**8 passed / 0 failed / 3424 skipped，0.435s**。
 本节没有仍绿变异，所有 mutant 均已复原。
+
+## 修复轮 4
+
+命令均保持 `NEIGE_CODEX_BIN` 未设置、`CARGO_BUILD_JOBS=6`，Rust PATH 含指定
+`.local-bin`。每个单点 mutant 取得预期失败后均用反向补丁复原；m2、m4 的处置分别是
+权威文档补记与意图注释，因此如实登记为文字契约检查，不冒充运行时行为测试。
+
+| 修复项 | 我改坏了什么 | 对应测试与实际结果 |
+|---|---|---|
+| m1 parent NotFound | 保留 parent existence 查询，但把缺失分支重新映射为 `Conflict("sub-wave-depth-exceeded")`。 | `operation::child_wave_adapter::tests::acceptance_8_missing_parent_is_not_misreported_as_depth_exhaustion` **红**（0 passed / 1 failed / 2399 skipped，0.118s）：实际错误重新变成误导性的 depth conflict。 |
+| m2 残留态登记 | 从 impl-notes 与权威架构 §12.1 同时删掉 `terminals` / `worker_sessions` 仍 active、读端显示 live 但运行时已死的半边描述。 | 双文档文字契约检查 **红**（exit 1）；这是文档完整性检查，不是运行时行为 oracle。 |
+| m3 生产 child guard 接线 | helper 保持不动，只把 `reconcile_child_wave_task` success 生产调用点替换成不含 child lifecycle guard 的等价 UPDATE。 | `acceptance_18_production_reconcile_keeps_the_child_guard_wired` **红**（0 passed / 1 failed / 2399 skipped，0.153s）：父任务被错误推进到 `Done`。该测试经真实 reconcile 入口，在同一 `BEGIN IMMEDIATE` 内于 snapshot 后把 child reopen；当前同事务事实使 guard 只是纵深防御，若日后拆成两个事务它会立即成为正确性承重点。 |
+| m4 `required_output` 意图 | 删除 `TxCommitted` 分支旁“所有 committed adapter 均 fail-closed，包括 child-wave”注释。 | 源码意图契约检查 **红**（exit 1）；按评审建议只补刻意收紧的说明，没有新增运行时机制或状态。 |
+
+本节所有 mutant 均已复原；恢复态结果由下方修复轮 4 全门再次确认。

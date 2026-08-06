@@ -447,6 +447,9 @@ impl OperationRuntime {
                 Ok(())
             }
             Phase::TxCommitted => {
+                // Intentionally fail closed for every committed adapter, including
+                // TxCommitted -> SpawnStarted adapters such as child-wave: a
+                // successfully prepared operation must always persist tx_output.
                 let output = required_output(&op)?.clone();
                 if adapter.phases().contains(&PhaseTag::AppServerInteract) {
                     let kind = adapter.app_server_interact_kind(&output, &op)?;
