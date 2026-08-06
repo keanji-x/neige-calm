@@ -4113,6 +4113,19 @@
           "blockId": {
             "type": "string"
           },
+          "childWaveDeleted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "childWaveId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Written after claim, so exposing it preserves the #1030 read-state\nexception. `spawn` must never be added beside it."
+          },
           "diagnostics": {
             "type": "array",
             "items": {

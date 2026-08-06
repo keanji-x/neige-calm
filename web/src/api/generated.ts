@@ -951,6 +951,12 @@ export interface components {
         };
         BlockVerdict: {
             blockId: string;
+            childWaveDeleted?: boolean | null;
+            /**
+             * @description Written after claim, so exposing it preserves the #1030 read-state
+             *     exception. `spawn` must never be added beside it.
+             */
+            childWaveId?: string | null;
             diagnostics: components["schemas"]["Diagnostic"][];
             gateResult?: unknown;
             key: string;
