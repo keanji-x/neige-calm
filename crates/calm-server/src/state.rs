@@ -13,6 +13,7 @@ use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
+use crate::operation::child_wave_adapter::ChildWaveAdapter;
 use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
@@ -432,6 +433,10 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
     let task_verify_adapter: Arc<dyn ProviderAdapter> =
         Arc::new(TaskVerifyAdapter::new(input.gate_logs_dir));
     let forge_action_adapter: Arc<dyn ProviderAdapter> = Arc::new(ForgeActionAdapter::new());
+    let child_wave_adapter: Arc<dyn ProviderAdapter> = Arc::new(ChildWaveAdapter::new(
+        input.card_role_cache.clone(),
+        input.wave_cove_cache.clone(),
+    ));
 
     vec![
         terminal_adapter,
@@ -446,6 +451,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         spec_harness_shutdown_adapter,
         task_verify_adapter,
         forge_action_adapter,
+        child_wave_adapter,
     ]
 }
 

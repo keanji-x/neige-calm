@@ -1095,7 +1095,7 @@ fn prepare_fork_report(
     Ok((payload, doc, declarations, diagnostics))
 }
 
-fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
+pub(crate) fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     let mut card_payload = serde_json::Map::new();
     card_payload.insert(
         "schemaVersion".into(),
@@ -1112,7 +1112,10 @@ fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     serde_json::Value::Object(card_payload)
 }
 
-fn spec_harness_layout_payload(spec_card_id: &str, report_card_id: &str) -> serde_json::Value {
+pub(crate) fn spec_harness_layout_payload(
+    spec_card_id: &str,
+    report_card_id: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
         "positions": {

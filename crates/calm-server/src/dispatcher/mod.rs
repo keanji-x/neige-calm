@@ -29,6 +29,7 @@ use crate::harness::{
 };
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::CardRole;
+use crate::operation::child_wave_adapter::ChildWaveAdapter;
 use crate::operation::claude_adapter::{ClaudeAdapter, ClaudeWorkerAdapter};
 use crate::operation::claude_restart_adapter::ClaudeRestartAdapter;
 use crate::operation::codex_adapter::{CodexAdapter, CodexWorkerAdapter};
@@ -319,6 +320,10 @@ fn dispatcher_operation_runtime(
     );
     let forge_action_adapter =
         Arc::new(crate::operation::forge_action_adapter::ForgeActionAdapter::new());
+    let child_wave_adapter = Arc::new(ChildWaveAdapter::new(
+        write.role_cache().clone(),
+        write.cove_cache().clone(),
+    ));
     let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
         operation_repo.clone(),
@@ -335,6 +340,7 @@ fn dispatcher_operation_runtime(
             spec_harness_shutdown_adapter,
             task_verify_adapter,
             forge_action_adapter,
+            child_wave_adapter,
         ],
         events.clone(),
         completion.clone(),
@@ -1011,6 +1017,7 @@ impl Inner {
                 self.scheduler.poke(wave_id.clone());
             }
             Event::WaveLifecycleChanged { id, .. } => {
+                self.scheduler.reconcile_child_wave(id.clone());
                 self.scheduler.poke(id.clone());
             }
             // Round-2 review F4 — `PATCH /api/waves` emits only
@@ -1050,7 +1057,16 @@ impl Inner {
                     );
                 }
             }
-            Event::WaveDeleted { .. } | Event::CoveDeleted { .. } => {
+            Event::WaveDeleted { id, .. } => {
+                self.scheduler.reconcile_child_wave(id.clone());
+                let context_monitor = Arc::clone(&self.context_monitor);
+                tokio::spawn(async move {
+                    if let Err(error) = context_monitor.sweep().await {
+                        tracing::warn!(%error, "task context deletion sweep failed");
+                    }
+                });
+            }
+            Event::CoveDeleted { .. } => {
                 // Payloads intentionally stay unchanged. The tasks-based
                 // sweep discovers vanished waves/coves fail-closed.
                 let context_monitor = Arc::clone(&self.context_monitor);

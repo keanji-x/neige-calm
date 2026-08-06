@@ -146,6 +146,12 @@ pub struct BlockVerdict {
     pub gate_result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_card_id: Option<String>,
+    /// Written after claim, so exposing it preserves the #1030 read-state
+    /// exception. `spawn` must never be added beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_wave_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_wave_deleted: Option<bool>,
     #[serde(skip)]
     #[schema(ignore)]
     pub withdrawal: Option<WithdrawalEdge>,
@@ -157,6 +163,8 @@ struct TaskReadState {
     status: String,
     gate_result_json: Option<String>,
     worker_card_id: Option<String>,
+    child_wave_id: Option<String>,
+    child_wave_deleted: i64,
     context_stale_at_ms: Option<i64>,
     context_closure_truncated: i64,
     claim_context_json: Option<String>,
@@ -191,6 +199,11 @@ fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut 
                 Some(serde_json::Value::Object(public))
             });
         verdict.worker_card_id = row.worker_card_id.clone();
+        verdict.child_wave_id = row.child_wave_id.clone();
+        verdict.child_wave_deleted = row
+            .child_wave_id
+            .as_ref()
+            .map(|_| row.child_wave_deleted != 0);
         let related_context_blocks = || {
             let grouped = row
                 .claim_context_json
@@ -422,6 +435,10 @@ async fn wave_projection_state(
                        'key', t.key, 'status', t.status,
                        'gate_result_json', t.gate_result_json,
                        'worker_card_id', t.worker_card_id,
+                       'child_wave_id', t.child_wave_id,
+                       'child_wave_deleted', CASE WHEN t.child_wave_id IS NOT NULL
+                         AND NOT EXISTS(SELECT 1 FROM waves child WHERE child.id=t.child_wave_id)
+                         THEN 1 ELSE 0 END,
                        'context_stale_at_ms', t.context_stale_at_ms,
                        'context_closure_truncated', t.context_closure_truncated,
                        'claim_context_json', t.claim_context_json))
@@ -657,6 +674,8 @@ pub async fn evaluate_schedulability(
             status: None,
             gate_result: None,
             worker_card_id: None,
+            child_wave_id: None,
+            child_wave_deleted: None,
             diagnostics,
             withdrawal: None,
         });
@@ -769,6 +788,8 @@ pub async fn evaluate_schedulability(
                 status: Some(row.status.clone()),
                 gate_result: None,
                 worker_card_id: None,
+                child_wave_id: None,
+                child_wave_deleted: None,
                 withdrawal: None,
             });
         }
@@ -933,6 +954,8 @@ pub async fn project_tasks_tx(
                         status: Some(status.clone()),
                         gate_result: None,
                         worker_card_id: None,
+                        child_wave_id: None,
+                        child_wave_deleted: None,
                         withdrawal: None,
                     });
                 }
@@ -974,13 +997,65 @@ pub async fn project_tasks_tx(
             .transpose()
             .map_err(|e| CalmError::Internal(format!("serialize task gate: {e}")))?;
         let result = sqlx::query(
-            "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,status,declared_by,origin,decl_ready,decl_released_by_user,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,'block',?13,?14,?15,?15) ON CONFLICT(wave_id,key) DO UPDATE SET kind=excluded.kind,goal=excluded.goal,context_json=excluded.context_json,acceptance_criteria=excluded.acceptance_criteria,cwd=excluded.cwd,depends_on_json=excluded.depends_on_json,priority=excluded.priority,gate_json=excluded.gate_json,declared_by=excluded.declared_by,origin='block',decl_ready=excluded.decl_ready,decl_released_by_user=excluded.decl_released_by_user,updated_at_ms=excluded.updated_at_ms WHERE tasks.status='pending' AND (tasks.origin='block' OR tasks.origin='legacy') AND (tasks.kind IS NOT excluded.kind OR tasks.goal IS NOT excluded.goal OR tasks.context_json IS NOT excluded.context_json OR tasks.acceptance_criteria IS NOT excluded.acceptance_criteria OR tasks.cwd IS NOT excluded.cwd OR tasks.depends_on_json IS NOT excluded.depends_on_json OR tasks.priority IS NOT excluded.priority OR tasks.gate_json IS NOT excluded.gate_json OR tasks.declared_by IS NOT excluded.declared_by OR tasks.origin IS NOT 'block' OR tasks.decl_ready IS NOT excluded.decl_ready OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user)",
+            r#"INSERT INTO tasks(
+                   id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+                   depends_on_json,priority,gate_json,status,declared_by,spawn,origin,
+                   decl_ready,decl_released_by_user,created_at_ms,updated_at_ms
+               ) VALUES(
+                   ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,'block',
+                   ?14,?15,?16,?16
+               )
+               ON CONFLICT(wave_id,key) DO UPDATE SET
+                   kind=excluded.kind,
+                   goal=excluded.goal,
+                   context_json=excluded.context_json,
+                   acceptance_criteria=excluded.acceptance_criteria,
+                   cwd=excluded.cwd,
+                   depends_on_json=excluded.depends_on_json,
+                   priority=excluded.priority,
+                   gate_json=excluded.gate_json,
+                   declared_by=excluded.declared_by,
+                   spawn=excluded.spawn,
+                   origin='block',
+                   decl_ready=excluded.decl_ready,
+                   decl_released_by_user=excluded.decl_released_by_user,
+                   updated_at_ms=excluded.updated_at_ms
+               WHERE tasks.status='pending'
+                 AND (tasks.origin='block' OR tasks.origin='legacy')
+                 AND (
+                     tasks.kind IS NOT excluded.kind
+                     OR tasks.goal IS NOT excluded.goal
+                     OR tasks.context_json IS NOT excluded.context_json
+                     OR tasks.acceptance_criteria IS NOT excluded.acceptance_criteria
+                     OR tasks.cwd IS NOT excluded.cwd
+                     OR tasks.depends_on_json IS NOT excluded.depends_on_json
+                     OR tasks.priority IS NOT excluded.priority
+                     OR tasks.gate_json IS NOT excluded.gate_json
+                     OR tasks.declared_by IS NOT excluded.declared_by
+                     OR tasks.spawn IS NOT excluded.spawn
+                     OR tasks.origin IS NOT 'block'
+                     OR tasks.decl_ready IS NOT excluded.decl_ready
+                     OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
+                 )"#,
         )
-        .bind(&id).bind(wave_id).bind(&declaration.key).bind(&declaration.kind)
-        .bind(&declaration.goal).bind(context).bind(&declaration.acceptance)
-        .bind(&declaration.cwd).bind(depends).bind(declaration.priority).bind(gate)
-        .bind(&declaration.declared_by).bind(i64::from(declaration.ready))
-        .bind(i64::from(declaration.released_by_user)).bind(now).execute(&mut **tx).await?;
+        .bind(&id)
+        .bind(wave_id)
+        .bind(&declaration.key)
+        .bind(&declaration.kind)
+        .bind(&declaration.goal)
+        .bind(context)
+        .bind(&declaration.acceptance)
+        .bind(&declaration.cwd)
+        .bind(depends)
+        .bind(declaration.priority)
+        .bind(gate)
+        .bind(&declaration.declared_by)
+        .bind(&declaration.spawn)
+        .bind(i64::from(declaration.ready))
+        .bind(i64::from(declaration.released_by_user))
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
         if result.rows_affected() != 0 {
             changed.insert(declaration.key.clone());
         }
@@ -1015,6 +1090,7 @@ mod tests {
             refs: Vec::new(),
             declared_by: "spec".into(),
             released_by_user: false,
+            spawn: "in-wave".into(),
             tombstoned_by: None,
             ready: true,
             tombstone: false,
@@ -1217,6 +1293,54 @@ mod tests {
             .expect("ceiling diagnostic");
         assert!(ceiling.related_block_ids.is_empty());
         assert_eq!(ceiling.related_wave_id.as_deref(), Some(wave.as_str()));
+    }
+
+    #[tokio::test]
+    async fn acceptance_1_spawn_only_projection_change_updates_row_and_changed_keys() {
+        let (repo, wave) = setup().await;
+        let mut declaration = declaration(0, "route");
+        let mut tx = repo.pool.begin().await.unwrap();
+        let first = project_tasks_tx(&mut tx, &wave, &[declaration.clone()], &[vec![]])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(first.changed_keys, ["route"]);
+        declaration.spawn = "sub-wave".into();
+        let mut tx = repo.pool.begin().await.unwrap();
+        let second = project_tasks_tx(&mut tx, &wave, &[declaration], &[vec![]])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(second.changed_keys, ["route"]);
+        let spawn: String =
+            sqlx::query_scalar("SELECT spawn FROM tasks WHERE wave_id=?1 AND key='route'")
+                .bind(&wave)
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert_eq!(spawn, "sub-wave");
+    }
+
+    #[tokio::test]
+    async fn acceptance_14b_and_22_read_dto_marks_deleted_child_and_never_exposes_spawn() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "child-link", "running").await;
+        sqlx::query("UPDATE tasks SET spawn='sub-wave',child_wave_id='gone-child' WHERE wave_id=?1 AND key='child-link'")
+            .bind(&wave).execute(&repo.pool).await.unwrap();
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut conn,
+            &wave,
+            &[declaration(0, "child-link")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verdicts[0].child_wave_id.as_deref(), Some("gone-child"));
+        assert_eq!(verdicts[0].child_wave_deleted, Some(true));
+        let json = serde_json::to_value(&verdicts[0]).unwrap();
+        assert!(!json.as_object().unwrap().contains_key("spawn"));
     }
 
     #[tokio::test]

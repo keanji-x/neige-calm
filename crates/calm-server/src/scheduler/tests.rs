@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn acceptance_11_sub_wave_sweep_arm_precedes_terminal_and_timeout_arms() {
+    let source = include_str!("mod.rs");
+    let sub_wave = source
+        .find("TaskStatus::Running if task.spawn == \"sub-wave\"")
+        .expect("sub-wave running arm");
+    let terminal = source
+        .find("TaskStatus::Running if task.kind == TaskKind::Terminal")
+        .expect("terminal running arm");
+    let timeout = source
+        .find("TaskStatus::Running if task_has_running_liveness_deadline(&task)")
+        .expect("kind timeout arm");
+    assert!(sub_wave < terminal && terminal < timeout);
+}
+
+#[test]
+fn acceptance_18_child_success_flip_rechecks_child_state_in_its_sql_guard() {
+    let source = include_str!("mod.rs");
+    assert_eq!(
+        source
+            .matches("WHERE child.id=?5 AND child.lifecycle='done')")
+            .count(),
+        2,
+        "success and pending-incomplete flips must each recheck child Done"
+    );
+    assert!(source.contains("AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5"));
+}
+
+#[test]
 fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
     assert!(fence_revision_matches(Some(Some(7)), 7));
     assert!(!fence_revision_matches(None, 7), "missing row");
@@ -39,6 +67,7 @@ fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
         running_deadline_ms: None,
         context_stale_at_ms: None,
         declared_by: "spec".into(),
+        spawn: "in-wave".into(),
         origin: "legacy".into(),
         created_at_ms: 1,
         updated_at_ms: 1,

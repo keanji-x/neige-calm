@@ -369,6 +369,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         running_deadline_ms: None,
         context_stale_at_ms: None,
         declared_by: "spec".into(),
+        spawn: "in-wave".into(),
         origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,

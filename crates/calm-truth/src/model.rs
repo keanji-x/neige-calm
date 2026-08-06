@@ -404,6 +404,9 @@ pub struct Task {
     pub running_deadline_ms: Option<i64>,
     pub context_stale_at_ms: Option<i64>,
     pub declared_by: String,
+    /// Claim-frozen route selector. Deliberately not exposed through task
+    /// read-state DTOs: it is written before claim, unlike child_wave_id.
+    pub spawn: String,
     pub origin: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
