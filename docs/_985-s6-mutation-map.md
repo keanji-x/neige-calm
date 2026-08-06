@@ -1,0 +1,45 @@
+# #985 切片 6 PR-A 变异映射
+
+记录日期：2026-08-06。表内只登记本工作树上实际改动并执行过测试的变异；每次执行后均已恢复。`docs/_985-s6-design.md` §7 当前实际有 **33** 个编号行，不是任务描述所称的 30 个，因此这里按 33 行全量列出，避免静默漏项。
+
+| 验收 # | 实际执行的变异（文件与表达式） | 实际变红的测试全名 | 结果 |
+|---|---|---|---|
+| 1 | `crates/calm-truth/src/db/sqlite/task_projection.rs:1035`：删除 UPSERT 变更检测中的 `OR tasks.spawn IS NOT excluded.spawn`，保留 SET。 | `db::sqlite::task_projection::tests::acceptance_1_spawn_only_projection_change_updates_row_and_changed_keys` | 红（exit 101）。 |
+| 2 | `crates/calm-server/src/scheduler/mod.rs:107`：把 `fence_revision_matches` 写死为 `true`。 | `acceptance_2_claim_fence_rejects_spawn_edit_after_resolution_without_side_effects` | 红（exit 101，行变成 `Dispatched`）。 |
+| 3a | `crates/calm-server/src/scheduler/mod.rs:897` 附近：claim 后、`drive_spawn` 前把 frozen `spawn` 改成 `in-wave`。 | `acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_edit` | 红（exit 101）。 |
+| 3b | `crates/calm-server/src/scheduler/mod.rs:2073`：`resume_dispatched` 把 frozen `spawn` 改成 `in-wave`。 | 补强 fixture 后：`acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread` | **首跑仍绿**（1 passed）：fixture 没注册 in-wave 假 adapter，错误路由被“没有 adapter”遮住；补入 `CardSpawnAdapter` 后，同一变异红（exit 101）。 |
+| 3c | `crates/calm-server/src/scheduler/mod.rs:1055`：tx 内重读后强制 `frozen.spawn = "in-wave"`。 | `acceptance_3c_claim_success_uses_transaction_reread_spawn` | 红（exit 101）。 |
+| 4 | `crates/calm-types/src/report_blocks/tasks.rs:580`：只把显式 `null` 规范化成 `broken-null`，缺席仍为 `in-wave`。 | `report_blocks::kinds::tests::acceptance_4_missing_explicit_in_wave_and_null_spawn_normalize_identically` | 红（exit 101）。 |
+| 5 | `crates/calm-server/src/operation/child_wave_adapter.rs:154` 后：在真实 `prepare_tx` 中把 payload `goal` 覆盖成 `current-goal`。 | `operation::child_wave_adapter::tests::acceptance_5_child_seed_uses_all_four_frozen_fields_and_parent_cwd` | 红（exit 101）。本轮只实际变异了 goal；acceptance/context/cwd 的三个独立变异未执行。第一次误改到另一处局部变量只造成编译错误，未计入证据。 |
+| 5b | `crates/calm-server/src/operation/child_wave_adapter.rs:154`：删除第一副作用前的 `refuse_if_context_stale`。 | `acceptance_5b_stale_frozen_context_refuses_real_child_operation` | 红（exit 101，waves 计数增加）。 |
+| 6 | `crates/calm-server/src/operation/child_wave_adapter.rs:157`：深度判断从 `>=` 改成 `>`。 | `operation::child_wave_adapter::tests::acceptance_6_real_adapter_writes_direct_parent_and_enforces_depth_three` | 红（exit 101）。direct-parent→root 的第二个独立变异未执行。 |
+| 7 | `crates/calm-server/src/operation/child_wave_adapter.rs:42`：删除递归 CTE 唯一的 `WHERE up.depth <= ?2`。 | `operation::child_wave_adapter::tests::acceptance_7_two_cycle_fails_fast_with_cycle_reason` | 红：编译后用例运行超过 60 秒，外层 150 秒 timeout 终止；随后恢复截断。 |
+| 8 | `crates/calm-server/src/operation/child_wave_adapter.rs:106`：零行分支改成 `Ok((parent_wave_id, 0))`。 | `operation::child_wave_adapter::tests::acceptance_8_missing_root_fails_closed` | 红（exit 101）。 |
+| 9 | `crates/calm-server/src/scheduler/mod.rs:1260`：遇 `sub-wave-depth-exceeded` 时提交普通 worker fallback。 | `acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback` | 红（exit 101，父任务仍 `Dispatched`）。 |
+| 10 | `crates/calm-server/src/operation/child_wave_adapter.rs:154`：删除 child-wave adapter 的 stale fence，再运行遍历 registry 的真实 adapter 测试。 | `every_registered_task_adapter_refuses_material_context` | 红（exit 101，child-wave 产生 `TxOutput`）。 |
+| 11 | 三次实际尝试：① `crates/calm-server/src/scheduler/mod.rs:1743` 把专用臂谓词改成 `sub-wave-mutant`；② `:293` 删除 `task_has_running_liveness_deadline` 中的 spawn 排除；③ `:1743` 直接让 sub-wave 臂调用 `fail_running_liveness_timeout`。 | 第三次：`acceptance_11_sub_wave_parent_survives_two_timeout_sweeps_without_deadline` | ①、②均**仍绿**（各 1 passed）：分别被后备谓词与更早的专用臂遮蔽；③ 红（exit 101）。这证实设计所述两个内层站点在正确臂序下是死代码。 |
+| 12 | `crates/calm-truth/src/db/sqlite/task.rs:144` 的 sub-wave running UPDATE 同时写 `worker_card_id='mutant-worker'`、`running_deadline_ms=1`。 | `acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline` | 红（exit 101；先红在 worker id）。deadline-only 独立变异未执行。 |
+| 13 | `crates/calm-server/src/scheduler/mod.rs:647`：把 gate 分流条件改成 `false && snapshot.gate_json.is_some()`。 | `acceptance_13_done_quiescent_child_routes_parent_through_gate` | 红（exit 101，得到 `Done` 而非 `Verifying`）。未单独执行“删除 TaskCompleted 事件”变异。 |
+| 13b | `crates/calm-server/src/scheduler/mod.rs:643` 与成功 SQL guard：删除 quiescence 条件。 | `acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_parent` | 红（exit 101，父任务过早 `Verifying`）。 |
+| 13c | `crates/calm-server/src/scheduler/mod.rs:618`：把 `pending` 加回 `inflight_count` 的状态集合。 | `acceptance_13d_done_child_with_pending_block_or_legacy_fails_with_count` | 红（exit 101，父任务留在 `Running`）。上一轮误标 M13c 的 `pending_count > 1000` 也红在同一测试，但这里只登记补跑后的准确设计变异。 |
+| 13d | `crates/calm-server/src/scheduler/mod.rs:702`：理由码改成 `child-wave-incomplete-mutant`。 | `acceptance_13d_done_child_with_pending_block_or_legacy_fails_with_count` | 红（exit 101）。 |
+| 13e | `crates/calm-server/src/scheduler/mod.rs:1271`：child-create 的 `OperationOutcome::Stuck` 直接 `Ok(())`。 | `acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once` | 红（exit 101，`create/stuck` 留在 `Dispatched`）。本次 mutant 只删 create/Stuck；正向测试仍表驱动四臂。 |
+| 14 | `crates/calm-server/src/scheduler/mod.rs:685`：删掉 child 不存在的失败映射（令 `None` race-lost）。 | `acceptance_14_failed_canceled_and_deleted_child_have_distinct_parent_reasons` | 红（exit 101，deleted reason 为空）。Failed/Canceled 两臂未分别变异。 |
+| 14b | 后端：`crates/calm-truth/src/db/sqlite/task_projection.rs:203` 把 `child_wave_deleted` 写成 `None`；前端：`web/src/pages/report-blocks/task.tsx:131` 把 tombstone 条件改成 `false && verdict.childWaveDeleted`。 | `db::sqlite::task_projection::tests::acceptance_14b_and_22_read_dto_marks_deleted_child_and_never_exposes_spawn`；`degraded blocks > acceptance 14b renders a deleted child wave as a non-clickable tombstone` | 两个变异均红（Rust exit 101；Vitest 1 failed / 50 skipped）。 |
+| 15 | `crates/calm-server/src/scheduler/mod.rs:1791`：从 `sweep_all` 删除 `reconcile_all_child_wave_tasks()`。 | `acceptance_15_lost_event_sweep_closes_child_parent` | 红（exit 101）。 |
+| 16 | `crates/calm-server/src/scheduler/mod.rs:565`：让 live `reconcile_child_wave` 立即 return。 | `acceptance_16_live_and_sweep_use_the_same_guarded_conclusion` | 红（exit 101）。 |
+| 17 | `crates/calm-truth/src/db/sqlite/wave.rs:133`：把 raw writer reopen 守卫前置为 `false && ...`。 | `db::sqlite::sub_wave_tree_tests::acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child` | 红（exit 101，writer 返回 Ok）。 |
+| 18 | `crates/calm-server/src/scheduler/mod.rs:657`：从成功 flip SQL 删除 child 仍为 Done 的 `EXISTS` guard。 | `scheduler::tests::acceptance_18_child_success_flip_rechecks_child_state_in_its_sql_guard` | 红（exit 101，源码中 guard 计数从 2 变 1）。 |
+| 19 | `crates/calm-server/src/scheduler/mod.rs:1317`：bootstrap `idempotency_key` 从稳定 key 改成 `None`。 | `acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive` | 红（exit 101，start-op 计数为 2）。 |
+| 20 | `crates/calm-truth/src/db/sqlite/wave.rs:222`：让 tx 内 descendant guard 永不执行。 | `db::sqlite::sub_wave_tree_tests::acceptance_20_repo_wave_delete_refuses_descendant_and_names_it`；`cards_deletable::acceptance_20_wave_delete_route_refuses_descendant_and_names_child` | 两入口均红（Repo 丢 child id；REST 从 409 退化成 FK 500）。cove 删除的正向控制由 #21b 覆盖。 |
+| 21 | `crates/calm-truth/migrations/0071_sub_wave_tree.sql:4`：临时加 `ON DELETE CASCADE`（执行后恢复；未触碰 0070 及以前）。 | `db::sqlite::sub_wave_tree_tests::acceptance_21_migration_uses_no_action_self_fk_and_partial_indexes` | 红（exit 101，读到 CASCADE）。 |
+| 21b | 同一 0071 FK 临时改成 `ON DELETE RESTRICT`。 | `db::sqlite::sub_wave_tree_tests::acceptance_21b_cove_delete_removes_a_same_cove_wave_tree` | 红（exit 101，FK constraint failed）。 |
+| 21c | `crates/calm-server/src/operation/child_wave_adapter.rs:173`：child `cove_id` 改成固定错误值 `cross-cove-mutant`。 | 旁路保护红：`operation::child_wave_adapter::tests::acceptance_6_real_adapter_writes_direct_parent_and_enforces_depth_three`；指定 tripwire `db::sqlite::sub_wave_tree_tests::acceptance_21c_cross_cove_edge_is_a_loud_delete_tripwire` **没有红**。 | **仍绿（验收缺口）**：指定 #21c 测试为 1 passed，因为它只用 raw SQL 自造跨-cove 边，未驱动 child adapter；同一 mutant 被 #6 的真实 adapter 测试抓红。 |
+| 22 | `crates/calm-truth/src/db/sqlite/task_projection.rs:150`：把 `child_wave_id` 的序列化 key 临时重命名成 `spawn`。 | `db::sqlite::task_projection::tests::acceptance_14b_and_22_read_dto_marks_deleted_child_and_never_exposes_spawn` | 红（exit 101，DTO JSON 含 `spawn`）。 |
+| 23 | `crates/calm-types/src/report_blocks/kinds.rs:257`：给公共 kind/spawn 校验加 `false &&`，等价删除拒绝。 | `report_blocks::kinds::tests::acceptance_23_sub_wave_rejects_claude_and_terminal_at_common_write_validation` | 红（exit 101，校验返回 Ok）。 |
+
+## 汇总
+
+- 33 个编号行均有实际执行记录，没有整行“未实现”。
+- 含“仍绿”证据的编号行 3 个（#3b、#11、#21c），共 4 次实际仍绿尝试；其中 #3b 已通过补强 fixture 修复，#11 是设计已承认的死代码形状，#21c 是尚存的验收缺口。
+- 独立变异覆盖仍不完整的子断言已在实现说明中逐条列出；没有把未执行的子变异写成已验证。
