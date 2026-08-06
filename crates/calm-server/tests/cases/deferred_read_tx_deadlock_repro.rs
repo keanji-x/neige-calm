@@ -24,10 +24,10 @@
 //! (`calm-truth/src/db/sqlite/read.rs`, allowlist entry
 //! `async fn wave_detail(`) against the REAL production writer sequence of
 //! `DELETE /api/waves/:id` (`calm-server/src/routes/waves.rs`):
-//! phase-two `write_with_events_typed` (= `begin_immediate_tx`) →
+//! `write_with_events_typed` (= `begin_immediate_tx`) →
 //! `overlay_delete_card_overlays_by_wave_tx` →
 //! `overlay_delete_by_entity_tx` ×2 → `wave_delete_tx`. Slow process/socket
-//! teardown happens between the durable marker tx and this writer tx.
+//! teardown happens before this writer tx.
 //!
 //! (`release_workspace_leases_for_wave_tx` sits between the overlay deletes
 //! and `wave_delete_tx` in the route but is `pub(crate)` to calm-server, so

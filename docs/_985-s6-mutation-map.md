@@ -87,3 +87,25 @@
 所有 mutant 均已复原。复原态扩大定向集合（wave-delete / durable recovery / #20 /
 #13d / 两处 #18 / #19 / queued-operation fence / 两条 #21c / child adapter #5/#6）为
 **32 passed / 0 failed / 3401 skipped，0.456s**。
+
+## 修复轮 3
+
+本轮按裁决删除从未发布的 0072 两阶段持久删除，不再对 marker 状态机做变异。
+以下命令均保持 `NEIGE_CODEX_BIN` 未设置、`CARGO_BUILD_JOBS=6`，Rust PATH 含指定
+`.local-bin`；每个单点 mutant 拿到红灯后均用反向补丁复原。
+
+| 修复项 | 我改坏了什么 | 对应测试与实际结果 |
+|---|---|---|
+| route descendant 前检 | 给 route 的普通读查询加 `AND 0`，仅保留最终事务 guard。 | `acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_terminal` **红**（1 failed，0.406s）：最终 409 前 terminal 已被杀，命中 `terminal process changed`；同 fixture 还守 process/registry/socket/DB。 |
+| `wave_delete_tx` 权威 guard | 在 `wave_delete_tx` 跳过 `wave_require_leaf_tx`。 | `acceptance_20_repo_wave_delete_refuses_descendant_and_names_it` **红**（1 failed，0.129s）：直调退化成 FK 错误且不再指名 child id。 |
+| 写事务内无外部 IO | 把确定性 teardown hook 从写事务前搬进 `write_with_actor_events_typed` 闭包。 | `wave_delete_external_teardown_does_not_hold_the_sqlite_writer` **红**（1 failed，0.359s）：无关 writer 在 250ms barrier 超时。 |
+| card owner NotFound（0072 删除审计） | 初版降范围随 `wave_require_not_deleting_tx` 一起删掉了它顺带承担的 owner-wave existence check。 | 首次全 nextest 中 `card_with_codex_create_tx_rolls_back_on_invalid_wave` 与 `card_with_terminal_create_tx_rolls_back_on_invalid_wave` **2 条红**（3341 passed / 2 failed，34.018s）：错误不再是 typed `NotFound`。恢复为不含 marker 语义的纯 existence check。 |
+| child-flip success | 把 `guarded_child_success_flip_tx` 的 child-Done 复核改成 `1=1`。 | `acceptance_18_success_flip_rechecks_done_after_its_snapshot` **红**（1 failed，0.111s）：delete 交错错误命中 1 行。 |
+| child-flip incomplete | 把 `guarded_child_incomplete_flip_tx` 的 child-Done 复核改成 `1=1`。 | `acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot` **红**（1 failed，0.122s）：delete 交错错误命中 1 行。 |
+| child-flip terminal（共用 helper） | 删除 `guarded_child_terminal_flip_tx` 的 outcome guard。 | `acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snapshot` **红**（1 failed，0.119s）：Deleted 后复活的 child 仍错误关闭 parent。 |
+| child-flip terminal/Failed | 只把 Failed outcome guard 改成 `1=1`。 | 同一三理由 oracle **红**（1 failed，0.227s）：Failed snapshot 后 reopen 仍错误命中 1 行。 |
+| child-flip terminal/Canceled | 只把 Canceled outcome guard 改成 `1=1`。 | 同一三理由 oracle **红**（1 failed，0.352s）：Canceled snapshot 后 reopen 仍错误命中 1 行。 |
+
+恢复态定向集合覆盖 success / incomplete / terminal 三个复核点、route / Repo / cove
+三个删除入口、拒删全不变和锁外 teardown：**8 passed / 0 failed / 3424 skipped，0.435s**。
+本节没有仍绿变异，所有 mutant 均已复原。

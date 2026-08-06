@@ -347,6 +347,52 @@ struct ChildTaskSnapshot {
     pending_count: i64,
 }
 
+#[derive(Clone, Copy)]
+enum ChildTerminalOutcome {
+    Deleted,
+    Failed,
+    Canceled,
+}
+
+impl ChildTerminalOutcome {
+    fn from_lifecycle(lifecycle: Option<WaveLifecycle>) -> Option<Self> {
+        match lifecycle {
+            None => Some(Self::Deleted),
+            Some(WaveLifecycle::Failed) => Some(Self::Failed),
+            Some(WaveLifecycle::Canceled) => Some(Self::Canceled),
+            _ => None,
+        }
+    }
+
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Deleted => "child-wave-deleted",
+            Self::Failed => "child-wave-failed",
+            Self::Canceled => "child-wave-canceled",
+        }
+    }
+
+    const fn detail(self) -> &'static str {
+        match self {
+            Self::Deleted => "child wave was deleted",
+            Self::Failed => "child wave entered failed",
+            Self::Canceled => "child wave was canceled",
+        }
+    }
+
+    const fn sql_guard(self) -> &'static str {
+        match self {
+            Self::Deleted => "NOT EXISTS(SELECT 1 FROM waves child WHERE child.id=?5)",
+            Self::Failed => {
+                "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='failed')"
+            }
+            Self::Canceled => {
+                "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='canceled')"
+            }
+        }
+    }
+}
+
 /// Final child-success compare-and-set. The snapshot that selected the
 /// success arm is advisory; this statement is the authority and rechecks the
 /// child lifecycle plus quiescence in the writer transaction.
@@ -407,6 +453,35 @@ async fn guarded_child_incomplete_flip_tx(
     .rows_affected())
 }
 
+/// Final terminal-child compare-and-set shared by the deleted, failed and
+/// canceled conclusions. The selected outcome comes from an advisory
+/// snapshot; the outcome-specific SQL predicate is the authority.
+async fn guarded_child_terminal_flip_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    parent_wave_id: &str,
+    child_wave_id: &str,
+    outcome: ChildTerminalOutcome,
+    now: i64,
+) -> Result<u64> {
+    let sql = format!(
+        "UPDATE tasks SET status='failed',status_detail=?1,worker_card_id=NULL,\
+                running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?2 \
+           WHERE id=?3 AND wave_id=?4 AND child_wave_id=?5 \
+             AND status IN ('dispatched','running') AND ({})",
+        outcome.sql_guard()
+    );
+    Ok(sqlx::query(&sql)
+        .bind(outcome.code())
+        .bind(now)
+        .bind(task_id)
+        .bind(parent_wave_id)
+        .bind(child_wave_id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected())
+}
+
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub async fn guarded_child_success_flip_for_test(
@@ -427,6 +502,29 @@ pub async fn guarded_child_incomplete_flip_for_test(
     child_wave_id: &str,
 ) -> Result<u64> {
     guarded_child_incomplete_flip_tx(tx, task_id, parent_wave_id, child_wave_id, now_ms()).await
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn guarded_child_terminal_flip_for_test(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    parent_wave_id: &str,
+    child_wave_id: &str,
+    lifecycle: Option<WaveLifecycle>,
+) -> Result<u64> {
+    let outcome = ChildTerminalOutcome::from_lifecycle(lifecycle).ok_or_else(|| {
+        CalmError::Internal("terminal child flip fixture requires deleted/failed/canceled".into())
+    })?;
+    guarded_child_terminal_flip_tx(
+        tx,
+        task_id,
+        parent_wave_id,
+        child_wave_id,
+        outcome,
+        now_ms(),
+    )
+    .await
 }
 
 pub struct Scheduler {
@@ -781,44 +879,23 @@ impl Scheduler {
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
                     }
 
-                    let (code, detail, child_guard): (&str, String, &str) = match lifecycle {
-                        None => (
-                            "child-wave-deleted",
-                            "child wave was deleted".into(),
-                            "NOT EXISTS(SELECT 1 FROM waves child WHERE child.id=?5)",
-                        ),
-                        Some(WaveLifecycle::Failed) => (
-                            "child-wave-failed",
-                            "child wave entered failed".into(),
-                            "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='failed')",
-                        ),
-                        Some(WaveLifecycle::Canceled) => (
-                            "child-wave-canceled",
-                            "child wave was canceled".into(),
-                            "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='canceled')",
-                        ),
-                        _ => return Err(race_lost_err()),
-                    };
-                    let sql = format!(
-                        "UPDATE tasks SET status='failed',status_detail=?1,worker_card_id=NULL,\
-                                running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?2 \
-                           WHERE id=?3 AND wave_id=?4 AND child_wave_id=?5 \
-                             AND status IN ('dispatched','running') AND ({child_guard})"
-                    );
-                    let changed = sqlx::query(&sql)
-                        .bind(code)
-                        .bind(now)
-                        .bind(&snapshot.task_id)
-                        .bind(&snapshot.parent_wave_id)
-                        .bind(&snapshot.child_wave_id)
-                        .execute(&mut **tx)
-                        .await?;
-                    if changed.rows_affected() == 0 {
+                    let outcome = ChildTerminalOutcome::from_lifecycle(lifecycle)
+                        .ok_or_else(race_lost_err)?;
+                    let changed = guarded_child_terminal_flip_tx(
+                        tx,
+                        &snapshot.task_id,
+                        &snapshot.parent_wave_id,
+                        &snapshot.child_wave_id,
+                        outcome,
+                        now,
+                    )
+                    .await?;
+                    if changed == 0 {
                         return Err(race_lost_err());
                     }
                     let event = Event::TaskFailed {
                         idempotency_key: snapshot.task_id,
-                        reason: format!("{code}: {detail}"),
+                        reason: format!("{}: {}", outcome.code(), outcome.detail()),
                         agent_message: None,
                     };
                     Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]))

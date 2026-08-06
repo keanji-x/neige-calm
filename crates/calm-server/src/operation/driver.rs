@@ -118,13 +118,6 @@ impl OperationRuntime {
         self.completion.complete(result);
     }
 
-    /// Serialize a durable delete marker with every operation external phase.
-    /// The caller holds this only for the short marker/snapshot transaction;
-    /// process and socket teardown happens after the guard is dropped.
-    pub(crate) async fn pause_drives_for_wave_delete(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        Arc::clone(&self.drive_mutex).lock_owned().await
-    }
-
     pub async fn submit(
         &self,
         kind: &str,
@@ -455,12 +448,6 @@ impl OperationRuntime {
             }
             Phase::TxCommitted => {
                 let output = required_output(&op)?.clone();
-                if self
-                    .fail_if_wave_deleting_before_external_io(&op, &output, PhaseTag::TxCommitted)
-                    .await?
-                {
-                    return Ok(());
-                }
                 if adapter.phases().contains(&PhaseTag::AppServerInteract) {
                     let kind = adapter.app_server_interact_kind(&output, &op)?;
                     if self
@@ -523,16 +510,6 @@ impl OperationRuntime {
             }
             Phase::AppServerInteract { .. } => {
                 let mut output = required_output(&op)?.clone();
-                if self
-                    .fail_if_wave_deleting_before_external_io(
-                        &op,
-                        &output,
-                        PhaseTag::AppServerInteract,
-                    )
-                    .await?
-                {
-                    return Ok(());
-                }
                 match adapter
                     .app_server_interact(&mut output, &op, &self.spawn_ctx)
                     .await
@@ -575,12 +552,6 @@ impl OperationRuntime {
             }
             Phase::SpawnStarted => {
                 let output = required_output(&op)?.clone();
-                if self
-                    .fail_if_wave_deleting_before_external_io(&op, &output, PhaseTag::SpawnStarted)
-                    .await?
-                {
-                    return Ok(());
-                }
                 match adapter
                     .spawn_side_effect(&output, &op, &self.spawn_ctx)
                     .await
@@ -688,50 +659,6 @@ impl OperationRuntime {
                 Ok(())
             }
         }
-    }
-
-    async fn fail_if_wave_deleting_before_external_io(
-        &self,
-        op: &Operation,
-        output: &TxOutput,
-        from_phase: PhaseTag,
-    ) -> Result<bool> {
-        let wave_id = output
-            .data
-            .get("wave_id")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                (output.target_type == "wave")
-                    .then_some(output.target_id.as_deref())
-                    .flatten()
-            });
-        let Some(wave_id) = wave_id else {
-            return Ok(false);
-        };
-        let pool = self.repo.sqlite_pool();
-        let marked: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM wave_deletions WHERE wave_id=?1)")
-                .bind(wave_id)
-                .fetch_one(&pool)
-                .await?;
-        if !marked {
-            return Ok(false);
-        }
-        if let Some(result) = self
-            .repo
-            .mark_failed(
-                op,
-                "wave-deleting".into(),
-                from_phase,
-                Some("conflict".into()),
-            )
-            .await?
-        {
-            self.completion.complete(result);
-        } else {
-            log_lost_lease(op, PhaseTag::Failed);
-        }
-        Ok(true)
     }
 
     async fn fail_with_compensation(

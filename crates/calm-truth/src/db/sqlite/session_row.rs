@@ -424,7 +424,6 @@ pub async fn session_insert_tx(
     tx: &mut SessionTx<'_>,
     session: WorkerSession,
 ) -> Result<WorkerSession> {
-    super::wave_require_not_deleting_tx(tx, session.wave_id.as_str()).await?;
     let handle_state_json = session
         .handle_state_json
         .as_ref()

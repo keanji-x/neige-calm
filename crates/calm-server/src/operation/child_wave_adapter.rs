@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_create_with_id_tx, overlay_upsert_tx, wave_create_tx,
-    wave_require_not_deleting_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
@@ -155,7 +154,6 @@ impl ProviderAdapter for ChildWaveAdapter {
         // Fifth task-bound decision point. This is deliberately the first DB
         // action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
-        wave_require_not_deleting_tx(tx, &payload.parent_wave_id).await?;
 
         let (_root_id, parent_depth) = root_and_depth(tx, &payload.parent_wave_id).await?;
         if parent_depth >= MAX_WAVE_TREE_DEPTH {

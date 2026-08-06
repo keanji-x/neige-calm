@@ -35,6 +35,24 @@
 | fe `npm run build` | exit 0；14 modules transformed。 |
 | fe `npm run test` | **61 files passed / 1 skipped；758 tests passed / 1 skipped**；`test:wire` 与 `test:mock-drift` 均 exit 0。无漂移，未运行 `mock:generate`。 |
 
+### 修复轮 3 最终门
+
+仍保持 `NEIGE_CODEX_BIN` 未设置、`CARGO_BUILD_JOBS=6`，Rust PATH 含指定
+`.local-bin`；命令均为设计 §9 原样命令。
+
+| 门 | 修复轮 3 实际结果 |
+|---|---|
+| `cargo fmt --all --check` | exit 0。 |
+| `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | exit 0，0 warnings / 0 errors，1m15s。 |
+| `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | 首跑发现删除 marker guard 时误删 owner-wave existence check：**3341 passed / 2 failed / 89 skipped**，34.018s；修复后全量复跑 **3343 passed / 0 failed / 89 skipped**，34.085s（编译 1m43s）。 |
+| web `npm run gen:api` | exit 0；生成测试 49 + 15 + 1 = **65 passed / 0 failed**，其余生成 crate 目标均为 0 run、仅 filtered。 |
+| web 生成物 `git diff --exit-code` | 新增 409 契约生成物纳入提交后，指定 5 组路径无未生成漂移，exit 0。 |
+| web `npm run build` | exit 0；849 modules transformed；仅保留既有 `::highlight` 与 chunk-size warning。 |
+| web `npm run test` | **85 files passed；1227 tests passed / 0 failed；0 type errors**。 |
+| fe `npm run lint` | exit 0；ownership 74 entries 完整；dependency cruise 102 modules / 232 dependencies，0 violations。 |
+| fe `npm run build` | exit 0；14 modules transformed。 |
+| fe `npm run test` | 首跑 61 files / 758 tests 通过但 mock drift 正确指出新增 409 未生成；按门要求运行 `npm run mock:generate` 后全门复跑：**61 files passed / 1 skipped；758 tests passed / 1 skipped**，`test:wire` 与 `test:mock-drift` 均 exit 0。 |
+
 针对本轮原始失败另跑过精确验证：`migration_backfills_preexisting_task_and_block_declaration_adopts_it` 为 1 passed / 0 failed / 2289 skipped。
 
 真实 Codex e2e 没有启动：命令均显式 `env -u NEIGE_CODEX_BIN`；这些入口只解析该变量，未解析时走 `skip!`，另有显式 `#[ignore]` 用例。全门没有启动嵌套 app-server。
@@ -95,3 +113,29 @@
   无需留后续理由项。
 - 修复轮 2 逐变异均红且已复原；扩大定向恢复态：**32 passed / 0 failed / 3401 skipped，
   0.456s**。逐项命令结果见 mutation-map「修复轮 2」。
+
+## 修复轮 3：降范围与 M4
+
+- 从未发布的 `0072_wave_deletions.sql` 已直接删除；marker 表/trigger、删除恢复 sweep、
+  operation drive fence 与三 phase marker 分支，以及 card/terminal/session/child 的 deleting
+  准入 guard 一并移除。没有留下空迁移。
+- 删除路径恢复为最小形状：route 在任何 teardown 前用普通读做 descendant 快失败并指名
+  child id；真正删除仍只由 `wave_delete_tx` 的事务内 descendant guard 裁决，覆盖 raw Repo
+  入口。turn/process/socket/harness teardown 全在最终短写事务之前。
+- 0072 曾额外购买的「删除对崩溃原子」与「marker 后资源不得复活」不再由本片承诺，也没有
+  偷换成其他载体；这两项整体另开 issue。保留下来的购买关系是：route 前检负责拒删时
+  process/registry/socket/DB 全不变，`wave_delete_tx` 负责所有入口不产生孤儿，cove 仍由单条
+  cascade 删除同 cove 树，确定性 writer barrier 负责证明写事务不跨外部 IO；card 写口原有的
+  owner-wave typed `NotFound` 由纯 existence check 继续购买，不再依赖 marker guard 顺带提供。
+- 已知安全竞态：route 前检通过后、最终删除前若新建 child，teardown 已发生，最终事务返回
+  409。该形状罕见、不损坏数据、可重试；若要消除它需要两阶段持久删除，另开 issue，
+  不在切片 6 PR-A 内扩面。
+- M4 枚举出 **3 个** child-flip 权威复核点：success、Done+pending incomplete、
+  deleted/failed/canceled 三理由共用 terminal helper。前两者沿用各自 delete/reopen oracle；
+  第三处抽为 `guarded_child_terminal_flip_tx`，新增行为 oracle 分别制造 Deleted 后复活、
+  Failed 后 reopen、Canceled 后 reopen，三种情况下都要求 `rows_affected == 0` 且 parent 仍
+  `running`。共享 guard 删除和 Failed/Canceled 单臂变异均实际变红。
+- 两份 r3 的其余 MINOR 均依附 0072（附录登记、boot sweep、半删健康、活跃态快照、typed
+  Conflict 分层、actor 恢复），随机制整体删除而消失；没有剩余的非 0072 MINOR 需要延期。
+- 修复轮 3 逐变异没有仍绿项，且均已复原；恢复态定向集合为
+  **8 passed / 0 failed / 3424 skipped，0.435s**。完整证据见 mutation-map「修复轮 3」。

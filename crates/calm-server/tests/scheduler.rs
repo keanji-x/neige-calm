@@ -6199,59 +6199,79 @@ async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
 }
 
 #[tokio::test]
-async fn deleting_wave_fails_queued_bootstrap_before_external_io() {
-    let boot = boot().await;
-    let child = boot
-        .repo
-        .wave_create(NewWave {
-            cove_id: boot.cove_id.clone(),
-            title: "delete-fenced-bootstrap".into(),
-            sort: None,
-            cwd: "/tmp".into(),
-            workflow_id: None,
-            workflow_input: None,
-            attach_folder: false,
-            theme: RequestTheme::default_dark(),
-        })
-        .await
-        .unwrap();
-    let child_id = child.id.to_string();
-    let child_id_for_tx = child_id.clone();
-    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            calm_server::db::sqlite::wave_mark_deleting_tx(tx, &child_id_for_tx)
+async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snapshot() {
+    for (label, seed_lifecycle, expected_lifecycle) in [
+        ("deleted", WaveLifecycle::Working, None),
+        ("failed", WaveLifecycle::Failed, Some(WaveLifecycle::Failed)),
+        (
+            "canceled",
+            WaveLifecycle::Canceled,
+            Some(WaveLifecycle::Canceled),
+        ),
+    ] {
+        let boot = boot().await;
+        let (task_id, child) = seed_child_parent(&boot, label, seed_lifecycle, None).await;
+        let pool = boot.repo.sqlite_pool().unwrap();
+        if label == "deleted" {
+            sqlx::query("DELETE FROM waves WHERE id=?1")
+                .bind(&child)
+                .execute(&pool)
                 .await
-                .map_err(Into::into)
-        })
-    })
-    .await
-    .unwrap();
-    let minted = Arc::new(AtomicUsize::new(0));
-    let (runtime, _scheduler) =
-        build_scheduler(&boot, vec![Arc::new(BootstrapAdapter::new(minted.clone()))]);
-    let payload = json!({"wave_id": child_id});
-    let op_id = runtime
-        .submit(
-            "spec-harness-start",
-            OperationKey {
-                operation_key: new_id(),
-                idempotency_key: Some("delete-fenced-bootstrap".into()),
-                payload_hash: stable_payload_hash(&payload).unwrap(),
-            },
-            payload,
+                .unwrap();
+        }
+
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        let observed: Option<String> =
+            sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+                .bind(&child)
+                .fetch_optional(&mut *tx)
+                .await
+                .unwrap();
+        assert_eq!(
+            observed.as_deref(),
+            expected_lifecycle.map(WaveLifecycle::as_db_str),
+            "fixture must first observe the selected {label} outcome"
+        );
+
+        if label == "deleted" {
+            sqlx::query(
+                "INSERT INTO waves(id,cove_id,title,sort,cwd,created_at,updated_at) \
+                 SELECT ?1,cove_id,'replacement child',sort+0.25,cwd,?2,?2 \
+                   FROM waves WHERE id=?3",
+            )
+            .bind(&child)
+            .bind(now_ms())
+            .bind(boot.wave_id.as_str())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        } else {
+            sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
+                .bind(&child)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+
+        let changed = calm_server::scheduler::guarded_child_terminal_flip_for_test(
+            &mut tx,
+            &task_id,
+            boot.wave_id.as_str(),
+            &child,
+            expected_lifecycle,
         )
         .await
         .unwrap();
-    let result = runtime.wait(&op_id).await.unwrap();
-    assert!(
-        matches!(
-            result.outcome,
-            OperationOutcome::Failed { ref last_error, .. } if last_error == "wave-deleting"
-        ),
-        "deleting wave must fail before adapter external IO: {:?}",
-        result.outcome
-    );
-    assert_eq!(minted.load(Ordering::SeqCst), 1, "prepare still committed");
+        tx.commit().await.unwrap();
+        assert_eq!(changed, 0, "{label} snapshot must lose after child flip");
+        assert_eq!(
+            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+            TaskStatus::Running,
+            "{label} snapshot must not close the parent"
+        );
+    }
 }
 
 #[tokio::test]

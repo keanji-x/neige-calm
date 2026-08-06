@@ -223,55 +223,9 @@ pub async fn wave_delete_tx(
     wave_delete_leaf_tx(tx, id, wave_cove_cache).await
 }
 
-/// First phase of route-level deletion: prove the wave is a leaf and persist
-/// a crash-recoverable marker in the same short writer transaction.
-///
-/// Callers take their teardown snapshot before committing this transaction.
-/// Migration 0072 prevents new children/cards/terminals/sessions/leases after
-/// the marker becomes visible, so the snapshot remains complete while slow
-/// process and socket work runs without holding SQLite's writer slot.
-pub async fn wave_mark_deleting_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
-    wave_require_leaf_tx(tx, id).await?;
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
-        .bind(id)
-        .fetch_optional(&mut **tx)
-        .await?;
-    if exists.is_none() {
-        return Err(CalmError::NotFound(format!("wave {id}")));
-    }
-    sqlx::query(
-        "INSERT INTO wave_deletions(wave_id,requested_at_ms) VALUES(?1,?2) \
-         ON CONFLICT(wave_id) DO NOTHING",
-    )
-    .bind(id)
-    .bind(now_ms())
-    .execute(&mut **tx)
-    .await?;
-    Ok(())
-}
-
-/// Refuse any resource creation whose owner wave has entered durable delete.
-pub async fn wave_require_not_deleting_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-) -> Result<()> {
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT EXISTS(SELECT 1 FROM wave_deletions WHERE wave_id = waves.id) \
-         FROM waves WHERE id = ?1",
-    )
-    .bind(id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    match row {
-        None => Err(CalmError::NotFound(format!("wave {id}"))),
-        Some((1,)) => Err(CalmError::Conflict(format!("wave {id} is deleting"))),
-        Some(_) => Ok(()),
-    }
-}
-
-/// Refuse deletion while a direct child exists. Route callers pair this with
-/// [`wave_mark_deleting_tx`]; the committed marker closes the child-creation
-/// window without holding SQLite's writer slot across external teardown.
+/// Refuse deletion while a direct child exists. This is the authoritative
+/// guard for every deletion entry point, including direct repository calls
+/// that bypass the HTTP route's best-effort preflight.
 pub async fn wave_require_leaf_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
     if let Some((child_id,)) =
         sqlx::query_as::<_, (String,)>("SELECT id FROM waves WHERE parent_wave_id = ?1 LIMIT 1")

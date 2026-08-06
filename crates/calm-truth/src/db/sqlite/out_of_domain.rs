@@ -82,22 +82,12 @@ impl RepoOutOfDomain for SqlxRepo {
     // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.
-        let owner: Option<(String, i64)> = sqlx::query_as(
-            "SELECT c.id, EXISTS(SELECT 1 FROM wave_deletions d WHERE d.wave_id=c.wave_id) \
-             FROM cards c WHERE c.id = ?1",
-        )
-        .bind(p.card_id.as_str())
-        .fetch_optional(&self.pool)
-        .await?;
-        match owner {
-            None => return Err(CalmError::NotFound(format!("card {}", p.card_id))),
-            Some((_, 1)) => {
-                return Err(CalmError::Conflict(format!(
-                    "card {} belongs to a deleting wave",
-                    p.card_id
-                )));
-            }
-            Some(_) => {}
+        let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
+            .bind(p.card_id.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
+        if owner.is_none() {
+            return Err(CalmError::NotFound(format!("card {}", p.card_id)));
         }
         // Per-card uniqueness — surface as Conflict to mirror MockRepo
         // (the schema also enforces this via UNIQUE on terminals.card_id).

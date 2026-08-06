@@ -2839,6 +2839,16 @@
               }
             }
           },
+          "409": {
+            "description": "Wave has a descendant or active forge action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {

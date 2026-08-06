@@ -20,11 +20,11 @@
 //!
 //! ## Wave-delete teardown (issue #197)
 //!
-//! `delete_wave` first marks a leaf wave in a short transaction and snapshots
-//! its teardown-owned resources. It then reaps terminals/harnesses outside
-//! SQLite and finishes the row delete in a second short transaction. The
-//! durable marker lets the terminal sweeper resume after a process crash. The
-//! `terminals.card_id` FK is `ON DELETE RESTRICT` (migration 0011),
+//! `delete_wave` first performs a best-effort descendant preflight and
+//! snapshots its teardown-owned resources. It then reaps terminals/harnesses
+//! outside SQLite and finishes the row delete in a short transaction whose
+//! descendant guard is authoritative. The `terminals.card_id` FK is
+//! `ON DELETE RESTRICT` (migration 0011),
 //! so a missed cleanup surfaces as a transaction-level error rather
 //! than a silent daemon-process leak.
 
@@ -33,10 +33,9 @@ use crate::auth::Principal;
 use crate::db::sqlite::{
     TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx, cove_folder_create_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_mark_deleting_tx,
-    wave_update_tx,
+    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
-use crate::db::{rows::CardRow, write_in_tx_typed, write_with_actor_events_typed};
+use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
@@ -71,7 +70,7 @@ use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
 use axum::{
     Json, Router,
-    extract::{FromRef, Path, Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -1360,51 +1359,32 @@ pub(crate) async fn update_wave(
     Ok(Json(wave))
 }
 
-async fn prepare_wave_deletion(s: &RouteState, wave_id: &WaveId) -> Result<WaveDeletePlan> {
-    let wave_id_for_tx = wave_id.clone();
-    write_in_tx_typed(s.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            wave_mark_deleting_tx(tx, wave_id_for_tx.as_str()).await?;
-            let cove_id: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id=?1")
-                .bind(wave_id_for_tx.as_str())
-                .fetch_one(&mut **tx)
-                .await?;
-            let cards = sqlx::query_as::<_, CardRow>(
-                "SELECT id,wave_id,kind,sort,payload,title,deletable,created_at,updated_at \
-                 FROM cards WHERE wave_id=?1 ORDER BY sort,id",
-            )
-            .bind(wave_id_for_tx.as_str())
-            .fetch_all(&mut **tx)
-            .await?
-            .into_iter()
-            .map(Card::from)
-            .collect();
-            let terminals = sqlx::query_as::<_, crate::model::Terminal>(
-                "SELECT t.id,t.card_id,t.program,t.cwd,t.env,t.pid,t.theme_fg,t.theme_bg, \
-                        t.exit_code,t.signal_killed,t.created_at \
-                 FROM terminals t JOIN cards c ON c.id=t.card_id \
-                 WHERE c.wave_id=?1 ORDER BY t.id",
-            )
-            .bind(wave_id_for_tx.as_str())
-            .fetch_all(&mut **tx)
-            .await?;
-            let active_runtime_ids = sqlx::query_scalar(
-                "SELECT id FROM worker_sessions WHERE wave_id=?1 \
-                 AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
-            )
-            .bind(wave_id_for_tx.as_str())
-            .fetch_all(&mut **tx)
-            .await?;
-            Ok(WaveDeletePlan {
-                wave_id: wave_id_for_tx,
-                cove_id: cove_id.into(),
-                cards,
-                terminals,
-                active_runtime_ids,
-            })
-        })
+async fn snapshot_wave_deletion(
+    s: &RouteState,
+    pool: &sqlx::SqlitePool,
+    wave: &Wave,
+) -> Result<WaveDeletePlan> {
+    let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;
+    let mut terminals = Vec::new();
+    for card in &cards {
+        if let Some(terminal) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
+            terminals.push(terminal);
+        }
+    }
+    let active_runtime_ids = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+    )
+    .bind(wave.id.as_str())
+    .fetch_all(pool)
+    .await?;
+    Ok(WaveDeletePlan {
+        wave_id: wave.id.clone(),
+        cove_id: wave.cove_id.clone(),
+        cards,
+        terminals,
+        active_runtime_ids,
     })
-    .await
 }
 
 async fn teardown_wave_deletion(
@@ -1474,54 +1454,6 @@ async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: Actor
     Ok(())
 }
 
-async fn resume_wave_deletion(
-    s: &RouteState,
-    w: &WorkerState,
-    cs: &CodexShellState,
-    wave_id: WaveId,
-    actor: ActorId,
-) -> Result<()> {
-    let operation_fence = s.operation_runtime.pause_drives_for_wave_delete().await;
-    let plan = prepare_wave_deletion(s, &wave_id).await?;
-    drop(operation_fence);
-    teardown_wave_deletion(s, w, cs, &plan).await?;
-    finish_wave_deletion(s, plan, actor).await
-}
-
-/// Crash-recovery half of durable wave deletion. The existing terminal sweep
-/// calls this before its orphan scan, including on the first manually-driven
-/// boot sweep in tests. Each wave is independent; one failed teardown remains
-/// marked and cannot prevent later rows from converging.
-pub(crate) async fn resume_marked_wave_deletions(state: &AppState) -> Result<()> {
-    let Some(pool) = state.sqlite_pool() else {
-        return Ok(());
-    };
-    let wave_ids: Vec<String> =
-        sqlx::query_scalar("SELECT wave_id FROM wave_deletions ORDER BY requested_at_ms,wave_id")
-            .fetch_all(&pool)
-            .await?;
-    if wave_ids.is_empty() {
-        return Ok(());
-    }
-    let route = RouteState::from_ref(state);
-    let worker = WorkerState::from_ref(state);
-    let shell = CodexShellState::from_ref(state);
-    for wave_id in wave_ids {
-        if let Err(error) = resume_wave_deletion(
-            &route,
-            &worker,
-            &shell,
-            wave_id.clone().into(),
-            ActorId::Kernel,
-        )
-        .await
-        {
-            tracing::warn!(%error, %wave_id, "wave delete recovery deferred to next sweep");
-        }
-    }
-    Ok(())
-}
-
 #[utoipa::path(
     delete,
     path = "/api/waves/{id}",
@@ -1530,6 +1462,7 @@ pub(crate) async fn resume_marked_wave_deletions(state: &AppState) -> Result<()>
     responses(
         (status = 204, description = "Wave deleted"),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 409, description = "Wave has a descendant or active forge action", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -1549,14 +1482,11 @@ pub(crate) async fn delete_wave(
     // doesn't work anymore: the cascade aborts the wave-delete txn.
     // This handler now owns the full subtree teardown:
     //
-    //   1. Short IMMEDIATE tx: require leaf, persist the marker, snapshot
-    //      cards/terminals/runtimes, and commit.
+    //   1. Best-effort unlocked descendant preflight, then snapshot
+    //      cards/terminals/runtimes.
     //   2. Outside SQLite: interrupt turns and stop terminal/harness processes.
-    //   3. Second short IMMEDIATE tx: remove terminal rows, overlays, leases,
-    //      then the wave. The marker cascades with the wave.
-    //
-    // Migration 0072 rejects new child/resource rows after step 1. A crash
-    // during step 2 leaves the marker for the terminal sweeper to resume.
+    //   3. Short IMMEDIATE tx: recheck descendants authoritatively in
+    //      `wave_delete_tx`, then remove terminal rows, overlays, leases and wave.
     let wave = s
         .repo
         .wave_get(&id)
@@ -1577,7 +1507,24 @@ pub(crate) async fn delete_wave(
         )));
     }
 
-    resume_wave_deletion(&s, &w, &cs, wave_id, actor.to_actor_id()).await?;
+    // Experience-only preflight: the in-transaction guard in `wave_delete_tx`
+    // remains the sole correctness boundary for this route and raw Repo calls.
+    // A child created after this read can still make the final delete return
+    // Conflict after teardown; that rare race is safe and retryable.
+    if let Some(child_id) =
+        sqlx::query_scalar::<_, String>("SELECT id FROM waves WHERE parent_wave_id=?1 LIMIT 1")
+            .bind(wave_id.as_str())
+            .fetch_optional(&pool)
+            .await?
+    {
+        return Err(CalmError::Conflict(format!(
+            "wave {id} has child wave {child_id}; cancel it if needed, then delete that child wave first"
+        )));
+    }
+
+    let plan = snapshot_wave_deletion(&s, &pool, &wave).await?;
+    teardown_wave_deletion(&s, &w, &cs, &plan).await?;
+    finish_wave_deletion(&s, plan, actor.to_actor_id()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

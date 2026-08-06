@@ -1583,6 +1583,7 @@ PR-A 已交付冻结 `tasks.spawn`、child-wave operation、`parent_wave_id`、�
 | 20 | **有后代的单 wave 删除必须 leaf-first** | DB 收口拒绝删除父 wave；恢复路径是先删子 wave。删除整个 cove 仍由单条级联原子完成 |
 | 21 | **父 wave cancel 不自动 cancel 子树** | live/sweep 按 child 的最终 lifecycle 闭合；活着但永不终态的 child 由人工 cancel/delete 恢复 |
 | 22 | **`MAX_WAVE_TREE_DEPTH = 3` 是猜的** | 以深度拒绝率校准；在 PR-B 的树存量约束到位前不得把它描述成完整树预算 |
+| 23 | **wave route 的 descendant 前检与最终删除之间可新建 child** | 前检只负责 teardown 前快失败；`wave_delete_tx` 的事务 guard 是唯一正确性载体。命中时 teardown 后返回 409，不损坏数据且可重试；消除此窗口所需的两阶段持久删除另开 issue，不扩入切片 6 PR-A |
 
 ### 12.2 产品侧裁决（2026-08-03 已拍板，四条全部按倾向落）
 

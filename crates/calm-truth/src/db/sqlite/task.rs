@@ -206,13 +206,11 @@ pub async fn wave_lifecycle_and_budget_tx(
 ) -> Result<Option<(WaveLifecycle, Option<i64>)>> {
     // #679 PR1 — `WaveLifecycle` lost its `sqlx::Type` derive when it
     // moved to calm-types; decode TEXT and parse via `TryFrom<String>`.
-    let row: Option<(String, Option<i64>)> = sqlx::query_as(
-        "SELECT lifecycle, task_budget FROM waves WHERE id = ?1 \
-             AND NOT EXISTS(SELECT 1 FROM wave_deletions d WHERE d.wave_id=waves.id)",
-    )
-    .bind(wave_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let row: Option<(String, Option<i64>)> =
+        sqlx::query_as("SELECT lifecycle, task_budget FROM waves WHERE id = ?1")
+            .bind(wave_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     row.map(|(lifecycle, budget)| {
         WaveLifecycle::try_from(lifecycle)
             .map(|lifecycle| (lifecycle, budget))
