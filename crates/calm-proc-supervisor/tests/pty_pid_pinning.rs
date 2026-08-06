@@ -16,8 +16,7 @@
 //! **What this pair does *not* prove**, stated plainly so nobody reads more
 //! into it: it says nothing about Pipe entries (their child belongs to tokio
 //! and is not pinned — see `pipe_procs_are_not_signalable.rs`), nothing about
-//! the `tcgetpgrp` foreground-group target (a different process group's number,
-//! which the leader's zombie cannot pin — #1013's remaining face), nothing
+//! the former `tcgetpgrp` foreground-group target (deleted by the Q1 fix), nothing
 //! about a wildcard `wait` stealing the zombie (that is the
 //! `no_wildcard_wait_in_the_supervisor_host` lint), nothing about `SIGCHLD`
 //! being made auto-reaping after spawn (`pin_lost_on_autoreap.rs`), and nothing
