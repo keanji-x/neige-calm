@@ -694,14 +694,13 @@ impl ProcRegistry {
     /// is not Pty. After the deletion the only filtering left is
     /// `filter_map(|e| group_target(e).ok())`, and each of its arms is already
     /// what we want: `Err(PinLost)` drops entries whose pgid the kernel has
-    /// proven is no longer ours, `Err(MasterPoisoned)` matches the pre-#1013
-    /// behaviour, and `Ok(PipeBestEffort)` keeps Pipe in verbatim.
+    /// proven is no longer ours, and `Ok(PipeBestEffort)` keeps Pipe in
+    /// verbatim.
     ///
-    /// No *unpinned* `Foreground` target is newly admitted by the widening: the
-    /// newly covered state requires the sticky exit to be recorded, i.e. the
-    /// session leader has exited, and then the kernel's `disassociate_ctty` has
-    /// already cleared `tty->ctrl.pgrp`, so `process_group_leader()` is `None`
-    /// and `group_target` necessarily yields the pinned `Leader` variant.
+    /// Every Pty target is the pinned leader pgid. The tty's foreground job
+    /// group is deliberately irrelevant to the Signal API: callers are
+    /// addressing the child this supervisor spawned, not whichever job that
+    /// child has temporarily placed in the foreground.
     ///
     /// Registered consequence (deliberate, and a narrowing versus pre-PR-B):
     /// a `pin_lost` entry is now excluded here too, so its grandchildren get no
@@ -1274,11 +1273,6 @@ mod pgid_lease {
         /// `Arc<ProcEntry>` is alive this number is still allocated to us and
         /// cannot have been handed to an unrelated process group.
         Leader(Pgid, PhantomData<&'a ProcEntry>),
-        /// Target = the foreground job group returned by `tcgetpgrp(master)`.
-        /// **Never pinned** — it is a different process group's number and the
-        /// leader's zombie does not hold it. This is the remaining face of
-        /// #1013 (§5.4 / Q1).
-        Foreground(Pgid, PhantomData<&'a ProcEntry>),
         /// Target = the pipe daemon's pgid (`try_spawn_pipe` does
         /// `cmd.process_group(0)`, so the daemon leads its own group).
         /// **Never pinned** — the child belongs to tokio. Only
@@ -1293,16 +1287,15 @@ mod pgid_lease {
         pub(super) fn kind(&self) -> &'static str {
             match self {
                 GroupSignalTarget::Leader(..) => "Leader",
-                GroupSignalTarget::Foreground(..) => "Foreground",
                 GroupSignalTarget::PipeBestEffort(..) => "PipeBestEffort",
             }
         }
 
         fn pgid(&self) -> &Pgid {
             match self {
-                GroupSignalTarget::Leader(pgid, _)
-                | GroupSignalTarget::Foreground(pgid, _)
-                | GroupSignalTarget::PipeBestEffort(pgid, _) => pgid,
+                GroupSignalTarget::Leader(pgid, _) | GroupSignalTarget::PipeBestEffort(pgid, _) => {
+                    pgid
+                }
             }
         }
     }
@@ -1319,15 +1312,12 @@ mod pgid_lease {
         /// stay textually distinguishable from `Kill(ESRCH)`: T6 can only be
         /// reddened by its own mutation because those two render differently.
         PinLost,
-        /// The pty master mutex is poisoned — the same situation in which the
-        /// pre-#1013 `current_process_group` returned `Err`.
-        MasterPoisoned,
         /// `kill_group`'s `libc::kill` returned -1.
         Kill(io::Error),
     }
 
     /// The only constructor. `Err` is only ever possible on the **Pty** branch
-    /// (`PinLost` or `MasterPoisoned`). See regulation 4: the Pipe branch must
+    /// (`PinLost`). See regulation 4: the Pipe branch must
     /// always be `Ok(PipeBestEffort)`.
     pub(super) fn group_target(
         entry: &ProcEntry,
@@ -1337,9 +1327,7 @@ mod pgid_lease {
                 Pgid(entry.pid as libc::pid_t),
                 PhantomData,
             )),
-            ProcRuntime::Pty {
-                master, pin_lost, ..
-            } => {
+            ProcRuntime::Pty { pin_lost, .. } => {
                 // #1013 PR-B §2.4. Deliberately one deletable line: T6's second
                 // mutation is deleting it, and T6 then has to notice by message
                 // prefix that it got `Kill(ESRCH)` instead of `PinLost`.
@@ -1349,23 +1337,10 @@ mod pgid_lease {
                 if pin_lost.load(Ordering::SeqCst) {
                     return Err(GroupSignalError::PinLost);
                 }
-                let master = master
-                    .lock()
-                    .map_err(|_| GroupSignalError::MasterPoisoned)?;
-                // `process_group_leader()` is `tcgetpgrp(master)` and returns
-                // `Some` only for pid > 0 (portable-pty-0.9 unix.rs:374-379),
-                // so this is the pre-#1013 `unwrap_or(entry.pid)` verbatim,
-                // with the two sources kept apart by variant instead of merged
-                // into one anonymous `i32`.
-                match master.process_group_leader() {
-                    Some(foreground) => {
-                        Ok(GroupSignalTarget::Foreground(Pgid(foreground), PhantomData))
-                    }
-                    None => Ok(GroupSignalTarget::Leader(
-                        Pgid(entry.pid as libc::pid_t),
-                        PhantomData,
-                    )),
-                }
+                Ok(GroupSignalTarget::Leader(
+                    Pgid(entry.pid as libc::pid_t),
+                    PhantomData,
+                ))
             }
         }
     }
@@ -1381,7 +1356,7 @@ mod pgid_lease {
     ) -> Result<(), GroupSignalError> {
         match target {
             GroupSignalTarget::PipeBestEffort(..) => Err(GroupSignalError::PipeNotSignalable),
-            GroupSignalTarget::Leader(..) | GroupSignalTarget::Foreground(..) => Ok(()),
+            GroupSignalTarget::Leader(..) => Ok(()),
         }
     }
 
@@ -1481,10 +1456,6 @@ fn group_signal_error_reply(
                 // reply after a `waitid` failure that proved nothing.
                 "pty leader pin lost for proc {proc_id} (kernel reported ECHILD or waitid failed); refusing to use its pgid as a signal target"
             ),
-        },
-        pgid_lease::GroupSignalError::MasterPoisoned => ControlReply::Error {
-            kind: ControlErrorKind::Internal,
-            message: format!("pty master mutex poisoned: proc {proc_id}"),
         },
         pgid_lease::GroupSignalError::Kill(e) => ControlReply::Error {
             kind: ControlErrorKind::Internal,
@@ -3001,9 +2972,7 @@ mod wnowait_tests {
     #[tokio::test]
     async fn group_target_refuses_the_leader_target_after_pin_loss() {
         // A pty pair whose leader has already exited; the entry is the minimal
-        // shape `group_target` needs. `process_group_leader()` is `None` once
-        // the session leader is gone (the kernel clears `tty->ctrl.pgrp`), so
-        // this is the `Leader` branch — the pinned one.
+        // shape `group_target` needs. Every Pty entry uses the `Leader` branch.
         let pair = native_pty_system()
             .openpty(PtPtySize {
                 rows: 24,
@@ -3319,11 +3288,6 @@ mod pgid_lease_tests {
                 pgid_lease::GroupSignalError::PinLost,
                 ControlErrorKind::Internal,
                 "pty leader pin lost for proc p (kernel reported ECHILD or waitid failed);",
-            ),
-            (
-                pgid_lease::GroupSignalError::MasterPoisoned,
-                ControlErrorKind::Internal,
-                "pty master mutex poisoned: proc p",
             ),
             (
                 pgid_lease::GroupSignalError::Kill(io::Error::from_raw_os_error(libc::ESRCH)),

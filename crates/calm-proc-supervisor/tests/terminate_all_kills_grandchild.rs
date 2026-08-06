@@ -37,8 +37,8 @@ async fn terminate_all_kills_grandchild_of_live_leader() {
         &["-c", "sleep 300 & echo GC=$!; wait"],
     )
     .await;
-    let mut attach = attach(supervisor.sock(), proc_id).await;
-    let grandchild = read_grandchild_pid(&mut attach).await;
+    let (mut attach, replay) = attach(supervisor.sock(), proc_id).await;
+    let grandchild = read_grandchild_pid(&mut attach, replay).await;
 
     assert_ne!(
         grandchild, leader,
@@ -66,20 +66,20 @@ async fn terminate_all_kills_grandchild_of_live_leader() {
     );
 }
 
-async fn read_grandchild_pid(stream: &mut UnixStream) -> u32 {
-    let mut buf = String::new();
+async fn read_grandchild_pid(stream: &mut UnixStream, replay: Vec<u8>) -> u32 {
+    let mut buf = String::from_utf8_lossy(&replay).into_owned();
     loop {
+        if let Some(rest) = buf.split("GC=").nth(1) {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            // Wait for the terminator so a chunk boundary mid-number cannot
+            // truncate the pid we parse.
+            if digits.len() < rest.len() && !digits.is_empty() {
+                return digits.parse().expect("grandchild pid");
+            }
+        }
         match timeout_read(stream).await {
             ControlReply::Output { bytes, .. } => {
                 buf.push_str(&String::from_utf8_lossy(&bytes));
-                if let Some(rest) = buf.split("GC=").nth(1) {
-                    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-                    // Wait for the terminator so a chunk boundary mid-number
-                    // cannot truncate the pid we parse.
-                    if digits.len() < rest.len() && !digits.is_empty() {
-                        return digits.parse().expect("grandchild pid");
-                    }
-                }
             }
             other => panic!("unexpected frame while waiting for grandchild pid: {other:?}"),
         }
@@ -114,7 +114,7 @@ async fn ensure_pty(sock: &Path, proc_id: &str, program: &str, args: &[&str]) ->
     pid
 }
 
-async fn attach(sock: &Path, proc_id: &str) -> UnixStream {
+async fn attach(sock: &Path, proc_id: &str) -> (UnixStream, Vec<u8>) {
     let mut stream = UnixStream::connect(sock).await.expect("connect attach");
     write_frame(
         &mut stream,
@@ -126,11 +126,11 @@ async fn attach(sock: &Path, proc_id: &str) -> UnixStream {
     )
     .await
     .expect("write attach");
-    match read_frame(&mut stream).await.expect("read attach ok") {
-        ControlReply::AttachOk(_) => {}
+    let replay = match read_frame(&mut stream).await.expect("read attach ok") {
+        ControlReply::AttachOk(attached) => attached.replay,
         other => panic!("unexpected attach reply: {other:?}"),
-    }
-    stream
+    };
+    (stream, replay)
 }
 
 async fn timeout_read(stream: &mut UnixStream) -> ControlReply {
