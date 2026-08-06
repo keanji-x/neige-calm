@@ -219,6 +219,15 @@ pub async fn wave_delete_tx(
     id: &str,
     wave_cove_cache: &WaveCoveCache,
 ) -> Result<()> {
+    wave_require_leaf_tx(tx, id).await?;
+    wave_delete_leaf_tx(tx, id, wave_cove_cache).await
+}
+
+/// Refuse deletion while a direct child exists. Callers that have external
+/// teardown to perform must run this check at the start of the same
+/// `BEGIN IMMEDIATE` transaction that eventually deletes the wave. Holding
+/// that writer lock closes the check-to-delete child-creation window.
+pub async fn wave_require_leaf_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
     if let Some((child_id,)) =
         sqlx::query_as::<_, (String,)>("SELECT id FROM waves WHERE parent_wave_id = ?1 LIMIT 1")
             .bind(id)
@@ -229,6 +238,14 @@ pub async fn wave_delete_tx(
             "wave {id} has child wave {child_id}; cancel it if needed, then delete that child wave first"
         )));
     }
+    Ok(())
+}
+
+async fn wave_delete_leaf_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_cove_cache: &WaveCoveCache,
+) -> Result<()> {
     sqlx::query("DELETE FROM wave_vcs_refs WHERE wave_id = ?1")
         .bind(id)
         .execute(&mut **tx)

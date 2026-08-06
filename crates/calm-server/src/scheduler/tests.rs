@@ -16,19 +16,6 @@ fn acceptance_11_sub_wave_sweep_arm_precedes_terminal_and_timeout_arms() {
 }
 
 #[test]
-fn acceptance_18_child_success_flip_rechecks_child_state_in_its_sql_guard() {
-    let source = include_str!("mod.rs");
-    assert_eq!(
-        source
-            .matches("WHERE child.id=?5 AND child.lifecycle='done')")
-            .count(),
-        2,
-        "success and pending-incomplete flips must each recheck child Done"
-    );
-    assert!(source.contains("AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5"));
-}
-
-#[test]
 fn claim_fence_revision_grid_fails_closed_for_missing_null_and_negative() {
     assert!(fence_revision_matches(Some(Some(7)), 7));
     assert!(!fence_revision_matches(None, 7), "missing row");

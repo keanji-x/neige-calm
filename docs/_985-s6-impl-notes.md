@@ -2,13 +2,13 @@
 
 ## 门结果
 
-所有最终门均在 `NEIGE_CODEX_BIN` 未设置、`CARGO_BUILD_JOBS=6` 下执行；Rust 命令的 PATH 含 `/mnt/data2/kenji/neige-calm/.local-bin`，web/fe 使用 Node 22.22.2。
+所有最终门均在 `NEIGE_CODEX_BIN` 未设置、`CARGO_BUILD_JOBS=6` 下执行；Rust 命令的 PATH 含 `/mnt/data2/kenji/neige-calm/.local-bin`，web/fe 使用 Node 24.4.1。
 
 | 门 | 实际结果 |
 |---|---|
-| `cargo fmt --all --check` | 首跑发现 3 处格式漂移、exit 1；运行 `cargo fmt --all` 后原命令复跑 exit 0。 |
-| `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | exit 0；0 warnings / 0 errors，1m19s。 |
-| `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | 首跑：3338 passed / 1 failed / 89 skipped，唯一失败为 `terminate_all_kills_grandchild_of_live_leader` 的 5s reply timeout；不枚举 target，原门整条复跑：**3339 passed / 0 failed / 89 skipped**。 |
+| `cargo fmt --all --check` | 修复轮 1 最终原命令 exit 0。 |
+| `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | 修复轮 1 首跑红在新测试元组的 `clippy::type-complexity`；抽本地类型别名后原命令复跑 exit 0，0 warnings / 0 errors。 |
+| `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | 修复轮 1：**3339 passed / 0 failed / 89 skipped**，31.410s（编译另 1m21s）。 |
 | web `npm run gen:api` | exit 0；生成测试 49 + 15 + 1 = **65 passed / 0 failed**，其余生成 crate 目标均为 0 run、仅 filtered。 |
 | web 生成物 `git diff --exit-code` | 指定 5 组路径无漂移，exit 0。 |
 | web `npm run build` | exit 0；849 modules transformed。保留既有 CSS `::highlight` 与 chunk-size warning，无错误。 |
@@ -26,7 +26,7 @@
 1. **0068 测试的后半应跑到哪个 schema。** 前半只钉 0068 backfill；后半调用当前生产投影。生产投影同时写 0070 的 `decl_*` 和 0071 的 `spawn`，所以 fixture 必须按真实顺序再执行 0069、0070、0071。只跑 0070 会缺 `spawn`；只跑 0071 会缺 `decl_ready`。没有把生产 `spawn` 写入改成条件式。
 2. **§7 数量漂移。** 设计表实际有 33 个编号行（3a/3b/3c、5b、13b–13e、14b、21b/21c 等均独立成行），任务描述称 30。裁决为交付 33 行，不按错误计数删项。
 3. **#11 的两个内层判定不是独立行为承重点。** 实测删除专用臂或删除 predicate 的 spawn 排除分别被另一层遮蔽而仍绿；只有把更早的 sub-wave 臂直接接到 timeout 收割器才红。保留这些仍绿结果，不声称“三站点各自可变异”。
-4. **#21c 的指定 tripwire 不驱动写路径。** adapter 写错 cove 时 #21c raw-SQL 测试仍绿，而真实 adapter #6 测试红。现状的生产行为有保护，但 §7 所称 tripwire 本身没有归因能力；后续应把 #21c 改成创建第二 cove、驱动真实 child adapter，再断言全表无跨-cove 边。
+4. **#21c 的指定 tripwire 已在修复轮 1 收敛。** 测试移到 child adapter 的真实写路径：创建第二 cove、提交真实 child operation，再断言全表无跨-cove 边且无关 cove 可删。把 adapter 的 cove reader 改成第二 cove 后，该测试自身红。
 5. **read-state 边界。** `child_wave_id` 是 claim 后状态，进入 DTO；`spawn` 是 claim 前冻结输入，保持不进 DTO。#22 用序列化 JSON 断言，而不是结构体字段恒真。
 
 ## 没做到或只做到部分变异证明的验收
@@ -40,6 +40,15 @@
 - #13：跑了无条件 done；删除 `TaskCompleted` 事件的独立 mutant 未跑（正向测试确实断言事件数与 gate attempt）。
 - #13e：正向测试覆盖 create/bootstrap × Failed/Stuck 四臂，但实际 mutant 只删除 create/Stuck。
 - #14：正向测试覆盖 Failed/Canceled/Deleted 三理由，但实际 mutant 只删除 Deleted 映射。
-- #21c：指定测试在设计 mutant 下仍绿，是现存验收缺口；不能把 #6 的旁路红冒充成 #21c 自己会红。
+- #21c：首轮这里记录的缺口已由修复轮 1 补齐；真实 adapter 跨-cove mutant 现在由 #21c 自身抓红。
 
 这些部分项在变异映射中均按实际执行范围标注，没有补写未跑结果。
+
+## 修复轮 1 收敛结果
+
+- B1：descendant leaf 判定移到 DELETE 的 `BEGIN IMMEDIATE` 首部，持锁穿过 turn / terminal / harness teardown 到最终删除；活 harness + terminal 进程/socket fixture 在 409 时断言 registry 与 DB 全不变。
+- B2：bootstrap 测试 adapter 支持 durable Parked 阻塞；阻塞期父任务保持 `dispatched`，放行后才 `running`；阻塞点丢弃并重建 runtime 后 child/bootstrap op 各 1 条、mint 1 次。
+- B3：`fail_child_wave_task` 在事务内读取 durable `tasks.child_wave_id`；真实 adapter 先创建 child 后注入 create Failed/Stuck，child 收场为 Failed，随后 leaf-first 删除 child 与 parent 均成功。
+- M1–M4：共享 bounded CTE + 500ms 硬超时；running stamp 三守卫各有负例；success flip 抽出行为门并删除源码计数 oracle；fresh child 的 Draft/archive/pin/terminal 四字段均有独立负断言。
+- #21c 与文档：tripwire 改走真实 adapter；两处 §7 计数改 33；权威附录 C.1 登记 `tasks.spawn` / `tasks.child_wave_id`，并明确后者不进 `TASK_COLUMNS`。
+- 恢复态定向集合：**9 passed / 0 failed / 3419 skipped**。完整逐变异红绿与首次仍绿的 B2 接缝记录见 `docs/_985-s6-mutation-map.md`「修复轮 1」。

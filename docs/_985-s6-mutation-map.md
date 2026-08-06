@@ -43,3 +43,26 @@
 - 33 个编号行均有实际执行记录，没有整行“未实现”。
 - 含“仍绿”证据的编号行 3 个（#3b、#11、#21c），共 4 次实际仍绿尝试；其中 #3b 已通过补强 fixture 修复，#11 是设计已承认的死代码形状，#21c 是尚存的验收缺口。
 - 独立变异覆盖仍不完整的子断言已在实现说明中逐条列出；没有把未执行的子变异写成已验证。
+
+## 修复轮 1
+
+以下变异均在本工作树实际执行，命令保持 `NEIGE_CODEX_BIN` 未设置、
+`CARGO_BUILD_JOBS=6`，且 PATH 含指定 `.local-bin`；每次运行后均用反向补丁复原。
+
+| 修复项 | 我改坏了什么 | 对应测试与实际结果 |
+|---|---|---|
+| B1 | 跳过 DELETE 写事务开头的 `wave_require_leaf_tx`，让 teardown 后的 `wave_delete_tx` 才拒绝 descendant。 | `acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_terminal` **红**（1 failed，断言捕获 terminal 进程已被杀；harness/registry/socket/DB 也在同一 fixture 受守护）。 |
+| B2 | 把 `mark_sub_wave_running` 提到 bootstrap `wait` 前，成功臂改 `Ok(())`。 | 第一版 hook 阻塞在同步 `submit()` 内，变异 **仍绿**（1 passed），说明接缝仍没到 `wait`；改成 adapter 返回 durable `Parked`、observer 在通知前保留 25ms 调度窗并继续阻塞后，同一变异使 `acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive` **红**（1 failed，阻塞期父状态为 `running` 而不是 `dispatched`）。恢复后的测试还会在阻塞点丢弃 runtime、重建后断言 child/bootstrap op 各 1 条且 mint 1 次。 |
+| B3 | 保留事务内 `SELECT tasks.child_wave_id` 但强制清理分支使用 `None`。 | `acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once` **红**（1 failed，真实 adapter 提交后的 child 仍为 `planning`，不是 `failed`）。测试对 create 的 Failed/Stuck 两臂都先驱动真实 child/bootstrap adapter，并在收场后 leaf-first 删除 child、parent。 |
+| M1 | 从共享 `bounded_wave_ancestor_cte!` 删除唯一的 `WHERE up.depth <= ?2`。 | `upward_cte_keeps_its_only_cycle_termination_guard` 与 `acceptance_7_two_cycle_fails_fast_with_cycle_reason` **2 条全红**；运行时用例在约 500ms 的 `tokio::time::timeout` 处失败，不再挂到外层 SIGTERM。 |
+| M2-a | 单独删除 `task_mark_sub_wave_running_tx` 的 `status='dispatched'`。 | `acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline` **红**（1 failed，已 failed 行 `rows_affected=1`，会被复活）。 |
+| M2-b | 单独删除同一 UPDATE 的 `spawn='sub-wave'`。 | 同一测试 **红**（1 failed，`in-wave` 行 `rows_affected=1`）。 |
+| M2-c | 单独删除同一 UPDATE 的 `child_wave_id IS NOT NULL`。 | 同一测试 **红**（1 failed，无 child 行 `rows_affected=1`）。 |
+| M3 | 把抽出的 success flip 中 child-Done `EXISTS` 真谓词改成 `AND 1=1`，不保留源码注释 oracle。 | `acceptance_18_success_flip_rechecks_done_after_its_snapshot` **红**（1 failed；同一 IMMEDIATE tx 先读 Done、再删 child 后 guarded flip 错误命中 1 行）。 |
+| M4-a | child adapter 提交内单独把 fresh child 改成 `lifecycle='planning'`。 | `acceptance_5_child_seed_uses_all_four_frozen_fields_and_parent_cwd` **红**（1 failed，期望 `draft`）。 |
+| M4-b | 同一位置单独写 `archived_at=101`。 | 同一测试 **红**（1 failed，期望 NULL）。 |
+| M4-c | 同一位置单独写 `pinned_at=102`。 | 同一测试 **红**（1 failed，期望 NULL）。 |
+| M4-d | 同一位置单独写 `terminal_at=103`。 | 同一测试 **红**（1 failed，期望 NULL）。 |
+| #21c | 把 parent cove reader 改成选取表内另一个 cove，使真实 child adapter 写出跨-cove 边。 | `acceptance_21c_real_adapter_never_writes_a_cross_cove_edge` **红**（1 failed，跨-cove 全表计数为 1）；该测试不再 raw SQL 自造被测边。 |
+
+本节所有变异均已复原；恢复态由后续定向基线与 §9 全门再次验证。

@@ -29,10 +29,12 @@ const CHILD_WAVE_PHASES: &[PhaseTag] = &[
     PhaseTag::Succeeded,
 ];
 
-/// Keep this SQL literal in one place so the static tripwire can verify the
-/// sole cycle-termination mechanism. `UNION` cannot terminate a CTE carrying
-/// depth; `WHERE up.depth <= ?2` is the ★ only termination guarantee ★.
-pub const WAVE_ROOT_DEPTH_SQL: &str = r#"
+/// Both ancestor queries must expand this exact bounded fragment. `UNION`
+/// cannot terminate a CTE carrying depth; the depth predicate is the only
+/// cycle-termination guarantee.
+macro_rules! bounded_wave_ancestor_cte {
+    () => {
+        r#"
 WITH RECURSIVE up(id, parent_wave_id, depth) AS (
   SELECT id, parent_wave_id, 0 FROM waves WHERE id = ?1
   UNION ALL
@@ -40,19 +42,19 @@ WITH RECURSIVE up(id, parent_wave_id, depth) AS (
     FROM waves w JOIN up ON w.id = up.parent_wave_id
    WHERE up.depth <= ?2
 )
-SELECT id AS root_id, depth AS parent_depth FROM up WHERE parent_wave_id IS NULL
-"#;
+"#
+    };
+}
 
-const WAVE_BOUNDED_PATH_SQL: &str = r#"
-WITH RECURSIVE up(id, parent_wave_id, depth) AS (
-  SELECT id, parent_wave_id, 0 FROM waves WHERE id = ?1
-  UNION ALL
-  SELECT w.id, w.parent_wave_id, up.depth + 1
-    FROM waves w JOIN up ON w.id = up.parent_wave_id
-   WHERE up.depth <= ?2
-)
-SELECT id, depth FROM up ORDER BY depth
-"#;
+pub const WAVE_ROOT_DEPTH_SQL: &str = concat!(
+    bounded_wave_ancestor_cte!(),
+    "SELECT id AS root_id, depth AS parent_depth FROM up WHERE parent_wave_id IS NULL"
+);
+
+const WAVE_BOUNDED_PATH_SQL: &str = concat!(
+    bounded_wave_ancestor_cte!(),
+    "SELECT id, depth FROM up ORDER BY depth"
+);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ChildWaveOperationPayload {
@@ -352,7 +354,7 @@ impl ProviderAdapter for ChildWaveAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::sqlite::{SqlxRepo, cove_create_tx};
+    use crate::db::sqlite::{SqlxRepo, cove_create_tx, cove_delete_tx};
     use crate::model::{NewCove, Task, TaskKind, TaskStatus};
     use crate::operation::Phase;
 
@@ -407,6 +409,17 @@ mod tests {
             },
             repo.wave_cove_cache(),
         )
+        .await
+        .unwrap();
+        // The inheritance matrix is intentionally negative for lifecycle
+        // metadata. Give the parent non-default values so a child-side copy
+        // cannot hide behind fresh-wave defaults.
+        sqlx::query(
+            "UPDATE waves SET archived_at=101,pinned_at=102,lifecycle='done',terminal_at=103 \
+             WHERE id=?1",
+        )
+        .bind(wave.id.as_str())
+        .execute(&mut *tx)
         .await
         .unwrap();
         tx.commit().await.unwrap();
@@ -473,8 +486,10 @@ mod tests {
 
     #[test]
     fn upward_cte_keeps_its_only_cycle_termination_guard() {
-        assert!(WAVE_ROOT_DEPTH_SQL.contains("WHERE up.depth <= ?2"));
-        assert!(WAVE_ROOT_DEPTH_SQL.contains("UNION ALL"));
+        for sql in [WAVE_ROOT_DEPTH_SQL, WAVE_BOUNDED_PATH_SQL] {
+            assert!(sql.contains("WHERE up.depth <= ?2"));
+            assert!(sql.contains("UNION ALL"));
+        }
     }
 
     #[tokio::test]
@@ -550,13 +565,35 @@ mod tests {
         }
         assert_eq!(output.data["cwd"], "/parent-cwd");
         let child_id = output.data["child_wave_id"].as_str().unwrap();
-        let inherited: (String, Option<String>, Option<String>, Option<String>) =
-            sqlx::query_as("SELECT cwd,workflow_id,workflow_input,purpose FROM waves WHERE id=?1")
-                .bind(child_id)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
-        assert_eq!(inherited, ("/parent-cwd".into(), None, None, None));
+        type InheritedChildFields = (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let inherited: InheritedChildFields = sqlx::query_as(
+            "SELECT cwd,workflow_id,workflow_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
+             FROM waves WHERE id=?1",
+        )
+        .bind(child_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(inherited.0, "/parent-cwd");
+        assert_eq!(inherited.1, None, "workflow_id must not inherit");
+        assert_eq!(inherited.2, None, "workflow_input must not inherit");
+        assert_eq!(inherited.3, None, "purpose must not inherit");
+        assert_eq!(
+            inherited.4, "draft",
+            "child must stay Draft before bootstrap"
+        );
+        assert_eq!(inherited.5, None, "archived_at must not inherit");
+        assert_eq!(inherited.6, None, "pinned_at must not inherit");
+        assert_eq!(inherited.7, None, "terminal_at must not inherit");
     }
 
     #[tokio::test]
@@ -613,6 +650,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn acceptance_21c_real_adapter_never_writes_a_cross_cove_edge() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let parent = seed_parent(&repo).await;
+        let second_cove = {
+            let mut tx = repo.pool().begin().await.unwrap();
+            let cove = cove_create_tx(
+                &mut tx,
+                NewCove {
+                    name: "unrelated-cove".into(),
+                    color: "#111".into(),
+                    sort: None,
+                },
+            )
+            .await
+            .unwrap();
+            tx.commit().await.unwrap();
+            cove.id.to_string()
+        };
+        let task = seed_task(&repo, &parent, false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let cross_cove_edges: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM waves child JOIN waves parent \
+             ON parent.id=child.parent_wave_id WHERE child.cove_id<>parent.cove_id",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(cross_cove_edges, 0);
+
+        // The unrelated cove is independently deletable: the adapter did not
+        // accidentally route its child there and create a NO ACTION tripwire.
+        let mut tx = repo.pool().begin().await.unwrap();
+        cove_delete_tx(&mut tx, &second_cove).await.unwrap();
+        tx.commit().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn acceptance_7_two_cycle_fails_fast_with_cycle_reason() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let a = seed_parent(&repo).await;
@@ -637,10 +722,14 @@ mod tests {
             .execute(repo.pool())
             .await
             .unwrap();
-        let start = std::time::Instant::now();
         let mut tx = repo.pool().begin().await.unwrap();
-        let error = root_and_depth(&mut tx, &a).await.unwrap_err();
-        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        let error = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            root_and_depth(&mut tx, &a),
+        )
+        .await
+        .expect("bounded ancestor query must return before 500ms")
+        .unwrap_err();
         assert!(error.to_string().contains("sub-wave-tree-cycle"));
     }
 

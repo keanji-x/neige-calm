@@ -887,7 +887,7 @@ r3 两通道各自坐实、可不再复议的：
 2. 跨 cove 父子边今天只有 `child-wave` adapter 一条写路径；
 3. 第二层 sub-wave 不与第一层 idem 碰撞（task id 是 `wave_id:key`，唯一键还带 kind）。
 
-**§7 现有 30 个编号行**（含 3a/3b/3c、5b、13b–13e、14b、21b、21c）。
+**§7 现有 33 个编号行**（含 3a/3b/3c、5b、13b–13e、14b、21b、21c）。
 
 **未在本片解决、已登记的**：一个活着但永不终态的 child spec 可让无 deadline 的父任务长期 `running`。
 这是本设计选择的**人工 cancel / delete 恢复语义**（§5.4 给出了完整恢复路径），

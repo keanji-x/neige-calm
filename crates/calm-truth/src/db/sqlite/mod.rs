@@ -112,7 +112,7 @@ pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
     evaluate_schedulability, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
 };
-pub use wave::{wave_create_tx, wave_delete_tx, wave_update_tx};
+pub use wave::{wave_create_tx, wave_delete_tx, wave_require_leaf_tx, wave_update_tx};
 
 use infra::check_no_unknown_future_migrations;
 

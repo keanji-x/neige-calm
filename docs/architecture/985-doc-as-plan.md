@@ -1866,8 +1866,10 @@ backfill**」四格。这四个问题只要有一个空着，就是下一轮的 
 | `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；收养路径初始化为 1 | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′-ii |
 | `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；存量 legacy 收养不初始化 | 同上 | 同上 | **保持 `0`，显式例外；升级时已在飞 legacy 行永久缺少该位的撤回前值，新 claim 不受影响** | 3b′-ii |
 | `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′-ii |
+| `spawn` | `TEXT NOT NULL DEFAULT 'in-wave'` | 投影规范化并冻结；claim 后沿任务行驱动 | scheduler / child-wave adapter；进入公共 `Task` / `TASK_COLUMNS` | 从文档重建 | 存量全标 `in-wave` | 6 PR-A |
+| `child_wave_id` | `TEXT NULL` + 非 NULL partial unique index | `child-wave` 的 `prepare_tx` guarded stamp | 父任务闭合与 DTO 定向 reader；**不进 `TASK_COLUMNS` / 公共 `Task`** | 运行期状态，不从文档重放 | `NULL` | 6 PR-A |
 
-**三列（`decl_*` / `context_verify_failures`）刻意不进 `TASK_COLUMNS` / 公共 `Task`**
+**三列（`decl_*` / `context_verify_failures`）与 `child_wave_id` 刻意不进 `TASK_COLUMNS` / 公共 `Task`**
 ——`TASK_COLUMNS` 服务通用 `Task` 查询，塞进去会扩大 model / 序列化 / OpenAPI /
 TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻意的。**
 
@@ -1980,7 +1982,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 再扩成 `{Fork, Materialize}` 两处）；
 `calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。
 
-**切片 6 PR-A**：§7 的 30 个编号验收行：`spawn` 规范化/投影/冻结路由、真实
+**切片 6 PR-A**：§7 的 33 个编号验收行：`spawn` 规范化/投影/冻结路由、真实
 child-wave 创建与深度/环 fail-closed、五个 task-bound adapter stale 拒绝、
 bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB 生命周期与删除
 守卫、NO ACTION/cove 同域绊线。**PR-B** 另验树预算的两个强制点、投影幂等与 rebuild 顺序。

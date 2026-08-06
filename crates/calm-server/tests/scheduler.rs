@@ -56,8 +56,8 @@ use calm_server::operation::terminal_adapter::TerminalWorkerAdapter;
 use calm_server::operation::{
     AppServerInteractOutcome, CompensationStateVersioned, NON_TASK_BOUND_ADAPTER_KINDS, Operation,
     OperationCompletionBus, OperationKey, OperationOutcome, OperationRepo, OperationRuntime,
-    PhaseTag, ProviderAdapter, SpawnCtx, SpawnHandle, SpawnOutcome, SqlxOperationRepo,
-    TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput,
+    ParkedOutcome, PhaseTag, ProviderAdapter, SpawnArtifacts, SpawnCtx, SpawnHandle, SpawnOutcome,
+    SqlxOperationRepo, TASK_BOUND_ADAPTER_KINDS, Tx, TxOutput, complete_parked_for_test,
 };
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -744,6 +744,13 @@ async fn operation_count(boot: &Boot, kind: &str) -> i64 {
 // ---------------------------------------------------------------------------
 
 const STUB_PHASES: &[PhaseTag] = &[];
+const BLOCKING_BOOTSTRAP_PHASES: &[PhaseTag] = &[
+    PhaseTag::Pending,
+    PhaseTag::TxCommitted,
+    PhaseTag::SpawnStarted,
+    PhaseTag::Parked,
+    PhaseTag::Succeeded,
+];
 
 fn unexpected(name: &str) -> calm_server::error::CalmError {
     calm_server::error::CalmError::Internal(format!("scheduler test stub unexpected call: {name}"))
@@ -866,6 +873,29 @@ impl ProviderAdapter for CardSpawnAdapter {
 
 struct BootstrapAdapter {
     minted: Arc<AtomicUsize>,
+    block: Option<BootstrapBlockHook>,
+}
+
+#[derive(Clone)]
+struct BootstrapBlockHook {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+impl BootstrapAdapter {
+    fn new(minted: Arc<AtomicUsize>) -> Self {
+        Self {
+            minted,
+            block: None,
+        }
+    }
+
+    fn new_blocking(minted: Arc<AtomicUsize>, block: BootstrapBlockHook) -> Self {
+        Self {
+            minted,
+            block: Some(block),
+        }
+    }
 }
 
 #[async_trait]
@@ -874,7 +904,11 @@ impl ProviderAdapter for BootstrapAdapter {
         "spec-harness-start"
     }
     fn phases(&self) -> &'static [PhaseTag] {
-        STUB_PHASES
+        if self.block.is_some() {
+            BLOCKING_BOOTSTRAP_PHASES
+        } else {
+            STUB_PHASES
+        }
     }
     async fn validate(&self, _input: &Value) -> CalmResult<()> {
         Ok(())
@@ -907,10 +941,43 @@ impl ProviderAdapter for BootstrapAdapter {
     }
     async fn spawn_side_effect(
         &self,
-        _output: &TxOutput,
-        _op: &Operation,
-        _ctx: &SpawnCtx,
+        output: &TxOutput,
+        op: &Operation,
+        ctx: &SpawnCtx,
     ) -> CalmResult<SpawnOutcome> {
+        if let Some(block) = &self.block {
+            ctx.record_spawn_artifacts(
+                op,
+                &SpawnArtifacts {
+                    pid: i32::MAX,
+                    pgid: i32::MAX,
+                    start_time: 1,
+                    boot_id: "bootstrap-block-test".into(),
+                    log_path: None,
+                    extra: Value::Null,
+                },
+            )
+            .await?;
+            let entered = block.entered.clone();
+            let release = block.release.clone();
+            let pool = ctx.operation_repo.sqlite_pool();
+            let op_id = op.id.clone();
+            let result = output.data.clone();
+            return Ok(SpawnOutcome::Parked {
+                deadline_ms: now_ms() + 10_000,
+                observer: Box::pin(async move {
+                    // Notify only after the driver has returned the observer,
+                    // persisted Parked, and spawned this future. At this point
+                    // submit() has returned and scheduler is blocked in wait().
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    entered.notify_one();
+                    release.notified().await;
+                    complete_parked_for_test(&pool, &op_id, &ParkedOutcome::Succeeded { result })
+                        .await
+                        .expect("complete blocked bootstrap operation");
+                }),
+            });
+        }
         Ok(SpawnOutcome::Ready(SpawnHandle::NoOp))
     }
     async fn plan_compensation(
@@ -5784,6 +5851,59 @@ async fn acceptance_12_sub_wave_running_stamp_has_no_worker_or_deadline() {
     assert_eq!(row.status, TaskStatus::Running);
     assert_eq!(row.worker_card_id, None);
     assert_eq!(row.running_deadline_ms, None);
+
+    for (key, status, spawn, child_wave_id, guard) in [
+        (
+            "stamp-failed",
+            TaskStatus::Failed,
+            "sub-wave",
+            Some("child-failed"),
+            "status='dispatched'",
+        ),
+        (
+            "stamp-in-wave",
+            TaskStatus::Dispatched,
+            "in-wave",
+            Some("child-in-wave"),
+            "spawn='sub-wave'",
+        ),
+        (
+            "stamp-no-child",
+            TaskStatus::Dispatched,
+            "sub-wave",
+            None,
+            "child_wave_id IS NOT NULL",
+        ),
+    ] {
+        let mut task = plan_task(&boot.wave_id, key, TaskKind::Codex, &[]);
+        task.status = status;
+        task.spawn = spawn.into();
+        let id = task.id.clone();
+        seed_task(&boot, task).await;
+        if let Some(child_wave_id) = child_wave_id {
+            sqlx::query("UPDATE tasks SET child_wave_id=?1 WHERE id=?2")
+                .bind(child_wave_id)
+                .bind(&id)
+                .execute(&boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        }
+        let pool = boot.repo.sqlite_pool().unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        let changed =
+            calm_server::db::sqlite::task_mark_sub_wave_running_tx(&mut tx, &id, now_ms())
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(changed, 0, "guard {guard} must reject the stamp");
+        assert_eq!(
+            boot.repo.task_get(&id).await.unwrap().unwrap().status,
+            status,
+            "guard {guard} must preserve the existing status"
+        );
+    }
 }
 
 #[tokio::test]
@@ -5991,22 +6111,45 @@ async fn acceptance_16_live_and_sweep_use_the_same_guarded_conclusion() {
 }
 
 #[tokio::test]
-async fn acceptance_18_deleted_child_cannot_pass_the_done_sql_guard() {
-    let boot = boot().await;
-    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-    let (task_id, child) = seed_child_parent(&boot, "guard", WaveLifecycle::Done, None).await;
-    sqlx::query("DELETE FROM waves WHERE id=?1")
-        .bind(&child)
-        .execute(&boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-    scheduler
-        .reconcile_child_wave_for_test(&child)
-        .await
-        .unwrap();
-    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
-    assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("child-wave-deleted"));
+async fn acceptance_18_success_flip_rechecks_done_after_its_snapshot() {
+    for mutation in ["delete", "reopen"] {
+        let boot = boot().await;
+        let (task_id, child) = seed_child_parent(&boot, mutation, WaveLifecycle::Done, None).await;
+        let pool = boot.repo.sqlite_pool().unwrap();
+        let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+            .await
+            .unwrap();
+        let observed: String = sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+            .bind(&child)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(observed, "done", "fixture must first observe Done");
+        if mutation == "delete" {
+            sqlx::query("DELETE FROM waves WHERE id=?1")
+                .bind(&child)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query("UPDATE waves SET lifecycle='planning' WHERE id=?1")
+                .bind(&child)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        let changed =
+            calm_server::scheduler::guarded_child_success_flip_for_test(&mut tx, &task_id, &child)
+                .await
+                .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(changed, 0, "{mutation} must lose the guarded flip");
+        assert_eq!(
+            boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+            TaskStatus::Running
+        );
+        assert_eq!(event_rows(&boot, "task.completed").await.len(), 0);
+    }
 }
 
 #[tokio::test]
@@ -6024,9 +6167,14 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
     )) as Arc<dyn ProviderAdapter>;
-    let bootstrap_adapter = Arc::new(BootstrapAdapter {
-        minted: minted.clone(),
-    }) as Arc<dyn ProviderAdapter>;
+    let block = BootstrapBlockHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let bootstrap_adapter = Arc::new(BootstrapAdapter::new_blocking(
+        minted.clone(),
+        block.clone(),
+    )) as Arc<dyn ProviderAdapter>;
     let (runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
 
     // Crash point 1: child-wave committed, before bootstrap submit and the
@@ -6053,7 +6201,20 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
         TaskStatus::Dispatched
     );
-    scheduler.sweep_all().await;
+    let sweep = {
+        let scheduler = scheduler.clone();
+        tokio::spawn(async move { scheduler.sweep_all().await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), block.entered.notified())
+        .await
+        .expect("bootstrap adapter must reach its blocking hook");
+    assert_eq!(
+        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+        TaskStatus::Dispatched,
+        "bootstrap has not completed, so running must not be visible"
+    );
+    block.release.notify_one();
+    sweep.await.unwrap();
     let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
     assert_eq!(row.status, TaskStatus::Running);
     assert_eq!(row.running_deadline_ms, None);
@@ -6089,6 +6250,99 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     .await
     .unwrap();
     assert_eq!(idem, format!("child-wave:{child_id}:bootstrap"));
+
+    // Crash while bootstrap is blocked after its prepare transaction. Drop
+    // the first runtime, recover the durable operation with a new runtime,
+    // and prove both operation rows and the harness mint remain exactly once.
+    let crash_boot = self::boot().await;
+    set_lifecycle(&crash_boot, WaveLifecycle::Working).await;
+    let mut crash_task = plan_task(&crash_boot.wave_id, "bootstrap-crash", TaskKind::Codex, &[]);
+    crash_task.spawn = "sub-wave".into();
+    crash_task.status = TaskStatus::Dispatched;
+    let crash_task_id = crash_task.id.clone();
+    seed_task(&crash_boot, crash_task).await;
+    let crash_minted = Arc::new(AtomicUsize::new(0));
+    let crash_block = BootstrapBlockHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let (crash_runtime, crash_scheduler) = build_scheduler(
+        &crash_boot,
+        vec![
+            Arc::new(ChildWaveAdapter::new(
+                crash_boot.card_role_cache.clone(),
+                crash_boot.wave_cove_cache.clone(),
+            )),
+            Arc::new(BootstrapAdapter::new_blocking(
+                crash_minted.clone(),
+                crash_block.clone(),
+            )),
+        ],
+    );
+    let crashed_sweep = {
+        let scheduler = crash_scheduler.clone();
+        tokio::spawn(async move { scheduler.sweep_all().await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), crash_block.entered.notified())
+        .await
+        .expect("crash fixture must block during bootstrap");
+    assert_eq!(
+        crash_boot
+            .repo
+            .task_get(&crash_task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Dispatched
+    );
+    assert_eq!(operation_count(&crash_boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&crash_boot, "spec-harness-start").await, 1);
+    assert_eq!(crash_minted.load(Ordering::SeqCst), 1);
+    crashed_sweep.abort();
+    assert!(crashed_sweep.await.unwrap_err().is_cancelled());
+    drop(crash_scheduler);
+    drop(crash_runtime);
+
+    let (_recovered_runtime, recovered_scheduler) = build_scheduler(
+        &crash_boot,
+        vec![
+            Arc::new(ChildWaveAdapter::new(
+                crash_boot.card_role_cache.clone(),
+                crash_boot.wave_cove_cache.clone(),
+            )),
+            Arc::new(BootstrapAdapter::new(crash_minted.clone())),
+        ],
+    );
+    let recovered_sweep = {
+        let scheduler = recovered_scheduler.clone();
+        tokio::spawn(async move { scheduler.sweep_all().await })
+    };
+    assert_eq!(
+        crash_boot
+            .repo
+            .task_get(&crash_task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Dispatched
+    );
+    crash_block.release.notify_one();
+    recovered_sweep.await.unwrap();
+    assert_eq!(
+        crash_boot
+            .repo
+            .task_get(&crash_task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        TaskStatus::Running
+    );
+    assert_eq!(operation_count(&crash_boot, "child-wave").await, 1);
+    assert_eq!(operation_count(&crash_boot, "spec-harness-start").await, 1);
+    assert_eq!(crash_minted.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -6112,44 +6366,44 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             task.status = TaskStatus::Dispatched;
         }
         let task_id = task.id.clone();
-        let child_payload = build_child_wave_payload(&task).unwrap();
         seed_task(&boot, task).await;
         let minted = Arc::new(AtomicUsize::new(0));
         let child_adapter = Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
         )) as Arc<dyn ProviderAdapter>;
-        let bootstrap_adapter = Arc::new(BootstrapAdapter { minted }) as Arc<dyn ProviderAdapter>;
+        let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
         let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
-        let op_repo = SqlxOperationRepo::new(boot.repo.sqlite_pool().unwrap());
         if stage == "create" {
-            let op_id = op_repo
-                .insert_operation(
-                    "child-wave",
-                    OperationKey {
-                        operation_key: new_id(),
-                        idempotency_key: Some(task_id.clone()),
-                        payload_hash: stable_payload_hash(&child_payload).unwrap(),
-                    },
-                    child_payload,
-                )
+            // Drive the real child adapter first. This preserves the
+            // production post-commit tx_output and child_wave_id that the
+            // failure cleanup must discover from durable task state.
+            scheduler.sweep_all().await;
+            assert_eq!(
+                boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+                TaskStatus::Running
+            );
+            sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
+                .bind(&task_id)
+                .execute(&boot.repo.sqlite_pool().unwrap())
                 .await
                 .unwrap();
             let (detail, last_error) = if phase == "stuck" {
                 (json!({"reason":"injected","since":1}).to_string(), None)
             } else {
                 (
-                    json!({"from_phase":"pending"}).to_string(),
+                    json!({"from_phase":"tx_committed"}).to_string(),
                     Some("injected"),
                 )
             };
             sqlx::query(
-                "UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 WHERE id=?4",
+                "UPDATE operations SET phase=?1,phase_detail_json=?2,last_error=?3 \
+                 WHERE kind='child-wave' AND idempotency_key=?4",
             )
             .bind(phase)
             .bind(detail)
             .bind(last_error)
-            .bind(op_id)
+            .bind(&task_id)
             .execute(&boot.repo.sqlite_pool().unwrap())
             .await
             .unwrap();
@@ -6180,6 +6434,34 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             Some(expected),
             "{stage}/{phase}"
         );
+        if stage == "create" {
+            let child_id: String =
+                sqlx::query_scalar("SELECT child_wave_id FROM tasks WHERE id=?1")
+                    .bind(&task_id)
+                    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                    .await
+                    .unwrap();
+            let child_lifecycle: String =
+                sqlx::query_scalar("SELECT lifecycle FROM waves WHERE id=?1")
+                    .bind(&child_id)
+                    .fetch_one(&boot.repo.sqlite_pool().unwrap())
+                    .await
+                    .unwrap();
+            assert_eq!(
+                child_lifecycle, "failed",
+                "post-commit {phase} must close the durable child"
+            );
+            boot.repo.wave_delete(&child_id).await.unwrap();
+            boot.repo.wave_delete(boot.wave_id.as_str()).await.unwrap();
+            assert!(boot.repo.wave_get(&child_id).await.unwrap().is_none());
+            assert!(
+                boot.repo
+                    .wave_get(boot.wave_id.as_str())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
         scheduler.sweep_all().await;
         assert_eq!(
             event_rows(&boot, "task.failed").await.len(),
@@ -6203,7 +6485,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
         )) as Arc<dyn ProviderAdapter>,
-        Arc::new(BootstrapAdapter { minted }) as Arc<dyn ProviderAdapter>,
+        Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>,
         Arc::new(CardSpawnAdapter {
             kind: "codex-worker",
             card_id: boot.worker_card_id.to_string(),
@@ -6285,9 +6567,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
         )) as Arc<dyn ProviderAdapter>,
-        Arc::new(BootstrapAdapter {
-            minted: Arc::new(AtomicUsize::new(0)),
-        }) as Arc<dyn ProviderAdapter>,
+        Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
     let (_runtime, scheduler) = build_scheduler(&boot, adapters);
     let claimed = Arc::new(tokio::sync::Notify::new());
@@ -6329,9 +6609,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
         )) as Arc<dyn ProviderAdapter>,
-        Arc::new(BootstrapAdapter {
-            minted: Arc::new(AtomicUsize::new(0)),
-        }) as Arc<dyn ProviderAdapter>,
+        Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
     let (_runtime, scheduler) = build_scheduler_with_semaphore(&boot, adapters, semaphore);
     let handle = tokio::spawn({

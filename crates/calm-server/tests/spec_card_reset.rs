@@ -15,7 +15,9 @@ use calm_server::harness::{
     HarnessConfig, HarnessPhaseTag, HarnessSnapshot, Observation, SpecHarness, SpecHarnessParams,
 };
 use calm_server::ids::WaveId;
-use calm_server::model::{Card, CardRole, NewCard, NewCove, NewWave, new_id, now_ms};
+use calm_server::model::{
+    Card, CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, new_id, now_ms,
+};
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use calm_server::operation::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -1615,6 +1617,163 @@ async fn wave_delete_shuts_down_active_spec_harness() {
             .is_none(),
         "runtime row must cascade with the deleted spec card"
     );
+}
+
+#[tokio::test]
+async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_terminal() {
+    let boot = boot_shared().await;
+    let cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "descendant-refusal-runtime".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let (status, body) = post_json(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "title": "live parent",
+            "cwd": "/tmp/descendant-refusal-runtime",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let parent_id = body["id"].as_str().unwrap().to_string();
+    let cards = boot.repo.cards_by_wave(&parent_id).await.unwrap();
+    let spec_card = cards
+        .iter()
+        .find(|card| card.payload["spec_harness"] == json!(true))
+        .expect("live spec card");
+    let runtime = boot
+        .repo
+        .session_projection_active_for_card(&spec_card.id.to_string())
+        .await
+        .unwrap()
+        .expect("live spec runtime");
+    assert!(boot.state.harness.get(&runtime.id).is_some());
+
+    let terminal_card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: parent_id.clone().into(),
+            title: Some("live terminal".into()),
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+    let socket_path = boot._tmp.path().join(format!("terminal-{}.sock", new_id()));
+    let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+    drop(listener);
+    let mut process = tokio::process::Command::new("sh")
+        .arg("-c")
+        .arg("trap 'rm -f \"$1\"; exit 0' TERM; while :; do sleep 0.05; done")
+        .arg("terminal-fixture")
+        .arg(&socket_path)
+        .spawn()
+        .unwrap();
+    let pid = process.id().expect("terminal fixture pid");
+    let terminal = boot
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: terminal_card.id.clone(),
+            program: "terminal-fixture".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    boot.repo
+        .terminal_set_pid(&terminal.id, Some(pid))
+        .await
+        .unwrap();
+
+    let child = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: cove.id,
+            title: "child".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            workflow_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+        .bind(&parent_id)
+        .bind(child.id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+
+    let before_counts: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+                (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
+    )
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    let status = delete_empty(boot.app.clone(), &format!("/api/waves/{parent_id}")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    assert!(
+        process.try_wait().unwrap().is_none(),
+        "terminal process changed"
+    );
+    assert!(socket_path.exists(), "terminal socket changed");
+    assert!(
+        boot.state.harness.get(&runtime.id).is_some(),
+        "harness registry changed"
+    );
+    assert!(boot.repo.wave_get(&parent_id).await.unwrap().is_some());
+    assert!(
+        boot.repo
+            .wave_get(child.id.as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        boot.repo
+            .terminal_get_by_card(terminal_card.id.as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        boot.repo
+            .session_projection_by_id(&runtime.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let after_counts: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+                (SELECT count(*) FROM terminals), (SELECT count(*) FROM worker_sessions)",
+    )
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(after_counts, before_counts, "DB rows changed on refusal");
+
+    process.kill().await.ok();
+    process.wait().await.ok();
+    std::fs::remove_file(&socket_path).ok();
+    if let Some(harness) = boot.state.harness.remove(&runtime.id) {
+        harness.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]

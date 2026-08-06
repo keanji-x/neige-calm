@@ -70,7 +70,7 @@ use crate::operation::task_verify_adapter::{
 };
 use crate::operation::terminal_adapter::TerminalWorkerOperationPayload;
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
-use crate::operation::{OperationKey, OperationOutcome, OperationRuntime};
+use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, FrozenClosure, TaskContextMonitor, context_ref};
@@ -345,6 +345,48 @@ struct ChildTaskSnapshot {
     gate_json: Option<String>,
     inflight_count: i64,
     pending_count: i64,
+}
+
+/// Final child-success compare-and-set. The snapshot that selected the
+/// success arm is advisory; this statement is the authority and rechecks the
+/// child lifecycle plus quiescence in the writer transaction.
+async fn guarded_child_success_flip_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    child_wave_id: &str,
+    target_status: &str,
+    now: i64,
+    finished_at_ms: Option<i64>,
+) -> Result<u64> {
+    Ok(sqlx::query(
+        "UPDATE tasks SET status=?1,status_detail=NULL,worker_card_id=NULL,\
+                running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?3 \
+           WHERE id=?4 AND child_wave_id=?5 \
+             AND status IN ('dispatched','running') \
+             AND EXISTS(SELECT 1 FROM waves child \
+                WHERE child.id=?5 AND child.lifecycle='done') \
+             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5 \
+                AND ct.status IN ('pending','dispatched','running','verifying'))",
+    )
+    .bind(target_status)
+    .bind(now)
+    .bind(finished_at_ms)
+    .bind(task_id)
+    .bind(child_wave_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected())
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn guarded_child_success_flip_for_test(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    child_wave_id: &str,
+) -> Result<u64> {
+    let now = now_ms();
+    guarded_child_success_flip_tx(tx, task_id, child_wave_id, "done", now, Some(now)).await
 }
 
 pub struct Scheduler {
@@ -649,24 +691,16 @@ impl Scheduler {
                         } else {
                             ("done", Some(now))
                         };
-                        let changed = sqlx::query(
-                            "UPDATE tasks SET status=?1,status_detail=NULL,worker_card_id=NULL,\
-                                    running_deadline_ms=NULL,updated_at_ms=?2,finished_at_ms=?3 \
-                               WHERE id=?4 AND child_wave_id=?5 \
-                                 AND status IN ('dispatched','running') \
-                                 AND EXISTS(SELECT 1 FROM waves child \
-                                    WHERE child.id=?5 AND child.lifecycle='done') \
-                                 AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5 \
-                                    AND ct.status IN ('pending','dispatched','running','verifying'))",
+                        let changed = guarded_child_success_flip_tx(
+                            tx,
+                            &snapshot.task_id,
+                            &snapshot.child_wave_id,
+                            target_status,
+                            now,
+                            finished_at,
                         )
-                        .bind(target_status)
-                        .bind(now)
-                        .bind(finished_at)
-                        .bind(&snapshot.task_id)
-                        .bind(&snapshot.child_wave_id)
-                        .execute(&mut **tx)
                         .await?;
-                        if changed.rows_affected() == 0 {
+                        if changed == 0 {
                             return Err(race_lost_err());
                         }
                         let event = Event::TaskCompleted {
@@ -1265,12 +1299,12 @@ impl Scheduler {
                     "child-wave-create-failed"
                 };
                 return self
-                    .fail_child_wave_task(task, wave, code, &last_error, None)
+                    .fail_child_wave_task(task, wave, code, &last_error)
                     .await;
             }
             OperationOutcome::Stuck { reason, .. } => {
                 return self
-                    .fail_child_wave_task(task, wave, "child-wave-create-stuck", &reason, None)
+                    .fail_child_wave_task(task, wave, "child-wave-create-stuck", &reason)
                     .await;
             }
         };
@@ -1327,24 +1361,12 @@ impl Scheduler {
                 self.mark_sub_wave_running(&task.id).await
             }
             OperationOutcome::Failed { last_error, .. } => {
-                self.fail_child_wave_task(
-                    task,
-                    wave,
-                    "child-wave-bootstrap-failed",
-                    &last_error,
-                    Some(child_id),
-                )
-                .await
+                self.fail_child_wave_task(task, wave, "child-wave-bootstrap-failed", &last_error)
+                    .await
             }
             OperationOutcome::Stuck { reason, .. } => {
-                self.fail_child_wave_task(
-                    task,
-                    wave,
-                    "child-wave-bootstrap-stuck",
-                    &reason,
-                    Some(child_id),
-                )
-                .await
+                self.fail_child_wave_task(task, wave, "child-wave-bootstrap-stuck", &reason)
+                    .await
             }
         }
     }
@@ -1366,7 +1388,6 @@ impl Scheduler {
         wave: &Wave,
         code: &str,
         detail: &str,
-        failed_child_id: Option<&str>,
     ) -> Result<()> {
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
@@ -1376,7 +1397,6 @@ impl Scheduler {
         };
         let code = code.to_string();
         let reason = format!("{code}: {detail}");
-        let child_id = failed_child_id.map(str::to_string);
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
             None,
@@ -1384,6 +1404,19 @@ impl Scheduler {
             &self.write,
             move |tx| {
                 Box::pin(async move {
+                    // The child-wave operation may fail after prepare_tx has
+                    // committed the child and stamped this row. Always derive
+                    // cleanup ownership from durable task state in the same
+                    // transaction as the parent failure flip; callers cannot
+                    // reliably infer child existence from an operation phase.
+                    let child_id: Option<String> = sqlx::query_scalar(
+                        "SELECT child_wave_id FROM tasks WHERE id=?1 AND wave_id=?2",
+                    )
+                    .bind(&task_id)
+                    .bind(wave_id.as_str())
+                    .fetch_optional(&mut **tx)
+                    .await?
+                    .flatten();
                     let rows = task_fail_from_worker_tx(
                         tx,
                         &task_id,

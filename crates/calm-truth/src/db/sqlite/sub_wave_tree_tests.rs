@@ -105,31 +105,6 @@ async fn acceptance_21b_cove_delete_removes_a_same_cove_wave_tree() {
 }
 
 #[tokio::test]
-async fn acceptance_21c_cross_cove_edge_is_a_loud_delete_tripwire() {
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove_a = seed_cove(&repo, "a").await;
-    let cove_b = seed_cove(&repo, "b").await;
-    let parent = seed_wave(&repo, &cove_a, "p").await;
-    let child = seed_wave(&repo, &cove_b, "ch").await;
-    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
-        .bind(&parent)
-        .bind(&child)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    let mismatch: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM waves child JOIN waves parent ON parent.id=child.parent_wave_id \
-         WHERE child.cove_id<>parent.cove_id",
-    )
-    .fetch_one(repo.pool())
-    .await
-    .unwrap();
-    assert_eq!(mismatch, 1);
-    let mut tx = repo.pool().begin().await.unwrap();
-    assert!(cove_delete_tx(&mut tx, &cove_a).await.is_err());
-}
-
-#[tokio::test]
 async fn acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo, "c").await;

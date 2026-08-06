@@ -33,7 +33,8 @@ use crate::auth::Principal;
 use crate::db::sqlite::{
     TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx, cove_folder_create_tx,
     overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_require_leaf_tx,
+    wave_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -1370,11 +1371,10 @@ pub(crate) async fn delete_wave(
         )));
     }
 
-    let mut terminal_ids: Vec<String> = Vec::new();
+    let mut terminals = Vec::new();
     let mut active_runtime_ids: Vec<String> = Vec::new();
     let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
     for card in &cards {
-        interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, card).await;
         if let Some(runtime) = s
             .repo
             .session_projection_active_for_card(&card.id.to_string())
@@ -1383,13 +1383,7 @@ pub(crate) async fn delete_wave(
             active_runtime_ids.push(runtime.id);
         }
         if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
-            reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
-            terminal_ids.push(t.id);
-        }
-    }
-    for runtime_id in active_runtime_ids {
-        if let Some(harness) = w.harness.remove(&runtime_id) {
-            harness.shutdown().await?;
+            terminals.push(t);
         }
     }
 
@@ -1399,15 +1393,46 @@ pub(crate) async fn delete_wave(
     };
     let delete_actor = actor.to_actor_id();
     let write_for_tx = s.write.clone();
+    let route_for_teardown = s.clone();
+    let worker_for_teardown = w.clone();
+    let shell_for_teardown = cs.clone();
     let (sweeps, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             Box::pin(async move {
+                // The descendant decision and every teardown side effect share
+                // this BEGIN IMMEDIATE transaction. Once the leaf check passes,
+                // the writer lock prevents a child-wave prepare transaction
+                // from creating a new descendant before the final delete.
+                wave_require_leaf_tx(tx, wave_id.as_str()).await?;
+                for card in &cards {
+                    interrupt_shared_card_active_turn(
+                        route_for_teardown.repo.as_ref(),
+                        &shell_for_teardown,
+                        card,
+                    )
+                    .await;
+                }
+                for terminal in &terminals {
+                    reap_terminal_artifacts_with_renderer(
+                        Some(worker_for_teardown.terminal_renderer.as_ref()),
+                        terminal,
+                    )
+                    .await;
+                }
+                for runtime_id in active_runtime_ids {
+                    if let Some(harness) = worker_for_teardown.harness.remove(&runtime_id) {
+                        harness.shutdown().await?;
+                    }
+                }
                 // Drop terminal rows first so the RESTRICT FK lets the
                 // wave delete cascade through cards cleanly.
                 // Idempotent: tolerate NotFound on each row in case a
                 // racing sweeper tick beat us to it.
-                for tid in &terminal_ids {
-                    match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
+                for terminal in &terminals {
+                    match terminal_delete_tx(tx, &terminal.id)
+                        .await
+                        .map_err(CalmError::from)
+                    {
                         Ok(()) => {}
                         Err(CalmError::NotFound(_)) => {}
                         Err(e) => return Err(e),
