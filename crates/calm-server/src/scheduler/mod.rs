@@ -378,6 +378,35 @@ async fn guarded_child_success_flip_tx(
     .rows_affected())
 }
 
+/// Final pending-incomplete compare-and-set. Kept separate from the success
+/// flip so each Done recheck has its own behavior oracle and mutation target.
+async fn guarded_child_incomplete_flip_tx(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    parent_wave_id: &str,
+    child_wave_id: &str,
+    now: i64,
+) -> Result<u64> {
+    Ok(sqlx::query(
+        "UPDATE tasks SET status='failed',status_detail='child-wave-incomplete',\
+                worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1,finished_at_ms=?1 \
+           WHERE id=?2 AND wave_id=?3 AND child_wave_id=?4 \
+             AND status IN ('dispatched','running') \
+             AND EXISTS(SELECT 1 FROM waves child \
+                WHERE child.id=?4 AND child.lifecycle='done') \
+             AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?4 \
+                AND ct.status IN ('dispatched','running','verifying')) \
+             AND EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?4 AND ct.status='pending')",
+    )
+    .bind(now)
+    .bind(task_id)
+    .bind(parent_wave_id)
+    .bind(child_wave_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected())
+}
+
 #[cfg(feature = "fixtures")]
 #[doc(hidden)]
 pub async fn guarded_child_success_flip_for_test(
@@ -387,6 +416,17 @@ pub async fn guarded_child_success_flip_for_test(
 ) -> Result<u64> {
     let now = now_ms();
     guarded_child_success_flip_tx(tx, task_id, child_wave_id, "done", now, Some(now)).await
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn guarded_child_incomplete_flip_for_test(
+    tx: &mut Tx<'_>,
+    task_id: &str,
+    parent_wave_id: &str,
+    child_wave_id: &str,
+) -> Result<u64> {
+    guarded_child_incomplete_flip_tx(tx, task_id, parent_wave_id, child_wave_id, now_ms()).await
 }
 
 pub struct Scheduler {
@@ -715,6 +755,32 @@ impl Scheduler {
                         return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
                     }
 
+                    if lifecycle == Some(WaveLifecycle::Done)
+                        && snapshot.inflight_count == 0
+                        && snapshot.pending_count > 0
+                    {
+                        let changed = guarded_child_incomplete_flip_tx(
+                            tx,
+                            &snapshot.task_id,
+                            &snapshot.parent_wave_id,
+                            &snapshot.child_wave_id,
+                            now,
+                        )
+                        .await?;
+                        if changed == 0 {
+                            return Err(race_lost_err());
+                        }
+                        let event = Event::TaskFailed {
+                            idempotency_key: snapshot.task_id,
+                            reason: format!(
+                                "child-wave-incomplete: {} pending task(s) remain",
+                                snapshot.pending_count
+                            ),
+                            agent_message: None,
+                        };
+                        return Ok(((), vec![(ActorId::KernelDispatcher, scope, event)]));
+                    }
+
                     let (code, detail, child_guard): (&str, String, &str) = match lifecycle {
                         None => (
                             "child-wave-deleted",
@@ -731,14 +797,6 @@ impl Scheduler {
                             "child wave was canceled".into(),
                             "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='canceled')",
                         ),
-                        Some(WaveLifecycle::Done)
-                            if snapshot.inflight_count == 0 && snapshot.pending_count > 0 => (
-                                "child-wave-incomplete",
-                                format!("{} pending task(s) remain", snapshot.pending_count),
-                                "EXISTS(SELECT 1 FROM waves child WHERE child.id=?5 AND child.lifecycle='done') \
-                                 AND NOT EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5 AND ct.status IN ('dispatched','running','verifying')) \
-                                 AND EXISTS(SELECT 1 FROM tasks ct WHERE ct.wave_id=?5 AND ct.status='pending')",
-                            ),
                         _ => return Err(race_lost_err()),
                     };
                     let sql = format!(

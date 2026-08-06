@@ -66,3 +66,24 @@
 | #21c | 把 parent cove reader 改成选取表内另一个 cove，使真实 child adapter 写出跨-cove 边。 | `acceptance_21c_real_adapter_never_writes_a_cross_cove_edge` **红**（1 failed，跨-cove 全表计数为 1）；该测试不再 raw SQL 自造被测边。 |
 
 本节所有变异均已复原；恢复态由后续定向基线与 §9 全门再次验证。
+
+## 修复轮 2
+
+以下变异均在 `NEIGE_CODEX_BIN` 未设置、`CARGO_BUILD_JOBS=6`、PATH 含指定
+`.local-bin` 的目标分支 worktree 实际执行。每次只改一个承重点，取得红灯后立即用反向
+`apply_patch` 复原；`0071_sub_wave_tree.sql` 的 CASCADE 变异也已复原，未修改已发布迁移。
+
+| 修复项 | 我改坏了什么 | 对应测试与实际结果 |
+|---|---|---|
+| B1-a（writer 槽） | 在 phase-1 marker 写事务内、`wave_mark_deleting_tx` 后插入 6s sleep。 | `wave_delete_external_teardown_does_not_hold_the_sqlite_writer` **红**（1 failed，1.116s）：1s 硬 barrier 等不到 marker commit / 锁外 teardown 入口；不是 nextest slow-timeout。恢复实现还在锁外 barrier 期间用 250ms 硬 timeout 断言无关 `cove_create` 成功。 |
+| B1-b（拒删全不变） | 从 `wave_mark_deleting_tx` 删除 leaf fence。 | `acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_terminal` **红**（1 failed，0.398s）：terminal 进程已改变；同一 fixture 还守护 registry/socket/四张 DB 表。 |
+| B1-c（崩溃恢复） | 从既有 terminal sweep 删除 `resume_marked_wave_deletions`。 | `durable_wave_delete_marker_refuses_new_resources_and_restart_sweep_finishes` **红**（1 failed，2.175s）：仅提交 marker、丢弃 AppState 并重建后，terminal 进程仍存；fixture 在失败时强制回收测试进程，未留泄漏。 |
+| B1-d（快照后的 operation） | 令 operation driver 无条件跳过 `wave_deletions` 外部 IO fence。 | `deleting_wave_fails_queued_bootstrap_before_external_io` **红**（1 failed，0.132s）：queued bootstrap 从预期 `Failed('wave-deleting')` 变成 `Succeeded`。marker 提交与 operation external phase 还由同一个短暂 drive fence 串行，fence 在 process/socket teardown 前释放。 |
+| B2-success | 单独把 `guarded_child_success_flip_tx` 的 child-Done `EXISTS` 改成 `1=1`。 | `acceptance_18_success_flip_rechecks_done_after_its_snapshot` **红**（1 failed，0.121s）：delete 交错错误更新 1 行。 |
+| B2-incomplete | 单独把 `guarded_child_incomplete_flip_tx` 的 child-Done `EXISTS` 改成 `1=1`。 | `acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot` **红**（1 failed，0.110s）：delete 交错错误更新 1 行。两个原 oracle 站点至此各有独立行为断言。 |
+| M1（#21c loud） | 临时把 0071 self-FK 改成 `ON DELETE CASCADE`。 | `acceptance_21c_cross_cove_edge_is_a_loud_delete_tripwire` **红**（1 failed，0.113s）：raw SQL 毒边下 `cove_delete_tx` 错误成功；真实 adapter 的全表零错边测试同时保留。 |
+| M2（确定性 barrier） | 把 parent `mark_sub_wave_running` 提到 bootstrap `wait` 前，成功臂改成 `Ok(())`。 | `acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive` **红**（1 failed，0.168s）：`wait_entered` happens-before 后稳定观测到错误的 `Running`；无 25ms sleep。 |
+
+所有 mutant 均已复原。复原态扩大定向集合（wave-delete / durable recovery / #20 /
+#13d / 两处 #18 / #19 / queued-operation fence / 两条 #21c / child adapter #5/#6）为
+**32 passed / 0 failed / 3401 skipped，0.456s**。

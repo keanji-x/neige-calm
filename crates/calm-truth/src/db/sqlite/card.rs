@@ -8,6 +8,7 @@ use super::overlay_delete_by_entity_tx;
 use super::session_row::{
     WorkerSessionDeleteScope, clear_wave_root_session_refs_for_worker_session_delete_tx,
 };
+use super::wave_require_not_deleting_tx;
 use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::ids::CardId;
@@ -80,13 +81,7 @@ pub async fn card_create_with_id_tx(
             ));
         }
     }
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
-        .bind(p.wave_id.as_str())
-        .fetch_optional(&mut **tx)
-        .await?;
-    if exists.is_none() {
-        return Err(CalmError::NotFound(format!("wave {}", p.wave_id)));
-    }
+    wave_require_not_deleting_tx(tx, p.wave_id.as_str()).await?;
 
     let sort = match p.sort {
         Some(s) => s,
@@ -577,12 +572,22 @@ pub async fn terminal_create_tx(
     p: NewTerminal,
 ) -> Result<Terminal> {
     // Parent card must exist; surface as NotFound to mirror MockRepo.
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
-        .bind(p.card_id.as_str())
-        .fetch_optional(&mut **tx)
-        .await?;
-    if exists.is_none() {
-        return Err(CalmError::NotFound(format!("card {}", p.card_id)));
+    let owner: Option<(String, i64)> = sqlx::query_as(
+        "SELECT c.id, EXISTS(SELECT 1 FROM wave_deletions d WHERE d.wave_id=c.wave_id) \
+         FROM cards c WHERE c.id = ?1",
+    )
+    .bind(p.card_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await?;
+    match owner {
+        None => return Err(CalmError::NotFound(format!("card {}", p.card_id))),
+        Some((_, 1)) => {
+            return Err(CalmError::Conflict(format!(
+                "card {} belongs to a deleting wave",
+                p.card_id
+            )));
+        }
+        Some(_) => {}
     }
     // Per-card uniqueness — surface as Conflict to mirror MockRepo
     // (the schema also enforces this via UNIQUE on terminals.card_id).

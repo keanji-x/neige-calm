@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::db::sqlite::{
     append_decision_event_in_tx, card_create_with_id_tx, overlay_upsert_tx, wave_create_tx,
+    wave_require_not_deleting_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
@@ -154,6 +155,7 @@ impl ProviderAdapter for ChildWaveAdapter {
         // Fifth task-bound decision point. This is deliberately the first DB
         // action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
+        wave_require_not_deleting_tx(tx, &payload.parent_wave_id).await?;
 
         let (_root_id, parent_depth) = root_and_depth(tx, &payload.parent_wave_id).await?;
         if parent_depth >= MAX_WAVE_TREE_DEPTH {
@@ -383,7 +385,7 @@ mod tests {
         }
     }
 
-    async fn seed_parent(repo: &SqlxRepo) -> String {
+    async fn seed_parent(repo: &SqlxRepo, non_default_lifecycle_metadata: bool) -> String {
         let mut tx = repo.pool().begin().await.unwrap();
         let cove = cove_create_tx(
             &mut tx,
@@ -411,17 +413,19 @@ mod tests {
         )
         .await
         .unwrap();
-        // The inheritance matrix is intentionally negative for lifecycle
-        // metadata. Give the parent non-default values so a child-side copy
-        // cannot hide behind fresh-wave defaults.
-        sqlx::query(
-            "UPDATE waves SET archived_at=101,pinned_at=102,lifecycle='done',terminal_at=103 \
-             WHERE id=?1",
-        )
-        .bind(wave.id.as_str())
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+        if non_default_lifecycle_metadata {
+            // Acceptance #5 alone needs negative inheritance sentinels. Other
+            // adapter tests keep a live Draft parent so their fixtures do not
+            // normalize "terminal parents may spawn children" as valid.
+            sqlx::query(
+                "UPDATE waves SET archived_at=101,pinned_at=102,lifecycle='done',terminal_at=103 \
+                 WHERE id=?1",
+            )
+            .bind(wave.id.as_str())
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
         tx.commit().await.unwrap();
         wave.id.to_string()
     }
@@ -495,7 +499,7 @@ mod tests {
     #[tokio::test]
     async fn acceptance_5_child_seed_uses_all_four_frozen_fields_and_parent_cwd() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let parent = seed_parent(&repo).await;
+        let parent = seed_parent(&repo, true).await;
         let task = seed_task(&repo, &parent, false).await;
         // The live report deliberately disagrees with every frozen field,
         // without marking the task stale. This DB seam proves that the real
@@ -599,7 +603,7 @@ mod tests {
     #[tokio::test]
     async fn acceptance_6_real_adapter_writes_direct_parent_and_enforces_depth_three() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let root = seed_parent(&repo).await;
+        let root = seed_parent(&repo, false).await;
         let mut direct_parent = root.clone();
         for level in 1..=3 {
             let task = seed_task(&repo, &direct_parent, false).await;
@@ -652,7 +656,7 @@ mod tests {
     #[tokio::test]
     async fn acceptance_21c_real_adapter_never_writes_a_cross_cove_edge() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let parent = seed_parent(&repo).await;
+        let parent = seed_parent(&repo, false).await;
         let second_cove = {
             let mut tx = repo.pool().begin().await.unwrap();
             let cove = cove_create_tx(
@@ -700,7 +704,7 @@ mod tests {
     #[tokio::test]
     async fn acceptance_7_two_cycle_fails_fast_with_cycle_reason() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let a = seed_parent(&repo).await;
+        let a = seed_parent(&repo, false).await;
         let b = {
             let task = seed_task(&repo, &a, false).await;
             let input = serde_json::to_value(payload(&task)).unwrap();
@@ -744,7 +748,7 @@ mod tests {
     #[tokio::test]
     async fn acceptance_10_child_adapter_stale_fence_precedes_every_side_effect() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let parent = seed_parent(&repo).await;
+        let parent = seed_parent(&repo, false).await;
         let task = seed_task(&repo, &parent, true).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(

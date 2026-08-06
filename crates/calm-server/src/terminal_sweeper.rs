@@ -16,7 +16,8 @@
 //!      card / wave / cove row. The `terminals.card_id` FK is
 //!      `ON DELETE RESTRICT` (migration 0011), so a missed cleanup
 //!      surfaces as a transaction-level FK error rather than a silent
-//!      renderer-process leak.
+//!      renderer-process leak. Wave deletion is a durable two-phase variant:
+//!      its short marker transaction commits before this external work.
 //!   2. **This sweeper.** Catches the residual shape: a crashed server,
 //!      a SIGKILL'd writer, or a partial-success transaction that left
 //!      a terminal row whose card has no active worker session. The orphan SQL
@@ -116,6 +117,10 @@ pub fn spawn(state: AppState) {
 /// One sweep pass. Public-in-crate so integration tests can drive it
 /// without standing up the interval task.
 pub async fn sweep(state: &AppState) -> Result<()> {
+    // A wave marked by phase one of DELETE must converge before the generic
+    // orphan scan. This path has no grace period: the durable marker proves
+    // that user-visible deletion already began, including after a crash.
+    crate::routes::waves::resume_marked_wave_deletions(state).await?;
     let orphans = state.repo.terminals_orphaned(ORPHAN_GRACE_SECONDS).await?;
     if orphans.is_empty() {
         return Ok(());
@@ -213,9 +218,9 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 ///
 /// Idempotent: missing socket, dead pid, and absent `renderer entry` /
 /// `pid` all collapse to a clean return. The caller is responsible for
-/// the *row delete* step (eager teardown: inside the surrounding
-/// `card_delete_tx` / `wave_delete_tx` transaction; sweeper: inside its
-/// own `write_with_event` audit transaction).
+/// the *row delete* step (card/cove eager teardown and wave-delete phase two:
+/// inside their short delete transaction; sweeper: inside its own
+/// `write_with_event` audit transaction).
 ///
 /// This is the synchronous bottom-half of the cleanup contract: steps
 /// 1-3 in the module doc above. Bounded by `GRACEFUL_KILL_TIMEOUT` for

@@ -49,12 +49,7 @@ use tower::ServiceExt;
 /// the existing test fixtures (`payload_validation.rs`,
 /// `terminal_sweeper.rs`). No real codex binaries — we never
 /// invoke them in this file.
-async fn fresh_state() -> AppState {
-    let repo: Arc<dyn Repo> = Arc::new(
-        SqlxRepo::open("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite repo"),
-    );
+fn state_from_repo(repo: Arc<dyn Repo>) -> AppState {
     AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -75,6 +70,19 @@ async fn fresh_state() -> AppState {
         None,
         None,
     )
+}
+
+async fn fresh_state_with_repo() -> (AppState, Arc<dyn Repo>) {
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
+    (state_from_repo(repo.clone()), repo)
+}
+
+async fn fresh_state() -> AppState {
+    fresh_state_with_repo().await.0
 }
 
 /// Compose a minimal Axum app with the cards + waves + coves routers
@@ -131,7 +139,9 @@ async fn await_child_killed(child: &mut std::process::Child) {
             Err(e) => panic!("try_wait(pid={pid}) failed: {e}"),
         }
     }
-    panic!("pid {pid} was still alive after 2s");
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("pid {pid} was still alive after 2s (force-killed by fixture cleanup)");
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +383,223 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
+    let (state, repo) = fresh_state_with_repo().await;
+    let cove = repo
+        .cove_create(NewCove {
+            name: "writer-probe-owner".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id,
+            title: "writer-probe-wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let hook = calm_server::routes::waves::WaveDeleteTeardownHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    calm_server::routes::waves::install_wave_delete_teardown_hook_for_test(
+        wave.id.as_str(),
+        hook.clone(),
+    );
+    let app = build_app(state);
+    let wave_id = wave.id.to_string();
+    let deleting = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/waves/{wave_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), hook.entered.notified())
+        .await
+        .expect("delete must commit its marker before entering external teardown");
+    let pool = repo.sqlite_pool().unwrap();
+    let marked: i64 = sqlx::query_scalar("SELECT count(*) FROM wave_deletions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marked, 1, "external teardown requires a durable marker");
+
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        repo.cove_create(NewCove {
+            name: "writer-probe-unrelated".into(),
+            color: "#111".into(),
+            sort: None,
+        }),
+    )
+    .await
+    .expect("unrelated writer was blocked by external wave teardown")
+    .expect("unrelated writer must succeed");
+
+    hook.release.notify_one();
+    let response = tokio::time::timeout(Duration::from_secs(5), deleting)
+        .await
+        .expect("wave delete must finish after teardown release")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn durable_wave_delete_marker_refuses_new_resources_and_restart_sweep_finishes() {
+    let (state, repo) = fresh_state_with_repo().await;
+    let cove = repo
+        .cove_create(NewCove {
+            name: "delete-recovery".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id.clone(),
+            title: "delete-recovery-wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let terminal_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "terminal".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let spare_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "note".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap();
+    let terminal = state
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: terminal_card.id.clone(),
+            program: "/bin/true".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let mut child_process = spawn_long_running_child();
+    state
+        .repo
+        .terminal_set_pid(&terminal.id, Some(child_process.id()))
+        .await
+        .unwrap();
+
+    let pool = repo.sqlite_pool().unwrap();
+    let wave_id = wave.id.to_string();
+    calm_server::db::write_in_tx_typed(repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            calm_server::db::sqlite::wave_mark_deleting_tx(tx, &wave_id)
+                .await
+                .map_err(Into::into)
+        })
+    })
+    .await
+    .unwrap();
+
+    let card_error = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "note".into(),
+            sort: None,
+            payload: json!({}),
+        })
+        .await
+        .unwrap_err();
+    assert!(card_error.to_string().contains("deleting"), "{card_error}");
+    let terminal_error = state
+        .repo
+        .terminal_create(NewTerminal {
+            card_id: spare_card.id,
+            program: "/bin/true".into(),
+            cwd: "/tmp".into(),
+            env: json!({}),
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap_err();
+    assert!(
+        terminal_error.to_string().contains("deleting"),
+        "{terminal_error}"
+    );
+    let unattached = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id,
+            title: "late-child".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let child_error = sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+        .bind(wave.id.as_str())
+        .bind(unattached.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap_err();
+    assert!(
+        child_error.to_string().contains("deleting"),
+        "{child_error}"
+    );
+
+    // Simulate process loss after phase one: discard every ephemeral registry
+    // and build a fresh AppState over the same durable database.
+    drop(state);
+    let restarted = state_from_repo(repo.clone());
+    calm_server::terminal_sweeper::sweep(&restarted)
+        .await
+        .unwrap();
+    await_child_killed(&mut child_process).await;
+    assert!(repo.wave_get(wave.id.as_str()).await.unwrap().is_none());
+    assert!(repo.terminal_get(&terminal.id).await.unwrap().is_none());
+    let markers: i64 = sqlx::query_scalar("SELECT count(*) FROM wave_deletions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(markers, 0, "restart sweep must remove the durable marker");
 }
 
 // ---------------------------------------------------------------------------
