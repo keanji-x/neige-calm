@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "proc-supervisor-ready-sleeper"
 path = "tests/fixtures/ready-sleeper/main.rs"
 
+[[bin]]
+name = "proc-supervisor-foreground-job"
+path = "tests/fixtures/foreground-job/main.rs"
+
 [features]
 default = []
 test-support = []
