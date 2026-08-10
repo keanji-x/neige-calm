@@ -16,7 +16,8 @@
 //!      card / wave / cove row. The `terminals.card_id` FK is
 //!      `ON DELETE RESTRICT` (migration 0011), so a missed cleanup
 //!      surfaces as a transaction-level FK error rather than a silent
-//!      renderer-process leak.
+//!      renderer-process leak. Wave deletion performs this external work
+//!      before its short row-delete transaction.
 //!   2. **This sweeper.** Catches the residual shape: a crashed server,
 //!      a SIGKILL'd writer, or a partial-success transaction that left
 //!      a terminal row whose card has no active worker session. The orphan SQL
@@ -213,9 +214,9 @@ async fn cleanup_terminal(state: &AppState, term: &Terminal) -> Result<()> {
 ///
 /// Idempotent: missing socket, dead pid, and absent `renderer entry` /
 /// `pid` all collapse to a clean return. The caller is responsible for
-/// the *row delete* step (eager teardown: inside the surrounding
-/// `card_delete_tx` / `wave_delete_tx` transaction; sweeper: inside its
-/// own `write_with_event` audit transaction).
+/// the *row delete* step (card/cove/wave eager teardown: inside their short
+/// delete transaction; sweeper: inside its own
+/// `write_with_event` audit transaction).
 ///
 /// This is the synchronous bottom-half of the cleanup contract: steps
 /// 1-3 in the module doc above. Bounded by `GRACEFUL_KILL_TIMEOUT` for

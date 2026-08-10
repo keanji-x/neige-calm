@@ -3087,6 +3087,17 @@ export const mockOperations = [
             }
           }
         ],
+        "status": "409"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
         "status": "500"
       }
     ],

@@ -951,6 +951,12 @@ export interface components {
         };
         BlockVerdict: {
             blockId: string;
+            childWaveDeleted?: boolean | null;
+            /**
+             * @description Written after claim, so exposing it preserves the #1030 read-state
+             *     exception. `spawn` must never be added beside it.
+             */
+            childWaveId?: string | null;
             diagnostics: components["schemas"]["Diagnostic"][];
             gateResult?: unknown;
             key: string;
@@ -4610,6 +4616,15 @@ export interface operations {
             };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave has a descendant or active forge action */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

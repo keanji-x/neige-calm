@@ -20,11 +20,11 @@
 //!
 //! ## Wave-delete teardown (issue #197)
 //!
-//! `delete_wave` enumerates every card under the wave (including the
-//! spec card), reaps each terminal's daemon + socket via
-//! `terminal_sweeper::reap_terminal_artifacts`, then drops the terminal
-//! rows and the wave row in one transaction. The
-//! `terminals.card_id` FK is `ON DELETE RESTRICT` (migration 0011),
+//! `delete_wave` first performs a best-effort descendant preflight and
+//! snapshots its teardown-owned resources. It then reaps terminals/harnesses
+//! outside SQLite and finishes the row delete in a short transaction whose
+//! descendant guard is authoritative. The `terminals.card_id` FK is
+//! `ON DELETE RESTRICT` (migration 0011),
 //! so a missed cleanup surfaces as a transaction-level error rather
 //! than a silent daemon-process leak.
 
@@ -78,9 +78,63 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+#[cfg(feature = "fixtures")]
+use std::collections::HashMap;
+#[cfg(feature = "fixtures")]
+use std::sync::{Mutex as StdMutex, OnceLock};
+#[cfg(feature = "fixtures")]
+use tokio::sync::Notify;
+
 mod fork_guard;
 
 use fork_guard::guard_forked_blocks;
+
+#[derive(Clone)]
+struct WaveDeletePlan {
+    wave_id: WaveId,
+    cove_id: crate::ids::CoveId,
+    cards: Vec<Card>,
+    terminals: Vec<crate::model::Terminal>,
+    active_runtime_ids: Vec<String>,
+}
+
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct WaveDeleteTeardownHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn wave_delete_teardown_hooks() -> &'static StdMutex<HashMap<String, WaveDeleteTeardownHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, WaveDeleteTeardownHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_wave_delete_teardown_hook_for_test(wave_id: &str, hook: WaveDeleteTeardownHook) {
+    wave_delete_teardown_hooks()
+        .lock()
+        .expect("wave delete hook mutex")
+        .insert(wave_id.to_string(), hook);
+}
+
+async fn wait_at_wave_delete_teardown_hook(wave_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = wave_delete_teardown_hooks()
+            .lock()
+            .expect("wave delete hook mutex")
+            .remove(wave_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = wave_id;
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -1095,7 +1149,7 @@ fn prepare_fork_report(
     Ok((payload, doc, declarations, diagnostics))
 }
 
-fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
+pub(crate) fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     let mut card_payload = serde_json::Map::new();
     card_payload.insert(
         "schemaVersion".into(),
@@ -1112,7 +1166,10 @@ fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     serde_json::Value::Object(card_payload)
 }
 
-fn spec_harness_layout_payload(spec_card_id: &str, report_card_id: &str) -> serde_json::Value {
+pub(crate) fn spec_harness_layout_payload(
+    spec_card_id: &str,
+    report_card_id: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
         "positions": {
@@ -1302,6 +1359,101 @@ pub(crate) async fn update_wave(
     Ok(Json(wave))
 }
 
+async fn snapshot_wave_deletion(
+    s: &RouteState,
+    pool: &sqlx::SqlitePool,
+    wave: &Wave,
+) -> Result<WaveDeletePlan> {
+    let cards = s.repo.cards_by_wave(wave.id.as_str()).await?;
+    let mut terminals = Vec::new();
+    for card in &cards {
+        if let Some(terminal) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
+            terminals.push(terminal);
+        }
+    }
+    let active_runtime_ids = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+    )
+    .bind(wave.id.as_str())
+    .fetch_all(pool)
+    .await?;
+    Ok(WaveDeletePlan {
+        wave_id: wave.id.clone(),
+        cove_id: wave.cove_id.clone(),
+        cards,
+        terminals,
+        active_runtime_ids,
+    })
+}
+
+async fn teardown_wave_deletion(
+    s: &RouteState,
+    w: &WorkerState,
+    cs: &CodexShellState,
+    plan: &WaveDeletePlan,
+) -> Result<()> {
+    wait_at_wave_delete_teardown_hook(plan.wave_id.as_str()).await;
+    for card in &plan.cards {
+        interrupt_shared_card_active_turn(s.repo.as_ref(), cs, card).await;
+    }
+    for terminal in &plan.terminals {
+        reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), terminal).await;
+    }
+    for runtime_id in &plan.active_runtime_ids {
+        if let Some(harness) = w.harness.get(runtime_id) {
+            harness.shutdown().await?;
+            let _ = w.harness.remove(runtime_id);
+        }
+    }
+    Ok(())
+}
+
+#[allow(deprecated)]
+async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: ActorId) -> Result<()> {
+    let write_for_tx = s.write.clone();
+    let wave_id = plan.wave_id.clone();
+    let cove_id = plan.cove_id.clone();
+    let terminals = plan.terminals;
+    let scope = EventScope::Wave {
+        wave: wave_id.clone(),
+        cove: cove_id.clone(),
+    };
+    let (sweeps, _ids) =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
+            Box::pin(async move {
+                for terminal in &terminals {
+                    match terminal_delete_tx(tx, &terminal.id)
+                        .await
+                        .map_err(CalmError::from)
+                    {
+                        Ok(()) => {}
+                        Err(CalmError::NotFound(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                overlay_delete_card_overlays_by_wave_tx(tx, wave_id.as_str()).await?;
+                overlay_delete_by_entity_tx(tx, "wave", wave_id.as_str()).await?;
+                overlay_delete_by_entity_tx(tx, "view", wave_id.as_str()).await?;
+                let release = release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?;
+                let mut events = release.events;
+                wave_delete_tx(tx, wave_id.as_str(), write_for_tx.cove_cache()).await?;
+                events.push((
+                    actor,
+                    scope,
+                    Event::WaveDeleted {
+                        id: wave_id,
+                        cove_id,
+                    },
+                ));
+                Ok((release.sweep.into_iter().collect::<Vec<_>>(), events))
+            })
+        })
+        .await?;
+    sweep_workspace_worktrees_for_waves_repo(s.repo.as_ref(), &s.events, sweeps).await?;
+    Ok(())
+}
+
 #[utoipa::path(
     delete,
     path = "/api/waves/{id}",
@@ -1310,6 +1462,7 @@ pub(crate) async fn update_wave(
     responses(
         (status = 204, description = "Wave deleted"),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 409, description = "Wave has a descendant or active forge action", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -1329,29 +1482,16 @@ pub(crate) async fn delete_wave(
     // doesn't work anymore: the cascade aborts the wave-delete txn.
     // This handler now owns the full subtree teardown:
     //
-    //   1. Enumerate every card under the wave (`cards_by_wave`).
-    //   2. Resolve each card's terminal row (if any) via
-    //      `terminal_get_by_card`.
-    //   3. Call `reap_terminal_artifacts` for each — kills the daemon
-    //      + unlinks the socket. Spec cards (CardRole::Spec) take this
-    //      same path; the spec card daemon TODO from PR6 is now
-    //      handled here.
-    //   4. Inside the write txn, drop each terminal row first
-    //      (`terminal_delete_tx`), then drop the wave row. The cards
-    //      cascade away from the wave; the FK to terminals is honored
-    //      because we've already drained the table for this subtree.
-    //
-    // The outside-txn card walk is only for terminal process reaping.
-    // Overlay cleanup happens inside the delete transaction via a DB
-    // subquery, so a card+overlay created after this snapshot but before
-    // the wave delete commits is still swept before the FK cascade drops
-    // the card.
+    //   1. Best-effort unlocked descendant preflight, then snapshot
+    //      cards/terminals/runtimes.
+    //   2. Outside SQLite: interrupt turns and stop terminal/harness processes.
+    //   3. Short IMMEDIATE tx: recheck descendants authoritatively in
+    //      `wave_delete_tx`, then remove terminal rows, overlays, leases and wave.
     let wave = s
         .repo
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
-    let cove_id = wave.cove_id.clone();
     let wave_id = wave.id.clone();
 
     // Defensive TOCTOU guard only: this non-transactional read happens before
@@ -1367,68 +1507,24 @@ pub(crate) async fn delete_wave(
         )));
     }
 
-    let mut terminal_ids: Vec<String> = Vec::new();
-    let mut active_runtime_ids: Vec<String> = Vec::new();
-    let cards = s.repo.cards_by_wave(wave_id.as_str()).await?;
-    for card in &cards {
-        interrupt_shared_card_active_turn(s.repo.as_ref(), &cs, card).await;
-        if let Some(runtime) = s
-            .repo
-            .session_projection_active_for_card(&card.id.to_string())
+    // Experience-only preflight: the in-transaction guard in `wave_delete_tx`
+    // remains the sole correctness boundary for this route and raw Repo calls.
+    // A child created after this read can still make the final delete return
+    // Conflict after teardown; that rare race is safe and retryable.
+    if let Some(child_id) =
+        sqlx::query_scalar::<_, String>("SELECT id FROM waves WHERE parent_wave_id=?1 LIMIT 1")
+            .bind(wave_id.as_str())
+            .fetch_optional(&pool)
             .await?
-        {
-            active_runtime_ids.push(runtime.id);
-        }
-        if let Some(t) = s.repo.terminal_get_by_card(card.id.as_str()).await? {
-            reap_terminal_artifacts_with_renderer(Some(w.terminal_renderer.as_ref()), &t).await;
-            terminal_ids.push(t.id);
-        }
-    }
-    for runtime_id in active_runtime_ids {
-        if let Some(harness) = w.harness.remove(&runtime_id) {
-            harness.shutdown().await?;
-        }
+    {
+        return Err(CalmError::Conflict(format!(
+            "wave {id} has child wave {child_id}; cancel it if needed, then delete that child wave first"
+        )));
     }
 
-    let scope = EventScope::Wave {
-        wave: wave_id.clone(),
-        cove: cove_id.clone(),
-    };
-    let delete_actor = actor.to_actor_id();
-    let write_for_tx = s.write.clone();
-    let (sweeps, _ids) =
-        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
-            Box::pin(async move {
-                // Drop terminal rows first so the RESTRICT FK lets the
-                // wave delete cascade through cards cleanly.
-                // Idempotent: tolerate NotFound on each row in case a
-                // racing sweeper tick beat us to it.
-                for tid in &terminal_ids {
-                    match terminal_delete_tx(tx, tid).await.map_err(CalmError::from) {
-                        Ok(()) => {}
-                        Err(CalmError::NotFound(_)) => {}
-                        Err(e) => return Err(e),
-                    }
-                }
-                overlay_delete_card_overlays_by_wave_tx(tx, wave_id.as_str()).await?;
-                overlay_delete_by_entity_tx(tx, "wave", wave_id.as_str()).await?;
-                overlay_delete_by_entity_tx(tx, "view", wave_id.as_str()).await?;
-                let release = release_workspace_leases_for_wave_tx(tx, wave_id.as_str()).await?;
-                let mut events = release.events;
-                wave_delete_tx(tx, wave_id.as_ref(), write_for_tx.cove_cache()).await?;
-                events.push((
-                    delete_actor,
-                    scope,
-                    Event::WaveDeleted {
-                        id: wave_id,
-                        cove_id,
-                    },
-                ));
-                Ok((release.sweep.into_iter().collect::<Vec<_>>(), events))
-            })
-        })
-        .await?;
-    sweep_workspace_worktrees_for_waves_repo(s.repo.as_ref(), &s.events, sweeps).await?;
+    let plan = snapshot_wave_deletion(&s, &pool, &wave).await?;
+    teardown_wave_deletion(&s, &w, &cs, &plan).await?;
+    finish_wave_deletion(&s, plan, actor.to_actor_id()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

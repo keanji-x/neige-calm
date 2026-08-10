@@ -49,12 +49,7 @@ use tower::ServiceExt;
 /// the existing test fixtures (`payload_validation.rs`,
 /// `terminal_sweeper.rs`). No real codex binaries — we never
 /// invoke them in this file.
-async fn fresh_state() -> AppState {
-    let repo: Arc<dyn Repo> = Arc::new(
-        SqlxRepo::open("sqlite::memory:")
-            .await
-            .expect("open in-memory sqlite repo"),
-    );
+fn state_from_repo(repo: Arc<dyn Repo>) -> AppState {
     AppState::from_parts(
         repo.clone(),
         EventBus::new(),
@@ -75,6 +70,19 @@ async fn fresh_state() -> AppState {
         None,
         None,
     )
+}
+
+async fn fresh_state_with_repo() -> (AppState, Arc<dyn Repo>) {
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite repo"),
+    );
+    (state_from_repo(repo.clone()), repo)
+}
+
+async fn fresh_state() -> AppState {
+    fresh_state_with_repo().await.0
 }
 
 /// Compose a minimal Axum app with the cards + waves + coves routers
@@ -131,7 +139,9 @@ async fn await_child_killed(child: &mut std::process::Child) {
             Err(e) => panic!("try_wait(pid={pid}) failed: {e}"),
         }
     }
-    panic!("pid {pid} was still alive after 2s");
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("pid {pid} was still alive after 2s (force-killed by fixture cleanup)");
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +383,76 @@ async fn wave_delete_reaps_every_terminal_under_wave() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wave_delete_external_teardown_does_not_hold_the_sqlite_writer() {
+    let (state, repo) = fresh_state_with_repo().await;
+    let cove = repo
+        .cove_create(NewCove {
+            name: "writer-probe-owner".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id,
+            title: "writer-probe-wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let hook = calm_server::routes::waves::WaveDeleteTeardownHook {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    calm_server::routes::waves::install_wave_delete_teardown_hook_for_test(
+        wave.id.as_str(),
+        hook.clone(),
+    );
+    let app = build_app(state);
+    let wave_id = wave.id.to_string();
+    let deleting = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/waves/{wave_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), hook.entered.notified())
+        .await
+        .expect("delete must reach external teardown without holding the writer");
+
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        repo.cove_create(NewCove {
+            name: "writer-probe-unrelated".into(),
+            color: "#111".into(),
+            sort: None,
+        }),
+    )
+    .await
+    .expect("unrelated writer was blocked by external wave teardown")
+    .expect("unrelated writer must succeed");
+
+    hook.release.notify_one();
+    let response = tokio::time::timeout(Duration::from_secs(5), deleting)
+        .await
+        .expect("wave delete must finish after teardown release")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
 // ---------------------------------------------------------------------------

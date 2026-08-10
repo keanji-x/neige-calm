@@ -5,6 +5,7 @@ mod driver;
 mod repo_sqlite;
 pub(crate) mod workspace_lease;
 
+pub mod child_wave_adapter;
 pub mod claude_adapter;
 pub mod claude_restart_adapter;
 pub mod codex_adapter;
@@ -53,11 +54,12 @@ const OPERATION_LEASE_MS: TimestampMs = 60_000;
 
 /// Authoritative registry of operation adapters whose payload is bound to a
 /// task row and must therefore enforce the stale-context admission fence.
-pub const TASK_BOUND_ADAPTER_KINDS: [&str; 4] = [
+pub const TASK_BOUND_ADAPTER_KINDS: [&str; 5] = [
     "codex-worker",
     "claude-worker",
     "terminal-worker",
     "task-verify",
+    "child-wave",
 ];
 
 /// Registered adapters whose payloads are not tied to a scheduler task row.

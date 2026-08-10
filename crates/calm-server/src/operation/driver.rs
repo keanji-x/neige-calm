@@ -60,7 +60,8 @@ pub struct OperationRuntime {
     events: EventBus,
     spawn_ctx: SpawnCtx,
     // PR2: replace with a singleton background driver loop per design §B.3.
-    drive_mutex: Mutex<()>,
+    drive_mutex: Arc<Mutex<()>>,
+    wait_entered_test_hook: std::sync::Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 impl OperationRuntime {
@@ -99,8 +100,18 @@ impl OperationRuntime {
             completion,
             events,
             spawn_ctx,
-            drive_mutex: Mutex::new(()),
+            drive_mutex: Arc::new(Mutex::new(())),
+            wait_entered_test_hook: std::sync::Mutex::new(None),
         }
+    }
+
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn install_wait_entered_hook_for_test(&self, hook: Arc<tokio::sync::Notify>) {
+        *self
+            .wait_entered_test_hook
+            .lock()
+            .expect("operation wait hook mutex") = Some(hook);
     }
 
     pub fn publish_completion(&self, result: OperationResult) {
@@ -256,6 +267,14 @@ impl OperationRuntime {
     pub async fn wait(&self, op_id: &OperationId) -> Result<OperationResult> {
         if let Some(result) = self.repo.operation_result(op_id).await? {
             return Ok(result);
+        }
+        let wait_hook = self
+            .wait_entered_test_hook
+            .lock()
+            .expect("operation wait hook mutex")
+            .take();
+        if let Some(wait_hook) = wait_hook {
+            wait_hook.notify_one();
         }
         let mut rx = self.completion.subscribe();
         loop {
@@ -428,9 +447,12 @@ impl OperationRuntime {
                 Ok(())
             }
             Phase::TxCommitted => {
+                // Intentionally fail closed for every committed adapter, including
+                // TxCommitted -> SpawnStarted adapters such as child-wave: a
+                // successfully prepared operation must always persist tx_output.
+                let output = required_output(&op)?.clone();
                 if adapter.phases().contains(&PhaseTag::AppServerInteract) {
-                    let output = required_output(&op)?;
-                    let kind = adapter.app_server_interact_kind(output, &op)?;
+                    let kind = adapter.app_server_interact_kind(&output, &op)?;
                     if self
                         .repo
                         .set_phase(&op, Phase::AppServerInteract { kind })
@@ -442,7 +464,6 @@ impl OperationRuntime {
                     return Ok(());
                 }
                 if !adapter.phases().contains(&PhaseTag::SpawnStarted) {
-                    let output = required_output(&op)?.clone();
                     match adapter
                         .spawn_side_effect(&output, &op, &self.spawn_ctx)
                         .await

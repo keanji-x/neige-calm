@@ -80,6 +80,9 @@ pub async fn card_create_with_id_tx(
             ));
         }
     }
+    // Keep the pre-0072 typed owner check: the removed deleting guard had
+    // temporarily subsumed it, but missing waves must still return NotFound
+    // before sort allocation or either half of an atomic card create runs.
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM waves WHERE id = ?1")
         .bind(p.wave_id.as_str())
         .fetch_optional(&mut **tx)
@@ -87,7 +90,6 @@ pub async fn card_create_with_id_tx(
     if exists.is_none() {
         return Err(CalmError::NotFound(format!("wave {}", p.wave_id)));
     }
-
     let sort = match p.sort {
         Some(s) => s,
         None => {
@@ -577,11 +579,11 @@ pub async fn terminal_create_tx(
     p: NewTerminal,
 ) -> Result<Terminal> {
     // Parent card must exist; surface as NotFound to mirror MockRepo.
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
+    let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
         .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-    if exists.is_none() {
+    if owner.is_none() {
         return Err(CalmError::NotFound(format!("card {}", p.card_id)));
     }
     // Per-card uniqueness — surface as Conflict to mirror MockRepo

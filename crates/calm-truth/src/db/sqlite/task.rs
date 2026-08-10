@@ -19,7 +19,7 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, wave_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, context_stale_at_ms, declared_by, origin, created_at_ms, updated_at_ms, \
+     running_deadline_ms, context_stale_at_ms, declared_by, spawn, origin, created_at_ms, updated_at_ms, \
      finished_at_ms";
 
 /// In-tx read of a wave's full plan, in scheduler order
@@ -52,9 +52,9 @@ pub async fn task_insert_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Resul
            (id, wave_id, key, kind, goal, context_json, acceptance_criteria, cwd,
                 depends_on_json, priority, gate_json, status, status_detail, worker_card_id,
                 gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id,
-                running_deadline_ms, created_at_ms, updated_at_ms, finished_at_ms)
+                running_deadline_ms, spawn, created_at_ms, updated_at_ms, finished_at_ms)
            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                   ?18, ?19, ?20, ?21, ?22, ?23)"#,
+                   ?18, ?19, ?20, ?21, ?22, ?23, ?24)"#,
     )
     .bind(&t.id)
     .bind(&t.wave_id)
@@ -76,6 +76,7 @@ pub async fn task_insert_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Resul
     .bind(t.gate_pid_starttime)
     .bind(&t.gate_pid_boot_id)
     .bind(t.running_deadline_ms)
+    .bind(&t.spawn)
     .bind(t.created_at_ms)
     .bind(t.updated_at_ms)
     .bind(t.finished_at_ms)
@@ -100,8 +101,8 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     let res = sqlx::query(
         r#"UPDATE tasks
            SET kind = ?1, goal = ?2, context_json = ?3, acceptance_criteria = ?4, cwd = ?5,
-               depends_on_json = ?6, priority = ?7, gate_json = ?8, updated_at_ms = ?9
-           WHERE id = ?10 AND status = 'pending'"#,
+               depends_on_json = ?6, priority = ?7, gate_json = ?8, spawn = ?9, updated_at_ms = ?10
+           WHERE id = ?11 AND status = 'pending'"#,
     )
     .bind(t.kind)
     .bind(&t.goal)
@@ -111,6 +112,7 @@ pub async fn task_update_pending_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) 
     .bind(&t.depends_on_json)
     .bind(t.priority)
     .bind(&t.gate_json)
+    .bind(&t.spawn)
     .bind(t.updated_at_ms)
     .bind(&t.id)
     .execute(&mut **tx)
@@ -135,6 +137,24 @@ pub async fn task_get_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<O
         .fetch_optional(&mut **tx)
         .await?;
     Ok(row)
+}
+
+/// Sub-wave parents are long-lived orchestration rows, not workers. They do
+/// not own a worker card and deliberately have no running deadline.
+pub async fn task_mark_sub_wave_running_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    now: i64,
+) -> Result<u64> {
+    Ok(sqlx::query(
+        "UPDATE tasks SET status='running',worker_card_id=NULL,running_deadline_ms=NULL,updated_at_ms=?1 \
+         WHERE id=?2 AND status='dispatched' AND spawn='sub-wave' AND child_wave_id IS NOT NULL",
+    )
+    .bind(now)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected())
 }
 
 /// In-tx wave-existence guard for the plan writers. `tasks.wave_id`

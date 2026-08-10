@@ -528,6 +528,81 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
 }
 
 #[tokio::test]
+async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
+    let boot = boot().await;
+    let parent = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: boot.cove_id.clone().into(),
+            title: "parent".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            workflow_input: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let child = boot
+        .repo
+        .wave_create(NewWave {
+            cove_id: boot.cove_id.clone().into(),
+            title: "child".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            workflow_input: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+        .bind(parent.id.as_str())
+        .bind(child.id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+
+    let (status, body) =
+        delete_with_body(boot.app.clone(), &format!("/api/waves/{}", parent.id)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body.to_string().contains(child.id.as_str()), "{body}");
+    assert!(
+        boot.repo
+            .wave_get(parent.id.as_str())
+            .await
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn rest_wave_create_cannot_set_parent_wave_id() {
+    let boot = boot().await;
+    let (status, body) = post(
+        boot.app,
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "forged child",
+            "cwd": "/tmp/forged-child",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+            "parent_wave_id": "wave-forged-parent"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
     let boot = boot().await;
     let (status, body) = post(

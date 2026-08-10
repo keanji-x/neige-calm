@@ -132,6 +132,18 @@ pub async fn wave_update_tx(
     // update and the caller's `WaveLifecycleChanged` event, so a
     // mid-tx crash leaves none of them behind.
     if let Some(new_lifecycle) = p.lifecycle {
+        if w.lifecycle.is_terminal() && !new_lifecycle.is_terminal() {
+            let parent: Option<(String, String)> =
+                sqlx::query_as("SELECT wave_id, key FROM tasks WHERE child_wave_id = ?1 LIMIT 1")
+                    .bind(id)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+            if let Some((parent_wave_id, parent_key)) = parent {
+                return Err(CalmError::Conflict(format!(
+                    "wave {id} is child of task {parent_wave_id}:{parent_key} and cannot be reopened"
+                )));
+            }
+        }
         if new_lifecycle != w.lifecycle {
             if new_lifecycle.is_terminal() {
                 w.terminal_at = Some(now_ms());
@@ -203,6 +215,32 @@ pub async fn wave_update_tx(
 }
 
 pub async fn wave_delete_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    wave_cove_cache: &WaveCoveCache,
+) -> Result<()> {
+    wave_require_leaf_tx(tx, id).await?;
+    wave_delete_leaf_tx(tx, id, wave_cove_cache).await
+}
+
+/// Refuse deletion while a direct child exists. This is the authoritative
+/// guard for every deletion entry point, including direct repository calls
+/// that bypass the HTTP route's best-effort preflight.
+pub async fn wave_require_leaf_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<()> {
+    if let Some((child_id,)) =
+        sqlx::query_as::<_, (String,)>("SELECT id FROM waves WHERE parent_wave_id = ?1 LIMIT 1")
+            .bind(id)
+            .fetch_optional(&mut **tx)
+            .await?
+    {
+        return Err(CalmError::Conflict(format!(
+            "wave {id} has child wave {child_id}; cancel it if needed, then delete that child wave first"
+        )));
+    }
+    Ok(())
+}
+
+async fn wave_delete_leaf_tx(
     tx: &mut Transaction<'_, Sqlite>,
     id: &str,
     wave_cove_cache: &WaveCoveCache,
