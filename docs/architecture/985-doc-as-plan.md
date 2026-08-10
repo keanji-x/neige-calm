@@ -1192,8 +1192,8 @@ PR-B 的树项**不是共享计数**，而是**确定性配额分割**：
 effective_ceiling(W) = min(spec_task_ceiling(W), share(W, T))
 share(W, T)          = floor(B / N)，余数按 (created_at, id) 升序分给前 r 个 wave 各 +1
 其中 T = W 所在的树，N = |T|，B = 树根的 tree_task_budget（NULL ⇒ 32；可配 0..=64），Σ share = B。
-`N=1` 不例外：孤根显式设置预算时 `share=B`；只有有效预算严格大于有效 wave ceiling、树项
-可证不收紧且不拥有相等边界诊断时才返回 `NotInTree`（仍以零递归完成）。子 wave 创建还要求创建后的 `N+1 <= B`，所以点一放行的
+`N=1` 不例外：孤根同样计算 `share=B`，不再保留独立的 `NotInTree` 语义短路；两条有界 CTE
+在孤根时各只有 1 行，仍是 O(1)。子 wave 创建还要求创建后的 `N+1 <= B`，所以点一放行的
 树里点二不会给任何成员零份额。B 或 N 改变后，同一写事务用一次成员枚举预计算所有 share，
 重投影整树并复核每个成员的非终结存量；pending 超额被裁掉，无法裁掉的 in-flight 超额会让
 整笔 PATCH / child-wave 创建回滚。因而 B 不能被提交到现有 live inventory 以下。

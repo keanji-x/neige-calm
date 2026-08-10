@@ -283,7 +283,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                     "the whole wave tree rooted at `{root}` shares a tree_task_budget of {budget}, \
                      split across {waves} wave(s); this wave's slice of {share} is used up, so no \
                      further spec task is queued here — raise tree_task_budget on the root wave or \
-                     let an in-flight task in this wave finish"
+                     let the tree's excess in-flight work finish"
                 )
             }
         }

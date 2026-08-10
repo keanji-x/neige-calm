@@ -40,10 +40,9 @@ pub(crate) const DEFAULT_SPEC_TASK_CEILING: i64 = 32;
 /// Decode nullable persisted limits at every enforcement point.
 ///
 /// Keeping the NULL fallback and non-negative clamp here matters more than it
-/// first appears: the singleton shortcut compares the effective tree budget
-/// with the effective per-wave ceiling. If either side decodes the bare SQL
-/// column on its own, SQLite/sqlx can turn NULL into a different value and
-/// make that comparison prove a shortcut which the projector does not honor.
+/// first appears: every enforcement point must decode nullable limits the
+/// same way. If one path decodes the bare SQL column on its own, SQLite/sqlx
+/// can turn NULL into a different value and silently remove an upper bound.
 pub(crate) fn effective_limit(value: Option<i64>, default: i64) -> i64 {
     value.unwrap_or(default).max(0)
 }
@@ -155,11 +154,6 @@ pub fn can_add_tree_member(budget: i64, members: i64) -> bool {
 /// The tree contribution to a wave's effective ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaveTreeTerm {
-    /// `parent_wave_id IS NULL`, no child exists, and the effective tree budget
-    /// is strictly above this wave's ceiling: the tree term provably cannot
-    /// tighten admission or own equal-bound diagnostics, so no recursive walk
-    /// runs.
-    NotInTree,
     /// The wave IS in a tree but its root could not be resolved (broken parent
     /// link, cycle, or a chain deeper than [`MAX_WAVE_TREE_DEPTH`]). Callers
     /// must fail closed: a single broken link would otherwise leave a whole
@@ -180,38 +174,14 @@ pub struct TreeShare {
     pub admission_frozen: bool,
 }
 
-/// [`WaveTreeTerm`] plus the countable seam that proves the non-tree
-/// short-circuit really skips the recursive walks.
-///
-/// The count is the number of *recursive* tree statements executed. It is 0
-/// for a wave that is not in a tree — an assertion that can actually fail,
-/// unlike "a non-tree wave behaves byte-identically", which is vacuous.
+/// [`WaveTreeTerm`] plus the countable seam used by whole-tree reprojection to
+/// reject an accidental per-member recursive walk. Ordinary evaluation uses
+/// two bounded recursive statements even for a singleton; each CTE then has
+/// one row, so singleton work remains O(1) without a separate semantic path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WaveTreeTermOutcome {
     pub term: WaveTreeTerm,
     pub tree_cte_queries: u32,
-}
-
-/// Is recursion needed, and what is the singleton root's wave ceiling? One
-/// non-recursive statement.
-async fn wave_tree_shortcut(
-    conn: &mut SqliteConnection,
-    wave_id: &str,
-) -> Result<Option<(bool, i64)>> {
-    let row: Option<(i64, Option<i64>)> = sqlx::query_as(
-        "SELECT CASE WHEN w.parent_wave_id IS NOT NULL \
-           OR EXISTS(SELECT 1 FROM waves c WHERE c.parent_wave_id = w.id) \
-         THEN 1 ELSE 0 END, w.spec_task_ceiling FROM waves w WHERE w.id = ?1",
-    )
-    .bind(wave_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(row.map(|(in_tree, ceiling)| {
-        (
-            in_tree == 1,
-            effective_limit(ceiling, DEFAULT_SPEC_TASK_CEILING),
-        )
-    }))
 }
 
 /// Resolve `wave_id`'s tree term.
@@ -219,27 +189,6 @@ pub async fn wave_tree_term(
     conn: &mut SqliteConnection,
     wave_id: &str,
 ) -> Result<WaveTreeTermOutcome> {
-    if let Some((false, ceiling)) = wave_tree_shortcut(&mut *conn, wave_id).await? {
-        // Use the SAME effective-budget function as child-wave admission.
-        // In particular, NULL means the kernel default here and there; PATCH
-        // back to NULL must never remove an upper bound.
-        let budget = wave_tree_budget(&mut *conn, wave_id).await?;
-        let term = if budget > ceiling {
-            WaveTreeTerm::NotInTree
-        } else {
-            WaveTreeTerm::Share(TreeShare {
-                root_id: wave_id.to_owned(),
-                budget,
-                members: 1,
-                share: budget,
-                admission_frozen: false,
-            })
-        };
-        return Ok(WaveTreeTermOutcome {
-            term,
-            tree_cte_queries: 0,
-        });
-    }
     let mut queries = 0u32;
     let roots: Vec<(String, i64)> = sqlx::query_as(WAVE_ROOT_DEPTH_SQL)
         .bind(wave_id)

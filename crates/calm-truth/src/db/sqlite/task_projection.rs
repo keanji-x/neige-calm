@@ -604,7 +604,6 @@ async fn evaluate_schedulability_with_tree_term(
     // path-dependent, and not reconstructible by a rebuild.
     let ceiling = state.ceiling;
     let (tree_share, tree_root_unresolved) = match &tree_term {
-        WaveTreeTerm::NotInTree => (None, false),
         WaveTreeTerm::RootUnresolved => {
             // Fail closed. A broken parent link, a cycle, or an over-deep chain
             // means we cannot name the budget this wave draws from; treating
@@ -916,14 +915,14 @@ async fn evaluate_schedulability_with_tree_term(
         })
         .map(|(_, declaration)| declaration.block_id.clone())
         .collect();
-    // Attribution matters here (§12.2 C: every diagnostic owes the reader a
-    // plain sentence AND a next action). When the binding constraint is the
-    // tree's shared budget rather than this wave's own ceiling, saying
-    // "spec task ceiling reached" sends the reader to raise a ceiling that is
-    // not what stopped them — the cause lives in a DIFFERENT wave's budget.
+    // Attribution matters here (§12.2 C): the recovery action must name a
+    // setting that actually binds this admission. Strictly smaller remaining
+    // tree capacity belongs to the root budget; equality belongs to the local
+    // ceiling because it is the nearer setting. A legacy overage freeze is
+    // tree-owned regardless of the local numeric capacities.
     let tree_bound = tree_share
         .as_ref()
-        .filter(|share| share.admission_frozen || tree_capacity <= ceiling_capacity)
+        .filter(|share| share.admission_frozen || tree_capacity < ceiling_capacity)
         .cloned();
     for index in candidates.into_iter().skip(capacity) {
         let diagnostic = match &tree_bound {

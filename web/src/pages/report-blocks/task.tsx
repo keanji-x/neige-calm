@@ -80,7 +80,7 @@ const taskDiagnosticCopy = Object.freeze({
   invalid_declaration: () => 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.',
   tree_budget_exhausted: (d: Diagnostic) => (typeof d.messageArgs.share === 'number' ? d.messageArgs.share : 0) === 0
     ? `This group has ${String(d.messageArgs.tree_waves ?? '')} linked waves but an AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave receives no task slots. Raise the limit on ${treeRootLabel(d)} or remove extra child waves.`
-    : `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. Raise the limit on ${treeRootLabel(d)} or let an in-progress task in this wave finish.`,
+    : `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. Raise the limit on ${treeRootLabel(d)} or let the group’s excess in-progress work finish.`,
   tree_root_unresolved: () => 'This wave is linked into a group of waves whose top wave cannot be found, so its share of the shared AI-task limit is unknown and nothing is queued here. Repair or remove the broken sub-wave link.',
 });
 

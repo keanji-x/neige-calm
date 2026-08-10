@@ -230,3 +230,35 @@ Node 22.22.2。每个单点补丁均用反向 `apply_patch` 复原。
 本轮没有 STILL-GREEN 变异。复原搜索确认没有 `false &&`、CASE/常量临时放行、旧按行 manifest
 解析器或 `Vec::<...>::new()` 跳过整树重投影残留。复原态定向门：wave-tree **33/33**、SQL
 性质门 **17/17**、child adapter **12/12**、total postcondition **1/1**、policy PATCH **8/8**。
+
+## 十、修复轮 6（删除短路 + 诊断可操作性，全部实际执行并复原）
+
+环境：`.local-bin` nextest、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置；web 变异用
+Node 22.22.0。每个变异均以 `apply_patch` 施加并反向复原。
+
+| # | 改坏什么 | 变红的测试 | 实际结果 |
+|---|---|---|---|
+| R6-B1a | 在 `wave_tree_term` 恢复孤根早退，直接给 `share=i64::MAX`（任意形式语义短路） | `singleton_default_budget_counts_legacy_occupancy_before_admission` | **RED**：live spec `33 != 32`，恢复了 codex 的默认 B=32 构造 |
+| R6-B1b | 同一短路 | `singleton_explicit_budget_counts_legacy_occupancy_before_admission` | **RED**：live spec `8 != 6`，恢复了 subagent 的 B=6 构造 |
+| R6-B1c | 旧 schema fixture 删除基线 `waves.created_at`（等价于短路仍遮住真实 tree query 的旧夹具） | `migration_backfills_preexisting_task_and_block_declaration_adopts_it` | **RED**：首轮全门报 `no such column: w.created_at`；补齐 head-schema 最小夹具后定向 **PASS 1/1**，未改 migration |
+| R6-B2a | 诊断归因把 `<` 反成 `>`，让严格绑定场景指向另一个旋钮 | `the_diagnosed_capacity_action_increases_admission` | **RED**：照 `raise_tree_task_budget` 做后准入仍为 `2 → 2` |
+| R6-B2b | 平局归因把 `<` 改为 `<=` | `an_equal_tree_share_reports_the_local_ceiling_knob` | **RED**：找不到 `spec_task_ceiling` / `raise_spec_task_ceiling` |
+| R6-m1-rust | Rust tree 文案恢复“let an in-flight task in this wave finish” | `over_share_declarations_are_diagnosed_against_the_root_wave` | **RED**：缺少通用的 `tree's excess in-flight work`；冻结 sibling 构造也常驻断言不得出现 `task in this wave` |
+| R6-m1-web | web tree 文案恢复“let an in-progress task in this wave finish” | `report-blocks.test.tsx` 的 `gives tree_budget_exhausted a human explanation and next action` | **RED**：Node 22 下 56 中 1 failed |
+| R6-m2 | 删除 workspace member root 的 `Cargo.toml` 存在性断言 | `a_missing_workspace_member_root_fails_closed` | **RED**：`should_panic` 未发生，证明扫描面会静默缩小 |
+
+SQL 常量界、未限定列、匿名参数与引号标识符没有放宽；实现笔记 §3.5/N7 明确记录为刻意拒绝，
+理由是门只证明 alias-qualified、编号参数化的直接合取叶，未来扩形状必须先补正反矩阵。
+
+### 10.1 短路相关旧证据保质期刷新
+
+| 旧条目 | 修复轮 6 处置 / 实跑结果 |
+|---|---|
+| M9 | 原“非树零递归”买的是短路性能性质，随短路一并删除；替换为 `a_singleton_tree_runs_two_constant_size_recursive_queries`，孤根固定 2 条各 1 行的有界 CTE。恢复任意孤根早退由 R6-B1a/b 两条正确性验收直接 RED |
+| R1-B1c（评审文字也曾写作 R3-B1c） | 原“孤根显式预算不得 NotInTree”不再依赖枚举分支；恢复孤根早退后 `an_explicit_budget_applies_to_a_singleton_root` **RED**：B=1 仍放过后两条 |
+| R3-B1a | shortcut 自行解 NULL 的变异已无落点；恢复孤根早退后 `a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root` **RED**：准入 `5 != 1` |
+| R5-m1 | `budget > ceiling` 条件已随 shortcut 删除；替代平局归因变异 R6-B2b **RED**，复原态 `singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling` **PASS 1/1** 且两入口同为 `spec_task_ceiling` |
+
+所有临时早退、反向比较、fail-open 与旧文案均已反向复原。复原态定向门：`calm-truth --lib`
+**357/357**（wave-tree **26/26**）、SQL **18/18**、child adapter **12/12**、web report-block
+**56/56**；最终全门数字见实现笔记 §5。

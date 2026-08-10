@@ -494,6 +494,13 @@ fn workspace_member_roots(workspace: &Path) -> Vec<PathBuf> {
         .map(|member| workspace.join(member))
         .collect::<Vec<_>>();
     assert!(!members.is_empty(), "workspace member list was not decoded");
+    for member in &members {
+        assert!(
+            member.join("Cargo.toml").is_file(),
+            "workspace member root does not contain Cargo.toml: {} (workspace globs must be expanded before this source gate can scan them)",
+            member.display()
+        );
+    }
     members
 }
 
@@ -506,6 +513,18 @@ fn cargo_legal_workspace_member_formatting_is_parsed_structurally() {
         let members = workspace_members_from_manifest(manifest);
         assert_eq!(members, ["crates/a", "crates/b"]);
     }
+}
+
+#[test]
+#[should_panic(expected = "workspace member root does not contain Cargo.toml")]
+fn a_missing_workspace_member_root_fails_closed() {
+    let workspace = tempfile::tempdir().unwrap();
+    fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/missing\"]\n",
+    )
+    .unwrap();
+    let _ = workspace_member_roots(workspace.path());
 }
 
 #[test]

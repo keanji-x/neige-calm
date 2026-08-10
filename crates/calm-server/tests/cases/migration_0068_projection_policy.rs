@@ -61,9 +61,15 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
         .unwrap()
         .foreign_keys(true);
     let pool = SqlitePool::connect_with(options).await.unwrap();
-    apply(&pool, r#"
+    apply(
+        &pool,
+        r#"
         CREATE TABLE coves(id TEXT PRIMARY KEY, kind TEXT NOT NULL);
-        CREATE TABLE waves(id TEXT PRIMARY KEY, cove_id TEXT NOT NULL, require_task_gates INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE waves(
+          id TEXT PRIMARY KEY, cove_id TEXT NOT NULL,
+          require_task_gates INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL
+        );
         CREATE TABLE tasks(
           id TEXT PRIMARY KEY, wave_id TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL,
           goal TEXT NOT NULL, context_json TEXT NOT NULL, acceptance_criteria TEXT NULL,
@@ -75,7 +81,7 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
           UNIQUE(wave_id,key)
         );
         INSERT INTO coves VALUES('c1','user');
-        INSERT INTO waves VALUES('w1','c1',0);
+        INSERT INTO waves VALUES('w1','c1',0,1);
         INSERT INTO tasks(
           id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
           depends_on_json,priority,gate_json,status,created_at_ms,updated_at_ms,
@@ -84,7 +90,9 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
           'old','w1','adopt','codex','old goal','{}',NULL,NULL,'[]',0,NULL,
           'dispatched',1,1,'[]',NULL,0
         );
-    "#).await;
+    "#,
+    )
+    .await;
     apply(&pool, HEAD_SCHEMA_FIXTURE_MIGRATIONS[0].1).await;
 
     let attribution: (String, String) =

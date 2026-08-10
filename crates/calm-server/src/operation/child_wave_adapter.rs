@@ -1192,9 +1192,9 @@ mod tests {
         );
     }
 
-    /// A singleton with equal numeric ceiling and budget is tree-bound by the
-    /// approved diagnostic contract. The ordinary and whole-tree rebuild
-    /// entrypoints must therefore produce the same code for the same report.
+    /// A singleton with equal numeric ceiling and budget attributes the tie to
+    /// the local ceiling. The ordinary and whole-tree rebuild entrypoints must
+    /// therefore produce the same code for the same report.
     #[tokio::test]
     async fn singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1238,7 +1238,7 @@ mod tests {
         let plain_codes = codes(&plain);
         let tree_codes = codes(tree);
         assert_eq!(plain_codes, tree_codes, "rebuild entrypoints drifted");
-        assert_eq!(plain_codes, ["tree_budget_exhausted"]);
+        assert_eq!(plain_codes, ["spec_task_ceiling"]);
         tx.rollback().await.unwrap();
     }
 

@@ -1,6 +1,6 @@
 //! #985 slice 6 PR-B — acceptance for the tree-level budget: the
 //! deterministic quota split in `evaluate_schedulability`, the fail-closed
-//! root resolution, the non-tree short circuit, and the downward CTE's
+//! root resolution, bounded singleton evaluation, and the downward CTE's
 //! termination guard.
 //!
 //! Everything here drives the production functions
@@ -146,6 +146,19 @@ async fn project(repo: &SqlxRepo, wave: &str, keys: &[&str]) {
         .await
         .unwrap();
     tx.commit().await.unwrap();
+}
+
+async fn live_spec_count(repo: &SqlxRepo, root: &str) -> i64 {
+    let mut conn = repo.pool().acquire().await.unwrap();
+    wave_tree_spec_inventory(&mut conn, root).await.unwrap()
+}
+
+async fn mark_all_tasks_as_running_legacy(repo: &SqlxRepo, wave: &str) {
+    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id=?1")
+        .bind(wave)
+        .execute(repo.pool())
+        .await
+        .unwrap();
 }
 
 /// Byte-level snapshot of every projected row, the same shape the PR-A
@@ -545,7 +558,7 @@ async fn over_share_declarations_are_diagnosed_against_the_root_wave() {
     );
     assert!(sentence.contains("tree_task_budget"), "{sentence}");
     assert!(
-        sentence.contains("in-flight task in this wave"),
+        sentence.contains("tree's excess in-flight work"),
         "{sentence}"
     );
     assert!(!sentence.contains("elsewhere in the tree"), "{sentence}");
@@ -611,10 +624,10 @@ async fn a_tighter_wave_ceiling_still_reports_the_ceiling_diagnostic() {
     );
 }
 
-/// Equal numeric limits are still a tree constraint: raising only this wave's
-/// ceiling cannot admit another task while its deterministic share stays 32.
+/// Equal numeric limits name the local knob. This boundary is deliberately
+/// owned by the wave ceiling rather than the more remote tree setting.
 #[tokio::test]
-async fn an_equal_tree_share_reports_the_tree_knob() {
+async fn an_equal_tree_share_reports_the_local_ceiling_knob() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "root").await;
@@ -641,19 +654,72 @@ async fn an_equal_tree_share_reports_the_tree_knob() {
     let diagnostic = verdicts[32]
         .diagnostics
         .iter()
-        .find(|diagnostic| diagnostic.code == "tree_budget_exhausted")
-        .expect("equal share/ceiling must name the tree constraint");
-    assert_eq!(diagnostic.action.as_deref(), Some("raise_tree_task_budget"));
+        .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
+        .expect("equal share/ceiling must name the local ceiling constraint");
+    assert_eq!(
+        diagnostic.action.as_deref(),
+        Some("raise_spec_task_ceiling")
+    );
     assert!(
         !verdicts[32]
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "spec_task_ceiling")
+            .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
     );
 }
 
+/// Reusable operability property for capacity diagnostics: perform the one
+/// setting change named by the diagnostic, then the same report must admit
+/// more declarations. This tests effects rather than freezing code/copy.
+#[tokio::test]
+async fn the_diagnosed_capacity_action_increases_admission() {
+    async fn project_and_action(repo: &SqlxRepo, wave: &str, keys: &[&str]) -> (i64, String) {
+        let decls = declarations(keys);
+        let mut tx = repo.pool().begin().await.unwrap();
+        let outcome = project_tasks_tx(&mut tx, wave, &decls, &vec![Vec::new(); decls.len()])
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let admitted: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+                .bind(wave)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        let action = outcome
+            .diagnostics
+            .iter()
+            .flat_map(|verdict| &verdict.diagnostics)
+            .find_map(|diagnostic| diagnostic.action.clone())
+            .expect("capacity rejection must provide an action");
+        (admitted, action)
+    }
+
+    for tree_is_binding in [false, true] {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = seed_cove(&repo).await;
+        let root = seed_wave(&repo, &cove, "actionable-root").await;
+        let (ceiling, budget) = if tree_is_binding { (4, 2) } else { (2, 4) };
+        set_ceiling(&repo, &root, ceiling).await;
+        set_tree_budget(&repo, &root, budget).await;
+        let keys = ["k1", "k2", "k3", "k4"];
+
+        let (before, action) = project_and_action(&repo, &root, &keys).await;
+        match action.as_str() {
+            "raise_spec_task_ceiling" => set_ceiling(&repo, &root, ceiling + 1).await,
+            "raise_tree_task_budget" => set_tree_budget(&repo, &root, budget + 1).await,
+            other => panic!("capacity diagnostic named unsupported action {other}"),
+        }
+        let (after, _) = project_and_action(&repo, &root, &keys).await;
+        assert!(
+            after > before,
+            "following {action} did not increase admission: {before} -> {after}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Fail-closed root resolution and the non-tree short circuit.
+// Fail-closed root resolution and bounded singleton evaluation.
 // ---------------------------------------------------------------------------
 
 /// A wave whose root cannot be resolved gets NOTHING scheduled. "No resolvable
@@ -769,11 +835,11 @@ async fn an_over_deep_chain_fails_closed() {
     );
 }
 
-/// The countable seam for the non-tree short circuit: a wave with no parent
-/// and no child runs ZERO recursive tree statements. Asserting "a non-tree
-/// wave behaves byte-identically" would be vacuous; this can fail.
+/// A singleton follows the same semantic path as every other tree. Its two
+/// bounded CTEs each visit one row, so the work is O(1) without a shortcut
+/// whose correctness predicate can drift when a new tree term is added.
 #[tokio::test]
-async fn a_non_tree_wave_runs_zero_recursive_tree_queries() {
+async fn a_singleton_tree_runs_two_constant_size_recursive_queries() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let lonely = seed_wave(&repo, &cove, "lonely").await;
@@ -781,20 +847,26 @@ async fn a_non_tree_wave_runs_zero_recursive_tree_queries() {
     let mut conn = repo.pool().acquire().await.unwrap();
 
     let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
-    assert_eq!(outcome.term, WaveTreeTerm::NotInTree);
-    assert_eq!(outcome.tree_cte_queries, 0);
+    assert_eq!(outcome.tree_cte_queries, 2);
+    assert!(matches!(
+        outcome.term,
+        WaveTreeTerm::Share(TreeShare {
+            members: 1,
+            share: 32,
+            ..
+        })
+    ));
 
     // Give it a child and the walks must actually run — otherwise the
     // zero-count assertion above could be satisfied by never walking at all.
     let child = seed_wave(&repo, &cove, "child").await;
     link(&repo, &child, &lonely).await;
     let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
-    assert!(outcome.tree_cte_queries > 0);
+    assert_eq!(outcome.tree_cte_queries, 2);
     assert!(matches!(outcome.term, WaveTreeTerm::Share(_)));
 }
 
-/// A binding singleton budget is still N=1 and share=B. This explicit B=1 is
-/// below the wave ceiling, so the provably-non-binding shortcut is illegal.
+/// A binding singleton budget is still N=1 and share=B.
 #[tokio::test]
 async fn an_explicit_budget_applies_to_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -811,7 +883,7 @@ async fn an_explicit_budget_applies_to_a_singleton_root() {
     assert!(verdicts[0].schedulable);
     assert!(verdicts[1..].iter().all(|verdict| !verdict.schedulable));
     let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
-    assert_eq!(outcome.tree_cte_queries, 0);
+    assert_eq!(outcome.tree_cte_queries, 2);
     assert!(matches!(
         outcome.term,
         WaveTreeTerm::Share(TreeShare {
@@ -822,9 +894,8 @@ async fn an_explicit_budget_applies_to_a_singleton_root() {
     ));
 }
 
-/// Both sides of the singleton shortcut comparison use the same nullable
-/// limit decoder. A present-null ceiling means the kernel default (32), not
-/// zero; with B=1 the tree term therefore remains binding.
+/// A present-null ceiling means the kernel default (32), not zero; with B=1
+/// the tree term therefore remains binding.
 #[tokio::test]
 async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -963,6 +1034,63 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
     );
 }
 
+/// r6 B1/codex construction: a default-budget singleton with two upgraded
+/// live rows must not stack 31 new block rows on top and commit 33 > B=32.
+#[tokio::test]
+async fn singleton_default_budget_counts_legacy_occupancy_before_admission() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "upgraded-default-root").await;
+    set_ceiling(&repo, &root, 31).await;
+    project(&repo, &root, &["legacy-a", "legacy-b"]).await;
+    mark_all_tasks_as_running_legacy(&repo, &root).await;
+
+    let keys = (0..31)
+        .map(|index| format!("new-{index:02}"))
+        .collect::<Vec<_>>();
+    let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+    project(&repo, &root, &key_refs).await;
+
+    assert_eq!(live_spec_count(&repo, &root).await, 32);
+    let new_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+            .bind(&root)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(new_rows, 30, "legacy occupancy must consume two of B=32");
+}
+
+/// r6 B1/subagent construction: B=6, ceiling=4 and four upgraded live rows
+/// leave exactly two slots; the report must not admit all four new keys.
+#[tokio::test]
+async fn singleton_explicit_budget_counts_legacy_occupancy_before_admission() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "upgraded-explicit-root").await;
+    set_ceiling(&repo, &root, 4).await;
+    set_tree_budget(&repo, &root, 8).await;
+    project(
+        &repo,
+        &root,
+        &["legacy-a", "legacy-b", "legacy-c", "legacy-d"],
+    )
+    .await;
+    mark_all_tasks_as_running_legacy(&repo, &root).await;
+    set_tree_budget(&repo, &root, 6).await;
+
+    project(&repo, &root, &["new-a", "new-b", "new-c", "new-d"]).await;
+
+    assert_eq!(live_spec_count(&repo, &root).await, 6);
+    let new_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+            .bind(&root)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(new_rows, 2, "legacy occupancy must leave only B-K slots");
+}
+
 /// The upgrade freeze is tree-wide, not merely local to the member carrying
 /// excess legacy rows. With K=B but root fixed occupancy 5 > share 4, the
 /// child must not use its otherwise-free fourth slot and push Σ to 9.
@@ -1013,6 +1141,18 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
                 .iter()
                 .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
     }));
+    for diagnostic in verdicts
+        .iter()
+        .flat_map(|verdict| &verdict.diagnostics)
+        .filter(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+    {
+        assert!(
+            diagnostic.message.contains("tree's excess in-flight work"),
+            "a sibling overage must not tell the reader to wait for this wave: {}",
+            diagnostic.message
+        );
+        assert!(!diagnostic.message.contains("task in this wave"));
+    }
     drop(conn);
 
     project(&repo, &child, &["new-a", "new-b"]).await;

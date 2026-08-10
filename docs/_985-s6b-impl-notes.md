@@ -15,7 +15,7 @@
 | B/N 共用重投影 | `wave_report.rs::tasks_rebuild_tree_tx`：一次枚举预计算全树 share；B PATCH 与 child-wave 创建都在同一写事务调用；裁 pending 后复核 live，in-flight 超额则整笔回滚 |
 | 事务上界 | `MAX_TREE_TASK_BUDGET=64`，结合 `N+1<=B` 封顶成员数；递归树查询固定 2 次，成员处理 O(N)，由 `tree_cte_queries` seam 守住 |
 | fail-closed | `WaveTreeTerm::RootUnresolved` ⇒ `effective_ceiling=0` + 每条声明追加 `tree_root_unresolved`，但继续走完 withdrawal / 已删块合成 / read-state 主干 |
-| 非树短路 | `wave_tree_term` 先做非递归形状判断，再用与点一相同的 `wave_tree_budget()` 取有效 B（NULL ⇒ 32）；仅孤根且 `B > spec_task_ceiling`、树项可证不收紧且不拥有相等边界诊断时短路，否则按 `N=1, share=B` 执行上界 |
+| 孤根 | 不设语义短路；与树成员走同一路径并得到 `N=1, share=B`。两条有界 CTE 各只有 1 行，仍为 O(1)，新增树项不会再漏出孤根分支 |
 | 诊断码 | `tree_budget_exhausted` / `tree_root_unresolved`；Rust recovery-action 契约为单一来源，web 交叉校验“该拧哪个旋钮”，缺参回退与 Rust 同为 share=0 |
 | 文档 | `985-doc-as-plan.md` D.4 #7 / §8 / C.2 / C.4 / §12.1 #19 #22 |
 
@@ -64,8 +64,8 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 `deterministic_share`。纯性质测试遍历 `B,N∈[0,64]`，双向断言
 `can_add_tree_member(B,N) == 创建后所有成员 share > 0`，既证明 soundness 也证明边界允许性；
 真实 adapter 交错再钉住接线：B=2 的首个 child 完成父任务后，库存已回落但第二个 child 因
-成员数被拒。孤根按有效 B 与 ceiling 比较：默认 B=32、ceiling=40 时不能短路，PATCH 回 NULL
-仍只准入 32；B>=ceiling 时才保留零递归优化。
+成员数被拒。孤根不再另写“可证不生效”谓词，始终计算 N=1 的真实 share；PATCH 回 NULL
+仍只准入默认 B=32。
 
 **G4. 「求不到根」包含哪些形态？设计只说「求不到根」。**
 选（fail-closed 一侧）：① 向上 CTE 返回 0 行或 >1 行；② 根深度 > `MAX_WAVE_TREE_DEPTH`；
@@ -76,10 +76,11 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 `tree_share_from_members` 纯 seam 直接喂一个不含 caller 的成员集。两条各自的单点变异都实测红。
 
 **G5. 两个 bound 同时收紧时报哪个诊断？设计没写。**
-选：`share <= spec_task_ceiling` 时报 `tree_budget_exhausted`（并指名根 wave），否则维持
-`spec_task_ceiling`。相等时单独抬 ceiling 仍无法多放一条，必须指向根预算；Rust 的
-`TASK_DIAGNOSTIC_ACTIONS` 固化 recovery action，web 测试读取该契约并校验文案旋钮。严格 `<`
-变异在 `share=ceiling=32` 下实测红。
+修复轮 6 裁决按本次写入的实际剩余容量归因：`tree_capacity < ceiling_capacity` 才报
+`tree_budget_exhausted`，否则报 `spec_task_ceiling`，所以平局归本地 ceiling。可复用性质验收
+分别构造严格 ceiling 绑定与严格 tree 绑定，读取诊断动作、执行一次对应 PATCH，再断言同一报告
+的准入数确实增加；把归因指向另一旋钮时实测 `2 → 2` 并 RED。平局另由普通/整树入口同码测试
+锁为 `spec_task_ceiling`。
 
 ## 3.1 修复轮 2 实现收口
 
@@ -125,7 +126,19 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
   fail-closed seam。后一分支在正确 `Σshare=B` 下数学上冗余，测试的是内部不一致兜底。
 - M1：SQL 门只接受直接合取叶 `alias.depth </<= ?N`（以及既有等价反向写法）；CASE、函数、
   常量 RHS、布尔 postfix 全拒。workspace members 改由 TOML parser 读取，不依赖 manifest 排版。
-- MINOR：孤根 shortcut 的相等边界改为 `budget > ceiling` 才短路，并用两个 rebuild 入口同码验收。
+- MINOR：孤根 shortcut 的相等边界曾改为 `budget > ceiling`，修复轮 6 已将整条 shortcut 删除。
+
+## 3.5 修复轮 6 实现收口
+
+- B1：删除孤根短路与 `WaveTreeTerm::NotInTree`；孤根真实计算 `Share{members:1,share:B}`，legacy
+  固定占用因此必经 tree capacity。两份评审构造分别锁住 `33→32 (B=32)` 与 `8→6 (B=6)`。
+- B2：诊断归因由剩余容量严格比较决定，平局归 local ceiling；新增“读取动作→执行 PATCH→重新
+  投影→准入数增加”的效果性质，错误指向非绑定旋钮时 `2→2`。
+- MINOR：tree freeze 文案不再谎称要等当前 wave，而统一指向整组 excess in-flight work；
+  workspace member root 缺 `Cargo.toml` 立即 panic，合法 glob 在未实现展开前也 fail-closed。
+- SQL 门继续刻意只接受 `alias.depth </<= ?N`（含反向等价式）。常量界、未限定列、匿名 `?`、
+  引号标识符虽可合法有界，但此门不做 SQL 名称解析/参数计数；若要引入必须先扩充正反矩阵，
+  不能让一个看似有界的 token 误保护别名错误或未绑定递归变量。
 
 ## 4. 停下来没做的（**不就地扩范围**）
 
@@ -149,9 +162,9 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 - **N6. 运行时任意 `format!/push_str` 生成 SQL 仍不是静态门可完备证明的对象。** 门覆盖 Rust
   literal、literal-only `concat!`、所有 workspace member 的 `.sql`（含常规 include/query_file/migration 载体）；
   若未来确需动态构造递归树 SQL，应迁到可扫描 `.sql`/完整 literal，而不是削弱门。
-- **N7. SQL 门刻意误红 `HAVING` / `IN`。** 这是安全方向：本树递归 SQL 的唯一允许形状是
-  ON/WHERE 中参数化的直接比较合取叶。需要其他等价语法时先扩语法白名单和红/绿矩阵，不能靠
-  “语义等价”放宽。
+- **N7. SQL 门刻意误红 `HAVING` / `IN` / 常量界 / 未限定列 / 匿名 `?` / 引号标识符。** 这是
+  安全方向：本树递归 SQL 的唯一允许形状是 ON/WHERE 中 alias-qualified、编号参数化的直接比较
+  合取叶。需要其他等价语法时先扩语法白名单和红/绿矩阵，不能靠“语义等价”放宽。
 - **N8. `tree_cte_queries` 是回退检测，不是 SQL tracing。** 它能抓循环退回全量入口，不能抓
   未来有人在循环体手写新的递归调用；任意递归 SQL 的终止性另由性质门覆盖。若要购买严格查询
   数，应在 DB 执行层加计数 seam，而不是继续累加调用方字面量。
@@ -161,22 +174,23 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 | 门 | 命令 | 结果 |
 |---|---|---|
 | fmt | `cargo fmt --all --check` | 干净（无输出） |
-| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | 最终 `Finished dev profile in 1m 11s`，0 warning；首次精确抓到 TOML helper 的 `needless_borrow`，修复后原命令重跑全绿 |
-| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | 最终 **3402 tests run: 3402 passed, 89 skipped**（104 binaries，28.517s；最终增量编译 1m49s）。较早一轮 **3400/3401**：既有 scheduler `acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive` 时序失败；同 profile 定向复跑 **1/1**，其后三次全量原命令均全绿 |
+| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | 最终 `Finished dev profile in 1m 14s`，0 warning |
+| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | 最终 **3406 tests run: 3406 passed, 89 skipped**（104 binaries，34.202s）。第一轮 **3405/3406** 抓到旧 schema fixture 缺基线 `waves.created_at`，补夹具后定向 **1/1**；第二轮仅 #1046 的既有 `acceptance_19` 偶发红，定向 **1/1** 后最终全量全绿 |
 | 生成物 | `web: npm run gen:api` 后 `git diff --exit-code -- src/api/openapi.json src/api/generated.ts src/api/generated-terminal.ts src/api/generated-events.ts src/editor/types/` | 干净，无生成物漂移 |
-| web build | `npm run build` | 成功，`built in 739ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web build | `npm run build` | 成功，`built in 727ms`（仅既有 CSS highlight / chunk-size 警告） |
 | web test | `npm run test` | **85 files / 1232 tests passed**，`Type Errors no errors` |
 | fe lint | `npm run lint` | `no dependency violations found (102 modules, 232 dependencies)` |
-| fe build | `npm run build` | 成功，`built in 206ms` |
+| fe build | `npm run build` | 成功，`built in 213ms` |
 | fe test | `npm run test`（含 `test:wire` + `test:mock-drift`） | **758 passed / 1 skipped**，wire 与 mock 均无漂移 |
 
 环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 全程未设置，
-web/fe 最终全门显式使用 Node `v22.22.2`。
+web/fe 最终全门显式使用 Node `v22.22.0`。
 
-修复轮 5 的复原后定向回归：`calm-truth` wave-tree 集合 **33/33**，全 workspace SQL 性质门
-**17/17**，`calm-server` child adapter **12/12** + total postcondition **1/1** + policy **8/8**。
+修复轮 6 的复原后定向回归：`calm-truth --lib` **357/357**（其中 wave-tree **26/26**），
+全 workspace SQL 性质门 **18/18**，`calm-server` child adapter **12/12**，web report-block
+**56/56**。
 
-修复轮 5 最终 Rust/web/fe 全门全绿；web/fe 从第一条正式命令起均显式使用 Node 22.22.2，且
+修复轮 6 最终 Rust/web/fe 全门全绿；web/fe 正式全门均显式使用 Node 22.22.0，且
 实现 worktree 内 `node_modules` 存在，vitest 确实执行（不是缺依赖的结构性复核）。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
