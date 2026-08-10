@@ -39,11 +39,12 @@ static、块表达式四种过去的零告警绕过均逐一变异为 RED。
 ## 3. 设计缺口 —— 我选了什么、依据是什么（**不静默决定**）
 
 **G1. `tree_task_budget` 改动要不要触发重投影？设计没写。**
-选：**要**，且**只重投影被 PATCH 的那个 wave**（并入 `projection_policy_changed`）。
-依据：`spec_task_ceiling` 的先例（`routes/waves.rs:1310/1318`）；树内其余 wave 在各自
-下次投影时收敛，这与「人把 ceiling 调低到在飞数以下」是**同一条已批准的退化语义**
-（doc-as-plan §4.2 / §8）。**没有**去做「整树 rebuild」—— fork C7 已证伪那条路，
-而且它会引入新的批量重建工作单元（全仓无先例）。
+修复轮 3 改选：**要，且根预算 PATCH 在同一 IMMEDIATE 事务内重投影有界成员集的每个 wave**。
+理由不是用 rebuild 重新裁决历史顺序（fork C7 证伪的仍是那种方案），而是 B 本身是每个成员
+确定性 share 的输入；只重投影根会让子 wave 的旧 pending 无限期保留并可直接 claim。当前实现
+复用既有 `tasks_rebuild_tx`，没有新增持久载体或跨事务协议；每个发生变化的成员按自身 wave/cove
+scope 发 `PlanUpdated`。SQLite writer 串行化 PATCH/claim：PATCH 返回后旧 pending 已不存在；若 claim
+先赢并成为 in-flight，则继续走设计已批准的“调低 ceiling 到在飞数以下”退化语义。
 
 **G2. root-only 守卫落 route 还是落 DB？设计只说「第 4/5 项还要加非 root ⇒ 拒绝」。**
 选：**落 `wave_update_tx`（共用 in-tx writer）**，route 只保留 user-only 与取值校验。
@@ -86,6 +87,18 @@ static、块表达式四种过去的零告警绕过均逐一变异为 RED。
 - M3：Rust recovery action 为单一契约，web 做跨文件校验；两边任改一边均有实测红变异。
 - MINOR：相等份额归因、双向相容性、migration fixture 集合相等、web 缺参回退均补齐。
 
+## 3.2 修复轮 3 实现收口
+
+- B1：`effective_limit(Option<i64>, default)` 成为 ceiling 与 B 的共同解析函数；shortcut、投影状态、
+  `wave_tree_budget` 都不再自行解释裸列。`ceiling=NULL,B=1` 只准 1 条。
+- B2：根预算 PATCH 同事务枚举 `WAVE_TREE_MEMBERS_SQL` 并逐成员 rebuild；子 pending 在响应前被裁，
+  随后的生产 claim seam 返回 0。
+- M-1/M1/M-2：性质门覆盖 calm-truth + calm-server 的生产 Rust 和 crate 内 `.sql`；解析单个 CTE
+  括号体与 UNION 递归成员，`RECURSIVE` 可选，只接受 ON/WHERE 中绑定递归 alias 的正序/反序上界。
+  各 literal 不再跨文件/跨 const 拼接，仅 literal-only `concat!` 按真实语义合并。
+- MINOR：删除 mutation-map 对退休登记门的引用并重写已过期的 crate-wide 结论；web 现在显示
+  `root_wave_id`，多树场景能直接指出应修改的根。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -94,36 +107,44 @@ static、块表达式四种过去的零告警绕过均逐一变异为 RED。
   那条断言（改成断言理由字符串），**没有**去改既有的 `spec_task_ceiling` / `automation_policy`
   测试 —— 那是 PR-A 之前就存在的形状，改它要连带审视 REST 的 AI actor 归因路径（另一个载体）。
   **建议单开 issue**：`ai:*` actor 经 REST 的空 card id 403 把所有 user-only 闸的验收变成恒真。
-- **N2. 没有做「整树 rebuild」/ `tree_rebuild_tx`。** fork C7 证伪 + 它是新的批量工作单元。
-- **N3. 没有做丙-1（claim 事务里的树级在飞检查）。** 设计说它只能当补充，且会碰
-  scheduler 的 claim 路径 —— 新面，超出本片。
+- **N2. 没有新增 `tree_rebuild_tx` 持久载体。** 修复轮 3 只在现有 PATCH 写事务内编排既有
+  `tasks_rebuild_tx`；这不是 fork C7 所否决的“用 rebuild 顺序决定共享 pending 配额”。
+- **N3. 没有另加 claim 时的树级在飞检查。** 同事务整树重投影已封住本轮的 stale-pending 问题；
+  先于 PATCH claim 成功的行已经是 in-flight，属于设计明确允许的调低预算退化。再加 claim fence
+  会改变 scheduler 语义与查询成本，且不改变本轮验收结果，故不扩面。
 - **N4. `tree_task_budget` 没有进 `Wave` / `WaveRow`。** 照 `spec_task_ceiling` /
   `parent_wave_id` 的先例（doc-as-plan §11：`WaveRow` 的显式 SELECT 有 8 处，sqlx 运行时才炸）。
-  读它的只有内核 SQL。
+  读它的只有内核 SQL。r3 m-4 仍仅为可观测性缺口；补公开字段会扩 OpenAPI/event replay/8 处显式
+  SELECT，超出本轮预算正确性修复。
+- **N5. SQL 注释剥离没有抽成生产公共 API。** `wave_tree.rs` 的 ORDER 结构断言与集成性质门都只在
+  测试编译期运行，但前者只需固定常量的简单检查，后者需要带引号状态机并扫描外部文件；为消除
+  测试辅助代码重复而公开新库 API 得不偿失。r3 m-3 记录保留，性质由各自行为夹具独立购买。
+- **N6. 运行时任意 `format!/push_str` 生成 SQL 仍不是静态门可完备证明的对象。** 门覆盖 Rust
+  literal、literal-only `concat!`、两 crate 全部 `.sql`（含常规 include/query_file/migration 载体）；
+  若未来确需动态构造递归树 SQL，应迁到可扫描 `.sql`/完整 literal，而不是削弱门。
 
 ## 5. 门（实际数字）
 
 | 门 | 命令 | 结果 |
 |---|---|---|
 | fmt | `cargo fmt --all --check` | 干净（无输出） |
-| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | `Finished dev profile in 1m 25s`，0 warning |
-| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3379 tests run: 3379 passed, 89 skipped**（104 binaries，87.040s） |
+| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | 最终增量复跑 `Finished dev profile in 0.53s`，0 warning（首次全量 47.22s） |
+| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3390 tests run: 3390 passed, 89 skipped**（104 binaries，32.665s） |
 | 生成物 | `web: npm run gen:api` 后 `git diff --exit-code -- src/api/openapi.json src/api/generated.ts src/api/generated-terminal.ts src/api/generated-events.ts src/editor/types/` | 干净，无生成物漂移 |
-| web build | `npm run build` | 成功，`built in 812ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web build | `npm run build` | 成功，`built in 795ms`（仅既有 CSS highlight / chunk-size 警告） |
 | web test | `npm run test` | **85 files / 1232 tests passed**，`Type Errors no errors` |
 | fe lint | `npm run lint` | `no dependency violations found (102 modules, 232 dependencies)` |
-| fe build | `npm run build` | 成功，`built in 207ms` |
+| fe build | `npm run build` | 成功，`built in 228ms` |
 | fe test | `npm run test`（含 `test:wire` + `test:mock-drift`） | **758 passed / 1 skipped**，wire 与 mock 均无漂移 |
 
 环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 全程未设置，
 web/fe 最终全门显式使用 Node `v22.22.2`。
 
-修复轮 2 的复原后定向回归：`calm-truth` 树预算集合 **29/29**，B2 crate-wide 性质门 **4/4**，
-`calm-server` 两个独立预算守卫 **2/2**，升级 fixture **2/2**，`calm-types` 诊断契约 **11/11**，
-web report-block 文案 **56/56**。
+修复轮 3 的复原后定向回归：`calm-truth` wave-tree 集合 **30/30**，双 crate SQL 性质门
+**13/13**，`calm-server` policy PATCH 套件 **7/7**，web report-block 文案 **56/56**。
 
-本轮最终 Rust/web/fe 全门一次全绿。web 首次命令探测到系统默认 Node 24 后在生成物阶段中止，
-不计为门结果；随后从 `gen:api` 起用显式 Node 22 路径完整重跑并得到表中结果。
+修复轮 3 最终 Rust/web/fe 全门全绿；web/fe 从第一条正式命令起均显式使用 Node 22.22.2，且
+实现 worktree 内 `node_modules` 存在，vitest 确实执行（不是缺依赖的结构性复核）。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
 

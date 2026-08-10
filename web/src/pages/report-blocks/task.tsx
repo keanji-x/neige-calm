@@ -54,6 +54,11 @@ function gateResultText(value: unknown): string | null {
     : 'Checks: not passed';
 }
 
+function treeRootLabel(diagnostic: Diagnostic): string {
+  const root = textArg(diagnostic, 'root_wave_id');
+  return root ? `top wave “${root}”` : 'top wave';
+}
+
 const taskDiagnosticCopy = Object.freeze({
   duplicate_key: (d: Diagnostic) => `Two task cards use “${textArg(d, 'key')}”. Rename this card or the other one.`,
   dependency_cycle: (d: Diagnostic) => `These tasks wait on each other: ${textArg(d, 'keys')}. Break one dependency to continue.`,
@@ -74,8 +79,8 @@ const taskDiagnosticCopy = Object.freeze({
   task_key_completed: () => 'This task key has already been delivered. Create a new task card with a new key for more work.',
   invalid_declaration: () => 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.',
   tree_budget_exhausted: (d: Diagnostic) => (typeof d.messageArgs.share === 'number' ? d.messageArgs.share : 0) === 0
-    ? `This group has ${String(d.messageArgs.tree_waves ?? '')} linked waves but an AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave receives no task slots. Raise the limit on the top wave or remove extra child waves.`
-    : `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. Raise the limit on the top wave or let an in-progress task in this wave finish.`,
+    ? `This group has ${String(d.messageArgs.tree_waves ?? '')} linked waves but an AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave receives no task slots. Raise the limit on ${treeRootLabel(d)} or remove extra child waves.`
+    : `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. Raise the limit on ${treeRootLabel(d)} or let an in-progress task in this wave finish.`,
   tree_root_unresolved: () => 'This wave is linked into a group of waves whose top wave cannot be found, so its share of the shared AI-task limit is unknown and nothing is queued here. Repair or remove the broken sub-wave link.',
 });
 

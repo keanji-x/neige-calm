@@ -14,7 +14,7 @@
 | # | 变异（改坏什么） | 目标测试全名 | 结果 |
 |---|---|---|---|
 | M1 | `task_projection.rs` 的 `WaveTreeTerm::Share(share) => (ceiling.min(share.share), …)` 换成**共享计数**：`ceiling.min(share.budget - 全树其它 wave 的非终结 spec 行数)` | `db::sqlite::wave_tree_budget_tests::two_rebuild_orders_over_one_tree_agree_byte_for_byte` | **RED** |
-| M2 | `wave_tree.rs` 的 `bounded_wave_descendant_cte!` 删掉 `WHERE down.depth <= ?2`（唯一终止装置） | `every_recursive_parent_wave_cte_in_the_crate_has_a_depth_bound` | **RED；R2 已把原名单内文本门升级为 crate-wide 性质门** |
+| M2 | `wave_tree.rs` 的 `bounded_wave_descendant_cte!` 删掉 `WHERE down.depth <= ?2`（唯一终止装置） | `every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable` | **RED；R3 已把判据升级为双 crate、逐 CTE 递归成员/alias 绑定性质门** |
 | M3 | `BOUNDED_WAVE_TREE_SQL` 里删掉 `WAVE_TREE_MEMBERS_SQL`（模拟「新增 CTE 漏登记」） | 原 `every_bounded_tree_cte_expansion_is_registered` | **历史 RED，登记表与该实例变异已退休。** 当前等价风险由 R2-B2a-d 的四类“新增无界 CTE”性质变异覆盖。 |
 | M4 | `RootUnresolved` 臂从 fail-closed 改成「没有树就跳过树项」（`(ceiling, None)`） | `db::sqlite::wave_tree_budget_tests::unresolvable_root_fails_closed_for_every_declaration` | **RED** |
 | M5a | migration `0072_` 的列加上 `DEFAULT 32`（照 `spec_task_ceiling` 的旧形状） | `db::sqlite::wave_tree_budget_tests::every_created_wave_lands_a_null_tree_task_budget`（`dflt_value` 断言） | **RED** |
@@ -53,9 +53,9 @@
 - **未实现的交付项：0 条。**
 - 未单独做变异的点，各有覆盖它的变异：
   1. 「整个强制点一删掉」—— 由 M7（差一）覆盖同一条断言；再做一遍是同一测试的第二次红。
-  2. 「向下 CTE 携带非 id 列」—— 无法只靠删一行制造（要重写 CTE 与外层 JOIN）；
-     它由 M2（删截断）+ `every_bounded_tree_cte_expansion_is_registered`（登记制）
-     共同把守，且宏本身是**唯一**产出点（源码扫描断言展开数 == 登记数）。
+  2. 「向下 CTE 携带非 id 列」—— 无法只靠删一行制造（要重写 CTE 与外层 JOIN）；环上终止
+     不再归因于已删除的登记门，而由 M2/R3-SQL3 直接购买：递归成员必须约束其**递归 alias 自己的**
+     `depth`。即使后来多携带列，显式深度上界仍是终止真因；“只携带 id+depth”保留为查询形状约束。
 
 ## 四、这些变异**共同**买到的性质
 
@@ -63,7 +63,8 @@
    rebuild 序分叉。
 2. **环上必然终止的唯一装置是 depth 截断** —— M2。`UNION ALL`↔`UNION` 在 PR-A 已实证
    换不出区别，所以本片不再拿它当变异。
-3. **登记制有机器联系** —— M3。名单与成员之间不是「人记得加」，源码扫描会红。
+3. **生产执行面都受性质门约束** —— R3-SQL1/SQL2：`calm-truth`、`calm-server` 的生产 Rust
+   字符串与 crate 内 `.sql` 都被扫描，不再依赖登记名单。
 4. **fail-closed 不是可选项** —— M4。
 5. **单一真源** —— M5a/M5b/M6：列没有 DEFAULT、每条建 wave 路径显式写 NULL、
    root-only 守卫落在共用 in-tx writer（不是 route）。
@@ -107,8 +108,10 @@
   用例只收紧显式预算分支，没有删掉原短路覆盖。
 - 原 `RootUnresolved` fail-closed 由既有“所有声明不可调度”继续购买；新实现去掉早退后，withdrawal
   边沿与已删块合成 verdict 分别由 R1-M3 的同一交错购买。
-- 登记清单与 AST 枚举已删除。crate-wide token/string 扫描直接购买「任何触及 `parent_wave_id`
-  的递归 CTE 都有 depth 截断」；const/static/内联 mod/块/包装宏都不需要登记。
+- 登记清单与 AST 枚举已删除。当前门扫描 `calm-truth` + `calm-server` 的 `src/**/*.rs` 与两个
+  crate 内全部 `.sql`（覆盖 migrations / `include_str!` / `query_file!` 的常规 `.sql` 载体）；Rust
+  每个 literal 独立检查，仅对真实 literal-only `concat!` 合并。判据限定到单个 CTE 的递归成员：
+  该成员同时自引用并触及 `parent_wave_id` 时，ON/WHERE 必须上界约束递归 CTE alias 的 `depth`。
 - 配额顺序的方向由固定 id/created_at 反序行为用例购买，同毫秒 id tie-break 由第二条行为用例购买；
   真正 `ORDER BY` 子句的存在性由剥离 SQL 注释后的结构断言购买。
 - 点一的库存 `>=` 与成员上界现在各有对方明确放行的 adapter 交错；两者组合的 soundness 与
@@ -119,7 +122,7 @@
 | # | 改坏什么 | 红的测试 | 实测结果 |
 |---|---|---|---|
 | R2-B1 | 孤根短路恢复为 `tree_task_budget IS NULL`，不比较同源有效 B 与 ceiling | `resetting_an_explicit_budget_to_null_keeps_the_default_bound` | **RED**：PATCH 回 NULL 后 40/40 schedulable，期望 32 |
-| R2-B2a | 在内联 `mod` 放一条无 depth 的递归 parent-wave SQL | `every_recursive_parent_wave_cte_in_the_crate_has_a_depth_bound` | **RED**：报告该 SQL 无 depth bound |
+| R2-B2a | 在内联 `mod` 放一条无 depth 的递归 parent-wave SQL | `every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable` | **RED**：报告该 SQL 无 depth bound；R3 与 b/c/d 捆绑重跑，四条分别报告 |
 | R2-B2b | 同一无界 SQL 改由包装宏生成 | 同上 | **RED** |
 | R2-B2c | 同一无界 SQL 写成 `static` | 同上 | **RED** |
 | R2-B2d | 同一无界 SQL 写成块表达式 `const` | 同上 | **RED** |
@@ -136,3 +139,36 @@
 
 复原审计：上述临时 SQL、宏、static、migration 0073、条件与文案变异均已删除/恢复；最终定向门
 再次全绿后才运行 §9 全门。
+
+## 七、修复轮 3（r3 双通道阻塞集，全部实际执行并复原）
+
+环境：`PATH` 含 `.local-bin`、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置；web 使用
+Node 22.22.2。每个临时实现/SQL/文案补丁均用反向 `apply_patch` 复原。
+
+| # | 改坏什么 | 红的测试 | 实测结果 |
+|---|---|---|---|
+| R3-B1a | singleton shortcut 的 ceiling 改回裸 `Option` 的 `NULL→0` | `a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root` | **RED**：5 条全部 schedulable，期望 1 |
+| R3-B1b | 有效 B 的 NULL 默认从 32 改成 31（不再与统一解析契约一致） | `resetting_an_explicit_budget_to_null_keeps_the_default_bound` | **RED**：31 条 schedulable，期望 32 |
+| R3-B2 | 根预算 PATCH 退回只重投影根（成员枚举分支强制关闭） | `tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_claimed` | **RED**：子 pending count 仍为 1，未到 claim 断言即失败 |
+| R3-SQL1 | 在 `calm-truth/src` 注入无界 parent-wave 递归 CTE | `every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable` | **RED**：报告 calm-truth 文件与 CTE |
+| R3-SQL2 | 在 `calm-server/src` 注入同形无界 CTE | 同上 | **RED**：报告 calm-server 文件与 CTE |
+| R3-SQL3 | 递归臂无 bound，只在外层 `SELECT` 写 `WHERE depth<=?2` | 同上 | **RED**：报告 CTE body 无递归变量 bound |
+| R3-SQL4 | 省略 SQLite 可选的 `RECURSIVE` 关键字且不设 bound | 同上 | **RED**：`WITH down...` 仍被识别并报告 |
+| R3-SQL5 | 用 `guard.depth<=?2` 给真正的递归变量伪造通行证 | 同上 | **RED**：错误 alias 不再满足判据 |
+| R3-m5 | web 不渲染 `root_wave_id`，只写泛称 top wave | `keeps capacity copy aligned with the Rust recovery-action contract` | **RED**：缺少 `wave-root-985` |
+
+三类旧误红的常驻正例在复原态实跑为绿：`?2 >= down.depth`、同语句无关递归 CTE +
+`parent_wave_id`、同文件两条无关字面量；literal-only `concat!` 的真实拼接反例也被识别。性质门复原态
+**13/13**。
+
+### 7.1 受本轮实现影响的旧证据保质期刷新
+
+| 旧条目 | 为什么受影响 | R3 重跑 |
+|---|---|---|
+| M9 | 改了 singleton shortcut 解码路径 | 把形状判断强制成“在树中”后 `a_non_tree_wave_runs_zero_recursive_tree_queries` **RED** |
+| R2-B1 | 改了 shortcut 的完整比较式 | 强制 singleton 恒 `NotInTree` 后 reset 用例 **RED：40/40，期望 32** |
+| R2-B2a–d | 性质门已完全重写 | 内联 mod / 包装宏 / static / 块 const 四种无界 SQL 同批注入，门列出 **4 条独立 violation** |
+| R2-M3b | web tree 文案新增根 ID | 把 `top wave` 改成 `wave settings` 后契约测试仍 **RED**，同时保留根 ID 断言 |
+
+其余旧条目没有经过本轮改动的执行路径或判据；不伪造“重跑”记录。复原搜索确认没有
+`R3_*_MUTANT`、强制 false 分支或临时默认值残留。

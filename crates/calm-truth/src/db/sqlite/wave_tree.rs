@@ -7,11 +7,11 @@
 //! (as opposed to `UNION ALL`) does NOT terminate these walks — PR-A proved
 //! that empirically — and a carried non-id column defeats even `UNION`'s
 //! duplicate elimination. Hence: every fragment below carries `id` (plus the
-//! depth counter) and nothing else. A crate-wide property test scans every
-//! Rust string (including strings nested in macro token trees) and rejects any
-//! recursive CTE touching `parent_wave_id` without a depth bound. There is no
-//! registry to remember to update: the property, rather than a list of known
-//! declarations, is the gate.
+//! depth counter) and nothing else. A production-scope property test scans the
+//! Rust strings and `.sql` files in both executing crates and rejects a
+//! recursive member touching `parent_wave_id` unless its ON/WHERE predicate
+//! upper-bounds that CTE alias's own depth. There is no registry to remember to
+//! update: the property, rather than a list of known declarations, is the gate.
 //!
 //! PR-B adds the two downward walks: the creation-admission inventory count
 //! (`child-wave`'s `prepare_tx`) and the tree membership enumeration that
@@ -28,6 +28,20 @@ pub const MAX_WAVE_TREE_DEPTH: i64 = 3;
 /// Kernel default for `waves.tree_task_budget` (the column is `NULL`-by-
 /// default on purpose; see migration 0072).
 pub const DEFAULT_TREE_TASK_BUDGET: i64 = 32;
+
+/// Kernel default for `waves.spec_task_ceiling`.
+pub(crate) const DEFAULT_SPEC_TASK_CEILING: i64 = 32;
+
+/// Decode nullable persisted limits at every enforcement point.
+///
+/// Keeping the NULL fallback and non-negative clamp here matters more than it
+/// first appears: the singleton shortcut compares the effective tree budget
+/// with the effective per-wave ceiling. If either side decodes the bare SQL
+/// column on its own, SQLite/sqlx can turn NULL into a different value and
+/// make that comparison prove a shortcut which the projector does not honor.
+pub(crate) fn effective_limit(value: Option<i64>, default: i64) -> i64 {
+    value.unwrap_or(default).max(0)
+}
 
 /// Both ancestor queries must expand this exact bounded fragment. `UNION`
 /// cannot terminate a CTE carrying depth; the depth predicate is the only
@@ -157,7 +171,7 @@ async fn wave_tree_shortcut(
     conn: &mut SqliteConnection,
     wave_id: &str,
 ) -> Result<Option<(bool, i64)>> {
-    let row: Option<(i64, i64)> = sqlx::query_as(
+    let row: Option<(i64, Option<i64>)> = sqlx::query_as(
         "SELECT CASE WHEN w.parent_wave_id IS NOT NULL \
            OR EXISTS(SELECT 1 FROM waves c WHERE c.parent_wave_id = w.id) \
          THEN 1 ELSE 0 END, w.spec_task_ceiling FROM waves w WHERE w.id = ?1",
@@ -165,7 +179,12 @@ async fn wave_tree_shortcut(
     .bind(wave_id)
     .fetch_optional(&mut *conn)
     .await?;
-    Ok(row.map(|(in_tree, ceiling)| (in_tree == 1, ceiling.max(0))))
+    Ok(row.map(|(in_tree, ceiling)| {
+        (
+            in_tree == 1,
+            effective_limit(ceiling, DEFAULT_SPEC_TASK_CEILING),
+        )
+    }))
 }
 
 /// Resolve `wave_id`'s tree term.
@@ -259,10 +278,10 @@ pub async fn wave_tree_budget(conn: &mut SqliteConnection, root_id: &str) -> Res
             .bind(root_id)
             .fetch_optional(&mut *conn)
             .await?;
-    Ok(row
-        .and_then(|(budget,)| budget)
-        .unwrap_or(DEFAULT_TREE_TASK_BUDGET)
-        .max(0))
+    Ok(effective_limit(
+        row.and_then(|(budget,)| budget),
+        DEFAULT_TREE_TASK_BUDGET,
+    ))
 }
 
 /// Whole-tree non-terminal `declared_by='spec'` row count, rooted at `root_id`.

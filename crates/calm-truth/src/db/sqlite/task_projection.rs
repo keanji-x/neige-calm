@@ -11,11 +11,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
-use super::wave_tree::WaveTreeTerm;
+use super::wave_tree::{DEFAULT_SPEC_TASK_CEILING, WaveTreeTerm, effective_limit};
 use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 
-const DEFAULT_SPEC_TASK_CEILING: i64 = 32;
 /// Persisted task columns compared for in-flight declaration drift. `refs` is
 /// resolved through the frozen context/index rather than stored on `tasks`;
 /// `no_gate_reason` is folded into legacy context and otherwise only affects
@@ -463,10 +462,7 @@ async fn wave_projection_state(
     let row = row.ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
     Ok(WaveProjectionState {
         policy: row.automation_policy,
-        ceiling: row
-            .spec_task_ceiling
-            .unwrap_or(DEFAULT_SPEC_TASK_CEILING)
-            .max(0),
+        ceiling: effective_limit(row.spec_task_ceiling, DEFAULT_SPEC_TASK_CEILING),
         require_gates: row.require_task_gates != 0,
         source_cove: row.cove_id,
         inflight: serde_json::from_str(&row.inflight_json)?,

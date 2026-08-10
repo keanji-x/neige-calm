@@ -804,6 +804,57 @@ async fn an_explicit_budget_applies_to_a_singleton_root() {
     ));
 }
 
+/// Both sides of the singleton shortcut comparison use the same nullable
+/// limit decoder. A present-null ceiling means the kernel default (32), not
+/// zero; with B=1 the tree term therefore remains binding.
+#[tokio::test]
+async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let lonely = seed_wave(&repo, &cove, "lonely").await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    wave_update_tx(
+        &mut tx,
+        &lonely,
+        WavePatch {
+            spec_task_ceiling: Some(None),
+            tree_task_budget: Some(Some(1)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let decls = declarations(&["k1", "k2", "k3", "k4", "k5"]);
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(
+        &mut conn,
+        &lonely,
+        &decls,
+        &vec![Vec::new(); decls.len()],
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        verdicts
+            .iter()
+            .filter(|verdict| verdict.schedulable)
+            .count(),
+        1
+    );
+    assert!(matches!(
+        wave_tree_term(&mut conn, &lonely).await.unwrap().term,
+        WaveTreeTerm::Share(TreeShare {
+            budget: 1,
+            members: 1,
+            share: 1,
+            ..
+        })
+    ));
+}
+
 /// PATCH back to NULL restores the kernel default; it does not remove the
 /// bound. Both enforcement points must therefore read B=32 for this wave.
 #[tokio::test]

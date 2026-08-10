@@ -901,10 +901,13 @@ describe('degraded blocks', () => {
     expect(actions.get('spec_task_ceiling')).toBe('raise_spec_task_ceiling');
 
     const treeCopy = taskDiagnosticText({
-      code: 'tree_budget_exhausted', messageArgs: { tree_waves: 2, tree_task_budget: 2, share: 1 },
+      code: 'tree_budget_exhausted', messageArgs: {
+        root_wave_id: 'wave-root-985', tree_waves: 2, tree_task_budget: 2, share: 1,
+      },
       relatedBlockIds: [], path: 'key', message: '', action: actions.get('tree_budget_exhausted'),
     });
     expect(treeCopy).toMatch(/top wave/);
+    expect(treeCopy).toContain('wave-root-985');
     expect(treeCopy).not.toMatch(/wave settings/);
 
     const ceilingCopy = taskDiagnosticText({
