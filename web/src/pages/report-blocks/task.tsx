@@ -64,13 +64,27 @@ const taskDiagnosticCopy = Object.freeze({
   dependency_cycle: (d: Diagnostic) => `These tasks wait on each other: ${textArg(d, 'keys')}. Break one dependency to continue.`,
   unknown_dependency: (d: Diagnostic) => `“${textArg(d, 'dependency')}” is not a task card here. It may only exist as an older task row; link this card to a current task key.`,
   gate_required: () => 'This wave requires checks. Add a check, or explain why this task does not need one.',
-  spec_task_ceiling: (d: Diagnostic) => d.messageArgs.bounds_tied === true
-    ? d.messageArgs.capacity_raise_unavailable === true
-      ? `This wave’s AI-task limit and its share of the group limit are both full, but the group limit on ${treeRootLabel(d)} has no higher legal target in the current configuration. Let in-progress work finish or reduce the number of linked waves.`
-      : `This wave’s AI-task limit and its share of the group limit are both full. Raise both the limit in this wave’s settings and the group limit on ${treeRootLabel(d)}; raising either one alone will not admit another card.`
-    : d.messageArgs.ceiling === 0
-      ? 'The AI-task limit is 0. Raise the limit in wave settings before allowing AI tasks.'
-      : `The AI-task limit is ${String(d.messageArgs.ceiling ?? '')}; ${String(d.messageArgs.occupied ?? '')} slots are already in use. Cards are admitted in document order, then by key, so an earlier card can push this one out. Raise the limit in wave settings or move this card earlier.`,
+  spec_task_ceiling: (d: Diagnostic) => {
+    const minimum = typeof d.messageArgs.minimum_spec_task_ceiling === 'number'
+      ? d.messageArgs.minimum_spec_task_ceiling
+      : undefined;
+    const exactRaise = minimum === undefined
+      ? 'Raise the limit in wave settings'
+      : `Raise the limit in wave settings to at least ${String(minimum)}`;
+    if (d.messageArgs.admission_frozen === true) {
+      return d.messageArgs.capacity_raise_unavailable === true
+        ? `This group is frozen and this wave’s local AI-task limit has no free slot, but the group limit on ${treeRootLabel(d)} has no higher legal target in the current configuration. Raising the local limit alone will not admit another card. Let in-progress work finish or reduce the number of linked waves.`
+        : `This group is frozen and this wave’s local AI-task limit has no free slot. ${exactRaise}, and follow the group-limit recovery action for ${treeRootLabel(d)}.`;
+    }
+    if (d.messageArgs.bounds_tied === true) {
+      return d.messageArgs.capacity_raise_unavailable === true
+        ? `This wave’s AI-task limit and its share of the group limit are both full, but the group limit on ${treeRootLabel(d)} has no higher legal target in the current configuration. Let in-progress work finish or reduce the number of linked waves.`
+        : `This wave’s AI-task limit and its share of the group limit are both full. ${exactRaise} and raise the group limit on ${treeRootLabel(d)}; raising either one alone will not admit another card.`;
+    }
+    return d.messageArgs.ceiling === 0
+      ? `The AI-task limit is 0. ${exactRaise} before allowing AI tasks.`
+      : `The AI-task limit is ${String(d.messageArgs.ceiling ?? '')}; ${String(d.messageArgs.occupied ?? '')} slots are already in use. Cards are admitted in document order, then by key, so an earlier card can push this one out. ${exactRaise} or move this card earlier.`;
+  },
   reference_needs_block: (d: Diagnostic) => `“${textArg(d, 'reference')}” points to a wave, not a block. Link the exact block this task needs.`,
   reference_missing: (d: Diagnostic) => `“${textArg(d, 'reference')}” no longer resolves. Open the destination and link an existing block.`,
   reference_cross_cove: (d: Diagnostic) => `“${textArg(d, 'reference')}” crosses into another cove. Copy the needed context here or link a block in this cove.`,

@@ -177,6 +177,31 @@ ceiling（判断剩余容量而不是裸设置值，所以 `ceiling=3, occupied=
   扩大首个成员查询的载荷，都会破坏该入口由生产后置条件守住的固定 2 次递归查询预算；此处显式记录
   依赖关系，不复制读路径的 freeze 推导。
 
+## 3.8 修复轮 9 实现收口
+
+- B1：local recovery target 现在是
+  `max(spec_task_ceiling, ceiling_occupied) + 1`。这是 tree 侧
+  `max(current_share, target_occupancy)` 的对称形式：在人把 ceiling 下调到在飞量以下时，目标严格为
+  裁决要求的 `occupied + 1`（`1/3 → 4`）；普通 `ceiling > occupied` 时仍为 `ceiling + 1`。只写
+  `occupied + 1` 会在普通状态给出不抬高 ceiling 的目标，新增网格实测有 73 个无效 action。
+  `minimum_spec_task_ceiling` 随诊断传到 Rust compatibility message 与 web copy，性质门读取这个值执行
+  真实配置修改，不再在测试里自行猜 `ceiling + 1`。
+- B2：效果网格新增 `block_inflight∈{0,3}`，连同 `ceiling=0..=5` 穿过设计 §7b/§8 声明的
+  `ceiling > / == / < occupied` 三态。规模由 **504 → 1008**；旧 504 格复原态 0 红、2.618s，
+  仅补维且保留旧生产 minimum 时 **252** 个 action 无效，修后 **0**、单跑 5.945s。网格旁逐项注明
+  唯二排除族：sibling overage 与 `B=64` 无合法目标边界，两者各有命名验收。以后穷举维度必须从文档
+  已声明状态集合导出；任何排除族必须就地列名、说明理由并指向独立验收，不能由实现者自选空间。
+- M1：冻结态 local 诊断改用 `admission_frozen=true`，并强制 `bounds_tied=false`；tree 诊断的 frozen
+  死参数也固定为 false。兄弟成员超额时不再谎称目标 wave 的 share 已打满，Rust/web 分别描述“整树
+  冻结 + 本地无余位”。
+- M2：Rust frozen 文案与 web 一样渲染 `minimum_tree_task_budget` 的精确 “at least N”；web 的跨源
+  契约测试同时检查 Rust 模板保留数字插槽与 UI 实际渲染 N，避免只改一侧继续全绿。
+- N1：web 补齐 ordinary/tied/frozen 与 `capacity_raise_unavailable` 的 local ceiling 文案矩阵，明确
+  unavailable 时抬 local 一项无效。N2：`capacity_raise_unavailable` 的写入移出 tree-context 条件，
+  将未来 `ceiling_diagnostic(None,false)` 也保持 fail-closed；当前生产不可达，所以反向变异定向门仍绿，
+  已如实登记在 mutation map。N3：删掉“网格只变化剩余 local capacity”的失真注释，改为声明网格已
+  覆盖全部文档 local occupancy 关系。其余 r9 MINOR 均已处置，无另行登记缺口。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -272,6 +297,27 @@ web/fe 最终全门显式使用 Node `v22.22.0`。
 
 fe 首轮 test 的 oracle 抓到本轮 web 文案增行造成 `CAP-REPORT-TASK-023` source range 漂移；把既有
 引用从 `task.tsx:99-127` 校准到 `task.tsx:112-170` 后复跑全绿，未增加 source-anchor baseline 债务。
+
+### 5.3 修复轮 9 复原态全门
+
+环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 未设置；web/fe 均在
+本实现 worktree、显式 Node `v22.23.2` 下执行。
+
+| 门 | 实际结果 |
+|---|---|
+| `cargo fmt --all --check` + `git diff --check` | 干净 |
+| workspace clippy（命令同上） | `Finished dev profile in 1m 25s`，0 warning |
+| workspace nextest ci | **3406/3406 PASS，89 skipped**（104 binaries，34.318s） |
+| migration replay gate | **2/2 PASS**（42.540s） |
+| web 生成物 | `npm run gen:api` 后目标生成文件 diff 干净；bindings **49/49 + 15/15**，emit-openapi **1/1** |
+| web build | 成功，`built in 792ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web test | **85 files / 1238 tests PASS**，Type Errors 0 |
+| fe lint | 通过；dependency cruise **102 modules / 232 dependencies**，0 violation |
+| fe build | 成功，`built in 211ms` |
+| fe test | **758 PASS / 1 skipped**（61 files pass / 1 skipped），wire 与 mock drift 均通过 |
+
+r9 的 web local recovery 文案增行后同步校准 `CAP-REPORT-TASK-023` 与 `INV-REPORT-TASK-024` 的
+source range；fe 的 tracked-fixture/oracle 门一次通过，无新增 baseline 债务。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
 

@@ -987,28 +987,45 @@ async fn evaluate_schedulability_with_tree_term(
                     .map(str::to_owned),
             )
         };
-        let ceiling_diagnostic = |tied: Option<&super::wave_tree::TreeShare>,
+        let ceiling_diagnostic = |tree_context: Option<&super::wave_tree::TreeShare>,
+                                  admission_frozen: bool,
                                   raise_available: bool| {
+            // The new ceiling must clear both the configured bound and fixed
+            // in-flight occupancy. When an operator lowered the ceiling below
+            // occupancy this is `occupied + 1`; otherwise it preserves the
+            // ordinary `ceiling + 1` minimum.
+            let minimum_spec_task_ceiling = ceiling.max(ceiling_occupied).saturating_add(1);
             let mut args = diagnostic_args([
                 ("ceiling", serde_json::Value::from(ceiling)),
                 ("occupied", serde_json::Value::from(ceiling_occupied)),
+                (
+                    "minimum_spec_task_ceiling",
+                    serde_json::Value::from(minimum_spec_task_ceiling),
+                ),
                 (
                     "admission_order",
                     serde_json::Value::String("document order, then key".into()),
                 ),
             ]);
-            if let Some(share) = tied {
-                args.insert("bounds_tied".into(), serde_json::Value::from(true));
+            if let Some(share) = tree_context {
+                args.insert(
+                    "admission_frozen".into(),
+                    serde_json::Value::from(admission_frozen),
+                );
+                args.insert(
+                    "bounds_tied".into(),
+                    serde_json::Value::from(!admission_frozen),
+                );
                 args.insert(
                     "root_wave_id".into(),
                     serde_json::Value::String(share.root_id.clone()),
                 );
-                if !raise_available {
-                    args.insert(
-                        "capacity_raise_unavailable".into(),
-                        serde_json::Value::from(true),
-                    );
-                }
+            }
+            if !raise_available {
+                args.insert(
+                    "capacity_raise_unavailable".into(),
+                    serde_json::Value::from(true),
+                );
             }
             Diagnostic::coded(
                 "spec_task_ceiling",
@@ -1023,23 +1040,27 @@ async fn evaluate_schedulability_with_tree_term(
             )
         };
         if let Some(share) = &tree_bound {
-            let tree = tree_diagnostic(share, share.admission_frozen && ceiling_capacity == 0);
+            let tree = tree_diagnostic(share, false);
             if share.admission_frozen && ceiling_capacity == 0 {
-                verdicts[index]
-                    .diagnostics
-                    .push(ceiling_diagnostic(Some(share), tree.action.is_some()));
+                verdicts[index].diagnostics.push(ceiling_diagnostic(
+                    Some(share),
+                    true,
+                    tree.action.is_some(),
+                ));
             }
             verdicts[index].diagnostics.push(tree);
         } else if let Some(share) = &tied_bounds {
             let tree = tree_diagnostic(share, true);
-            verdicts[index]
-                .diagnostics
-                .push(ceiling_diagnostic(Some(share), tree.action.is_some()));
+            verdicts[index].diagnostics.push(ceiling_diagnostic(
+                Some(share),
+                false,
+                tree.action.is_some(),
+            ));
             verdicts[index].diagnostics.push(tree);
         } else {
             verdicts[index]
                 .diagnostics
-                .push(ceiling_diagnostic(None, true));
+                .push(ceiling_diagnostic(None, false, true));
         }
         verdicts[index].schedulable = false;
     }

@@ -262,6 +262,14 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .get("ceiling")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
+            let minimum_ceiling = args
+                .get("minimum_spec_task_ceiling")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(|| ceiling.saturating_add(1));
+            let admission_frozen = args
+                .get("admission_frozen")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let bounds_tied = args
                 .get("bounds_tied")
                 .and_then(Value::as_bool)
@@ -270,7 +278,22 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .get("capacity_raise_unavailable")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            if bounds_tied && capacity_raise_unavailable {
+            if admission_frozen && capacity_raise_unavailable {
+                format!(
+                    "the wave tree rooted at `{}` is frozen and this wave's spec task ceiling has \
+                     no free slot, but the tree budget has no higher legal target in the current \
+                     configuration; raising the local ceiling alone cannot admit another task — \
+                     wait for in-flight work to finish or reduce the number of tree members",
+                    arg(args, "root_wave_id")
+                )
+            } else if admission_frozen {
+                format!(
+                    "the wave tree rooted at `{}` is frozen and this wave's spec task ceiling has \
+                     no free slot — raise this wave's spec_task_ceiling to at least \
+                     {minimum_ceiling} and follow the tree-budget recovery action",
+                    arg(args, "root_wave_id")
+                )
+            } else if bounds_tied && capacity_raise_unavailable {
                 format!(
                     "spec task ceiling of {ceiling} and this wave's tree share are both reached, \
                      but the tree budget has no higher legal target in the current configuration; \
@@ -279,11 +302,15 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             } else if bounds_tied {
                 format!(
                     "spec task ceiling of {ceiling} and this wave's tree share are both reached — \
-                     raise both this wave's spec_task_ceiling and tree_task_budget on root wave `{}`",
+                     raise this wave's spec_task_ceiling to at least {minimum_ceiling} and also \
+                     raise tree_task_budget on root wave `{}`",
                     arg(args, "root_wave_id")
                 )
             } else {
-                format!("spec task ceiling of {ceiling} is reached")
+                format!(
+                    "spec task ceiling of {ceiling} is reached — raise spec_task_ceiling to at \
+                     least {minimum_ceiling}"
+                )
             }
         }
         // The cause of this one lives OUTSIDE the wave being read: it is the
@@ -326,8 +353,9 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 format!(
                     "the wave tree rooted at `{root}` is frozen because at least one member's \
                      immutable in-flight occupancy exceeds its assigned share; no member may \
-                     admit a new spec task — raise tree_task_budget enough for every member's \
-                     existing work to fit or let the tree's excess in-flight work finish"
+                     admit a new spec task — raise tree_task_budget to at least {minimum_budget} \
+                     so every member's existing work fits with room for another task, or let the \
+                     tree's excess in-flight work finish"
                 )
             } else if bounds_tied {
                 format!(

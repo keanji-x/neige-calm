@@ -804,7 +804,7 @@
     自动化作为两个独立按钮。
   why: >
     三句对外概念契约要求系统署名不成为输入或 UI 名词；状态来自读时投影，已交付卡只读。
-  source: web/src/pages/report-blocks/task.tsx:112-170 + web/src/pages/WaveReportPage.tsx:431-466
+  source: web/src/pages/report-blocks/task.tsx:126-184 + web/src/pages/WaveReportPage.tsx:431-466
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:891
   owner_slice: features/report/blocks
   intentional_omission: false
@@ -821,7 +821,7 @@
     尚未投影 status 时，可回落到声明面 ready 表达「排队意向」。
   why: >
     状态投影是服务端 (#985) 的职责；前端重算会与服务端裁决漂移，但必须如实显示服务端投影。
-  source: web/src/pages/report-blocks/task.tsx:99-127
+  source: web/src/pages/report-blocks/task.tsx:31-45,121-123,162-177
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:891
   owner_slice: features/report/blocks
   intentional_omission: false

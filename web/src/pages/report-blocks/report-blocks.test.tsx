@@ -812,7 +812,7 @@ describe('degraded blocks', () => {
     ['unknown_dependency', { dependency: 'legacy-only' }, /older task row/],
     ['gate_required', {}, /Add a check/],
     ['spec_task_ceiling', { ceiling: 2, occupied: 1 }, /document order, then by key/],
-    ['spec_task_ceiling', { ceiling: 0, occupied: 0 }, /Raise the limit in wave settings before allowing AI tasks/],
+    ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1 }, /settings to at least 1 before allowing AI tasks/],
     ['reference_needs_block', { reference: 'neige:\/\/wave\/w' }, /exact block/],
     ['reference_missing', { reference: 'neige:\/\/wave\/w#gone' }, /link an existing block/],
     ['reference_cross_cove', { reference: 'neige:\/\/wave\/other#b' }, /another cove/],
@@ -828,7 +828,10 @@ describe('degraded blocks', () => {
     ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, minimum_tree_task_budget: 4 }, /group’s excess in-progress work finish/],
     ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, admission_frozen: true, minimum_tree_task_budget: 6 }, /immutable in-progress work than its share/],
     ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, bounds_tied: true, minimum_tree_task_budget: 4 }, /raising either one alone will not admit another card/],
-    ['spec_task_ceiling', { ceiling: 2, occupied: 0, bounds_tied: true }, /Raise both/],
+    ['spec_task_ceiling', { ceiling: 2, occupied: 3, minimum_spec_task_ceiling: 4, bounds_tied: true }, /settings to at least 4.*raising either one alone/],
+    ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1, admission_frozen: true }, /group is frozen.*settings to at least 1/],
+    ['spec_task_ceiling', { ceiling: 0, occupied: 0, minimum_spec_task_ceiling: 1, admission_frozen: true, capacity_raise_unavailable: true }, /group is frozen.*no higher legal target.*local limit alone/],
+    ['spec_task_ceiling', { ceiling: 64, occupied: 64, minimum_spec_task_ceiling: 65, bounds_tied: true, capacity_raise_unavailable: true }, /both full.*no higher legal target/],
     ['tree_budget_exhausted', {}, /cannot be released by raising/],
     ['tree_root_unresolved', {}, /operator must repair the wave tree/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
@@ -925,11 +928,24 @@ describe('degraded blocks', () => {
     expect(unavailableTreeCopy).not.toMatch(/at least\s*(?:0|$)/);
 
     const ceilingCopy = taskDiagnosticText({
-      code: 'spec_task_ceiling', messageArgs: { ceiling: 1, occupied: 1 },
+      code: 'spec_task_ceiling', messageArgs: { ceiling: 1, occupied: 3, minimum_spec_task_ceiling: 4 },
       relatedBlockIds: [], path: 'key', message: '', action: actions.get('spec_task_ceiling'),
     });
     expect(ceilingCopy).toMatch(/wave settings/);
+    expect(ceilingCopy).toMatch(/at least 4/);
     expect(ceilingCopy).not.toMatch(/top wave/);
+
+    // The server-rendered compatibility message and the web copy must both
+    // preserve the executable numeric target in frozen recovery guidance.
+    expect(rust).toContain('raise tree_task_budget to at least {minimum_budget}');
+    const frozenTreeCopy = taskDiagnosticText({
+      code: 'tree_budget_exhausted', messageArgs: {
+        root_wave_id: 'wave-root-985', tree_waves: 2, tree_task_budget: 2, share: 1,
+        admission_frozen: true, minimum_tree_task_budget: 6,
+      },
+      relatedBlockIds: [], path: 'key', message: '', action: actions.get('tree_budget_exhausted'),
+    });
+    expect(frozenTreeCopy).toMatch(/at least 6/);
 
     const diagnostic = (code: string, action: string) => ({
       code, action, messageArgs: {}, relatedBlockIds: [`b_${code}`],

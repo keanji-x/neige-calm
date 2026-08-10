@@ -327,3 +327,45 @@ Node 22.22.0。所有生产/文案变异均以 `apply_patch` 单点施加，目�
 
 本轮没有 STILL-GREEN 运行时变异。复原搜索确认没有 `false &&`、裸 `ceiling==0`、反向/放宽容量
 比较、无条件 tree raise action、假 `at least 0` 或 web 空 minimum 残留。
+
+## 十三、修复轮 9（local minimum 对称修法 + 文档状态补维，全部实际执行并复原）
+
+环境：`.local-bin` nextest、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置；web 变异使用
+Node 22.23.2。所有实现、测试与文案变异都以 `apply_patch` 单点施加，运行后立即反向复原。
+
+基线旧网格为 **504** 格、**0** 红、2.618s。只加入 `block_inflight∈{0,3}`、仍执行旧生产
+`ceiling+1` 时，1008 格精确 **252** 个无效 action；生产改为
+`max(ceiling, ceiling_occupied)+1` 后 **0** 红，复原态网格 **1008/1008 PASS，5.945s**。
+
+| # | 改坏什么 | 变红的测试 | 实际结果 |
+|---|---|---|---|
+| R9-B1a | local minimum 退回 `ceiling+1`，丢掉 occupancy floor | `the_diagnosed_capacity_action_increases_admission` | **RED 0/1**：精确 **252** 个 `block_inflight=3 && ceiling<3` 组合执行全部动作后不增长 |
+| R9-B1b | local minimum 只写 `occupied+1`，丢掉 current-ceiling floor | 同一网格 | **RED 0/1**：精确 **73** 个普通 `ceiling>occupied` 组合拿到未抬高甚至降低的目标 |
+| R9-B1c | 生产不携带 `minimum_spec_task_ceiling` | 同一网格 | **RED 0/1**：首个 local action 在 `ceiling action must carry an occupancy-safe minimum` fail-closed |
+| R9-B1-rust | Rust local renderer 忽略诊断 minimum、退回 `ceiling+1` | `a_frozen_wave_with_nonzero_ceiling_occupancy_names_both_bounds` | **RED 0/1**：`ceiling=1,occupied=3` 错报 `at least 2`，期望 4 |
+| R9-B1-web | web 丢弃 local minimum 的数字分支 | `report-blocks.test.tsx` | **RED 4/62**：ordinary、tied、frozen 与跨源动作契约均缺精确目标 |
+| R9-B2 | 从网格删除 `block_inflight=3` 轴 | 同一网格的规模断言 | **RED 0/1**：`left: 504, right: 1008`，防止验收空间退回实现者自选状态 |
+| R9-M1 | 冻结 local 诊断重新写 `bounds_tied=true` | `a_frozen_wave_with_nonzero_ceiling_occupancy_names_both_bounds` + `legacy_member_overage_freezes_new_blocks_across_the_tree` | **RED 0/2**：两条都抓到冻结被伪装成“份额与 local 双满” |
+| R9-M2 | Rust frozen 文案恢复不打印 minimum 的旧句 | 同上两条 Rust 验收 | **RED 0/2**：分别缺 `at least 4` 与 `at least 9` |
+| R9-N1 | web tied unavailable 分支方向反转 | `report-blocks.test.tsx` | **RED 1/62**：错误建议 local 目标 65，缺“无更高合法目标” |
+| R9-N2 | `capacity_raise_unavailable` 再次只在 `tree_context.is_some()` 时写入 | `an_unreachable_tree_budget_target_reports_no_raise_action` + 新网格 | **STILL-GREEN 2/2**：当前 false-action 调用都带 tree context；修复的是评审指出的未来不可达 panic 脆点，尚无可达生产 seam |
+| R9-N3 | wiring 注释恢复“网格只变 remaining local capacity”的旧假陈述 | `git diff --check` + focused wiring test | **STILL-GREEN 1/1**：纯注释漂移无运行时 oracle；依靠就地状态/排除族清单与评审核对承重 |
+
+### 13.1 受 local minimum 与网格补维影响的旧证据保质期刷新
+
+下列旧条目都以效果网格计数，因空间从 504 变为 1008 且 local action 改为读取诊断 minimum，旧数字
+失效，已逐条重跑。sibling-only freeze、无解上限、migration/SQL/后置条件等不经过该网格的旧条目不受
+本轮两处改动影响。
+
+| 旧条目 | r9 扩维后重跑 |
+|---|---|
+| R8-B1（tree minimum 忽略 target occupancy） | 网格 **RED：666** 个 action 无效；`a_frozen_wave_with_nonzero_ceiling_occupancy_names_both_bounds` 同时红，tree minimum `3 != 4` |
+| R8-B2a（冻结不登记 local ceiling） | 网格 **RED：339** 个 action 无效；nonzero-occupancy 专测同时找不到 ceiling diagnostic |
+| R8-B2b（用裸 `ceiling==0` 识别 local 绑定） | 网格 **RED：228** 个 action 无效；nonzero-occupancy 专测同时红 |
+| R7-B1a（平局漏 tree） | 网格 **RED：70** 个 action 无效 |
+| R7-B1b（tree minimum 退回 `B+1`） | 网格 **RED：788** 个 action 无效 |
+| R7-B1c / R6-B2a（严格方向反转） | 网格 **RED：272** 个 action 无效 |
+| R7-B1d（`<` 放宽为 `<=`，平局 tree-only） | 网格 **RED：70** 个 action 无效 |
+
+复原搜索确认没有 `_removed` minimum key、`false &&`、裸 `ceiling==0`、反向/放宽容量比较、
+`minimum_for_target=Some(B+1)`、强制 `bounds_tied=true` 或 web unavailable 反向条件残留。
