@@ -29,6 +29,11 @@ pub const MAX_WAVE_TREE_DEPTH: i64 = 3;
 /// default on purpose; see migration 0072).
 pub const DEFAULT_TREE_TASK_BUDGET: i64 = 32;
 
+/// Largest configurable tree budget. Member admission requires `N <= B`, so
+/// this also puts a hard ceiling on the amount of work an in-transaction
+/// whole-tree reprojection may perform.
+pub const MAX_TREE_TASK_BUDGET: i64 = 64;
+
 /// Kernel default for `waves.spec_task_ceiling`.
 pub(crate) const DEFAULT_SPEC_TASK_CEILING: i64 = 32;
 
@@ -304,6 +309,29 @@ pub async fn wave_tree_member_count(conn: &mut SqliteConnection, root_id: &str) 
     Ok(members.len() as i64)
 }
 
+/// Per-member whole-tree non-terminal `declared_by='spec'` inventory.
+///
+/// The whole-tree reprojection seam uses this after deleting excess pending
+/// rows. A remaining member over its new share can only be over because of
+/// already in-flight work; callers then reject the shape/budget change rather
+/// than committing a tree for which `sum(live_spec) <= B` is false.
+pub async fn wave_tree_spec_inventory_by_member(
+    conn: &mut SqliteConnection,
+    root_id: &str,
+) -> Result<Vec<(String, i64)>> {
+    Ok(sqlx::query_as(concat!(
+        bounded_wave_descendant_cte!(),
+        "SELECT d.id, count(t.id) FROM (SELECT DISTINCT id FROM down) d \
+         LEFT JOIN tasks t ON t.wave_id=d.id AND t.declared_by='spec' \
+           AND t.status NOT IN ('done','failed','canceled') \
+         GROUP BY d.id ORDER BY d.id"
+    ))
+    .bind(root_id)
+    .bind(MAX_WAVE_TREE_DEPTH + 1)
+    .fetch_all(&mut *conn)
+    .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +387,33 @@ mod tests {
                 .collect();
             assert!(shares.windows(2).all(|w| w[0] >= w[1]), "{shares:?}");
             assert!(shares[0] - shares[members as usize - 1] <= 1, "{shares:?}");
+        }
+    }
+
+    #[test]
+    fn every_declaration_sequence_within_member_shares_respects_whole_tree_budget() {
+        fn visit(shares: &[i64], index: usize, live_total: i64, budget: i64) {
+            if index == shares.len() {
+                assert!(
+                    live_total <= budget,
+                    "live_total={live_total} budget={budget} shares={shares:?}"
+                );
+                return;
+            }
+            // Any declaration/claim order ends in one of these per-member live
+            // counts because projection never admits above the member share.
+            for live in 0..=shares[index] {
+                visit(shares, index + 1, live_total + live, budget);
+            }
+        }
+
+        for budget in 0..=12 {
+            for members in 1..=12 {
+                let shares = (0..members)
+                    .map(|index| deterministic_share(budget, members, index))
+                    .collect::<Vec<_>>();
+                visit(&shares, 0, 0, budget);
+            }
         }
     }
 

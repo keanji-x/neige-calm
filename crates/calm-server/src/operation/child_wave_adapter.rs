@@ -11,7 +11,7 @@ use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId};
 use crate::model::{CardRole, NewCard, NewOverlay, NewWave, RequestTheme, new_id, now_ms};
 use crate::routes::waves::{spec_harness_card_payload, spec_harness_layout_payload};
-use crate::wave_report::WaveReportPayload;
+use crate::wave_report::{WaveReportPayload, tasks_rebuild_tree_tx};
 
 use super::{
     AppServerInteractOutcome, CompensationStateVersioned, Operation, PhaseTag, ProviderAdapter,
@@ -266,17 +266,24 @@ impl ProviderAdapter for ChildWaveAdapter {
             )));
         }
 
+        // `N` has changed, so every old member's deterministic share may have
+        // shrunk. Reuse the same bounded whole-tree routine as a root budget
+        // PATCH before this transaction can expose the child.
+        let projections = tasks_rebuild_tree_tx(tx, &root_id).await?;
+
         let actor = ActorId::KernelDispatcher;
         let wave_scope = EventScope::Wave {
             wave: child.id.clone(),
             cove: child.cove_id.clone(),
         };
-        let entries = [
+        let mut entries = vec![
             (
+                actor.clone(),
                 wave_scope.clone(),
                 Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(child.clone(), None)),
             ),
             (
+                actor.clone(),
                 EventScope::Card {
                     card: spec_card.id.clone(),
                     wave: child.id.clone(),
@@ -285,6 +292,7 @@ impl ProviderAdapter for ChildWaveAdapter {
                 Event::CardAdded(spec_card),
             ),
             (
+                actor.clone(),
                 EventScope::Card {
                     card: report_card.id.clone(),
                     wave: child.id.clone(),
@@ -292,16 +300,40 @@ impl ProviderAdapter for ChildWaveAdapter {
                 },
                 Event::CardAdded(report_card),
             ),
-            (wave_scope, Event::OverlaySet(layout)),
+            (actor.clone(), wave_scope, Event::OverlaySet(layout)),
         ];
+        for (projected_wave, projection) in projections {
+            if !projection.changed_keys.is_empty() {
+                entries.push((
+                    actor.clone(),
+                    EventScope::Wave {
+                        wave: projected_wave.id.clone(),
+                        cove: projected_wave.cove_id.clone(),
+                    },
+                    Event::PlanUpdated {
+                        wave_id: projected_wave.id,
+                        changed_keys: projection.changed_keys,
+                        agent_message: None,
+                    },
+                ));
+            }
+            entries.extend(projection.kernel_events);
+        }
         let mut envelopes = Vec::with_capacity(entries.len());
-        for (scope, event) in entries {
-            let id = append_decision_event_in_tx(tx, &PermissiveGate, &actor, &scope, None, &event)
-                .await?;
+        for (event_actor, scope, event) in entries {
+            let id = append_decision_event_in_tx(
+                tx,
+                &PermissiveGate,
+                &event_actor,
+                &scope,
+                None,
+                &event,
+            )
+            .await?;
             envelopes.push(BroadcastEnvelope {
                 id,
                 event_version: SYNC_EVENT_VERSION,
-                actor: actor.clone(),
+                actor: event_actor,
                 scope,
                 event,
             });
@@ -367,9 +399,12 @@ impl ProviderAdapter for ChildWaveAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::sqlite::{SqlxRepo, cove_create_tx, cove_delete_tx};
-    use crate::model::{NewCove, Task, TaskKind, TaskStatus};
+    use crate::db::sqlite::{
+        SqlxRepo, cove_create_tx, cove_delete_tx, task_claim_pending_tx, wave_update_tx,
+    };
+    use crate::model::{NewCove, Task, TaskKind, TaskStatus, WavePatch};
     use crate::operation::Phase;
+    use crate::wave_report::tasks_rebuild_tx;
 
     fn operation(payload: Value) -> Operation {
         Operation {
@@ -490,6 +525,132 @@ mod tests {
                 .unwrap();
         }
         task
+    }
+
+    async fn project_pending_tasks(
+        repo: &SqlxRepo,
+        wave_id: &str,
+        prefix: &str,
+        count: usize,
+    ) -> Vec<String> {
+        let blocks = (0..count)
+            .map(|index| calm_types::wave_report::ReportBlock {
+                id: format!("b_{prefix}_{index}"),
+                rev: 1,
+                kind: "task".into(),
+                payload: json!({
+                    "key": format!("{prefix}-{index}"),
+                    "kind": "codex",
+                    "goal": format!("{prefix} goal {index}"),
+                    "acceptance": "done",
+                    "no_gate_reason": "not needed",
+                    "declared_by": "spec",
+                    "ready": true
+                }),
+            })
+            .collect::<Vec<_>>();
+        let mut report = WaveReportPayload::new(
+            "",
+            blocks
+                .iter()
+                .map(calm_types::report_blocks::flat_text)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        report.blocks = Some(blocks);
+        let mut tx = repo.pool().begin().await.unwrap();
+        let updated = sqlx::query(
+            "UPDATE cards SET payload=?1,body_crdt=NULL WHERE wave_id=?2 AND kind='wave-report'",
+        )
+        .bind(serde_json::to_string(&report).unwrap())
+        .bind(wave_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        if updated.rows_affected() == 0 {
+            card_create_with_id_tx(
+                &mut tx,
+                new_id(),
+                NewCard {
+                    title: None,
+                    wave_id: wave_id.to_owned().into(),
+                    kind: "wave-report".into(),
+                    sort: Some(-1.0),
+                    payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+                },
+                CardRole::ReportCard,
+                false,
+                repo.card_role_cache(),
+            )
+            .await
+            .unwrap();
+            sqlx::query(
+                "UPDATE cards SET payload=?1,body_crdt=NULL WHERE wave_id=?2 AND kind='wave-report'",
+            )
+            .bind(serde_json::to_string(&report).unwrap())
+            .bind(wave_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tasks_rebuild_tx(&mut tx, wave_id).await.unwrap();
+        tx.commit().await.unwrap();
+        (0..count)
+            .map(|index| format!("{wave_id}:{prefix}-{index}"))
+            .collect()
+    }
+
+    async fn claim_for_child(repo: &SqlxRepo, task_id: &str) {
+        let mut tx = repo.pool().begin().await.unwrap();
+        assert_eq!(
+            task_claim_pending_tx(&mut tx, task_id, now_ms(), &[], false)
+                .await
+                .unwrap(),
+            1
+        );
+        tx.commit().await.unwrap();
+    }
+
+    async fn create_child_from_task(
+        repo: &SqlxRepo,
+        parent_wave_id: &str,
+        task_id: &str,
+    ) -> String {
+        let root_id = root_and_depth(&mut repo.pool().begin().await.unwrap(), parent_wave_id)
+            .await
+            .unwrap()
+            .0;
+        let mut conn = repo.pool().acquire().await.unwrap();
+        let budget = wave_tree_budget(&mut conn, &root_id).await.unwrap();
+        let inventory = wave_tree_spec_inventory(&mut conn, &root_id).await.unwrap();
+        let members = wave_tree_member_count(&mut conn, &root_id).await.unwrap();
+        assert!(inventory < budget, "point one inventory must admit");
+        assert!(
+            can_add_tree_member(budget, members),
+            "point one member bound must admit"
+        );
+        drop(conn);
+
+        let input = serde_json::to_value(ChildWaveOperationPayload {
+            task_id: task_id.into(),
+            parent_wave_id: parent_wave_id.into(),
+            goal: "child goal".into(),
+            acceptance: Some("done".into()),
+            context: json!({}),
+            cwd: None,
+        })
+        .unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        output.data["child_wave_id"].as_str().unwrap().to_owned()
     }
 
     fn payload(task: &Task) -> ChildWaveOperationPayload {
@@ -888,6 +1049,79 @@ mod tests {
             .unwrap();
         assert_eq!(before, after, "a shape-refused creation must write nothing");
         tx.rollback().await.unwrap();
+    }
+
+    /// Load-bearing D.4 #7 acceptance. Both cases use only the production
+    /// projection, claim, admission predicates, and child adapter. They are
+    /// the review counterexamples: without the post-create whole-tree
+    /// reprojection they finish at 9/8 and 15/12 respectively.
+    #[tokio::test]
+    async fn whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences() {
+        // B=8: root keeps three rows; a four-row first child supplies the
+        // second child-wave operation. N=3 shrinks that member's share to 3,
+        // so the shared rebuild must cull one pending row before child 2 can
+        // consume its two-row share.
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let root = seed_parent(&repo, false).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        wave_update_tx(
+            &mut tx,
+            &root,
+            WavePatch {
+                tree_task_budget: Some(Some(8)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let root_tasks = project_pending_tasks(&repo, &root, "root-eight", 3).await;
+        for task_id in &root_tasks[..2] {
+            claim_for_child(&repo, task_id).await;
+        }
+        let first_child = create_child_from_task(&repo, &root, &root_tasks[0]).await;
+        let first_child_tasks = project_pending_tasks(&repo, &first_child, "child-eight", 4).await;
+        claim_for_child(&repo, &first_child_tasks[0]).await;
+        let second_child = create_child_from_task(&repo, &first_child, &first_child_tasks[0]).await;
+        project_pending_tasks(&repo, &second_child, "leaf-eight", 2).await;
+        let mut conn = repo.pool().acquire().await.unwrap();
+        let total_eight = wave_tree_spec_inventory(&mut conn, &root).await.unwrap();
+
+        // B=12: three already-claimed root declarations create three siblings.
+        // The final N=4 rebuild shrinks root from six live rows to share=3;
+        // each child may then independently consume its three-row share.
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let root = seed_parent(&repo, false).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        wave_update_tx(
+            &mut tx,
+            &root,
+            WavePatch {
+                tree_task_budget: Some(Some(12)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let root_tasks = project_pending_tasks(&repo, &root, "root-twelve", 6).await;
+        for task_id in &root_tasks[..3] {
+            claim_for_child(&repo, task_id).await;
+        }
+        let mut children = Vec::new();
+        for task_id in &root_tasks[..3] {
+            children.push(create_child_from_task(&repo, &root, task_id).await);
+        }
+        for (index, child) in children.iter().enumerate() {
+            project_pending_tasks(&repo, child, &format!("leaf-twelve-{index}"), 3).await;
+        }
+        let mut conn = repo.pool().acquire().await.unwrap();
+        let total_twelve = wave_tree_spec_inventory(&mut conn, &root).await.unwrap();
+        assert_eq!(
+            (total_eight, total_twelve),
+            (8, 12),
+            "admitted B=8/B=12 growth must settle at, never above, each B"
+        );
     }
 
     #[tokio::test]

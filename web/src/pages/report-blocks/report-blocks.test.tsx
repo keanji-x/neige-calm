@@ -916,6 +916,33 @@ describe('degraded blocks', () => {
     });
     expect(ceilingCopy).toMatch(/wave settings/);
     expect(ceilingCopy).not.toMatch(/top wave/);
+
+    const diagnostic = (code: string, action: string) => ({
+      code, action, messageArgs: {}, relatedBlockIds: [`b_${code}`],
+      path: 'key', message: '',
+    });
+    render(<>
+      <ReportTaskBlock payload={{
+        key: 'tree-action', kind: 'codex', goal: 'Tree action', ready: true, declared_by: 'spec',
+      }} verdict={{
+        blockId: 'b_tree', key: 'tree-action', schedulable: false,
+        diagnostics: [diagnostic('tree_budget_exhausted', actions.get('tree_budget_exhausted') ?? '')],
+      }} waveId="wave-root-985" />
+      <ReportTaskBlock payload={{
+        key: 'ceiling-action', kind: 'codex', goal: 'Ceiling action', ready: true, declared_by: 'spec',
+      }} verdict={{
+        blockId: 'b_ceiling', key: 'ceiling-action', schedulable: false,
+        diagnostics: [diagnostic('spec_task_ceiling', actions.get('spec_task_ceiling') ?? '')],
+      }} waveId="wave-root-985" />
+      <ReportTaskBlock payload={{
+        key: 'ordinary-action', kind: 'codex', goal: 'Ordinary action', ready: true, declared_by: 'spec',
+      }} verdict={{
+        blockId: 'b_ordinary', key: 'ordinary-action', schedulable: false,
+        diagnostics: [diagnostic('reference_missing', 'relink_reference')],
+      }} waveId="wave-root-985" />
+    </>);
+    expect(screen.getAllByText(/Review capacity:/)).toHaveLength(2);
+    expect(screen.getByText(/Open related item:/)).toBeInTheDocument();
   });
 
   it('keeps the task payload contract split between live declarations and tombstones', () => {

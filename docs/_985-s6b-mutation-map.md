@@ -14,7 +14,7 @@
 | # | 变异（改坏什么） | 目标测试全名 | 结果 |
 |---|---|---|---|
 | M1 | `task_projection.rs` 的 `WaveTreeTerm::Share(share) => (ceiling.min(share.share), …)` 换成**共享计数**：`ceiling.min(share.budget - 全树其它 wave 的非终结 spec 行数)` | `db::sqlite::wave_tree_budget_tests::two_rebuild_orders_over_one_tree_agree_byte_for_byte` | **RED** |
-| M2 | `wave_tree.rs` 的 `bounded_wave_descendant_cte!` 删掉 `WHERE down.depth <= ?2`（唯一终止装置） | `every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable` | **RED；R3 已把判据升级为双 crate、逐 CTE 递归成员/alias 绑定性质门** |
+| M2 | `wave_tree.rs` 的 `bounded_wave_descendant_cte!` 删掉 `WHERE down.depth <= ?2`（唯一终止装置） | `every_recursive_parent_wave_cte_in_workspace_members_bounds_its_recursive_variable` | **RED；R4 已把判据升级为全 workspace、逐 CTE 递归成员/alias 绑定/合取项性质门** |
 | M3 | `BOUNDED_WAVE_TREE_SQL` 里删掉 `WAVE_TREE_MEMBERS_SQL`（模拟「新增 CTE 漏登记」） | 原 `every_bounded_tree_cte_expansion_is_registered` | **历史 RED，登记表与该实例变异已退休。** 当前等价风险由 R2-B2a-d 的四类“新增无界 CTE”性质变异覆盖。 |
 | M4 | `RootUnresolved` 臂从 fail-closed 改成「没有树就跳过树项」（`(ceiling, None)`） | `db::sqlite::wave_tree_budget_tests::unresolvable_root_fails_closed_for_every_declaration` | **RED** |
 | M5a | migration `0072_` 的列加上 `DEFAULT 32`（照 `spec_task_ceiling` 的旧形状） | `db::sqlite::wave_tree_budget_tests::every_created_wave_lands_a_null_tree_task_budget`（`dflt_value` 断言） | **RED** |
@@ -122,7 +122,7 @@
 | # | 改坏什么 | 红的测试 | 实测结果 |
 |---|---|---|---|
 | R2-B1 | 孤根短路恢复为 `tree_task_budget IS NULL`，不比较同源有效 B 与 ceiling | `resetting_an_explicit_budget_to_null_keeps_the_default_bound` | **RED**：PATCH 回 NULL 后 40/40 schedulable，期望 32 |
-| R2-B2a | 在内联 `mod` 放一条无 depth 的递归 parent-wave SQL | `every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable` | **RED**：报告该 SQL 无 depth bound；R3 与 b/c/d 捆绑重跑，四条分别报告 |
+| R2-B2a | 在内联 `mod` 放一条无 depth 的递归 parent-wave SQL | `every_recursive_parent_wave_cte_in_workspace_members_bounds_its_recursive_variable` | **RED**：报告该 SQL 无 depth bound；R3 与 b/c/d 捆绑重跑，四条分别报告 |
 | R2-B2b | 同一无界 SQL 改由包装宏生成 | 同上 | **RED** |
 | R2-B2c | 同一无界 SQL 写成 `static` | 同上 | **RED** |
 | R2-B2d | 同一无界 SQL 写成块表达式 `const` | 同上 | **RED** |
@@ -150,7 +150,7 @@ Node 22.22.2。每个临时实现/SQL/文案补丁均用反向 `apply_patch` 复
 | R3-B1a | singleton shortcut 的 ceiling 改回裸 `Option` 的 `NULL→0` | `a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root` | **RED**：5 条全部 schedulable，期望 1 |
 | R3-B1b | 有效 B 的 NULL 默认从 32 改成 31（不再与统一解析契约一致） | `resetting_an_explicit_budget_to_null_keeps_the_default_bound` | **RED**：31 条 schedulable，期望 32 |
 | R3-B2 | 根预算 PATCH 退回只重投影根（成员枚举分支强制关闭） | `tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_claimed` | **RED**：子 pending count 仍为 1，未到 claim 断言即失败 |
-| R3-SQL1 | 在 `calm-truth/src` 注入无界 parent-wave 递归 CTE | `every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable` | **RED**：报告 calm-truth 文件与 CTE |
+| R3-SQL1 | 在 `calm-truth/src` 注入无界 parent-wave 递归 CTE | `every_recursive_parent_wave_cte_in_workspace_members_bounds_its_recursive_variable` | **RED**：报告 calm-truth 文件与 CTE |
 | R3-SQL2 | 在 `calm-server/src` 注入同形无界 CTE | 同上 | **RED**：报告 calm-server 文件与 CTE |
 | R3-SQL3 | 递归臂无 bound，只在外层 `SELECT` 写 `WHERE depth<=?2` | 同上 | **RED**：报告 CTE body 无递归变量 bound |
 | R3-SQL4 | 省略 SQLite 可选的 `RECURSIVE` 关键字且不设 bound | 同上 | **RED**：`WITH down...` 仍被识别并报告 |
@@ -169,6 +169,35 @@ Node 22.22.2。每个临时实现/SQL/文案补丁均用反向 `apply_patch` 复
 | R2-B1 | 改了 shortcut 的完整比较式 | 强制 singleton 恒 `NotInTree` 后 reset 用例 **RED：40/40，期望 32** |
 | R2-B2a–d | 性质门已完全重写 | 内联 mod / 包装宏 / static / 块 const 四种无界 SQL 同批注入，门列出 **4 条独立 violation** |
 | R2-M3b | web tree 文案新增根 ID | 把 `top wave` 改成 `wave settings` 后契约测试仍 **RED**，同时保留根 ID 断言 |
+| R1-M6 | `projection_policy_changed` / 整树重投影路径在 r3 被重排 | 删除 `tree_task_budget` 后目标仍 **RED**：pending `1 != 0` |
 
 其余旧条目没有经过本轮改动的执行路径或判据；不伪造“重跑”记录。复原搜索确认没有
 `R3_*_MUTANT`、强制 false 分支或临时默认值残留。
+
+## 八、修复轮 4（D.4 #7 收口，全部实际执行并复原）
+
+环境：`PATH` 含 `.local-bin`、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置；web 使用
+Node 22.22.2。每个单点补丁均用反向 `apply_patch` 复原。
+
+| # | 改坏什么 | 红的测试 | 实测结果 |
+|---|---|---|---|
+| R4-B1 | 删除 child-wave 写入 parent 后的 `tasks_rebuild_tree_tx` 调用 | `whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences` | **RED**：评审两构造精确复现 `left=(9,15), right=(8,12)` |
+| R4-M1 | 整树循环退回每个成员调用 `tasks_rebuild_tx`，丢弃预计算 tree term | 同上 | **RED**：`tree_cte_queries=6`，期望与 N 无关的固定 2；在第一个 N=2 构造即拒绝 |
+| R4-B1b | 删除裁 pending 后的逐成员/全树 live 后置复核 | `tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomically` | **RED**：PATCH 返回 200，期望 409；证明不可删除的 in-flight 超额不能提交 |
+| R4-B2a | 生产向下 CTE 改成 `WHERE 1=1 OR down.depth<=?2` | `every_recursive_parent_wave_cte_in_workspace_members_bounds_its_recursive_variable` | **RED**：报告生产 CTE 的 depth 比较不是合取项 |
+| R4-B2b | 生产向下 CTE 改成 `WHERE down.depth<=?2 OR 1=1` | 同上 | **RED**：同上，反序析取也不能通行 |
+| R4-m2 | 在 `calm-provider/src` 新增无界 parent-wave `.sql` | 同上 | **RED**：报告 provider 文件；证明 crate 集合来自 workspace manifest 而非两 crate 清单 |
+| R4-M1b | 共用 writer 的预算校验退回只拒绝负数（允许 65） | `tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer` | **RED**：`MAX_TREE_TASK_BUDGET+1` 的 `unwrap_err()` 得到 `Ok(Wave)` |
+| R4-m3 | web action→label 分支删除 `raise_tree_task_budget` | web `keeps capacity copy aligned with the Rust recovery-action contract` | **RED**：56 中 1 failed，`Review capacity` 只有 1 个、期望 2 |
+
+### 8.1 受本轮路径改写影响的旧证据保质期刷新
+
+| 旧条目 | 为什么受影响 | R4 重跑 |
+|---|---|---|
+| R1-M6 | `projection_policy_changed` 仍决定是否进入新的 B 共用例程 | 删除 `tree_task_budget` 后目标 **RED**：pending `1 != 0` |
+| R3-B2 | 根预算分支改为共用 O(N) 例程 | 强制 `tree_budget_changed=false` 后目标 **RED**：descendant pending `1 != 0` |
+| R2-M1a / M7 | N 变化后新增后置复核可能遮蔽库存差一 | `>=` 改 `>` 后目标仍 **RED**：写后复核拒绝，但错误不再是 `sub-wave-tree-budget-exhausted`，原测试的理由断言抓住接线退化 |
+
+复原态定向门：wave-tree（含全声明序列性质）**31/31**、承重生产路径 **1/1**、SQL 性质门
+**15/15**、child + policy **18/18**、web report-block **56/56**。没有
+`zz_r4_wave_tree_probe.sql`、`false &&`、逐成员 `tasks_rebuild_tx` 或析取式生产谓词残留。

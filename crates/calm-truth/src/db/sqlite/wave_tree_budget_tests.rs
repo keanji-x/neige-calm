@@ -14,7 +14,8 @@ use calm_types::report_blocks::tasks::TaskDeclaration;
 use serde_json::json;
 
 use super::wave_tree::{
-    MAX_WAVE_TREE_DEPTH, TreeShare, WaveTreeTerm, deterministic_share, wave_tree_term,
+    MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare, WaveTreeTerm, deterministic_share,
+    wave_tree_term,
 };
 use super::{SqlxRepo, evaluate_schedulability, project_tasks_tx, wave_create_tx, wave_update_tx};
 use crate::model::{NewCove, NewWave, RequestTheme, WavePatch};
@@ -266,6 +267,22 @@ async fn tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer() {
         .await
         .unwrap();
     assert_eq!(budget, None);
+
+    // The shared writer, not only the REST route, owns the fixed bound that
+    // keeps whole-tree reprojection from becoming an unbounded writer hold.
+    let mut tx = repo.pool().begin().await.unwrap();
+    let error = wave_update_tx(
+        &mut tx,
+        &root,
+        WavePatch {
+            tree_task_budget: Some(Some(MAX_TREE_TASK_BUDGET + 1)),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_err();
+    tx.rollback().await.unwrap();
+    assert!(error.to_string().contains("between 0 and 64"), "{error}");
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ use crate::ids::WaveId;
 use crate::model::*;
 use crate::wave_cove_cache::WaveCoveCache;
 
+use super::wave_tree::MAX_TREE_TASK_BUDGET;
+
 pub async fn wave_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewWave,
@@ -225,6 +227,13 @@ pub async fn wave_update_tx(
     // budget divides across the tree's waves, so a child carrying its own value
     // would be a second, unreachable source of truth.
     if let Some(budget) = p.tree_task_budget {
+        if let Some(budget) = budget
+            && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
+        {
+            return Err(CalmError::BadRequest(format!(
+                "tree_task_budget must be between 0 and {MAX_TREE_TASK_BUDGET} (got {budget})"
+            )));
+        }
         let parent: Option<(String,)> = sqlx::query_as(
             "SELECT parent_wave_id FROM waves WHERE id = ?1 AND parent_wave_id IS NOT NULL",
         )

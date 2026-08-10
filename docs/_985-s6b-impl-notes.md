@@ -8,10 +8,12 @@
 | 交付项 | 落点 |
 |---|---|
 | `waves.tree_task_budget` | `crates/calm-truth/migrations/0072_wave_tree_task_budget.sql`（`INTEGER NULL`，**无 DB DEFAULT**，原地 additive） |
-| 写入面 | `model.rs::WavePatch.tree_task_budget`（double-option）+ `wave.rs::wave_update_tx` 定向单列 UPDATE + `routes/waves.rs` 的 user-only 闸 / `>= 0` 校验 / `patch_has_other_changes` / `projection_policy_changed` + OpenAPI-TS 生成物 |
+| 写入面 | `model.rs::WavePatch.tree_task_budget`（double-option）+ `wave.rs::wave_update_tx` 定向单列 UPDATE + `routes/waves.rs` 的 user-only 闸 / `0..=64` 校验 / `patch_has_other_changes` / `projection_policy_changed` + OpenAPI-TS 生成物 |
 | 单一真源 | `wave_create_tx` 固定列清单**显式写 NULL**；root-only 守卫落在 `wave_update_tx`（共用 in-tx writer） |
 | 强制点一 | `child_wave_adapter.rs::prepare_tx`：库存要求 `inventory < B`，形状还要求创建后 `members + 1 <= B`；任一失败 ⇒ `sub-wave-tree-budget-exhausted` |
 | 强制点二 | `task_projection.rs::evaluate_schedulability`：`effective_ceiling = min(spec_task_ceiling, share)` |
+| B/N 共用重投影 | `wave_report.rs::tasks_rebuild_tree_tx`：一次枚举预计算全树 share；B PATCH 与 child-wave 创建都在同一写事务调用；裁 pending 后复核 live，in-flight 超额则整笔回滚 |
+| 事务上界 | `MAX_TREE_TASK_BUDGET=64`，结合 `N+1<=B` 封顶成员数；递归树查询固定 2 次，成员处理 O(N)，由 `tree_cte_queries` seam 守住 |
 | fail-closed | `WaveTreeTerm::RootUnresolved` ⇒ `effective_ceiling=0` + 每条声明追加 `tree_root_unresolved`，但继续走完 withdrawal / 已删块合成 / read-state 主干 |
 | 非树短路 | `wave_tree_term` 先做非递归形状判断，再用与点一相同的 `wave_tree_budget()` 取有效 B（NULL ⇒ 32）；仅孤根且 `B >= spec_task_ceiling`、树项可证不更紧时短路，否则按 `N=1, share=B` 执行上界 |
 | 诊断码 | `tree_budget_exhausted` / `tree_root_unresolved`；Rust recovery-action 契约为单一来源，web 交叉校验“该拧哪个旋钮”，缺参回退与 Rust 同为 share=0 |
@@ -26,10 +28,11 @@
 `WAVE_ROOT_DEPTH_SQL` 原样搬过去，adapter 侧 `pub use` 回原路径，公开契约不变。
 
 **2.2 修复轮 2 删除登记制，直接守「不存在无界递归 parent-wave CTE」的性质。**
-独立集成门递归扫描 `calm-truth/src` 的 Rust token tree，解码所有字符串字面量和宏 token 内文本，
-剥离 SQL 行/块注释后检查：凡含 `WITH RECURSIVE` 且触及 `parent_wave_id`，必须存在 depth 上界
-谓词。它不维护常量名单，也不依赖顶层 `pub const + concat!` 这一种 AST；内联 mod、包装宏、
-static、块表达式四种过去的零告警绕过均逐一变异为 RED。
+独立集成门从根 `Cargo.toml` 解码并扫描**全部 workspace member** 的生产 Rust / SQL，解码所有
+字符串字面量和宏 token 内文本，剥离 SQL 行/块注释后检查：触及 `parent_wave_id` 的递归成员必须
+用 alias-qualified depth 上界作 ON/WHERE 的**合取项**；`true OR bound` 两种顺序都拒绝。
+它不维护 crate/常量名单，也不依赖顶层 `pub const + concat!` 这一种 AST；内联 mod、包装宏、
+static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED。
 
 **2.3 递归只携带 `id` + `depth`，`created_at` 由外层 JOIN 读。**
 配额顺序要 `(created_at, id)`，但设计要求向下 CTE 只投影 `id`。做法是
@@ -39,12 +42,12 @@ static、块表达式四种过去的零告警绕过均逐一变异为 RED。
 ## 3. 设计缺口 —— 我选了什么、依据是什么（**不静默决定**）
 
 **G1. `tree_task_budget` 改动要不要触发重投影？设计没写。**
-修复轮 3 改选：**要，且根预算 PATCH 在同一 IMMEDIATE 事务内重投影有界成员集的每个 wave**。
+修复轮 4 最终裁决：**要，且 B PATCH 与 N 增长都在同一 IMMEDIATE 事务内调用同一个整树例程**。
 理由不是用 rebuild 重新裁决历史顺序（fork C7 证伪的仍是那种方案），而是 B 本身是每个成员
-确定性 share 的输入；只重投影根会让子 wave 的旧 pending 无限期保留并可直接 claim。当前实现
-复用既有 `tasks_rebuild_tx`，没有新增持久载体或跨事务协议；每个发生变化的成员按自身 wave/cove
-scope 发 `PlanUpdated`。SQLite writer 串行化 PATCH/claim：PATCH 返回后旧 pending 已不存在；若 claim
-先赢并成为 in-flight，则继续走设计已批准的“调低 ceiling 到在飞数以下”退化语义。
+确定性 share 的输入；只重投影根会让子 wave 的旧 pending 无限期保留并可直接 claim。例程一次
+枚举成员并预计算 share，再把 tree term 传给各投影；没有新增持久载体或跨事务协议。旧 pending
+在提交前被裁；若不可删除的 in-flight 仍超过新 share，则 B PATCH / child-wave 创建回滚，而不是
+提交退化的树总量上界。每个发生变化的成员仍按自身 wave/cove scope 发 `PlanUpdated`。
 
 **G2. root-only 守卫落 route 还是落 DB？设计只说「第 4/5 项还要加非 root ⇒ 拒绝」。**
 选：**落 `wave_update_tx`（共用 in-tx writer）**，route 只保留 user-only 与取值校验。
@@ -99,6 +102,19 @@ scope 发 `PlanUpdated`。SQLite writer 串行化 PATCH/claim：PATCH 返回后�
 - MINOR：删除 mutation-map 对退休登记门的引用并重写已过期的 crate-wide 结论；web 现在显示
   `root_wave_id`，多树场景能直接指出应修改的根。
 
+## 3.3 修复轮 4 实现收口
+
+- B1：`tasks_rebuild_tree_tx` 成为 B/N 两个触发点的唯一整树重投影例程；承重性质验收在生产
+  projection/claim/admission/adapter 路径跑 B=8、B=12 两个构造。删 N 触发调用后精确 RED 为
+  `(9>8, 15>12)`。
+- M1：成员只枚举一次，每个投影消费预计算 `WaveTreeTerm`；分组 live 后置复核是第二次且最后
+  一次递归树查询。`tree_cte_queries` 要求查询数恒为 2；退回逐成员求树后实测 6 并 RED。
+  `MAX_TREE_TASK_BUDGET=64` 同时封顶合法 N 与写事务成员循环。
+- B2：SQL 门只接受不处于任一可绕过 OR 支路的 alias-qualified depth 合取项；生产谓词两种
+  `OR 1=1` 排列均实测 RED。crate 清单删除，改从 workspace manifest 扫所有成员；provider 探针 RED。
+- web：从 Rust action 表解析实际 action 后渲染两个 capacity 诊断，断言均为 `Review capacity`；
+  web 单边删 tree action 后 56 中 1 failed。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -107,11 +123,10 @@ scope 发 `PlanUpdated`。SQLite writer 串行化 PATCH/claim：PATCH 返回后�
   那条断言（改成断言理由字符串），**没有**去改既有的 `spec_task_ceiling` / `automation_policy`
   测试 —— 那是 PR-A 之前就存在的形状，改它要连带审视 REST 的 AI actor 归因路径（另一个载体）。
   **建议单开 issue**：`ai:*` actor 经 REST 的空 card id 403 把所有 user-only 闸的验收变成恒真。
-- **N2. 没有新增 `tree_rebuild_tx` 持久载体。** 修复轮 3 只在现有 PATCH 写事务内编排既有
-  `tasks_rebuild_tx`；这不是 fork C7 所否决的“用 rebuild 顺序决定共享 pending 配额”。
-- **N3. 没有另加 claim 时的树级在飞检查。** 同事务整树重投影已封住本轮的 stale-pending 问题；
-  先于 PATCH claim 成功的行已经是 in-flight，属于设计明确允许的调低预算退化。再加 claim fence
-  会改变 scheduler 语义与查询成本，且不改变本轮验收结果，故不扩面。
+- **N2. 没有新增持久载体。** 整树例程只在现有 PATCH / child-wave 写事务内编排既有投影；
+  这不是 fork C7 所否决的“用 rebuild 顺序决定共享 pending 配额”。
+- **N3. 没有另加 claim 时的树级共享计数。** B/N 变化后用逐成员 live 后置复核关闭 in-flight
+  超额；日常 claim 仍只消费确定性 per-wave share，不引入依赖兄弟投影产物的路径依赖。
 - **N4. `tree_task_budget` 没有进 `Wave` / `WaveRow`。** 照 `spec_task_ceiling` /
   `parent_wave_id` 的先例（doc-as-plan §11：`WaveRow` 的显式 SELECT 有 8 处，sqlx 运行时才炸）。
   读它的只有内核 SQL。r3 m-4 仍仅为可观测性缺口；补公开字段会扩 OpenAPI/event replay/8 处显式
@@ -120,7 +135,7 @@ scope 发 `PlanUpdated`。SQLite writer 串行化 PATCH/claim：PATCH 返回后�
   测试编译期运行，但前者只需固定常量的简单检查，后者需要带引号状态机并扫描外部文件；为消除
   测试辅助代码重复而公开新库 API 得不偿失。r3 m-3 记录保留，性质由各自行为夹具独立购买。
 - **N6. 运行时任意 `format!/push_str` 生成 SQL 仍不是静态门可完备证明的对象。** 门覆盖 Rust
-  literal、literal-only `concat!`、两 crate 全部 `.sql`（含常规 include/query_file/migration 载体）；
+  literal、literal-only `concat!`、所有 workspace member 的 `.sql`（含常规 include/query_file/migration 载体）；
   若未来确需动态构造递归树 SQL，应迁到可扫描 `.sql`/完整 literal，而不是削弱门。
 
 ## 5. 门（实际数字）
@@ -128,22 +143,22 @@ scope 发 `PlanUpdated`。SQLite writer 串行化 PATCH/claim：PATCH 返回后�
 | 门 | 命令 | 结果 |
 |---|---|---|
 | fmt | `cargo fmt --all --check` | 干净（无输出） |
-| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | 最终增量复跑 `Finished dev profile in 0.53s`，0 warning（首次全量 47.22s） |
-| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3390 tests run: 3390 passed, 89 skipped**（104 binaries，32.665s） |
+| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | `Finished dev profile in 1m 12s`，0 warning |
+| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3395 tests run: 3395 passed, 89 skipped**（104 binaries，55.475s；编译 1m45s） |
 | 生成物 | `web: npm run gen:api` 后 `git diff --exit-code -- src/api/openapi.json src/api/generated.ts src/api/generated-terminal.ts src/api/generated-events.ts src/editor/types/` | 干净，无生成物漂移 |
-| web build | `npm run build` | 成功，`built in 795ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web build | `npm run build` | 成功，`built in 825ms`（仅既有 CSS highlight / chunk-size 警告） |
 | web test | `npm run test` | **85 files / 1232 tests passed**，`Type Errors no errors` |
 | fe lint | `npm run lint` | `no dependency violations found (102 modules, 232 dependencies)` |
-| fe build | `npm run build` | 成功，`built in 228ms` |
+| fe build | `npm run build` | 成功，`built in 203ms` |
 | fe test | `npm run test`（含 `test:wire` + `test:mock-drift`） | **758 passed / 1 skipped**，wire 与 mock 均无漂移 |
 
 环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 全程未设置，
 web/fe 最终全门显式使用 Node `v22.22.2`。
 
-修复轮 3 的复原后定向回归：`calm-truth` wave-tree 集合 **30/30**，双 crate SQL 性质门
-**13/13**，`calm-server` policy PATCH 套件 **7/7**，web report-block 文案 **56/56**。
+修复轮 4 的复原后定向回归：`calm-truth` wave-tree 集合 **31/31**，全 workspace SQL 性质门
+**15/15**，`calm-server` child + policy 套件 **18/18**，web report-block 文案 **56/56**。
 
-修复轮 3 最终 Rust/web/fe 全门全绿；web/fe 从第一条正式命令起均显式使用 Node 22.22.2，且
+修复轮 4 最终 Rust/web/fe 全门全绿；web/fe 从第一条正式命令起均显式使用 Node 22.22.2，且
 实现 worktree 内 `node_modules` 存在，vitest 确实执行（不是缺依赖的结构性复核）。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）

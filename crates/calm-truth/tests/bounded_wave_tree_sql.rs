@@ -315,6 +315,42 @@ fn enclosing_condition_start(tokens: &[String], index: usize) -> Option<usize> {
     matches!(clause.1.as_str(), "on" | "where").then_some(clause.0)
 }
 
+/// A terminating comparison only counts when every row admitted by the
+/// ON/WHERE condition must pass it. In SQL's boolean grammar, a comparison is
+/// bypassable when an `OR` occurs in its own parenthesis scope or any enclosing
+/// scope. An `OR` nested inside a sibling conjunct does not weaken it:
+/// `depth <= ?2 AND (flag OR fallback)` remains bounded.
+fn comparison_is_conjunct(tokens: &[String], condition: usize, comparison: usize) -> bool {
+    let mut open_parens = Vec::new();
+    let mut comparison_scope = None;
+    let mut or_scopes = Vec::new();
+    for (index, token) in tokens.iter().enumerate().skip(condition + 1) {
+        if index == comparison {
+            comparison_scope = Some(open_parens.clone());
+        }
+        match token.as_str() {
+            "(" => open_parens.push(index),
+            ")" => {
+                open_parens.pop();
+            }
+            "or" => or_scopes.push(open_parens.clone()),
+            "select" | "from" | "join" | "on" | "where" | "group" | "having" | "order"
+            | "limit" | "returning"
+                if open_parens.is_empty() =>
+            {
+                break;
+            }
+            _ => {}
+        }
+    }
+    let Some(comparison_scope) = comparison_scope else {
+        return false;
+    };
+    !or_scopes
+        .into_iter()
+        .any(|or_scope| comparison_scope.starts_with(&or_scope))
+}
+
 fn predicate_bounds_recursive_depth(member: &[String], aliases: &BTreeSet<String>) -> bool {
     for index in 0..member.len() {
         if !recursive_depth_at(member, index, aliases) {
@@ -323,6 +359,9 @@ fn predicate_bounds_recursive_depth(member: &[String], aliases: &BTreeSet<String
         let Some(condition) = enclosing_condition_start(member, index) else {
             continue;
         };
+        if !comparison_is_conjunct(member, condition, index) {
+            continue;
+        }
 
         // recursive_alias.depth <= upper_bound
         if member
@@ -440,13 +479,36 @@ fn unbounded_recursive_parent_ctes(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn workspace_member_roots(workspace: &Path) -> Vec<PathBuf> {
+    let manifest =
+        fs::read_to_string(workspace.join("Cargo.toml")).expect("read workspace manifest");
+    let mut in_members = false;
+    let mut members = Vec::new();
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("members") && trimmed.contains('[') {
+            in_members = true;
+            continue;
+        }
+        if in_members && trimmed.starts_with(']') {
+            break;
+        }
+        if in_members {
+            let member = trimmed.trim_end_matches(',').trim_matches('"');
+            if !member.is_empty() {
+                members.push(workspace.join(member));
+            }
+        }
+    }
+    assert!(!members.is_empty(), "workspace member list was not decoded");
+    members
+}
+
 #[test]
-fn every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_variable() {
+fn every_recursive_parent_wave_cte_in_workspace_members_bounds_its_recursive_variable() {
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let crates = ["calm-truth", "calm-server"];
     let mut files = Vec::new();
-    for crate_name in crates {
-        let crate_root = workspace.join("crates").join(crate_name);
+    for crate_root in workspace_member_roots(&workspace) {
         production_sources_below(&crate_root.join("src"), true, &mut files);
         // `include_str!`, `query_file!`, and migrations commonly keep SQL
         // outside `src`; scan every .sql file in the executing crate.
@@ -469,7 +531,7 @@ fn every_recursive_parent_wave_cte_in_production_crates_bounds_its_recursive_var
     }
     assert!(
         failures.is_empty(),
-        "recursive parent-wave CTE members without a bound on their recursive depth variable:\n{}",
+        "recursive parent-wave CTE members without an alias-qualified conjunctive bound on their recursive depth variable (for example `WHERE down.depth <= ?2`):\n{}",
         failures.join("\n")
     );
 }
@@ -610,6 +672,37 @@ fn another_boolean_term_cannot_turn_a_real_bound_into_a_false_positive() {
           SELECT w.id, down.depth + 1
           FROM waves w JOIN down ON w.parent_wave_id = down.id
           WHERE down.depth <= ?2 AND down.depth >= 0
+        ) SELECT id FROM down
+    "#;
+    assert!(unbounded_recursive_parent_ctes_in_sql(sql).is_empty());
+}
+
+#[test]
+fn a_bound_or_true_is_not_a_recursive_member_bound() {
+    for condition in ["1=1 OR down.depth <= ?2", "down.depth <= ?2 OR 1=1"] {
+        let sql = format!(
+            "WITH RECURSIVE down(id,depth) AS (\
+             SELECT id,0 FROM waves UNION ALL \
+             SELECT w.id,down.depth+1 FROM waves w \
+             JOIN down ON w.parent_wave_id=down.id WHERE {condition}\
+             ) SELECT id FROM down"
+        );
+        assert!(
+            !unbounded_recursive_parent_ctes_in_sql(&sql).is_empty(),
+            "disjunctive fake bound bypassed the gate: {condition}"
+        );
+    }
+}
+
+#[test]
+fn an_or_nested_in_another_conjunct_does_not_hide_a_real_bound() {
+    let sql = r#"
+        WITH RECURSIVE down(id, depth) AS (
+          SELECT id, 0 FROM waves
+          UNION ALL
+          SELECT w.id, down.depth + 1
+          FROM waves w JOIN down ON w.parent_wave_id = down.id
+          WHERE (down.depth <= ?2) AND (w.lifecycle = 'draft' OR w.lifecycle = 'active')
         ) SELECT id FROM down
     "#;
     assert!(unbounded_recursive_parent_ctes_in_sql(sql).is_empty());

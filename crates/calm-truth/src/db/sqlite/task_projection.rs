@@ -282,6 +282,10 @@ pub struct TaskProjectionOutcome {
     pub changed_keys: Vec<String>,
     pub diagnostics: Vec<BlockVerdict>,
     pub kernel_events: Vec<(ActorId, EventScope, Event)>,
+    /// Recursive tree statements used to obtain this projection's tree term.
+    /// Whole-tree callers use this countable seam to prevent an accidental
+    /// return to one full member walk per projected wave.
+    pub tree_cte_queries: u32,
 }
 
 /// Single-winner material verdict. Callers that commit this transaction must
@@ -551,6 +555,26 @@ pub async fn evaluate_schedulability(
     block_local_diags: &[Vec<Diagnostic>],
     include_read_state: bool,
 ) -> Result<Vec<BlockVerdict>> {
+    let tree = super::wave_tree::wave_tree_term(&mut *conn, wave_id).await?;
+    evaluate_schedulability_with_tree_term(
+        conn,
+        wave_id,
+        declarations,
+        block_local_diags,
+        include_read_state,
+        tree.term,
+    )
+    .await
+}
+
+async fn evaluate_schedulability_with_tree_term(
+    conn: &mut SqliteConnection,
+    wave_id: &str,
+    declarations: &[TaskDeclaration],
+    block_local_diags: &[Vec<Diagnostic>],
+    include_read_state: bool,
+    tree_term: WaveTreeTerm,
+) -> Result<Vec<BlockVerdict>> {
     let state = wave_projection_state(&mut *conn, wave_id, include_read_state).await?;
     let configured_policy = state.policy;
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
@@ -563,9 +587,8 @@ pub async fn evaluate_schedulability(
     // tree, and it is why this is a quota split rather than a shared count of
     // sibling rows: shared counting is first-come-first-served, hence
     // path-dependent, hence not reconstructible by a rebuild.
-    let tree = super::wave_tree::wave_tree_term(&mut *conn, wave_id).await?;
     let ceiling = state.ceiling;
-    let (effective_ceiling, tree_share, tree_root_unresolved) = match &tree.term {
+    let (effective_ceiling, tree_share, tree_root_unresolved) = match &tree_term {
         WaveTreeTerm::NotInTree => (ceiling, None, false),
         WaveTreeTerm::RootUnresolved => {
             // Fail closed. A broken parent link, a cycle, or an over-deep chain
@@ -935,8 +958,49 @@ pub async fn project_tasks_tx(
     declarations: &[TaskDeclaration],
     block_local_diags: &[Vec<Diagnostic>],
 ) -> Result<TaskProjectionOutcome> {
-    let verdicts =
-        evaluate_schedulability(tx, wave_id, declarations, block_local_diags, false).await?;
+    let tree = super::wave_tree::wave_tree_term(tx, wave_id).await?;
+    let tree_cte_queries = tree.tree_cte_queries;
+    let verdicts = evaluate_schedulability_with_tree_term(
+        tx,
+        wave_id,
+        declarations,
+        block_local_diags,
+        false,
+        tree.term,
+    )
+    .await?;
+    project_tasks_from_verdicts_tx(tx, wave_id, declarations, verdicts, tree_cte_queries).await
+}
+
+/// Projection entry point for a whole-tree rebuild. The caller enumerates the
+/// tree once and passes each deterministic share here, avoiding one recursive
+/// member walk per wave.
+pub async fn project_tasks_with_tree_term_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+    declarations: &[TaskDeclaration],
+    block_local_diags: &[Vec<Diagnostic>],
+    tree_term: WaveTreeTerm,
+) -> Result<TaskProjectionOutcome> {
+    let verdicts = evaluate_schedulability_with_tree_term(
+        tx,
+        wave_id,
+        declarations,
+        block_local_diags,
+        false,
+        tree_term,
+    )
+    .await?;
+    project_tasks_from_verdicts_tx(tx, wave_id, declarations, verdicts, 0).await
+}
+
+async fn project_tasks_from_verdicts_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wave_id: &str,
+    declarations: &[TaskDeclaration],
+    verdicts: Vec<BlockVerdict>,
+    tree_cte_queries: u32,
+) -> Result<TaskProjectionOutcome> {
     let schedulable_by_key: BTreeMap<_, _> = verdicts
         .iter()
         .filter(|v| !v.key.is_empty())
@@ -1136,6 +1200,7 @@ pub async fn project_tasks_tx(
         changed_keys: changed.into_iter().collect(),
         diagnostics: verdicts,
         kernel_events,
+        tree_cte_queries,
     })
 }
 

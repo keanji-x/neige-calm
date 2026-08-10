@@ -278,6 +278,19 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert_eq!(tree_budget(&repo, &wave_id).await, None);
 
+    // The whole-tree rebuild runs in the write transaction. Its configured
+    // budget (and therefore N, because member admission requires N<=B) has a
+    // fixed production ceiling rather than allowing an unbounded writer hold.
+    let response = patch(
+        state.clone(),
+        &wave_id,
+        None,
+        json!({"tree_task_budget": 65}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(tree_budget(&repo, &wave_id).await, None);
+
     // A budget-only patch is NOT short-circuited as an empty patch.
     let response = patch(
         state.clone(),
@@ -490,4 +503,53 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
         "a task admitted under the old descendant share remained claimable"
     );
     tx.rollback().await.unwrap();
+}
+
+/// Pending overage is removable, but already-dispatched work is not. A budget
+/// PATCH that would make an in-flight member exceed its new share must roll
+/// back instead of publishing a root budget smaller than the live inventory.
+#[tokio::test]
+async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomically() {
+    let (state, root_id, repo) = boot().await;
+    let root = repo.wave_get(&root_id).await.unwrap().unwrap();
+    let child = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: root.cove_id,
+            title: "child".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+        .bind(&root_id)
+        .bind(child.id.as_str())
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let task_id = seed_pending_report_task(&repo, child.id.as_str(), "inflight").await;
+    let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    let before_events = event_count(&repo).await;
+    let response = patch(state, &root_id, None, json!({"tree_task_budget": 0})).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(tree_budget(&repo, &root_id).await, None);
+    assert_eq!(event_count(&repo).await, before_events);
+    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(status, "dispatched");
 }

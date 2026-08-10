@@ -31,10 +31,10 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_WAVE_TREE_DEPTH, TaskProjectionOutcome, WAVE_TREE_MEMBERS_SQL, card_create_with_id_tx,
-    card_update_with_crdt_tx, cove_folder_create_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx, project_tasks_tx,
-    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx,
+    cove_folder_create_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
+    overlay_upsert_tx, project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
+    wave_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -65,7 +65,7 @@ use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::{validate_transition, wave_get_tx};
 use crate::wave_report::{
     ReportBlock, WaveReportPayload, persist_report, report_blocks_snapshot_tx,
-    resolve_report_for_wave, tasks_rebuild_tx,
+    resolve_report_for_wave, tasks_rebuild_tree_tx, tasks_rebuild_tx,
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
@@ -1283,10 +1283,10 @@ pub(crate) async fn update_wave(
     // ("no new spec inventory anywhere in this tree"); the root-only rule is
     // enforced inside `wave_update_tx`, which every writer shares.
     if let Some(Some(budget)) = p.tree_task_budget
-        && budget < 0
+        && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
     {
         return Err(CalmError::BadRequest(format!(
-            "tree_task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
+            "tree_task_budget must be between 0 and {MAX_TREE_TASK_BUDGET} (got {budget}); pass null to reset to the kernel default"
         )));
     }
     if let Some(Some(policy)) = &p.automation_policy
@@ -1336,25 +1336,11 @@ pub(crate) async fn update_wave(
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p_for_tx).await?;
                 let projections = if projection_policy_changed {
-                    let member_ids = if tree_budget_changed {
-                        sqlx::query_as::<_, (String, i64)>(WAVE_TREE_MEMBERS_SQL)
-                            .bind(&id)
-                            .bind(MAX_WAVE_TREE_DEPTH + 1)
-                            .fetch_all(&mut **tx)
-                            .await?
-                            .into_iter()
-                            .map(|(member_id, _depth)| member_id)
-                            .collect::<Vec<_>>()
+                    if tree_budget_changed {
+                        tasks_rebuild_tree_tx(tx, &id).await?
                     } else {
-                        vec![id.clone()]
-                    };
-                    let mut projections = Vec::with_capacity(member_ids.len());
-                    for member_id in member_ids {
-                        let member_wave = wave_get_tx(tx, &WaveId::from(member_id.clone())).await?;
-                        let projection = tasks_rebuild_tx(tx, &member_id).await?;
-                        projections.push((member_wave, projection));
+                        vec![(wave.clone(), tasks_rebuild_tx(tx, &id).await?)]
                     }
-                    projections
                 } else {
                     Vec::new()
                 };

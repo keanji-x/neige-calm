@@ -111,14 +111,16 @@ pub use task::{
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
-    evaluate_schedulability, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
+    evaluate_schedulability, mark_context_material_tx, project_tasks_tx,
+    project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_require_leaf_tx, wave_update_tx};
 pub use wave_tree::{
-    DEFAULT_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare, WAVE_BOUNDED_PATH_SQL,
-    WAVE_ROOT_DEPTH_SQL, WAVE_TREE_MEMBERS_SQL, WAVE_TREE_SPEC_INVENTORY_SQL, WaveTreeTerm,
-    WaveTreeTermOutcome, can_add_tree_member, deterministic_share, wave_tree_budget,
-    wave_tree_member_count, wave_tree_spec_inventory, wave_tree_term,
+    DEFAULT_TREE_TASK_BUDGET, MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare,
+    WAVE_BOUNDED_PATH_SQL, WAVE_ROOT_DEPTH_SQL, WAVE_TREE_MEMBERS_SQL,
+    WAVE_TREE_SPEC_INVENTORY_SQL, WaveTreeTerm, WaveTreeTermOutcome, can_add_tree_member,
+    deterministic_share, wave_tree_budget, wave_tree_member_count, wave_tree_spec_inventory,
+    wave_tree_spec_inventory_by_member, wave_tree_term,
 };
 
 use infra::check_no_unknown_future_migrations;
