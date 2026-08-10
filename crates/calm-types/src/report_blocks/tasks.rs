@@ -62,6 +62,22 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("tree_root_unresolved", "key"),
 ];
 
+/// Recovery-action contract shared by producers and checked by the web copy
+/// tests. Capacity diagnostics must point at the setting that can actually
+/// release admission; changing only the Rust producer or only the renderer is
+/// therefore a test failure.
+pub const TASK_DIAGNOSTIC_ACTIONS: &[(&str, &str)] = &[
+    ("spec_task_ceiling", "raise_spec_task_ceiling"),
+    ("tree_budget_exhausted", "raise_tree_task_budget"),
+    ("tree_root_unresolved", "repair_wave_tree"),
+];
+
+pub fn task_diagnostic_action(code: &str) -> Option<&'static str> {
+    TASK_DIAGNOSTIC_ACTIONS
+        .iter()
+        .find_map(|(candidate, action)| (*candidate == code).then_some(*action))
+}
+
 pub fn json_eq(a: &str, b: &str) -> bool {
     match (
         serde_json::from_str::<Value>(a),
@@ -160,6 +176,13 @@ impl Diagnostic {
             .find_map(|(candidate, path)| (*candidate == code).then_some(*path))
             .expect("registered task diagnostic code must have a path");
         assert_eq!(path, expected_path, "wrong path for task diagnostic {code}");
+        if let Some(expected_action) = task_diagnostic_action(&code) {
+            assert_eq!(
+                action.as_deref(),
+                Some(expected_action),
+                "wrong recovery action for task diagnostic {code}"
+            );
+        }
         let message = render_diagnostic_message(&code, &message_args);
         Self {
             code,
@@ -877,7 +900,14 @@ mod tests {
         );
 
         for &(code, path) in TASK_DIAGNOSTIC_CODE_PATHS {
-            let diagnostic = Diagnostic::coded(code, path, BTreeMap::new(), vec![], None, None);
+            let diagnostic = Diagnostic::coded(
+                code,
+                path,
+                BTreeMap::new(),
+                vec![],
+                None,
+                task_diagnostic_action(code).map(str::to_owned),
+            );
             assert_eq!(diagnostic.path, path, "path drifted for {code}");
         }
     }

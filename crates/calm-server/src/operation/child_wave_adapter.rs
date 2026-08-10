@@ -504,21 +504,13 @@ mod tests {
     }
 
     /// Both fragments this adapter runs keep their only cycle-termination
-    /// guard AND are registered in the shared bounded-tree registry, which is
-    /// what the `calm-truth` static gate walks. Asserting membership (rather
-    /// than re-asserting the text) keeps a single gate authoritative while
-    /// still turning red if this adapter ever runs an unregistered walk.
+    /// guard. The crate-wide property gate independently scans every SQL
+    /// string touching `parent_wave_id`; there is intentionally no registry.
     #[test]
     fn upward_cte_keeps_its_only_cycle_termination_guard() {
         for sql in [WAVE_ROOT_DEPTH_SQL, WAVE_BOUNDED_PATH_SQL] {
             assert!(sql.contains("WHERE up.depth <= ?2"));
             assert!(sql.contains("UNION ALL"));
-            assert!(
-                calm_truth::db::sqlite::BOUNDED_WAVE_TREE_SQL
-                    .iter()
-                    .any(|(_, registered)| registered == &sql),
-                "adapter runs an unregistered bounded-tree walk"
-            );
         }
     }
 
@@ -775,21 +767,22 @@ mod tests {
     }
 
     /// PR-B enforcement point one. The inventory counted is the WHOLE tree's
-    /// non-terminal spec rows, and the claiming parent task is one of them, so
-    /// a budget of 1 refuses the child while a budget of 2 admits it. The
-    /// refusal leaves no wave behind: the whole admission runs before any
-    /// skeleton write.
+    /// non-terminal spec rows. At B=2, inventory is exactly 2 while member
+    /// admission N=1 -> 2 is legal, so ONLY the inventory guard can refuse.
+    /// At B=3 both guards admit. This keeps the inventory `>=` tripwire
+    /// independent from the later member-count guard.
     #[tokio::test]
     async fn acceptance_tree_budget_refuses_child_creation_when_the_tree_is_full() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let parent = seed_parent(&repo, false).await;
         let task = seed_task(&repo, &parent, false).await;
+        let _other = seed_task_with_key(&repo, &parent, "other-live-task", false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
         );
-        sqlx::query("UPDATE waves SET tree_task_budget=1 WHERE id=?1")
+        sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
             .bind(&parent)
             .execute(repo.pool())
             .await
@@ -804,20 +797,20 @@ mod tests {
             .prepare_tx(&mut tx, &input, &operation(input.clone()))
             .await
             .unwrap_err();
-        drop(tx);
         assert!(
             error.to_string().contains("sub-wave-tree-budget-exhausted"),
             "{error}"
         );
         assert!(error.to_string().contains(&parent), "{error}");
         let after: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
-            .fetch_one(repo.pool())
+            .fetch_one(&mut *tx)
             .await
             .unwrap();
         assert_eq!(before, after, "a refused creation must write nothing");
+        tx.rollback().await.unwrap();
 
         // Raising the ROOT's budget (the only place it lives) admits it.
-        sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
+        sqlx::query("UPDATE waves SET tree_task_budget=3 WHERE id=?1")
             .bind(&parent)
             .execute(repo.pool())
             .await
@@ -883,7 +876,6 @@ mod tests {
             .prepare_tx(&mut tx, &input, &operation(input.clone()))
             .await
             .unwrap_err();
-        drop(tx);
         assert!(
             error.to_string().contains("sub-wave-tree-budget-exhausted")
                 && error.to_string().contains("2 member wave(s)")
@@ -891,10 +883,11 @@ mod tests {
             "{error}"
         );
         let after: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
-            .fetch_one(repo.pool())
+            .fetch_one(&mut *tx)
             .await
             .unwrap();
         assert_eq!(before, after, "a shape-refused creation must write nothing");
+        tx.rollback().await.unwrap();
     }
 
     #[tokio::test]

@@ -324,13 +324,26 @@ async fn quota_remainder_follows_created_at_not_insertion_order() {
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "root-first").await;
     let child = seed_wave(&repo, &cove, "child-second").await;
-    link(&repo, &child, &root).await;
-    stamp_created_at(&repo, &root, 2_000).await;
-    stamp_created_at(&repo, &child, 1_000).await;
-    set_tree_budget(&repo, &root, 1).await;
+    // Fix ids opposite to created_at order. Without the final ORDER BY,
+    // SQLite is free to return the GROUP BY's id order (`a-child` first), so
+    // the oracle does not depend on today's query plan or random UUIDs.
+    sqlx::query("UPDATE waves SET id='z-root' WHERE id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET id='a-child' WHERE id=?1")
+        .bind(&child)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    link(&repo, "a-child", "z-root").await;
+    stamp_created_at(&repo, "z-root", 1_000).await;
+    stamp_created_at(&repo, "a-child", 2_000).await;
+    set_tree_budget(&repo, "z-root", 1).await;
 
-    assert_eq!(share_of(&repo, &child).await.share, 1);
-    assert_eq!(share_of(&repo, &root).await.share, 0);
+    assert_eq!(share_of(&repo, "z-root").await.share, 1);
+    assert_eq!(share_of(&repo, "a-child").await.share, 0);
 }
 
 /// Equal-millisecond creation is common. The secondary id key is therefore a
@@ -581,6 +594,47 @@ async fn a_tighter_wave_ceiling_still_reports_the_ceiling_diagnostic() {
     );
 }
 
+/// Equal numeric limits are still a tree constraint: raising only this wave's
+/// ceiling cannot admit another task while its deterministic share stays 32.
+#[tokio::test]
+async fn an_equal_tree_share_reports_the_tree_knob() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "root").await;
+    let child = seed_wave(&repo, &cove, "child").await;
+    link(&repo, &child, &root).await;
+    set_ceiling(&repo, &child, 32).await;
+    set_tree_budget(&repo, &root, 64).await;
+
+    let keys = (0..33)
+        .map(|index| format!("k{index:02}"))
+        .collect::<Vec<_>>();
+    let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+    let decls = declarations(&key_refs);
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(
+        &mut conn,
+        &child,
+        &decls,
+        &vec![Vec::new(); decls.len()],
+        false,
+    )
+    .await
+    .unwrap();
+    let diagnostic = verdicts[32]
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+        .expect("equal share/ceiling must name the tree constraint");
+    assert_eq!(diagnostic.action.as_deref(), Some("raise_tree_task_budget"));
+    assert!(
+        !verdicts[32]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "spec_task_ceiling")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Fail-closed root resolution and the non-tree short circuit.
 // ---------------------------------------------------------------------------
@@ -721,8 +775,8 @@ async fn a_non_tree_wave_runs_zero_recursive_tree_queries() {
     assert!(matches!(outcome.term, WaveTreeTerm::Share(_)));
 }
 
-/// The recursive short circuit is legal only while its tree budget is NULL.
-/// Once a human explicitly configures it, a singleton root is N=1 and share=B.
+/// A binding singleton budget is still N=1 and share=B. This explicit B=1 is
+/// below the wave ceiling, so the provably-non-binding shortcut is illegal.
 #[tokio::test]
 async fn an_explicit_budget_applies_to_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -745,6 +799,67 @@ async fn an_explicit_budget_applies_to_a_singleton_root() {
         WaveTreeTerm::Share(TreeShare {
             members: 1,
             share: 1,
+            ..
+        })
+    ));
+}
+
+/// PATCH back to NULL restores the kernel default; it does not remove the
+/// bound. Both enforcement points must therefore read B=32 for this wave.
+#[tokio::test]
+async fn resetting_an_explicit_budget_to_null_keeps_the_default_bound() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let lonely = seed_wave(&repo, &cove, "lonely").await;
+    set_ceiling(&repo, &lonely, 40).await;
+    set_tree_budget(&repo, &lonely, 40).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    wave_update_tx(
+        &mut tx,
+        &lonely,
+        WavePatch {
+            tree_task_budget: Some(None),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let keys = (0..40)
+        .map(|index| format!("k{index:02}"))
+        .collect::<Vec<_>>();
+    let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+    let decls = declarations(&key_refs);
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(
+        &mut conn,
+        &lonely,
+        &decls,
+        &vec![Vec::new(); decls.len()],
+        false,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        verdicts
+            .iter()
+            .filter(|verdict| verdict.schedulable)
+            .count(),
+        32
+    );
+    assert!(verdicts[32..].iter().all(|verdict| {
+        verdict
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+    }));
+    assert!(matches!(
+        wave_tree_term(&mut conn, &lonely).await.unwrap().term,
+        WaveTreeTerm::Share(TreeShare {
+            budget: 32,
+            members: 1,
+            share: 32,
             ..
         })
     ));

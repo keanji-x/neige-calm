@@ -513,6 +513,7 @@ dependencies = [
  "dashmap",
  "futures",
  "hex",
+ "proc-macro2",
  "rand 0.8.6",
  "serde",
  "serde_json",

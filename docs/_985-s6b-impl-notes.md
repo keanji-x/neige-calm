@@ -13,8 +13,8 @@
 | 强制点一 | `child_wave_adapter.rs::prepare_tx`：库存要求 `inventory < B`，形状还要求创建后 `members + 1 <= B`；任一失败 ⇒ `sub-wave-tree-budget-exhausted` |
 | 强制点二 | `task_projection.rs::evaluate_schedulability`：`effective_ceiling = min(spec_task_ceiling, share)` |
 | fail-closed | `WaveTreeTerm::RootUnresolved` ⇒ `effective_ceiling=0` + 每条声明追加 `tree_root_unresolved`，但继续走完 withdrawal / 已删块合成 / read-state 主干 |
-| 非树短路 | `wave_tree_term` 先做一条**非递归**判断；仅孤根 `tree_task_budget IS NULL` 时短路。显式预算的孤根返回 `N=1, share=B`，两者都保持零递归查询 |
-| 诊断码 | `tree_budget_exhausted` / `tree_root_unresolved`（Rust 文案 + web 人话文案 + 下一步动作 + 集合相等元测试 16 ⇒ 18） |
+| 非树短路 | `wave_tree_term` 先做非递归形状判断，再用与点一相同的 `wave_tree_budget()` 取有效 B（NULL ⇒ 32）；仅孤根且 `B >= spec_task_ceiling`、树项可证不更紧时短路，否则按 `N=1, share=B` 执行上界 |
+| 诊断码 | `tree_budget_exhausted` / `tree_root_unresolved`；Rust recovery-action 契约为单一来源，web 交叉校验“该拧哪个旋钮”，缺参回退与 Rust 同为 share=0 |
 | 文档 | `985-doc-as-plan.md` D.4 #7 / §8 / C.2 / C.4 / §12.1 #19 #22 |
 
 ## 2. 结构性决定（都能在设计里找到依据）
@@ -25,11 +25,11 @@
 门禁**（设计 §8 ⚠️ 框明令），SQL 只能住在下游 crate。PR-A 的 `MAX_WAVE_TREE_DEPTH` /
 `WAVE_ROOT_DEPTH_SQL` 原样搬过去，adapter 侧 `pub use` 回原路径，公开契约不变。
 
-**2.2 登记制按 fork D9 的建议做成清单 + 机器联系，并在修复轮 1 改成集合相等。**
-`BOUNDED_WAVE_TREE_SQL: &[(&str, &str)]` 收常量名与四条片段，门禁遍历清单；元测试用 `syn`
-解析 `wave_tree.rs`，枚举 initializer 实际展开 `bounded_wave_*_cte!` 的全部 const 名，再与登记表
-做集合相等。它不再依赖 `concat!` 的换行/缩进；新增一条 rustfmt 后仍为单行的未登记常量会红，
-从清单删一条也仍会红。
+**2.2 修复轮 2 删除登记制，直接守「不存在无界递归 parent-wave CTE」的性质。**
+独立集成门递归扫描 `calm-truth/src` 的 Rust token tree，解码所有字符串字面量和宏 token 内文本，
+剥离 SQL 行/块注释后检查：凡含 `WITH RECURSIVE` 且触及 `parent_wave_id`，必须存在 depth 上界
+谓词。它不维护常量名单，也不依赖顶层 `pub const + concat!` 这一种 AST；内联 mod、包装宏、
+static、块表达式四种过去的零告警绕过均逐一变异为 RED。
 
 **2.3 递归只携带 `id` + `depth`，`created_at` 由外层 JOIN 读。**
 配额顺序要 `(created_at, id)`，但设计要求向下 CTE 只投影 `id`。做法是
@@ -57,9 +57,11 @@
 
 **G3b. 两个强制点的相容性（修复轮 1 补裁决）。**
 点一除库存外复用 `can_add_tree_member(B,N) = (N+1 <= B)`；点二继续用 v5 的
-`deterministic_share`。纯性质测试遍历 `B,N∈[0,64]`，断言点一放行后所有成员份额均大于 0；
+`deterministic_share`。纯性质测试遍历 `B,N∈[0,64]`，双向断言
+`can_add_tree_member(B,N) == 创建后所有成员 share > 0`，既证明 soundness 也证明边界允许性；
 真实 adapter 交错再钉住接线：B=2 的首个 child 完成父任务后，库存已回落但第二个 child 因
-成员数被拒。孤根显式预算则按 N=1 生效；NULL 默认仍保留原零递归短路。
+成员数被拒。孤根按有效 B 与 ceiling 比较：默认 B=32、ceiling=40 时不能短路，PATCH 回 NULL
+仍只准入 32；B>=ceiling 时才保留零递归优化。
 
 **G4. 「求不到根」包含哪些形态？设计只说「求不到根」。**
 选（fail-closed 一侧）：① 向上 CTE 返回 0 行或 >1 行；② 根深度 > `MAX_WAVE_TREE_DEPTH`；
@@ -70,9 +72,19 @@
 `tree_share_from_members` 纯 seam 直接喂一个不含 caller 的成员集。两条各自的单点变异都实测红。
 
 **G5. 两个 bound 同时收紧时报哪个诊断？设计没写。**
-选：`share < spec_task_ceiling` 时报 `tree_budget_exhausted`（并指名根 wave），否则维持
-`spec_task_ceiling`。依据：§12.2 C「人话 + 下一步动作」—— 报错要指向**真正能改的那个旋钮**；
-两者相等时（默认 32 == 32 且 N=1）保持既有码，不改既有验收。变异 M10 实测红。
+选：`share <= spec_task_ceiling` 时报 `tree_budget_exhausted`（并指名根 wave），否则维持
+`spec_task_ceiling`。相等时单独抬 ceiling 仍无法多放一条，必须指向根预算；Rust 的
+`TASK_DIAGNOSTIC_ACTIONS` 固化 recovery action，web 测试读取该契约并校验文案旋钮。严格 `<`
+变异在 `share=ceiling=32` 下实测红。
+
+## 3.1 修复轮 2 实现收口
+
+- B1：孤根短路从“列恰为 NULL”改成“同源有效 B 可证不更紧”，消除 PATCH 清回默认解除上界。
+- B2：删除登记表与 AST 枚举，换成 crate-wide SQL 字符串性质门；SQL 注释不能伪造 depth 谓词。
+- M1：库存与成员守卫各用另一守卫明确放行的 fixture，且拒绝后的零写入在同一 tx 内观察。
+- M2：ORDER BY 结构门先去 SQL 注释；行为夹具固定 id 顺序与 created_at 顺序相反。
+- M3：Rust recovery action 为单一契约，web 做跨文件校验；两边任改一边均有实测红变异。
+- MINOR：相等份额归因、双向相容性、migration fixture 集合相等、web 缺参回退均补齐。
 
 ## 4. 停下来没做的（**不就地扩范围**）
 
@@ -94,26 +106,24 @@
 | 门 | 命令 | 结果 |
 |---|---|---|
 | fmt | `cargo fmt --all --check` | 干净（无输出） |
-| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | `Finished dev profile in 1m 20s`，0 warning |
-| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3374 tests run: 3374 passed, 89 skipped**（103 binaries，28.4s） |
-| 生成物 | `web: npm run gen:api` 后 `git diff --exit-code -- src/api/openapi.json src/api/generated.ts src/api/generated-terminal.ts src/api/generated-events.ts src/editor/types/` | 干净（产物已提交：`WavePatch.tree_task_budget`） |
-| web build | `npm run build` | 成功（仅既有 chunk-size 警告） |
-| web test | `npm run test` | **85 files / 1230 tests passed**，`Type Errors no errors` |
+| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | `Finished dev profile in 1m 25s`，0 warning |
+| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3379 tests run: 3379 passed, 89 skipped**（104 binaries，87.040s） |
+| 生成物 | `web: npm run gen:api` 后 `git diff --exit-code -- src/api/openapi.json src/api/generated.ts src/api/generated-terminal.ts src/api/generated-events.ts src/editor/types/` | 干净，无生成物漂移 |
+| web build | `npm run build` | 成功，`built in 812ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web test | `npm run test` | **85 files / 1232 tests passed**，`Type Errors no errors` |
 | fe lint | `npm run lint` | `no dependency violations found (102 modules, 232 dependencies)` |
-| fe build | `npm run build` | 成功，`built in 214ms` |
+| fe build | `npm run build` | 成功，`built in 207ms` |
 | fe test | `npm run test`（含 `test:wire` + `test:mock-drift`） | **758 passed / 1 skipped**，wire 与 mock 均无漂移 |
 
 环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 全程未设置，
-web/fe 用 Node 22。
+web/fe 最终全门显式使用 Node `v22.22.2`。
 
-修复轮 1 的定向回归在全门前先跑：`calm-truth` 树预算集合 **29/29**，`calm-server`
-新接缝 **8/8**，`calm-types` 人话 **1/1**，web 文案 **54/54**。
+修复轮 2 的复原后定向回归：`calm-truth` 树预算集合 **29/29**，B2 crate-wide 性质门 **4/4**，
+`calm-server` 两个独立预算守卫 **2/2**，升级 fixture **2/2**，`calm-types` 诊断契约 **11/11**，
+web report-block 文案 **56/56**。
 
-全门过程不隐藏两次前置红：第一轮 3373/3374 暴露 `migration_0068_projection_policy` 的手工
-head-schema fixture 只应用到 0071，新孤根判据读 0072 列时报 `no such column`；fixture 补应用
-**既有** 0072（未改 migration）后目标测试 1/1。第二轮同样 3373/3374，仅
-`acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive` 一次时序失败；该测试
-无改动、单独复跑 1/1（0.34s），第三轮完整 workspace 得到表中 3374/3374。
+本轮最终 Rust/web/fe 全门一次全绿。web 首次命令探测到系统默认 Node 24 后在生成物阶段中止，
+不计为门结果；随后从 `gen:api` 起用显式 Node 22 路径完整重跑并得到表中结果。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
 

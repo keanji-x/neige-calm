@@ -4,7 +4,7 @@ use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef
 use calm_types::ids::{ActorId, WaveId};
 use calm_types::report_blocks::tasks::{
     Diagnostic, GateInput, TASK_BLOCKING_DIAGNOSTIC_PATHS, TaskDeclaration, diagnostic_args,
-    gate_rule_violations, json_eq, opt_json_eq, unknown_deps,
+    gate_rule_violations, json_eq, opt_json_eq, task_diagnostic_action, unknown_deps,
 };
 use calm_types::report_links::{parse_destination, scan_links};
 use serde::{Deserialize, Serialize};
@@ -872,7 +872,7 @@ pub async fn evaluate_schedulability(
     // not what stopped them — the cause lives in a DIFFERENT wave's budget.
     let tree_bound = tree_share
         .as_ref()
-        .filter(|share| share.share < ceiling)
+        .filter(|share| share.share <= ceiling)
         .cloned();
     for index in candidates.into_iter().skip(capacity) {
         let diagnostic = match &tree_bound {
@@ -896,7 +896,7 @@ pub async fn evaluate_schedulability(
                 ]),
                 admitted_ids.clone(),
                 Some(share.root_id.clone()),
-                Some("raise_tree_task_budget".into()),
+                task_diagnostic_action("tree_budget_exhausted").map(str::to_owned),
             ),
             None => Diagnostic::coded(
                 "spec_task_ceiling",
@@ -911,7 +911,7 @@ pub async fn evaluate_schedulability(
                 ]),
                 admitted_ids.clone(),
                 Some(wave_id.into()),
-                Some("raise_spec_task_ceiling".into()),
+                task_diagnostic_action("spec_task_ceiling").map(str::to_owned),
             ),
         };
         verdicts[index].diagnostics.push(diagnostic);

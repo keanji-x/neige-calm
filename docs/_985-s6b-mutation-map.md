@@ -14,13 +14,13 @@
 | # | 变异（改坏什么） | 目标测试全名 | 结果 |
 |---|---|---|---|
 | M1 | `task_projection.rs` 的 `WaveTreeTerm::Share(share) => (ceiling.min(share.share), …)` 换成**共享计数**：`ceiling.min(share.budget - 全树其它 wave 的非终结 spec 行数)` | `db::sqlite::wave_tree_budget_tests::two_rebuild_orders_over_one_tree_agree_byte_for_byte` | **RED** |
-| M2 | `wave_tree.rs` 的 `bounded_wave_descendant_cte!` 删掉 `WHERE down.depth <= ?2`（唯一终止装置） | `db::sqlite::wave_tree::tests::bounded_tree_sql_keeps_its_only_cycle_termination_guard` | **RED** |
-| M3 | `BOUNDED_WAVE_TREE_SQL` 里删掉 `WAVE_TREE_MEMBERS_SQL`（模拟「新增 CTE 漏登记」） | `db::sqlite::wave_tree::tests::every_bounded_tree_cte_expansion_is_registered` | **RED** |
+| M2 | `wave_tree.rs` 的 `bounded_wave_descendant_cte!` 删掉 `WHERE down.depth <= ?2`（唯一终止装置） | `every_recursive_parent_wave_cte_in_the_crate_has_a_depth_bound` | **RED；R2 已把原名单内文本门升级为 crate-wide 性质门** |
+| M3 | `BOUNDED_WAVE_TREE_SQL` 里删掉 `WAVE_TREE_MEMBERS_SQL`（模拟「新增 CTE 漏登记」） | 原 `every_bounded_tree_cte_expansion_is_registered` | **历史 RED，登记表与该实例变异已退休。** 当前等价风险由 R2-B2a-d 的四类“新增无界 CTE”性质变异覆盖。 |
 | M4 | `RootUnresolved` 臂从 fail-closed 改成「没有树就跳过树项」（`(ceiling, None)`） | `db::sqlite::wave_tree_budget_tests::unresolvable_root_fails_closed_for_every_declaration` | **RED** |
 | M5a | migration `0072_` 的列加上 `DEFAULT 32`（照 `spec_task_ceiling` 的旧形状） | `db::sqlite::wave_tree_budget_tests::every_created_wave_lands_a_null_tree_task_budget`（`dflt_value` 断言） | **RED** |
 | M5b | 在 M5a 之上再把 `wave_create_tx` 固定列清单里的 `tree_task_budget`/`NULL` 删掉 | 同上（子 wave 实测 `Some(32)`，即「每个子 wave 各拿一份预算」） | **RED** |
 | M6 | `wave_update_tx` 删掉 root-only 守卫（保留 UPDATE） | `db::sqlite::wave_tree_budget_tests::tree_task_budget_patch_on_a_child_is_refused_by_the_shared_writer` | **RED** |
-| M7 | 强制点一的 `inventory >= budget` 改成 `>`（差一） | `operation::child_wave_adapter::tests::acceptance_tree_budget_refuses_child_creation_when_the_tree_is_full` | **RED** |
+| M7 | 强制点一的 `inventory >= budget` 改成 `>`（差一） | `operation::child_wave_adapter::tests::acceptance_tree_budget_refuses_child_creation_when_the_tree_is_full` | **RED（修复轮 2 重新成立）**。修复轮 1 加入成员守卫后，旧 B=1 fixture 会先撞成员上界，曾让这条变异 **STILL-GREEN**；R2 改为 `B=2, inventory=2, N+1=2` 后重跑，`unwrap_err()` 收到 `Ok(TxOutput)`，库存守卫独立红。 |
 | M9 | `wave_tree_term` 删掉非树 wave 的短路（永远走递归遍历） | `db::sqlite::wave_tree_budget_tests::a_non_tree_wave_runs_zero_recursive_tree_queries` | **RED** |
 | M10 | 树上界的诊断码从 `tree_budget_exhausted` 换回 `spec_task_ceiling`（跨 wave 归因被抹掉） | `db::sqlite::wave_tree_budget_tests::over_share_declarations_are_diagnosed_against_the_root_wave` | **RED** |
 | M11 | `deterministic_share` 去掉余数分配（只留 `floor(B/N)`） | `db::sqlite::wave_tree_budget_tests::shares_over_a_real_tree_sum_to_the_budget` | **RED** |
@@ -82,8 +82,8 @@
 | R1-B1a | `can_add_tree_member` 恒返回 true | `wave_tree::tests::enforcement_points_are_compatible_for_every_budget_and_member_count` | **RED**：`B=0, N=2` 出现零份额 |
 | R1-B1b | adapter 的成员数准入条件改成恒 false（保留库存准入） | `child_wave_adapter::tests::acceptance_tree_budget_never_admits_a_zero_share_member` | **RED**：第二个 child 被实际创建，`unwrap_err` 拿到 `Ok` |
 | R1-B1c | 孤根显式预算仍返回 `NotInTree` | `wave_tree_budget_tests::an_explicit_budget_applies_to_a_singleton_root` | **RED**：B=1 仍准入 3/3 |
-| R1-B2 | 从 `WAVE_TREE_MEMBERS_SQL` 删除整句 `ORDER BY w.created_at, w.id` | `wave_tree::tests::quota_member_sql_keeps_its_total_order_definition` | **RED**：排序定义缺席 |
-| R1-B3 | 新增 rustfmt 后仍保持单行的 `pub const X: &str = concat!(bounded_wave_descendant_cte!(), "");`，只 re-export、不登记 | `wave_tree::tests::every_bounded_tree_cte_expansion_is_registered` | **RED**：AST 实际集合多出 `X`，零 warning |
+| R1-B2 | 从 `WAVE_TREE_MEMBERS_SQL` 删除整句 `ORDER BY w.created_at, w.id` | `wave_tree::tests::quota_member_sql_keeps_its_total_order_definition` | **历史 RED；R2 已升级并重验**：旧门可被注释满足；现门先剥 SQL 注释，行为夹具也固定成 id 顺序与 created_at 顺序相反。只留同文注释时两门都 RED。 |
+| R1-B3 | 新增 rustfmt 后仍保持单行的 `pub const X: &str = concat!(bounded_wave_descendant_cte!(), "");`，只 re-export、不登记 | 原 `wave_tree::tests::every_bounded_tree_cte_expansion_is_registered` | **历史 RED，但实例门已删除并由 R2-B2a-d 取代。** 该 AST 枚举只覆盖顶层 const + concat，不能证明「不存在无界递归 CTE」；当前门不再维护登记表。 |
 | R1-M1a | Rust 正份额文案恢复为“等树里别处任务完成” | `wave_tree_budget_tests::over_share_declarations_are_diagnosed_against_the_root_wave` | **RED** |
 | R1-M1b | Rust 把 `share==0` 专用分支改成不可达 | `wave_tree_budget_tests::zero_share_diagnostic_explains_the_shape_and_effective_actions` | **RED** |
 | R1-M1c | web 正份额文案恢复为“wait for tasks elsewhere” | `report-blocks.test.tsx` 的 `gives tree_budget_exhausted a human explanation and next action` | **RED**：54 中 1 failed |
@@ -99,7 +99,7 @@
 
 | # | 变异 | 目标测试 | 结果与处置 |
 |---|---|---|---|
-| R1-B2-pre | 删除 `ORDER BY` 整句后，只跑两条反插入序 / 同时间戳行为用例 | `quota_remainder_follows_created_at_not_insertion_order` + `quota_remainder_breaks_equal_created_at_ties_by_id` | **STILL-GREEN（2/2）**。当前 SQLite 的 `GROUP BY id` 临时给出了同一顺序，行为用例仍与查询计划共用事实来源。因此保留它们覆盖方向/tie-break，并新增直接守住 SQL 定义存在性的 R1-B2；在同一未复原变异上，R1-B2 已实测红。 |
+| R1-B2-pre | 删除 `ORDER BY` 整句后，只跑两条反插入序 / 同时间戳行为用例 | `quota_remainder_follows_created_at_not_insertion_order` + `quota_remainder_breaks_equal_created_at_ties_by_id` | **修复轮 1 当时 STILL-GREEN（2/2），该结论已过期。** R2 固定 id 与 created_at 反序后，同一删除/注释变异使第一条 RED（第二条继续守 tie-break）；见 R2-M2。 |
 
 ### 5.3 覆盖替换审计
 
@@ -107,8 +107,32 @@
   用例只收紧显式预算分支，没有删掉原短路覆盖。
 - 原 `RootUnresolved` fail-closed 由既有“所有声明不可调度”继续购买；新实现去掉早退后，withdrawal
   边沿与已删块合成 verdict 分别由 R1-M3 的同一交错购买。
-- 原登记清单的“删一项会红”没有丢：AST 实际集合与登记名集合做**集合相等**，两个方向都比较；
-  R1-B3 专门购买过去缺失的“新增不登记会红”，且不依赖排版。
-- 配额顺序的方向和同毫秒 id tie-break 仍由行为用例购买；`ORDER BY` 的**存在性**由结构断言购买。
-- 点一的库存 `>=` 既有 M7 保留；新增成员上界由 adapter 交错购买；两者组合不产生零份额由
-  `B,N` 性质测试购买。
+- 登记清单与 AST 枚举已删除。crate-wide token/string 扫描直接购买「任何触及 `parent_wave_id`
+  的递归 CTE 都有 depth 截断」；const/static/内联 mod/块/包装宏都不需要登记。
+- 配额顺序的方向由固定 id/created_at 反序行为用例购买，同毫秒 id tie-break 由第二条行为用例购买；
+  真正 `ORDER BY` 子句的存在性由剥离 SQL 注释后的结构断言购买。
+- 点一的库存 `>=` 与成员上界现在各有对方明确放行的 adapter 交错；两者组合的 soundness 与
+  边界允许性由 `can_add == every share > 0` 的双向性质购买。
+
+## 六、修复轮 2（r2 双通道收敛项，全部实际执行并复原）
+
+| # | 改坏什么 | 红的测试 | 实测结果 |
+|---|---|---|---|
+| R2-B1 | 孤根短路恢复为 `tree_task_budget IS NULL`，不比较同源有效 B 与 ceiling | `resetting_an_explicit_budget_to_null_keeps_the_default_bound` | **RED**：PATCH 回 NULL 后 40/40 schedulable，期望 32 |
+| R2-B2a | 在内联 `mod` 放一条无 depth 的递归 parent-wave SQL | `every_recursive_parent_wave_cte_in_the_crate_has_a_depth_bound` | **RED**：报告该 SQL 无 depth bound |
+| R2-B2b | 同一无界 SQL 改由包装宏生成 | 同上 | **RED** |
+| R2-B2c | 同一无界 SQL 写成 `static` | 同上 | **RED** |
+| R2-B2d | 同一无界 SQL 写成块表达式 `const` | 同上 | **RED** |
+| R2-M1a（重跑旧 M7） | 库存 `inventory >= budget` 改为 `>` | `acceptance_tree_budget_refuses_child_creation_when_the_tree_is_full` | **RED**：`B=2, inventory=2, N+1=2` 下错误放行；修复轮 1 后曾被成员守卫遮蔽的证据已恢复 |
+| R2-M1b | 删除成员上界守卫 | `acceptance_tree_budget_never_admits_a_zero_share_member` | **RED**：`B=2, inventory=1, N+1=3` 下错误放行；库存守卫明确不触发 |
+| R2-M1c | 把成员拒绝移到 child wave skeleton 写入之后 | 同上 | **RED**：同一未回滚 tx 内 waves 从 2 变 3，证明零写入断言不再依赖 `drop(tx)` 回滚 |
+| R2-M2 | 删除真实 `ORDER BY`、只留 `/* ORDER BY w.created_at, w.id */` | `quota_member_sql_keeps_its_total_order_definition` + `quota_remainder_follows_created_at_not_insertion_order` | **RED + RED**：注释不能满足结构门；固定 id/时间反序让行为不依赖查询计划 |
+| R2-M3a | Rust 动作契约把 tree 旋钮改为 `raise_spec_task_ceiling` | web `keeps capacity copy aligned with the Rust recovery-action contract` | **RED**：期望 `raise_tree_task_budget` |
+| R2-M3b | web 正份额文案把 “top wave” 改成 “wave settings” | 同上 | **RED**：文案不再指向契约旋钮 |
+| R2-m1 | `can_add_tree_member` 的边界从 `<=` 改为 `<` | `enforcement_points_are_compatible_for_every_budget_and_member_count` | **RED**：`B=2, after N=2` 本应允许却拒绝 |
+| R2-m2 | tree 诊断归因的 `share <= ceiling` 恢复严格 `<` | `an_equal_tree_share_reports_the_tree_knob` | **RED**：`share=ceiling=32` 错归 `spec_task_ceiling` |
+| R2-m3 | migrations 目录新增 `0073_r2_probe.sql`，不更新升级日 fixture | `head_schema_fixture_lists_every_migration_from_0068_through_head` | **RED**：集合右侧多出 0073 |
+| R2-m4 | web 缺 share 时恢复严格 `share === 0` | web `gives tree_budget_exhausted a human explanation and next action` | **RED**：渲染出空的 “this wave can hold .” 分支 |
+
+复原审计：上述临时 SQL、宏、static、migration 0073、条件与文案变异均已删除/恢复；最终定向门
+再次全绿后才运行 §9 全门。

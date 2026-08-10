@@ -826,6 +826,7 @@ describe('degraded blocks', () => {
     ['invalid_declaration', {}, /incomplete or invalid/],
     ['tree_budget_exhausted', { tree_waves: 3, tree_task_budget: 2, share: 0 }, /remove extra child waves/],
     ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1 }, /in-progress task in this wave finish/],
+    ['tree_budget_exhausted', {}, /receives no task slots/],
     ['tree_root_unresolved', {}, /Repair or remove the broken sub-wave link/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
@@ -886,6 +887,32 @@ describe('degraded blocks', () => {
     const rustCodes = [...(declaration?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
     expect(new Set(rustCodes)).toEqual(new Set(taskDiagnosticCodes));
     expect(taskDiagnosticCodes).toHaveLength(18);
+  });
+
+  it('keeps capacity copy aligned with the Rust recovery-action contract', () => {
+    const rust = readFileSync('../crates/calm-types/src/report_blocks/tasks.rs', 'utf8');
+    const declaration = rust.match(/pub const TASK_DIAGNOSTIC_ACTIONS: &\[\(&str, &str\)\] = &\[([\s\S]*?)\n\];/);
+    expect(declaration).not.toBeNull();
+    const actions = new Map(
+      [...(declaration?.[1] ?? '').matchAll(/\("([^"]+)", "([^"]+)"\)/g)]
+        .map((match) => [match[1], match[2]]),
+    );
+    expect(actions.get('tree_budget_exhausted')).toBe('raise_tree_task_budget');
+    expect(actions.get('spec_task_ceiling')).toBe('raise_spec_task_ceiling');
+
+    const treeCopy = taskDiagnosticText({
+      code: 'tree_budget_exhausted', messageArgs: { tree_waves: 2, tree_task_budget: 2, share: 1 },
+      relatedBlockIds: [], path: 'key', message: '', action: actions.get('tree_budget_exhausted'),
+    });
+    expect(treeCopy).toMatch(/top wave/);
+    expect(treeCopy).not.toMatch(/wave settings/);
+
+    const ceilingCopy = taskDiagnosticText({
+      code: 'spec_task_ceiling', messageArgs: { ceiling: 1, occupied: 1 },
+      relatedBlockIds: [], path: 'key', message: '', action: actions.get('spec_task_ceiling'),
+    });
+    expect(ceilingCopy).toMatch(/wave settings/);
+    expect(ceilingCopy).not.toMatch(/top wave/);
   });
 
   it('keeps the task payload contract split between live declarations and tombstones', () => {

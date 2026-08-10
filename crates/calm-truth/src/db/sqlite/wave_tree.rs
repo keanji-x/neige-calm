@@ -7,12 +7,11 @@
 //! (as opposed to `UNION ALL`) does NOT terminate these walks — PR-A proved
 //! that empirically — and a carried non-id column defeats even `UNION`'s
 //! duplicate elimination. Hence: every fragment below carries `id` (plus the
-//! depth counter) and nothing else, and every fragment is registered in
-//! [`BOUNDED_WAVE_TREE_SQL`], which the static gate at the bottom of this file
-//! walks. The gate additionally counts macro expansions in this file's own
-//! source so that adding a new bounded-tree SQL constant WITHOUT registering
-//! it turns the gate red — a name list with no machine link to its members is
-//! exactly the shape #985 §7.1 forbids.
+//! depth counter) and nothing else. A crate-wide property test scans every
+//! Rust string (including strings nested in macro token trees) and rejects any
+//! recursive CTE touching `parent_wave_id` without a depth bound. There is no
+//! registry to remember to update: the property, rather than a list of known
+//! declarations, is the gate.
 //!
 //! PR-B adds the two downward walks: the creation-admission inventory count
 //! (`child-wave`'s `prepare_tx`) and the tree membership enumeration that
@@ -91,15 +90,6 @@ pub const WAVE_TREE_SPEC_INVENTORY_SQL: &str = concat!(
      JOIN (SELECT DISTINCT id FROM down) d ON t.wave_id = d.id \
      WHERE t.declared_by = 'spec' AND t.status NOT IN ('done', 'failed', 'canceled')"
 );
-/// Every bounded-tree SQL constant in this module. The static gate walks this
-/// list; a fragment missing from it is a fragment nothing checks.
-pub const BOUNDED_WAVE_TREE_SQL: &[(&str, &str)] = &[
-    ("WAVE_ROOT_DEPTH_SQL", WAVE_ROOT_DEPTH_SQL),
-    ("WAVE_BOUNDED_PATH_SQL", WAVE_BOUNDED_PATH_SQL),
-    ("WAVE_TREE_MEMBERS_SQL", WAVE_TREE_MEMBERS_SQL),
-    ("WAVE_TREE_SPEC_INVENTORY_SQL", WAVE_TREE_SPEC_INVENTORY_SQL),
-];
-
 /// The deterministic share of `budget` handed to the member at `index` of a
 /// tree with `members` waves, ordered by `(created_at, id)`.
 ///
@@ -129,10 +119,9 @@ pub fn can_add_tree_member(budget: i64, members: i64) -> bool {
 /// The tree contribution to a wave's effective ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaveTreeTerm {
-    /// `parent_wave_id IS NULL`, no child exists, and `tree_task_budget` is
-    /// NULL: the default tree term cannot tighten the default wave ceiling, so
-    /// no recursive walk runs. An explicitly configured budget still returns
-    /// `Share { members: 1 }` for this same shape.
+    /// `parent_wave_id IS NULL`, no child exists, and the effective tree budget
+    /// is at least this wave's ceiling: the tree term provably cannot tighten
+    /// admission, so no recursive walk runs.
     NotInTree,
     /// The wave IS in a tree but its root could not be resolved (broken parent
     /// link, cycle, or a chain deeper than [`MAX_WAVE_TREE_DEPTH`]). Callers
@@ -162,21 +151,21 @@ pub struct WaveTreeTermOutcome {
     pub tree_cte_queries: u32,
 }
 
-/// Is recursion needed, and did the user explicitly configure the singleton
-/// root's budget? One non-recursive statement.
+/// Is recursion needed, and what is the singleton root's wave ceiling? One
+/// non-recursive statement.
 async fn wave_tree_shortcut(
     conn: &mut SqliteConnection,
     wave_id: &str,
-) -> Result<Option<(bool, Option<i64>)>> {
-    let row: Option<(i64, Option<i64>)> = sqlx::query_as(
+) -> Result<Option<(bool, i64)>> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
         "SELECT CASE WHEN w.parent_wave_id IS NOT NULL \
            OR EXISTS(SELECT 1 FROM waves c WHERE c.parent_wave_id = w.id) \
-         THEN 1 ELSE 0 END, w.tree_task_budget FROM waves w WHERE w.id = ?1",
+         THEN 1 ELSE 0 END, w.spec_task_ceiling FROM waves w WHERE w.id = ?1",
     )
     .bind(wave_id)
     .fetch_optional(&mut *conn)
     .await?;
-    Ok(row.map(|(in_tree, budget)| (in_tree == 1, budget)))
+    Ok(row.map(|(in_tree, ceiling)| (in_tree == 1, ceiling.max(0))))
 }
 
 /// Resolve `wave_id`'s tree term.
@@ -184,15 +173,20 @@ pub async fn wave_tree_term(
     conn: &mut SqliteConnection,
     wave_id: &str,
 ) -> Result<WaveTreeTermOutcome> {
-    if let Some((false, configured_budget)) = wave_tree_shortcut(&mut *conn, wave_id).await? {
-        let term = match configured_budget {
-            None => WaveTreeTerm::NotInTree,
-            Some(budget) => WaveTreeTerm::Share(TreeShare {
+    if let Some((false, ceiling)) = wave_tree_shortcut(&mut *conn, wave_id).await? {
+        // Use the SAME effective-budget function as child-wave admission.
+        // In particular, NULL means the kernel default here and there; PATCH
+        // back to NULL must never remove an upper bound.
+        let budget = wave_tree_budget(&mut *conn, wave_id).await?;
+        let term = if budget >= ceiling {
+            WaveTreeTerm::NotInTree
+        } else {
+            WaveTreeTerm::Share(TreeShare {
                 root_id: wave_id.to_owned(),
-                budget: budget.max(0),
+                budget,
                 members: 1,
-                share: budget.max(0),
-            }),
+                share: budget,
+            })
         };
         return Ok(WaveTreeTermOutcome {
             term,
@@ -295,53 +289,32 @@ pub async fn wave_tree_member_count(conn: &mut SqliteConnection, root_id: &str) 
 mod tests {
     use super::*;
 
-    /// Every registered fragment keeps its only cycle-termination guard.
-    #[test]
-    fn bounded_tree_sql_keeps_its_only_cycle_termination_guard() {
-        assert!(!BOUNDED_WAVE_TREE_SQL.is_empty());
-        for (_, sql) in BOUNDED_WAVE_TREE_SQL {
-            let bounded =
-                sql.contains("WHERE up.depth <= ?2") || sql.contains("WHERE down.depth <= ?2");
-            assert!(bounded, "unbounded recursive tree SQL: {sql}");
-            assert!(sql.contains("UNION ALL"), "{sql}");
-        }
-    }
-
     #[test]
     fn quota_member_sql_keeps_its_total_order_definition() {
+        let without_line_comments = WAVE_TREE_MEMBERS_SQL
+            .lines()
+            .map(|line| line.split("--").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut without_comments = String::new();
+        let mut rest = without_line_comments.as_str();
+        while let Some(start) = rest.find("/*") {
+            without_comments.push_str(&rest[..start]);
+            let Some(end) = rest[start + 2..].find("*/") else {
+                rest = "";
+                break;
+            };
+            rest = &rest[start + 2 + end + 2..];
+        }
+        without_comments.push_str(rest);
+        let normalized = without_comments
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
-            WAVE_TREE_MEMBERS_SQL.contains("ORDER BY w.created_at, w.id"),
+            normalized.contains("ORDER BY w.created_at, w.id"),
             "quota membership lost its deterministic (created_at, id) order"
         );
-    }
-
-    /// Parse the Rust file, enumerate every const whose initializer expands a
-    /// bounded CTE, and require exact set equality with the registry. Source
-    /// formatting, including a whole declaration on one line, is irrelevant.
-    #[test]
-    fn every_bounded_tree_cte_expansion_is_registered() {
-        let source: syn::File = syn::parse_str(include_str!("wave_tree.rs")).unwrap();
-        let actual = source
-            .items
-            .into_iter()
-            .filter_map(|item| match item {
-                syn::Item::Const(item) => match *item.expr {
-                    syn::Expr::Macro(expression)
-                        if expression.mac.path.is_ident("concat")
-                            && expression.mac.tokens.to_string().contains("bounded_wave_") =>
-                    {
-                        Some(item.ident.to_string())
-                    }
-                    _ => None,
-                },
-                _ => None,
-            })
-            .collect::<std::collections::BTreeSet<_>>();
-        let registered = BOUNDED_WAVE_TREE_SQL
-            .iter()
-            .map(|(name, _)| (*name).to_owned())
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual, registered, "bounded-tree SQL registry drifted");
     }
 
     #[test]
@@ -374,13 +347,13 @@ mod tests {
     fn enforcement_points_are_compatible_for_every_budget_and_member_count() {
         for budget in 0..=64 {
             for members in 1..=64 {
-                if !can_add_tree_member(budget, members) {
-                    continue;
-                }
                 let after = members + 1;
-                assert!(
-                    (0..after).all(|index| deterministic_share(budget, after, index) > 0),
-                    "point one admitted a zero-share tree: budget={budget}, members={after}"
+                let every_member_gets_a_share =
+                    (0..after).all(|index| deterministic_share(budget, after, index) > 0);
+                assert_eq!(
+                    can_add_tree_member(budget, members),
+                    every_member_gets_a_share,
+                    "admission and quota split disagree: budget={budget}, members={after}"
                 );
             }
         }
