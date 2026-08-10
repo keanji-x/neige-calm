@@ -1,5 +1,11 @@
 // The `/wave/$waveId` surface.
 //
+// §8.3 — the one page where the product is actually alive, and the one the
+// rewrite is most missing. The card runtime is a later slice; that is a fact to
+// be **rendered honestly** at the real geometry, not narrated in prose. The
+// document slot therefore occupies a document's worth of space even when empty,
+// because that shape is what teaches the user what they will get.
+//
 // Presentational: the wave, its cove and its cards arrive as props, and every
 // mutation and every navigation leaves through a callback — `features/**` may
 // not import `app/**`, so the router owns both the fetch and the destination.
@@ -8,11 +14,14 @@
 // is no `<a href>` anywhere on this page, and `public.contract.test.tsx` holds
 // that line for the whole subtree.
 
-import { type Cove } from '../../../../../core/domain/cove.ts';
+import type { RefObject } from 'react';
+
+import { coveSlotVar, type Cove } from '../../../../../core/domain/cove.ts';
 import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
+import { Breadcrumb, PageHeader } from '../../../ui/page-header/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import styles from './page.module.css';
@@ -22,6 +31,8 @@ export type WavePageProps = Readonly<{
   /** Absent when the wave points at a cove the current read cannot see. */
   cove: Cove | undefined;
   cards: readonly CardWire[];
+  /** CR-8 — after a successful delete, focus lands on the cove page's title. */
+  pageTitleRef?: RefObject<HTMLElement | null>;
   onOpenCove: () => void;
   onOpenToday: () => void;
   onRenameWave: (title: string) => void | Promise<void>;
@@ -30,16 +41,8 @@ export type WavePageProps = Readonly<{
 
 const UNKNOWN_COVE_LABEL = 'Unknown cove';
 
-/**
- * The card runtime — terminals, editors, the draggable board — is a later
- * slice. Until it lands the page still has to answer "what is in this wave",
- * so the body is an honest inventory rather than an empty panel or a
- * half-built renderer that would have to be thrown away.
- */
-const CARD_RUNTIME_NOTE = 'Card runtime lands in a later slice.';
-
 export function WavePage({
-  wave, cove, cards, onOpenCove, onOpenToday, onRenameWave, onDeleteWave,
+  wave, cove, cards, pageTitleRef, onOpenCove, onOpenToday, onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -47,10 +50,13 @@ export function WavePage({
   const coveName = cove?.name ?? UNKNOWN_COVE_LABEL;
 
   /**
-   * The confirm stays mounted for the whole round trip — Confirm disabled,
-   * Cancel still live — and `finally` clears both flags. A rejected
-   * `onDeleteWave` must not strand the dialog open around a dead Confirm
-   * button, which is what a `then`-only reset would do.
+   * The confirm stays mounted for the whole round trip — Confirm busy, Cancel
+   * still live — and `finally` clears both flags. A rejected `onDeleteWave`
+   * must not strand the dialog open around a dead Confirm button, which is what
+   * a `then`-only reset would do.
+   *
+   * Deleting a wave is a plain confirm, not a typed one: it is not the
+   * catastrophic, cascading operation that earns the third rung (§4.3).
    */
   const confirmDelete = () => {
     setDeleting(true);
@@ -67,54 +73,124 @@ export function WavePage({
 
   return (
     <section className={styles.page} data-nc-wave-page="">
-      <header className={styles.header}>
-        <nav className={styles.crumbs} aria-label="Breadcrumb">
-          <button type="button" className={styles.back} aria-label="Back to cove" onClick={onOpenCove}>←</button>
-          <button type="button" className={styles.crumb} onClick={onOpenToday}>Today</button>
-          <span className={styles.crumbSeparator} aria-hidden="true">/</span>
-          <button type="button" className={styles.crumb} onClick={onOpenCove}>
-            <span className={styles.coveDot} style={{ background: cove?.color }} aria-hidden="true" />
-            {coveName}
-          </button>
-        </nav>
-
-        <div className={styles.titleRow}>
+      {/* All three rows: the only route in the app whose --header-h is 92. */}
+      <PageHeader
+        breadcrumb={
+          <Breadcrumb
+            ancestor="Today"
+            onNavigate={onOpenToday}
+            onBack={onOpenCove}
+            onNavigateCurrent={onOpenCove}
+            backLabel="Back to cove"
+            current={
+              <>
+                <span
+                  className={styles.coveDot}
+                  style={cove === undefined ? undefined : { background: `var(${coveSlotVar(cove.id)})` }}
+                  aria-hidden="true"
+                />
+                {coveName}
+              </>
+            }
+          />
+        }
+        title={
           <EditableTitle
             value={waveDisplayTitle(wave.title)}
             onCommit={onRenameWave}
             editLabel="Rename wave"
             inputLabel="Wave title"
             className={styles.title}
+            isPageTitle
           />
-          <WaveLifecycleBadge lifecycle={wave.lifecycle} />
+        }
+        meta={
+          <>
+            {/* Status is a different *kind* of thing from a title, so it is
+                carried by shape and semantic colour, never by size — which is
+                exactly why it can sit next to 18px type without competing. */}
+            <WaveLifecycleBadge lifecycle={wave.lifecycle} />
+            {wave.anyCardNeedsInput && (
+              <span className={styles.needsInput}>
+                <span className={styles.needsInputDot} aria-hidden="true" />
+                Needs input
+              </span>
+            )}
+          </>
+        }
+        actions={
+          // This page has no primary action, and that is legal and common:
+          // creating a card is a gesture on the board, renaming is in place.
+          // Same icon + tooltip treatment as the cove page — one destructive
+          // affordance, one glyph, wherever it appears.
           <button
             type="button"
-            className={styles.delete}
+            data-nc-role="icon"
+            className={styles.headerDelete}
+            aria-label={`Delete wave ${waveDisplayTitle(wave.title)}`}
+            title="Delete wave"
             onClick={() => setConfirmOpen(true)}
           >
-            Delete
+            ×
           </button>
+        }
+        /*
+         * No identity row — `--header-h` is 62 here now, not 92.
+         *
+         * The folder is real (unlike the cove page's, which was synthesised
+         * from whatever its waves happened to agree on, and was deleted). But
+         * being real is not the same as belonging in the chrome: a page header
+         * is what you read on *every* visit, and a path you already chose when
+         * you created the wave is something you look up once, if ever. Three
+         * rows of header to carry it was the page paying its largest fixed
+         * cost for its least-read fact — and in mono, which §2.2 reserves for
+         * machine identity precisely so it stands out where it matters.
+         *
+         * It moves to the panel, under a label, next to the other things about
+         * this wave you might want to check. Nothing is lost; it stops being
+         * chrome.
+         */
+      />
+
+      <div className={styles.content}>
+        <div className={styles.doc}>
+          {/* The unbuilt slot renders at the geometry the real content will
+              have: dashed, unfilled, one centred sentence of at most six words,
+              and nothing else — no module path, no slice name, no apology. The
+              shape is the useful information; the sentence is a one-off. */}
+          <div className={styles.reportSlot}>
+            <p className={styles.slotNote}>No report yet.</p>
+          </div>
         </div>
 
-        {wave.cwd !== '' && <p className={styles.cwd}>{wave.cwd}</p>}
-      </header>
+        <aside className={styles.panel}>
+          <h2 className={styles.sectionLabel}>Cards</h2>
+          {cards.length === 0
+            ? <p className={styles.inlineEmpty}>No cards yet.</p>
+            : (
+              <ul className={styles.cards} data-nc-card-inventory="">
+                {cards.map((card) => (
+                  <li key={card.id} className={styles.cardRow}>
+                    {/* `kind` is the identity and `title` is the label; with no
+                        title the kind stands alone rather than being printed
+                        twice. */}
+                    <span className={styles.cardKind}>{card.title ?? card.kind}</span>
+                    {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
 
-      <div className={styles.body}>
-        <h2 className={styles.sectionTitle}>Cards</h2>
-        {cards.length === 0
-          ? <p className={styles.empty}>This wave has no cards yet. {CARD_RUNTIME_NOTE}</p>
-          : (
-            <ul className={styles.cards} data-nc-card-inventory="">
-              {cards.map((card) => (
-                <li key={card.id} className={styles.card}>
-                  <span className={styles.cardKind}>{card.kind}</span>
-                  <span className={styles.cardTitle}>{card.title ?? card.kind}</span>
-                  {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
-                  <span className={styles.cardNote}>{CARD_RUNTIME_NOTE}</span>
-                </li>
-              ))}
-            </ul>
+          {wave.cwd !== '' && (
+            <>
+              <h2 className={styles.sectionLabel}>Folder</h2>
+              <p className={styles.cwd}>{wave.cwd}</p>
+            </>
           )}
+
+          <h2 className={styles.sectionLabel}>Activity</h2>
+          <p className={styles.inlineEmpty}>Nothing yet.</p>
+        </aside>
       </div>
 
       <ConfirmDialog
@@ -122,7 +198,9 @@ export function WavePage({
         title={DELETE_WAVE_COPY.title}
         description={DELETE_WAVE_COPY.description}
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
-        confirmDisabled={deleting}
+        confirmBusyLabel="Deleting…"
+        confirmState={deleting ? 'busy' : 'ready'}
+        restoreFocusRef={pageTitleRef}
         onConfirm={confirmDelete}
         onCancel={() => setConfirmOpen(false)}
       />

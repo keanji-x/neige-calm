@@ -43,6 +43,8 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         onDeleteCove={props.onDeleteCove ?? vi.fn()}
         onSetPinned={props.onSetPinned ?? vi.fn()}
         onDeleteWave={props.onDeleteWave ?? vi.fn()}
+        collapsed={props.collapsed ?? false}
+        onToggleCollapsed={props.onToggleCollapsed ?? vi.fn()}
         onOpenSettings={props.onOpenSettings ?? vi.fn()}
         onSignOut={props.onSignOut ?? vi.fn()}
       />
@@ -104,7 +106,12 @@ describe('E2E-INV-SHELL-003 the kernel system cove never reaches the rail', () =
     });
     expect(screen.queryByRole('button', { name: /^System/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Wave Kernel/ })).toBeNull();
-    expect(screen.getByText('No coves yet.')).toBeTruthy();
+    // §5.3's strongest rule: when a region's emptiness has exactly one remedy,
+    // render that remedy's own interface where the content would have been. So
+    // there is no "No coves yet." sentence pointing at a button elsewhere —
+    // the create field is already open in the first row's place.
+    expect(screen.queryByText(/no coves/i)).toBeNull();
+    expect(screen.getByRole('textbox', { name: 'Cove name' })).toBeTruthy();
   });
 });
 

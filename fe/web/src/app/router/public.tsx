@@ -22,6 +22,7 @@ import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/pub
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
+import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -99,7 +100,18 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
     <TodayPage
       waves={workspace.waves}
       coves={workspace.coves}
-      onOpenWave={(waveId) => go({ name: 'wave', waveId })}
+      // The row belongs to features/wave and Today may not import a sibling
+      // domain, so the composition layer injects it — the same reason CovePage
+      // takes its list as a prop. One WaveRow still, per INV-DUP-009.
+      renderWaveRow={(wave, options) => (
+        <WaveRow
+          wave={wave}
+          variant={options.variant}
+          hourLabel={options.hourLabel}
+          coveName={options.coveName}
+          onOpen={(waveId) => go({ name: 'wave', waveId })}
+        />
+      )}
     />
   );
 }
@@ -123,7 +135,6 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
     return <PendingRoute label="Cove" owner="features/cove" missing />;
   }
   const waves = workspace.wavesByCove.get(cove.id) ?? [];
-
   const submit = (draft: NewWaveDraft) => {
     setSubmitting(true);
     setCreateError(null);

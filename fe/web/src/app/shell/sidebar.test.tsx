@@ -48,6 +48,8 @@ function renderSidebar(props: Partial<Props> = {}) {
           onDeleteCove={merged.onDeleteCove ?? vi.fn()}
           onSetPinned={merged.onSetPinned ?? vi.fn()}
           onDeleteWave={merged.onDeleteWave ?? vi.fn()}
+          collapsed={merged.collapsed ?? false}
+          onToggleCollapsed={merged.onToggleCollapsed ?? vi.fn()}
           onOpenSettings={merged.onOpenSettings ?? vi.fn()}
           onSignOut={merged.onSignOut ?? vi.fn()}
           userLabel={merged.userLabel}
@@ -82,23 +84,35 @@ describe('cove disclosure', () => {
   });
 });
 
-describe('cove badge', () => {
-  it('counts waiting waves in preference to the total, and shows nothing when empty', () => {
+describe('cove row', () => {
+  /*
+   * The count is gone, and this asserts its absence.
+   *
+   * It answered a question nobody asks: you come to the rail to find *a* wave,
+   * not to learn how many a cove holds, and the number drove no decision here.
+   * It spent a grid column and a tone saying so. What the rail owes you about a
+   * cove is already under it — its rows.
+   */
+  it('carries the name and nothing else — no count, no identity dot', () => {
     const waves = [
       wave({ id: 'a', lifecycle: 'blocked' }),
       wave({ id: 'b', lifecycle: 'draft' }),
       wave({ id: 'c', lifecycle: 'draft' }),
     ];
-    const { update } = renderSidebar({ waves, wavesByCove: new Map([['c1', waves]]) });
-    // Three waves, one blocked: the badge is the waiting count, not the total.
-    expect(screen.getByRole('button', { name: 'Work' }).textContent).toBe('Work1');
+    renderSidebar({ waves, wavesByCove: new Map([['c1', waves]]) });
+    const row = screen.getByRole('button', { name: 'Work' });
+    expect(row.textContent).toBe('Work');
+    expect(row.querySelectorAll('[style]').length).toBe(0);
+  });
 
-    const quiet = [wave({ id: 'b', lifecycle: 'draft' }), wave({ id: 'c', lifecycle: 'draft' })];
-    update({ waves: quiet, wavesByCove: new Map([['c1', quiet]]) });
-    expect(screen.getByRole('button', { name: 'Work' }).textContent).toBe('Work2');
-
-    update({ waves: [], wavesByCove: new Map([['c1', []]]) });
-    expect(screen.getByRole('button', { name: 'Work' }).textContent).toBe('Work');
+  // The disclosure control is a *sibling* of the row, not a child: a button
+  // inside a button is invalid HTML and trips axe's `nested-interactive`.
+  it('exposes disclosure as its own control outside the navigation button', () => {
+    renderSidebar({ waves: [wave()] });
+    const row = screen.getByRole('button', { name: 'Work' });
+    const chevron = screen.getByRole('button', { name: 'Collapse cove Work' });
+    expect(row.contains(chevron)).toBe(false);
+    expect(chevron.getAttribute('aria-expanded')).toBe('true');
   });
 });
 
@@ -150,7 +164,15 @@ describe('destructive confirms', () => {
     renderSidebar({ onDeleteCove });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
-    expect(screen.getByRole('dialog', { name: 'Delete this cove?' })).toBeTruthy();
+    // §6.13 / CR-5a — the title names the cove, and Confirm stays blocked until
+    // the name is reproduced. Deleting a cove cascades to every wave inside it;
+    // it is the one operation in the product that earns a typed confirm, and
+    // this rail entry shares that dialog with the cove page's header button.
+    expect(screen.getByRole('dialog', { name: 'Delete Work?' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    expect(onDeleteCove).not.toHaveBeenCalled();
+
+    await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
     expect(onDeleteCove.mock.calls).toEqual([['c1']]);
   });
@@ -162,8 +184,12 @@ describe('destructive confirms', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
-    // Confirm disabled, Cancel still an exit, dialog still mounted.
-    expect(screen.getByRole('button', { name: 'Delete wave' }).hasAttribute('disabled')).toBe(true);
+    // CR-6 — busy, not `disabled`. Cancel stays a real exit, the dialog stays
+    // mounted for the whole await, and Confirm stays focusable: focus is on it
+    // at this instant and `disabled` would drop it out of the trap.
+    const confirm = screen.getByRole('button', { name: 'Deleting…' });
+    expect(confirm.hasAttribute('disabled')).toBe(false);
+    expect(confirm.getAttribute('aria-disabled')).toBe('true');
     expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
 
     reject(new Error('boom'));
@@ -191,7 +217,11 @@ describe('user menu', () => {
     const avatar = screen.getByRole('button', { name: 'Account menu for Kenji Xie' });
     expect(avatar.textContent).toBe('KX');
     await userEvent.click(avatar);
-    expect(screen.getAllByRole('menuitem').map((node) => node.textContent)).toEqual(['Settings', 'Sign out']);
+    // Theme cycles in place (system -> light -> dark) rather than opening a
+    // submenu: three modes is not enough to earn one, and the current mode has
+    // to be readable without opening anything further.
+    expect(screen.getAllByRole('menuitem').map((node) => node.textContent))
+      .toEqual(['Theme: system (light)', 'Settings', 'Sign out']);
 
     await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
@@ -203,15 +233,50 @@ describe('user menu', () => {
 });
 
 describe('collapse toggle', () => {
-  it('drops the rail to an icon strip and keeps the toggle reachable', async () => {
-    renderSidebar({ waves: [wave({ title: 'Inside' })] });
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }));
+  /*
+   * The rail does not own `collapsed` — `AppShell` does, because collapsing
+   * changes the *shell grid column*, not just what the rail draws. A version of
+   * this suite that clicked the toggle and expected the rail to change was
+   * asserting against a `vi.fn()`; it passed only while the state still lived
+   * here. So: the click reports upward, and the collapsed rendering is driven
+   * by the prop.
+   */
+  it('reports the toggle upward instead of collapsing itself', async () => {
+    const onToggleCollapsed = vi.fn();
+    renderSidebar({ waves: [wave({ title: 'Inside' })], onToggleCollapsed });
+    const toggle = screen.getByRole('button', { name: 'Collapse sidebar' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    await userEvent.click(toggle);
+    expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
+    // Nothing changed here, because nothing here owns it.
+    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+  });
 
+  it('drops to an icon strip when told it is collapsed, and stays navigable', () => {
+    const { update } = renderSidebar({ waves: [wave({ title: 'Inside' })] });
+    update({ collapsed: true });
+
+    // No section labels: 11px uppercase does not fit in 44px, and the strip
+    // answers "where am I", not "what is there".
     expect(screen.queryAllByRole('heading')).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
-    // The cove is still reachable as an icon, and the rail can come back.
-    expect(screen.getByRole('button', { name: 'Work' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Expand sidebar' }));
+    // The cove is still reachable, named for assistive tech and initialled for
+    // sighted users — a letter, not one of eight cove hues, because §7.5 keeps
+    // this surface greyscale apart from the current location and "waiting".
+    const item = screen.getByRole('button', { name: 'Work' });
+    expect(item.textContent).toBe('W');
+    expect(screen.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded')).toBe('false');
+
+    update({ collapsed: false });
     expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+  });
+
+  it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {
+    const { update } = renderSidebar({
+      waves: [wave({ id: 'a', lifecycle: 'blocked' }), wave({ id: 'b', lifecycle: 'draft' })],
+    });
+    update({ collapsed: true });
+    const count = screen.getByLabelText('1 waiting on you');
+    expect(count.textContent).toBe('1');
   });
 });

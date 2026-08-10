@@ -30,4 +30,4 @@ GATE-TOKENS-009 的故意缺口仅是 `--r` 不进入 radius 形状数组；本�
 
 ## `data-*` DOM 契约
 
-应用自有 locator 使用 `data-nc-<kebab-case>`；名称全小写，至少一个语义名段。允许无值布尔标记或稳定的枚举/ID 字符串值，禁止把可见文案或样式状态当 locator。`data-theme` 是文档主题协议，`data-testid` 只供测试；冻结接口中既有的 `data-variant` 是视觉变体而非 locator，并作为精确路径遗留项。`aria-*` 只表达无障碍语义，不能替代测试/运行时定位；`data-nc-*` 也不能替代 role、name、state。AST 检查会拒绝生产 TSX 中其他 `data-` 名称，negative fixture 的 `data-card-id` 必红。
+应用自有 locator 使用 `data-nc-<kebab-case>`；名称全小写，至少一个语义名段。允许无值布尔标记或稳定的枚举/ID 字符串值，禁止把可见文案或样式状态当 locator。`data-theme` 是文档主题协议，`data-testid` 只供测试。遗留豁免表已清空：冻结对话框原来的 `data-variant` 已并入 `data-nc-action`（§0.3），四档词汇与 §4 一致。`aria-*` 只表达无障碍语义，不能替代测试/运行时定位；`data-nc-*` 也不能替代 role、name、state。AST 检查会拒绝生产 TSX 中其他 `data-` 名称，negative fixture 的 `data-card-id` 必红。

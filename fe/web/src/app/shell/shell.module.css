@@ -1,265 +1,430 @@
-/* App-composition styles sit in the `features` cascade layer: `@layer` names a
-   cascade position, not a directory, and the shell must not out-rank the
-   features it wraps. */
+/*
+ * The shell and the rail (§7.1, §7.4, §7.5).
+ *
+ * `@layer features` on purpose: a layer name is a cascade position, not a
+ * directory. `app` is the composition layer, so its styles have to sit at the
+ * same position as the features they compose.
+ */
 @layer features {
+  /*
+   * `block-size`, not `min-block-size`. With a minimum the whole app becomes one
+   * scrolling document: the rail scrolls away, the page header cannot stick, and
+   * a short page leaves a screen of empty ground below the fold. There are
+   * exactly two scroll containers — the rail and the main region — and <body>
+   * is never one of them.
+   */
   .shell {
     display: grid;
-    grid-template-columns: 17rem minmax(0, 1fr);
-    min-height: 100dvh;
-    background: var(--surface-bg);
-    color: var(--text);
-    font-family: var(--font-sans);
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+    block-size: 100dvh;
+    overflow: hidden;
   }
 
-  @media (width < 60rem) {
-    .shell {
-      grid-template-columns: minmax(0, 1fr);
-    }
+  /* The manual collapse. Without this rule the toggle only swapped the rail's
+     contents and left a 200px column of empty ground beside them. */
+  .shellCollapsed {
+    grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
+  }
 
-    .rail {
-      display: none;
-    }
+  .main {
+    min-inline-size: 0;
+    overflow: auto;
   }
 
   .rail {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-4);
+    gap: var(--space-8);
+    min-block-size: 0;
+    padding-block: var(--space-3) var(--space-7);
+
+    /* The only inline padding in the rail. A section that adds a second layer
+       would cut the usable width from 180 to 168 and flatten the asymmetric
+       gutter that does most of the work of separating rail from main. */
+    padding-inline: var(--space-5);
     border-inline-end: 1px solid var(--hairline);
     background: var(--surface-rail);
-    overflow-y: auto;
-    max-height: 100dvh;
+    overflow: auto;
   }
 
-  /* Collapsed is an icon strip, not a hidden rail: the toggle has to stay
-     reachable, so the grid column narrows instead of disappearing. */
+  /* Below 60rem the rail becomes a 44px icon strip — it does not disappear.
+     900px is an ordinary split-screen width, and navigation may not evaporate
+     there. The number is declared once in styles/breakpoints.ts
+     (RAIL_COLLAPSE_REM); this query and the shell's must match it. */
+  @media (width < 60rem) {
+    .shell {
+      grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
+    }
+  }
+
+  /* 44 − 2×10 = 24px cannot hold a 28px control, so the collapsed strip drops
+     the inline padding entirely and each child centres itself in the full 44. */
   .railCollapsed {
-    gap: var(--space-2);
-    padding-inline: var(--space-2);
+    padding-inline: var(--space-0);
+    align-items: center;
   }
 
   .brandRow {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: var(--space-2);
+    block-size: var(--control-h);
   }
 
   .brand {
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    font: inherit;
-    font-size: var(--text-md);
-    color: var(--text);
-    letter-spacing: var(--tracking-tight);
-  }
-
-  .themeToggle {
-    border: 1px solid var(--hairline);
-    background: var(--surface-chip);
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    /* --leading-tight, never --leading-none, on any clipped text: this element
+       carries `overflow: hidden` for its ellipsis, and `--leading-none` makes
+       the line box exactly the font size (12.5px) while the glyphs need 14 —
+       so the box clips 1.5px, and what it takes is the ascender and the
+       descender. The `g` in "ledger-service" was losing the bottom of its tail.
+       `--leading-none` is for boxes whose height is set by something else (icon
+       buttons, badges), not for a line of prose that clips itself. */
+    line-height: var(--leading-tight);
     color: var(--text-2);
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-2);
-    font: inherit;
-    font-size: var(--text-xs);
+    white-space: nowrap;
+    text-overflow: ellipsis;
     cursor: pointer;
   }
 
-  .collapseToggle {
-    border: 1px solid var(--hairline);
-    background: transparent;
+  .brand:hover,
+  .brand:focus-visible {
+    color: var(--text);
+  }
+
+  .iconButton {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+
+    /* Glyph size follows the box, one pairing for the whole app: a 28px chrome
+       box takes --glyph (16), a 20px in-row box takes --glyph-sm (14). Mixing
+       them is what made the rail's own controls look like three icon sets. */
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
     color: var(--text-3);
-    border-radius: var(--radius-sm);
-    padding: var(--space-1) var(--space-2);
-    font: inherit;
-    font-size: var(--text-xs);
-    line-height: 1;
     cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out, color var(--motion-quick) ease-out;
   }
 
-  .iconStrip {
+  .iconButton:hover,
+  .iconButton:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .spring {
+    margin-inline-start: auto;
+  }
+
+  /*
+   * THE VERTICAL SCALE. One rule, four values, no per-case tuning:
+   *
+   *     every container declares exactly one `gap`,
+   *     and it is half its parent container's.
+   *
+   *   .rail         block  <-> block   --space-8   16px   sections
+   *   .coveGroups   group  <-> group   --space-4    8px   cove groups
+   *   .section      label  <-> content --space-2    4px   a heading and its list
+   *   .coveGroup    label  <-> content --space-2    4px   ditto, one level down
+   *   .sectionRows  item   <-> item    --space-1    2px   rows
+   *   .waveList     item   <-> item    --space-1    2px   rows
+   *
+   * 16 / 8 / 4 / 2 is a doubling scale, which is what makes each boundary
+   * legible instead of merely different — a 1.2x step reads as a mistake, a 2x
+   * step reads as structure. Every value is a §2.3 token, and three of them are
+   * §2.3's own stated pairings (列表项之间 --space-1, 段标签到它第一行
+   * --space-2, 区块之间 the block tier). Nothing here is chosen by eye.
+   *
+   * "A heading sits closer to what it heads than to what precedes it" is not a
+   * separate rule that needs its own numbers — it falls out. A label's gap
+   * below is its own container's; its gap above is its parent's, which is
+   * twice as large by construction. Section labels come out at 16 above / 4
+   * below, cove names at 8 above / 4 below.
+   *
+   * Every step is a `gap` on the container that owns the relationship, never a
+   * margin on a child. §2.3 requires both halves of that: "内容元素禁止纵向
+   * margin" (margin collapses, gap does not, and a margin-made rhythm cannot be
+   * verified by measuring one container) and "同一个组件不能在同一轴上既写 gap
+   * 又给子元素写 margin".
+   */
+  .section,
+  .coveGroup {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    align-items: center;
   }
 
-  .iconCove {
-    display: grid;
-    place-items: center;
-    inline-size: 28px;
-    block-size: 28px;
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .section {
+  .sectionRows,
+  .waveList {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+
+  .coveGroups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
   }
 
   .sectionHead {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
+    block-size: var(--row-h-sm);
   }
 
+  /* §6.1: "标签占一个 --row-h-sm 槽". Only the Coves label used to — it
+     inherited the slot from `.sectionHead`, which needs the height for its 28px
+     `+`. The other two were bare 11px boxes, which is why the same rank of
+     label sat at two different distances above its own rows.
+
+     The only "decoration" in the app: uppercase plus tracking, standing in for
+     a font size the rail does not have room to spend. 11px uppercase without
+     added tracking is not readable, so the two always travel together. It is
+     also now the *only* thing separating a section label from a cove name,
+     which is a device doing exactly one job. */
   .sectionTitle {
+    display: flex;
+    align-items: center;
+    block-size: var(--row-h-sm);
     font-size: var(--text-xs);
-    text-transform: uppercase;
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
     letter-spacing: var(--tracking-wider);
-    color: var(--text-4);
-    padding-inline: var(--space-2);
+    color: var(--text-3);
+    text-transform: uppercase;
   }
 
-  .newCove {
-    border: 1px solid transparent;
+  /* A section action has no row to be discovered from, so it is always visible
+     — and therefore may not be 20px (§6.7). */
+  .sectionAction {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    background: transparent;
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
     color: var(--text-3);
-    font: inherit;
-    font-size: var(--text-sm);
-    line-height: 1;
-    padding: var(--space-1) var(--space-2);
     cursor: pointer;
   }
 
-  .coveInput {
-    inline-size: 100%;
-    padding: var(--space-1) var(--space-2);
-    border: 1px solid var(--hairline-strong);
-    border-radius: var(--radius-sm);
-    background: var(--surface-card);
+  .sectionAction:hover,
+  .sectionAction:focus-visible {
+    background: var(--overlay-hover-strong);
     color: var(--text);
-    font: inherit;
-    font-size: var(--text-sm);
-  }
-
-  .coveGroup {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
   }
 
   .coveRowWrap {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
-  .chevron {
-    flex: none;
-    inline-size: 18px;
-    block-size: 18px;
+    position: relative;
     display: grid;
-    place-items: center;
-    border: none;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-4);
-    font: inherit;
-    font-size: var(--text-xs);
-    line-height: 1;
-    cursor: pointer;
   }
 
+  /*
+   * The cove name starts exactly where every wave title starts: one 28px
+   * leading gutter (4px inset + 20px box + 4px clearance) for the chevron,
+   * which is the same arithmetic as the wave row's pin gutter, and then text.
+   *
+   * The empty 6px cell that used to sit between them is gone with the wave
+   * row's leading status dot — that dot moved to the trailing edge, so there is
+   * no longer a column for a cove to reserve space in for a status it does not
+   * have. Removing an apology is usually a better fix than writing a better
+   * apology for it.
+   */
   .coveRow {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
-    gap: var(--space-2);
-    flex: 1;
-    min-inline-size: 0;
-    padding: var(--space-2);
+
+    /* --row-h-sm, not §6.2's --row-h. That 28 was sized for a row carrying an
+       8px identity dot and a 12.5px name; the dot is gone, and §2.5 lists
+       --row-h-sm for "rail 里的 wave 行、菜单项、树行" — a cove row is a tree
+       row. 24 still clears the 20px chevron, and it is what lets the name sit
+       closer to its first wave than the waves sit to each other. */
+    min-block-size: var(--row-h-sm);
+    padding-block: 0;
+    padding-inline: calc(var(--space-2) + var(--control-h-sm) + var(--space-2)) var(--space-3);
     border: 1px solid transparent;
-    border-radius: var(--radius-md);
-    background: transparent;
-    color: var(--text);
-    font: inherit;
-    font-size: var(--text-sm);
-    cursor: pointer;
+    border-radius: var(--radius-sm);
     text-align: start;
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
   }
 
-  .rowActive {
+  .coveRow:hover {
+    background: var(--overlay-hover);
+  }
+
+  .coveRow:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Fill + weight only; see the same note in wave-row's row.module.css. */
+  .coveRowActive {
     background: var(--accent-soft);
-    border-color: var(--accent);
   }
 
-  .coveDelete {
-    flex: none;
-    inline-size: 20px;
-    block-size: 20px;
+  .coveRowActive:hover {
+    background: var(--accent-soft);
+    background-image: linear-gradient(var(--overlay-hover-faint), var(--overlay-hover-faint));
+  }
+
+  /* A 20px control box holding a 16px glyph. 16 is the glyph size, not a fourth
+     control height.
+
+     It is a *sibling* of the row, absolutely positioned over the row's first
+     grid column: a button inside a button is invalid HTML and trips axe's
+     `nested-interactive`. */
+  .chevron {
+    position: absolute;
+    inset-block-start: 50%;
+    /* 4px = (--control-h − --control-h-sm) / 2. This box shares one column with
+       every wave row's pin, and the column is set by the 28px chrome icons
+       above it (the collapse chevron, the section `+`), which are flush to the
+       rail padding; a 20px box inset by half the difference lands its glyph on
+       their centre line. The row's own padding reserves the space. */
+    inset-inline-start: var(--space-2);
     display: grid;
     place-items: center;
-    border: none;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-4);
-    font: inherit;
-    line-height: 1;
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
     cursor: pointer;
-    opacity: 0;
+    translate: 0 -50%;
+    transition: rotate var(--motion-snappy) ease-out;
   }
 
-  .swatch {
-    inline-size: 8px;
-    block-size: 8px;
-    border-radius: var(--radius-pill);
-    background: var(--text-4);
-    flex: none;
+  .chevronOpen {
+    rotate: 90deg;
   }
 
-  /* A cove with a running wave breathes; the colour still carries identity. */
-  .swatchRunning {
-    animation: sidebar-pulse var(--motion-pulse) ease-in-out infinite;
+  .chevron:hover,
+  .chevron:focus-visible {
+    color: var(--text);
   }
 
-  .rowLabel {
+  /*
+   * Same size as its waves, same weight — **tone is the only thing that
+   * demotes it**. One channel, and the cheapest one on §3.1's table.
+   *
+   * Two rounds got this wrong in opposite directions. First 12.5/500/--text-2:
+   * heavier weight saying "more important", lighter tone saying "less", and
+   * §3.1 ranks weight above tone with no rule for which wins — a net rank that
+   * is genuinely undefined is what "别扭" was. Then 11/600/--text-3: internally
+   * consistent, but it spent *three* channels to say one thing, and made a
+   * clickable row look like the inert section label above it.
+   *
+   * What actually carries the hierarchy now is everything that is free (§3.2
+   * rule 6 — 位置是免费通道，先用它): the disclosure chevron this row alone
+   * owns, the 12px above it and 0 below it, and the empty status column that
+   * every wave fills and no cove does. Type only has to stay out of the way,
+   * so it spends one step of tone and nothing else (§3.2 rule 7 — 降低优于抬高).
+   */
+  .coveName {
+    min-inline-size: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .count {
-    margin-inline-start: auto;
-    color: var(--text-4);
-    font-family: var(--font-numeric);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .countWarn {
-    margin-inline-start: auto;
-    color: var(--warn);
-    font-family: var(--font-numeric);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .waveList {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding-inline-start: var(--space-4);
-  }
-
-  .empty {
-    color: var(--text-4);
     font-size: var(--text-sm);
-    padding-inline: var(--space-2);
+    font-weight: var(--weight-normal);
+    /* --leading-tight, never --leading-none, on any clipped text: this element
+       carries `overflow: hidden` for its ellipsis, and `--leading-none` makes
+       the line box exactly the font size (12.5px) while the glyphs need 14 —
+       so the box clips 1.5px, and what it takes is the ascender and the
+       descender. The `g` in "ledger-service" was losing the bottom of its tail.
+       `--leading-none` is for boxes whose height is set by something else (icon
+       buttons, badges), not for a line of prose that clips itself. */
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Fill + tone: §5.1's two channels. Weight stays out of it — rest is 400
+     here and 400 on the waves, so a weight step would be the row's third. */
+  .coveRowActive .coveName {
+    color: var(--text);
+  }
+
+  /*
+   * `--space-2` is (--control-h − --control-h-sm) / 2 = 4px, and that is the
+   * whole reason it is here rather than 0.
+   *
+   * The rail's chrome icons (the collapse chevron, the section `+`) are 28px
+   * boxes flush to the rail's inline padding; its row icons (this ×, the wave
+   * row's pin and ×) are 20px. Flush-right on both meant their *glyphs* sat on
+   * two vertical lines 4px apart — near enough to read as a mistake, far enough
+   * to see. Insetting the small boxes by half the difference puts every icon in
+   * the rail on one column. The same 4px is applied in
+   * `features/wave/row/row.module.css`; both derive it, neither hardcodes it.
+   */
+  .coveDelete {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: var(--space-2);
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph-sm);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    opacity: 0;
+    pointer-events: none;
+    cursor: pointer;
+    translate: 0 -50%;
+    transition: opacity var(--motion-quick) ease-out;
+  }
+
+  .coveDelete:hover,
+  .coveDelete:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    background: var(--overlay-hover-strong);
+    color: var(--error-text);
+  }
+
+  .coveRowWrap:hover .coveDelete,
+  .coveRowWrap:focus-within .coveDelete {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+
+
+  /*
+   * §5.3's most important rule: when a region's emptiness has exactly one
+   * remedy, render that remedy's own interface in the position and at the size
+   * the content would have had. This input opens on the first cove row's spot
+   * and is therefore a cove row's height.
+   */
+  .inlineCreate {
+    min-block-size: var(--row-h);
+    padding-block: 0;
+
+    /* The one field in the app that is deliberately *inset* rather than flush:
+       it opens where a cove row would be, and a cove row's text starts 28px in.
+       See the `.coveRow` note — this input is standing in for that row. */
+    padding-inline: calc(var(--space-2) + var(--control-h-sm) + var(--space-2)) var(--space-3);
+    font-size: var(--text-sm);
+    line-height: var(--leading-none);
+    color: var(--text);
   }
 
   .userRow {
     margin-block-start: auto;
     display: flex;
     align-items: center;
+    block-size: var(--control-h);
   }
 
   .menuWrap {
@@ -267,78 +432,110 @@
   }
 
   .avatar {
-    inline-size: 28px;
-    block-size: 28px;
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
     border-radius: var(--radius-pill);
-    border: 1px solid var(--hairline);
     background: var(--surface-chip);
-    color: var(--text-2);
-    font: inherit;
     font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
     cursor: pointer;
+  }
+
+  .avatar:hover,
+  .avatar:focus-visible {
+    color: var(--text);
   }
 
   .menu {
     position: absolute;
-    inset-block-end: calc(100% + var(--space-1));
-    inset-inline-start: 0;
+    inset-block-end: var(--control-h);
+    inset-inline-start: var(--space-0);
     z-index: var(--z-overlay);
-    min-inline-size: 10rem;
+    display: flex;
+    flex-direction: column;
+    min-inline-size: var(--menu-w-min);
+    max-inline-size: var(--menu-w-max);
     padding: var(--space-1);
     border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
-    list-style: none;
+    border-radius: var(--radius-lg);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
   }
 
   .menuItem {
-    inline-size: 100%;
-    padding: var(--space-1) var(--space-2);
-    border: none;
+    display: flex;
+    align-items: center;
+    block-size: var(--row-h-sm);
+    padding-inline: var(--space-3);
     border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text);
-    font: inherit;
     font-size: var(--text-sm);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text);
     text-align: start;
     cursor: pointer;
   }
 
-  .main {
-    min-width: 0;
-    overflow-x: hidden;
-  }
-
-  .themeToggle:hover,
-  .collapseToggle:hover,
-  .newCove:hover,
-  .iconCove:hover,
-  .chevron:hover,
-  .coveRow:hover,
-  .menuItem:hover {
+  .menuItem:hover,
+  .menuItem:focus-visible {
     background: var(--overlay-hover);
   }
 
-  .coveDelete:hover {
-    background: var(--overlay-hover-strong);
-    color: var(--warn);
+  /* Collapsed strip: "where am I", not "what is there". No section labels (11px
+     uppercase does not fit in 44px), no wave rows, and zero-row sections still
+     do not render. */
+  .stripItem {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--row-h);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
   }
 
-  /* Hover-revealed, but never hover-only: focus brings it back for the
-     keyboard, and the accessible name is always in the tree. */
-  .coveRowWrap:hover .coveDelete,
-  .coveRowWrap:focus-within .coveDelete {
-    opacity: 1;
+  .stripItem:hover {
+    background: var(--overlay-hover);
   }
 
-  @keyframes sidebar-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
+  .stripItemActive {
+    background: var(--accent-soft);
+  }
+
+  .stripInitial {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .stripItemActive .stripInitial,
+  .stripItem:hover .stripInitial {
+    color: var(--text);
+  }
+
+  /* The single figure. Tone is the whole signal — see the note in sidebar.tsx. */
+  .stripWaiting {
+    display: grid;
+    place-items: center;
+    block-size: var(--row-h);
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--warn-text);
+    font-variant-numeric: tabular-nums;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .swatchRunning {
-      animation: none;
+    .coveRow,
+    .coveDelete,
+    .iconButton,
+    .chevron {
+      transition: none;
     }
   }
 }

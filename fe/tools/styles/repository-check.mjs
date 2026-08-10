@@ -25,9 +25,11 @@ export const DATA_ATTRIBUTE_SOURCE_FORMS = Object.freeze([
   'computed-static-string', 'computed-static-template', 'set-attribute-static-string',
   'variable-key-known-escape',
 ]);
-const LEGACY_DATA_ATTRIBUTES = new Map([
-  ['web/src/ui/dialog/public.tsx:data-variant', 'frozen UI interface; visual variant, not a DOM locator'],
-]);
+// Empty by design: `data-variant` was the last entry and is gone (§0.3 — the
+// dialog's confirm button now carries `data-nc-action`, whose `destructive` value
+// is the same word §4 uses everywhere else). A stale exemption is a violation in
+// its own right, so entries leave this map the moment their subject does.
+const LEGACY_DATA_ATTRIBUTES = new Map([]);
 
 function filesUnder(directory) {
   const result = [];

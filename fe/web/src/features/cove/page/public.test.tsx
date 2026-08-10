@@ -26,21 +26,32 @@ function renderPage(overrides: Partial<Parameters<typeof CovePage>[0]> = {}) {
 }
 
 describe('CovePage header', () => {
-  it('shows the cove name and a pluralised wave count', () => {
-    renderPage();
+  it('shows the cove name, and nothing else', () => {
+    const { container } = renderPage();
     expect(screen.getByRole('button', { name: 'Rename cove' }).textContent).toBe('Work');
-    expect(screen.getByText('2 waves')).toBeTruthy();
+    // No wave count. It answered a question nobody asks — you open a cove to
+    // pick a wave, not to learn how many there are — and the list below already
+    // says it, at a glance, with the names attached. No identity dot either: it
+    // was the only colour on the page and it restated the name beside it.
+    expect(container.textContent).not.toMatch(/\d+ waves?/);
   });
 
-  it('uses the singular noun for one wave', () => {
-    renderPage({ waveCount: 1 });
-    expect(screen.getByText('1 wave')).toBeTruthy();
-  });
-
+  // `waveCount` survives as a prop because the *confirm copy* spends it
+  // ("This deletes 2 waves"), which is the one place the number changes a
+  // decision. See the delete suite below.
   it('asks the caller to open the new-wave surface', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: '+ New wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New wave' }));
     expect(props.onRequestNewWave).toHaveBeenCalledTimes(1);
+  });
+
+  // §4.4's "一次性动作必须带文字" is overridden here for two glyphs in their
+  // conventional meanings — but the tooltip may never stand in for the
+  // accessible name, so both are present, not either.
+  it('gives each header icon a tooltip as well as an accessible name', () => {
+    renderPage();
+    expect(screen.getByRole('button', { name: 'New wave' }).getAttribute('title')).toBe('New wave');
+    expect(screen.getByRole('button', { name: 'Delete cove Work' }).getAttribute('title')).toBe('Delete cove');
   });
 
   it('renders the wave list slot rather than its own list', () => {
@@ -59,16 +70,30 @@ describe('CovePage delete', () => {
     const { props } = renderPage();
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByText('The cove and every wave inside it are removed. This cannot be undone.')).toBeTruthy();
+    // §6.13's body is two sentences with different typography: what it costs,
+    // then what to type. The count lands here, where it changes a decision.
+    expect(screen.getByText('This deletes 2 waves. This cannot be undone.')).toBeTruthy();
     expect(props.onDeleteCove).not.toHaveBeenCalled();
   });
 
-  it('deletes once the confirm is accepted', async () => {
+  it('deletes once the name is typed and the confirm is accepted', async () => {
     const { props } = renderPage();
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
     expect(props.onDeleteCove).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('refuses to delete while the typed name does not match', async () => {
+    const { props } = renderPage();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'work');
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    // Case-sensitive, and no Unicode normalisation: the point of a typed
+    // confirm is that you reproduced the name, not that you approximated it.
+    expect(props.onDeleteCove).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
   it('closes without deleting when the confirm is cancelled', async () => {

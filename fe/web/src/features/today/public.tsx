@@ -1,13 +1,21 @@
 // Today — the landing route. Presentational and props-driven: the data comes
 // from app/router, and navigation leaves through `onOpenWave` (features must
 // not import app).
+//
+// §8.1 — the user opens this to answer one question: *is anything waiting for
+// me?* That question owns the top of the main column, and it is answered by
+// position plus the only --warn pixels on the page — never by type size. The
+// clock, which used to be 36px, is ambient information and now sits at the
+// header's right edge at --text-sm: a page whose job is "what needs me" cannot
+// have a clock as its main emphasis.
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, type ReactNode } from 'react';
 
 import {
-  activeWavesOn, isRunning, isWaitingForUser, lifecycleLabel, waveDisplayTitle, type Wave,
+  activeWavesOn, isRunning, needsUserAttention, type Wave,
 } from '../../../../core/domain/wave.ts';
-import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
+import { coveOf, coveSlotVar, type Cove } from '../../../../core/domain/cove.ts';
+import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './today.module.css';
 
@@ -29,17 +37,41 @@ import styles from './today.module.css';
  */
 export type ScheduledEvent = Readonly<{ wave: Wave; date: Date; hour: number }>;
 
+/**
+ * How Today draws one wave. It is injected rather than imported because the row
+ * belongs to `features/wave` and a feature domain may not import a sibling;
+ * `app/router` supplies it, the same way it composes the cove page's list. The
+ * variant vocabulary is §6.3's, so every surface still renders the one row.
+ */
+export type WaveRowRenderer = (
+  wave: Wave,
+  options: Readonly<{ variant: 'compact' | 'agenda'; hourLabel?: string; coveName?: string }>,
+) => ReactNode;
+
 export type TodayPageProps = Readonly<{
   waves: readonly Wave[];
   coves: readonly Cove[];
-  onOpenWave: (waveId: string) => void;
+  /** Navigation lives inside the injected row; Today itself opens nothing. */
+  renderWaveRow: WaveRowRenderer;
   /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
   scheduledEvents?: readonly ScheduledEvent[];
+  pageTitleRef?: React.RefObject<HTMLElement | null>;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
   nowMs?: number;
 }>;
 
 const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
+
+/**
+ * An agenda row spans coves, so it always names one. When the id resolves to
+ * nothing the row says so rather than going silent: a row with the cove phrase
+ * simply missing is indistinguishable from a row that belongs nowhere, and the
+ * unresolvable case is exactly the one worth seeing.
+ */
+const UNKNOWN_COVE = 'Unknown cove';
+
+/** It answers "what happened while I was away", not "browse the archive". */
+const RECENT_LIMIT = 12;
 
 function addDays(day: Date, count: number): Date {
   const next = new Date(day);
@@ -64,33 +96,72 @@ function formatHour(hour: number): string {
   return `${(hour + 11) % 12 + 1}${hour >= 12 ? 'pm' : 'am'}`;
 }
 
-export function TodayPage({ waves, coves, onOpenWave, scheduledEvents = [], nowMs }: TodayPageProps) {
+export function TodayPage({
+  waves, coves, renderWaveRow, scheduledEvents = [], pageTitleRef, nowMs,
+}: TodayPageProps) {
   const today = useMemo(() => {
     const start = nowMs === undefined ? new Date() : new Date(nowMs);
     start.setHours(0, 0, 0, 0);
     return start;
   }, [nowMs]);
 
+  const waiting = waves.filter(needsUserAttention);
+  const running = waves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
+  // RECENT shares the same wave list — no second request — and excludes anything
+  // already shown above: one wave appearing twice on a page distorts both the
+  // counts and the scan.
+  const shown = new Set([...waiting, ...running].map((wave) => wave.id));
+  const recent = waves
+    .filter((wave) => wave.archivedAt === null && !shown.has(wave.id))
+    .toSorted((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, RECENT_LIMIT);
+
+
+  // A brand-new workspace: one hero line and one primary action, nothing else.
+  if (waves.length === 0 && coves.length === 0) {
+    return (
+      <div className={styles.page}>
+        <TodayHeader
+          today={today} waiting={waiting.length} running={running.length}
+          pageTitleRef={pageTitleRef} nowMs={nowMs}
+        />
+        <div className={styles.emptyPage}>
+          <p className={styles.hero}>Nothing here yet.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.page}>
-      <TodayClock waves={waves} nowMs={nowMs} />
-      <div className={styles.grid}>
-        <section className={styles.card} aria-label="Today terminal">
-          <h2 className={styles.cardTitle}>~ / neige · today</h2>
-          <p className={styles.placeholderBody}>
-            The default Today terminal lands with features/today/terminal. Its
-            resolve order (cached card id → verify the terminal row → bootstrap
-            only on 404) is a contract, not an implementation detail — see this
-            module&apos;s README before wiring it.
-          </p>
-        </section>
-        <aside className={styles.card} aria-label="Calendar">
-          <CalendarCard
+      <TodayHeader
+        today={today} waiting={waiting.length} running={running.length}
+        pageTitleRef={pageTitleRef} nowMs={nowMs}
+      />
+      <div className={styles.content}>
+        {/* Decision first, ambience after: the two attention sections take as
+            much height as they need, the terminal takes a fixed 240 slot, and
+            RECENT absorbs whatever is left. */}
+        <div className={styles.mainColumn}>
+          {/* An empty section renders nothing at all — no label, no dashed box.
+              The absence is the message. */}
+          <Section title="Waiting on you" waves={waiting} render={renderWaveRow} />
+          <Section title="Running" waves={running} render={renderWaveRow} />
+
+          <section className={styles.terminalSlot} aria-label="Today terminal">
+            <p className={styles.slotNote}>Terminal is not wired up yet.</p>
+          </section>
+
+          <Section title="Recent" waves={recent} render={renderWaveRow} />
+        </div>
+
+        <aside className={styles.panelColumn}>
+          <Calendar
             today={today}
             waves={waves}
             coves={coves}
             scheduledEvents={scheduledEvents}
-            onOpenWave={onOpenWave}
+            renderWaveRow={renderWaveRow}
             nowMs={nowMs}
           />
         </aside>
@@ -99,51 +170,81 @@ export function TodayPage({ waves, coves, onOpenWave, scheduledEvents = [], nowM
   );
 }
 
-function TodayClock({ waves, nowMs }: { waves: readonly Wave[]; nowMs?: number }) {
+function TodayHeader({ today, waiting, running, pageTitleRef, nowMs }: {
+  today: Date;
+  waiting: number;
+  running: number;
+  pageTitleRef?: React.RefObject<HTMLElement | null>;
+  nowMs?: number;
+}) {
+  return (
+    <PageHeader
+      // One row only: Today is the root, so there is no breadcrumb, and it has
+      // no machine identifier. --header-h is 32.
+      title={
+        <PageTitle titleRef={pageTitleRef as React.RefObject<HTMLHeadingElement | null>}>
+          {today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+        </PageTitle>
+      }
+      meta={
+        <span className={styles.counts}>
+          {/* The two numbers summarise the two attention sections, so they take
+              the weight; the words stay quiet. */}
+          <span className={styles.countValue}>{waiting}</span>
+          <span className={styles.countWord}>waiting</span>
+          <span className={styles.countSep} aria-hidden="true">·</span>
+          <span className={styles.countValue}>{running}</span>
+          <span className={styles.countWord}>running</span>
+        </span>
+      }
+      actions={<Clock nowMs={nowMs} />}
+    />
+  );
+}
+
+/** Ambient, so position is its entire signal. No seconds — a digit changing
+ *  once a second in the corner of a page people read is motion for nothing. */
+function Clock({ nowMs }: { nowMs?: number }) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
 
   useEffect(() => {
     if (nowMs !== undefined) return;
-    const id = setInterval(() => setNow(new Date()), 1000);
+    const id = setInterval(() => setNow(new Date()), 15_000);
     return () => clearInterval(id);
   }, [nowMs]);
 
   const hours = now.getHours();
-  const running = waves.filter((wave) => isRunning(wave.lifecycle)).length;
-  // Same predicate the sidebar's "Waiting on you" section uses, so the two
-  // surfaces cannot disagree about what counts.
-  const waiting = waves.filter((wave) => isWaitingForUser(wave.lifecycle)).length;
-
   return (
-    <header className={styles.clock}>
-      <div className={styles.time}>
-        <span>{(hours + 11) % 12 + 1}</span>
-        <span>:</span>
-        <span>{String(now.getMinutes()).padStart(2, '0')}</span>
-        <span className={styles.period}>{hours >= 12 ? 'PM' : 'AM'}</span>
-      </div>
-      <div className={styles.weekday}>{now.toLocaleDateString('en-US', { weekday: 'long' })}</div>
-      <div className={styles.stats}>
-        <span className={styles.stat}>
-          <span className={`${styles.dot} ${styles.dotRunning}`} aria-hidden="true" />
-          {running} running
-        </span>
-        <span aria-hidden="true">·</span>
-        <span className={styles.stat}>
-          <span className={`${styles.dot} ${styles.dotWaiting}`} aria-hidden="true" />
-          {waiting} waiting
-        </span>
-      </div>
-    </header>
+    <span className={styles.clock}>
+      {`${(hours + 11) % 12 + 1}:${String(now.getMinutes()).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`}
+    </span>
   );
 }
 
-function CalendarCard({ today, waves, coves, scheduledEvents, onOpenWave, nowMs }: {
+function Section({ title, waves, render }: {
+  title: string;
+  waves: readonly Wave[];
+  render: WaveRowRenderer;
+}) {
+  if (waves.length === 0) return null;
+  return (
+    <section className={styles.section}>
+      <h2 className={styles.sectionLabel}>{title}</h2>
+      <div className={styles.rows}>
+        {waves.map((wave) => (
+          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }: {
   today: Date;
   waves: readonly Wave[];
   coves: readonly Cove[];
   scheduledEvents: readonly ScheduledEvent[];
-  onOpenWave: (waveId: string) => void;
+  renderWaveRow: WaveRowRenderer;
   nowMs?: number;
 }) {
   const [selected, setSelected] = useState<Date>(today);
@@ -155,128 +256,103 @@ function CalendarCard({ today, waves, coves, scheduledEvents, onOpenWave, nowMs 
     .filter((event) => sameDay(event.date, selected))
     .toSorted((left, right) => left.hour - right.hour);
   // INV-TODAY-002 — live wave activity is computed independently of the
-  // scheduled list; both render into the same agenda below.
+  // scheduled list; both render into the same agenda below, as the same row.
   const waveAgenda = activeWavesOn(waves, selected, now);
-
-  const label = sameDay(selected, today)
-    ? 'Today'
-    : selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  const scheduledIds = new Set(scheduledAgenda.map((event) => event.wave.id));
 
   return (
     <>
+      {/* The calendar is not inside a panel: the month row *is* its section
+          label. Wrapping it would cost another 8px of padding on each side and
+          drop every column from 42px to 40. */}
       <div className={styles.weekHead}>
-        <button type="button" className={styles.nav} aria-label="Previous week"
-          onClick={() => setSelected(addDays(selected, -7))}>‹</button>
+        <button type="button" data-nc-role="icon" className={styles.navButton}
+          aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}>‹</button>
         <span className={styles.monthLabel}>
           {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
         </span>
-        <button type="button" className={styles.nav} aria-label="Next week"
-          onClick={() => setSelected(addDays(selected, 7))}>›</button>
+        <button type="button" data-nc-role="icon" className={styles.navButton}
+          aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}>›</button>
       </div>
+
+      <div className={styles.dayNames} aria-hidden="true">
+        {SHORT_DAYS.map((day, index) => (
+          <span key={index} className={styles.dayName}>{day}</span>
+        ))}
+      </div>
+
       <div className={styles.weekGrid}>
-        {days.map((day, index) => {
-          // De-dup by wave id so a wave with both a scheduled event and an
+        {days.map((day) => {
+          // De-dup by wave id: a wave with both a scheduled event and an
           // overlapping activity window contributes one dot, not two.
           const seen = new Set<string>();
-          const dots: { id: string; color: string | undefined }[] = [];
+          let dotCoveId: string | undefined;
           for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day))) {
             if (seen.has(event.wave.id)) continue;
             seen.add(event.wave.id);
-            dots.push({ id: event.wave.id, color: coveOf(event.wave.coveId, coves)?.color });
+            dotCoveId ??= event.wave.coveId;
           }
           for (const wave of activeWavesOn(waves, day, now)) {
             if (seen.has(wave.id)) continue;
             seen.add(wave.id);
-            dots.push({ id: wave.id, color: coveOf(wave.coveId, coves)?.color });
+            dotCoveId ??= wave.coveId;
           }
-          const classes = [
-            styles.day,
-            sameDay(day, today) ? styles.dayToday : '',
-            sameDay(day, selected) ? styles.daySelected : '',
-          ].filter(Boolean).join(' ');
+          const isToday = sameDay(day, today);
+          const isSelected = sameDay(day, selected);
           return (
             <button
               key={day.toDateString()}
               type="button"
-              className={classes}
-              aria-pressed={sameDay(day, selected)}
+              data-nc-role="cell"
+              className={[
+                styles.day, isToday ? styles.dayToday : '', isSelected ? styles.daySelected : '',
+              ].filter(Boolean).join(' ')}
+              aria-pressed={isSelected}
               aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
               onClick={() => setSelected(day)}
             >
-              <span className={styles.dayName} aria-hidden="true">{SHORT_DAYS[index]}</span>
               <span className={styles.dayNumber}>{day.getDate()}</span>
-              <span className={styles.dayDots} data-nc-day-dots aria-hidden="true">
-                {dots.slice(0, 4).map((dot) => (
-                  <span key={dot.id} className={styles.dayDot} data-nc-day-dot style={{ background: dot.color }} />
-                ))}
-              </span>
+              {/* At most one dot a day; its colour is the first agenda item's
+                  cove identity. */}
+              {dotCoveId !== undefined && (
+                <span
+                  className={styles.dayDot}
+                  data-nc-day-dot
+                  style={{ background: `var(${coveSlotVar(dotCoveId)})` }}
+                  aria-hidden="true"
+                />
+              )}
             </button>
           );
         })}
       </div>
 
-      <div className={styles.agendaHead}>{label}</div>
-      <div className={styles.agenda}>
+      <h2 className={styles.sectionLabel}>
+        {sameDay(selected, today)
+          ? 'Today'
+          : selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+      </h2>
+      <div className={styles.rows}>
+        {/* Only when *both* sources are empty. The string is the one the live
+            contract pins; it satisfies §5.3 as well as any rewrite would. */}
         {scheduledAgenda.length === 0 && waveAgenda.length === 0 && (
-          <div className={styles.empty}>Nothing scheduled.</div>
+          <p className={styles.inlineEmpty}>Nothing scheduled.</p>
         )}
         {scheduledAgenda.map((event) => (
-          <AgendaRow
-            key={`scheduled-${event.wave.id}-${event.hour}`}
-            wave={event.wave}
-            hourLabel={formatHour(event.hour)}
-            coves={coves}
-            onOpenWave={onOpenWave}
-          />
+          <span key={`scheduled-${event.wave.id}-${event.hour}`}>
+            {renderWaveRow(event.wave, {
+              variant: 'agenda',
+              hourLabel: formatHour(event.hour),
+              coveName: coveOf(event.wave.coveId, coves)?.name ?? UNKNOWN_COVE,
+            })}
+          </span>
         ))}
-        {waveAgenda.map((wave) => (
-          <AgendaRow key={`wave-${wave.id}`} wave={wave} coves={coves} onOpenWave={onOpenWave} />
+        {waveAgenda.filter((wave) => !scheduledIds.has(wave.id)).map((wave) => (
+          <span key={`wave-${wave.id}`}>
+            {renderWaveRow(wave, { variant: 'agenda', coveName: coveOf(wave.coveId, coves)?.name ?? UNKNOWN_COVE })}
+          </span>
         ))}
       </div>
     </>
-  );
-}
-
-/**
- * One agenda row, shared by both sources. `hourLabel` present = scheduled
- * event (time gutter); absent = live wave activity (day-level, so no gutter,
- * and the lifecycle phrase goes on a second line).
- *
- * INV-A11Y-061 — navigation is a `<button>` + callback, never an `<a href>`.
- * The full lifecycle phrase is folded into the accessible name so the dot
- * flags stay purely decorative.
- */
-function AgendaRow({ wave, hourLabel, coves, onOpenWave }: {
-  wave: Wave;
-  hourLabel?: string;
-  coves: readonly Cove[];
-  onOpenWave: (waveId: string) => void;
-}) {
-  const cove = coveOf(wave.coveId, coves);
-  const waiting = isWaitingForUser(wave.lifecycle);
-  const running = isRunning(wave.lifecycle);
-  const title = waveDisplayTitle(wave.title);
-  const lifecycle = lifecycleLabel(wave.lifecycle);
-  const bits = [waiting ? 'waiting on you' : '', running ? 'running' : ''].filter(Boolean);
-  const label = `Wave ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}`
-    + `, ${lifecycle}, in cove ${cove?.name ?? 'Unknown cove'}`;
-
-  return (
-    <button type="button" className={styles.event} aria-label={label} onClick={() => onOpenWave(wave.id)}>
-      <span className={styles.eventBar} style={{ background: cove?.color }} aria-hidden="true" />
-      <span className={styles.eventBody}>
-        <span className={styles.eventTitleRow}>
-          {hourLabel !== undefined && <span className={styles.eventLifecycle}>{hourLabel}</span>}
-          <span className={styles.eventTitle}>{title}</span>
-          {waiting && <span className={`${styles.flag} ${styles.flagWaiting}`} aria-hidden="true" />}
-          {running && <span className={`${styles.flag} ${styles.flagRunning}`} aria-hidden="true" />}
-        </span>
-        {hourLabel === undefined && (
-          <span className={`${styles.eventLifecycle} ${waiting ? styles.eventLifecycleAttention : ''}`}>
-            {lifecycle}
-          </span>
-        )}
-      </span>
-    </button>
   );
 }

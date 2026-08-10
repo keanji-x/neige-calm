@@ -5,6 +5,7 @@
 import { useEffect } from 'react';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
+import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './settings.module.css';
 
@@ -86,78 +87,119 @@ export function SettingsPage({
 
   return (
     <div className={styles.page}>
-      <nav className={styles.crumbs} aria-label="Breadcrumb">
-        {/* INV-A11Y-061 — in-app navigation is a button + callback, never <a href>. */}
-        <button type="button" className={styles.crumbLink} onClick={onOpenToday}>Today</button>
-        <span className={styles.crumbSep} aria-hidden="true">/</span>
-        <span className={styles.crumb} aria-current="page">Settings</span>
-      </nav>
+      {/* Two rows: breadcrumb + title, no machine identity. --header-h is 62. */}
+      <PageHeader
+        breadcrumb={<Breadcrumb ancestor="Today" onNavigate={onOpenToday} />}
+        title={<PageTitle>Settings</PageTitle>}
+      />
 
-      <h1 className={styles.title}>Settings</h1>
+      <div className={styles.form}>
+        {/* Section labels take the place of card boxes. Per the boundary
+            ladder, a label plus 16px of space separates two groups as well as
+            "border + radius + fill + padding" does, using one channel instead
+            of four. */}
+        <section className={styles.section} aria-labelledby="nc-settings-network">
+          <h2 className={styles.sectionLabel} id="nc-settings-network">Network</h2>
+          {loadError !== null && <p className={styles.error} role="alert">{loadError}</p>}
+          {!loaded
+            ? <p className={styles.hint}>Loading settings…</p>
+            : (
+              <>
+                <Field
+                  id="nc-settings-http-proxy"
+                  label="HTTP proxy"
+                  value={draft.http}
+                  onChange={(value) => setDraft({ ...draft, http: value })}
+                />
+                <Field
+                  id="nc-settings-https-proxy"
+                  label="HTTPS proxy"
+                  value={draft.https}
+                  onChange={(value) => setDraft({ ...draft, https: value })}
+                />
+                <div className={styles.actions}>
+                  {/*
+                    Two kinds of "cannot press", and they must not look alike.
+                    A clean form is really `disabled`. Saving is busy: focus is
+                    on Save at that moment, and a real `disabled` would throw it
+                    away. Reset follows Save, because two buttons in one action
+                    row taking two different treatments reads as two different
+                    things happening.
+                  */}
+                  <button
+                    type="button"
+                    data-nc-action="primary"
+                    disabled={!dirty && !saving}
+                    aria-busy={saving ? true : undefined}
+                    aria-disabled={saving ? true : undefined}
+                    data-nc-state={saving ? 'busy' : undefined}
+                    onClick={() => { if (saving) return; void onSave(buildPatch(draft, base)); }}
+                  >
+                    {/* Both labels occupy one grid cell, so the button's width
+                        is the wider of the two and never changes. */}
+                    <span className="confirm-dialog-label">
+                      <span aria-hidden={saving}>Save</span>
+                      <span aria-hidden={!saving}>Saving…</span>
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    data-nc-action="secondary"
+                    disabled={!dirty && !saving}
+                    aria-busy={saving ? true : undefined}
+                    aria-disabled={saving ? true : undefined}
+                    data-nc-state={saving ? 'busy' : undefined}
+                    onClick={() => { if (saving) return; setDraft(base); }}
+                  >
+                    Reset
+                  </button>
+                  {/* The only green pixels in the app, and only for four seconds. */}
+                  {showSaved && <span className={styles.saved} role="status">Saved.</span>}
+                </div>
+                {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
+              </>
+            )}
+        </section>
 
-      <section className={styles.card} aria-labelledby="nc-settings-network">
-        <h2 className={styles.cardTitle} id="nc-settings-network">Network</h2>
-        {loadError !== null && <p className={styles.error} role="alert">{loadError}</p>}
-        {!loaded
-          ? <p className={styles.loading}>Loading settings…</p>
-          : (
-            <>
-              <Field
-                id="nc-settings-http-proxy"
-                label="HTTP proxy"
-                value={draft.http}
-                onChange={(value) => setDraft({ ...draft, http: value })}
-              />
-              <Field
-                id="nc-settings-https-proxy"
-                label="HTTPS proxy"
-                value={draft.https}
-                onChange={(value) => setDraft({ ...draft, https: value })}
-              />
-              <div className={styles.actions}>
-                <button
-                  type="button"
-                  className={styles.primary}
-                  disabled={!dirty || saving}
-                  onClick={() => void onSave(buildPatch(draft, base))}
-                >
-                  {saving ? 'Saving…' : 'Save'}
-                </button>
-                <button
-                  type="button"
-                  className={styles.secondary}
-                  disabled={!dirty || saving}
-                  onClick={() => setDraft(base)}
-                >
-                  Reset
-                </button>
-                {showSaved && <span className={styles.saved} role="status">Saved.</span>}
-              </div>
-              {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
-            </>
-          )}
-      </section>
+        <section className={styles.section} aria-labelledby="nc-settings-appearance">
+          <h2 className={styles.sectionLabel} id="nc-settings-appearance">Appearance</h2>
+          {/* Deliberately local-only: theme is a device preference, so it never
+              goes through onSave. See this module's README.
 
-      <section className={styles.card} aria-labelledby="nc-settings-appearance">
-        <h2 className={styles.cardTitle} id="nc-settings-appearance">Appearance</h2>
-        {/* Deliberately local-only: theme is a device preference, so it never
-            goes through onSave. See this module's README. */}
-        <div className={styles.radios} role="radiogroup" aria-label="Appearance">
-          {THEME_MODES.map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              role="radio"
-              aria-checked={themeMode === mode}
-              className={themeMode === mode ? `${styles.radio} ${styles.radioOn}` : styles.radio}
-              onClick={() => onThemeModeChange(mode)}
-            >
-              {themeLabel(mode)}
-            </button>
-          ))}
-        </div>
-        <p className={styles.hint}>Appearance is stored on this device only.</p>
-      </section>
+              `radiogroup`/`radio`, not `tablist`/`tab`: this picks a value, it
+              does not switch views, and there is no tabpanel. Calling it a
+              tablist would be an accessibility downgrade dressed as a reskin. */}
+          <div className={styles.segmented} role="radiogroup" aria-label="Appearance">
+            {THEME_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                data-nc-role="tab"
+                aria-checked={themeMode === mode}
+                className={themeMode === mode ? `${styles.segment} ${styles.segmentOn}` : styles.segment}
+                onClick={() => onThemeModeChange(mode)}
+              >
+                {themeLabel(mode)}
+              </button>
+            ))}
+          </div>
+          <p className={styles.hint}>Appearance is stored on this device only.</p>
+        </section>
+
+        <section className={styles.section} aria-labelledby="nc-settings-about">
+          <h2 className={styles.sectionLabel} id="nc-settings-about">About</h2>
+          {/* Build-time facts, not API fields (§0.5). `data dir` is kernel-owned
+              and has no wire column, so that row is simply absent — no dashed
+              box, no "unavailable". */}
+          <dl className={styles.about}>
+            <dt className={styles.aboutKey}>version</dt>
+            <dd className={styles.aboutValue}>{__NC_VERSION__}</dd>
+            <dt className={styles.aboutKey}>build</dt>
+            <dd className={styles.aboutValue}>{__NC_BUILD__}</dd>
+          </dl>
+        </section>
+      </div>
     </div>
   );
 }

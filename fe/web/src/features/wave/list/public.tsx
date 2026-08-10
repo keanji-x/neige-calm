@@ -24,12 +24,13 @@ export type WaveListProps = Readonly<{
   onSetPinned?: (waveId: string, pinned: boolean) => void;
   /** Supplying this reveals each row's delete button. The caller owns the confirm. */
   onDeleteWave?: (waveId: string) => void;
+  nowMs?: number;
   emptyMessage: string;
 }>;
 
 export function WaveList({
   waves, coves, showCove = false, activeWaveId = null,
-  onOpenWave, onSetPinned, onDeleteWave, emptyMessage,
+  onOpenWave, onSetPinned, onDeleteWave, nowMs, emptyMessage,
 }: WaveListProps) {
   const ordered = sortByLifecycleRank(waves);
 
@@ -45,10 +46,14 @@ export function WaveList({
         const cove = showCove ? coveOf(wave.coveId, coves) : undefined;
         return (
           <li key={wave.id} className={styles.item}>
+            {/* The default variant: 48px, two lines, the lifecycle phrase on
+                the second. No identity dot per row — every row in this list
+                belongs to the same cove, and the page header already says
+                which (§8.2). */}
             <WaveRow
               wave={wave}
               coveName={showCove ? cove?.name ?? 'Unknown cove' : undefined}
-              coveColor={cove?.color}
+              nowMs={nowMs}
               active={wave.id === activeWaveId}
               onOpen={onOpenWave}
               onSetPinned={onSetPinned}

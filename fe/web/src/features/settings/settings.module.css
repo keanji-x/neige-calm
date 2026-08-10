@@ -1,87 +1,44 @@
 @layer features {
   .page {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--space-8);
+    max-inline-size: var(--measure-page);
+    padding-block: var(--space-9) var(--space-11);
+    padding-inline: var(--space-10);
+  }
+
+  /*
+   * Capped at 544 and start-aligned. The 636px to its right is page whitespace,
+   * not a hole: a second column there would be work invented to fill space, and
+   * §7.3's empty-rectangle rule measures the main column only.
+   */
+  .form {
     display: flex;
     flex-direction: column;
-    gap: var(--space-5);
-    padding: var(--space-6);
-    min-height: 100%;
-    background: var(--surface-bg);
-    color: var(--text);
-    font-family: var(--font-sans);
+    max-inline-size: var(--measure-form);
+    min-block-size: 0;
   }
 
-  .crumbs {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-sm);
-    color: var(--text-3);
-  }
-
-  .crumbLink {
-    border: none;
-    background: transparent;
-    color: var(--text-2);
-    padding: var(--space-1) var(--space-2);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font: inherit;
-  }
-
-  .crumbLink:hover {
-    background: var(--overlay-hover);
-    color: var(--text);
-  }
-
-  .crumbSep {
-    color: var(--text-4);
-  }
-
-  .crumb {
-    color: var(--text);
-  }
-
-  .title {
-    font-size: var(--text-xl);
-    letter-spacing: var(--tracking-tight);
-  }
-
-  .card {
+  .section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
-    max-width: 40rem;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--surface-card);
-    padding: var(--space-4);
+    gap: var(--space-4);
+    margin-block-start: var(--space-8);
   }
 
-  .cardTitle {
-    font-size: var(--text-sm);
-    color: var(--text-3);
-    letter-spacing: var(--tracking-wide);
-    text-transform: uppercase;
+  .section:first-child {
+    margin-block-start: var(--space-0);
   }
 
-  .loading {
-    color: var(--text-3);
-    font-size: var(--text-sm);
-  }
-
-  .hint {
-    color: var(--text-4);
+  /* These labels *are* the section boundary; there is no card box. */
+  .sectionLabel {
     font-size: var(--text-xs);
-  }
-
-  .error {
-    color: var(--error-text);
-    font-size: var(--text-sm);
-  }
-
-  .saved {
-    color: var(--success);
-    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
   }
 
   .field {
@@ -92,82 +49,125 @@
 
   .label {
     font-size: var(--text-xs);
-    color: var(--text-3);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
   }
 
+  /* Box, border and background all come from base.css's one text-field recipe;
+     this only says how tall it is and what it is set in. */
   .input {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: var(--surface-bg);
-    color: var(--text);
-    padding: var(--space-2);
-    font-family: var(--font-mono);
+    block-size: var(--control-h);
+    padding-block: 0;
     font-size: var(--text-sm);
-  }
-
-  .input:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text);
   }
 
   .actions {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-4);
   }
 
-  .primary {
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--accent-soft);
-    color: var(--text);
-    padding: var(--space-2) var(--space-3);
-    cursor: pointer;
-    font: inherit;
+  /* The only green in the app. */
+  .saved {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--success-text);
   }
 
-  .primary:disabled {
-    opacity: 0.5;
-    cursor: default;
+  .hint {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
   }
 
-  .secondary {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: var(--surface-chip);
-    color: var(--text-2);
-    padding: var(--space-2) var(--space-3);
-    cursor: pointer;
-    font: inherit;
+  /* The error box: dot, message, and a home of its own — error tones, never
+     warn tones. Waiting and broken are different things. */
+  .error {
+    padding-block: var(--space-3);
+    padding-inline: var(--space-4);
+    border: 1px solid var(--error-border);
+    border-radius: var(--radius-md);
+    background: var(--error-soft);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--error-text);
   }
 
-  .secondary:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-
-  .radios {
+  /* A segmented control: no gutters between segments, one hairline under the
+     whole group, and the selected segment marked by a 2px accent rule sitting
+     on that hairline. */
+  .segmented {
     display: flex;
-    gap: var(--space-2);
+    border-block-end: 1px solid var(--hairline);
   }
 
-  .radio {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: transparent;
+  .segment {
+    position: relative;
+    block-size: var(--control-h);
+    padding-inline: var(--space-6);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
     color: var(--text-2);
-    padding: var(--space-2) var(--space-3);
     cursor: pointer;
-    font: inherit;
+    transition: color var(--motion-quick) ease-out, background-color var(--motion-quick) ease-out;
   }
 
-  .radio:hover {
-    background: var(--overlay-hover-faint);
+  .segment:hover {
+    background: var(--overlay-hover);
   }
 
-  .radioOn {
-    border-color: var(--accent);
-    background: var(--accent-soft);
+  .segment:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Not --accent-soft: that fill belongs to a selected list row, and a segment
+     wearing it would read as the same kind of object. */
+  .segmentOn {
+    font-weight: var(--weight-medium);
     color: var(--text);
+  }
+
+  .segmentOn::after {
+    content: '';
+    position: absolute;
+    inset-inline: var(--space-0);
+    inset-block-end: var(--space-0);
+    block-size: var(--rule-h);
+    background: var(--accent);
+  }
+
+  .about {
+    display: grid;
+    grid-template-columns: var(--menu-w-min) minmax(0, 1fr);
+    align-items: center;
+  }
+
+  .aboutKey,
+  .aboutValue {
+    min-block-size: var(--row-h);
+    display: flex;
+    align-items: center;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .aboutValue {
+    font-family: var(--font-mono);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .segment {
+      transition: none;
+    }
   }
 }

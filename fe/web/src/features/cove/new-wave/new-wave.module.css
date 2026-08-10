@@ -19,14 +19,11 @@
     font-size: var(--text-sm);
   }
 
+  /* Rule, box and colour come from base.css's one text-field recipe. */
   .textarea,
   .input,
   .select {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: var(--surface-card);
-    color: var(--text);
-    padding: var(--space-2);
+    padding-block: var(--space-2);
     font: inherit;
     font-size: var(--text-sm);
     width: 100%;

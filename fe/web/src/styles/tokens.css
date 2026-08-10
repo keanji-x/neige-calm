@@ -20,7 +20,7 @@
     --warn: oklch(58% 0.16 30);
     --warn-soft: oklch(96% 0.03 30);
 
-    --surface-rail: oklch(98% 0.003 240);
+    --surface-rail: oklch(96.4% 0.004 240);
     --surface-card: oklch(96% 0.004 240);
     --surface-chip: oklch(95% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
@@ -94,6 +94,56 @@
     --error-text: oklch(50% 0.18 25);
     --warn-border: oklch(85% 0.05 30);
 
+    /* Weights: three steps only (§2.2). 300/700/bold are forbidden. */
+    --weight-normal: 400;
+    --weight-medium: 500;
+    --weight-semibold: 600;
+
+    /* Box scale: declared densities, never padding+line-height accidents (§2.5). */
+    --row-h-sm: 24px;
+    --row-h: 28px;
+    --row-h-lg: 48px;
+    --control-h-sm: 20px;
+    --control-h: 28px;
+    --control-h-lg: 32px;
+    --rail-w: 200px;
+    --rail-w-collapsed: 44px;
+    --panel-w: 308px;
+    --drawer-w: 396px;
+    --measure-prose: 616px;
+    --measure-form: 544px;
+    --measure-page: 1180px;
+    --measure-board: 1280px;
+    --measure-list: 720px;
+    --measure-doc: 748px;
+    --slot-h: 240px;
+    --rule-h: 2px;
+    --dot-sm: 6px;
+    --dot-md: 8px;
+    --glyph-sm: 14px;
+    --glyph: 16px;
+    --menu-w-min: 180px;
+    --menu-w-max: 320px;
+
+    /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
+    --warn-text: oklch(45% 0.16 30);
+    --success-text: oklch(45% 0.14 145);
+    --error-soft: oklch(96% 0.028 25);
+    --error-border: oklch(85% 0.05 25);
+    --text-on-accent: var(--bg);
+
+    --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.05), 0 12px 32px oklch(0% 0 0 / 0.08);
+
+    /* Cove identity slots: id hash mod 8. Never a free-form hex (§6.2). */
+    --cove-1: oklch(62% 0.09 20);
+    --cove-2: oklch(62% 0.09 60);
+    --cove-3: oklch(62% 0.09 110);
+    --cove-4: oklch(62% 0.09 150);
+    --cove-5: oklch(62% 0.09 200);
+    --cove-6: oklch(62% 0.09 245);
+    --cove-7: oklch(62% 0.09 290);
+    --cove-8: oklch(62% 0.09 330);
+
     --z-base: 0;
     --z-raised: 2;
     --z-sticky: 4;
@@ -115,7 +165,7 @@
     --accent-soft: oklch(28% 0.05 245);
     --warn: oklch(70% 0.16 30);
     --warn-soft: oklch(28% 0.05 30);
-    --surface-rail: oklch(15% 0.008 245);
+    --surface-rail: oklch(13% 0.008 245);
     --surface-card: oklch(21% 0.009 245);
     --surface-chip: oklch(24% 0.01 245);
     --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
@@ -132,5 +182,23 @@
     --cal-event-waiting-bg: oklch(24% 0.03 30);
     --error-text: oklch(74% 0.14 25);
     --warn-border: oklch(40% 0.05 30);
+
+    --warn-text: oklch(78% 0.13 30);
+    --success-text: oklch(78% 0.13 145);
+    --error-soft: oklch(26% 0.05 25);
+    --error-border: oklch(40% 0.05 25);
+    --text-on-accent: var(--bg);
+
+    /* Dark shadows are heavier: the surface behind them has less contrast to lose. */
+    --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.3), 0 12px 32px oklch(0% 0 0 / 0.45);
+
+    --cove-1: oklch(70% 0.1 20);
+    --cove-2: oklch(70% 0.1 60);
+    --cove-3: oklch(70% 0.1 110);
+    --cove-4: oklch(70% 0.1 150);
+    --cove-5: oklch(70% 0.1 200);
+    --cove-6: oklch(70% 0.1 245);
+    --cove-7: oklch(70% 0.1 290);
+    --cove-8: oklch(70% 0.1 330);
   }
 }

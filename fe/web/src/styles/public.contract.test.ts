@@ -38,6 +38,18 @@ const TOKEN_INVENTORY = [
   '--motion-slow', '--motion-pulse', '--font-sans', '--font-serif', '--font-mono',
   '--font-display', '--font-numeric', '--font-code', '--z-base', '--z-raised', '--z-sticky',
   '--z-overlay', '--z-modal', '--z-toast',
+  '--weight-normal', '--weight-medium', '--weight-semibold',
+  '--row-h-sm', '--row-h', '--row-h-lg',
+  '--control-h-sm', '--control-h', '--control-h-lg',
+  '--rail-w', '--rail-w-collapsed', '--panel-w', '--drawer-w',
+  '--measure-prose', '--measure-form', '--measure-page', '--measure-board',
+  '--measure-list', '--measure-doc',
+  '--slot-h', '--rule-h', '--dot-sm', '--dot-md',
+  '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
+  '--warn-text', '--success-text', '--error-soft', '--error-border', '--text-on-accent',
+  '--shadow-float',
+  '--cove-1', '--cove-2', '--cove-3', '--cove-4',
+  '--cove-5', '--cove-6', '--cove-7', '--cove-8',
 ] as const;
 
 describe('styles/tokens public type contract', () => {

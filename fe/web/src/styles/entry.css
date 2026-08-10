@@ -7,3 +7,5 @@
    layer, and sublayer precedence follows first appearance. */
 @import "./vendor.css" layer(astryx);
 @import "./astryx-theme.css" layer(astryx);
+/* The frozen dialog primitive's hard-coded global class names (§0.4 CR-4). */
+@import "./dialog.css" layer(ui);

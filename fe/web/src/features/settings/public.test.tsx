@@ -54,9 +54,17 @@ describe('Settings network form', () => {
     expect(onSave).toHaveBeenCalledWith({ [HTTPS_PROXY_KEY]: 'http://edge:8080' });
   });
 
-  it('flips the save label and blocks the button while saving', () => {
+  // CR-6 — in flight the button is *busy*, not `disabled`. A real `disabled`
+  // element is not focusable, and focus is on Save at exactly that moment, so
+  // disabling it would throw focus to <body> mid-action. The block has to come
+  // from `aria-disabled` + the handler, and the state has to stay announceable.
+  it('flips the save label and blocks the button while saving, without disabling it', () => {
     render(<SettingsPage {...props({ saving: true })} />);
-    expect(screen.getByRole('button', { name: 'Saving…' }).hasAttribute('disabled')).toBe(true);
+    const save = screen.getByRole('button', { name: 'Saving…' });
+    expect(save.hasAttribute('disabled')).toBe(false);
+    expect(save.getAttribute('aria-disabled')).toBe('true');
+    expect(save.getAttribute('aria-busy')).toBe('true');
+    expect(save.dataset.ncState).toBe('busy');
   });
 
   it('re-seeds the fields when the settings prop reports a new server value', () => {

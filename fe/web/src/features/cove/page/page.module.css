@@ -1,85 +1,82 @@
 @layer features {
+  /*
+   * §7.2 — header row plus a content row that fills. Page padding is the same
+   * on all four routes: 24 inline, 20 block-start, 28 block-end. The extra 8 at
+   * the bottom keeps the last row off the edge when the page is scrolled home.
+   */
   .page {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-5);
-    padding: var(--space-6);
-    min-height: 100%;
-    background: var(--surface-bg);
-    color: var(--text);
-    font-family: var(--font-sans);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--space-8);
+    max-inline-size: var(--measure-page);
+    padding-block: var(--space-9) var(--space-11);
+    padding-inline: var(--space-10);
   }
 
-  .header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    flex-wrap: wrap;
-    border-bottom: 1px solid var(--hairline);
-    padding-bottom: var(--space-3);
-  }
-
-  .swatch {
-    width: 12px;
-    height: 12px;
-    flex: none;
-    border-radius: var(--radius-pill);
-    background: var(--text-4);
-  }
-
+  /* 18px, down from 22. 22/13 is 1.7× and reads like a landing page; 18/13 is
+     1.38×, the ratio dense tools use. */
   .title {
-    font-size: var(--text-xl);
+    min-inline-size: 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
     color: var(--text);
   }
 
-  .count {
-    color: var(--text-3);
-    font-size: var(--text-sm);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    margin-inline-start: auto;
-  }
-
-  .newWave {
-    border: 1px solid var(--hairline);
+  /* Chrome icon button: 28px box, 16px glyph — the one pairing (§4.4). */
+  .headerAction {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    background: var(--accent-soft);
-    color: var(--accent);
-    padding: var(--space-1) var(--space-3);
-    cursor: pointer;
-    font: inherit;
-    font-size: var(--text-sm);
-  }
-
-  .newWave:hover {
-    background: var(--overlay-hover);
-  }
-
-  .delete {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: transparent;
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
     color: var(--text-3);
-    padding: var(--space-1) var(--space-3);
     cursor: pointer;
-    font: inherit;
-    font-size: var(--text-sm);
+    transition: background-color var(--motion-quick) ease-out, color var(--motion-quick) ease-out;
   }
 
-  .delete:hover {
-    background: var(--overlay-hover);
-    color: var(--warn);
+  .headerAction:hover,
+  .headerAction:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
   }
+
+  /*
+   * Coloured at rest, not on hover (§4.3): a warning that only appears once the
+   * pointer is already on the control is absent at the moment of the decision,
+   * and absent from the keyboard path entirely. As a 16px glyph it stays quiet
+   * while still being unmistakably the destructive one. At least --space-6 from
+   * the benign action beside it — separation is how destructive actions avoid
+   * alarm fatigue, not hiding their colour.
+   */
+  .headerDelete {
+    /* The title row already contributes a --space-3 flex gap, so this adds the
+       other half: the two controls end up exactly --space-6 apart, which is
+       §4.3's stated *minimum* separation for a destructive action — not 18px,
+       which is what a full --space-6 on top of the gap was producing. */
+    margin-inline-start: var(--space-3);
+    color: var(--error-text);
+  }
+
+  .headerDelete:hover,
+  .headerDelete:focus-visible {
+    background: var(--error-soft);
+    color: var(--error-text);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .headerAction {
+      transition: none;
+    }
+  }
+
+  /* The font itself declares "this is a literal", so it spends no size, weight
+     or colour doing it. */
 
   .body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    min-height: 0;
+    min-block-size: 0;
   }
 }

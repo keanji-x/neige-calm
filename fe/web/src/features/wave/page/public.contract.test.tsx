@@ -29,17 +29,23 @@ describe('WavePage delete confirm contract', () => {
     const onDeleteWave = vi.fn(() => gate.promise);
     renderPage({ onDeleteWave });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
 
     // Still mounted, mid-flight.
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Delete wave' }).hasAttribute('disabled')).toBe(true);
+    // CR-6 — busy, not `disabled`: a disabled element is not focusable, and
+    // focus is on Confirm at this exact moment, so disabling it would drop
+    // focus out of the dialog's trap mid-action.
+    const confirm = screen.getByRole('button', { name: 'Deleting…' });
+    expect(confirm.hasAttribute('disabled')).toBe(false);
+    expect(confirm.getAttribute('aria-disabled')).toBe('true');
+    expect(confirm.dataset.ncState).toBe('busy');
     expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
 
     gate.resolve();
     await gate.promise;
-    await screen.findByRole('button', { name: 'Delete' });
+    await screen.findByRole('button', { name: /^Delete wave / });
   });
 
   it('closes the confirm and clears pending when onDeleteWave rejects', async () => {
@@ -47,18 +53,18 @@ describe('WavePage delete confirm contract', () => {
     const onDeleteWave = vi.fn(() => gate.promise);
     renderPage({ onDeleteWave });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
 
     gate.reject();
     await gate.promise.catch(() => undefined);
 
     // The dialog let go, and re-opening it hands back a live Confirm button.
-    const reopen = await screen.findByRole('button', { name: 'Delete' });
+    const reopen = await screen.findByRole('button', { name: /^Delete wave / });
     expect(screen.queryByRole('dialog')).toBeNull();
     await userEvent.click(reopen);
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Delete wave' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-disabled')).toBeNull();
   });
 
   it('renders no <a> element anywhere on the page (INV-A11Y-061)', () => {

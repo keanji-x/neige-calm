@@ -38,11 +38,21 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     renderPage({ onDeleteCove: () => pending.promise });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    // §6.13 — deleting a cove cascades to every wave inside it, so it is the
+    // one operation in the product that earns a typed confirm. Confirm stays
+    // `blocked` until the name matches; clicking it before that is a no-op, and
+    // a suite that skips the typing is asserting against a dialog that never
+    // armed.
+    await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
 
     // Still mounted for the whole await.
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Delete cove' })).toHaveProperty('disabled', true);
+    // CR-6 — busy, not `disabled`: focus is on Confirm at this moment and a
+    // real `disabled` would drop it out of the dialog's trap mid-action.
+    const confirm = screen.getByRole('button', { name: 'Deleting…' });
+    expect(confirm).toHaveProperty('disabled', false);
+    expect(confirm.getAttribute('aria-disabled')).toBe('true');
     expect(screen.getByRole('button', { name: 'Cancel' })).toHaveProperty('disabled', false);
 
     pending.settle.resolve();
@@ -53,13 +63,24 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     renderPage({ onDeleteCove: () => pending.promise });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    // §6.13 — deleting a cove cascades to every wave inside it, so it is the
+    // one operation in the product that earns a typed confirm. Confirm stays
+    // `blocked` until the name matches; clicking it before that is a no-op, and
+    // a suite that skips the typing is asserting against a dialog that never
+    // armed.
+    await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
     pending.settle.reject(new Error('409'));
     await vi.waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
 
     // Reopening must offer a usable Confirm: pending has to be cleared too, not
     // just `open`, or the second attempt is dead on arrival.
+    // Reopening starts blocked again — the typed input is cleared with the
+    // dialog, so a second attempt has to be re-armed rather than inheriting the
+    // first one's confirmation.
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    expect(screen.getByRole('button', { name: 'Delete cove' })).toHaveProperty('disabled', true);
+    await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     expect(screen.getByRole('button', { name: 'Delete cove' })).toHaveProperty('disabled', false);
   });
 });

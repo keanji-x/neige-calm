@@ -1,181 +1,190 @@
 @layer features {
   .page {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-6);
-    padding: var(--space-6);
-    min-block-size: 100%;
-    background: var(--surface-bg);
-    color: var(--text);
-    font-family: var(--font-sans);
-  }
-
-  .header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-  }
-
-  .crumbs {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--text-xs);
-    color: var(--text-3);
-  }
-
-  .back {
     display: grid;
-    place-items: center;
-    inline-size: 24px;
-    block-size: 24px;
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-2);
-    font: inherit;
-    line-height: var(--leading-none);
-    cursor: pointer;
-  }
-
-  .back:hover {
-    background: var(--overlay-hover);
-    color: var(--text);
-  }
-
-  .crumb {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    padding: var(--space-0);
-    border: 0;
-    background: transparent;
-    color: var(--text-3);
-    font: inherit;
-    cursor: pointer;
-  }
-
-  .crumb:hover {
-    color: var(--text);
-    text-decoration: underline;
-  }
-
-  .crumbSeparator {
-    color: var(--text-4);
-  }
-
-  .coveDot {
-    inline-size: 6px;
-    block-size: 6px;
-    border-radius: var(--radius-pill);
-    background: var(--text-4);
-    flex: none;
-  }
-
-  .titleRow {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    min-inline-size: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--space-8);
+    max-inline-size: var(--measure-page);
+    padding-block: var(--space-9) var(--space-11);
+    padding-inline: var(--space-10);
   }
 
   .title {
-    font-size: var(--text-xl);
+    min-inline-size: 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
     letter-spacing: var(--tracking-tight);
+    color: var(--text);
   }
 
-  .delete {
-    margin-inline-start: auto;
-    padding-block: var(--space-1);
-    padding-inline: var(--space-3);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-3);
-    font: inherit;
+  .coveDot {
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+  }
+
+  /* `any_card_needs_input` is a field the kernel really writes, so it can carry
+     a page's attention — unlike progress/eta/now, which have no writer at all. */
+  .needsInput {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
     font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--warn-text);
+  }
+
+  .needsInputDot {
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--warn);
+  }
+
+  /* Coloured at rest, not on hover (§4.3). 28px box, 16px glyph — the one
+     chrome pairing. */
+  .headerDelete {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--error-text);
     cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
   }
 
-  .delete:hover {
-    border-color: var(--warn-border);
-    color: var(--warn);
+  .headerDelete:hover,
+  .headerDelete:focus-visible {
+    background: var(--error-soft);
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    .headerDelete {
+      transition: none;
+    }
+  }
+
+  /* A panel field, not a header row. It wraps rather than truncating: a path
+     you came here to read is worth two lines, and the panel has them. */
   .cwd {
-    margin: 0;
-    color: var(--text-4);
+    overflow-wrap: anywhere;
+    padding-inline: var(--space-4);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
   }
 
-  .body {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
+  /* Main column plus a 308 panel column, separated by the standard 24px gutter.
+     At 1440 that is 848 / 24 / 308 = 1180. */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    gap: var(--space-10);
+    min-block-size: 0;
   }
 
-  .sectionTitle {
-    margin: 0;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--text-2);
-    letter-spacing: var(--tracking-wide);
+  .doc {
+    max-inline-size: var(--measure-doc);
+    min-inline-size: 0;
   }
 
-  .empty {
-    margin: 0;
-    padding: var(--space-4);
+  /*
+   * An empty report still occupies a report's worth of space, because that is
+   * precisely the shape being taught. It is dashed content, not a void, so
+   * §7.3's empty-rectangle rule does not count it.
+   */
+  .reportSlot {
+    display: grid;
+    place-items: center;
+    max-inline-size: var(--measure-prose);
+    min-block-size: calc(var(--slot-h) * 2);
     border: 1px dashed var(--hairline);
     border-radius: var(--radius-md);
+  }
+
+  .slotNote {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
     color: var(--text-3);
-    font-size: var(--text-sm);
+  }
+
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
+  /* Uppercase plus tracking standing in for a size the panel cannot spend. */
+  .sectionLabel {
+    margin-block-start: var(--space-8);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+
+  .sectionLabel:first-child {
+    margin-block-start: var(--space-0);
   }
 
   .cards {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    margin: 0;
-    padding: 0;
-    list-style: none;
+    gap: var(--space-1);
   }
 
-  .card {
+  .cardRow {
     display: flex;
-    align-items: baseline;
-    gap: var(--space-3);
-    padding: var(--space-3);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
-    font-size: var(--text-sm);
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-4);
+    border-radius: var(--radius-sm);
   }
 
   .cardKind {
-    padding-inline: var(--space-2);
-    border-radius: var(--radius-pill);
-    background: var(--surface-chip);
-    color: var(--text-3);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-  }
-
-  .cardTitle {
+    min-inline-size: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text);
     white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
   .kernelOwned {
-    color: var(--text-4);
+    flex: none;
     font-size: var(--text-xs);
-    letter-spacing: var(--tracking-wide);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
   }
 
-  .cardNote {
-    margin-inline-start: auto;
-    color: var(--text-4);
+  /* The inline empty state: one line of hint-toned text in a dashed row-height
+     box. Dashed is the difference between "a container with nothing in it" and
+     "something is here". */
+  .inlineEmpty {
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-4);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-sm);
     font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
   }
 }

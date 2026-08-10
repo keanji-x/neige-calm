@@ -12,8 +12,23 @@ export const DELETE_WAVE_COPY = Object.freeze({
   confirmLabel: 'Delete wave',
 });
 
-export const DELETE_COVE_COPY = Object.freeze({
-  title: 'Delete this cove?',
-  description: 'The cove and every wave inside it are removed. This cannot be undone.',
-  confirmLabel: 'Delete cove',
-});
+/**
+ * CR-5 / CR-5a — parameterised, but still the single declaration site. INV-DUP-010
+ * protects "one home", not "one string": both cove entry points (sidebar row, cove
+ * page header) call this same function.
+ *
+ * Four fields, not three: §6.13's body is two sentences with different typography
+ * (consequence at --text-sm/--text, prompt at --text-xs/--text-3), and a single
+ * `description` slot cannot carry both. The component owns the layout; this file
+ * owns only the strings.
+ */
+export function deleteCoveCopy(coveName: string, waveCount: number) {
+  return Object.freeze({
+    title: `Delete ${coveName}?`,
+    consequence: waveCount === 1
+      ? 'This deletes 1 wave. This cannot be undone.'
+      : `This deletes ${waveCount} waves. This cannot be undone.`,
+    prompt: `Type ${coveName} to confirm.`,
+    confirmLabel: 'Delete cove',
+  });
+}

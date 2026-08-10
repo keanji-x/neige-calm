@@ -87,3 +87,25 @@ export function updateCoveOperation(coveId: string, body: CovePatchBody): ApiOpe
 export function deleteCoveOperation(coveId: string): ApiOperation<undefined> {
   return { method: 'DELETE', path: `/api/coves/${encodeURIComponent(coveId)}`, responseSchema: z.undefined() };
 }
+
+/** The eight identity slots. A cove's colour is a slot, never a free hex (§6.2). */
+export const COVE_SLOT_COUNT = 8;
+
+/**
+ * §6.2 — a cove's identity dot is a stable hash of its id, mod 8, not the
+ * kernel's `color` field. Two consequences the design leans on: the same cove
+ * is the same colour on every surface and across reloads, and the palette stays
+ * inside the token set, so the eight hues can be re-tuned (or cut to six) in
+ * `tokens.css` without touching a component.
+ *
+ * It lives in core rather than beside COVE_PALETTE because three separate
+ * surfaces need it and `features/**` may not import a sibling feature domain —
+ * and because "which slot is this cove" is domain logic, not a palette value.
+ */
+export function coveSlotVar(coveId: string): string {
+  let hash = 0;
+  for (let index = 0; index < coveId.length; index += 1) {
+    hash = (hash * 31 + coveId.charCodeAt(index)) | 0;
+  }
+  return `--cove-${(Math.abs(hash) % COVE_SLOT_COUNT) + 1}`;
+}

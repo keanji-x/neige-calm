@@ -20,12 +20,26 @@ export type EditableTitleProps = Readonly<{
   /** Accessible name for the input, e.g. "Cove name". */
   inputLabel: string;
   className?: string;
+  /**
+   * Marks this as the route's single page-title element (§6.4). Two routes
+   * rename in place, so their title *is* this control — there is no separate
+   * heading to carry the marker, and CR-8 focuses it after a delete.
+   *
+   * No `tabIndex={-1}` here. §5.2 adds that only because an `<h1>` is not
+   * otherwise focusable; taking a rename control out of the Tab order to
+   * satisfy the letter of that rule would delete the keyboard path to renaming.
+   * `base.css` already suppresses the ring for programmatic focus.
+   */
+  isPageTitle?: boolean;
+  titleRef?: React.RefObject<HTMLButtonElement | null>;
 }>;
 
 /** How long after an Enter commit a synthesized click is ignored (#288). */
 const CLICK_SUPPRESS_MS = 300;
 
-export function EditableTitle({ value, onCommit, editLabel, inputLabel, className }: EditableTitleProps) {
+export function EditableTitle({
+  value, onCommit, editLabel, inputLabel, className, isPageTitle, titleRef,
+}: EditableTitleProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -49,7 +63,10 @@ export function EditableTitle({ value, onCommit, editLabel, inputLabel, classNam
   if (!editing) {
     return (
       <button
+        ref={titleRef}
         type="button"
+        data-nc-role="row"
+        data-nc-page-title={isPageTitle ? '' : undefined}
         className={`${styles.title} ${className ?? ''}`}
         aria-label={editLabel}
         onClick={begin}

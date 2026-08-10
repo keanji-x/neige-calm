@@ -9,6 +9,7 @@
 import { Outlet } from '@tanstack/react-router';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import { useState } from '../../ui/state/public.ts';
 import { useCoveMutations, useWaveMutations, useWorkspace } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
 import { Sidebar } from './sidebar.tsx';
@@ -30,14 +31,28 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
   const currentPath = useCurrentPath();
   const go = useGo();
 
+  /*
+   * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
+   * a *grid* change: the rail may swap its contents for an icon strip, but
+   * unless this element's `grid-template-columns` also changes, the column
+   * stays 200px wide and the button appears to do nothing. That was the bug.
+   *
+   * Manual choice always wins (§7.1). The sub-960px auto-collapse is a media
+   * query on the same grid and deliberately does not write this state, so
+   * widening the window restores whatever the user picked.
+   */
+  const [railCollapsed, setRailCollapsed] = useState(false);
+
   // Both wave mutations need the cove id to invalidate the right list, and the
   // rail only knows wave ids; the workspace read already has the mapping.
   const coveIdOf = (waveId: string): string | undefined =>
     workspace.waves.find((wave) => wave.id === waveId)?.coveId;
 
   return (
-    <div className={styles.shell}>
+    <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : ''}`}>
       <Sidebar
+        collapsed={railCollapsed}
+        onToggleCollapsed={() => setRailCollapsed(!railCollapsed)}
         coves={workspace.coves}
         wavesByCove={workspace.wavesByCove}
         waves={workspace.waves}
