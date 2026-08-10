@@ -339,3 +339,57 @@ async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan
             .unwrap();
     assert_eq!(plan_events, 1);
 }
+
+/// `tree_task_budget` is an input to schedulability even for an N=1 root when
+/// explicitly configured. Tightening it must use the same in-transaction
+/// reprojection seam as the other policy fields.
+#[tokio::test]
+async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits_plan_updated() {
+    let (state, wave_id, repo) = boot().await;
+    let block = calm_types::wave_report::ReportBlock {
+        id: "b_tree_budget".into(),
+        rev: 1,
+        kind: "task".into(),
+        payload: json!({"key":"queued","kind":"codex","goal":"queued goal",
+            "acceptance":"done","no_gate_reason":"not needed","declared_by":"spec","ready":true}),
+    };
+    let mut payload = calm_server::wave_report::WaveReportPayload::new(
+        "",
+        calm_types::report_blocks::flat_text(&block),
+    );
+    payload.blocks = Some(vec![block]);
+    let report = repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone().into(),
+            title: None,
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(calm_server::wave_report::WaveReportPayload::initial())
+                .unwrap(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&payload).unwrap())
+        .bind(report.id.as_str())
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec','block',0,0)")
+        .bind(format!("{wave_id}:queued")).bind(&wave_id).execute(&repo.sqlite_pool().unwrap()).await.unwrap();
+
+    let response = patch(state, &wave_id, None, json!({"tree_task_budget": 0})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1")
+        .bind(&wave_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    let plan_events: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events WHERE kind='plan.updated'")
+            .fetch_one(&repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(plan_events, 1);
+}

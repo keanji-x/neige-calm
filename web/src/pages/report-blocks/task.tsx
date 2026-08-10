@@ -73,7 +73,9 @@ const taskDiagnosticCopy = Object.freeze({
   context_stale_declaration: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
   task_key_completed: () => 'This task key has already been delivered. Create a new task card with a new key for more work.',
   invalid_declaration: () => 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.',
-  tree_budget_exhausted: (d: Diagnostic) => `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. The limit lives on the top wave of the group: raise it there, or wait for tasks elsewhere in the group to finish.`,
+  tree_budget_exhausted: (d: Diagnostic) => d.messageArgs.share === 0
+    ? `This group has ${String(d.messageArgs.tree_waves ?? '')} linked waves but an AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave receives no task slots. Raise the limit on the top wave or remove extra child waves.`
+    : `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. Raise the limit on the top wave or let an in-progress task in this wave finish.`,
   tree_root_unresolved: () => 'This wave is linked into a group of waves whose top wave cannot be found, so its share of the shared AI-task limit is unknown and nothing is queued here. Repair or remove the broken sub-wave link.',
 });
 

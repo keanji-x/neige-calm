@@ -25,7 +25,10 @@ pub const CHILD_WAVE_KIND: &str = "child-wave";
 /// share the same fragments AND the same static gate. Re-exported here
 /// because the tree depth bound is part of this adapter's public contract.
 pub use calm_truth::db::sqlite::{MAX_WAVE_TREE_DEPTH, WAVE_ROOT_DEPTH_SQL};
-use calm_truth::db::sqlite::{WAVE_BOUNDED_PATH_SQL, wave_tree_budget, wave_tree_spec_inventory};
+use calm_truth::db::sqlite::{
+    WAVE_BOUNDED_PATH_SQL, can_add_tree_member, wave_tree_budget, wave_tree_member_count,
+    wave_tree_spec_inventory,
+};
 
 const CHILD_WAVE_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -159,6 +162,14 @@ impl ProviderAdapter for ChildWaveAdapter {
             return Err(CalmError::Conflict(format!(
                 "sub-wave-tree-budget-exhausted: wave tree rooted at {root_id} holds {inventory} \
                  unfinished spec task(s), at or over its tree_task_budget of {budget}"
+            )));
+        }
+        let members = wave_tree_member_count(tx, &root_id).await?;
+        if !can_add_tree_member(budget, members) {
+            return Err(CalmError::Conflict(format!(
+                "sub-wave-tree-budget-exhausted: wave tree rooted at {root_id} already has \
+                 {members} member wave(s); adding one would exceed its tree_task_budget of {budget} \
+                 and create a wave with zero schedulable share"
             )));
         }
 
@@ -431,11 +442,15 @@ mod tests {
     }
 
     async fn seed_task(repo: &SqlxRepo, wave_id: &str, stale: bool) -> Task {
+        seed_task_with_key(repo, wave_id, "child", stale).await
+    }
+
+    async fn seed_task_with_key(repo: &SqlxRepo, wave_id: &str, key: &str, stale: bool) -> Task {
         let now = now_ms();
         let task = Task {
-            id: format!("{wave_id}:child"),
+            id: format!("{wave_id}:{key}"),
             wave_id: wave_id.into(),
-            key: "child".into(),
+            key: key.into(),
             kind: TaskKind::Codex,
             goal: "frozen-goal".into(),
             context_json: json!({"frozen":"context"}).to_string(),
@@ -499,7 +514,9 @@ mod tests {
             assert!(sql.contains("WHERE up.depth <= ?2"));
             assert!(sql.contains("UNION ALL"));
             assert!(
-                calm_truth::db::sqlite::BOUNDED_WAVE_TREE_SQL.contains(&sql),
+                calm_truth::db::sqlite::BOUNDED_WAVE_TREE_SQL
+                    .iter()
+                    .any(|(_, registered)| registered == &sql),
                 "adapter runs an unregistered bounded-tree walk"
             );
         }
@@ -822,6 +839,62 @@ mod tests {
             child_budget, None,
             "the child must not carry a budget of its own"
         );
+    }
+
+    /// Compatibility of the two enforcement points: after the first child is
+    /// admitted under B=2 and its parent task finishes, inventory alone would
+    /// allow another child. The member bound must still refuse it because an
+    /// admitted N=3 tree would assign a zero share.
+    #[tokio::test]
+    async fn acceptance_tree_budget_never_admits_a_zero_share_member() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let parent = seed_parent(&repo, false).await;
+        sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
+            .bind(&parent)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        let first = seed_task_with_key(&repo, &parent, "first-child", false).await;
+        let input = serde_json::to_value(payload(&first)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        sqlx::query("UPDATE tasks SET status='done',finished_at_ms=1 WHERE id=?1")
+            .bind(&first.id)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let second = seed_task_with_key(&repo, &parent, "second-child", false).await;
+        let input = serde_json::to_value(payload(&second)).unwrap();
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap_err();
+        drop(tx);
+        assert!(
+            error.to_string().contains("sub-wave-tree-budget-exhausted")
+                && error.to_string().contains("2 member wave(s)")
+                && error.to_string().contains("zero schedulable share"),
+            "{error}"
+        );
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(before, after, "a shape-refused creation must write nothing");
     }
 
     #[tokio::test]

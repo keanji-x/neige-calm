@@ -315,6 +315,51 @@ async fn shares_over_a_real_tree_sum_to_the_budget() {
     assert_eq!(total, 8);
 }
 
+/// The quota order itself is part of the split definition. Insertion order is
+/// deliberately the reverse of `created_at`; deleting the ORDER BY must make
+/// this fail instead of inheriting SQLite's current scan order by accident.
+#[tokio::test]
+async fn quota_remainder_follows_created_at_not_insertion_order() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "root-first").await;
+    let child = seed_wave(&repo, &cove, "child-second").await;
+    link(&repo, &child, &root).await;
+    stamp_created_at(&repo, &root, 2_000).await;
+    stamp_created_at(&repo, &child, 1_000).await;
+    set_tree_budget(&repo, &root, 1).await;
+
+    assert_eq!(share_of(&repo, &child).await.share, 1);
+    assert_eq!(share_of(&repo, &root).await.share, 0);
+}
+
+/// Equal-millisecond creation is common. The secondary id key is therefore a
+/// correctness input, not decorative SQL.
+#[tokio::test]
+async fn quota_remainder_breaks_equal_created_at_ties_by_id() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "root-first").await;
+    let child = seed_wave(&repo, &cove, "child-second").await;
+    sqlx::query("UPDATE waves SET id='z-root' WHERE id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET id='a-child' WHERE id=?1")
+        .bind(&child)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    link(&repo, "a-child", "z-root").await;
+    stamp_created_at(&repo, "z-root", 1_000).await;
+    stamp_created_at(&repo, "a-child", 1_000).await;
+    set_tree_budget(&repo, "z-root", 1).await;
+
+    assert_eq!(share_of(&repo, "a-child").await.share, 1);
+    assert_eq!(share_of(&repo, "z-root").await.share, 0);
+}
+
 /// The share is a function of the tree's SHAPE only. Adding pending rows in a
 /// sibling — the projection's own OUTPUT — must not move anybody's share.
 /// This is the property that keeps rebuild ≡ incremental true on a tree; a
@@ -469,6 +514,11 @@ async fn over_share_declarations_are_diagnosed_against_the_root_wave() {
         "sentence must name the root: {sentence}"
     );
     assert!(sentence.contains("tree_task_budget"), "{sentence}");
+    assert!(
+        sentence.contains("in-flight task in this wave"),
+        "{sentence}"
+    );
+    assert!(!sentence.contains("elsewhere in the tree"), "{sentence}");
     // The wave's own ceiling is NOT the binding constraint here, so the
     // ceiling diagnostic must not be what the reader sees.
     assert!(
@@ -477,6 +527,32 @@ async fn over_share_declarations_are_diagnosed_against_the_root_wave() {
             .iter()
             .any(|diagnostic| diagnostic.code == "spec_task_ceiling")
     );
+}
+
+#[tokio::test]
+async fn zero_share_diagnostic_explains_the_shape_and_effective_actions() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "root").await;
+    let child = seed_wave(&repo, &cove, "child").await;
+    link(&repo, &child, &root).await;
+    stamp_created_at(&repo, &root, 1).await;
+    stamp_created_at(&repo, &child, 2).await;
+    set_tree_budget(&repo, &root, 1).await;
+
+    let decls = declarations(&["k1"]);
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(&mut conn, &child, &decls, &[vec![]], false)
+        .await
+        .unwrap();
+    let diagnostic = verdicts[0]
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+        .expect("zero share has a tree diagnostic");
+    assert!(diagnostic.message.contains("zero task share"));
+    assert!(diagnostic.message.contains("remove extra child waves"));
+    assert!(!diagnostic.message.contains("finish"));
 }
 
 /// When the wave's own ceiling is the tighter bound, the existing ceiling
@@ -549,6 +625,53 @@ async fn unresolvable_root_fails_closed_for_every_declaration() {
     assert!(task_bytes(&repo).await.is_empty());
 }
 
+/// Root failure closes tree admission without skipping the independent §6.5
+/// withdrawal/read-state path.
+#[tokio::test]
+async fn unresolved_root_preserves_withdrawal_and_deleted_block_read_verdicts() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "root").await;
+    let child = seed_wave(&repo, &cove, "child").await;
+    link(&repo, &child, &root).await;
+    project(&repo, &child, &["k1"]).await;
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='k1'")
+        .bind(&child)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    link(&repo, &root, &child).await;
+
+    let mut withdrawn = declaration(0, "k1");
+    withdrawn.ready = false;
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(&mut conn, &child, &[withdrawn], &[vec![]], false)
+        .await
+        .unwrap();
+    assert_eq!(verdicts[0].withdrawal, Some(super::WithdrawalEdge::Ready));
+    assert!(
+        verdicts[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "tree_root_unresolved")
+    );
+
+    let deleted = evaluate_schedulability(&mut conn, &child, &[], &[], true)
+        .await
+        .unwrap();
+    let verdict = deleted
+        .iter()
+        .find(|verdict| verdict.key == "k1")
+        .expect("deleted in-flight block remains readable");
+    assert_eq!(verdict.status.as_deref(), Some("running"));
+    assert!(
+        verdict
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "context_stale_declaration")
+    );
+}
+
 /// A chain deeper than the legal bound is also unresolvable, not "rooted at
 /// whatever the truncated walk happened to reach".
 #[tokio::test]
@@ -567,6 +690,11 @@ async fn an_over_deep_chain_fails_closed() {
     assert_eq!(
         wave_tree_term(&mut conn, deepest).await.unwrap().term,
         WaveTreeTerm::RootUnresolved
+    );
+    assert_eq!(
+        wave_tree_term(&mut conn, &chain[0]).await.unwrap().term,
+        WaveTreeTerm::RootUnresolved,
+        "the root must reject a member set containing an over-deep node"
     );
 }
 
@@ -593,21 +721,33 @@ async fn a_non_tree_wave_runs_zero_recursive_tree_queries() {
     assert!(matches!(outcome.term, WaveTreeTerm::Share(_)));
 }
 
-/// A non-tree wave keeps drawing on its own ceiling alone: the default budget
-/// of 32 never becomes the binding constraint for it.
+/// The recursive short circuit is legal only while its tree budget is NULL.
+/// Once a human explicitly configures it, a singleton root is N=1 and share=B.
 #[tokio::test]
-async fn a_non_tree_wave_is_bounded_only_by_its_own_ceiling() {
+async fn an_explicit_budget_applies_to_a_singleton_root() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let lonely = seed_wave(&repo, &cove, "lonely").await;
     set_ceiling(&repo, &lonely, 3).await;
+    set_tree_budget(&repo, &lonely, 1).await;
     let decls = declarations(&["k1", "k2", "k3"]);
     let diags = vec![Vec::new(); decls.len()];
     let mut conn = repo.pool().acquire().await.unwrap();
     let verdicts = evaluate_schedulability(&mut conn, &lonely, &decls, &diags, false)
         .await
         .unwrap();
-    assert!(verdicts.iter().all(|verdict| verdict.schedulable));
+    assert!(verdicts[0].schedulable);
+    assert!(verdicts[1..].iter().all(|verdict| !verdict.schedulable));
+    let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
+    assert_eq!(outcome.tree_cte_queries, 0);
+    assert!(matches!(
+        outcome.term,
+        WaveTreeTerm::Share(TreeShare {
+            members: 1,
+            share: 1,
+            ..
+        })
+    ));
 }
 
 // ---------------------------------------------------------------------------

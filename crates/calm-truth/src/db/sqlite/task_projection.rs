@@ -537,39 +537,15 @@ async fn wave_projection_state(
 /// unschedulable, with a diagnostic that says so. Deliberately NOT "skip the
 /// tree term when there is no tree": one broken link would then exempt an
 /// entire subtree from the bound.
-fn tree_root_unresolved_verdicts(
-    declarations: &[TaskDeclaration],
-    block_local_diags: &[Vec<Diagnostic>],
-) -> Vec<BlockVerdict> {
-    declarations
-        .iter()
-        .map(|declaration| {
-            let mut diagnostics = block_local_diags
-                .get(declaration.block_index.unwrap_or(usize::MAX))
-                .cloned()
-                .unwrap_or_default();
-            diagnostics.push(Diagnostic::coded(
-                "tree_root_unresolved",
-                "key",
-                BTreeMap::new(),
-                vec![],
-                None,
-                Some("repair_wave_tree".into()),
-            ));
-            BlockVerdict {
-                block_id: declaration.block_id.clone(),
-                key: declaration.key.clone(),
-                schedulable: false,
-                status: None,
-                gate_result: None,
-                worker_card_id: None,
-                child_wave_id: None,
-                child_wave_deleted: None,
-                diagnostics,
-                withdrawal: None,
-            }
-        })
-        .collect()
+fn tree_root_unresolved_diagnostic() -> Diagnostic {
+    Diagnostic::coded(
+        "tree_root_unresolved",
+        "key",
+        BTreeMap::new(),
+        vec![],
+        None,
+        Some("repair_wave_tree".into()),
+    )
 }
 
 pub async fn evaluate_schedulability(
@@ -593,21 +569,17 @@ pub async fn evaluate_schedulability(
     // path-dependent, hence not reconstructible by a rebuild.
     let tree = super::wave_tree::wave_tree_term(&mut *conn, wave_id).await?;
     let ceiling = state.ceiling;
-    let (effective_ceiling, tree_share) = match &tree.term {
-        WaveTreeTerm::NotInTree => (ceiling, None),
+    let (effective_ceiling, tree_share, tree_root_unresolved) = match &tree.term {
+        WaveTreeTerm::NotInTree => (ceiling, None, false),
         WaveTreeTerm::RootUnresolved => {
             // Fail closed. A broken parent link, a cycle, or an over-deep chain
             // means we cannot name the budget this wave draws from; treating
             // "no resolvable tree" as "no tree constraint" would leave a whole
             // subtree unbounded, which is the one outcome the tree bound exists
             // to prevent.
-            let mut verdicts = tree_root_unresolved_verdicts(declarations, block_local_diags);
-            if include_read_state {
-                attach_task_read_state(&state.task_read_state, wave_id, &mut verdicts);
-            }
-            return Ok(verdicts);
+            (0, None, true)
         }
-        WaveTreeTerm::Share(share) => (ceiling.min(share.share), Some(share.clone())),
+        WaveTreeTerm::Share(share) => (ceiling.min(share.share), Some(share.clone()), false),
     };
     let require_gates = state.require_gates;
     let source_cove = state.source_cove;
@@ -635,6 +607,9 @@ pub async fn evaluate_schedulability(
             .get(declaration.block_index.unwrap_or(usize::MAX))
             .cloned()
             .unwrap_or_default();
+        if tree_root_unresolved {
+            diagnostics.push(tree_root_unresolved_diagnostic());
+        }
         for (_, dependency) in unknown.iter().filter(|(key, _)| key == &declaration.key) {
             diagnostics.push(Diagnostic::coded(
                 "unknown_dependency",

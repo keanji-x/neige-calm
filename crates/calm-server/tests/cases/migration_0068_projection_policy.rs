@@ -13,6 +13,8 @@ const MIGRATION_0069: &str =
 const MIGRATION_0070: &str =
     include_str!("../../../calm-truth/migrations/0070_task_context_withdrawal_and_verify.sql");
 const MIGRATION_0071: &str = include_str!("../../../calm-truth/migrations/0071_sub_wave_tree.sql");
+const MIGRATION_0072: &str =
+    include_str!("../../../calm-truth/migrations/0072_wave_tree_task_budget.sql");
 
 async fn apply(pool: &SqlitePool, sql: &str) {
     let clean = sql
@@ -70,6 +72,7 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
     apply(&pool, MIGRATION_0069).await;
     apply(&pool, MIGRATION_0070).await;
     apply(&pool, MIGRATION_0071).await;
+    apply(&pool, MIGRATION_0072).await;
 
     let declaration = TaskDeclaration {
         block_index: Some(0),

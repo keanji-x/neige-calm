@@ -235,21 +235,35 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
         // "ceiling reached" would send the reader to raise this wave's ceiling,
         // which changes nothing — so the sentence names the root wave, the
         // budget, how many waves share it, and this wave's slice.
-        "tree_budget_exhausted" => format!(
-            "the whole wave tree rooted at `{}` shares a tree_task_budget of {}, split across {} \
-             wave(s); this wave's slice of {} is used up, so no further spec task is queued here \
-             — raise tree_task_budget on the root wave, or let tasks elsewhere in the tree finish",
-            arg(args, "root_wave_id"),
-            args.get("tree_task_budget")
+        "tree_budget_exhausted" => {
+            let root = arg(args, "root_wave_id");
+            let budget = args
+                .get("tree_task_budget")
                 .and_then(Value::as_i64)
-                .unwrap_or_default(),
-            args.get("tree_waves")
+                .unwrap_or_default();
+            let waves = args
+                .get("tree_waves")
                 .and_then(Value::as_i64)
-                .unwrap_or_default(),
-            args.get("share")
+                .unwrap_or_default();
+            let share = args
+                .get("share")
                 .and_then(Value::as_i64)
-                .unwrap_or_default()
-        ),
+                .unwrap_or_default();
+            if share == 0 {
+                format!(
+                    "the wave tree rooted at `{root}` has {waves} wave(s) but a tree_task_budget \
+                     of {budget}, so this wave receives a zero task share — raise tree_task_budget \
+                     on the root wave or remove extra child waves"
+                )
+            } else {
+                format!(
+                    "the whole wave tree rooted at `{root}` shares a tree_task_budget of {budget}, \
+                     split across {waves} wave(s); this wave's slice of {share} is used up, so no \
+                     further spec task is queued here — raise tree_task_budget on the root wave or \
+                     let an in-flight task in this wave finish"
+                )
+            }
+        }
         "tree_root_unresolved" => {
             "this wave belongs to a wave tree whose root cannot be resolved (a broken parent link, \
              a cycle, or a chain deeper than the limit), so its share of the tree budget is \
@@ -866,6 +880,28 @@ mod tests {
             let diagnostic = Diagnostic::coded(code, path, BTreeMap::new(), vec![], None, None);
             assert_eq!(diagnostic.path, path, "path drifted for {code}");
         }
+    }
+
+    #[test]
+    fn tree_root_unresolved_always_has_human_copy_and_a_next_action() {
+        let diagnostic = Diagnostic::coded(
+            "tree_root_unresolved",
+            "key",
+            BTreeMap::new(),
+            vec![],
+            None,
+            Some("repair_wave_tree".into()),
+        );
+        assert!(
+            diagnostic.message.contains("root"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("repair or delete"),
+            "{}",
+            diagnostic.message
+        );
     }
 
     #[test]
