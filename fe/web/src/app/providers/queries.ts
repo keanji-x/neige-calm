@@ -70,6 +70,12 @@ export function serverVersionOperation(): ApiOperation<ServerVersionInfo> {
   return { method: 'GET', path: '/api/version', responseSchema: serverVersionSchema };
 }
 
+/** Sign-out is a server-side session kill; the caller reloads afterwards so
+ *  every persisted cache restarts from an unauthenticated probe. */
+export function logoutOperation(): ApiOperation<undefined> {
+  return { method: 'POST', path: '/api/auth/logout', responseSchema: z.undefined() };
+}
+
 // ---------- reads ----------
 
 export function coveListQueryOptions(transport: ApiTransportPort) {

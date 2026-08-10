@@ -37,4 +37,20 @@
     margin: 0;
     font-family: var(--font-mono);
   }
+
+  .back {
+    align-self: start;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: var(--surface-chip);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .back:hover {
+    background: var(--overlay-hover);
+  }
 }

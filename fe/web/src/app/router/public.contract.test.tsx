@@ -38,21 +38,21 @@ function routeByPath(tree: ReturnType<typeof createRouteTree>, path: string) {
 describe('INV-APP-084 the index loader primes coves and nothing else', () => {
   it('issues exactly one request — the coves list — when the loader runs', async () => {
     const { transport, paths } = recordingTransport();
-    const tree = createRouteTree({ transport, client: new QueryClient() });
+    const tree = createRouteTree({ transport, client: new QueryClient(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
     expect(paths).toEqual(['/api/coves']);
   });
 
   it('leaves the cove → waves fan-out off the loader so one slow cove cannot block the commit', async () => {
     const { transport, paths } = recordingTransport();
-    const tree = createRouteTree({ transport, client: new QueryClient() });
+    const tree = createRouteTree({ transport, client: new QueryClient(), onSignOut: () => undefined });
     await routeByPath(tree, '/').options.loader?.();
     expect(paths.filter((path) => path.endsWith('/waves'))).toEqual([]);
   });
 
   it('gives the other routes no loader at all', () => {
     const { transport } = recordingTransport();
-    const tree = createRouteTree({ transport, client: new QueryClient() });
+    const tree = createRouteTree({ transport, client: new QueryClient(), onSignOut: () => undefined });
     for (const path of ['/cove/$coveId', '/wave/$waveId', '/settings']) {
       expect(routeByPath(tree, path).options.loader).toBeUndefined();
     }
@@ -62,7 +62,7 @@ describe('INV-APP-084 the index loader primes coves and nothing else', () => {
 describe('route registration', () => {
   it('registers the four product routes', () => {
     const { transport } = recordingTransport();
-    const tree = createRouteTree({ transport, client: new QueryClient() });
+    const tree = createRouteTree({ transport, client: new QueryClient(), onSignOut: () => undefined });
     const paths = (tree.children as { options: { path?: string } }[]).map((child) => child.options.path);
     expect(paths).toEqual(['/', '/cove/$coveId', '/wave/$waveId', '/settings']);
   });

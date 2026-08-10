@@ -37,3 +37,19 @@ export function useGo(): (target: NavTarget) => void {
 export function useCurrentPath(): string {
   return useRouterState({ select: (state) => state.location.pathname });
 }
+
+/**
+ * Reads a single path segment straight off the URL.
+ *
+ * TanStack's `useParams({ strict: false })` widens to `any` outside a typed
+ * route context, which the `no-unsafe-*` rules reject — and silencing them
+ * would hand every route component an unchecked id. Parsing here keeps the id
+ * a `string` and keeps the prefix table next to `pathFor`, so the two cannot
+ * drift apart.
+ */
+export function useRouteParam(prefix: '/cove/' | '/wave/'): string | undefined {
+  const path = useCurrentPath();
+  if (!path.startsWith(prefix)) return undefined;
+  const segment = path.slice(prefix.length).split('/', 1)[0];
+  return segment === '' ? undefined : decodeURIComponent(segment);
+}

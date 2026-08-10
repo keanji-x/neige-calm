@@ -39,6 +39,12 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         waves={waves}
         currentPath={props.currentPath ?? '/'}
         onGo={props.onGo ?? vi.fn()}
+        onCreateCove={props.onCreateCove ?? vi.fn()}
+        onDeleteCove={props.onDeleteCove ?? vi.fn()}
+        onSetPinned={props.onSetPinned ?? vi.fn()}
+        onDeleteWave={props.onDeleteWave ?? vi.fn()}
+        onOpenSettings={props.onOpenSettings ?? vi.fn()}
+        onSignOut={props.onSignOut ?? vi.fn()}
       />
     </ThemeProvider>,
   );
@@ -67,6 +73,38 @@ describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => 
   it('drops a section entirely when it is empty rather than reordering the rest', () => {
     renderSidebar({ waves: [wave()] });
     expect(screen.getAllByRole('heading').map((node) => node.textContent)).toEqual(['Coves']);
+  });
+});
+
+describe('INV-SIDEBAR-012 the pin button is always in the accessibility tree', () => {
+  // The *visual* reveal (opacity 0 until hover, opacity 1 once pinned) is CSS in
+  // `features/wave/row/row.module.css` and is a `browser`-tier concern: jsdom
+  // does not apply CSS Modules, so this test cannot prove it. What it can prove
+  // — and what actually breaks touch users if it regresses — is that the control
+  // exists and is reachable in both states, carrying its pressed state.
+  it('exposes a pressed-state pin control for pinned and unpinned waves alike', () => {
+    renderSidebar({
+      waves: [wave({ id: 'u', title: 'Loose' }), wave({ id: 'p', title: 'Stuck', pinnedAt: 10 })],
+    });
+    const unpinned = screen.getByRole('button', { name: 'Pin Loose' });
+    expect(unpinned.getAttribute('aria-pressed')).toBe('false');
+    // The pinned wave renders twice (Pinned section + cove list); both carry it.
+    const pinned = screen.getAllByRole('button', { name: 'Unpin Stuck' });
+    expect(pinned).toHaveLength(2);
+    for (const node of pinned) expect(node.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('E2E-INV-SHELL-003 the kernel system cove never reaches the rail', () => {
+  it('renders zero cove rows for a workspace whose only cove is a system cove', () => {
+    renderSidebar({
+      coves: [cove({ id: 'sys', name: 'System', kind: 'system' })],
+      waves: [wave({ id: 'k', coveId: 'sys', title: 'Kernel' })],
+      wavesByCove: new Map([['sys', [wave({ id: 'k', coveId: 'sys', title: 'Kernel' })]]]),
+    });
+    expect(screen.queryByRole('button', { name: /^System/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Wave Kernel/ })).toBeNull();
+    expect(screen.getByText('No coves yet.')).toBeTruthy();
   });
 });
 

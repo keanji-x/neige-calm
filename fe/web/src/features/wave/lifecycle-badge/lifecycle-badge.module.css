@@ -1,0 +1,62 @@
+@layer features {
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding-block: var(--space-1);
+    padding-inline: var(--space-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
+    color: var(--text-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    white-space: nowrap;
+  }
+
+  .compact {
+    gap: var(--space-0);
+    padding-inline: var(--space-1);
+  }
+
+  .dot {
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--text-4);
+    flex: none;
+  }
+
+  .label {
+    letter-spacing: var(--tracking-wide);
+  }
+
+  .attention {
+    border-color: var(--warn-border);
+    background: var(--warn-soft);
+    color: var(--warn);
+  }
+
+  .attention .dot {
+    background: var(--warn);
+  }
+
+  .running {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  .running .dot {
+    background: var(--accent);
+  }
+
+  .neutral {
+    color: var(--text-3);
+  }
+
+  .neutral .dot {
+    background: var(--text-4);
+  }
+}
