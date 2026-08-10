@@ -1,0 +1,56 @@
+/* Element reset. Declared in the layer order since day one but never
+   implemented — the app rendered on UA defaults, which is why a stray
+   `body { margin: 8px }` framed the dark theme in white and every
+   `font: inherit` control inherited Times New Roman at 16px. */
+@layer reset {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    min-block-size: 100dvh;
+  }
+
+  /* Headings and lists carry UA margins that fight every flex/grid gap in
+     the app. The gap is the layout tool here; margins are opt-in. */
+  h1, h2, h3, h4, h5, h6,
+  p, figure, blockquote, dl, dd, ol, ul {
+    margin: 0;
+  }
+
+  ol, ul {
+    padding: 0;
+    list-style: none;
+  }
+
+  /* Controls do not inherit typography by default; without this every
+     button silently falls back to the UA font stack and size. */
+  button, input, select, textarea, optgroup {
+    font: inherit;
+    color: inherit;
+    letter-spacing: inherit;
+  }
+
+  button {
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  img, svg, video, canvas {
+    display: block;
+    max-inline-size: 100%;
+  }
+
+  table {
+    border-collapse: collapse;
+  }
+}

@@ -1,0 +1,72 @@
+/* Typographic and interaction baseline: the smallest set of global
+   declarations every surface may assume. Component styling belongs to the
+   `ui` / `features` layers, not here. */
+@layer base {
+  /*
+   * `color-scheme` must be declared in CSS, not assigned through
+   * `element.style.colorScheme`. Two things depend on it:
+   *   - native UI (scrollbars, form controls, caret) follows the theme;
+   *   - Lightning CSS, which Vite uses to minify, lowers `light-dark()`
+   *     into a `var(--lightningcss-light/dark)` switch that is keyed on a
+   *     CSS `color-scheme` declaration. A JS-assigned value never arms it,
+   *     so every `light-dark()` colour in a dependency resolves to nothing
+   *     and the element renders transparent. Verified against a production
+   *     build; a dev server does not minify, so this cannot be caught there.
+   */
+  :root[data-theme='light'] { color-scheme: light; }
+  :root[data-theme='dark'] { color-scheme: dark; }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-base);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Weight is a hierarchy channel; UA defaults wire heading weight to
+     element name, which is why every heading looked identical once the
+     components set `font: inherit`. Roles set weight explicitly. */
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  code, kbd, samp, pre {
+    font-family: var(--font-mono);
+    font-size: 1em;
+  }
+
+  /* One focus recipe for the whole app. A component may restyle it, but it
+     may not remove it: with no rule here every control fell back to
+     Chromium's `outline: auto 1px rgb(16,16,16)`, a constant that ignores
+     the theme and disappears on dark surfaces. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  :where(button, [role='button'], a, summary):focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

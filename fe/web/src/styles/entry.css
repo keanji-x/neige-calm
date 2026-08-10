@@ -1,4 +1,9 @@
 @layer reset, vendor, tokens, base, astryx, ui, features, overrides;
 
+@import "./reset.css" layer(reset);
 @import "./tokens.css" layer(tokens);
+@import "./base.css" layer(base);
+/* vendor.css must precede astryx-theme.css: both land in the `astryx`
+   layer, and sublayer precedence follows first appearance. */
 @import "./vendor.css" layer(astryx);
+@import "./astryx-theme.css" layer(astryx);
