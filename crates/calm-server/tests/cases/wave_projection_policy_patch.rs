@@ -193,7 +193,11 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
     assert_eq!(tree_budget(&repo, &wave_id).await, None);
     let before = event_count(&repo).await;
 
-    // Non-user actors are refused, with no row and no event.
+    // Non-user actors are refused, with no row and no event. The REASON is
+    // asserted, not just the status: an `ai:codex` REST request is also
+    // refused further downstream (its legacy header path carries an empty
+    // card id), so a bare 403 assertion here would stay green with the
+    // user-only gate deleted.
     let response = patch(
         state.clone(),
         &wave_id,
@@ -202,6 +206,14 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(response.into_body(), 65536)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&body);
+    assert!(
+        body.contains("tree_task_budget") && body.contains("user-only"),
+        "403 must come from the user-only policy gate, got {body}"
+    );
     assert_eq!(tree_budget(&repo, &wave_id).await, None);
     assert_eq!(event_count(&repo).await, before);
 
@@ -217,7 +229,13 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
     assert_eq!(tree_budget(&repo, &wave_id).await, None);
 
     // A budget-only patch is NOT short-circuited as an empty patch.
-    let response = patch(state.clone(), &wave_id, None, json!({"tree_task_budget": 8})).await;
+    let response = patch(
+        state.clone(),
+        &wave_id,
+        None,
+        json!({"tree_task_budget": 8}),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(tree_budget(&repo, &wave_id).await, Some(8));
     assert_eq!(event_count(&repo).await, before + 1);

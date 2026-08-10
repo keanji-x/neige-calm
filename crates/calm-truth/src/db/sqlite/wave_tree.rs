@@ -208,7 +208,9 @@ pub async fn wave_tree_term(
     // Poisoned data: a member deeper than the legal bound, or a tree that does
     // not contain the wave we started from. Both mean the shape we would
     // divide the budget over is not the shape the wave actually lives in.
-    let over_deep = members.iter().any(|(_, depth)| *depth > MAX_WAVE_TREE_DEPTH);
+    let over_deep = members
+        .iter()
+        .any(|(_, depth)| *depth > MAX_WAVE_TREE_DEPTH);
     let index = members.iter().position(|(id, _)| id == wave_id);
     let (Some(index), false) = (index, over_deep) else {
         return Ok(WaveTreeTermOutcome {

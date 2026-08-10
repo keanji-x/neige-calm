@@ -25,9 +25,7 @@ pub const CHILD_WAVE_KIND: &str = "child-wave";
 /// share the same fragments AND the same static gate. Re-exported here
 /// because the tree depth bound is part of this adapter's public contract.
 pub use calm_truth::db::sqlite::{MAX_WAVE_TREE_DEPTH, WAVE_ROOT_DEPTH_SQL};
-use calm_truth::db::sqlite::{
-    WAVE_BOUNDED_PATH_SQL, wave_tree_budget, wave_tree_spec_inventory,
-};
+use calm_truth::db::sqlite::{WAVE_BOUNDED_PATH_SQL, wave_tree_budget, wave_tree_spec_inventory};
 
 const CHILD_WAVE_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -155,8 +153,8 @@ impl ProviderAdapter for ChildWaveAdapter {
         // so `>=` (not `>`) is the right comparison: admitting a child at
         // `count == budget` would let the tree grow past its bound before any
         // schedulability verdict could see it.
-        let budget = wave_tree_budget(&mut **tx, &root_id).await?;
-        let inventory = wave_tree_spec_inventory(&mut **tx, &root_id).await?;
+        let budget = wave_tree_budget(tx, &root_id).await?;
+        let inventory = wave_tree_spec_inventory(tx, &root_id).await?;
         if inventory >= budget {
             return Err(CalmError::Conflict(format!(
                 "sub-wave-tree-budget-exhausted: wave tree rooted at {root_id} holds {inventory} \

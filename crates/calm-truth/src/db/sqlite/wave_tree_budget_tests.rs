@@ -188,19 +188,21 @@ async fn every_created_wave_lands_a_null_tree_task_budget() {
     link(&repo, &child, &root).await;
 
     for wave in [&root, &child] {
-        let budget: Option<i64> = sqlx::query_scalar("SELECT tree_task_budget FROM waves WHERE id=?1")
-            .bind(wave)
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
+        let budget: Option<i64> =
+            sqlx::query_scalar("SELECT tree_task_budget FROM waves WHERE id=?1")
+                .bind(wave)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
         assert_eq!(budget, None, "wave {wave} must be born without a budget");
     }
     // And the column has no DB DEFAULT that a future INSERT could fall into.
-    let default: Option<String> =
-        sqlx::query_scalar("SELECT dflt_value FROM pragma_table_info('waves') WHERE name='tree_task_budget'")
-            .fetch_one(repo.pool())
-            .await
-            .unwrap();
+    let default: Option<String> = sqlx::query_scalar(
+        "SELECT dflt_value FROM pragma_table_info('waves') WHERE name='tree_task_budget'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
     assert_eq!(default, None);
 }
 
@@ -402,7 +404,9 @@ async fn projecting_the_same_document_twice_inside_a_tree_is_identical() {
     let diags = vec![Vec::new(); decls.len()];
 
     let mut tx = repo.pool().begin().await.unwrap();
-    let first = project_tasks_tx(&mut tx, &root, &decls, &diags).await.unwrap();
+    let first = project_tasks_tx(&mut tx, &root, &decls, &diags)
+        .await
+        .unwrap();
     tx.commit().await.unwrap();
     let after_first = task_bytes(&repo).await;
 

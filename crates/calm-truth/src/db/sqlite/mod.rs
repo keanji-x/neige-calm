@@ -410,11 +410,11 @@ mod tests;
 #[cfg(test)]
 mod sub_wave_tree_tests;
 #[cfg(test)]
-mod wave_tree_budget_tests;
-#[cfg(test)]
 mod task_context_migration_tests;
 #[cfg(test)]
 mod task_liveness_deadline_tests;
+#[cfg(test)]
+mod wave_tree_budget_tests;
 
 #[cfg(test)]
 mod workspace_lease_lookup_tests;

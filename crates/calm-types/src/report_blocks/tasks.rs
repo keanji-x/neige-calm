@@ -246,7 +246,9 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
             args.get("tree_waves")
                 .and_then(Value::as_i64)
                 .unwrap_or_default(),
-            args.get("share").and_then(Value::as_i64).unwrap_or_default()
+            args.get("share")
+                .and_then(Value::as_i64)
+                .unwrap_or_default()
         ),
         "tree_root_unresolved" => {
             "this wave belongs to a wave tree whose root cannot be resolved (a broken parent link, \

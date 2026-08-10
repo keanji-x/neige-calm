@@ -905,7 +905,10 @@ pub async fn evaluate_schedulability(
                 "tree_budget_exhausted",
                 "key",
                 diagnostic_args([
-                    ("root_wave_id", serde_json::Value::String(share.root_id.clone())),
+                    (
+                        "root_wave_id",
+                        serde_json::Value::String(share.root_id.clone()),
+                    ),
                     ("tree_task_budget", serde_json::Value::from(share.budget)),
                     ("tree_waves", serde_json::Value::from(share.members)),
                     ("share", serde_json::Value::from(share.share)),
