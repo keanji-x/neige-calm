@@ -19,7 +19,15 @@ use super::{
 };
 
 pub const CHILD_WAVE_KIND: &str = "child-wave";
-pub const MAX_WAVE_TREE_DEPTH: i64 = 3;
+
+/// PR-B moved every bounded wave-tree walk into one module in `calm-truth`,
+/// so the schedulability predicate (which lives there) and this operation
+/// share the same fragments AND the same static gate. Re-exported here
+/// because the tree depth bound is part of this adapter's public contract.
+pub use calm_truth::db::sqlite::{MAX_WAVE_TREE_DEPTH, WAVE_ROOT_DEPTH_SQL};
+use calm_truth::db::sqlite::{
+    WAVE_BOUNDED_PATH_SQL, wave_tree_budget, wave_tree_spec_inventory,
+};
 
 const CHILD_WAVE_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -28,33 +36,6 @@ const CHILD_WAVE_PHASES: &[PhaseTag] = &[
     PhaseTag::SpawnSucceeded,
     PhaseTag::Succeeded,
 ];
-
-/// Both ancestor queries must expand this exact bounded fragment. `UNION`
-/// cannot terminate a CTE carrying depth; the depth predicate is the only
-/// cycle-termination guarantee.
-macro_rules! bounded_wave_ancestor_cte {
-    () => {
-        r#"
-WITH RECURSIVE up(id, parent_wave_id, depth) AS (
-  SELECT id, parent_wave_id, 0 FROM waves WHERE id = ?1
-  UNION ALL
-  SELECT w.id, w.parent_wave_id, up.depth + 1
-    FROM waves w JOIN up ON w.id = up.parent_wave_id
-   WHERE up.depth <= ?2
-)
-"#
-    };
-}
-
-pub const WAVE_ROOT_DEPTH_SQL: &str = concat!(
-    bounded_wave_ancestor_cte!(),
-    "SELECT id AS root_id, depth AS parent_depth FROM up WHERE parent_wave_id IS NULL"
-);
-
-const WAVE_BOUNDED_PATH_SQL: &str = concat!(
-    bounded_wave_ancestor_cte!(),
-    "SELECT id, depth FROM up ORDER BY depth"
-);
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ChildWaveOperationPayload {
@@ -163,9 +144,24 @@ impl ProviderAdapter for ChildWaveAdapter {
         // action: a materialized frozen context may not create a child skeleton.
         refuse_if_context_stale(tx, Some(&payload.task_id)).await?;
 
-        let (_root_id, parent_depth) = root_and_depth(tx, &payload.parent_wave_id).await?;
+        let (root_id, parent_depth) = root_and_depth(tx, &payload.parent_wave_id).await?;
         if parent_depth >= MAX_WAVE_TREE_DEPTH {
             return Err(CalmError::Conflict("sub-wave-depth-exceeded".into()));
+        }
+
+        // Enforcement point one for the tree budget (#985 §8). The whole tree's
+        // non-terminal `declared_by='spec'` inventory — NOT this wave's — gates
+        // child creation. The claiming parent task is itself one of those rows,
+        // so `>=` (not `>`) is the right comparison: admitting a child at
+        // `count == budget` would let the tree grow past its bound before any
+        // schedulability verdict could see it.
+        let budget = wave_tree_budget(&mut **tx, &root_id).await?;
+        let inventory = wave_tree_spec_inventory(&mut **tx, &root_id).await?;
+        if inventory >= budget {
+            return Err(CalmError::Conflict(format!(
+                "sub-wave-tree-budget-exhausted: wave tree rooted at {root_id} holds {inventory} \
+                 unfinished spec task(s), at or over its tree_task_budget of {budget}"
+            )));
         }
 
         let parent: Option<(String, String)> =
@@ -494,11 +490,20 @@ mod tests {
         }
     }
 
+    /// Both fragments this adapter runs keep their only cycle-termination
+    /// guard AND are registered in the shared bounded-tree registry, which is
+    /// what the `calm-truth` static gate walks. Asserting membership (rather
+    /// than re-asserting the text) keeps a single gate authoritative while
+    /// still turning red if this adapter ever runs an unregistered walk.
     #[test]
     fn upward_cte_keeps_its_only_cycle_termination_guard() {
         for sql in [WAVE_ROOT_DEPTH_SQL, WAVE_BOUNDED_PATH_SQL] {
             assert!(sql.contains("WHERE up.depth <= ?2"));
             assert!(sql.contains("UNION ALL"));
+            assert!(
+                calm_truth::db::sqlite::BOUNDED_WAVE_TREE_SQL.contains(&sql),
+                "adapter runs an unregistered bounded-tree walk"
+            );
         }
     }
 

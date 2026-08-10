@@ -56,6 +56,7 @@ mod session_row;
 mod task;
 mod task_projection;
 mod wave;
+mod wave_tree;
 
 pub use card::{
     card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
@@ -113,6 +114,12 @@ pub use task_projection::{
     evaluate_schedulability, mark_context_material_tx, project_tasks_tx, task_delete_pending_tx,
 };
 pub use wave::{wave_create_tx, wave_delete_tx, wave_require_leaf_tx, wave_update_tx};
+pub use wave_tree::{
+    BOUNDED_WAVE_TREE_SQL, DEFAULT_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare,
+    WAVE_BOUNDED_PATH_SQL, WAVE_ROOT_DEPTH_SQL, WAVE_TREE_MEMBERS_SQL,
+    WAVE_TREE_SPEC_INVENTORY_SQL, WaveTreeTerm, WaveTreeTermOutcome, deterministic_share,
+    wave_tree_budget, wave_tree_spec_inventory, wave_tree_term,
+};
 
 use infra::check_no_unknown_future_migrations;
 
@@ -402,6 +409,8 @@ mod tests;
 
 #[cfg(test)]
 mod sub_wave_tree_tests;
+#[cfg(test)]
+mod wave_tree_budget_tests;
 #[cfg(test)]
 mod task_context_migration_tests;
 #[cfg(test)]

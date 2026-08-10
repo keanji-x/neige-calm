@@ -36,6 +36,8 @@ pub const TASK_DIAGNOSTIC_CODES: &[&str] = &[
     "context_stale_reference",
     "reference_chain_too_large",
     "spec_task_ceiling",
+    "tree_budget_exhausted",
+    "tree_root_unresolved",
 ];
 
 /// Stable producer contract used by §6.5 withdrawal decisions.
@@ -56,6 +58,8 @@ pub const TASK_DIAGNOSTIC_CODE_PATHS: &[(&str, &str)] = &[
     ("context_stale_reference", "refs"),
     ("reference_chain_too_large", "refs"),
     ("spec_task_ceiling", "key"),
+    ("tree_budget_exhausted", "key"),
+    ("tree_root_unresolved", "key"),
 ];
 
 pub fn json_eq(a: &str, b: &str) -> bool {
@@ -226,6 +230,30 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .and_then(Value::as_i64)
                 .unwrap_or_default()
         ),
+        // The cause of this one lives OUTSIDE the wave being read: it is the
+        // whole tree's budget, divided across the tree's waves. Saying only
+        // "ceiling reached" would send the reader to raise this wave's ceiling,
+        // which changes nothing — so the sentence names the root wave, the
+        // budget, how many waves share it, and this wave's slice.
+        "tree_budget_exhausted" => format!(
+            "the whole wave tree rooted at `{}` shares a tree_task_budget of {}, split across {} \
+             wave(s); this wave's slice of {} is used up, so no further spec task is queued here \
+             — raise tree_task_budget on the root wave, or let tasks elsewhere in the tree finish",
+            arg(args, "root_wave_id"),
+            args.get("tree_task_budget")
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+            args.get("tree_waves")
+                .and_then(Value::as_i64)
+                .unwrap_or_default(),
+            args.get("share").and_then(Value::as_i64).unwrap_or_default()
+        ),
+        "tree_root_unresolved" => {
+            "this wave belongs to a wave tree whose root cannot be resolved (a broken parent link, \
+             a cycle, or a chain deeper than the limit), so its share of the tree budget is \
+             unknown and nothing is queued here — repair or delete the offending sub-wave link"
+                .into()
+        }
         _ => arg(args, "detail").into(),
     }
 }
@@ -814,6 +842,8 @@ mod tests {
             ("context_stale_reference", "refs"),
             ("reference_chain_too_large", "refs"),
             ("spec_task_ceiling", "key"),
+            ("tree_budget_exhausted", "key"),
+            ("tree_root_unresolved", "key"),
         ];
         assert_eq!(TASK_DIAGNOSTIC_CODE_PATHS, expected_paths);
         let expected = TASK_DIAGNOSTIC_CODES

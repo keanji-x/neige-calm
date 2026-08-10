@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
+use super::wave_tree::WaveTreeTerm;
 use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 
@@ -532,6 +533,45 @@ async fn wave_projection_state(
 /// `begin_immediate_tx` would also be cycle-free and fully consistent, but it
 /// takes the writer slot and would serialize this read against every writer
 /// on production too — a real production cost for a non-production gap.
+/// Every declaration of a wave whose tree root cannot be resolved is
+/// unschedulable, with a diagnostic that says so. Deliberately NOT "skip the
+/// tree term when there is no tree": one broken link would then exempt an
+/// entire subtree from the bound.
+fn tree_root_unresolved_verdicts(
+    declarations: &[TaskDeclaration],
+    block_local_diags: &[Vec<Diagnostic>],
+) -> Vec<BlockVerdict> {
+    declarations
+        .iter()
+        .map(|declaration| {
+            let mut diagnostics = block_local_diags
+                .get(declaration.block_index.unwrap_or(usize::MAX))
+                .cloned()
+                .unwrap_or_default();
+            diagnostics.push(Diagnostic::coded(
+                "tree_root_unresolved",
+                "key",
+                BTreeMap::new(),
+                vec![],
+                None,
+                Some("repair_wave_tree".into()),
+            ));
+            BlockVerdict {
+                block_id: declaration.block_id.clone(),
+                key: declaration.key.clone(),
+                schedulable: false,
+                status: None,
+                gate_result: None,
+                worker_card_id: None,
+                child_wave_id: None,
+                child_wave_deleted: None,
+                diagnostics,
+                withdrawal: None,
+            }
+        })
+        .collect()
+}
+
 pub async fn evaluate_schedulability(
     conn: &mut SqliteConnection,
     wave_id: &str,
@@ -541,7 +581,34 @@ pub async fn evaluate_schedulability(
 ) -> Result<Vec<BlockVerdict>> {
     let state = wave_projection_state(&mut *conn, wave_id, include_read_state).await?;
     let configured_policy = state.policy;
+    // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
+    // share)` where `share` is this wave's deterministic slice of the root's
+    // `tree_task_budget`, split over the tree's waves in `(created_at, id)`
+    // order. Its three inputs — this wave's document, this wave's in-flight
+    // rows, and the tree's SHAPE — are all outside the projection's own output
+    // set, so the tree term cannot make the projection depend on `pending`
+    // rows. That is what keeps "rebuild ≡ incremental" (D.1 #11) true on a
+    // tree, and it is why this is a quota split rather than a shared count of
+    // sibling rows: shared counting is first-come-first-served, hence
+    // path-dependent, hence not reconstructible by a rebuild.
+    let tree = super::wave_tree::wave_tree_term(&mut *conn, wave_id).await?;
     let ceiling = state.ceiling;
+    let (effective_ceiling, tree_share) = match &tree.term {
+        WaveTreeTerm::NotInTree => (ceiling, None),
+        WaveTreeTerm::RootUnresolved => {
+            // Fail closed. A broken parent link, a cycle, or an over-deep chain
+            // means we cannot name the budget this wave draws from; treating
+            // "no resolvable tree" as "no tree constraint" would leave a whole
+            // subtree unbounded, which is the one outcome the tree bound exists
+            // to prevent.
+            let mut verdicts = tree_root_unresolved_verdicts(declarations, block_local_diags);
+            if include_read_state {
+                attach_task_read_state(&state.task_read_state, wave_id, &mut verdicts);
+            }
+            return Ok(verdicts);
+        }
+        WaveTreeTerm::Share(share) => (ceiling.min(share.share), Some(share.clone())),
+    };
     let require_gates = state.require_gates;
     let source_cove = state.source_cove;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
@@ -554,7 +621,7 @@ pub async fn evaluate_schedulability(
         .iter()
         .filter(|r| r.declared_by == "spec" && r.origin == "block")
         .count() as i64;
-    let capacity = ceiling.saturating_sub(occupied).max(0) as usize;
+    let capacity = effective_ceiling.saturating_sub(occupied).max(0) as usize;
 
     let unknown: BTreeSet<_> = unknown_deps(declarations, &inflight_keys)
         .into_iter()
@@ -823,22 +890,53 @@ pub async fn evaluate_schedulability(
         })
         .map(|(_, declaration)| declaration.block_id.clone())
         .collect();
+    // Attribution matters here (§12.2 C: every diagnostic owes the reader a
+    // plain sentence AND a next action). When the binding constraint is the
+    // tree's shared budget rather than this wave's own ceiling, saying
+    // "spec task ceiling reached" sends the reader to raise a ceiling that is
+    // not what stopped them — the cause lives in a DIFFERENT wave's budget.
+    let tree_bound = tree_share
+        .as_ref()
+        .filter(|share| share.share < ceiling)
+        .cloned();
     for index in candidates.into_iter().skip(capacity) {
-        verdicts[index].diagnostics.push(Diagnostic::coded(
-            "spec_task_ceiling",
-            "key",
-            diagnostic_args([
-                ("ceiling", serde_json::Value::from(ceiling)),
-                ("occupied", serde_json::Value::from(occupied)),
-                (
-                    "admission_order",
-                    serde_json::Value::String("document order, then key".into()),
-                ),
-            ]),
-            admitted_ids.clone(),
-            Some(wave_id.into()),
-            Some("raise_spec_task_ceiling".into()),
-        ));
+        let diagnostic = match &tree_bound {
+            Some(share) => Diagnostic::coded(
+                "tree_budget_exhausted",
+                "key",
+                diagnostic_args([
+                    ("root_wave_id", serde_json::Value::String(share.root_id.clone())),
+                    ("tree_task_budget", serde_json::Value::from(share.budget)),
+                    ("tree_waves", serde_json::Value::from(share.members)),
+                    ("share", serde_json::Value::from(share.share)),
+                    ("ceiling", serde_json::Value::from(ceiling)),
+                    ("occupied", serde_json::Value::from(occupied)),
+                    (
+                        "admission_order",
+                        serde_json::Value::String("document order, then key".into()),
+                    ),
+                ]),
+                admitted_ids.clone(),
+                Some(share.root_id.clone()),
+                Some("raise_tree_task_budget".into()),
+            ),
+            None => Diagnostic::coded(
+                "spec_task_ceiling",
+                "key",
+                diagnostic_args([
+                    ("ceiling", serde_json::Value::from(ceiling)),
+                    ("occupied", serde_json::Value::from(occupied)),
+                    (
+                        "admission_order",
+                        serde_json::Value::String("document order, then key".into()),
+                    ),
+                ]),
+                admitted_ids.clone(),
+                Some(wave_id.into()),
+                Some("raise_spec_task_ceiling".into()),
+            ),
+        };
+        verdicts[index].diagnostics.push(diagnostic);
         verdicts[index].schedulable = false;
     }
     if include_read_state {

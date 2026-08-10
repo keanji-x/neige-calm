@@ -1218,11 +1218,13 @@ pub(crate) async fn update_wave(
     // Issue #985 — wave-level automation controls are human decisions.
     // Reject non-user actors before entering the eventized write so neither
     // the row nor a WaveUpdated event can land.
-    if (p.spec_task_ceiling.is_some() || p.automation_policy.is_some())
+    if (p.spec_task_ceiling.is_some()
+        || p.automation_policy.is_some()
+        || p.tree_task_budget.is_some())
         && !matches!(actor_id, ActorId::User)
     {
         return Err(CalmError::Forbidden(
-            "automation_policy and spec_task_ceiling are user-only".into(),
+            "automation_policy, spec_task_ceiling and tree_task_budget are user-only".into(),
         ));
     }
 
@@ -1276,6 +1278,16 @@ pub(crate) async fn update_wave(
             "spec_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
         )));
     }
+    // Issue #985 slice 6 PR-B — same shape as `spec_task_ceiling`. 0 is legal
+    // ("no new spec inventory anywhere in this tree"); the root-only rule is
+    // enforced inside `wave_update_tx`, which every writer shares.
+    if let Some(Some(budget)) = p.tree_task_budget
+        && budget < 0
+    {
+        return Err(CalmError::BadRequest(format!(
+            "tree_task_budget must be >= 0 (got {budget}); pass null to reset to the kernel default"
+        )));
+    }
     if let Some(Some(policy)) = &p.automation_policy
         && !matches!(policy.as_str(), "auto-declare" | "declare-and-wait")
     {
@@ -1295,7 +1307,8 @@ pub(crate) async fn update_wave(
         || p.task_budget.is_some()
         || p.require_task_gates.is_some()
         || p.spec_task_ceiling.is_some()
-        || p.automation_policy.is_some();
+        || p.automation_policy.is_some()
+        || p.tree_task_budget.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
         return Ok(Json(existing));
     }
@@ -1307,7 +1320,14 @@ pub(crate) async fn update_wave(
     // row shape. Both share scope + actor; both land or neither does.
     let cove_id_for_event = existing.cove_id.clone();
     let wave_id_for_event = existing.id.clone();
-    let projection_policy_changed = p.spec_task_ceiling.is_some() || p.automation_policy.is_some();
+    // `tree_task_budget` joins this set: it feeds the tree term of the
+    // schedulability predicate, so the patched wave must re-project in the same
+    // transaction. The rest of the tree converges at its own next projection —
+    // the approved "ceiling lowered below current inventory" degradation
+    // (doc-as-plan §4.2), not a new semantic.
+    let projection_policy_changed = p.spec_task_ceiling.is_some()
+        || p.automation_policy.is_some()
+        || p.tree_task_budget.is_some();
     let p_for_tx = p.clone();
     let (wave, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
