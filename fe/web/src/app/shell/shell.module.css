@@ -123,29 +123,42 @@
   }
 
   /*
-   * THE VERTICAL SCALE. One rule, four values, no per-case tuning:
+   * THE VERTICAL SCALE.
    *
-   *     every container declares exactly one `gap`,
-   *     and it is half its parent container's.
+   * The rule is about *optical* distance, not about DOM depth, and it is one
+   * line:
    *
-   *   .rail         block  <-> block   --space-8   16px   sections
-   *   .coveGroups   group  <-> group   --space-4    8px   cove groups
-   *   .section      label  <-> content --space-2    4px   a heading and its list
-   *   .coveGroup    label  <-> content --space-2    4px   ditto, one level down
-   *   .sectionRows  item   <-> item    --space-1    2px   rows
-   *   .waveList     item   <-> item    --space-1    2px   rows
+   *     text-to-text distance must increase monotonically
+   *     with the size of the structural break.
    *
-   * 16 / 8 / 4 / 2 is a doubling scale, which is what makes each boundary
-   * legible instead of merely different — a 1.2x step reads as a mistake, a 2x
-   * step reads as structure. Every value is a §2.3 token, and three of them are
-   * §2.3's own stated pairings (列表项之间 --space-1, 段标签到它第一行
-   * --space-2, 区块之间 the block tier). Nothing here is chosen by eye.
+   * Two Gestalt consequences it has to satisfy, and both are checkable:
+   *   - a heading sits CLOSER to its own content than that content sits to
+   *     itself, otherwise it reads as one more row;
+   *   - a break between groups exceeds any break inside one.
    *
-   * "A heading sits closer to what it heads than to what precedes it" is not a
-   * separate rule that needs its own numbers — it falls out. A label's gap
-   * below is its own container's; its gap above is its parent's, which is
-   * twice as large by construction. Section labels come out at 16 above / 4
-   * below, cove names at 8 above / 4 below.
+   * Measured, at 12.5px/--leading-tight in 24px rows and 11px/--leading-none in
+   * a 24px label slot:
+   *
+   *   cove name  -> its first wave    --space-0    0px   ->  9.6px
+   *   row        -> row               --space-1    2px   -> 11.6px
+   *   section lb -> its first row     --space-2    4px   -> 15.3px
+   *   cove group -> cove group        --space-6   12px   -> 21.6px
+   *   section    -> section           --space-8   16px   -> 27.3px
+   *
+   * 9.6 < 11.6 < 15.3 < 21.6 < 27.3. Monotonic, and each step is a clear jump
+   * rather than a nudge.
+   *
+   * The two zeroes-and-fours are not arbitrary and not interchangeable: a cove
+   * name gets 0 while a section label gets 4 because their boxes donate
+   * different amounts of their own leading (4.8px vs 6.5px). Equal gaps there
+   * would produce unequal distances, which is the whole reason this table is
+   * written in rendered pixels and not only in tokens.
+   *
+   * A previous round stated this as "every container's gap is half its
+   * parent's". That is a tidier sentence and it is wrong: it ranks by DOM
+   * nesting, and DOM nesting is not structural-break size. It handed the cove
+   * name the same 4px a section label gets, putting it 13.6px from its own
+   * first wave while the waves sat 11.6px apart — grouping stated backwards.
    *
    * Every step is a `gap` on the container that owns the relationship, never a
    * margin on a child. §2.3 requires both halves of that: "内容元素禁止纵向
@@ -153,11 +166,16 @@
    * verified by measuring one container) and "同一个组件不能在同一轴上既写 gap
    * 又给子元素写 margin".
    */
-  .section,
-  .coveGroup {
+  .section {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  .coveGroup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0);
   }
 
   .sectionRows,
@@ -170,7 +188,7 @@
   .coveGroups {
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
+    gap: var(--space-6);
   }
 
   .sectionHead {
