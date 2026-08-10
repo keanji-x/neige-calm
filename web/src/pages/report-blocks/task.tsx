@@ -14,7 +14,9 @@ function textArg(diagnostic: Diagnostic, key: string): string {
 }
 
 function RelatedBlocks({ diagnostic, waveId }: { diagnostic: Diagnostic; waveId?: string }) {
-  const actionLabel = diagnostic.action === 'raise_spec_task_ceiling' ? 'Review capacity' : 'Open related item';
+  const actionLabel = diagnostic.action === 'raise_spec_task_ceiling' || diagnostic.action === 'raise_tree_task_budget'
+    ? 'Review capacity'
+    : 'Open related item';
   if (diagnostic.relatedBlockIds.length === 0 && !diagnostic.relatedWaveId) return null;
   return (
     <span className="rb-task-related">
@@ -71,6 +73,8 @@ const taskDiagnosticCopy = Object.freeze({
   context_stale_declaration: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
   task_key_completed: () => 'This task key has already been delivered. Create a new task card with a new key for more work.',
   invalid_declaration: () => 'This task card is incomplete or invalid. Fix the highlighted task fields, then try again.',
+  tree_budget_exhausted: (d: Diagnostic) => `This wave is part of a group of ${String(d.messageArgs.tree_waves ?? '')} linked waves that share one AI-task limit of ${String(d.messageArgs.tree_task_budget ?? '')}, so this wave can hold ${String(d.messageArgs.share ?? '')}. The limit lives on the top wave of the group: raise it there, or wait for tasks elsewhere in the group to finish.`,
+  tree_root_unresolved: () => 'This wave is linked into a group of waves whose top wave cannot be found, so its share of the shared AI-task limit is unknown and nothing is queued here. Repair or remove the broken sub-wave link.',
 });
 
 export const taskDiagnosticCodes = Object.freeze(Object.keys(taskDiagnosticCopy));

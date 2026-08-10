@@ -6790,6 +6790,14 @@
               "string",
               "null"
             ]
+          },
+          "tree_task_budget": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a\nwave with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
           }
         }
       },

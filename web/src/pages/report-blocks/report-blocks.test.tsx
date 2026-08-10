@@ -882,7 +882,7 @@ describe('degraded blocks', () => {
     expect(declaration).not.toBeNull();
     const rustCodes = [...(declaration?.[1] ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
     expect(new Set(rustCodes)).toEqual(new Set(taskDiagnosticCodes));
-    expect(taskDiagnosticCodes).toHaveLength(16);
+    expect(taskDiagnosticCodes).toHaveLength(18);
   });
 
   it('keeps the task payload contract split between live declarations and tombstones', () => {

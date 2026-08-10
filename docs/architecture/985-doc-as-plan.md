@@ -1176,7 +1176,7 @@ wave 创建本来就是人的动作。
 | **并发** | `waves.task_budget`（既有，默认 1）| 同时在飞的任务数 |
 | **未结存量** | `waves.spec_task_ceiling`（默认 32）| 该 wave 内 `declared_by='spec'` 且 `origin='block'` 的**未结**行数 |
 | **树深度（PR-A）** | `waves.parent_wave_id` + `MAX_WAVE_TREE_DEPTH = 3` | 子 wave 递归展开深度 0..=3 |
-| **树级存量（PR-B）** | `waves.tree_task_budget`（默认 32）| 只约束 `declared_by='spec'` 的子树非终结存量 |
+| **树级存量（切片 6 PR-B，已交付）** | `waves.tree_task_budget`（`INTEGER NULL`，NULL ⇒ 内核默认 32，**只在树根有意义**）| 整棵树内 `declared_by='spec'` 的非终结存量 |
 
 **为什么并发容量挡不住存量**：`compute_ready` 算的是
 `capacity = budget - running_cost` 然后 `take` —— 一个失控的 spec 可以声明无界的
@@ -1186,10 +1186,22 @@ pending 行，以并发 1 串行地永远排下去。
 见 §4.2 规则 3 —— `occupied` **只数 `dispatched/running/verifying`**，
 `pending` 一概不数；准入按块序 + `key` 升序在剩余容量内。
 
-PR-B 的树项不能直接复用这个谓词：它先算
-`external_occupied = 全树非终结 − 本 wave pending`，再对本报告的 clean declarations
-按稳定顺序准入；子 wave 创建时还要在同一写事务执行树预算准入。只有这两个强制点
-同时落地，树级存量上界才成立。
+PR-B 的树项**不是共享计数**，而是**确定性配额分割**：
+
+```
+effective_ceiling(W) = min(spec_task_ceiling(W), share(W, T))
+share(W, T)          = floor(B / N)，余数按 (created_at, id) 升序分给前 r 个 wave 各 +1
+其中 T = W 所在的树，N = |T|，B = 树根的 tree_task_budget（NULL ⇒ 32），Σ share = B
+```
+
+三个输入 —— 本 wave 文档、本 wave 在飞、**树的形状（`waves` 行）** —— 没有一个是投影的
+产物，因此树项**不读任何 `pending` 行**，D.1 #11「rebuild ≡ 增量差分」在树上原样成立。
+（早期方案「`external_occupied = 全树非终结 − 本 wave pending`」已取消：共享计数是
+先到先得、路径依赖的，rebuild 无从得知「谁先来」。）
+子 wave 创建时还要在同一写事务执行树预算准入（全树非终结计数 ≥ 预算 ⇒ 拒绝
+`sub-wave-tree-budget-exhausted`）。只有这两个强制点同时落地，树级存量上界才成立。
+**求不到树根时 fail-closed**（诊断 `tree_root_unresolved`，该 wave 一条都不准入）——
+一条断链绝不能让整棵子树无约束。
 
 **上界的精确形式**：`非终结行数 = occupied + |准入| ≤ max(ceiling, occupied)`。
 若人把 ceiling 调低到当时的在飞行数以下，上界**暂时退化为调低那一刻的在飞行数**，
@@ -1579,10 +1591,10 @@ PR-A 已交付冻结 `tasks.spawn`、child-wave operation、`parent_wave_id`、�
 | 16 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
 | 17 | **投影暂时看不见深度 ≥ 2 的失效引用、被引用块自身不合法的 `refs`，以及整张报告卡缺席（`ReportAbsent`）** | pending 行会可逆地无限次重试 claim、反复定位失败；`ReportAbsent` 没有对应的投影守卫式删除路径。每次只付一次闭包重解析，不 spawn worker、不改状态，任一侧 wave 编辑即自愈，且成功 claim 才消耗 capacity，所以不拖住同 wave 其它任务。定价与证伪装置：`context_resolve_failures{variant}`；腿 2 在 3b′-ii 下沉块粒度检查以缩小 refs 侧集合 |
 | 18 | **context-stale 的 (a)/(b) 形态尚未由 material 真因直接驱动** | 当前读投影以已有声明变更诊断区分 (b)，其余 stale 落入引用变化 (a)；未体现在声明影子位差异中的 material 成因可能误归为 (a)。代价是下一步动作可能指错到“重新链接”，但仍 fail-closed、不放行任务。切片 4 推进冻结点时须把 material 成因随判定结果持久化，并让读投影直接消费该真因。 |
-| 19 | **PR-A 后树存量上界尚未成立** | 真实上界仍是 `Σ per-wave spec_task_ceiling`；PR-B 必须同时落创建准入与 schedulability 树项 |
+| 19 | **树级配额分割在树深 / 树宽时份额偏紧** | PR-B 已交付两个强制点，D.4 #7 成立。代价：`share = floor(B/N)` ⇒ `B = 32`、`N = 10` 时每个 wave 只剩 3 条未结额度，一棵大树里单个 wave 会比它独立存在时更早撞上限。属常数标定问题（与 §8 其余常数同一处置）：**校准装置是 `tree_budget_exhausted` 诊断的发生率**；若它在正常树形上频繁触发，说明 `tree_task_budget = 32` 定低了，调常数而不是改分配律 —— 改成共享计数会直接击穿 D.1 #11 |
 | 20 | **有后代的单 wave 删除必须 leaf-first** | DB 收口拒绝删除父 wave；恢复路径是先删子 wave。删除整个 cove 仍由单条级联原子完成 |
 | 21 | **父 wave cancel 不自动 cancel 子树** | live/sweep 按 child 的最终 lifecycle 闭合；活着但永不终态的 child 由人工 cancel/delete 恢复 |
-| 22 | **`MAX_WAVE_TREE_DEPTH = 3` 是猜的** | 以深度拒绝率校准；在 PR-B 的树存量约束到位前不得把它描述成完整树预算 |
+| 22 | **`MAX_WAVE_TREE_DEPTH = 3` 是猜的** | 以深度拒绝率校准。PR-B 后它还多了一层含义：**它也是求根 / 树成员枚举的 fail-closed 边界** —— 超过该深度的链求不到根 ⇒ 整条链 `tree_root_unresolved`、一条都不准入。调大它就是调大这个边界 |
 | 23 | **wave route 的 descendant 前检与最终删除之间可新建 child** | 前检只负责 teardown 前快失败；`wave_delete_tx` 的事务 guard 是唯一正确性载体。命中时 teardown 后返回 409；事务回滚后 `terminals` / `worker_sessions` 行仍是 active，但 terminal 进程已被杀、spec harness 已退出 registry（shutdown 不改 session 行），所以读端暂时显示 live、实际运行时已死，直到重试删除或进程重启后恢复/清理。不产生孤儿或越权写；消除此窗口所需的两阶段持久删除另开 issue，不扩入切片 6 PR-A |
 
 ### 12.2 产品侧裁决（2026-08-03 已拍板，四条全部按倾向落）
@@ -1881,7 +1893,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | `spec_task_ceiling` | `INTEGER NULL`（默认常数 32）| **只有 `EditAuthor::User` 经 `WavePatch`**；spec 403 | 列本身即真源 | 3b |
 | `automation_policy` | `TEXT NULL`（**三态**：NULL = 内核默认）| 同上 | **列本身即真源**：`effective_policy` = 该列非 NULL 时取列值，否则 `auto-declare`（**B2 后不再依赖文档墓碑**）| 3b |
 | `parent_wave_id` | `TEXT NULL REFERENCES waves(id)`（NO ACTION）| 仅 `child-wave` 内核定向写；不进 REST / `NewWave` | 结构真源 | 6 PR-A |
-| `tree_task_budget` | `INTEGER NULL`（默认 32）| PR-B 的 root 写入面 | 列本身即真源 | 6 PR-B |
+| `tree_task_budget` | `INTEGER NULL`（**无 DB DEFAULT**；NULL ⇒ 内核默认 32。默认住代码而不住列，是为了让 `wave_create_tx` 显式写 NULL 的每个子 wave 都不可能各拿一份预算）| **只有 `EditAuthor::User` 经 `WavePatch`**；spec 403；**root-only**（守卫落在共用 in-tx writer `wave_update_tx`，非 route，故直调 repo 亦被拒）| 列本身即真源；改动触发该 wave 重投影 | 6 PR-B |
 
 ### C.3 不落列的载体
 
@@ -1904,7 +1916,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | `MAX_SWEEP_NODES` | 4096 | 单轮 sweep 的重解析预算 | 本轮剩余未验证的一律 `material` |
 | `DEFAULT_WAVE_TASK_BUDGET` | 1（既有）| per-wave 并发 | —— |
 | `DEFAULT_SPEC_TASK_CEILING` | 32 | 单 wave 未结存量 | 超限不落行 + 诊断 |
-| `tree_task_budget` | 32 | 树内未结存量（切片 6 PR-B）| 子 wave 创建被拒 |
+| `tree_task_budget` | 32（内核默认；列为 NULL 时生效）| 树内未结存量（切片 6 PR-B）| 两处：子 wave 创建被拒（`sub-wave-tree-budget-exhausted`）；已存在的 wave 其 `effective_ceiling = min(ceiling, share)` 用尽 ⇒ 超额声明不落行 + `tree_budget_exhausted` 诊断（指名根 wave）。求不到根 ⇒ `tree_root_unresolved`，该 wave 全部不准入 |
 | `MAX_WAVE_TREE_DEPTH` | 3 | 递归深度（切片 6 PR-A）| `sub-wave-depth-exceeded` |
 | 瞬时失败升级阈值 | 3 轮 | per-row `context_verify_failures` | 升级为 `material` + 告警 |
 | `NEIGE_SCHEDULER_RECONCILE_SECS` | 300（既有）| sweep 节奏 | **不新增环境旋钮** |
@@ -2015,7 +2027,7 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 5 的三构造 | (a) worker 未开始 → 重启 → 不得 spawn；(b) **gate 未开始**（`gate_attempt = 0` + material）→ 重启 → **不得有任何 gate shell 命令被执行**；(c) **已开始的不受影响**（验证没有过度收紧）|
 | 5b seam | boot 顺序**两半缺一不可**：(a) 源码序断言 + (b) **seam 测试**（真实跑一次 boot，断言上下文 sweep 的副作用先于 operation 恢复可见）|
 | 6b | **两个清除动作互相独立**（B2 后不再有派生耦合）：删墓碑 ⇒ 该 `key` 可重新声明；PATCH `automation_policy='auto-declare'` ⇒ 恢复自动化**且墓碑保留**。（换 key 不再被机制挡 —— 那是 §12.1 风险 15 记录的**已知缺口**，不是本条要验收的不变量）|
-| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**，那条论断已被明确驳回。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**（投影只落 `pending` 行，派发是 scheduler 的独立动作）；树内 `declared_by='spec'` 的非终结行 ≤ `tree_task_budget` **在 PR-A 后尚未成立**，真实上界是 `Σ per-wave spec_task_ceiling`，由 PR-B 的创建准入 + schedulability 树项共同交付 |
+| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**，那条论断已被明确驳回。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**（投影只落 `pending` 行，派发是 scheduler 的独立动作）；树内 `declared_by='spec'` 的非终结行 ≤ `tree_task_budget`（切片 6 PR-B 已交付）。由**两个强制点**共同保证：子 wave 创建准入（全树非终结计数）与 `evaluate_schedulability` 的**确定性配额分割**（`min(ceiling, share)`，`Σ share = B`）。**配额分割而非共享计数**是刻意的：它使树项只依赖树的形状而非投影产物，从而 D.1 #11「rebuild ≡ 增量差分」得以保持 —— 共享计数在这一点上做不到（先到先得是路径依赖的）。与 §4.2 一致的退化条款：树形状变大（新建子 wave）或人调低 `tree_task_budget` 时，上界暂时退化为那一刻树内的在飞行数，随这些行终结**单调收敛**回新上界；期间超额 wave 的 `capacity = 0`，超额 `pending` 行按块序 + `key` 逆序被裁掉 |
 | 10 | **`refs[]` 的 cove 边界**：越界引用 ⇒ 该块不可调度 + 诊断，且**该引用不得出现在任何 `TaskContextFrozen.refs` 里** |
 | 11 生成器 | rebuild ≡ 增量的属性测试，其生成器**必须能生成「制造诊断的编辑」**：重复 key / 环 / 跨 cove / 撤回放行位 |
 | 13 | 删除必须能被检出：(a) wave 删除 (b) cove 删除 —— **各要「事件正常投递」与「事件被丢弃」两个变体，且必须给出同一结论**；(c) `EditAuthor::Spec` 编辑被引用块必须被第 1 级检出 |

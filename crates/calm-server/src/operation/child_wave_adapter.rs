@@ -759,6 +759,73 @@ mod tests {
         );
     }
 
+    /// PR-B enforcement point one. The inventory counted is the WHOLE tree's
+    /// non-terminal spec rows, and the claiming parent task is one of them, so
+    /// a budget of 1 refuses the child while a budget of 2 admits it. The
+    /// refusal leaves no wave behind: the whole admission runs before any
+    /// skeleton write.
+    #[tokio::test]
+    async fn acceptance_tree_budget_refuses_child_creation_when_the_tree_is_full() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let parent = seed_parent(&repo, false).await;
+        let task = seed_task(&repo, &parent, false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+        );
+        sqlx::query("UPDATE waves SET tree_task_budget=1 WHERE id=?1")
+            .bind(&parent)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap_err();
+        drop(tx);
+        assert!(
+            error.to_string().contains("sub-wave-tree-budget-exhausted"),
+            "{error}"
+        );
+        assert!(error.to_string().contains(&parent), "{error}");
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        assert_eq!(before, after, "a refused creation must write nothing");
+
+        // Raising the ROOT's budget (the only place it lives) admits it.
+        sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
+            .bind(&parent)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let child = output.data["child_wave_id"].as_str().unwrap().to_string();
+        let child_budget: Option<i64> =
+            sqlx::query_scalar("SELECT tree_task_budget FROM waves WHERE id=?1")
+                .bind(&child)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            child_budget, None,
+            "the child must not carry a budget of its own"
+        );
+    }
+
     #[tokio::test]
     async fn acceptance_10_child_adapter_stale_fence_precedes_every_side_effect() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();

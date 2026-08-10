@@ -173,6 +173,98 @@ async fn invalid_policy_values_are_rejected() {
     assert_eq!(columns(&repo, &wave_id).await, (Some(32), None));
 }
 
+async fn tree_budget(repo: &Arc<dyn Repo>, wave_id: &str) -> Option<i64> {
+    sqlx::query_scalar("SELECT tree_task_budget FROM waves WHERE id = ?1")
+        .bind(wave_id)
+        .fetch_one(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap()
+}
+
+/// #985 slice 6 PR-B — `tree_task_budget` reaches the column through the SAME
+/// production PATCH surface as `spec_task_ceiling`, with the same four
+/// behaviors (write, present-null reset, non-user 403, negative 400) plus the
+/// root-only rule. Without a write surface the column would be permanently
+/// pinned at the kernel default and every test would have to poke it with raw
+/// SQL — a fixture bypassing the production route.
+#[tokio::test]
+async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
+    let (state, wave_id, repo) = boot().await;
+    assert_eq!(tree_budget(&repo, &wave_id).await, None);
+    let before = event_count(&repo).await;
+
+    // Non-user actors are refused, with no row and no event.
+    let response = patch(
+        state.clone(),
+        &wave_id,
+        Some("ai:codex"),
+        json!({"tree_task_budget": 8}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(tree_budget(&repo, &wave_id).await, None);
+    assert_eq!(event_count(&repo).await, before);
+
+    // Negative values are refused.
+    let response = patch(
+        state.clone(),
+        &wave_id,
+        None,
+        json!({"tree_task_budget": -1}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(tree_budget(&repo, &wave_id).await, None);
+
+    // A budget-only patch is NOT short-circuited as an empty patch.
+    let response = patch(state.clone(), &wave_id, None, json!({"tree_task_budget": 8})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(tree_budget(&repo, &wave_id).await, Some(8));
+    assert_eq!(event_count(&repo).await, before + 1);
+
+    // Present-null resets to the kernel default.
+    let response = patch(
+        state.clone(),
+        &wave_id,
+        None,
+        json!({"tree_task_budget": null}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(tree_budget(&repo, &wave_id).await, None);
+
+    // Root-only: a child wave refuses the patch and keeps its NULL.
+    let child = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: repo
+                .wave_get(&wave_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .cove_id
+                .clone(),
+            title: "child".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let child_id = child.id.to_string();
+    sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+        .bind(&wave_id)
+        .bind(&child_id)
+        .execute(&repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let response = patch(state, &child_id, None, json!({"tree_task_budget": 4})).await;
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert_eq!(tree_budget(&repo, &child_id).await, None);
+}
+
 #[tokio::test]
 async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan_updated() {
     let (state, wave_id, repo) = boot().await;
