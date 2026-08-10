@@ -167,11 +167,19 @@ pub struct TreeShare {
     pub root_id: String,
     pub budget: i64,
     pub members: i64,
+    /// Zero-based position in the deterministic `(created_at, id)` order.
+    /// Diagnostics use it to name the first B that increases THIS member's
+    /// share instead of assuming `B + 1` helps every remainder position.
+    pub member_index: i64,
     pub share: i64,
     /// An upgrade/corruption state has at least one member whose immutable
     /// occupancy exceeds its share. No member may admit a new block until the
     /// excess terminates; otherwise a less-full sibling could grow Σ above B.
     pub admission_frozen: bool,
+    /// First legal B at which every member's immutable occupancy fits its
+    /// deterministic share. `None` means either no freeze or no such B within
+    /// [`MAX_TREE_TASK_BUDGET`].
+    pub minimum_budget_to_unfreeze: Option<i64>,
 }
 
 /// [`WaveTreeTerm`] plus the countable seam used by whole-tree reprojection to
@@ -233,7 +241,7 @@ fn tree_share_from_members(
     budget: i64,
     members: &[(String, i64)],
 ) -> WaveTreeTerm {
-    tree_share_from_members_with_freeze(root_id, wave_id, budget, members, false)
+    tree_share_from_members_with_freeze(root_id, wave_id, budget, members, false, None)
 }
 
 fn tree_share_from_member_inventory(
@@ -253,7 +261,24 @@ fn tree_share_from_member_inventory(
         .any(|(index, (_, _, fixed_live))| {
             *fixed_live > deterministic_share(budget, count, index as i64)
         });
-    tree_share_from_members_with_freeze(root_id, wave_id, budget, &shape, admission_frozen)
+    let minimum_budget_to_unfreeze = admission_frozen.then(|| {
+        (budget.saturating_add(1)..=MAX_TREE_TASK_BUDGET).find(|candidate| {
+            members
+                .iter()
+                .enumerate()
+                .all(|(index, (_, _, fixed_live))| {
+                    *fixed_live <= deterministic_share(*candidate, count, index as i64)
+                })
+        })
+    });
+    tree_share_from_members_with_freeze(
+        root_id,
+        wave_id,
+        budget,
+        &shape,
+        admission_frozen,
+        minimum_budget_to_unfreeze.flatten(),
+    )
 }
 
 fn tree_share_from_members_with_freeze(
@@ -262,6 +287,7 @@ fn tree_share_from_members_with_freeze(
     budget: i64,
     members: &[(String, i64)],
     admission_frozen: bool,
+    minimum_budget_to_unfreeze: Option<i64>,
 ) -> WaveTreeTerm {
     let over_deep = members
         .iter()
@@ -275,8 +301,10 @@ fn tree_share_from_members_with_freeze(
         root_id,
         budget,
         members: count,
+        member_index: index as i64,
         share: deterministic_share(budget, count, index as i64),
         admission_frozen,
+        minimum_budget_to_unfreeze,
     })
 }
 

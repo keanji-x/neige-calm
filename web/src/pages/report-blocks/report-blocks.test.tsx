@@ -826,8 +826,11 @@ describe('degraded blocks', () => {
     ['invalid_declaration', {}, /incomplete or invalid/],
     ['tree_budget_exhausted', { tree_waves: 3, tree_task_budget: 2, share: 0 }, /remove extra child waves/],
     ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1 }, /group’s excess in-progress work finish/],
+    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, admission_frozen: true }, /immutable in-progress work than its share/],
+    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, bounds_tied: true, minimum_tree_task_budget: 4 }, /raising either one alone will not admit another card/],
+    ['spec_task_ceiling', { ceiling: 2, occupied: 0, bounds_tied: true }, /Raise both/],
     ['tree_budget_exhausted', {}, /receives no task slots/],
-    ['tree_root_unresolved', {}, /Repair or remove the broken sub-wave link/],
+    ['tree_root_unresolved', {}, /operator must repair the wave tree/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
   });

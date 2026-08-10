@@ -140,6 +140,23 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
   引号标识符虽可合法有界，但此门不做 SQL 名称解析/参数计数；若要引入必须先扩充正反矩阵，
   不能让一个看似有界的 token 误保护别名错误或未绑定递归变量。
 
+## 3.6 修复轮 7 实现收口
+
+- B1：剩余 ceiling capacity 与 tree capacity 平局时，同一拒绝同时携带
+  `raise_spec_task_ceiling` 与 `raise_tree_task_budget`，两条人话都明确“必须同时提高”；tree 诊断给出
+  `minimum_tree_task_budget`：从 `B+1..=MAX` 中按该成员的 `(created_at,id)` 位置求第一个使 share 增长的
+  精确目标；freeze 时再与“所有成员不可裁占用均装回 share”的最小 B 取 max。后序余数成员不再因只做
+  `B+1` 而原地不动，既有 overage 也不会只抬到仍冻结的位置。效果性质改成 8 行表，覆盖严格 `<`/`>`、默认孤根 `32/32`、三成员余数内外、两成员零余数
+  边界、legacy 平局与 sibling legacy freeze；每行读取全部容量动作、执行后断言同一报告准入严格增加。
+- MINOR-1：freeze 诊断携带 `admission_frozen=true`；Rust/web 均改说“某成员不可裁在飞超过 share，
+  整树冻结”，不再谎称当前 wave 的 slice 已用尽。
+- MINOR-2：删除恒为 2 的 `a_singleton_tree_runs_two_constant_size_recursive_queries`。孤根正确性由默认/
+  显式预算与 legacy 占用验收承重；整树入口不得逐成员递归仍由 calm-server 的总查询计数验收承重。
+- MINOR-3：删除不存在 API 的 `repair_wave_tree` recovery action。损坏树继续 fail-closed，但诊断如实说需
+  operator 修复，不再向普通用户承诺一个不可执行动作。
+- MINOR-5：读路径说明补回 PR-B 的 root CTE、member/inventory CTE、root budget 三条 autocommit 读取，
+  不再沿用“只剩两处外部读取”的旧版本数说法。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -168,6 +185,10 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 - **N8. `tree_cte_queries` 是回退检测，不是 SQL tracing。** 它能抓循环退回全量入口，不能抓
   未来有人在循环体手写新的递归调用；任意递归 SQL 的终止性另由性质门覆盖。若要购买严格查询
   数，应在 DB 执行层加计数 seam，而不是继续累加调用方字面量。
+- **N9. 旧 migration schema fixture 仍是显式最小子集。** 本片只补了生产树查询实际需要且自 0001
+  就存在的 `waves.created_at`；把所有旧版本夹具统一改成从 head schema 派生，会改变 migration replay
+  所要模拟的历史边界并扩大到全仓迁移治理。当前缺列会 fail-closed 为 `no such column`，不会静默放行；
+  本轮不另造一套可能掩盖历史 schema 差异的结构生成器。
 
 ## 5. 门（实际数字）
 
@@ -192,6 +213,24 @@ web/fe 最终全门显式使用 Node `v22.22.0`。
 
 修复轮 6 最终 Rust/web/fe 全门全绿；web/fe 正式全门均显式使用 Node 22.22.0，且
 实现 worktree 内 `node_modules` 存在，vitest 确实执行（不是缺依赖的结构性复核）。
+
+### 5.1 修复轮 7 复原态全门
+
+环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 未设置；web/fe
+均在本实现 worktree、显式 Node `v22.22.0` 下执行。
+
+| 门 | 实际结果 |
+|---|---|
+| `cargo fmt --all --check` + `git diff --check` | 干净 |
+| workspace clippy（命令同上） | `Finished dev profile in 1m 22s`，0 warning |
+| workspace nextest ci | 第一轮 **3403/3404**，唯一失败为题定既有 #1046 `acceptance_19`（`Failed != Running`）；定向复跑 **1/1 PASS**，第二轮 **3404/3404 PASS，89 skipped**（104 binaries，59.532s） |
+| migration replay gate | **2/2 PASS**（37.472s） |
+| web 生成物 | `npm run gen:api` 后目标生成文件 `git diff --exit-code` 干净；bindings 49/49 + 15/15 + emit-openapi 1/1 |
+| web build | 成功，`built in 785ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web test | **85 files / 1235 tests PASS**，Type Errors 0 |
+| fe lint | 通过；dependency cruise **102 modules / 232 dependencies**，0 violation |
+| fe build | 成功，`built in 211ms` |
+| fe test | **758 PASS / 1 skipped**（61 files pass / 1 skipped），wire 与 mock drift 均通过 |
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
 

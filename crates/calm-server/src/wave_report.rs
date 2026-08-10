@@ -207,8 +207,10 @@ pub async fn tasks_rebuild_tree_tx(
             root_id: root_id.to_owned(),
             budget,
             members: member_count,
+            member_index: index as i64,
             share,
             admission_frozen: false,
+            minimum_budget_to_unfreeze: None,
         });
         let wave = wave_get_tx(tx, &crate::ids::WaveId::from(member_id.clone())).await?;
         let projection = tasks_rebuild_with_tree_term_tx(tx, &member_id, Some(tree_term)).await?;

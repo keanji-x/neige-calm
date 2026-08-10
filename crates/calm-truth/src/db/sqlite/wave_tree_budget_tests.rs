@@ -624,56 +624,31 @@ async fn a_tighter_wave_ceiling_still_reports_the_ceiling_diagnostic() {
     );
 }
 
-/// Equal numeric limits name the local knob. This boundary is deliberately
-/// owned by the wave ceiling rather than the more remote tree setting.
-#[tokio::test]
-async fn an_equal_tree_share_reports_the_local_ceiling_knob() {
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let root = seed_wave(&repo, &cove, "root").await;
-    let child = seed_wave(&repo, &cove, "child").await;
-    link(&repo, &child, &root).await;
-    set_ceiling(&repo, &child, 32).await;
-    set_tree_budget(&repo, &root, 64).await;
-
-    let keys = (0..33)
-        .map(|index| format!("k{index:02}"))
-        .collect::<Vec<_>>();
-    let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
-    let decls = declarations(&key_refs);
-    let mut conn = repo.pool().acquire().await.unwrap();
-    let verdicts = evaluate_schedulability(
-        &mut conn,
-        &child,
-        &decls,
-        &vec![Vec::new(); decls.len()],
-        false,
-    )
-    .await
-    .unwrap();
-    let diagnostic = verdicts[32]
-        .diagnostics
-        .iter()
-        .find(|diagnostic| diagnostic.code == "spec_task_ceiling")
-        .expect("equal share/ceiling must name the local ceiling constraint");
-    assert_eq!(
-        diagnostic.action.as_deref(),
-        Some("raise_spec_task_ceiling")
-    );
-    assert!(
-        !verdicts[32]
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
-    );
-}
-
-/// Reusable operability property for capacity diagnostics: perform the one
-/// setting change named by the diagnostic, then the same report must admit
-/// more declarations. This tests effects rather than freezing code/copy.
+/// Operability property for capacity diagnostics over the meaningful input
+/// space: strict local/tree minima, equal minima, singleton/defaults, both
+/// sides of a deterministic remainder, legacy occupancy, and a tree freeze.
+/// Perform every capacity action named on the rejection, using the minimum
+/// tree target carried by the diagnostic, then the SAME member/report must
+/// admit more declarations. The assertion is deliberately on the effect, not
+/// on which code or prose happens to describe it.
 #[tokio::test]
 async fn the_diagnosed_capacity_action_increases_admission() {
-    async fn project_and_action(repo: &SqlxRepo, wave: &str, keys: &[&str]) -> (i64, String) {
+    struct Case {
+        name: &'static str,
+        ceiling: i64,
+        budget: i64,
+        members: usize,
+        target_index: usize,
+        expected_share: i64,
+        target_legacy: usize,
+        root_legacy_freeze: usize,
+    }
+
+    async fn project_and_actions(
+        repo: &SqlxRepo,
+        wave: &str,
+        keys: &[&str],
+    ) -> (i64, std::collections::BTreeMap<String, Option<i64>>) {
         let decls = declarations(keys);
         let mut tx = repo.pool().begin().await.unwrap();
         let outcome = project_tasks_tx(&mut tx, wave, &decls, &vec![Vec::new(); decls.len()])
@@ -686,34 +661,196 @@ async fn the_diagnosed_capacity_action_increases_admission() {
                 .fetch_one(repo.pool())
                 .await
                 .unwrap();
-        let action = outcome
+        let actions = outcome
             .diagnostics
             .iter()
             .flat_map(|verdict| &verdict.diagnostics)
-            .find_map(|diagnostic| diagnostic.action.clone())
-            .expect("capacity rejection must provide an action");
-        (admitted, action)
+            .filter_map(|diagnostic| {
+                diagnostic.action.as_ref().and_then(|action| {
+                    matches!(
+                        action.as_str(),
+                        "raise_spec_task_ceiling" | "raise_tree_task_budget"
+                    )
+                    .then(|| {
+                        (
+                            action.clone(),
+                            diagnostic
+                                .message_args
+                                .get("minimum_tree_task_budget")
+                                .and_then(serde_json::Value::as_i64),
+                        )
+                    })
+                })
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert!(
+            !actions.is_empty(),
+            "capacity rejection must provide an action"
+        );
+        (admitted, actions)
     }
 
-    for tree_is_binding in [false, true] {
+    async fn seed_legacy(repo: &SqlxRepo, wave: &str, count: usize, prefix: &str) {
+        if count == 0 {
+            return;
+        }
+        let keys = (0..count)
+            .map(|index| format!("{prefix}-{index}"))
+            .collect::<Vec<_>>();
+        let refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+        project(repo, wave, &refs).await;
+        sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id=?1")
+            .bind(wave)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+    }
+
+    let cases = [
+        Case {
+            name: "strict local singleton",
+            ceiling: 2,
+            budget: 4,
+            members: 1,
+            target_index: 0,
+            expected_share: 4,
+            target_legacy: 0,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "strict tree singleton",
+            ceiling: 4,
+            budget: 2,
+            members: 1,
+            target_index: 0,
+            expected_share: 2,
+            target_legacy: 0,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "default singleton tie",
+            ceiling: 32,
+            budget: 32,
+            members: 1,
+            target_index: 0,
+            expected_share: 32,
+            target_legacy: 0,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "tie on a remainder recipient",
+            ceiling: 2,
+            budget: 5,
+            members: 3,
+            target_index: 1,
+            expected_share: 2,
+            target_legacy: 0,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "tie immediately after the remainder",
+            ceiling: 1,
+            budget: 5,
+            members: 3,
+            target_index: 2,
+            expected_share: 1,
+            target_legacy: 0,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "tree bound after a zero-remainder boundary",
+            ceiling: 4,
+            budget: 2,
+            members: 2,
+            target_index: 1,
+            expected_share: 1,
+            target_legacy: 0,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "tie after legacy occupancy",
+            ceiling: 3,
+            budget: 5,
+            members: 1,
+            target_index: 0,
+            expected_share: 5,
+            target_legacy: 2,
+            root_legacy_freeze: 0,
+        },
+        Case {
+            name: "sibling legacy overage freezes the target",
+            ceiling: 4,
+            budget: 4,
+            members: 2,
+            target_index: 1,
+            expected_share: 2,
+            target_legacy: 0,
+            root_legacy_freeze: 5,
+        },
+    ];
+
+    for case in cases {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
         let cove = seed_cove(&repo).await;
-        let root = seed_wave(&repo, &cove, "actionable-root").await;
-        let (ceiling, budget) = if tree_is_binding { (4, 2) } else { (2, 4) };
-        set_ceiling(&repo, &root, ceiling).await;
-        set_tree_budget(&repo, &root, budget).await;
-        let keys = ["k1", "k2", "k3", "k4"];
-
-        let (before, action) = project_and_action(&repo, &root, &keys).await;
-        match action.as_str() {
-            "raise_spec_task_ceiling" => set_ceiling(&repo, &root, ceiling + 1).await,
-            "raise_tree_task_budget" => set_tree_budget(&repo, &root, budget + 1).await,
-            other => panic!("capacity diagnostic named unsupported action {other}"),
+        let root = seed_wave(&repo, &cove, &format!("{} root", case.name)).await;
+        let mut waves = vec![root.clone()];
+        for index in 1..case.members {
+            let child = seed_wave(&repo, &cove, &format!("{} child {index}", case.name)).await;
+            link(&repo, &child, &root).await;
+            waves.push(child);
         }
-        let (after, _) = project_and_action(&repo, &root, &keys).await;
+        for (index, wave) in waves.iter().enumerate() {
+            stamp_created_at(&repo, wave, index as i64 + 1).await;
+            set_ceiling(&repo, wave, 64).await;
+        }
+        set_tree_budget(&repo, &root, 64).await;
+        let target = &waves[case.target_index];
+        seed_legacy(&repo, target, case.target_legacy, "target-legacy").await;
+        seed_legacy(&repo, &root, case.root_legacy_freeze, "root-freeze-legacy").await;
+        set_ceiling(&repo, target, case.ceiling).await;
+        if case.root_legacy_freeze > 0 {
+            // Simulate the upgrade/corruption state: the production PATCH
+            // correctly refuses to create an immutable member overage.
+            sqlx::query("UPDATE waves SET tree_task_budget=?1 WHERE id=?2")
+                .bind(case.budget)
+                .bind(&root)
+                .execute(repo.pool())
+                .await
+                .unwrap();
+        } else {
+            set_tree_budget(&repo, &root, case.budget).await;
+        }
+        assert_eq!(
+            share_of(&repo, target).await.share,
+            case.expected_share,
+            "bad table fixture: {}",
+            case.name
+        );
+
+        let declaration_count = case.ceiling.max(case.expected_share) as usize + 2;
+        let keys = (0..declaration_count)
+            .map(|index| format!("candidate-{index:02}"))
+            .collect::<Vec<_>>();
+        let key_refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
+        let (before, actions) = project_and_actions(&repo, target, &key_refs).await;
+        for (action, minimum_tree_budget) in &actions {
+            match action.as_str() {
+                "raise_spec_task_ceiling" => {
+                    set_ceiling(&repo, target, case.ceiling + 1).await;
+                }
+                "raise_tree_task_budget" => {
+                    let minimum = minimum_tree_budget
+                        .expect("tree action must carry a remainder-safe minimum budget");
+                    set_tree_budget(&repo, &root, minimum).await;
+                }
+                other => panic!("capacity diagnostic named unsupported action {other}"),
+            }
+        }
+        let (after, _) = project_and_actions(&repo, target, &key_refs).await;
         assert!(
             after > before,
-            "following {action} did not increase admission: {before} -> {after}"
+            "{}: following {actions:?} did not increase admission: {before} -> {after}",
+            case.name
         );
     }
 }
@@ -833,37 +970,6 @@ async fn an_over_deep_chain_fails_closed() {
         WaveTreeTerm::RootUnresolved,
         "the root must reject a member set containing an over-deep node"
     );
-}
-
-/// A singleton follows the same semantic path as every other tree. Its two
-/// bounded CTEs each visit one row, so the work is O(1) without a shortcut
-/// whose correctness predicate can drift when a new tree term is added.
-#[tokio::test]
-async fn a_singleton_tree_runs_two_constant_size_recursive_queries() {
-    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-    let cove = seed_cove(&repo).await;
-    let lonely = seed_wave(&repo, &cove, "lonely").await;
-    set_ceiling(&repo, &lonely, 31).await;
-    let mut conn = repo.pool().acquire().await.unwrap();
-
-    let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
-    assert_eq!(outcome.tree_cte_queries, 2);
-    assert!(matches!(
-        outcome.term,
-        WaveTreeTerm::Share(TreeShare {
-            members: 1,
-            share: 32,
-            ..
-        })
-    ));
-
-    // Give it a child and the walks must actually run — otherwise the
-    // zero-count assertion above could be satisfied by never walking at all.
-    let child = seed_wave(&repo, &cove, "child").await;
-    link(&repo, &child, &lonely).await;
-    let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
-    assert_eq!(outcome.tree_cte_queries, 2);
-    assert!(matches!(outcome.term, WaveTreeTerm::Share(_)));
 }
 
 /// A binding singleton budget is still N=1 and share=B.
@@ -1149,6 +1255,16 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
         assert!(
             diagnostic.message.contains("tree's excess in-flight work"),
             "a sibling overage must not tell the reader to wait for this wave: {}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("is frozen because"),
+            "the diagnostic must state the actual tree-wide freeze: {}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.contains("slice") && !diagnostic.message.contains("used up"),
+            "a target with unused share must not be described as full: {}",
             diagnostic.message
         );
         assert!(!diagnostic.message.contains("task in this wave"));

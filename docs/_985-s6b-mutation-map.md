@@ -254,11 +254,42 @@ SQL 常量界、未限定列、匿名参数与引号标识符没有放宽；实�
 
 | 旧条目 | 修复轮 6 处置 / 实跑结果 |
 |---|---|
-| M9 | 原“非树零递归”买的是短路性能性质，随短路一并删除；替换为 `a_singleton_tree_runs_two_constant_size_recursive_queries`，孤根固定 2 条各 1 行的有界 CTE。恢复任意孤根早退由 R6-B1a/b 两条正确性验收直接 RED |
+| M9 | 原“非树零递归”买的是短路性能性质，随短路一并删除；r6 替换的 `a_singleton_tree_runs_two_constant_size_recursive_queries` 对所有可解析树恒为 2，修复轮 7 也删除。恢复孤根早退仍由 R6-B1a/b 正确性验收 RED；整树入口退回逐成员递归由 R7-m2 的真实 `calm-server --lib` 变异 RED |
 | R1-B1c（评审文字也曾写作 R3-B1c） | 原“孤根显式预算不得 NotInTree”不再依赖枚举分支；恢复孤根早退后 `an_explicit_budget_applies_to_a_singleton_root` **RED**：B=1 仍放过后两条 |
 | R3-B1a | shortcut 自行解 NULL 的变异已无落点；恢复孤根早退后 `a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root` **RED**：准入 `5 != 1` |
-| R5-m1 | `budget > ceiling` 条件已随 shortcut 删除；替代平局归因变异 R6-B2b **RED**，复原态 `singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling` **PASS 1/1** 且两入口同为 `spec_task_ceiling` |
+| R5-m1 | `budget > ceiling` 条件已随 shortcut 删除；r6 的“平局单归 local ceiling”证据在 r7 语义下失效，由 R7-B1a/R7-B1d 取代。复原态 `singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling` **PASS 1/1**，两入口现在都同时给出 `spec_task_ceiling` + `tree_budget_exhausted` |
 
 所有临时早退、反向比较、fail-open 与旧文案均已反向复原。复原态定向门：`calm-truth --lib`
 **357/357**（wave-tree **26/26**）、SQL **18/18**、child adapter **12/12**、web report-block
 **56/56**；最终全门数字见实现笔记 §5。
+
+## 十一、修复轮 7（平局双绑定 + 组合空间效果性质，全部实际执行并复原）
+
+环境：`.local-bin` nextest、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置；web 使用
+Node 22.22.0。每个生产/文案变异均以 `apply_patch` 施加并反向复原。
+
+| # | 改坏什么 | 变红的测试 | 实际结果 |
+|---|---|---|---|
+| R7-B1a | 平局分支删掉 tree 诊断，退回只报 `raise_spec_task_ceiling` | `the_diagnosed_capacity_action_increases_admission` | **RED 0/1**：默认孤根平局照动作后 `32 → 32`；这条就是题定默认配置回归的杀手变异 |
+| R7-B1b | tree 动作携带的“该成员 share 首次增长的最小 B”退回朴素 `B+1` | 同一 8 行表驱动性质 | **RED 0/1**：`N=3,B=5,index=1` 余数接收者在 `B=6` 时 share 仍为 2，照两个平局动作后 `2 → 2` |
+| R7-B1b-freeze | freeze 目标只算当前成员下一格，忽略让所有 legacy overage 装回 share 所需的更高 B | 同一性质 | **RED 0/1**：sibling 有 5 条不可裁 legacy、`N=2,B=4`；只抬到 6 后整树仍冻结，目标成员 `0 → 0` |
+| R7-B1c（刷新 R6-B2a） | 严格归因比较 `<` 反成 `>` | 同一性质 | **RED 0/1**：strict-local 孤根被误报 tree，照做后 `2 → 2` |
+| R7-B1d（刷新 R6-B2b） | 严格 tree 分支把 `<` 放宽成 `<=`，平局被吞成 tree 单诊断 | 同一性质 | **RED 0/1**：默认孤根只抬 B 到 33，`32 → 32` |
+| R7-m1-rust | 跳过 `admission_frozen` 专用渲染，恢复普通“slice used up”句 | `legacy_member_overage_freezes_new_blocks_across_the_tree` | **RED 0/1**：实际打印当前 wave `slice of 4 is used up`，缺少真实 tree-wide freeze 原因 |
+| R7-m1-web | web 跳过 `admission_frozen` 专用渲染 | `report-blocks.test.tsx` | **RED**：59 中 1 failed，缺少 `immutable in-progress work than its share` |
+| R7-m2 | 整树循环丢弃预计算 term，改为每成员调用 `tasks_rebuild_tx` 重新递归 | `calm-server --lib` 的整树查询计数后置 | **RED**：已执行 234/693 时累计 **8 failed**、其余 459 因 fail-fast 未运行；错误均为递归查询 `4/6 != 2`，包含 `whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences` 与入口一致性测试，证明已删除的孤根恒 2 断言不是承重点 |
+| R7-m3 | 把不存在 API 的 `repair_wave_tree` 重新登记为 recovery action | `tree_root_unresolved_has_human_copy_without_a_fake_user_action` | **RED 0/1**：构造器发现期望假 action、实际为 `None` |
+| R7-D4 | 在 D.4 #7 后临时恢复“升级 legacy 无例外、任意瞬间无条件 `Σ≤B`”句 | `legacy_live_spec_consumes_tree_share_until_it_terminates` | **STILL-GREEN 1/1**：实现验收只能证明退化行为，不能证明架构文案没有撒谎；因此 D.4 精确措辞仍需人工评审承重 |
+| R7-m5 | 在读路径注释临时恢复“core 外只有后两种读”的旧版本数说法 | `the_diagnosed_capacity_action_increases_admission` | **STILL-GREEN 1/1**：纯注释漂移无运行时红灯，已复原；修复靠代码序与评审核对 |
+
+### 11.1 组合空间与旧证据保质期
+
+效果性质不是两个例子的列表，而是一张 8 行输入表：strict-local、strict-tree、默认孤根
+`C=S=32`、`N=3/B=5` 的余数内 `index=1` 与余数外 `index=2`、`N=2/B=2` 的零余数后序成员、
+`share=5/legacy=2/ceiling=3` 的容量平局，以及 sibling legacy overage freeze。每行从实际拒绝读取全部
+容量 action，tree action 使用诊断携带的 minimum B，完成后重投影同一报告并断言准入严格增加。
+
+r6 的 R6-B2a（严格方向）由 R7-B1c 重跑仍 RED；R6-B2b 与 R5-m1 原先钉住“平局归 local”这一旧
+语义，已主动退役并由 R7-B1a/B1d 的效果杀手变异替换。`singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling`
+已改为两入口都返回双诊断，复原态定向 **PASS 1/1**。旧 schema fixture 的 `created_at` 与 workspace
+fail-closed 本轮未动；其 R6-B1c/R6-m2 证据不受归因变更影响。

@@ -11,7 +11,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use utoipa::ToSchema;
 
-use super::wave_tree::{DEFAULT_SPEC_TASK_CEILING, WaveTreeTerm, effective_limit};
+use super::wave_tree::{
+    DEFAULT_SPEC_TASK_CEILING, MAX_TREE_TASK_BUDGET, WaveTreeTerm, deterministic_share,
+    effective_limit,
+};
 use crate::error::{CalmError, Result};
 use crate::model::now_ms;
 
@@ -497,11 +500,12 @@ async fn wave_projection_state(
 /// pooled connection in AUTOCOMMIT mode.
 ///
 /// Consistency on the READ path, stated precisely — including what is still
-/// broken. The verdict core — policy, ceiling, in-flight occupancy, in-flight
-/// keys, the wave's cove — is ONE statement ([`wave_projection_state`]), so a
-/// displayed capacity or schedulability decision can no longer be assembled
-/// from two different versions of the database. Two reads remain outside that
-/// statement, each its own autocommit version:
+/// broken. The local verdict core — policy, ceiling, in-flight occupancy,
+/// in-flight keys, the wave's cove — is ONE statement
+/// ([`wave_projection_state`]). Before it, [`wave_tree_term`] runs three
+/// autocommit statements (root walk, member/inventory walk, root budget); after
+/// it, two more kinds of reads remain outside that statement, each its own
+/// autocommit version:
 ///
 ///   * the frozen-declaration scan (`status!='pending'`), used to flag "this
 ///     key is already executing"; and
@@ -522,9 +526,9 @@ async fn wave_projection_state(
 /// that no single database version would have produced. The reverse skew
 /// (row becomes frozen after t0) is the same shape.
 ///
-/// This is not a #1016 regression: the pre-#1016 four-statement version had
-/// the identical split — #1016 only shrank the number of versions that can be
-/// mixed, from four to two. Collapsing the remainder is a separate job:
+/// This is not a #1016 regression: #1016 made the local verdict core atomic;
+/// PR-B later added the three tree reads and deliberately kept the read path
+/// in autocommit mode. Collapsing the remainder is a separate job:
 /// `evaluate_schedulability` fans out one data-dependent query per declared
 /// ref, so it cannot become a single statement without restructuring the
 /// predicate that the write path shares.
@@ -559,7 +563,7 @@ fn tree_root_unresolved_diagnostic() -> Diagnostic {
         BTreeMap::new(),
         vec![],
         None,
-        Some("repair_wave_tree".into()),
+        None,
     )
 }
 
@@ -915,56 +919,106 @@ async fn evaluate_schedulability_with_tree_term(
         })
         .map(|(_, declaration)| declaration.block_id.clone())
         .collect();
-    // Attribution matters here (§12.2 C): the recovery action must name a
-    // setting that actually binds this admission. Strictly smaller remaining
-    // tree capacity belongs to the root budget; equality belongs to the local
-    // ceiling because it is the nearer setting. A legacy overage freeze is
-    // tree-owned regardless of the local numeric capacities.
+    // Attribution matters here (§12.2 C): recovery must name every setting
+    // that actually binds this admission. A strict minimum names one knob;
+    // equality names BOTH, because raising either one alone leaves the other
+    // at the same minimum. A legacy overage freeze is tree-owned regardless of
+    // the local numeric capacities.
     let tree_bound = tree_share
         .as_ref()
         .filter(|share| share.admission_frozen || tree_capacity < ceiling_capacity)
         .cloned();
+    let tied_bounds = tree_share
+        .as_ref()
+        .filter(|share| !share.admission_frozen && tree_capacity == ceiling_capacity)
+        .cloned();
     for index in candidates.into_iter().skip(capacity) {
-        let diagnostic = match &tree_bound {
-            Some(share) => Diagnostic::coded(
+        let tree_diagnostic = |share: &super::wave_tree::TreeShare, bounds_tied: bool| {
+            let minimum_for_target =
+                (share.budget.saturating_add(1)..=MAX_TREE_TASK_BUDGET).find(|budget| {
+                    deterministic_share(*budget, share.members, share.member_index) > share.share
+                });
+            let minimum_tree_task_budget = if share.admission_frozen {
+                minimum_for_target
+                    .zip(share.minimum_budget_to_unfreeze)
+                    .map(|(target_minimum, unfreeze_minimum)| target_minimum.max(unfreeze_minimum))
+            } else {
+                minimum_for_target
+            };
+            let mut args = diagnostic_args([
+                (
+                    "root_wave_id",
+                    serde_json::Value::String(share.root_id.clone()),
+                ),
+                ("tree_task_budget", serde_json::Value::from(share.budget)),
+                ("tree_waves", serde_json::Value::from(share.members)),
+                ("share", serde_json::Value::from(share.share)),
+                ("ceiling", serde_json::Value::from(ceiling)),
+                ("occupied", serde_json::Value::from(tree_occupied)),
+                (
+                    "admission_frozen",
+                    serde_json::Value::from(share.admission_frozen),
+                ),
+                ("bounds_tied", serde_json::Value::from(bounds_tied)),
+                (
+                    "admission_order",
+                    serde_json::Value::String("document order, then key".into()),
+                ),
+            ]);
+            if let Some(minimum) = minimum_tree_task_budget {
+                args.insert(
+                    "minimum_tree_task_budget".into(),
+                    serde_json::Value::from(minimum),
+                );
+            }
+            Diagnostic::coded(
                 "tree_budget_exhausted",
                 "key",
-                diagnostic_args([
-                    (
-                        "root_wave_id",
-                        serde_json::Value::String(share.root_id.clone()),
-                    ),
-                    ("tree_task_budget", serde_json::Value::from(share.budget)),
-                    ("tree_waves", serde_json::Value::from(share.members)),
-                    ("share", serde_json::Value::from(share.share)),
-                    ("ceiling", serde_json::Value::from(ceiling)),
-                    ("occupied", serde_json::Value::from(tree_occupied)),
-                    (
-                        "admission_order",
-                        serde_json::Value::String("document order, then key".into()),
-                    ),
-                ]),
+                args,
                 admitted_ids.clone(),
                 Some(share.root_id.clone()),
                 task_diagnostic_action("tree_budget_exhausted").map(str::to_owned),
-            ),
-            None => Diagnostic::coded(
+            )
+        };
+        let ceiling_diagnostic = |tied: Option<&super::wave_tree::TreeShare>| {
+            let mut args = diagnostic_args([
+                ("ceiling", serde_json::Value::from(ceiling)),
+                ("occupied", serde_json::Value::from(ceiling_occupied)),
+                (
+                    "admission_order",
+                    serde_json::Value::String("document order, then key".into()),
+                ),
+            ]);
+            if let Some(share) = tied {
+                args.insert("bounds_tied".into(), serde_json::Value::from(true));
+                args.insert(
+                    "root_wave_id".into(),
+                    serde_json::Value::String(share.root_id.clone()),
+                );
+            }
+            Diagnostic::coded(
                 "spec_task_ceiling",
                 "key",
-                diagnostic_args([
-                    ("ceiling", serde_json::Value::from(ceiling)),
-                    ("occupied", serde_json::Value::from(ceiling_occupied)),
-                    (
-                        "admission_order",
-                        serde_json::Value::String("document order, then key".into()),
-                    ),
-                ]),
+                args,
                 admitted_ids.clone(),
                 Some(wave_id.into()),
                 task_diagnostic_action("spec_task_ceiling").map(str::to_owned),
-            ),
+            )
         };
-        verdicts[index].diagnostics.push(diagnostic);
+        if let Some(share) = &tree_bound {
+            verdicts[index]
+                .diagnostics
+                .push(tree_diagnostic(share, false));
+        } else if let Some(share) = &tied_bounds {
+            verdicts[index]
+                .diagnostics
+                .push(ceiling_diagnostic(Some(share)));
+            verdicts[index]
+                .diagnostics
+                .push(tree_diagnostic(share, true));
+        } else {
+            verdicts[index].diagnostics.push(ceiling_diagnostic(None));
+        }
         verdicts[index].schedulable = false;
     }
     if include_read_state {
