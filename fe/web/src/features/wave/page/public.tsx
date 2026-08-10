@@ -14,7 +14,7 @@
 // is no `<a href>` anywhere on this page, and `public.contract.test.tsx` holds
 // that line for the whole subtree.
 
-import type { RefObject } from 'react';
+import type { ReactNode, RefObject } from 'react';
 
 import { coveSlotVar, type Cove } from '../../../../../core/domain/cove.ts';
 import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
@@ -22,6 +22,7 @@ import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { Breadcrumb, PageHeader } from '../../../ui/page-header/public.tsx';
+import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import styles from './page.module.css';
@@ -31,6 +32,8 @@ export type WavePageProps = Readonly<{
   /** Absent when the wave points at a cove the current read cannot see. */
   cove: Cove | undefined;
   cards: readonly CardWire[];
+  /** The panel card's second module, composed by `app/router` (features/chat). */
+  conversationList?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onOpenCove: () => void;
@@ -42,7 +45,8 @@ export type WavePageProps = Readonly<{
 const UNKNOWN_COVE_LABEL = 'Unknown cove';
 
 export function WavePage({
-  wave, cove, cards, pageTitleRef, onOpenCove, onOpenToday, onRenameWave, onDeleteWave,
+  wave, cove, cards, conversationList, pageTitleRef,
+  onOpenCove, onOpenToday, onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -163,33 +167,43 @@ export function WavePage({
           </div>
         </div>
 
+        {/*
+          The same card every route has. CARDS is this route's own module —
+          `kind` is a card's identity and `title` its label, so a card with a
+          title shows the title alone rather than printing both in a 308px
+          column. FOLDER sits with it because a wave's cwd is a fact about the
+          same object; it left the page header, where it was the largest fixed
+          cost the page paid for its least-read fact.
+        */}
         <aside className={styles.panel}>
-          <h2 className={styles.sectionLabel}>Cards</h2>
-          {cards.length === 0
-            ? <p className={styles.inlineEmpty}>No cards yet.</p>
-            : (
-              <ul className={styles.cards} data-nc-card-inventory="">
-                {cards.map((card) => (
-                  <li key={card.id} className={styles.cardRow}>
-                    {/* `kind` is the identity and `title` is the label; with no
-                        title the kind stands alone rather than being printed
-                        twice. */}
-                    <span className={styles.cardKind}>{card.title ?? card.kind}</span>
-                    {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-          {wave.cwd !== '' && (
-            <>
-              <h2 className={styles.sectionLabel}>Folder</h2>
-              <p className={styles.cwd}>{wave.cwd}</p>
-            </>
-          )}
-
-          <h2 className={styles.sectionLabel}>Activity</h2>
-          <p className={styles.inlineEmpty}>Nothing yet.</p>
+          <PanelCard>
+            <PanelModule title="Cards">
+              {cards.length === 0
+                ? <PanelEmpty>No cards yet.</PanelEmpty>
+                : (
+                  <ul className={styles.cards} data-nc-card-inventory="">
+                    {cards.map((card) => (
+                      <li key={card.id} className={styles.cardRow}>
+                        <span className={styles.cardKind}>{card.title ?? card.kind}</span>
+                        {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              {/* The folder is a fact about the same object, so it rides in
+                  this module rather than earning a third one — but it is a
+                  different *kind* of fact from a card, so a hairline separates
+                  them (boundary ladder step ②). Without it the path read as a
+                  second line of the empty state. */}
+              {wave.cwd !== '' && (
+                <p className={styles.cwd}>
+                  <span className={styles.cwdLabel}>Folder</span>
+                  {wave.cwd}
+                </p>
+              )}
+            </PanelModule>
+            <PanelModule title="Conversations">{conversationList}</PanelModule>
+          </PanelCard>
         </aside>
       </div>
 

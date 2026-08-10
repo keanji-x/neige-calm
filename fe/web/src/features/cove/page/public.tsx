@@ -1,9 +1,11 @@
-// The cove route: a one-row header (rename in place, new-wave, delete) over a
-// body slot for the wave list. Everything else this header once carried — an
-// identity dot, a wave count, a derived cwd — is gone; see the notes inline.
+// The cove route, on the skeleton every route now shares: a one-row header, an
+// unbounded document in the main column, and one rounded card top-right holding
+// two modules — the wave list, then the conversation list.
 //
-// §8.2 — this page *is* a list. Everything else on it is that list's label, and
-// the page's whole job is "pick the wave I need, or start one".
+// This overturns §8.2's "这一页*就是*一个列表". Picking a wave is still the
+// page's first job and the list is still the card's first module; what changed
+// is that a cove now has somewhere to put what comes *out* of the work, which
+// it previously did not.
 //
 // Presentational by construction. It never fetches, never deletes, never
 // navigates; every escape is a prop. In particular it does NOT render the wave
@@ -17,6 +19,7 @@ import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { deleteCoveCopy } from '../../../ui/confirm-dialog/copy.ts';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
+import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../../ui/typed-confirm/public.tsx';
 import styles from './page.module.css';
@@ -26,6 +29,8 @@ export type CovePageProps = Readonly<{
   waveCount: number;
   /** The wave list, composed by `app/router`. Owns the empty state too. */
   waveList: ReactNode;
+  /** The panel card's second module, composed by `app/router` (features/chat). */
+  conversationList?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the next page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameCove: (name: string) => void | Promise<void>;
@@ -43,7 +48,8 @@ export type CovePageProps = Readonly<{
  * clears both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
  */
 export function CovePage({
-  cove, waveCount, waveList, pageTitleRef, onRenameCove, onDeleteCove, onRequestNewWave,
+  cove, waveCount, waveList, conversationList, pageTitleRef,
+  onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -106,45 +112,70 @@ export function CovePage({
           />
         }
         actions={
-          <>
-            {/*
-              Icon buttons with a hover tooltip, not labelled buttons. This
-              overrides §4.4 ("每页只出现一次的动作必须带文字"), whose worry is
-              that a row of unlabelled glyphs becomes a memory test — with two
-              controls, a `+` and an `×` in their conventional meanings, and a
-              tooltip on each, that worry does not apply, and a 94px solid
-              accent slab was the loudest thing on a page whose content is a
-              quiet list.
+          /*
+            One control. The `+` moved to the WAVES module head, next to the
+            list it creates into — a page-level "new wave" and a list-level one
+            are the same action, and two buttons with the same accessible name
+            is a defect rather than redundancy.
 
-              `title` gives the sighted hover label; `aria-label` gives the
-              accessible name. §4.4 is explicit that the tooltip may not stand
-              in for the accessible name — both are present, not either.
-            */}
-            <button
-              type="button"
-              data-nc-role="icon"
-              className={styles.headerAction}
-              aria-label="New wave"
-              title="New wave"
-              onClick={onRequestNewWave}
-            >
-              +
-            </button>
-            <button
-              type="button"
-              data-nc-role="icon"
-              className={`${styles.headerAction} ${styles.headerDelete}`}
-              aria-label={`Delete cove ${cove.name}`}
-              title="Delete cove"
-              onClick={() => setConfirmOpen(true)}
-            >
-              ×
-            </button>
-          </>
+            `title` gives the sighted hover label; `aria-label` gives the
+            accessible name. §4.4 is explicit that a tooltip may not stand in
+            for the accessible name — both are present, not either. That the
+            glyph is unlabelled overrides §4.4's "每页只出现一次的动作必须带
+            文字": the worry there is a row of glyphs becoming a memory test,
+            and one `×` in its conventional meaning is not a row.
+          */
+          <button
+            type="button"
+            data-nc-role="icon"
+            className={`${styles.headerAction} ${styles.headerDelete}`}
+            aria-label={`Delete cove ${cove.name}`}
+            title="Delete cove"
+            onClick={() => setConfirmOpen(true)}
+          >
+            ×
+          </button>
         }
       />
 
-      <div className={styles.body}>{waveList}</div>
+      {/*
+        The shared skeleton: an unbounded report document in the main column,
+        one rounded card top-right with two modules.
+
+        This overturns §8.2's "这一页*就是*一个列表". The list is still what you
+        came for and it is still the card's first module, but a cove is a place
+        work happens, and the page had nowhere to put what came *out* of that
+        work. The main column is that place. It is empty today — no cove-level
+        document exists yet — so it renders at §5.3's unbuilt geometry rather
+        than collapsing, because the shape is the useful information.
+      */}
+      <div className={styles.content}>
+        <div className={styles.doc}>
+          <div className={styles.reportSlot}>
+            <p className={styles.slotNote}>No document yet.</p>
+          </div>
+        </div>
+
+        <aside className={styles.panel}>
+          <PanelCard>
+            <PanelModule title="Waves" action={
+              <button
+                type="button"
+                data-nc-role="icon"
+                className={styles.moduleAction}
+                aria-label="New wave"
+                title="New wave"
+                onClick={onRequestNewWave}
+              >
+                +
+              </button>
+            }>
+              {waveList}
+            </PanelModule>
+            <PanelModule title="Conversations">{conversationList}</PanelModule>
+          </PanelCard>
+        </aside>
+      </div>
 
       {/* Deleting a cove cascades to every wave in it: the one operation in the
           product that earns a typed confirm (§4.3 / §6.13). The rail's entry

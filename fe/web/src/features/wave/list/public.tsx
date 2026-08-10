@@ -26,11 +26,18 @@ export type WaveListProps = Readonly<{
   onDeleteWave?: (waveId: string) => void;
   nowMs?: number;
   emptyMessage: string;
+  /**
+   * §6.3's variant. `compact` inside a 308px panel module, `default` when the
+   * list owns a main column. The two-line variant in a panel is 48px of row for
+   * a lifecycle phrase the panel has no width to set — and its hover actions
+   * sit at the row's own edge, which in a panel is the card's edge.
+   */
+  variant?: 'default' | 'compact';
 }>;
 
 export function WaveList({
   waves, coves, showCove = false, activeWaveId = null,
-  onOpenWave, onSetPinned, onDeleteWave, nowMs, emptyMessage,
+  onOpenWave, onSetPinned, onDeleteWave, nowMs, emptyMessage, variant = 'default',
 }: WaveListProps) {
   const ordered = sortByLifecycleRank(waves);
 
@@ -46,12 +53,11 @@ export function WaveList({
         const cove = showCove ? coveOf(wave.coveId, coves) : undefined;
         return (
           <li key={wave.id} className={styles.item}>
-            {/* The default variant: 48px, two lines, the lifecycle phrase on
-                the second. No identity dot per row — every row in this list
-                belongs to the same cove, and the page header already says
-                which (§8.2). */}
+            {/* No identity dot per row — every row in this list belongs to the
+                same cove, and the page header already says which (§8.2). */}
             <WaveRow
               wave={wave}
+              variant={variant}
               coveName={showCove ? cove?.name ?? 'Unknown cove' : undefined}
               nowMs={nowMs}
               active={wave.id === activeWaveId}

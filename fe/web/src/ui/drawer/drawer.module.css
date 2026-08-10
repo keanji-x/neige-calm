@@ -1,0 +1,95 @@
+@layer ui {
+  /*
+   * §7.6, verbatim: fixed to the main region's inline-end, `--drawer-w` wide,
+   * `--z-overlay`, `--shadow-float`, and `--radius-lg` on the inline-start
+   * corners only — it is attached to the edge, not floating in the middle.
+   *
+   * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
+   * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
+   * unrelated content, which is exactly what the exemption is for.
+   */
+  .drawer {
+    position: fixed;
+    inset-block: 0;
+    inset-inline-end: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    inline-size: var(--drawer-w);
+    max-inline-size: 100%;
+    border-inline-start: 1px solid var(--hairline);
+    border-start-start-radius: var(--radius-lg);
+    border-end-start-radius: var(--radius-lg);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    animation: drawer-in var(--motion-medium) ease-out;
+  }
+
+  .drawer:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    flex: none;
+    block-size: var(--control-h-lg);
+    padding-inline: var(--space-6) var(--space-4);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .title {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .close {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .close:hover,
+  .close:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    min-block-size: 0;
+    padding: var(--space-6);
+    overflow: auto;
+  }
+
+  /* Enter animates, exit is instant (§7.6). An exit transition on something you
+     dismissed keeps the screen busy after the decision is already made. */
+  @keyframes drawer-in {
+    from {
+      translate: var(--drawer-w) 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .drawer {
+      animation: none;
+    }
+  }
+}

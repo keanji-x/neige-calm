@@ -1,0 +1,67 @@
+@layer ui {
+  /*
+   * One card per page. Hairline + `--surface-card` + `--radius-md`, and nothing
+   * else — see the note in public.tsx for why a panel-column card may carry a
+   * border at all, and §6.5 for why it may not carry a shadow.
+   *
+   * `overflow: hidden` so the first module's head and the last module's body
+   * are clipped by the radius instead of squaring off its corners; without it
+   * the head's own background paints over the top two.
+   */
+  .card {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+    overflow: hidden;
+  }
+
+  .module {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+  }
+
+  /* A hairline between siblings inside one object (boundary ladder step ②). */
+  .module + .module {
+    border-block-start: 1px solid var(--hairline);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    block-size: var(--control-h-lg);
+    padding-inline: var(--space-4);
+    background: var(--surface-panel-head);
+  }
+
+  /* The label tier: uppercase plus tracking, standing in for a font size the
+     panel has no room to spend. The two always travel together — 11px uppercase
+     without added tracking is not readable. */
+  .title {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    padding: var(--space-4);
+  }
+
+  .empty {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+}

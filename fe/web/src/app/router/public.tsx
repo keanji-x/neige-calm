@@ -24,7 +24,10 @@ import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
+import { ChatList } from '../../features/chat/list/public.tsx';
+import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
+import { Drawer } from '../../ui/drawer/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, prefetchCoveList, settingsQueryOptions, useCoveMutations, useSettingsMutation,
@@ -34,6 +37,14 @@ import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { useGo, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
+import paneStyles from './router.module.css';
+
+/**
+ * A frozen empty list, so every route hands the same reference down and React
+ * cannot see a "new" array on each render. Production has no conversation
+ * endpoint yet; see `core/domain/conversation.ts`.
+ */
+const NO_CONVERSATIONS: readonly Conversation[] = Object.freeze([]);
 
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
@@ -93,10 +104,55 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
   );
 }
 
+/**
+ * The conversation module every route's panel card carries, plus the drawer it
+ * opens into.
+ *
+ * It lives here, in the composition layer, for two separate reasons. The list
+ * is `features/chat` and the pages are `features/today|cove|wave`, and a
+ * feature may not import a sibling domain — so someone above them has to put
+ * the two together, exactly as `renderWaveRow` and `waveList` already are. And
+ * the drawer overlays the entire main region (§7.6), which is not something a
+ * 308px module inside one page should own.
+ *
+ * `conversations` is empty in production: the kernel holds this data
+ * (`WorkerSessionProjection` + `HarnessItem`) but no HTTP endpoint serves it
+ * yet, so the list renders §5.3's unbuilt shape. See
+ * `core/domain/conversation.ts`.
+ */
+function useConversationPanel(conversations: readonly Conversation[], options?: { showWave?: boolean }) {
+  const [open, setOpen] = useState<Conversation | null>(null);
+  return {
+    list: (
+      <ChatList
+        conversations={conversations}
+        activeId={open?.id ?? null}
+        showWave={options?.showWave ?? true}
+        onOpen={setOpen}
+      />
+    ),
+    drawer: (
+      <Drawer
+        open={open !== null}
+        title={open === null ? '' : open.waveTitle}
+        onClose={() => setOpen(null)}
+      >
+        {/* The transcript is the same unbuilt story as the list: the turns
+            exist in the kernel, the endpoint does not. The drawer still opens,
+            at the width and behaviour §7.6 fixed, so the shape is real even
+            though the content is not. */}
+        <p className={paneStyles.drawerNote}>No transcript yet.</p>
+      </Drawer>
+    ),
+  };
+}
+
 function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const go = useGo();
+  const chat = useConversationPanel(NO_CONVERSATIONS);
   return (
+    <>
     <TodayPage
       waves={workspace.waves}
       coves={workspace.coves}
@@ -112,7 +168,10 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
           onOpen={(waveId) => go({ name: 'wave', waveId })}
         />
       )}
+      conversationList={chat.list}
     />
+    {chat.drawer}
+    </>
   );
 }
 
@@ -123,6 +182,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
   const waveMutations = useWaveMutations(transport);
   const go = useGo();
   const [creating, setCreating] = useState(false);
+  const chat = useConversationPanel(NO_CONVERSATIONS);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -162,10 +222,12 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
         onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
         onDeleteCove={() => coveMutations.remove(cove.id).then(() => { go({ name: 'today' }); })}
         onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
+        conversationList={chat.list}
         waveList={(
           <WaveList
             waves={waves}
             coves={workspace.coves}
+            variant="compact"
             emptyMessage="This cove is quiet. Start a wave."
             onOpenWave={(waveId) => go({ name: 'wave', waveId })}
             onSetPinned={(waveId, pinned) => {
@@ -185,6 +247,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
           onSubmit={submit}
         />
       </Dialog>
+      {chat.drawer}
     </>
   );
 }
@@ -192,6 +255,9 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
 function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   const waveId = useRouteParam('/wave/');
   const workspace = useWorkspace(transport);
+  // `showWave: false` — on a wave's own page the wave's name is the page title,
+  // so repeating it on every row is one column spent saying nothing.
+  const chat = useConversationPanel(NO_CONVERSATIONS, { showWave: false });
   const waveMutations = useWaveMutations(transport);
   const go = useGo();
   const detail = useQuery({
@@ -212,10 +278,12 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   const cove = coveOf(wave.coveId, workspace.coves);
 
   return (
+    <>
     <WavePage
       wave={wave}
       cove={cove}
       cards={detail.data.cards}
+      conversationList={chat.list}
       onOpenCove={() => { if (cove !== undefined) go({ name: 'cove', coveId: cove.id }); }}
       onOpenToday={() => go({ name: 'today' })}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
@@ -224,6 +292,8 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
         else go({ name: 'today' });
       })}
     />
+    {chat.drawer}
+    </>
   );
 }
 

@@ -1,0 +1,92 @@
+@layer features {
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  /* The row recipe, at the panel's density. Same shape as every other row in
+     the app: no border, no background of its own, a 6px leading state column
+     and a fixed trailing column for the age (§6.0). */
+  .row {
+    display: grid;
+    grid-template-columns: var(--dot-sm) minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--space-2);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    text-align: start;
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .row:hover {
+    background: var(--overlay-hover);
+  }
+
+  .row:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Fill + weight, no border — §5.1's two channels, same as every other
+     selected row in the app. */
+  .rowActive {
+    background: var(--accent-soft);
+  }
+
+  .dot {
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--text-4);
+  }
+
+  .dotLive {
+    background: var(--accent);
+    animation: chat-pulse var(--motion-pulse) ease-in-out infinite;
+  }
+
+  .label {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rowActive .label {
+    font-weight: var(--weight-semibold);
+    color: var(--text);
+  }
+
+  .age {
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @keyframes chat-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dotLive {
+      animation: none;
+    }
+
+    .row {
+      transition: none;
+    }
+  }
+}

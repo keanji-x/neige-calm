@@ -76,7 +76,64 @@
   /* The font itself declares "this is a literal", so it spends no size, weight
      or colour doing it. */
 
-  .body {
+  /* Main column plus a 308 panel column, separated by the standard 24px gutter
+     — the same content grid every route uses (§7.2). */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    gap: var(--space-10);
     min-block-size: 0;
+  }
+
+  .doc {
+    max-inline-size: var(--measure-doc);
+    min-inline-size: 0;
+  }
+
+  /*
+   * The unbuilt document. It occupies a document's worth of space because that
+   * shape is precisely what is being taught; it is dashed content, not a void,
+   * so §7.3's empty-rectangle rule does not count it.
+   */
+  .reportSlot {
+    display: grid;
+    place-items: center;
+    max-inline-size: var(--measure-prose);
+    min-block-size: calc(var(--slot-h) * 2);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-md);
+  }
+
+  .slotNote {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .panel {
+    min-inline-size: 0;
+  }
+
+  /* A module head's trailing control. 20px, not 28: unlike a rail section
+     action it sits inside a 32px head that is itself a bigger target, which is
+     the exemption §2.5 grants (WCAG 2.5.8's 24px-offset rule). */
+  .moduleAction {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    margin-inline-end: calc(var(--space-2) * -1);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .moduleAction:hover,
+  .moduleAction:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
   }
 }

@@ -16,6 +16,7 @@ import {
 } from '../../../../core/domain/wave.ts';
 import { coveOf, coveSlotVar, type Cove } from '../../../../core/domain/cove.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
+import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './today.module.css';
 
@@ -55,6 +56,15 @@ export type TodayPageProps = Readonly<{
   renderWaveRow: WaveRowRenderer;
   /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
   scheduledEvents?: readonly ScheduledEvent[];
+  /**
+   * The panel card's second module, composed by `app/router`.
+   *
+   * A slot rather than props for the same reason `renderWaveRow` is a callback:
+   * `features/**` may not import a sibling domain, and the conversation list is
+   * `features/chat`. The same slot appears on all three routes — that identical
+   * second module is the point of the skeleton.
+   */
+  conversationList?: ReactNode;
   pageTitleRef?: React.RefObject<HTMLElement | null>;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
   nowMs?: number;
@@ -97,7 +107,8 @@ function formatHour(hour: number): string {
 }
 
 export function TodayPage({
-  waves, coves, renderWaveRow, scheduledEvents = [], pageTitleRef, nowMs,
+  waves, coves, renderWaveRow, scheduledEvents = [], conversationList,
+  pageTitleRef, nowMs,
 }: TodayPageProps) {
   const today = useMemo(() => {
     const start = nowMs === undefined ? new Date() : new Date(nowMs);
@@ -155,15 +166,26 @@ export function TodayPage({
           <Section title="Recent" waves={recent} render={renderWaveRow} />
         </div>
 
+        {/*
+          One card, two modules — the skeleton every route now shares. The
+          route-specific module comes first because it is why you are on this
+          route; the conversation list is second and identical everywhere, so
+          it can be found without reading it.
+        */}
         <aside className={styles.panelColumn}>
-          <Calendar
-            today={today}
-            waves={waves}
-            coves={coves}
-            scheduledEvents={scheduledEvents}
-            renderWaveRow={renderWaveRow}
-            nowMs={nowMs}
-          />
+          <PanelCard>
+            <PanelModule title="Calendar">
+              <Calendar
+                today={today}
+                waves={waves}
+                coves={coves}
+                scheduledEvents={scheduledEvents}
+                renderWaveRow={renderWaveRow}
+                nowMs={nowMs}
+              />
+            </PanelModule>
+            <PanelModule title="Conversations">{conversationList}</PanelModule>
+          </PanelCard>
         </aside>
       </div>
     </div>
