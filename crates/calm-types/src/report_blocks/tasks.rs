@@ -176,9 +176,20 @@ impl Diagnostic {
             .expect("registered task diagnostic code must have a path");
         assert_eq!(path, expected_path, "wrong path for task diagnostic {code}");
         if let Some(expected_action) = task_diagnostic_action(&code) {
+            let action_available = match code.as_str() {
+                "tree_budget_exhausted" => message_args
+                    .get("minimum_tree_task_budget")
+                    .and_then(Value::as_i64)
+                    .is_some(),
+                "spec_task_ceiling" => !message_args
+                    .get("capacity_raise_unavailable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                _ => true,
+            };
             assert_eq!(
                 action.as_deref(),
-                Some(expected_action),
+                action_available.then_some(expected_action),
                 "wrong recovery action for task diagnostic {code}"
             );
         }
@@ -251,11 +262,21 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .get("ceiling")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
-            if args
+            let bounds_tied = args
                 .get("bounds_tied")
                 .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
+                .unwrap_or(false);
+            let capacity_raise_unavailable = args
+                .get("capacity_raise_unavailable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if bounds_tied && capacity_raise_unavailable {
+                format!(
+                    "spec task ceiling of {ceiling} and this wave's tree share are both reached, \
+                     but the tree budget has no higher legal target in the current configuration; \
+                     wait for in-flight work to finish or reduce the number of tree members"
+                )
+            } else if bounds_tied {
                 format!(
                     "spec task ceiling of {ceiling} and this wave's tree share are both reached — \
                      raise both this wave's spec_task_ceiling and tree_task_budget on root wave `{}`",
@@ -284,10 +305,7 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .get("share")
                 .and_then(Value::as_i64)
                 .unwrap_or_default();
-            let minimum_budget = args
-                .get("minimum_tree_task_budget")
-                .and_then(Value::as_i64)
-                .unwrap_or_default();
+            let minimum_budget = args.get("minimum_tree_task_budget").and_then(Value::as_i64);
             let admission_frozen = args
                 .get("admission_frozen")
                 .and_then(Value::as_bool)
@@ -296,6 +314,14 @@ fn render_diagnostic_message(code: &str, args: &BTreeMap<String, Value>) -> Stri
                 .get("bounds_tied")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let Some(minimum_budget) = minimum_budget else {
+                return format!(
+                    "the wave tree rooted at `{root}` cannot admit another spec task, and the \
+                     current configuration cannot be released by raising tree_task_budget within \
+                     its allowed range — let in-flight work finish or reduce the number of tree \
+                     members"
+                );
+            };
             if admission_frozen {
                 format!(
                     "the wave tree rooted at `{root}` is frozen because at least one member's \
@@ -938,14 +964,11 @@ mod tests {
         );
 
         for &(code, path) in TASK_DIAGNOSTIC_CODE_PATHS {
-            let diagnostic = Diagnostic::coded(
-                code,
-                path,
-                BTreeMap::new(),
-                vec![],
-                None,
-                task_diagnostic_action(code).map(str::to_owned),
-            );
+            let action = (code != "tree_budget_exhausted")
+                .then(|| task_diagnostic_action(code))
+                .flatten()
+                .map(str::to_owned);
+            let diagnostic = Diagnostic::coded(code, path, BTreeMap::new(), vec![], None, action);
             assert_eq!(diagnostic.path, path, "path drifted for {code}");
         }
     }

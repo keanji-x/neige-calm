@@ -293,3 +293,37 @@ r6 的 R6-B2a（严格方向）由 R7-B1c 重跑仍 RED；R6-B2b 与 R5-m1 原�
 语义，已主动退役并由 R7-B1a/B1d 的效果杀手变异替换。`singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling`
 已改为两入口都返回双诊断，复原态定向 **PASS 1/1**。旧 schema fixture 的 `created_at` 与 workspace
 fail-closed 本轮未动；其 R6-B1c/R6-m2 证据不受归因变更影响。
+
+## 十二、修复轮 8（冻结态联合目标 + 无解诊断，全部实际执行并复原）
+
+环境：`.local-bin` nextest、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置；web 变异显式使用
+Node 22.22.0。所有生产/文案变异均以 `apply_patch` 单点施加，目标测试结束后立即反向复原。
+
+修复前先把评审扫描固化：`N=1..=3`、`B=0..=6`、全部 target index、`ceiling=0..=5`、
+目标 legacy 占用 `∈{0,3}`，共 **504** 个实际 SQLite 投影组合。每个拒绝读取全部容量动作、执行一次
+并重投影同一报告；修前精确 **210** 个无效，修后 **0**。这是跨过每个 N 至少两个余数边界的最小
+稠密网格；`B=64` 的普通/冻结无解边界另用生产验收覆盖，避免把一个稀疏上限乘进整张网格。
+
+| # | 改坏什么 | 变红的测试 | 实际结果 |
+|---|---|---|---|
+| R8-B1 | 联合目标搜索退回只要求 `new_share > current_share`，不要求 `new_share > target_occupancy` | `the_diagnosed_capacity_action_increases_admission` | **RED 0/1**：**210** 个 self-overage 组合执行建议后仍 `0 → 0`；含 `B=0,N=1,legacy=3` 的错误 minimum 3 |
+| R8-B2a | 冻结分支删除 `ceiling_capacity==0` 时的 local ceiling 诊断 | 同一穷举验收 | **RED 0/1**：B1 已正确后残余精确 **35** 个，全部 `C=0 && frozen`，tree 动作后仍 `0 → 0` |
+| R8-B2b | 冻结双归因错误判断裸 `ceiling==0`，忽略非零 ceiling 已被在飞 block 占满 | `a_frozen_wave_with_nonzero_ceiling_occupancy_names_both_bounds` | **RED 0/1**：`ceiling=3, occupied=3` 缺 `spec_task_ceiling` / `raise_spec_task_ceiling` |
+| R8-B3-action | minimum 不存在时恢复无条件 `raise_tree_task_budget` | `an_unreachable_tree_budget_target_reports_no_raise_action` | **RED 0/1**：构造器 fail-closed，`Some("raise_tree_task_budget") != None` |
+| R8-B3-rust | Rust 无 minimum 分支恢复伪建议 “at least 0” | 同上 | **RED 0/1**：缺“当前配置无法通过抬高预算解除”，边界断言在假 0 文案处失败 |
+| R8-B3-web | web 无 minimum 分支恢复 `minimum ?? ''` 的空数字建议 | `report-blocks.test.tsx` | **RED 2/59**：实际渲染 `to at least .`，无解说明与跨源契约两处同时失败 |
+
+### 12.1 受冻结归因/动作可用性改写影响的旧证据刷新
+
+| 旧条目 | R8 重跑 |
+|---|---|
+| R7-B1a（平局漏 tree） | 新穷举门 **RED：48** 个动作无效，均只抬 local ceiling 后准入不增 |
+| R7-B1b（minimum 退回 `B+1`） | 新穷举门 **RED：320** 个动作无效，覆盖余数位置与 self-overage，不再依赖一行手挑数据 |
+| R7-B1b-freeze（忽略全员解冻 minimum） | `legacy_member_overage_freezes_new_blocks_across_the_tree` **RED**：sibling overage 构造给 8，期望可执行的 9 |
+| R7-B1c / R6-B2a（严格方向反转） | 新穷举门 **RED：246** 个动作无效 |
+| R7-B1d（`<` 放宽成 `<=`，平局吞成 tree-only） | 新穷举门 **RED：48** 个动作无效 |
+| R7-m1-rust | `legacy_member_overage_freezes_new_blocks_across_the_tree` **RED**：错误回退成 “slice … used up” |
+| R7-m1-web | web report-block 定向门 **RED 1/59**：缺 `immutable in-progress work than its share` |
+
+本轮没有 STILL-GREEN 运行时变异。复原搜索确认没有 `false &&`、裸 `ceiling==0`、反向/放宽容量
+比较、无条件 tree raise action、假 `at least 0` 或 web 空 minimum 残留。

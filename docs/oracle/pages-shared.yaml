@@ -804,7 +804,7 @@
     自动化作为两个独立按钮。
   why: >
     三句对外概念契约要求系统署名不成为输入或 UI 名词；状态来自读时投影，已交付卡只读。
-  source: web/src/pages/report-blocks/task.tsx:99-127 + web/src/pages/WaveReportPage.tsx:431-466
+  source: web/src/pages/report-blocks/task.tsx:112-170 + web/src/pages/WaveReportPage.tsx:431-466
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:891
   owner_slice: features/report/blocks
   intentional_omission: false

@@ -824,12 +824,12 @@ describe('degraded blocks', () => {
     ['declaration_changed_in_flight', {}, /worker output is still available/],
     ['task_key_completed', {}, /already been delivered/],
     ['invalid_declaration', {}, /incomplete or invalid/],
-    ['tree_budget_exhausted', { tree_waves: 3, tree_task_budget: 2, share: 0 }, /remove extra child waves/],
-    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1 }, /group’s excess in-progress work finish/],
-    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, admission_frozen: true }, /immutable in-progress work than its share/],
+    ['tree_budget_exhausted', { tree_waves: 3, tree_task_budget: 2, share: 0, minimum_tree_task_budget: 3 }, /remove extra child waves/],
+    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, minimum_tree_task_budget: 4 }, /group’s excess in-progress work finish/],
+    ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, admission_frozen: true, minimum_tree_task_budget: 6 }, /immutable in-progress work than its share/],
     ['tree_budget_exhausted', { tree_waves: 2, tree_task_budget: 2, share: 1, bounds_tied: true, minimum_tree_task_budget: 4 }, /raising either one alone will not admit another card/],
     ['spec_task_ceiling', { ceiling: 2, occupied: 0, bounds_tied: true }, /Raise both/],
-    ['tree_budget_exhausted', {}, /receives no task slots/],
+    ['tree_budget_exhausted', {}, /cannot be released by raising/],
     ['tree_root_unresolved', {}, /operator must repair the wave tree/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
@@ -906,12 +906,23 @@ describe('degraded blocks', () => {
     const treeCopy = taskDiagnosticText({
       code: 'tree_budget_exhausted', messageArgs: {
         root_wave_id: 'wave-root-985', tree_waves: 2, tree_task_budget: 2, share: 1,
+        minimum_tree_task_budget: 4,
       },
       relatedBlockIds: [], path: 'key', message: '', action: actions.get('tree_budget_exhausted'),
     });
     expect(treeCopy).toMatch(/top wave/);
     expect(treeCopy).toContain('wave-root-985');
     expect(treeCopy).not.toMatch(/wave settings/);
+
+    const unavailableTreeCopy = taskDiagnosticText({
+      code: 'tree_budget_exhausted', messageArgs: {
+        root_wave_id: 'wave-root-985', tree_waves: 1, tree_task_budget: 64, share: 64,
+      },
+      relatedBlockIds: [], path: 'key', message: '',
+    });
+    expect(unavailableTreeCopy).toMatch(/cannot be released by raising/);
+    expect(unavailableTreeCopy).toMatch(/in-progress work finish|reduce the number of linked waves/);
+    expect(unavailableTreeCopy).not.toMatch(/at least\s*(?:0|$)/);
 
     const ceilingCopy = taskDiagnosticText({
       code: 'spec_task_ceiling', messageArgs: { ceiling: 1, occupied: 1 },

@@ -922,8 +922,8 @@ async fn evaluate_schedulability_with_tree_term(
     // Attribution matters here (§12.2 C): recovery must name every setting
     // that actually binds this admission. A strict minimum names one knob;
     // equality names BOTH, because raising either one alone leaves the other
-    // at the same minimum. A legacy overage freeze is tree-owned regardless of
-    // the local numeric capacities.
+    // at the same minimum. A legacy overage freeze always binds the tree and
+    // also binds the local ceiling when that ceiling has no remaining slot.
     let tree_bound = tree_share
         .as_ref()
         .filter(|share| share.admission_frozen || tree_capacity < ceiling_capacity)
@@ -934,9 +934,14 @@ async fn evaluate_schedulability_with_tree_term(
         .cloned();
     for index in candidates.into_iter().skip(capacity) {
         let tree_diagnostic = |share: &super::wave_tree::TreeShare, bounds_tied: bool| {
+            // The target must gain a genuinely free slot, not merely catch up
+            // to immutable occupancy. In a self-overage freeze the first B
+            // that increases `share` can still leave share == occupancy.
+            let occupied_or_current_share = share.share.max(tree_occupied);
             let minimum_for_target =
                 (share.budget.saturating_add(1)..=MAX_TREE_TASK_BUDGET).find(|budget| {
-                    deterministic_share(*budget, share.members, share.member_index) > share.share
+                    deterministic_share(*budget, share.members, share.member_index)
+                        > occupied_or_current_share
                 });
             let minimum_tree_task_budget = if share.admission_frozen {
                 minimum_for_target
@@ -977,10 +982,13 @@ async fn evaluate_schedulability_with_tree_term(
                 args,
                 admitted_ids.clone(),
                 Some(share.root_id.clone()),
-                task_diagnostic_action("tree_budget_exhausted").map(str::to_owned),
+                minimum_tree_task_budget
+                    .and_then(|_| task_diagnostic_action("tree_budget_exhausted"))
+                    .map(str::to_owned),
             )
         };
-        let ceiling_diagnostic = |tied: Option<&super::wave_tree::TreeShare>| {
+        let ceiling_diagnostic = |tied: Option<&super::wave_tree::TreeShare>,
+                                  raise_available: bool| {
             let mut args = diagnostic_args([
                 ("ceiling", serde_json::Value::from(ceiling)),
                 ("occupied", serde_json::Value::from(ceiling_occupied)),
@@ -995,6 +1003,12 @@ async fn evaluate_schedulability_with_tree_term(
                     "root_wave_id".into(),
                     serde_json::Value::String(share.root_id.clone()),
                 );
+                if !raise_available {
+                    args.insert(
+                        "capacity_raise_unavailable".into(),
+                        serde_json::Value::from(true),
+                    );
+                }
             }
             Diagnostic::coded(
                 "spec_task_ceiling",
@@ -1002,22 +1016,30 @@ async fn evaluate_schedulability_with_tree_term(
                 args,
                 admitted_ids.clone(),
                 Some(wave_id.into()),
-                task_diagnostic_action("spec_task_ceiling").map(str::to_owned),
+                raise_available
+                    .then(|| task_diagnostic_action("spec_task_ceiling"))
+                    .flatten()
+                    .map(str::to_owned),
             )
         };
         if let Some(share) = &tree_bound {
-            verdicts[index]
-                .diagnostics
-                .push(tree_diagnostic(share, false));
+            let tree = tree_diagnostic(share, share.admission_frozen && ceiling_capacity == 0);
+            if share.admission_frozen && ceiling_capacity == 0 {
+                verdicts[index]
+                    .diagnostics
+                    .push(ceiling_diagnostic(Some(share), tree.action.is_some()));
+            }
+            verdicts[index].diagnostics.push(tree);
         } else if let Some(share) = &tied_bounds {
+            let tree = tree_diagnostic(share, true);
             verdicts[index]
                 .diagnostics
-                .push(ceiling_diagnostic(Some(share)));
-            verdicts[index]
-                .diagnostics
-                .push(tree_diagnostic(share, true));
+                .push(ceiling_diagnostic(Some(share), tree.action.is_some()));
+            verdicts[index].diagnostics.push(tree);
         } else {
-            verdicts[index].diagnostics.push(ceiling_diagnostic(None));
+            verdicts[index]
+                .diagnostics
+                .push(ceiling_diagnostic(None, true));
         }
         verdicts[index].schedulable = false;
     }

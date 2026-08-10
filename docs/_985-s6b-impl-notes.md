@@ -76,11 +76,11 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 `tree_share_from_members` 纯 seam 直接喂一个不含 caller 的成员集。两条各自的单点变异都实测红。
 
 **G5. 两个 bound 同时收紧时报哪个诊断？设计没写。**
-修复轮 6 裁决按本次写入的实际剩余容量归因：`tree_capacity < ceiling_capacity` 才报
-`tree_budget_exhausted`，否则报 `spec_task_ceiling`，所以平局归本地 ceiling。可复用性质验收
-分别构造严格 ceiling 绑定与严格 tree 绑定，读取诊断动作、执行一次对应 PATCH，再断言同一报告
-的准入数确实增加；把归因指向另一旋钮时实测 `2 → 2` 并 RED。平局另由普通/整树入口同码测试
-锁为 `spec_task_ceiling`。
+最终裁决按实际剩余容量归因：严格较小的一侧报一个；相等时报两个，因为单抬任一侧都无效。
+冻结态同样按“解除冻结后的实际绑定项”归因：tree 恒绑定，本地 `ceiling_capacity==0` 时同时点名
+ceiling（判断剩余容量而不是裸设置值，所以 `ceiling=3, occupied=3` 也覆盖）。若 64 内不存在能让
+目标获得一个空位且让全员 immutable occupancy 装回 share 的 B，则两个诊断都不登记 raise action，
+改为说明当前配置下不能靠抬预算解除，并建议等待在飞终结或减少树成员。
 
 ## 3.1 修复轮 2 实现收口
 
@@ -157,6 +157,26 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 - MINOR-5：读路径说明补回 PR-B 的 root CTE、member/inventory CTE、root budget 三条 autocommit 读取，
   不再沿用“只剩两处外部读取”的旧版本数说法。
 
+## 3.7 修复轮 8 实现收口
+
+- B1：冻结 minimum 的目标谓词改为
+  `deterministic_share(candidate,N,index) > max(current_share, target_tree_occupied)`，再与
+  `minimum_budget_to_unfreeze` 取联合可行值。self-overage 不再停在 `share==occupancy` 的零容量点。
+- B2：冻结仍由 tree 诊断承载根因；若本地剩余 ceiling capacity 也为 0，同时产生 local 诊断。
+  两项 action 都执行后同一报告必须严格多准入。非零 ceiling 被 block in-flight 占满有独立生产接线验收。
+- B3：联合搜索在 `MAX_TREE_TASK_BUDGET=64` 内无解时，tree action/minimum 同时缺席；若 local 也绑定，
+  local action 也不单独误导。Rust/web 都走明确的“当前配置无法通过抬高预算解除”分支，不再把缺值
+  渲染成 `0` 或空串，并给出等待在飞终结/减少树成员两条真实出路。
+- 验收：r7 的 8 行手挑表由 504 组合的 SQLite 穷举替换，边界为 `N=1..=3`、`B=0..=6`、
+  `index=全部`、`ceiling=0..=5`、`target legacy∈{0,3}`；它跨每个 N 的至少两个余数边界，单次约
+  2.5s。修前/后无效
+  action 数为 **210 → 0**。`B=64` 普通满载、冻结满载与“无解且 local 同时绑定”另在同模块锁住。
+- MINOR-3：保留 `tasks_rebuild_tree_tx` 预计算 term 的 `admission_frozen=false`。该 term 只存在于 B/N
+  变更的写事务内；循环后的 `require_tree_budget_postcondition` 会在提交前拒绝任何 member overage，
+  因而不会把假值暴露到已提交读路径。若在循环前求真实 freeze，必须新增第三次递归 inventory 查询或
+  扩大首个成员查询的载荷，都会破坏该入口由生产后置条件守住的固定 2 次递归查询预算；此处显式记录
+  依赖关系，不复制读路径的 freeze 推导。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -231,6 +251,27 @@ web/fe 最终全门显式使用 Node `v22.22.0`。
 | fe lint | 通过；dependency cruise **102 modules / 232 dependencies**，0 violation |
 | fe build | 成功，`built in 211ms` |
 | fe test | **758 PASS / 1 skipped**（61 files pass / 1 skipped），wire 与 mock drift 均通过 |
+
+### 5.2 修复轮 8 复原态全门
+
+环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 未设置；web/fe 均在
+本实现 worktree、显式 Node `v22.22.0` 下执行。
+
+| 门 | 实际结果 |
+|---|---|
+| `cargo fmt --all --check` + `git diff --check` | 干净 |
+| workspace clippy（命令同上） | 最终 `Finished dev profile in 1m 26s`，0 warning；首轮正确抓到 3 处 `Option` 判空后 `expect`，结构化解包后复跑全绿 |
+| workspace nextest ci | **3406/3406 PASS，89 skipped**（104 binaries，72.707s）；本轮未触发 #1046 偶发红 |
+| migration replay gate | **2/2 PASS**（42.700s） |
+| web 生成物 | `npm run gen:api` 后目标生成文件 diff 干净；bindings **49/49 + 15/15**，emit-openapi **1/1** |
+| web build | 成功，`built in 788ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web test | 首轮 **1234/1235**，唯一为未改 `DirectoryPicker` 键盘用例；定向 **20/20 PASS**，最终全量 **85 files / 1235 tests PASS**，Type Errors 0 |
+| fe lint | 通过；dependency cruise **102 modules / 232 dependencies**，0 violation |
+| fe build | 成功，`built in 207ms` |
+| fe test | **758 PASS / 1 skipped**（61 files pass / 1 skipped），wire 与 mock drift 均通过 |
+
+fe 首轮 test 的 oracle 抓到本轮 web 文案增行造成 `CAP-REPORT-TASK-023` source range 漂移；把既有
+引用从 `task.tsx:99-127` 校准到 `task.tsx:112-170` 后复跑全绿，未增加 source-anchor baseline 债务。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
 
