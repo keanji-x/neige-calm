@@ -8,8 +8,11 @@ use std::str::FromStr;
 
 const MIGRATION_0068: &str =
     include_str!("../../../calm-truth/migrations/0068_projection_policy_columns.sql");
+const MIGRATION_0069: &str =
+    include_str!("../../../calm-truth/migrations/0069_clear_pending_context_stale.sql");
 const MIGRATION_0070: &str =
     include_str!("../../../calm-truth/migrations/0070_task_context_withdrawal_and_verify.sql");
+const MIGRATION_0071: &str = include_str!("../../../calm-truth/migrations/0071_sub_wave_tree.sql");
 
 async fn apply(pool: &SqlitePool, sql: &str) {
     let clean = sql
@@ -64,7 +67,9 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
     // Production projection runs against the schema at head. Keep the 0068
     // backfill assertion above isolated, then bring this minimal fixture up to
     // the first schema version required by the production write path.
+    apply(&pool, MIGRATION_0069).await;
     apply(&pool, MIGRATION_0070).await;
+    apply(&pool, MIGRATION_0071).await;
 
     let declaration = TaskDeclaration {
         block_index: Some(0),
@@ -82,6 +87,7 @@ async fn migration_backfills_preexisting_task_and_block_declaration_adopts_it() 
         refs: vec![],
         declared_by: "spec".into(),
         released_by_user: false,
+        spawn: "in-wave".into(),
         tombstoned_by: None,
         ready: true,
         tombstone: false,

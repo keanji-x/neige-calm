@@ -112,6 +112,9 @@ pub struct TaskDeclaration {
     pub refs: Vec<String>,
     pub declared_by: String,
     pub released_by_user: bool,
+    /// Claim-frozen execution route. Missing and explicit null normalize to
+    /// `in-wave` before projection.
+    pub spawn: String,
     pub tombstoned_by: Option<String>,
     pub ready: bool,
     pub tombstone: bool,
@@ -571,6 +574,11 @@ pub fn project_task_declarations(
                 .get("released_by_user")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            spawn: payload
+                .get("spawn")
+                .and_then(Value::as_str)
+                .unwrap_or("in-wave")
+                .to_string(),
             tombstoned_by: payload
                 .get("tombstoned_by")
                 .and_then(Value::as_str)
@@ -704,6 +712,7 @@ mod tests {
             refs: Vec::new(),
             declared_by: "spec".into(),
             released_by_user: false,
+            spawn: "in-wave".into(),
             tombstoned_by: None,
             ready: true,
             tombstone: false,

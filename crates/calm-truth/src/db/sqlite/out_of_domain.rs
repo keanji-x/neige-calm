@@ -82,11 +82,11 @@ impl RepoOutOfDomain for SqlxRepo {
     // ------------------------------------------------------------- terminals
     async fn terminal_create(&self, p: NewTerminal) -> Result<Terminal> {
         // Parent card must exist; surface as NotFound to mirror MockRepo.
-        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
+        let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
             .bind(p.card_id.as_str())
             .fetch_optional(&self.pool)
             .await?;
-        if exists.is_none() {
+        if owner.is_none() {
             return Err(CalmError::NotFound(format!("card {}", p.card_id)));
         }
         // Per-card uniqueness — surface as Conflict to mirror MockRepo

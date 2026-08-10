@@ -250,9 +250,15 @@ fn validate_task(map: &Map<String, Value>, errors: &mut Vec<String>) {
         errors.push("released_by_user: must be a boolean".into());
     }
     if let Some(value) = map.get("spawn")
+        && !value.is_null()
         && !matches!(value.as_str(), Some("in-wave" | "sub-wave"))
     {
         errors.push("spawn: must be one of \"in-wave\" | \"sub-wave\"".into());
+    }
+    if matches!(map.get("spawn").and_then(Value::as_str), Some("sub-wave"))
+        && !matches!(map.get("kind").and_then(Value::as_str), Some("codex"))
+    {
+        errors.push("spawn: \"sub-wave\" requires kind \"codex\"".into());
     }
 }
 

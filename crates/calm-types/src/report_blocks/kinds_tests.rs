@@ -268,6 +268,43 @@ fn task_payload_validates_every_field_and_unknown_fields() {
 }
 
 #[test]
+fn acceptance_4_missing_explicit_in_wave_and_null_spawn_normalize_identically() {
+    let mut missing = valid_task();
+    missing.as_object_mut().unwrap().remove("spawn");
+    let explicit = valid_task();
+    let mut null = valid_task();
+    null["spawn"] = Value::Null;
+    for payload in [&missing, &explicit, &null] {
+        assert_eq!(validate_payload(KIND_TASK, payload), Ok(()));
+    }
+    let blocks = |payload: Value| {
+        vec![crate::wave_report::ReportBlock {
+            id: "b_0001".into(),
+            kind: KIND_TASK.into(),
+            payload,
+            rev: 1,
+        }]
+    };
+    let values = [missing, explicit, null].map(|payload| {
+        crate::report_blocks::tasks::project_task_declarations(&blocks(payload)).0[0]
+            .spawn
+            .clone()
+    });
+    assert_eq!(values, ["in-wave", "in-wave", "in-wave"]);
+}
+
+#[test]
+fn acceptance_23_sub_wave_rejects_claude_and_terminal_at_common_write_validation() {
+    for kind in ["claude", "terminal"] {
+        let mut payload = valid_task();
+        payload["kind"] = json!(kind);
+        payload["spawn"] = json!("sub-wave");
+        let error = validate_payload(KIND_TASK, &payload).unwrap_err();
+        assert!(error.contains("requires kind \"codex\""), "{kind}: {error}");
+    }
+}
+
+#[test]
 fn task_priority_rejects_integer_outside_i64_range() {
     let mut payload = valid_task();
     payload["priority"] = json!(9_223_372_036_854_775_808_u64);

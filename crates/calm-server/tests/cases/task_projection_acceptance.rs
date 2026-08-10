@@ -960,7 +960,7 @@ async fn deleted_tombstone_then_same_key_reproposal_creates_a_fresh_row() {
 }
 
 #[tokio::test]
-async fn report_write_emits_three_events_or_two_when_projection_is_unchanged() {
+async fn acceptance_1_report_spawn_only_edit_emits_plan_updated_and_changes_frozen_route_column() {
     let boot = new_boot().await;
     let mut rx = boot.ctx.events.subscribe();
     let (id, rev) = upsert(&boot, None, task("events")).await;
@@ -987,6 +987,37 @@ async fn report_write_emits_three_events_or_two_when_projection_is_unchanged() {
         rx.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Empty)
     ));
+
+    let mut sub_wave = task("events");
+    sub_wave["spawn"] = json!("sub-wave");
+    let current = read(&boot).await;
+    let rev = current["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["id"] == id)
+        .unwrap()["rev"]
+        .as_u64()
+        .unwrap();
+    upsert(&boot, Some((&id, rev)), sub_wave).await;
+    let events = [
+        rx.recv().await.unwrap(),
+        rx.recv().await.unwrap(),
+        rx.recv().await.unwrap(),
+    ];
+    assert!(matches!(events[0].event, Event::CardUpdated(_)));
+    assert!(matches!(events[1].event, Event::WaveReportEdited { .. }));
+    match &events[2].event {
+        Event::PlanUpdated { changed_keys, .. } => assert_eq!(changed_keys, &["events"]),
+        other => panic!("expected spawn-only PlanUpdated, got {other:?}"),
+    }
+    let spawn: String =
+        sqlx::query_scalar("SELECT spawn FROM tasks WHERE wave_id=?1 AND key='events'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(spawn, "sub-wave");
 }
 
 #[tokio::test]

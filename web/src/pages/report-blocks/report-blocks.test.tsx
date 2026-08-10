@@ -787,6 +787,25 @@ describe('degraded blocks', () => {
     expect(screen.queryByText('Ready to queue')).not.toBeInTheDocument();
   });
 
+  it('acceptance 14b renders a deleted child wave as a non-clickable tombstone', () => {
+    const baseVerdict = {
+      blockId: 'b_child', key: 'child', schedulable: false, status: 'running' as const,
+      gateResult: null, workerCardId: null, diagnostics: [], childWaveId: 'wave-child',
+    };
+    const { rerender } = render(<ReportTaskBlock payload={{
+      key: 'child', kind: 'codex', goal: 'Delegate', ready: true, declared_by: 'spec',
+    }} verdict={{ ...baseVerdict, childWaveDeleted: true }} />);
+    expect(screen.getByText('Child wave deleted')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /child wave/i })).not.toBeInTheDocument();
+
+    rerender(<ReportTaskBlock payload={{
+      key: 'child', kind: 'codex', goal: 'Delegate', ready: true, declared_by: 'spec',
+    }} verdict={{ ...baseVerdict, childWaveDeleted: false }} />);
+    expect(screen.getByRole('link', { name: 'Open child wave' })).toHaveAttribute(
+      'href', '/wave/wave-child',
+    );
+  });
+
   it.each([
     ['duplicate_key', { key: 'same' }, /Rename this card/],
     ['dependency_cycle', { keys: 'a -> b -> a' }, /Break one dependency/],

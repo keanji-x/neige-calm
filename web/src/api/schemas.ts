@@ -32,6 +32,8 @@ export const taskBlockVerdictSchema = z.object({
   status: z.string().nullable().optional(),
   gateResult: z.unknown().nullable().optional(),
   workerCardId: z.string().nullable().optional(),
+  childWaveId: z.string().nullable().optional(),
+  childWaveDeleted: z.boolean().nullable().optional(),
 });
 
 // ---------------- Entity schemas (mirror model.rs) ----------------

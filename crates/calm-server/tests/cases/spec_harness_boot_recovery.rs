@@ -1169,6 +1169,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         running_deadline_ms: None,
         context_stale_at_ms: None,
         declared_by: "spec".into(),
+        spawn: "in-wave".into(),
         origin: "legacy".into(),
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),

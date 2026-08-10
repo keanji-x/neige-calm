@@ -2839,6 +2839,16 @@
               }
             }
           },
+          "409": {
+            "description": "Wave has a descendant or active forge action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -4112,6 +4122,19 @@
         "properties": {
           "blockId": {
             "type": "string"
+          },
+          "childWaveDeleted": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "childWaveId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Written after claim, so exposing it preserves the #1030 read-state\nexception. `spawn` must never be added beside it."
           },
           "diagnostics": {
             "type": "array",

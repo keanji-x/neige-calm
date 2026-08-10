@@ -128,6 +128,9 @@ export function ReportTaskBlock({
       {payload.depends_on && payload.depends_on.length > 0 && <p>Waits for: {payload.depends_on.join(', ')}</p>}
       {gateText && <p className="rb-task-meta">{gateText}</p>}
       {verdict?.workerCardId && <p><Link to="/wave/$waveId" params={{ waveId: waveId ?? '' }} hash={verdict.workerCardId}>Open worker output</Link></p>}
+      {verdict?.childWaveId && <p>{verdict.childWaveDeleted
+        ? <span>Child wave deleted</span>
+        : <Link to="/wave/$waveId" params={{ waveId: verdict.childWaveId }}>Open child wave</Link>}</p>}
       {verdict?.diagnostics.map((diagnostic, index) => <p className="rb-task-diagnostic" role="alert" key={`${diagnostic.code}:${index}`}>{taskDiagnosticText(diagnostic)}<RelatedBlocks diagnostic={diagnostic} waveId={waveId} /></p>)}
       <div className="rb-task-actions">
         {waiting && !payload.released_by_user && <button type="button" disabled={actionPending} onClick={onRelease}>Allow this task</button>}

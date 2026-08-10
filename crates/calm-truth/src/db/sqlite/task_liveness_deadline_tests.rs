@@ -29,6 +29,7 @@ fn task(key: &str, status: TaskStatus) -> Task {
         running_deadline_ms: None,
         context_stale_at_ms: None,
         declared_by: "spec".into(),
+        spawn: "in-wave".into(),
         origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
