@@ -208,6 +208,7 @@ pub async fn tasks_rebuild_tree_tx(
             budget,
             members: member_count,
             share,
+            admission_frozen: false,
         });
         let wave = wave_get_tx(tx, &crate::ids::WaveId::from(member_id.clone())).await?;
         let projection = tasks_rebuild_with_tree_term_tx(tx, &member_id, Some(tree_term)).await?;
@@ -216,6 +217,21 @@ pub async fn tasks_rebuild_tree_tx(
     }
 
     let inventories = wave_tree_spec_inventory_by_member(tx, root_id).await?;
+    require_tree_budget_postcondition(root_id, budget, &shares, &inventories)?;
+    if tree_cte_queries != 2 {
+        return Err(CalmError::Internal(format!(
+            "whole-tree reprojection executed {tree_cte_queries} recursive tree queries; expected exactly 2 independent of member count"
+        )));
+    }
+    Ok(projections)
+}
+
+fn require_tree_budget_postcondition(
+    root_id: &str,
+    budget: i64,
+    shares: &std::collections::BTreeMap<String, i64>,
+    inventories: &[(String, i64)],
+) -> crate::error::Result<()> {
     let total: i64 = inventories.iter().map(|(_, live)| *live).sum();
     let member_overage = inventories
         .iter()
@@ -231,12 +247,7 @@ pub async fn tasks_rebuild_tree_tx(
             "wave tree rooted at {root_id} would hold {total} unfinished spec task(s), above its tree_task_budget of {budget}"
         )));
     }
-    if tree_cte_queries != 2 {
-        return Err(CalmError::Internal(format!(
-            "whole-tree reprojection executed {tree_cte_queries} recursive tree queries; expected exactly 2 independent of member count"
-        )));
-    }
-    Ok(projections)
+    Ok(())
 }
 use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
@@ -873,6 +884,21 @@ pub(crate) async fn persist_report_with_shadow(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn whole_tree_total_postcondition_rejects_an_over_budget_inventory() {
+        // Exact production share construction makes member-overage imply this
+        // branch. Feed a deliberately inconsistent share map to prove the
+        // independent fail-closed guard remains live if that construction is
+        // ever corrupted without changing the grouped inventory.
+        let shares = std::collections::BTreeMap::from([("root".to_owned(), 9)]);
+        let error =
+            require_tree_budget_postcondition("root", 8, &shares, &[("root".to_owned(), 9)])
+                .unwrap_err();
+        assert!(
+            matches!(error, CalmError::Conflict(message) if message.contains("9 unfinished spec task(s)") && message.contains("tree_task_budget of 8"))
+        );
+    }
 
     #[test]
     fn initial_carries_current_schema_version() {

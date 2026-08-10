@@ -1192,29 +1192,50 @@ PR-B 的树项**不是共享计数**，而是**确定性配额分割**：
 effective_ceiling(W) = min(spec_task_ceiling(W), share(W, T))
 share(W, T)          = floor(B / N)，余数按 (created_at, id) 升序分给前 r 个 wave 各 +1
 其中 T = W 所在的树，N = |T|，B = 树根的 tree_task_budget（NULL ⇒ 32；可配 0..=64），Σ share = B。
-`N=1` 不例外：孤根显式设置预算时 `share=B`；只有预算列为 NULL、树项可证不收紧默认
-wave ceiling 时才允许零递归短路。子 wave 创建还要求创建后的 `N+1 <= B`，所以点一放行的
+`N=1` 不例外：孤根显式设置预算时 `share=B`；只有有效预算严格大于有效 wave ceiling、树项
+可证不收紧且不拥有相等边界诊断时才返回 `NotInTree`（仍以零递归完成）。子 wave 创建还要求创建后的 `N+1 <= B`，所以点一放行的
 树里点二不会给任何成员零份额。B 或 N 改变后，同一写事务用一次成员枚举预计算所有 share，
 重投影整树并复核每个成员的非终结存量；pending 超额被裁掉，无法裁掉的 in-flight 超额会让
 整笔 PATCH / child-wave 创建回滚。因而 B 不能被提交到现有 live inventory 以下。
 ```
 
-三个输入 —— 本 wave 文档、本 wave 在飞、**树的形状（`waves` 行）** —— 没有一个是投影的
-产物，因此树项**不读任何 `pending` 行**，D.1 #11「rebuild ≡ 增量差分」在树上原样成立。
+树份额的占用口径覆盖**所有**非终结 `declared_by='spec'` 行：block-origin 在飞行直接占用，
+block-origin pending 作为本轮投影候选重新派额，非 block 行（升级迁移产生的 legacy，含 pending）
+作为不可裁的固定占用。per-wave `spec_task_ceiling` 仍保持 §4.2 已批准的 block-only 口径；两种
+容量分别计算后取较小值。若任一成员的不可裁占用已超过自己的 share，则整树冻结新 block 准入，
+避免未满 sibling 继续增长把总量推过 B。故 legacy 行既不会被裁剪/改写，也绝不能给新 block
+行“让出”树份额。
+
+三个输入 —— 本 wave 文档、本 wave 不可裁存量、**树的形状（`waves` 行）** —— 没有一个是
+block pending 投影产物；树项不读 sibling pending，且本 wave 的 block pending 仍作为候选重建，
+D.1 #11「rebuild ≡ 增量差分」在树上原样成立。
 （早期方案「`external_occupied = 全树非终结 − 本 wave pending`」已取消：共享计数是
 先到先得、路径依赖的，rebuild 无从得知「谁先来」。）
 子 wave 创建时还要在同一写事务执行树预算准入（全树非终结计数 ≥ 预算 ⇒ 拒绝
 `sub-wave-tree-budget-exhausted`），并在 N 改变后走与 B PATCH 相同的整树重投影/后置复核。
-因此任一已提交状态都满足 `Σ_v live_spec(v) ≤ B`；承重验收是
-`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`。
+因此任一由本 build 准入的新状态都满足 `Σ_v live_spec(v) ≤ B`；承重验收是
+`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences` 与
+`legacy_live_spec_consumes_tree_share_until_it_terminates`、
+`legacy_member_overage_freezes_new_blocks_across_the_tree`。
 **求不到树根时 fail-closed**（诊断 `tree_root_unresolved`，该 wave 一条都不准入）——
 一条断链绝不能让整棵子树无约束。
+
+**升级遗留退化旁注（与 ceiling 退化语义并列）**：若升级瞬间树内已有 `K` 条非终结 legacy
+spec 行且 `K >= B`，这些行逐字节不变、不得裁；当时的有效上界暂时退化为 `K`，所有成员的
+新 block 容量为 0。legacy 行每终结一条才按确定性 share 释放相应容量，存量不再上升并单调
+收敛到严格的 `Σ_v live_spec(v) ≤ B`。`K == B` 起一条新声明也不能落行；`K > B` 是被接管的
+升级前既有状态，不允许后续写把超额维持或扩大。
 
 **单 wave ceiling 上界的精确形式**：`非终结行数 = occupied + |准入| ≤ max(ceiling, occupied)`。
 若人把 ceiling 调低到当时的在飞行数以下，上界**暂时退化为调低那一刻的在飞行数**，
 并随这些行终结**单调收敛**回新 ceiling —— 期间 `capacity = 0`，不准入任何新行。
 这条退化只属于 `spec_task_ceiling`；tree B/N 改动由整树后置复核拒绝 in-flight 超额，
-不再允许树总量上界退化。
+不再允许新产生的 block 行把树总量上界退化；唯一例外是上一段逐字节保留的升级 legacy 存量。
+
+子 wave 创建还有一个显式 409 失败模式：点一库存/成员准入可能放行，但 `N` 增长后的整树
+重投影若发现任一成员的不可裁 in-flight 存量高于新 share，整笔创建回滚并返回 Conflict；调用方
+应等待这些在飞任务终结后重试。承重验收：
+`child_creation_409s_when_inflight_member_exceeds_its_new_share`。
 
 **所有上界常数都是猜的**：`spec_task_ceiling = 32`、`tree_task_budget = 32`、
 `MAX_TREE_TASK_BUDGET = 64`、
@@ -2026,7 +2047,7 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 3c | 人能看见状态与诊断、能放行 | 无 |
 | 4 | 误报下降，冻结点可推进 | 无 |
 | 5 | 模板可 fork，agent 只剩一个写口 | 无（新 legacy 行从此停增）|
-| 6 PR-A | 子 wave 可用、深度有界、父任务可闭合 | **显式代价**：树存量上界尚未成立，真实上界为 `Σ per-wave spec_task_ceiling`，由 PR-B 收口 |
+| 6 PR-A | 子 wave 可用、深度有界、父任务可闭合 | PR-B 已用确定性份额、整树后置复核与升级 legacy 退化语义收口树存量上界 |
 | 7 | 存量可见，cove 可聚合 | 无 |
 
 ### D.4 补充不变量（B13 恢复项）
@@ -2038,7 +2059,7 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 5 的三构造 | (a) worker 未开始 → 重启 → 不得 spawn；(b) **gate 未开始**（`gate_attempt = 0` + material）→ 重启 → **不得有任何 gate shell 命令被执行**；(c) **已开始的不受影响**（验证没有过度收紧）|
 | 5b seam | boot 顺序**两半缺一不可**：(a) 源码序断言 + (b) **seam 测试**（真实跑一次 boot，断言上下文 sweep 的副作用先于 operation 恢复可见）|
 | 6b | **两个清除动作互相独立**（B2 后不再有派生耦合）：删墓碑 ⇒ 该 `key` 可重新声明；PATCH `automation_policy='auto-declare'` ⇒ 恢复自动化**且墓碑保留**。（换 key 不再被机制挡 —— 那是 §12.1 风险 15 记录的**已知缺口**，不是本条要验收的不变量）|
-| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**；以及树内 `declared_by='spec'` 的非终结行始终满足 `Σ_v live_spec(v) ≤ tree_task_budget`。后者由库存/成员创建准入、`evaluate_schedulability` 的确定性配额分割，以及 B/N 两个触发点共用的整树重投影/逐成员后置复核共同保证；pending 超额被裁，无法裁掉的 in-flight 超额使 B/N 变更回滚。`N=1` 仍按公式，配额只依赖树形状而不依赖投影产物，保持 D.1 #11。承重验收：`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`；删 child-wave 后的重投影会精确复现 `(9>8,15>12)` 并 RED。整树成员数由 `MAX_TREE_TASK_BUDGET=64` 封顶，递归树查询固定 2 次，成员处理 O(N) |
+| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**；以及稳态树内 `declared_by='spec'` 的非终结行满足 `Σ_v live_spec(v) ≤ tree_task_budget`。后者由库存/成员创建准入、`evaluate_schedulability` 的确定性配额分割，以及 B/N 两个触发点共用的整树重投影/逐成员 + 总量后置复核共同保证；pending 超额被裁，无法裁掉的 in-flight 超额使 B/N 变更回滚。**升级 legacy 旁注**：所有非终结 legacy spec 行都占 tree share 且逐字节不变；任一成员不可裁占用超过 share 时整树冻结新 block 准入。若升级瞬间 `K >= B`，有效上界暂退化为 `K`、新 block 容量为 0，并随 legacy 终结单调收敛到 B，期间不得维持或扩大超额。`N=1` 仍按公式，配额只依赖树形状与不可裁既有占用而不依赖 block pending 投影产物，保持 D.1 #11。承重验收：`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`、`legacy_live_spec_consumes_tree_share_until_it_terminates`、`legacy_member_overage_freezes_new_blocks_across_the_tree`、`child_creation_409s_when_inflight_member_exceeds_its_new_share`；排除 legacy 占用、关闭整树冻结、删除 member 后置复核或删除 child-wave 后的整树重投影均 RED。整树成员数由 `MAX_TREE_TASK_BUDGET=64` 封顶，递归树查询固定 2 次，成员处理 O(N) |
 | 10 | **`refs[]` 的 cove 边界**：越界引用 ⇒ 该块不可调度 + 诊断，且**该引用不得出现在任何 `TaskContextFrozen.refs` 里** |
 | 11 生成器 | rebuild ≡ 增量的属性测试，其生成器**必须能生成「制造诊断的编辑」**：重复 key / 环 / 跨 cove / 撤回放行位 |
 | 13 | 删除必须能被检出：(a) wave 删除 (b) cove 删除 —— **各要「事件正常投递」与「事件被丢弃」两个变体，且必须给出同一结论**；(c) `EditAuthor::Spec` 编辑被引用块必须被第 1 级检出 |
@@ -2064,9 +2085,10 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 13.11（`tasks` 积累执行史行、**刻意无清理**、读端必须能区分）、13.13、13.16、
 13.19（三个权属位只能靠 §3.7 收口守住）、13.22 残余两条（**不阻止 spec 反复提议**；
 **「人一直不放行」与「人没看见」在机制上不可区分**）、
-**13.22b（升级日 legacy 在飞行不计入 `occupied`** ⇒ 人的「本 wave 未结任务」口径
-会暂时**大于 ceiling**；且 `unknown_deps` 按规则 3‴ **必须把 legacy 在飞 key 视为
-已知**，**不得在 `occupied` 查询里无条件混入 legacy 行**）、
+**13.22b（升级日 legacy 在飞行不计入 per-wave ceiling 的 block-only `occupied`** ⇒ 人的
+「本 wave 未结任务」口径会暂时**大于 ceiling**；但它们必须计入独立的 tree-share 固定占用，
+且 `unknown_deps` 按规则 3‴ **必须把 legacy 在飞 key 视为已知**。不得把两层占用合并成一个
+谓词，避免悄悄改变既定 ceiling 语义）、
 13.2（block id 稳定性 ⇒ **误中止潮**，缓解是「引用已失效，请重新链接」诊断 +
 marker 通道，**未量化**）、13.14（闭包开销：一次触发的重解析上界 =
 冻结了该 wave 的 in-flight 任务数 × `MAX_REF_NODES` ≤ (Σ per-wave `task_budget`)

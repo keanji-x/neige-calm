@@ -201,3 +201,32 @@ Node 22.22.2。每个单点补丁均用反向 `apply_patch` 复原。
 复原态定向门：wave-tree（含全声明序列性质）**31/31**、承重生产路径 **1/1**、SQL 性质门
 **15/15**、child + policy **18/18**、web report-block **56/56**。没有
 `zz_r4_wave_tree_probe.sql`、`false &&`、逐成员 `tasks_rebuild_tx` 或析取式生产谓词残留。
+
+## 九、修复轮 5（r5 裁决收尾，全部实际执行并复原）
+
+环境：`PATH` 含 `.local-bin`、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置。每个变异均用
+`apply_patch` 单点施加，目标测试结束后立即反向复原。
+
+| # | 改坏什么 | 变红的测试 | 实际结果 |
+|---|---|---|---|
+| R5-B1 | tree share 占用排除全部 non-block live spec（等价于排除升级 legacy） | `legacy_live_spec_consumes_tree_share_until_it_terminates` | **RED**：`K=3,B=2` 的普通报告写错误落下 2 条新 block，库存 `5 != 3` |
+| R5-B1b | 固定关闭“任一成员不可裁占用 > share ⇒ 整树冻结” | `legacy_member_overage_freezes_new_blocks_across_the_tree` | **RED**：`K=B=8` 但 root legacy `5>share 4` 时，child 错误准入 1 条，`1 != 0`，总量会升到 9 |
+| R5-B2-member | `member_overage` 后置条件改成 `if false &&` | `child_creation_409s_when_inflight_member_exceeds_its_new_share` | **RED**：`B=8`、root 5 条全 claim、`N:1→2` 的真实 adapter 错误返回 `Ok(TxOutput)`，child/card/event 均已进入未提交 tx |
+| R5-B2-total | `total > budget` 后置条件改成 `if false &&` | `whole_tree_total_postcondition_rejects_an_over_budget_inventory` | **RED**：故意破坏 share/inventory 一致性的 fail-closed seam 返回 `Ok(())`；正确 `Σshare=B` 下该分支数学上冗余，seam 专门锁内部不一致兜底 |
+| R5-M1a | 让直接合取叶语法门把任意含 recursive depth 的 `CASE` 当上界 | `semantic_or_constant_fakes_cannot_satisfy_the_bound_grammar` | **RED**：`CASE WHEN 1=1 THEN 1 ELSE down.depth <= ?2 END` 被测试点名 |
+| R5-M1b | 允许 `alias.depth <= <常量>` | 同上 | **RED**：`<= 9223372036854775807` 被测试点名 |
+| R5-m1 | singleton shortcut 的 `budget > ceiling` 改回 `>=` | `singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling` | **RED**：普通入口 `spec_task_ceiling`、整树入口 `tree_budget_exhausted`，同文档诊断分叉 |
+| R5-m2 | TOML parser 退回按行猜 `workspace.members` | `cargo_legal_workspace_member_formatting_is_parsed_structurally` | **RED**：Cargo 合法单行数组被解析为 `[]`，期望两个成员 |
+
+### 9.1 受本轮占用/相等边界改写影响的旧证据保质期刷新
+
+| 旧条目 | 为什么受影响 | R5 重跑 |
+|---|---|---|
+| R4-B1 | 新 tree occupancy 改写了正常报告写的容量计算，可能提前挡住原 9/15 构造 | 删除 child 创建后的整树重投影，承重验收仍 **RED：`(9,15) != (8,12)`** |
+| R2-m2 | 诊断归因从比较 share/ceiling 改成比较两种剩余 capacity | `tree_capacity <= ceiling_capacity` 改严格 `<` 后 `an_equal_tree_share_reports_the_tree_knob` **RED** |
+| M9 | singleton shortcut 的相等边界由 `>=` 改成 `>`，默认孤根不再是 `NotInTree` | 对明确非绑定的 `B=32 > ceiling=31` 关闭 shortcut，`a_non_tree_wave_runs_zero_recursive_tree_queries` **RED**：错误返回 `Share` |
+| R4-B1b | 后置条件抽成 helper，原“整段删除”变异的行位置与覆盖已过期 | 由 R5-B2-member + R5-B2-total 分拆刷新，两条各自 **RED**；不再用一个变异同时关闭两个谓词 |
+
+本轮没有 STILL-GREEN 变异。复原搜索确认没有 `false &&`、CASE/常量临时放行、旧按行 manifest
+解析器或 `Vec::<...>::new()` 跳过整树重投影残留。复原态定向门：wave-tree **33/33**、SQL
+性质门 **17/17**、child adapter **12/12**、total postcondition **1/1**、policy PATCH **8/8**。

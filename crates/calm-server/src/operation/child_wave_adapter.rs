@@ -1124,6 +1124,124 @@ mod tests {
         );
     }
 
+    /// The member postcondition is the only guard that can reject this legal
+    /// point-one admission: inventory 5 < B=8 and N+1=2 <= B, but the new
+    /// two-member share is 4 while all five root rows are already in-flight.
+    /// The adapter must surface Conflict and its enclosing transaction must be
+    /// rollback-clean (the HTTP operation layer maps Conflict to 409).
+    #[tokio::test]
+    async fn child_creation_409s_when_inflight_member_exceeds_its_new_share() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let root = seed_parent(&repo, false).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        wave_update_tx(
+            &mut tx,
+            &root,
+            WavePatch {
+                tree_task_budget: Some(Some(8)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let tasks = project_pending_tasks(&repo, &root, "root-overage", 5).await;
+        for task in &tasks {
+            claim_for_child(&repo, task).await;
+        }
+        let before: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+             (SELECT count(*) FROM tasks), (SELECT count(*) FROM events)",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        let input = serde_json::to_value(ChildWaveOperationPayload {
+            task_id: tasks[0].clone(),
+            parent_wave_id: root.clone(),
+            goal: "must roll back".into(),
+            acceptance: Some("no child committed".into()),
+            context: json!({}),
+            cwd: None,
+        })
+        .unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let error = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, CalmError::Conflict(message) if message.contains("5 unfinished spec task(s)") && message.contains("new share of 4")),
+            "{error}"
+        );
+        tx.rollback().await.unwrap();
+        let after: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM waves), (SELECT count(*) FROM cards), \
+             (SELECT count(*) FROM tasks), (SELECT count(*) FROM events)",
+        )
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "the refused child operation must roll back every write"
+        );
+    }
+
+    /// A singleton with equal numeric ceiling and budget is tree-bound by the
+    /// approved diagnostic contract. The ordinary and whole-tree rebuild
+    /// entrypoints must therefore produce the same code for the same report.
+    #[tokio::test]
+    async fn singleton_rebuild_entrypoints_agree_when_budget_equals_ceiling() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let root = seed_parent(&repo, false).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        wave_update_tx(
+            &mut tx,
+            &root,
+            WavePatch {
+                spec_task_ceiling: Some(Some(2)),
+                tree_task_budget: Some(Some(2)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        project_pending_tasks(&repo, &root, "equal", 3).await;
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let plain = tasks_rebuild_tx(&mut tx, &root).await.unwrap();
+        let tree = tasks_rebuild_tree_tx(&mut tx, &root).await.unwrap();
+        let tree = &tree
+            .iter()
+            .find(|(wave, _)| wave.id.as_str() == root)
+            .expect("singleton root projection")
+            .1;
+        let codes = |outcome: &crate::db::sqlite::TaskProjectionOutcome| {
+            outcome
+                .diagnostics
+                .iter()
+                .filter(|verdict| !verdict.schedulable)
+                .flat_map(|verdict| {
+                    verdict
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| diagnostic.code.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+        let plain_codes = codes(&plain);
+        let tree_codes = codes(tree);
+        assert_eq!(plain_codes, tree_codes, "rebuild entrypoints drifted");
+        assert_eq!(plain_codes, ["tree_budget_exhausted"]);
+        tx.rollback().await.unwrap();
+    }
+
     #[tokio::test]
     async fn acceptance_10_child_adapter_stale_fence_precedes_every_side_effect() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();

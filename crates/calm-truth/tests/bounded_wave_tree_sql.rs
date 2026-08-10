@@ -292,113 +292,102 @@ fn recursive_depth_at(tokens: &[String], index: usize, aliases: &BTreeSet<String
         && tokens.get(index + 2).is_some_and(|token| token == "depth")
 }
 
-fn enclosing_condition_start(tokens: &[String], index: usize) -> Option<usize> {
-    let clause = tokens[..index]
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, token)| {
-            matches!(
-                token.as_str(),
-                "select"
-                    | "from"
-                    | "join"
-                    | "on"
-                    | "where"
-                    | "group"
-                    | "having"
-                    | "order"
-                    | "limit"
-                    | "returning"
-            )
-        })?;
-    matches!(clause.1.as_str(), "on" | "where").then_some(clause.0)
+fn strip_wrapping_parens(mut tokens: &[String]) -> &[String] {
+    while tokens.first().is_some_and(|token| token == "(")
+        && matching_right_paren(tokens, 0) == Some(tokens.len().saturating_sub(1))
+    {
+        tokens = &tokens[1..tokens.len() - 1];
+    }
+    tokens
 }
 
-/// A terminating comparison only counts when every row admitted by the
-/// ON/WHERE condition must pass it. In SQL's boolean grammar, a comparison is
-/// bypassable when an `OR` occurs in its own parenthesis scope or any enclosing
-/// scope. An `OR` nested inside a sibling conjunct does not weaken it:
-/// `depth <= ?2 AND (flag OR fallback)` remains bounded.
-fn comparison_is_conjunct(tokens: &[String], condition: usize, comparison: usize) -> bool {
-    let mut open_parens = Vec::new();
-    let mut comparison_scope = None;
-    let mut or_scopes = Vec::new();
-    for (index, token) in tokens.iter().enumerate().skip(condition + 1) {
-        if index == comparison {
-            comparison_scope = Some(open_parens.clone());
-        }
+fn is_numbered_parameter(tokens: &[String]) -> bool {
+    tokens.len() == 2
+        && tokens[0] == "?"
+        && !tokens[1].is_empty()
+        && tokens[1]
+            .chars()
+            .all(|character| character.is_ascii_digit())
+}
+
+/// The deliberately small accepted grammar. The recursive member must carry
+/// a direct, parameterized comparison leaf; constants, functions, CASE, IS,
+/// arithmetic, and boolean postfixes are rejected rather than interpreted.
+fn direct_parameterized_depth_bound(tokens: &[String], aliases: &BTreeSet<String>) -> bool {
+    let tokens = strip_wrapping_parens(tokens);
+    if tokens.len() != 6 {
+        return false;
+    }
+    let forward = recursive_depth_at(tokens, 0, aliases)
+        && matches!(tokens[3].as_str(), "<" | "<=")
+        && is_numbered_parameter(&tokens[4..]);
+    // Preserve the already-approved equivalent spelling `?N >= alias.depth`.
+    let reversed = is_numbered_parameter(&tokens[..2])
+        && matches!(tokens[2].as_str(), ">" | ">=")
+        && recursive_depth_at(tokens, 3, aliases);
+    forward || reversed
+}
+
+/// Accept a bound only when it is itself a conjunction leaf. A sibling term
+/// may contain OR (`bound AND (flag OR fallback)`), but an OR surrounding the
+/// comparison, or any wrapper other than parentheses, makes it ineligible.
+fn conjunct_has_direct_bound(tokens: &[String], aliases: &BTreeSet<String>) -> bool {
+    let tokens = strip_wrapping_parens(tokens);
+    let mut depth = 0usize;
+    let mut ands = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
         match token.as_str() {
-            "(" => open_parens.push(index),
-            ")" => {
-                open_parens.pop();
-            }
-            "or" => or_scopes.push(open_parens.clone()),
+            "(" => depth += 1,
+            ")" => depth = depth.saturating_sub(1),
+            "or" if depth == 0 => return false,
+            "and" if depth == 0 => ands.push(index),
+            _ => {}
+        }
+    }
+    if ands.is_empty() {
+        return direct_parameterized_depth_bound(tokens, aliases);
+    }
+    let mut start = 0usize;
+    for end in ands.into_iter().chain(std::iter::once(tokens.len())) {
+        if conjunct_has_direct_bound(&tokens[start..end], aliases) {
+            return true;
+        }
+        start = end + 1;
+    }
+    false
+}
+
+fn condition_end(tokens: &[String], condition: usize) -> usize {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate().skip(condition + 1) {
+        match token.as_str() {
+            "(" => depth += 1,
+            ")" => depth = depth.saturating_sub(1),
             "select" | "from" | "join" | "on" | "where" | "group" | "having" | "order"
             | "limit" | "returning"
-                if open_parens.is_empty() =>
+                if depth == 0 =>
             {
-                break;
+                return index;
             }
             _ => {}
         }
     }
-    let Some(comparison_scope) = comparison_scope else {
-        return false;
-    };
-    !or_scopes
-        .into_iter()
-        .any(|or_scope| comparison_scope.starts_with(&or_scope))
+    tokens.len()
 }
 
 fn predicate_bounds_recursive_depth(member: &[String], aliases: &BTreeSet<String>) -> bool {
-    for index in 0..member.len() {
-        if !recursive_depth_at(member, index, aliases) {
-            continue;
-        }
-        let Some(condition) = enclosing_condition_start(member, index) else {
-            continue;
-        };
-        if !comparison_is_conjunct(member, condition, index) {
-            continue;
-        }
-
-        // recursive_alias.depth <= upper_bound
-        if member
-            .get(index + 3)
-            .is_some_and(|operator| operator == "<" || operator == "<=")
-        {
-            let rhs_start = (index + 4).min(member.len());
-            let rhs_end = member[rhs_start..]
-                .iter()
-                .position(|token| {
-                    matches!(
-                        token.as_str(),
-                        "and" | "or" | "group" | "having" | "order" | "limit" | "returning"
-                    )
-                })
-                .map_or(member.len(), |offset| rhs_start + offset);
-            let rhs = &member[rhs_start..rhs_end];
-            if !rhs.is_empty()
-                && !(0..rhs.len()).any(|rhs_index| recursive_depth_at(rhs, rhs_index, aliases))
-            {
-                return true;
+    let mut depth = 0usize;
+    for (index, token) in member.iter().enumerate() {
+        match token.as_str() {
+            "(" => depth += 1,
+            ")" => depth = depth.saturating_sub(1),
+            "on" | "where" if depth == 0 => {
+                let end = condition_end(member, index);
+                if conjunct_has_direct_bound(&member[index + 1..end], aliases) {
+                    return true;
+                }
             }
-        }
-
-        // upper_bound >= recursive_alias.depth
-        if index > 0
-            && matches!(member[index - 1].as_str(), ">" | ">=")
-            && condition + 1 < index - 1
-        {
-            let lhs_start = member[condition + 1..index - 1]
-                .iter()
-                .rposition(|token| matches!(token.as_str(), "and" | "or"))
-                .map_or(condition + 1, |offset| condition + 2 + offset);
-            let lhs = &member[lhs_start..index - 1];
-            if !(0..lhs.len()).any(|lhs_index| recursive_depth_at(lhs, lhs_index, aliases)) {
-                return true;
-            }
+            _ => {}
         }
     }
     false
@@ -479,29 +468,44 @@ fn unbounded_recursive_parent_ctes(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn workspace_members_from_manifest(manifest: &str) -> Vec<String> {
+    let manifest: toml::Value = toml::from_str(manifest)
+        .unwrap_or_else(|error| panic!("parse workspace manifest: {error}"));
+    manifest
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .expect("workspace.members must be an array")
+        .iter()
+        .map(|member| {
+            member
+                .as_str()
+                .expect("every workspace.members entry must be a string")
+                .to_owned()
+        })
+        .collect()
+}
+
 fn workspace_member_roots(workspace: &Path) -> Vec<PathBuf> {
-    let manifest =
-        fs::read_to_string(workspace.join("Cargo.toml")).expect("read workspace manifest");
-    let mut in_members = false;
-    let mut members = Vec::new();
-    for line in manifest.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("members") && trimmed.contains('[') {
-            in_members = true;
-            continue;
-        }
-        if in_members && trimmed.starts_with(']') {
-            break;
-        }
-        if in_members {
-            let member = trimmed.trim_end_matches(',').trim_matches('"');
-            if !member.is_empty() {
-                members.push(workspace.join(member));
-            }
-        }
-    }
+    let manifest_path = workspace.join("Cargo.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read workspace manifest");
+    let members = workspace_members_from_manifest(&manifest)
+        .into_iter()
+        .map(|member| workspace.join(member))
+        .collect::<Vec<_>>();
     assert!(!members.is_empty(), "workspace member list was not decoded");
     members
+}
+
+#[test]
+fn cargo_legal_workspace_member_formatting_is_parsed_structurally() {
+    for manifest in [
+        "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+        "[workspace]\nmembers = [\n  \"crates/a\",\n  \"crates/b\",\n]\n",
+    ] {
+        let members = workspace_members_from_manifest(manifest);
+        assert_eq!(members, ["crates/a", "crates/b"]);
+    }
 }
 
 #[test]
@@ -690,6 +694,28 @@ fn a_bound_or_true_is_not_a_recursive_member_bound() {
         assert!(
             !unbounded_recursive_parent_ctes_in_sql(&sql).is_empty(),
             "disjunctive fake bound bypassed the gate: {condition}"
+        );
+    }
+}
+
+#[test]
+fn semantic_or_constant_fakes_cannot_satisfy_the_bound_grammar() {
+    for condition in [
+        "CASE WHEN 1=1 THEN 1 ELSE down.depth <= ?2 END",
+        "down.depth <= 9223372036854775807",
+        "coalesce(down.depth <= ?2, 1)",
+        "down.depth <= ?2 IS FALSE",
+    ] {
+        let sql = format!(
+            "WITH RECURSIVE down(id,depth) AS (\
+             SELECT id,0 FROM waves UNION ALL \
+             SELECT w.id,down.depth+1 FROM waves w \
+             JOIN down ON w.parent_wave_id=down.id WHERE {condition}\
+             ) SELECT id FROM down"
+        );
+        assert!(
+            !unbounded_recursive_parent_ctes_in_sql(&sql).is_empty(),
+            "non-leaf or non-parameterized fake bound bypassed the gate: {condition}"
         );
     }
 }

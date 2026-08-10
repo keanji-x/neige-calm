@@ -102,6 +102,23 @@ pub const WAVE_TREE_MEMBERS_SQL: &str = concat!(
      ORDER BY w.created_at, w.id"
 );
 
+/// Membership plus fixed (non-cullable in this projection) spec occupancy.
+/// The outer correlated count preserves the same recursive shape/order while
+/// detecting an upgrade member already above its deterministic share. Block
+/// pending rows are excluded because they re-enter projection as candidates;
+/// all non-block live rows (notably legacy) are immutable occupancy.
+const WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
+    bounded_wave_descendant_cte!(),
+    "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
+       WHERE t.wave_id=w.id AND t.declared_by='spec' AND ( \
+         (t.origin='block' AND t.status IN ('dispatched','running','verifying')) \
+         OR (t.origin!='block' AND t.status NOT IN ('done','failed','canceled')) \
+       )) AS fixed_live \
+     FROM waves w \
+     JOIN (SELECT id, min(depth) AS depth FROM down GROUP BY id) d ON w.id = d.id \
+     ORDER BY w.created_at, w.id"
+);
+
 /// Whole-tree non-terminal spec inventory — enforcement point one.
 pub const WAVE_TREE_SPEC_INVENTORY_SQL: &str = concat!(
     bounded_wave_descendant_cte!(),
@@ -139,8 +156,9 @@ pub fn can_add_tree_member(budget: i64, members: i64) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WaveTreeTerm {
     /// `parent_wave_id IS NULL`, no child exists, and the effective tree budget
-    /// is at least this wave's ceiling: the tree term provably cannot tighten
-    /// admission, so no recursive walk runs.
+    /// is strictly above this wave's ceiling: the tree term provably cannot
+    /// tighten admission or own equal-bound diagnostics, so no recursive walk
+    /// runs.
     NotInTree,
     /// The wave IS in a tree but its root could not be resolved (broken parent
     /// link, cycle, or a chain deeper than [`MAX_WAVE_TREE_DEPTH`]). Callers
@@ -156,6 +174,10 @@ pub struct TreeShare {
     pub budget: i64,
     pub members: i64,
     pub share: i64,
+    /// An upgrade/corruption state has at least one member whose immutable
+    /// occupancy exceeds its share. No member may admit a new block until the
+    /// excess terminates; otherwise a less-full sibling could grow Σ above B.
+    pub admission_frozen: bool,
 }
 
 /// [`WaveTreeTerm`] plus the countable seam that proves the non-tree
@@ -202,7 +224,7 @@ pub async fn wave_tree_term(
         // In particular, NULL means the kernel default here and there; PATCH
         // back to NULL must never remove an upper bound.
         let budget = wave_tree_budget(&mut *conn, wave_id).await?;
-        let term = if budget >= ceiling {
+        let term = if budget > ceiling {
             WaveTreeTerm::NotInTree
         } else {
             WaveTreeTerm::Share(TreeShare {
@@ -210,6 +232,7 @@ pub async fn wave_tree_term(
                 budget,
                 members: 1,
                 share: budget,
+                admission_frozen: false,
             })
         };
         return Ok(WaveTreeTermOutcome {
@@ -237,7 +260,7 @@ pub async fn wave_tree_term(
         });
     }
     let root_id = root_id.clone();
-    let members: Vec<(String, i64)> = sqlx::query_as(WAVE_TREE_MEMBERS_SQL)
+    let members: Vec<(String, i64, i64)> = sqlx::query_as(WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL)
         .bind(&root_id)
         .bind(MAX_WAVE_TREE_DEPTH + 1)
         .fetch_all(&mut *conn)
@@ -247,18 +270,49 @@ pub async fn wave_tree_term(
     // not contain the wave we started from. Both mean the shape we would
     // divide the budget over is not the shape the wave actually lives in.
     let budget = wave_tree_budget(&mut *conn, &root_id).await?;
-    let term = tree_share_from_members(root_id, wave_id, budget, &members);
+    let term = tree_share_from_member_inventory(root_id, wave_id, budget, &members);
     Ok(WaveTreeTermOutcome {
         term,
         tree_cte_queries: queries,
     })
 }
 
+#[cfg(test)]
 fn tree_share_from_members(
     root_id: String,
     wave_id: &str,
     budget: i64,
     members: &[(String, i64)],
+) -> WaveTreeTerm {
+    tree_share_from_members_with_freeze(root_id, wave_id, budget, members, false)
+}
+
+fn tree_share_from_member_inventory(
+    root_id: String,
+    wave_id: &str,
+    budget: i64,
+    members: &[(String, i64, i64)],
+) -> WaveTreeTerm {
+    let shape = members
+        .iter()
+        .map(|(id, depth, _)| (id.clone(), *depth))
+        .collect::<Vec<_>>();
+    let count = members.len() as i64;
+    let admission_frozen = members
+        .iter()
+        .enumerate()
+        .any(|(index, (_, _, fixed_live))| {
+            *fixed_live > deterministic_share(budget, count, index as i64)
+        });
+    tree_share_from_members_with_freeze(root_id, wave_id, budget, &shape, admission_frozen)
+}
+
+fn tree_share_from_members_with_freeze(
+    root_id: String,
+    wave_id: &str,
+    budget: i64,
+    members: &[(String, i64)],
+    admission_frozen: bool,
 ) -> WaveTreeTerm {
     let over_deep = members
         .iter()
@@ -273,6 +327,7 @@ fn tree_share_from_members(
         budget,
         members: count,
         share: deterministic_share(budget, count, index as i64),
+        admission_frozen,
     })
 }
 

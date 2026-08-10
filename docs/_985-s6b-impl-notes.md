@@ -15,7 +15,7 @@
 | B/N 共用重投影 | `wave_report.rs::tasks_rebuild_tree_tx`：一次枚举预计算全树 share；B PATCH 与 child-wave 创建都在同一写事务调用；裁 pending 后复核 live，in-flight 超额则整笔回滚 |
 | 事务上界 | `MAX_TREE_TASK_BUDGET=64`，结合 `N+1<=B` 封顶成员数；递归树查询固定 2 次，成员处理 O(N)，由 `tree_cte_queries` seam 守住 |
 | fail-closed | `WaveTreeTerm::RootUnresolved` ⇒ `effective_ceiling=0` + 每条声明追加 `tree_root_unresolved`，但继续走完 withdrawal / 已删块合成 / read-state 主干 |
-| 非树短路 | `wave_tree_term` 先做非递归形状判断，再用与点一相同的 `wave_tree_budget()` 取有效 B（NULL ⇒ 32）；仅孤根且 `B >= spec_task_ceiling`、树项可证不更紧时短路，否则按 `N=1, share=B` 执行上界 |
+| 非树短路 | `wave_tree_term` 先做非递归形状判断，再用与点一相同的 `wave_tree_budget()` 取有效 B（NULL ⇒ 32）；仅孤根且 `B > spec_task_ceiling`、树项可证不收紧且不拥有相等边界诊断时短路，否则按 `N=1, share=B` 执行上界 |
 | 诊断码 | `tree_budget_exhausted` / `tree_root_unresolved`；Rust recovery-action 契约为单一来源，web 交叉校验“该拧哪个旋钮”，缺参回退与 Rust 同为 share=0 |
 | 文档 | `985-doc-as-plan.md` D.4 #7 / §8 / C.2 / C.4 / §12.1 #19 #22 |
 
@@ -115,6 +115,18 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 - web：从 Rust action 表解析实际 action 后渲染两个 capacity 诊断，断言均为 `Review capacity`；
   web 单边删 tree action 后 56 中 1 failed。
 
+## 3.4 修复轮 5 实现收口
+
+- B1：per-wave ceiling 保留 block-only 占用；tree share 另数 block in-flight 与全部非 block
+  非终结 spec 行。升级 legacy 不裁不改；任一成员不可裁占用超过 share 时冻结整树，防止未满
+  sibling 继续增长。`K >= B` 时新 block 容量为 0，终结后单调恢复。
+- B2：child 创建固化 `B=8/root=5 in-flight/N:1→2` 的真实 adapter 409 序列；整树后置条件
+  抽成共同 helper，member overage 走生产验收，total guard 走故意破坏 share/inventory 一致性的
+  fail-closed seam。后一分支在正确 `Σshare=B` 下数学上冗余，测试的是内部不一致兜底。
+- M1：SQL 门只接受直接合取叶 `alias.depth </<= ?N`（以及既有等价反向写法）；CASE、函数、
+  常量 RHS、布尔 postfix 全拒。workspace members 改由 TOML parser 读取，不依赖 manifest 排版。
+- MINOR：孤根 shortcut 的相等边界改为 `budget > ceiling` 才短路，并用两个 rebuild 入口同码验收。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -137,28 +149,34 @@ static、块表达式和新增 workspace crate 的绕过均逐一变异为 RED�
 - **N6. 运行时任意 `format!/push_str` 生成 SQL 仍不是静态门可完备证明的对象。** 门覆盖 Rust
   literal、literal-only `concat!`、所有 workspace member 的 `.sql`（含常规 include/query_file/migration 载体）；
   若未来确需动态构造递归树 SQL，应迁到可扫描 `.sql`/完整 literal，而不是削弱门。
+- **N7. SQL 门刻意误红 `HAVING` / `IN`。** 这是安全方向：本树递归 SQL 的唯一允许形状是
+  ON/WHERE 中参数化的直接比较合取叶。需要其他等价语法时先扩语法白名单和红/绿矩阵，不能靠
+  “语义等价”放宽。
+- **N8. `tree_cte_queries` 是回退检测，不是 SQL tracing。** 它能抓循环退回全量入口，不能抓
+  未来有人在循环体手写新的递归调用；任意递归 SQL 的终止性另由性质门覆盖。若要购买严格查询
+  数，应在 DB 执行层加计数 seam，而不是继续累加调用方字面量。
 
 ## 5. 门（实际数字）
 
 | 门 | 命令 | 结果 |
 |---|---|---|
 | fmt | `cargo fmt --all --check` | 干净（无输出） |
-| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | `Finished dev profile in 1m 12s`，0 warning |
-| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | **3395 tests run: 3395 passed, 89 skipped**（104 binaries，55.475s；编译 1m45s） |
+| clippy | `cargo clippy --workspace --all-targets --features calm-server/codex-e2e -- -D warnings` | 最终 `Finished dev profile in 1m 11s`，0 warning；首次精确抓到 TOML helper 的 `needless_borrow`，修复后原命令重跑全绿 |
+| 测试 | `cargo nextest run --workspace --locked --features calm-server/codex-e2e --profile ci` | 最终 **3402 tests run: 3402 passed, 89 skipped**（104 binaries，28.517s；最终增量编译 1m49s）。较早一轮 **3400/3401**：既有 scheduler `acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive` 时序失败；同 profile 定向复跑 **1/1**，其后三次全量原命令均全绿 |
 | 生成物 | `web: npm run gen:api` 后 `git diff --exit-code -- src/api/openapi.json src/api/generated.ts src/api/generated-terminal.ts src/api/generated-events.ts src/editor/types/` | 干净，无生成物漂移 |
-| web build | `npm run build` | 成功，`built in 825ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web build | `npm run build` | 成功，`built in 739ms`（仅既有 CSS highlight / chunk-size 警告） |
 | web test | `npm run test` | **85 files / 1232 tests passed**，`Type Errors no errors` |
 | fe lint | `npm run lint` | `no dependency violations found (102 modules, 232 dependencies)` |
-| fe build | `npm run build` | 成功，`built in 203ms` |
+| fe build | `npm run build` | 成功，`built in 206ms` |
 | fe test | `npm run test`（含 `test:wire` + `test:mock-drift`） | **758 passed / 1 skipped**，wire 与 mock 均无漂移 |
 
 环境：`CARGO_BUILD_JOBS=6`，nextest 取自 `.local-bin`，`NEIGE_CODEX_BIN` 全程未设置，
 web/fe 最终全门显式使用 Node `v22.22.2`。
 
-修复轮 4 的复原后定向回归：`calm-truth` wave-tree 集合 **31/31**，全 workspace SQL 性质门
-**15/15**，`calm-server` child + policy 套件 **18/18**，web report-block 文案 **56/56**。
+修复轮 5 的复原后定向回归：`calm-truth` wave-tree 集合 **33/33**，全 workspace SQL 性质门
+**17/17**，`calm-server` child adapter **12/12** + total postcondition **1/1** + policy **8/8**。
 
-修复轮 4 最终 Rust/web/fe 全门全绿；web/fe 从第一条正式命令起均显式使用 Node 22.22.2，且
+修复轮 5 最终 Rust/web/fe 全门全绿；web/fe 从第一条正式命令起均显式使用 Node 22.22.2，且
 实现 worktree 内 `node_modules` 存在，vitest 确实执行（不是缺依赖的结构性复核）。
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）

@@ -391,6 +391,11 @@ struct WaveProjectionState {
     /// cross-cove reference check.
     source_cove: String,
     inflight: Vec<InflightTaskRow>,
+    /// Non-terminal spec rows which projection cannot treat as its own
+    /// replaceable `origin='block' AND status='pending'` output. Migration
+    /// 0068 legacy rows live here, including legacy pending rows: they must
+    /// consume tree share but must never be culled to make room.
+    non_block_live_spec: i64,
     task_read_state: Vec<TaskReadState>,
 }
 
@@ -401,6 +406,7 @@ struct WaveProjectionStateRow {
     require_task_gates: i64,
     cove_id: String,
     inflight_json: String,
+    non_block_live_spec: i64,
     task_read_state_json: String,
 }
 
@@ -418,10 +424,10 @@ struct WaveProjectionStateRow {
 /// fetch_one` that turned a concurrently deleted wave into a 500 (it is the
 /// `NotFound` below, i.e. a 404, on the same row that carries the policy).
 ///
-/// The three subsets the predicate needs are all derivable from the in-flight
-/// rows, so the extra statements bought nothing even before consistency:
-/// every in-flight key, the `declared_by='spec' AND origin='block'` count,
-/// and the `origin='block'` orphan candidates.
+/// The in-flight key set, block-origin ceiling occupancy, orphan candidates,
+/// and non-block live spec occupancy are captured by the same statement. The
+/// last count is deliberately separate: legacy rows consume TREE share while
+/// the per-wave ceiling retains its approved block-only predicate.
 async fn wave_projection_state(
     conn: &mut SqliteConnection,
     wave_id: &str,
@@ -434,8 +440,12 @@ async fn wave_projection_state(
                        'declared_by', t.declared_by, 'origin', t.origin))
                    FROM tasks t
                    WHERE t.wave_id = w.id
-                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
-                  (SELECT json_group_array(json_object(
+                      AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
+                   (SELECT count(*) FROM tasks t
+                    WHERE t.wave_id = w.id AND t.declared_by = 'spec'
+                      AND t.origin != 'block'
+                      AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'gate_result_json', t.gate_result_json,
                        'worker_card_id', t.worker_card_id,
@@ -455,8 +465,12 @@ async fn wave_projection_state(
                        'declared_by', t.declared_by, 'origin', t.origin))
                    FROM tasks t
                    WHERE t.wave_id = w.id
-                     AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
-                  '[]' AS task_read_state_json
+                      AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
+                   (SELECT count(*) FROM tasks t
+                    WHERE t.wave_id = w.id AND t.declared_by = 'spec'
+                      AND t.origin != 'block'
+                      AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                   '[]' AS task_read_state_json
            FROM waves w WHERE w.id = ?1"#
     };
     let row: Option<WaveProjectionStateRow> = sqlx::query_as(sql)
@@ -470,6 +484,7 @@ async fn wave_projection_state(
         require_gates: row.require_task_gates != 0,
         source_cove: row.cove_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
+        non_block_live_spec: row.non_block_live_spec,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
     })
 }
@@ -580,25 +595,25 @@ async fn evaluate_schedulability_with_tree_term(
     // #985 slice 6 PR-B — the tree term. `effective_ceiling = min(ceiling,
     // share)` where `share` is this wave's deterministic slice of the root's
     // `tree_task_budget`, split over the tree's waves in `(created_at, id)`
-    // order. Its three inputs — this wave's document, this wave's in-flight
-    // rows, and the tree's SHAPE — are all outside the projection's own output
-    // set, so the tree term cannot make the projection depend on `pending`
-    // rows. That is what keeps "rebuild ≡ incremental" (D.1 #11) true on a
-    // tree, and it is why this is a quota split rather than a shared count of
-    // sibling rows: shared counting is first-come-first-served, hence
-    // path-dependent, hence not reconstructible by a rebuild.
+    // order. Its quota is a function of tree SHAPE, never sibling projection
+    // output. Within this wave, immutable occupancy (block in-flight plus
+    // non-block live spec rows) is subtracted and block pending rows re-enter
+    // as ordered candidates. That keeps "rebuild ≡ incremental" (D.1 #11)
+    // true while making upgrade legacy rows consume share without culling
+    // them. A shared sibling count would instead be first-come-first-served,
+    // path-dependent, and not reconstructible by a rebuild.
     let ceiling = state.ceiling;
-    let (effective_ceiling, tree_share, tree_root_unresolved) = match &tree_term {
-        WaveTreeTerm::NotInTree => (ceiling, None, false),
+    let (tree_share, tree_root_unresolved) = match &tree_term {
+        WaveTreeTerm::NotInTree => (None, false),
         WaveTreeTerm::RootUnresolved => {
             // Fail closed. A broken parent link, a cycle, or an over-deep chain
             // means we cannot name the budget this wave draws from; treating
             // "no resolvable tree" as "no tree constraint" would leave a whole
             // subtree unbounded, which is the one outcome the tree bound exists
             // to prevent.
-            (0, None, true)
+            (None, true)
         }
-        WaveTreeTerm::Share(share) => (ceiling.min(share.share), Some(share.clone()), false),
+        WaveTreeTerm::Share(share) => (Some(share.clone()), false),
     };
     let require_gates = state.require_gates;
     let source_cove = state.source_cove;
@@ -607,12 +622,29 @@ async fn evaluate_schedulability_with_tree_term(
     // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
-    let occupied: i64 = state
+    let ceiling_occupied: i64 = state
         .inflight
         .iter()
         .filter(|r| r.declared_by == "spec" && r.origin == "block")
         .count() as i64;
-    let capacity = effective_ceiling.saturating_sub(occupied).max(0) as usize;
+    let ceiling_capacity = ceiling.saturating_sub(ceiling_occupied).max(0);
+    // Block pending rows are projection output and re-enter below as
+    // candidates. Everything else is fixed occupancy for this write: all
+    // block in-flight rows plus every non-terminal non-block spec row. In
+    // particular, 0068 legacy rows consume share without becoming cullable.
+    let tree_occupied = ceiling_occupied.saturating_add(state.non_block_live_spec);
+    let tree_capacity = tree_share.as_ref().map_or(i64::MAX, |share| {
+        share.share.saturating_sub(tree_occupied).max(0)
+    });
+    let capacity = if tree_root_unresolved
+        || tree_share
+            .as_ref()
+            .is_some_and(|share| share.admission_frozen)
+    {
+        0
+    } else {
+        ceiling_capacity.min(tree_capacity) as usize
+    };
 
     let unknown: BTreeSet<_> = unknown_deps(declarations, &inflight_keys)
         .into_iter()
@@ -891,7 +923,7 @@ async fn evaluate_schedulability_with_tree_term(
     // not what stopped them — the cause lives in a DIFFERENT wave's budget.
     let tree_bound = tree_share
         .as_ref()
-        .filter(|share| share.share <= ceiling)
+        .filter(|share| share.admission_frozen || tree_capacity <= ceiling_capacity)
         .cloned();
     for index in candidates.into_iter().skip(capacity) {
         let diagnostic = match &tree_bound {
@@ -907,7 +939,7 @@ async fn evaluate_schedulability_with_tree_term(
                     ("tree_waves", serde_json::Value::from(share.members)),
                     ("share", serde_json::Value::from(share.share)),
                     ("ceiling", serde_json::Value::from(ceiling)),
-                    ("occupied", serde_json::Value::from(occupied)),
+                    ("occupied", serde_json::Value::from(tree_occupied)),
                     (
                         "admission_order",
                         serde_json::Value::String("document order, then key".into()),
@@ -922,7 +954,7 @@ async fn evaluate_schedulability_with_tree_term(
                 "key",
                 diagnostic_args([
                     ("ceiling", serde_json::Value::from(ceiling)),
-                    ("occupied", serde_json::Value::from(occupied)),
+                    ("occupied", serde_json::Value::from(ceiling_occupied)),
                     (
                         "admission_order",
                         serde_json::Value::String("document order, then key".into()),

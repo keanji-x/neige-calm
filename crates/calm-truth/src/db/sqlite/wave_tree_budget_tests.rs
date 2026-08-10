@@ -15,7 +15,7 @@ use serde_json::json;
 
 use super::wave_tree::{
     MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare, WaveTreeTerm, deterministic_share,
-    wave_tree_term,
+    wave_tree_spec_inventory, wave_tree_term,
 };
 use super::{SqlxRepo, evaluate_schedulability, project_tasks_tx, wave_create_tx, wave_update_tx};
 use crate::model::{NewCove, NewWave, RequestTheme, WavePatch};
@@ -777,6 +777,7 @@ async fn a_non_tree_wave_runs_zero_recursive_tree_queries() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let lonely = seed_wave(&repo, &cove, "lonely").await;
+    set_ceiling(&repo, &lonely, 31).await;
     let mut conn = repo.pool().acquire().await.unwrap();
 
     let outcome = wave_tree_term(&mut conn, &lonely).await.unwrap();
@@ -870,6 +871,183 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
             ..
         })
     ));
+}
+
+/// Upgrade degradation rule for D.4 #7. Legacy rows are immutable projection
+/// inputs, but every non-terminal spec row still consumes tree share. Starting
+/// above B therefore admits no new block row; capacity returns only as the
+/// legacy rows terminate, and projection never edits or culls those rows.
+#[tokio::test]
+async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "upgraded-root").await;
+    set_ceiling(&repo, &root, 8).await;
+    set_tree_budget(&repo, &root, 3).await;
+    project(&repo, &root, &["legacy-a", "legacy-b", "legacy-c"]).await;
+    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    // This is the rollout state under test: K=3 pre-existing live legacy rows
+    // meet a newly effective B=2. Production cannot create new legacy rows.
+    sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let legacy_bytes = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT json_group_array(json_object('id',id,'status',status,'origin',origin, \
+             'goal',goal,'context',context_json,'updated',updated_at_ms)) \
+             FROM tasks WHERE wave_id=?1 AND origin='legacy' ORDER BY key",
+        )
+        .bind(&root)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    };
+    let live_count = || async {
+        let mut conn = repo.pool().acquire().await.unwrap();
+        wave_tree_spec_inventory(&mut conn, &root).await.unwrap()
+    };
+
+    let before = legacy_bytes().await;
+    project(&repo, &root, &["new-a", "new-b"]).await;
+    assert_eq!(
+        legacy_bytes().await,
+        before,
+        "report writes must not edit legacy rows"
+    );
+    assert_eq!(live_count().await, 3);
+    let new_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+            .bind(&root)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(new_rows, 0, "K >= B must force new-block capacity to zero");
+
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='legacy-a'")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    project(&repo, &root, &["new-a", "new-b"]).await;
+    assert_eq!(live_count().await, 2, "K == B still has zero new capacity");
+
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='legacy-b'")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    project(&repo, &root, &["new-a", "new-b"]).await;
+    assert_eq!(
+        live_count().await,
+        2,
+        "one terminated legacy row restores one slot"
+    );
+
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='legacy-c'")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    project(&repo, &root, &["new-a", "new-b"]).await;
+    assert_eq!(
+        live_count().await,
+        2,
+        "all legacy termination restores the full B=2"
+    );
+}
+
+/// The upgrade freeze is tree-wide, not merely local to the member carrying
+/// excess legacy rows. With K=B but root fixed occupancy 5 > share 4, the
+/// child must not use its otherwise-free fourth slot and push Σ to 9.
+#[tokio::test]
+async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "upgrade-root").await;
+    let child = seed_wave(&repo, &cove, "upgrade-child").await;
+    link(&repo, &child, &root).await;
+    set_ceiling(&repo, &root, 8).await;
+    set_ceiling(&repo, &child, 8).await;
+    set_tree_budget(&repo, &root, 16).await;
+    project(
+        &repo,
+        &root,
+        &["root-a", "root-b", "root-c", "root-d", "root-e"],
+    )
+    .await;
+    project(&repo, &child, &["child-a", "child-b", "child-c"]).await;
+    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id IN (?1,?2)")
+        .bind(&root)
+        .bind(&child)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET tree_task_budget=8 WHERE id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let new_declarations = declarations(&["new-a", "new-b"]);
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(
+        &mut conn,
+        &child,
+        &new_declarations,
+        &vec![Vec::new(); new_declarations.len()],
+        false,
+    )
+    .await
+    .unwrap();
+    assert!(verdicts.iter().all(|verdict| {
+        !verdict.schedulable
+            && verdict
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+    }));
+    drop(conn);
+
+    project(&repo, &child, &["new-a", "new-b"]).await;
+    let new_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+            .bind(&child)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut conn = repo.pool().acquire().await.unwrap();
+    assert_eq!(
+        new_rows, 0,
+        "one over-share member must freeze every member"
+    );
+    assert_eq!(wave_tree_spec_inventory(&mut conn, &root).await.unwrap(), 8);
+    drop(conn);
+
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='root-a'")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    project(&repo, &child, &["new-a", "new-b"]).await;
+    let new_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+            .bind(&child)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let mut conn = repo.pool().acquire().await.unwrap();
+    assert_eq!(
+        new_rows, 1,
+        "capacity returns once every member fits its share"
+    );
+    assert_eq!(wave_tree_spec_inventory(&mut conn, &root).await.unwrap(), 8);
 }
 
 /// PATCH back to NULL restores the kernel default; it does not remove the
