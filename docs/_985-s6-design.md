@@ -767,7 +767,60 @@ claim→submit 的窗口由 `resume_dispatched` 补齐。内联方案要重造�
 **强制点二**：`evaluate_schedulability` 加树项。**只有强制点一时 D.4 #7 为假**
 （真实上界 Σ per-wave ceiling）。
 
-> ### ⚠️ BLOCKER-A3：树项直接数 pending 会让投影**非幂等**
+> ### ✅ v5 裁决（PR-B 施工前）：树项形状 = **确定性配额分割**，不是「数兄弟的行」
+>
+> 设计原文把这里留成「必须裁决：rebuild 跳过树项，或整树 root-first DFS 重建」。
+> 施工前的定向调研（`docs/_985-s6b-fork.md`）**证伪了这两个选项，并给出第三条**。
+>
+> **甲（只数兄弟 in-flight，不数兄弟 pending）—— 恒真门，不做。**
+> 精确退化上界 `Σ_v min(spec_task_ceiling_v, B)`；默认 `ceiling = B = 32`
+> （`task_projection.rs:17`、`985-doc-as-plan.md:1179`）⇒ **收窄量为 0**。
+> 且 `N_open ≤ B` 已被强制点一独立封顶（每个未闭合子 wave 恰对应一条仍
+> `dispatched/running` 的父任务行，必被全树非终结计数数到）⇒ 强制点一单独已给
+> `L ≤ B·ceiling`，甲把它「改进」到同一个数。**典型 fake gate 形状。**
+>
+> **乙（数兄弟 pending + 整树 root-first DFS 重建）—— 救不了 D.1 #11，不做。**
+> 共享预算的先到先得分配是**路径依赖**的：兄弟 C、D 各声明 2 条、`B=2`、双方 0 存量时，
+> 增量结果由人的编辑顺序决定（先写 C ⇒ C 得 2、D 得 0）。
+> 整树 rebuild 只能按确定性顺序得到**规范**不动点，与增量历史留下的不动点在一半情形下不同；
+> 而 rebuild **无从得知「谁先来」**（pending 是产物，不能当输入 —— 当 tie-break 就是 BLOCKER-A3 的同一个坑）。
+> ⇒ 乙 = **明确牺牲 D.1 #11**，整树 rebuild 只是把不确定变确定。
+>
+> **丙-2（确定性配额分割）—— 采纳。**
+>
+> ```
+> effective_ceiling(W) = min(spec_task_ceiling(W), share(W, T))
+> share(W, T)          = floor(B / N) ，余数按 (created_at, id) 升序分给前 r 个 wave 各 +1
+> 其中 T = W 所在的树，N = |T|，B = 树根的 tree_task_budget（NULL ⇒ 默认 32），Σ share = B
+> ```
+>
+> **为什么它同时满足两边**：三个输入 —— 本 wave 文档、本 wave 在飞、**树的形状（`waves` 行）**
+> —— **没有一个是投影的产物** ⇒ rebuild 序无关，**D.1 #11 原样成立**；
+> 而上界 `Σ_v live_spec(v) ≤ Σ_v share_v = B` —— **这才是 D.4 #7 想要的那条**。
+>
+> **`external_occupied` 补丁随之取消**（它是 BLOCKER-A3 的修法，丙-2 下不再需要 ——
+> 份额完全不依赖 pending，因此没有「自己的输出计入自己的占用」那个回路）。
+>
+> **唯一的新语义**：树变大 ⇒ 份额缩小 ⇒ 超额 pending 在其下次投影按既有顺序被裁。
+> 这与「人把 ceiling 调低到当时在飞数以下」**完全同形**，而那条退化语义文档已批准写死
+> （`985-doc-as-plan.md:1194-1196`）⇒ **复用既有语义，不是新风险**。
+> 关键性质：**份额不随 pending 变化**，所以裁掉超额 pending 不会反过来改变份额 ⇒ **不振荡**。
+>
+> **已知代价**：树深/宽时份额偏紧（N=10 ⇒ 每 wave 3 条）。属常数标定问题，
+> 与其余常数一并按可观测量标定（`985-doc-as-plan.md:1198-1204`）。登记进 §12.1。
+>
+> **查询面**：解根复用 PR-A 的 `WAVE_ROOT_DEPTH_SQL`；向下 CTE **只数 wave 不数 task**
+> （走 `idx_waves_parent_wave_id`，`0071_sub_wave_tree.sql:7-8`），比乙更轻。
+>
+> **D.4 #7 的最终表述**（PR-B 合入时改成这条，去掉 PR-A 留下的「尚未成立」旁注）：
+>
+> > 树内 `declared_by='spec'` 的非终结行 ≤ `tree_task_budget`。
+> > 由**两个强制点**共同保证：子 wave 创建准入（全树非终结计数）与
+> > `evaluate_schedulability` 的**确定性配额分割**（`min(ceiling, share)`，`Σ share = B`）。
+> > **配额分割而非共享计数**是刻意的：它使树项只依赖树的形状而非投影产物，
+> > 从而 D.1 #11「rebuild ≡ 增量差分」得以保持 —— 共享计数在这一点上做不到（先到先得是路径依赖的）。
+
+> ### ⚠️ BLOCKER-A3（**v5 后已由丙-2 从根上消除，保留作为记录**）：树项直接数 pending 会让投影**非幂等**
 >
 > 树计数含 pending，但 pending 行是投影的**输出**、不是占用输入
 > （`task_projection.rs:777-796`）。于是一次无关的 prose 编辑 ⇒ 树项把本 wave 自己的
@@ -789,10 +842,10 @@ claim→submit 的窗口由 `resume_dispatched` 补齐。内联方案要重造�
 - **M-A3 / M-B1**：`§7 #11`「非树 wave 逐字节不变」是**恒真断言**，
   证明不了「零新增查询」。要么给树项一个可计数的接缝（语句计数 / 可注入函数断言 0 次调用），
   要么删掉这条，别留恒真断言充数。
-- **M-B8**：树项让本 wave 的准入依赖**兄弟 wave 的行** ⇒ rebuild 不再是本 wave 文档的纯函数，
-  **先 rebuild C 还是先 rebuild D 会产出不同准入集合**。必须裁决：rebuild 跳过树项
-  （并论证为何不破坏 D.4 #7），或规定整棵树按 root-first DFS 整体 rebuild。
-  验收：「同一棵树两种 rebuild 序 ⇒ 同一结果」。
+- **M-B8**（**v5 已裁决**：丙-2 确定性配额分割）：原问题是「树项让本 wave 的准入依赖兄弟 wave 的行
+  ⇒ rebuild 不再是本 wave 文档的纯函数」。丙-2 让树项**只依赖树的形状**（`waves` 行，非投影产物），
+  问题从根上消失。**验收仍要保留**：「同一棵树两种 rebuild 序 ⇒ 同一结果」，
+  且**变异 = 把 `share` 改成依赖兄弟 pending 的共享计数 ⇒ 该验收必红**。
 - 单一真源：`tree_task_budget` 只在树根有意义，子 wave 建时**显式写 NULL**
   （`wave_create_tx` 是固定列清单 `wave.rs:47-63`，不写就吃 `DEFAULT 32` ——
   每个子 wave 都拿到自己的 32）。**正面断言该列为 NULL**，不要断言「预算生效」（值相等时恒真）。
