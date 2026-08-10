@@ -1,0 +1,175 @@
+@layer features {
+  .wrapper {
+    position: relative;
+    display: block;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    inline-size: 100%;
+    padding: var(--space-2);
+    padding-inline-end: var(--space-11);
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: var(--text-sm);
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .wrapperCompact .row {
+    padding-block: var(--space-1);
+    border-radius: var(--radius-sm);
+    color: var(--text-2);
+  }
+
+  .row:hover {
+    background: var(--overlay-hover);
+  }
+
+  .rowActive {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+  }
+
+  .glyph {
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    flex: none;
+  }
+
+  .glyphAttention {
+    background: var(--warn);
+  }
+
+  .glyphRunning {
+    background: var(--accent);
+  }
+
+  .body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-inline-size: 0;
+    flex: 1;
+  }
+
+  .titleRow {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
+  .title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rowAttention .title {
+    color: var(--warn);
+  }
+
+  .lifecycle {
+    margin-inline-start: auto;
+    color: var(--text-4);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+
+  .meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    min-inline-size: 0;
+  }
+
+  .coveTag {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    white-space: nowrap;
+  }
+
+  .coveDot {
+    inline-size: 6px;
+    block-size: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--text-4);
+  }
+
+  .now {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .progressTrack {
+    display: block;
+    block-size: 3px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-chip);
+    overflow: hidden;
+  }
+
+  .progressFill {
+    display: block;
+    block-size: 100%;
+    background: var(--accent);
+  }
+
+  .action {
+    position: absolute;
+    inset-block-start: 50%;
+    translate: 0 -50%;
+    display: grid;
+    place-items: center;
+    inline-size: 22px;
+    block-size: 22px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-3);
+    font: inherit;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+  }
+
+  .action:hover {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .wrapper:hover .action,
+  .wrapper:focus-within .action {
+    opacity: 1;
+  }
+
+  .pin {
+    inset-inline-end: 26px;
+  }
+
+  /* INV-SIDEBAR-012: once pinned, unpin must be reachable without hover. */
+  .pinAlways {
+    opacity: 1;
+    color: var(--accent);
+  }
+
+  .remove {
+    inset-inline-end: 2px;
+  }
+
+  .remove:hover {
+    color: var(--warn);
+  }
+}

@@ -72,3 +72,18 @@ export function sortedCoves(coves: readonly Cove[]): Cove[] {
     ? left.sort - right.sort
     : left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 }
+
+export type NewCoveBody = Readonly<{ name: string; color: string; sort?: number }>;
+export type CovePatchBody = Readonly<{ name?: string; color?: string; sort?: number }>;
+
+export function createCoveOperation(body: NewCoveBody): ApiOperation<CoveWire> {
+  return { method: 'POST', path: '/api/coves', body, responseSchema: coveWireSchema };
+}
+
+export function updateCoveOperation(coveId: string, body: CovePatchBody): ApiOperation<CoveWire> {
+  return { method: 'PATCH', path: `/api/coves/${encodeURIComponent(coveId)}`, body, responseSchema: coveWireSchema };
+}
+
+export function deleteCoveOperation(coveId: string): ApiOperation<undefined> {
+  return { method: 'DELETE', path: `/api/coves/${encodeURIComponent(coveId)}`, responseSchema: z.undefined() };
+}

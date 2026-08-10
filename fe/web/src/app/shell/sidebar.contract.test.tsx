@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
-import type { Wave } from '../../../../core/domain/wave.ts';
+import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { Sidebar } from './sidebar.tsx';
 
@@ -24,6 +24,7 @@ function wave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1', coveId: 'c1', title: 'Task', sort: 1, lifecycle: 'draft', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+    ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
 }

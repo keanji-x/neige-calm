@@ -33,6 +33,23 @@ export const waveWireSchema = z.object({
 });
 export type WaveWire = z.infer<typeof waveWireSchema>;
 
+/**
+ * Plugin-written activity a wave carries on top of its kernel row. The kernel
+ * stores these as overlays, so a wave read without overlays still has to be a
+ * complete `Wave` — the neutral values below are what "no plugin has posted
+ * anything" means, not "unknown".
+ */
+export type WaveActivity = Readonly<{
+  progress: number;
+  eta: string;
+  now: string;
+  anyCardNeedsInput: boolean;
+}>;
+
+export const NEUTRAL_ACTIVITY: WaveActivity = Object.freeze({
+  progress: 0, eta: '', now: '', anyCardNeedsInput: false,
+});
+
 export type Wave = Readonly<{
   id: string;
   coveId: string;
@@ -45,9 +62,9 @@ export type Wave = Readonly<{
   terminalAt: number | null;
   createdAt: number;
   updatedAt: number;
-}>;
+}> & WaveActivity;
 
-export function toWave(wire: WaveWire): Wave {
+export function toWave(wire: WaveWire, activity: WaveActivity = NEUTRAL_ACTIVITY): Wave {
   return {
     id: wire.id,
     coveId: wire.cove_id,
@@ -60,8 +77,91 @@ export function toWave(wire: WaveWire): Wave {
     terminalAt: wire.terminal_at,
     createdAt: wire.created_at,
     updatedAt: wire.updated_at,
+    ...activity,
   };
 }
+
+export const overlayWireSchema = z.object({
+  id: z.string(),
+  plugin_id: z.string(),
+  entity_kind: z.string(),
+  entity_id: z.string(),
+  kind: z.string(),
+  payload: z.unknown(),
+  updated_at: z.number(),
+});
+export type OverlayWire = z.infer<typeof overlayWireSchema>;
+
+function payloadField(payload: unknown, key: string): unknown {
+  return typeof payload === 'object' && payload !== null
+    ? (payload as Record<string, unknown>)[key]
+    : undefined;
+}
+
+/**
+ * Folds a wave's overlays into its activity fields. Unknown overlay kinds and
+ * mistyped payloads are ignored rather than rejected: a plugin writing junk
+ * must not blank out a wave the sidebar is trying to render.
+ */
+export function waveActivityFrom(waveId: string, overlays: readonly OverlayWire[]): WaveActivity {
+  let activity = NEUTRAL_ACTIVITY;
+  for (const overlay of overlays) {
+    if (overlay.entity_kind !== 'wave' || overlay.entity_id !== waveId) continue;
+    const value = payloadField(overlay.payload, 'value');
+    const text = payloadField(overlay.payload, 'text');
+    if (overlay.kind === 'progress' && typeof value === 'number') activity = { ...activity, progress: value };
+    else if (overlay.kind === 'eta' && typeof text === 'string') activity = { ...activity, eta: text };
+    else if (overlay.kind === 'now' && typeof text === 'string') activity = { ...activity, now: text };
+    else if (overlay.kind === 'any_card_needs_input' && typeof value === 'boolean') {
+      activity = { ...activity, anyCardNeedsInput: value };
+    }
+  }
+  return activity;
+}
+
+export const cardWireSchema = z.object({
+  id: z.string(),
+  wave_id: z.string(),
+  kind: z.string(),
+  title: z.string().nullable().default(null),
+  sort: z.number(),
+  payload: z.unknown(),
+  deletable: z.boolean().default(true),
+  created_at: z.number(),
+  updated_at: z.number(),
+});
+export type CardWire = z.infer<typeof cardWireSchema>;
+
+export const waveDetailSchema = z.object({
+  wave: waveWireSchema,
+  cards: z.array(cardWireSchema),
+  overlays: z.array(overlayWireSchema),
+});
+export type WaveDetailWire = z.infer<typeof waveDetailSchema>;
+
+/** `{ fg, bg }` RGB the kernel stamps onto a spawning daemon's argv (#177). */
+export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: readonly [number, number, number] }>;
+
+export type NewWaveBody = Readonly<{
+  cove_id: string;
+  title: string;
+  cwd: string;
+  theme: ThemeRgb;
+  /**
+   * `false` requires `cwd` to already sit under a folder claimed by some cove;
+   * the route answers 409 `conflict` naming the cove to claim it for. `true`
+   * claims it in the same transaction. There is no third option — omitting the
+   * field is `false`.
+   */
+  attach_folder?: boolean;
+}>;
+
+export type WavePatchBody = Readonly<{
+  title?: string;
+  sort?: number;
+  pinned_at?: number | null;
+  archived_at?: number | null;
+}>;
 
 export function wavesInCoveOperation(coveId: string): ApiOperation<WaveWire[]> {
   return {
@@ -71,9 +171,59 @@ export function wavesInCoveOperation(coveId: string): ApiOperation<WaveWire[]> {
   };
 }
 
+export function waveDetailOperation(waveId: string): ApiOperation<WaveDetailWire> {
+  return { method: 'GET', path: `/api/waves/${encodeURIComponent(waveId)}`, responseSchema: waveDetailSchema };
+}
+
+export function createWaveOperation(body: NewWaveBody): ApiOperation<WaveWire> {
+  return { method: 'POST', path: '/api/waves', body, responseSchema: waveWireSchema };
+}
+
+export function updateWaveOperation(waveId: string, body: WavePatchBody): ApiOperation<WaveWire> {
+  return { method: 'PATCH', path: `/api/waves/${encodeURIComponent(waveId)}`, body, responseSchema: waveWireSchema };
+}
+
+export function deleteWaveOperation(waveId: string): ApiOperation<undefined> {
+  return { method: 'DELETE', path: `/api/waves/${encodeURIComponent(waveId)}`, responseSchema: z.undefined() };
+}
+
+export function overlaysByKindOperation(entityKind: 'wave' | 'card'): ApiOperation<OverlayWire[]> {
+  return {
+    method: 'GET',
+    path: `/api/overlays?entity_kind=${entityKind}`,
+    responseSchema: z.array(overlayWireSchema),
+  };
+}
+
 /** The wave needs a human: blocked, in review, or failed. */
 export function isWaitingForUser(lifecycle: WaveLifecycle): boolean {
   return lifecycle === 'blocked' || lifecycle === 'reviewing' || lifecycle === 'failed';
+}
+
+/**
+ * #254 — the UI grouping predicate for every "Waiting on you" surface. ORs the
+ * lifecycle bucket with the kernel `card_fsm`-derived overlay so a wave whose
+ * worker card is sitting on AwaitingInput surfaces even before the Spec Agent
+ * has driven `working → blocked`.
+ *
+ * This stays separate from `isWaitingForUser` on purpose: the two signals have
+ * different owners (Spec Agent vs kernel) and different storage (column vs
+ * overlay), and places that genuinely want the pure lifecycle bucket — the
+ * lifecycle badge, cove bucket sort — must keep getting it.
+ */
+export function needsUserAttention(wave: Wave): boolean {
+  return isWaitingForUser(wave.lifecycle) || wave.anyCardNeedsInput;
+}
+
+/** Waiting first, then running, then everything quiet. */
+export function lifecycleRank(wave: Wave): number {
+  if (needsUserAttention(wave)) return 0;
+  if (isRunning(wave.lifecycle)) return 1;
+  return 2;
+}
+
+export function sortByLifecycleRank(waves: readonly Wave[]): Wave[] {
+  return [...waves].sort((left, right) => lifecycleRank(left) - lifecycleRank(right));
 }
 
 /** The wave has work in flight. `done` / `draft` / `canceled` are neither. */

@@ -1,0 +1,29 @@
+@layer ui {
+  .title {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    margin-inline-start: calc(-1 * var(--space-2));
+    font: inherit;
+    color: inherit;
+    cursor: text;
+    text-align: start;
+  }
+
+  .title:hover {
+    border-color: var(--hairline);
+    background: var(--overlay-hover-faint);
+  }
+
+  .input {
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    margin-inline-start: calc(-1 * var(--space-2));
+    font: inherit;
+    color: var(--text);
+    background: var(--surface-paper);
+    min-width: 0;
+  }
+}

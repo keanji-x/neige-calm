@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
-import type { Wave } from '../../../../core/domain/wave.ts';
+import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
 import { TodayPage, type ScheduledEvent } from './public.tsx';
 
 afterEach(cleanup);
@@ -19,6 +19,7 @@ function wave(overrides: Partial<Wave> = {}): Wave {
   return {
     id: 'w1', coveId: 'c1', title: 'Open wave', sort: 1, lifecycle: 'working', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: NOW - 3_600_000, updatedAt: NOW,
+    ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activeWavesOn, isRunning, isWaitingForUser, lifecycleLabel, toWave,
-  UNTITLED_WAVE_LABEL, waveDisplayTitle, waveLifecycleSchema, waveWireSchema, wavesInCoveOperation,
+  NEUTRAL_ACTIVITY, UNTITLED_WAVE_LABEL, waveDisplayTitle, waveLifecycleSchema, waveWireSchema, wavesInCoveOperation,
   type Wave,
 } from './wave.js';
 
@@ -15,6 +15,7 @@ function wave(overrides: Partial<Wave>): Wave {
   return {
     id: 'w', coveId: 'c', title: 't', sort: 1, lifecycle: 'draft', cwd: '/tmp',
     archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0,
+    ...NEUTRAL_ACTIVITY,
     ...overrides,
   };
 }
