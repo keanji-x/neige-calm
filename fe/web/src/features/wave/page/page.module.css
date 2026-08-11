@@ -4,6 +4,12 @@
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
     max-inline-size: var(--measure-page);
+
+    /* Fills the scroll region rather than hugging its content. Without it the
+       page's own `1fr` row resolves against nothing — the grid was 308 tall
+       inside a 900 tall main — so the document column had no space to centre an
+       empty state in. Content taller than the region still grows it. */
+    min-block-size: 100%;
     padding-block: var(--space-9) var(--space-11);
     padding-inline: var(--space-10);
   }
@@ -64,20 +70,33 @@
 
   /* Main column plus a 308 panel column, separated by the standard 24px gutter.
      At 1440 that is 848 / 24 / 308 = 1180. */
+  /*
+   * One row, and it fills. Left implicit, the row is sized by its tallest item
+   * — the panel card — so the document column ended where the card ended and an
+   * empty document could not centre itself in the space it owns. The panel
+   * pins to the top instead of stretching with it.
+   */
   .content {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-rows: minmax(0, 1fr);
     gap: var(--space-10);
     min-block-size: 0;
   }
 
+  /* Centred, not start-aligned. The prose is 616 in an 828 column, and hanging
+     all 212 of the slack off its trailing edge put a dead band between the last
+     word and the panel card — the two things on the page that carry content
+     were the two things furthest apart. */
   .doc {
     max-inline-size: var(--measure-doc);
     min-inline-size: 0;
+    margin-inline: auto;
   }
 
 
   .panel {
+    align-self: start;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);

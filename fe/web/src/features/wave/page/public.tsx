@@ -88,6 +88,7 @@ export function WavePage({
         header had, one level down.
       */}
       <PageHeader
+        align="document"
         title={
           <EditableTitle
             value={waveDisplayTitle(wave.title)}

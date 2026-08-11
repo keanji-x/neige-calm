@@ -92,6 +92,7 @@ export function CovePage({
         (the agent literally runs there) and stays on the wave page.
       */}
       <PageHeader
+        align="document"
         /*
          * No identity dot and no wave count.
          *

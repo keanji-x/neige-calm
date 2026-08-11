@@ -27,12 +27,29 @@ export type PageHeaderProps = Readonly<{
   actions?: ReactNode;
   /** Row 3. A cwd, an id, a branch — mono, because the font says "literal". */
   identity?: ReactNode;
+  /**
+   * Where the title sits.
+   *
+   * `page` starts it at the page's own inset — right for a route whose main
+   * column *is* the page, like Settings.
+   *
+   * `document` starts it at the prose column instead. The document routes
+   * centre their prose inside the main column, and the title is that
+   * document's first line: left at the page inset it hangs 106px out to the
+   * side of every word below it. Actions are unaffected — they belong to the
+   * page's trailing edge, not to the document.
+   */
+  align?: 'page' | 'document';
 }>;
 
-export function PageHeader({ breadcrumb, title, meta, actions, identity }: PageHeaderProps) {
+export function PageHeader({ breadcrumb, title, meta, actions, identity, align = 'page' }: PageHeaderProps) {
   const rows = 1 + (breadcrumb === undefined ? 0 : 1) + (identity === undefined ? 0 : 1);
   return (
-    <header className={styles.header} data-nc-header-rows={String(rows) as '1' | '2' | '3'}>
+    <header
+      className={styles.header}
+      data-nc-header-rows={String(rows) as '1' | '2' | '3'}
+      data-nc-align={align}
+    >
       {breadcrumb !== undefined && <div className={styles.crumbRow}>{breadcrumb}</div>}
       <div className={styles.titleRow}>
         {title}

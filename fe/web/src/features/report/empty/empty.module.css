@@ -1,26 +1,47 @@
 @layer features {
+  /*
+   * An empty document is centred; a written one is not.
+   *
+   * That difference is the point rather than an inconsistency. Prose is read
+   * from a left edge, so it keeps one. An empty state is not read, it is
+   * *recognised* — and centred in the space the document would have filled, it
+   * says "this page is blank" in the one language a layout has: where the ink
+   * is. A left-aligned line in the top corner of a 616×600 void reads as a page
+   * that failed to load.
+   */
   .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-8);
+    block-size: 100%;
     max-inline-size: var(--measure-prose);
+    margin-inline: auto;
+    padding-block-end: var(--space-12);
+    text-align: center;
   }
 
   /*
-   * Document weight, hint tone. It is the size a paragraph in this column will
-   * be, which is the point: the empty state shows the measure and the rhythm
-   * the report will arrive in, rather than a small grey label floating in a
-   * large blank area.
+   * One step above the document's own headings (`--text-xl` against the
+   * report's `--text-lg`). An empty state is allowed to be the largest thing on
+   * its page because it is the *only* thing on it — the competition a size like
+   * this would normally lose to does not exist here.
    */
   .lead {
-    font-size: var(--text-md);
+    font-size: var(--text-xl);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
     color: var(--text-2);
   }
 
   .hints {
     display: flex;
     flex-direction: column;
-    gap: var(--space-2);
-    margin-block-start: var(--space-6);
+    gap: var(--space-3);
+    max-inline-size: var(--measure-form);
+    margin: 0;
     padding: 0;
     list-style: none;
   }
@@ -30,13 +51,12 @@
    * rank (the day-count superscript, a disabled glyph); at 74 L on a 92.2 L
    * ground it measures about 1.9:1, which is a mark you notice rather than text
    * you read. These two lines are the whole guidance this column offers, so
-   * they have to be legible. The step down from the lead is carried by size and
-   * by `--text-2` → `--text-3`, both of which clear AA.
+   * they have to be legible.
    */
   .hint {
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--leading-base);
     color: var(--text-3);
   }
 }

@@ -16,6 +16,38 @@
     --header-h: calc(var(--control-h-lg) + var(--row-h-sm) * 2 + var(--space-3) * 2);
   }
 
+  /*
+   * The document routes' offset, derived rather than typed: the main column is
+   * the page's inner width less the panel and its gutter, and the prose is
+   * centred in it, so the title's start is half the difference.
+   *
+   *   (1180 − 3×24 − 280 − 616) / 2 = 106
+   *
+   * `padding-inline-start`, not a max-width — the sticky header's background
+   * must still span the full page, or content scrolls out from under it at the
+   * edges.
+   */
+  .header[data-nc-align='document'] {
+    --document-start: calc(
+      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--measure-prose)) / 2
+    );
+
+    /*
+     * The title *hangs* — it stops one gutter short of the prose rather than
+     * landing on it. Flush, the header reads as the document's first line;
+     * hung, it reads as what it is, the page's label for the document below.
+     *
+     * One `--space-10` is the size chosen, and the reason it is not free: the
+     * page's own inset and the grid's gutter are both `--space-10`, so a hang
+     * of exactly one gutter is a distance already on the page rather than a new
+     * one. Bigger reads as misalignment (the 106 it started at was the whole
+     * offset, and looked like a bug); smaller stops registering as deliberate.
+     */
+    --title-hang: var(--space-10);
+
+    padding-inline-start: calc(var(--document-start) - var(--title-hang));
+  }
+
   .header {
     position: sticky;
     inset-block-start: 0;
