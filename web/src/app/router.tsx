@@ -34,9 +34,11 @@ import { MissingShell } from './shell';
 import { useGo } from './navigation';
 import { useTodayTerminal } from '../hooks/useTodayTerminal';
 import {
+  coveTaskSummaryQueryOptions,
   covesQueryOptions,
   settingsQueryOptions,
   useCovesQuery,
+  useCoveTaskSummaryQuery,
   useDeleteCardMutation,
   useDeleteCoveMutation,
   useDeleteWaveMutation,
@@ -110,6 +112,9 @@ const coveRoute = createRoute({
     // component can surface it.
     void queryClient
       .ensureQueryData(wavesByCoveQueryOptions(params.coveId))
+      .catch(() => {});
+    void queryClient
+      .ensureQueryData(coveTaskSummaryQueryOptions(params.coveId))
       .catch(() => {});
   },
   component: CoveComponent,
@@ -230,6 +235,7 @@ function CoveComponent() {
   const { coveId } = useParams({ from: coveRoute.id });
   const covesQ = useCovesQuery();
   const wavesQ = useWavesByCoveQuery(coveId);
+  const taskSummaryQ = useCoveTaskSummaryQuery(coveId);
   const updateCove = useUpdateCoveMutation();
   const deleteCove = useDeleteCoveMutation();
   const deleteWave = useDeleteWaveMutation();
@@ -251,6 +257,7 @@ function CoveComponent() {
     <CovePage
       cove={cove}
       waves={waves}
+      taskSummary={taskSummaryQ.data}
       onGo={go}
       onWaveCreated={(wave) => {
         // Issue #250 PR 3 — the NewTaskForm inside CovePage owns the

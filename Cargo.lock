@@ -513,6 +513,7 @@ dependencies = [
  "dashmap",
  "futures",
  "hex",
+ "libsqlite3-sys",
  "proc-macro2",
  "rand 0.8.6",
  "serde",

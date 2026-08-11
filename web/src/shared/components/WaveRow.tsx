@@ -6,11 +6,13 @@ import { ProgressBar } from './ProgressBar';
 import { WaveGlyph } from './WaveGlyph';
 import { WaveLifecycleBadge } from './WaveLifecycleBadge';
 import { waveDisplayTitle } from '../waveTitle';
+import type { KernelWaveTaskSummary } from '../../api/wire';
 
 // ---------------- WaveRow ----------------
 
 export function WaveRow({
   wave,
+  taskSummary,
   cove,
   showCove = true,
   onClick,
@@ -18,6 +20,7 @@ export function WaveRow({
   onPinWave,
 }: {
   wave: Wave;
+  taskSummary?: KernelWaveTaskSummary;
   cove?: Cove;
   showCove?: boolean;
   onClick?: () => void;
@@ -87,6 +90,24 @@ export function WaveRow({
           <div className="s">
             <WaveLifecycleBadge lifecycle={wave.lifecycle} compact />
           </div>
+          {taskSummary && (
+            <div
+              className="wave-task-summary"
+              aria-label="已投影任务（排队与在飞）"
+            >
+              <span>已投影任务（排队与在飞） {taskSummary.blockLive}</span>
+              <span>排队 {taskSummary.pending}</span>
+              <span>在飞 {taskSummary.inFlight}</span>
+              <span>完成 {taskSummary.done}</span>
+              <span>失败 {taskSummary.failed}</span>
+              <span>取消 {taskSummary.canceled}</span>
+              {taskSummary.legacyLive > 0 && (
+                <span className="wave-task-legacy-badge">
+                  存量未物化 {taskSummary.legacyLive}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         {(showProgress || showEta) && (
           <div

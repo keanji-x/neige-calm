@@ -27,7 +27,7 @@ use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::ids::ActorId;
-use crate::model::{Cove, CoveKind, CovePatch, NewCove};
+use crate::model::{Cove, CoveKind, CovePatch, CoveTaskSummary, NewCove};
 use crate::operation::workspace_lease::{
     any_wave_has_active_forge_action, release_workspace_leases_for_wave_tx,
     sweep_workspace_worktrees_for_waves_repo,
@@ -53,6 +53,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/coves/{id}",
             axum::routing::patch(update_cove).delete(delete_cove),
+        )
+        .route(
+            "/api/coves/{cove_id}/task-summary",
+            get(get_cove_task_summary),
         )
 }
 
@@ -95,6 +99,33 @@ pub(crate) async fn list_coves(
         s.repo.coves_list_user_visible().await?
     };
     Ok(Json(coves))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/coves/{cove_id}/task-summary",
+    tag = "coves",
+    params(("cove_id" = String, Path, description = "Cove id")),
+    responses(
+        (status = 200, description = "Read-time task totals and sorted per-wave rows", body = CoveTaskSummary),
+        (status = 404, description = "Cove not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    ),
+)]
+// Deliberately no `Principal`: this GET runs when Cove.tsx mounts, and adding
+// the extractor would break anonymous a11y replay. TODO(#573 multi-user):
+// add ownership filtering when the mount-time read surface has a replay-safe
+// auth contract (same constraint as waves.rs list/file reads).
+pub(crate) async fn get_cove_task_summary(
+    State(s): State<RouteState>,
+    Path(cove_id): Path<String>,
+) -> Result<Json<CoveTaskSummary>> {
+    let summary = s
+        .repo
+        .cove_task_summary(&cove_id)
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("cove {cove_id}")))?;
+    Ok(Json(summary))
 }
 
 #[utoipa::path(

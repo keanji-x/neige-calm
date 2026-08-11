@@ -10,6 +10,7 @@ import type {
   CoveResolveBody,
   KernelCard,
   KernelCove,
+  KernelCoveTaskSummary,
   KernelOverlay,
   KernelTerminal,
   KernelWave,
@@ -132,6 +133,11 @@ export const deleteCove = (id: string) =>
   request<void>('DELETE', `/api/coves/${encodeURIComponent(id)}`);
 export const wavesInCove = (coveId: string) =>
   request<KernelWave[]>('GET', `/api/coves/${encodeURIComponent(coveId)}/waves`);
+export const coveTaskSummary = (coveId: string) =>
+  request<KernelCoveTaskSummary>(
+    'GET',
+    `/api/coves/${encodeURIComponent(coveId)}/task-summary`,
+  );
 
 /**
  * Issue #250 PR 3 — longest-prefix lookup for "which cove (if any)

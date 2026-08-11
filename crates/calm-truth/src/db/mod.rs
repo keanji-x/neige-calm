@@ -105,6 +105,10 @@ use sqlx::{Sqlite, SqlitePool, Transaction};
 pub mod rows;
 pub mod sqlite;
 
+/// Maximum number of per-wave rows returned by a cove task summary. Totals
+/// always cover the complete cove and are calculated before this limit.
+pub const COVE_TASK_SUMMARY_MAX_WAVES: i64 = 200;
+
 /// Closure shape accepted by `Repo::write_with_event`. The closure receives
 /// a mutable transaction handle (so it can call the `_tx`-suffixed helpers
 /// in `db::sqlite`) and returns the `Event` to persist + broadcast.
@@ -298,6 +302,10 @@ pub trait RepoRead: Send + Sync + 'static {
     /// [`RepoRead::coves_list`]).
     async fn coves_list_user_visible(&self) -> Result<Vec<Cove>>;
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>>;
+    /// One-statement, read-time task aggregation for a cove. `None` means
+    /// the cove itself does not exist; an existing cove with no waves returns
+    /// an all-zero summary.
+    async fn cove_task_summary(&self, cove_id: &str) -> Result<Option<CoveTaskSummary>>;
     /// Issue #175 — fetch the singleton system cove if one exists.
     /// Returns `None` until the first call to `POST /api/coves/system`
     /// mints the row. Backed by the unique partial index on

@@ -30,6 +30,7 @@ pub trait ServerRepoReadExt {
     async fn coves_list(&self) -> Result<Vec<Cove>>;
     async fn coves_list_user_visible(&self) -> Result<Vec<Cove>>;
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>>;
+    async fn cove_task_summary(&self, cove_id: &str) -> Result<Option<CoveTaskSummary>>;
     async fn cove_get_system(&self) -> Result<Option<Cove>>;
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>>;
@@ -119,6 +120,11 @@ where
     }
     async fn cove_get(&self, id: &str) -> Result<Option<Cove>> {
         calm_truth::db::RepoRead::cove_get(self, id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn cove_task_summary(&self, cove_id: &str) -> Result<Option<CoveTaskSummary>> {
+        calm_truth::db::RepoRead::cove_task_summary(self, cove_id)
             .await
             .map_err(Into::into)
     }

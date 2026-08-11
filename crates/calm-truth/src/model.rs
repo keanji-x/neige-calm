@@ -441,6 +441,48 @@ pub struct WaveDetail {
     pub overlays: Vec<Overlay>,
 }
 
+/// Status and attribution buckets shared by the cove total and every
+/// per-wave row in [`CoveTaskSummary`]. This is a read model only: it is
+/// derived from `tasks` by one SQLite statement and has no backing table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSummaryCounts {
+    pub pending: i64,
+    pub in_flight: i64,
+    pub done: i64,
+    pub failed: i64,
+    pub canceled: i64,
+    pub legacy_live: i64,
+    pub block_live: i64,
+    pub spec_live: i64,
+    pub user_live: i64,
+}
+
+/// One sorted row in the cove task summary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WaveTaskSummary {
+    pub wave_id: String,
+    pub title: String,
+    pub lifecycle: WaveLifecycle,
+    pub parent_wave_id: Option<String>,
+    pub spec_task_ceiling: Option<i64>,
+    pub tree_task_budget: Option<i64>,
+    #[serde(flatten)]
+    pub counts: TaskSummaryCounts,
+}
+
+/// Read-time cove aggregation returned by
+/// `GET /api/coves/{cove_id}/task-summary`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CoveTaskSummary {
+    #[serde(flatten)]
+    pub totals: TaskSummaryCounts,
+    pub waves: Vec<WaveTaskSummary>,
+    pub truncated: bool,
+}
+
 // ---------------- Helpers ----------------
 
 fn empty_object() -> serde_json::Value {

@@ -33,6 +33,23 @@ use crate::error::{CalmError, Result};
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
 
+/// Shared SQL carrier for the immutable/live legacy-spec predicate. Keep
+/// this private: both executing statements expand the same token sequence,
+/// while semantic fixtures pin what it means (including the intentional
+/// difference for user-declared legacy rows).
+macro_rules! legacy_live_spec_predicate {
+    ($task:literal) => {
+        concat!(
+            $task,
+            ".declared_by='spec' AND ",
+            $task,
+            ".origin!='block' AND ",
+            $task,
+            ".status NOT IN ('done','failed','canceled')"
+        )
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Sub-trait impls — thin pool-wrapping wrappers around the `_tx` helpers,
 // plus the read-side methods that don't need transaction composition.
@@ -470,5 +487,7 @@ mod wave_detail_json_shape_tests;
 mod wave_detail_sort_precision_tests;
 // …and the order file pins what the aggregate does NOT give for free: its
 // input order is arbitrary, so both arrays state their own.
+#[cfg(test)]
+mod cove_task_summary_tests;
 #[cfg(test)]
 mod wave_detail_order_tests;

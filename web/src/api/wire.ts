@@ -39,6 +39,8 @@ type Schemas = components['schemas'];
 
 export type KernelCove = Schemas['Cove'];
 export type KernelWave = Schemas['Wave'];
+export type KernelCoveTaskSummary = Schemas['CoveTaskSummary'];
+export type KernelWaveTaskSummary = Schemas['WaveTaskSummary'];
 
 /**
  * Issue #250 PR 3 — 200 body for `GET /api/coves/resolve`. The kernel

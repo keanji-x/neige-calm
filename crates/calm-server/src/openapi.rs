@@ -14,8 +14,9 @@ use crate::error::ErrorBody;
 use crate::harness::HarnessPhaseTag;
 use crate::model::{
     Card, CardPatch, CardRuntimeView, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve,
-    FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay,
-    NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
+    CoveTaskSummary, FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove,
+    NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin, TaskSummaryCounts, Terminal, Wave,
+    WaveDetail, WavePatch, WaveTaskSummary,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
@@ -63,6 +64,7 @@ use utoipa::OpenApi;
     paths(
         // ---- coves ----
         crate::routes::coves::list_coves,
+        crate::routes::coves::get_cove_task_summary,
         crate::routes::coves::create_cove,
         crate::routes::coves::get_or_create_system_cove,
         crate::routes::coves::update_cove,
@@ -149,6 +151,9 @@ use utoipa::OpenApi;
         CoveFolder,
         NewCoveFolder,
         CoveResolve,
+        CoveTaskSummary,
+        TaskSummaryCounts,
+        WaveTaskSummary,
         FolderConflict,
         FolderConflictKind,
         ResolveQuery,

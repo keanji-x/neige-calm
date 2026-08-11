@@ -83,6 +83,8 @@ describe('queryKeys / query option factories', () => {
 
   it('queryKeys helpers match the factory output', () => {
     expect(queryKeys.coves()).toEqual(['coves']);
+    expect(queryKeys.coveTaskSummaries()).toEqual(['cove-task-summary']);
+    expect(queryKeys.coveTaskSummary('c1')).toEqual(['cove-task-summary', 'c1']);
     expect(queryKeys.wavesInCove('c1')).toEqual(['waves', 'c1']);
     expect(queryKeys.waveDetail('w1')).toEqual(['wave', 'w1']);
   });

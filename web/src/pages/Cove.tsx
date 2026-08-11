@@ -8,6 +8,7 @@ import { PlusIcon } from '../shared/components/PlusIcon';
 import { sortByLifecycleRank } from '../shared/lifecycle';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import type { Cove, Route, Wave } from '../types';
+import type { KernelCoveTaskSummary } from '../api/wire';
 import { ConfirmDialog } from '../ui/ConfirmDialog/ConfirmDialog';
 import { Dialog } from '../ui/Dialog/Dialog';
 import { DeleteButton } from './_shared';
@@ -32,6 +33,7 @@ import { DeleteButton } from './_shared';
 export function CovePage({
   cove,
   waves,
+  taskSummary,
   onGo,
   onWaveCreated,
   onRenameCove,
@@ -41,6 +43,8 @@ export function CovePage({
 }: {
   cove: Cove;
   waves: Wave[];
+  /** One read-time snapshot for all task-count rows in this cove. */
+  taskSummary?: KernelCoveTaskSummary;
   onGo: (r: Route) => void;
   /** Issue #250 PR 3 — fired after NewTaskForm successfully POSTs
    *  `/api/waves`. Caller navigates to the new wave's detail page.
@@ -97,6 +101,10 @@ export function CovePage({
   // wave's `WaveLifecycle` (the single source of truth for wave-level
   // state — see `shared/lifecycle.ts`).
   const sortedWaves = useMemo(() => sortByLifecycleRank(waves), [waves]);
+  const taskRowsByWave = useMemo(
+    () => new Map(taskSummary?.waves.map((row) => [row.waveId, row]) ?? []),
+    [taskSummary],
+  );
 
   return (
     <div className="col wide">
@@ -177,6 +185,7 @@ export function CovePage({
               <WaveRow
                 key={w.id}
                 wave={w}
+                taskSummary={taskRowsByWave.get(w.id)}
                 cove={cove}
                 showCove={false}
                 onClick={() => onGo({ name: 'wave', id: w.id })}

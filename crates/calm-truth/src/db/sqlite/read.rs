@@ -6,7 +6,10 @@ use super::{
     SqlxRepo, derive_session_identity, session_get_by_active_token_hash, session_get_by_id,
 };
 use crate::card_role_cache::CardRoleCache;
-use crate::db::{RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, WorkspaceLease};
+use crate::db::{
+    COVE_TASK_SUMMARY_MAX_WAVES, RepoRead, SessionCardIdentity, SharedCodexDaemonRecord,
+    WorkspaceLease,
+};
 use crate::error::{CalmError, Result};
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::model::*;
@@ -27,6 +30,191 @@ struct WaveDetailRow {
     wave: crate::db::rows::WaveRow,
     cards_json: String,
     overlays_json: String,
+}
+
+/// Row shape of the one-statement cove summary. Cove totals repeat on every
+/// returned wave row; an existing empty cove produces exactly one row with a
+/// NULL `wave_id`, while a missing cove produces no rows.
+#[derive(sqlx::FromRow)]
+struct CoveTaskSummaryRow {
+    total_pending: i64,
+    total_in_flight: i64,
+    total_done: i64,
+    total_failed: i64,
+    total_canceled: i64,
+    total_legacy_live: i64,
+    total_block_live: i64,
+    total_spec_live: i64,
+    total_user_live: i64,
+    truncated: i64,
+    wave_id: Option<String>,
+    title: Option<String>,
+    lifecycle: Option<String>,
+    parent_wave_id: Option<String>,
+    spec_task_ceiling: Option<i64>,
+    tree_task_budget: Option<i64>,
+    pending: Option<i64>,
+    in_flight: Option<i64>,
+    done: Option<i64>,
+    failed: Option<i64>,
+    canceled: Option<i64>,
+    legacy_live: Option<i64>,
+    block_live: Option<i64>,
+    spec_live: Option<i64>,
+    user_live: Option<i64>,
+}
+
+/// One static statement owns all four pieces of the contract: the `coves`
+/// anchor distinguishes missing from empty, window totals are calculated over
+/// every `wave_counts` row, `ROW_NUMBER` applies the stable sort/limit only to
+/// the returned rows, and `wave_count` yields `truncated` from the same SQLite
+/// snapshot. Do not split this into autocommit reads.
+pub(super) const COVE_TASK_SUMMARY_SQL: &str = concat!(
+    r#"
+WITH wave_counts AS (
+  SELECT
+    w.id AS wave_id,
+    w.title,
+    w.lifecycle,
+    w.parent_wave_id,
+    w.spec_task_ceiling,
+    w.tree_task_budget,
+    w.updated_at,
+    SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END) AS pending,
+    SUM(CASE WHEN t.status IN ('dispatched','running','verifying') THEN 1 ELSE 0 END) AS in_flight,
+    SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) AS done,
+    SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+    SUM(CASE WHEN t.status = 'canceled' THEN 1 ELSE 0 END) AS canceled,
+    SUM(CASE WHEN "#,
+    legacy_live_spec_predicate!("t"),
+    r#" THEN 1 ELSE 0 END) AS legacy_live,
+    SUM(CASE WHEN t.declared_by = 'spec' AND t.origin = 'block'
+                  AND t.status NOT IN ('done','failed','canceled') THEN 1 ELSE 0 END) AS block_live,
+    SUM(CASE WHEN t.declared_by = 'spec'
+                  AND t.status NOT IN ('done','failed','canceled') THEN 1 ELSE 0 END) AS spec_live,
+    SUM(CASE WHEN t.declared_by = 'user'
+                  AND t.status NOT IN ('done','failed','canceled') THEN 1 ELSE 0 END) AS user_live
+  FROM waves w
+  LEFT JOIN tasks t ON t.wave_id = w.id
+  WHERE w.cove_id = ?1
+  GROUP BY w.id, w.title, w.lifecycle, w.parent_wave_id,
+           w.spec_task_ceiling, w.tree_task_budget, w.updated_at
+), ranked AS (
+  SELECT
+    wave_counts.*,
+    SUM(pending) OVER () AS total_pending,
+    SUM(in_flight) OVER () AS total_in_flight,
+    SUM(done) OVER () AS total_done,
+    SUM(failed) OVER () AS total_failed,
+    SUM(canceled) OVER () AS total_canceled,
+    SUM(legacy_live) OVER () AS total_legacy_live,
+    SUM(block_live) OVER () AS total_block_live,
+    SUM(spec_live) OVER () AS total_spec_live,
+    SUM(user_live) OVER () AS total_user_live,
+    COUNT(*) OVER () AS wave_count,
+    ROW_NUMBER() OVER (
+      ORDER BY legacy_live DESC, updated_at DESC, wave_id ASC
+    ) AS ordinal
+  FROM wave_counts
+)
+SELECT
+  COALESCE(r.total_pending, 0) AS total_pending,
+  COALESCE(r.total_in_flight, 0) AS total_in_flight,
+  COALESCE(r.total_done, 0) AS total_done,
+  COALESCE(r.total_failed, 0) AS total_failed,
+  COALESCE(r.total_canceled, 0) AS total_canceled,
+  COALESCE(r.total_legacy_live, 0) AS total_legacy_live,
+  COALESCE(r.total_block_live, 0) AS total_block_live,
+  COALESCE(r.total_spec_live, 0) AS total_spec_live,
+  COALESCE(r.total_user_live, 0) AS total_user_live,
+  CASE WHEN COALESCE(r.wave_count, 0) > ?2 THEN 1 ELSE 0 END AS truncated,
+  r.wave_id,
+  r.title,
+  r.lifecycle,
+  r.parent_wave_id,
+  r.spec_task_ceiling,
+  r.tree_task_budget,
+  r.pending,
+  r.in_flight,
+  r.done,
+  r.failed,
+  r.canceled,
+  r.legacy_live,
+  r.block_live,
+  r.spec_live,
+  r.user_live
+FROM coves c
+LEFT JOIN ranked r ON r.ordinal <= ?2
+WHERE c.id = ?1
+ORDER BY r.ordinal
+"#
+);
+
+pub(super) async fn cove_task_summary_on(
+    conn: &mut sqlx::SqliteConnection,
+    cove_id: &str,
+) -> Result<Option<CoveTaskSummary>> {
+    let rows = sqlx::query_as::<_, CoveTaskSummaryRow>(COVE_TASK_SUMMARY_SQL)
+        .bind(cove_id)
+        .bind(COVE_TASK_SUMMARY_MAX_WAVES)
+        .fetch_all(conn)
+        .await?;
+    let Some(first) = rows.first() else {
+        return Ok(None);
+    };
+
+    let totals = TaskSummaryCounts {
+        pending: first.total_pending,
+        in_flight: first.total_in_flight,
+        done: first.total_done,
+        failed: first.total_failed,
+        canceled: first.total_canceled,
+        legacy_live: first.total_legacy_live,
+        block_live: first.total_block_live,
+        spec_live: first.total_spec_live,
+        user_live: first.total_user_live,
+    };
+    let truncated = first.truncated != 0;
+    let waves = rows
+        .into_iter()
+        .filter_map(|row| {
+            let wave_id = row.wave_id.clone()?;
+            Some((wave_id, row))
+        })
+        .map(|(wave_id, row)| {
+            let lifecycle = row
+                .lifecycle
+                .ok_or_else(|| {
+                    CalmError::Internal(format!("summary wave {wave_id} has no lifecycle"))
+                })
+                .and_then(|value| WaveLifecycle::try_from(value).map_err(CalmError::Internal))?;
+            Ok(WaveTaskSummary {
+                wave_id,
+                title: row.title.unwrap_or_default(),
+                lifecycle,
+                parent_wave_id: row.parent_wave_id,
+                spec_task_ceiling: row.spec_task_ceiling,
+                tree_task_budget: row.tree_task_budget,
+                counts: TaskSummaryCounts {
+                    pending: row.pending.unwrap_or_default(),
+                    in_flight: row.in_flight.unwrap_or_default(),
+                    done: row.done.unwrap_or_default(),
+                    failed: row.failed.unwrap_or_default(),
+                    canceled: row.canceled.unwrap_or_default(),
+                    legacy_live: row.legacy_live.unwrap_or_default(),
+                    block_live: row.block_live.unwrap_or_default(),
+                    spec_live: row.spec_live.unwrap_or_default(),
+                    user_live: row.user_live.unwrap_or_default(),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(Some(CoveTaskSummary {
+        totals,
+        waves,
+        truncated,
+    }))
 }
 
 #[async_trait]
@@ -66,6 +254,13 @@ impl RepoRead for SqlxRepo {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Cove::from))
+    }
+
+    async fn cove_task_summary(&self, cove_id: &str) -> Result<Option<CoveTaskSummary>> {
+        // Exactly one autocommit statement: no explicit transaction and no
+        // existence preflight. See `COVE_TASK_SUMMARY_SQL`.
+        let mut conn = self.pool.acquire().await?;
+        cove_task_summary_on(&mut conn, cove_id).await
     }
 
     async fn cove_get_system(&self) -> Result<Option<Cove>> {

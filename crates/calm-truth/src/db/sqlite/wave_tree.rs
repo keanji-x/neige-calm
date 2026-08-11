@@ -106,12 +106,14 @@ pub const WAVE_TREE_MEMBERS_SQL: &str = concat!(
 /// detecting an upgrade member already above its deterministic share. Block
 /// pending rows are excluded because they re-enter projection as candidates;
 /// all non-block live rows (notably legacy) are immutable occupancy.
-const WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
+pub(super) const WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
     bounded_wave_descendant_cte!(),
     "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
        WHERE t.wave_id=w.id AND t.declared_by='spec' AND ( \
          (t.origin='block' AND t.status IN ('dispatched','running','verifying')) \
-         OR (t.origin!='block' AND t.status NOT IN ('done','failed','canceled')) \
+         OR (",
+    legacy_live_spec_predicate!("t"),
+    ") \
        )) AS fixed_live \
      FROM waves w \
      JOIN (SELECT id, min(depth) AS depth FROM down GROUP BY id) d ON w.id = d.id \

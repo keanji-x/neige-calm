@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as api from '../api/calm';
 import { CovePage } from './Cove';
 import type { Cove, Wave } from '../types';
+import type { KernelCoveTaskSummary } from '../api/wire';
 
 function makeCove(): Cove {
   return { id: 'c1', name: 'Atlas', subtitle: '', color: '#5a9' };
@@ -36,6 +37,64 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
     ...overrides,
   };
 }
+
+function makeTaskSummary(legacyLive: number): KernelCoveTaskSummary {
+  const counts = {
+    pending: 2,
+    inFlight: 1,
+    done: 3,
+    failed: 1,
+    canceled: 0,
+    legacyLive,
+    blockLive: 2,
+    specLive: 3,
+    userLive: 1,
+  };
+  return {
+    ...counts,
+    truncated: false,
+    waves: [{
+      ...counts,
+      waveId: 'w1',
+      title: 'Migrate auth',
+      lifecycle: 'draft',
+      parentWaveId: null,
+      specTaskCeiling: 32,
+      treeTaskBudget: null,
+    }],
+  };
+}
+
+describe('CovePage cove task summary', () => {
+  it('renders the projected-task wording and the legacy badge when legacyLive is positive', () => {
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave()]}
+        taskSummary={makeTaskSummary(2)}
+        onGo={() => {}}
+      />,
+    );
+
+    expect(screen.getByLabelText('已投影任务（排队与在飞）')).toHaveTextContent(
+      '已投影任务（排队与在飞） 2',
+    );
+    expect(screen.getByText('存量未物化 2')).toBeInTheDocument();
+  });
+
+  it('omits the legacy badge when legacyLive is zero', () => {
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave()]}
+        taskSummary={makeTaskSummary(0)}
+        onGo={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText(/存量未物化/)).not.toBeInTheDocument();
+  });
+});
 
 describe('CovePage EditableTitle keyboard entry', () => {
   it('renders the cove title as a focusable button named after the cove', () => {

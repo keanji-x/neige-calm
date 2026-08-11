@@ -149,6 +149,67 @@ beforeEach(() => {
 });
 
 describe('EventBridge', () => {
+  it.each([
+    {
+      kind: 'plan.updated',
+      data: { wave_id: 'wave_1', changed_keys: ['task'] },
+      key: ['cove-task-summary'],
+    },
+    {
+      kind: 'task.dispatched',
+      data: { idempotency_key: 'wave_1:task', kind: 'codex' },
+      key: ['cove-task-summary'],
+    },
+    {
+      kind: 'task.completed',
+      data: { idempotency_key: 'wave_1:task', result: {}, artifacts: [] },
+      key: ['cove-task-summary'],
+    },
+    {
+      kind: 'task.failed',
+      data: { idempotency_key: 'wave_1:task', reason: 'boom' },
+      key: ['cove-task-summary'],
+    },
+    {
+      kind: 'task.gate_result',
+      data: {
+        task_id: 'wave_1:task', idempotency_key: 'wave_1:task', passed: true,
+        log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
+      },
+      key: ['cove-task-summary'],
+    },
+    {
+      kind: 'wave.updated',
+      data: { id: 'wave_1', cove_id: 'cove_1' },
+      key: ['cove-task-summary', 'cove_1'],
+    },
+    {
+      kind: 'wave.lifecycle_changed',
+      data: {
+        id: 'wave_1', cove_id: 'cove_1', from: 'draft', to: 'planning',
+      },
+      key: ['cove-task-summary', 'cove_1'],
+    },
+    {
+      kind: 'wave.deleted',
+      data: { id: 'wave_1', cove_id: 'cove_1' },
+      key: ['cove-task-summary', 'cove_1'],
+    },
+  ])('$kind invalidates exactly the required cove-summary key', ({ kind, data, key }) => {
+    const client = makeClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const Wrapper = wrap(client);
+    render(<Wrapper><EventBridge syncEventVersion={1} /></Wrapper>);
+
+    fakeStream.emit({ ev: kind, data } as unknown as WireEvent);
+
+    const summaryKeys = invalidate.mock.calls
+      .map(([filters]) => filters?.queryKey)
+      .filter((queryKey) => queryKey?.[0] === 'cove-task-summary');
+    expect(summaryKeys).toEqual([key]);
+    cleanup();
+  });
+
   it('subscribes to the wildcard topic on mount', () => {
     const client = makeClient();
     const Wrapper = wrap(client);

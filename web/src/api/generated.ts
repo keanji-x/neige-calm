@@ -288,6 +288,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coves/{cove_id}/task-summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_cove_task_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coves/{cove_id}/waves": {
         parameters: {
             query?: never;
@@ -1178,6 +1194,14 @@ export interface components {
             folder_path: string;
         };
         /**
+         * @description Read-time cove aggregation returned by
+         *     `GET /api/coves/{cove_id}/task-summary`.
+         */
+        CoveTaskSummary: components["schemas"]["TaskSummaryCounts"] & {
+            truncated: boolean;
+            waves: components["schemas"]["WaveTaskSummary"][];
+        };
+        /**
          * @description Body payload accepted by `POST /api/waves/:wave_id/cards`.
          *
          *     Two mutually-exclusive paths:
@@ -1784,6 +1808,31 @@ export interface components {
                 [key: string]: string | null;
             };
         };
+        /**
+         * @description Status and attribution buckets shared by the cove total and every
+         *     per-wave row in [`CoveTaskSummary`]. This is a read model only: it is
+         *     derived from `tasks` by one SQLite statement and has no backing table.
+         */
+        TaskSummaryCounts: {
+            /** Format: int64 */
+            blockLive: number;
+            /** Format: int64 */
+            canceled: number;
+            /** Format: int64 */
+            done: number;
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            inFlight: number;
+            /** Format: int64 */
+            legacyLive: number;
+            /** Format: int64 */
+            pending: number;
+            /** Format: int64 */
+            specLive: number;
+            /** Format: int64 */
+            userLive: number;
+        };
         Terminal: {
             card_id: string;
             /** Format: int64 */
@@ -2319,6 +2368,17 @@ export interface components {
             schemaVersion: number;
             summary: string;
             taskDiagnostics: components["schemas"]["BlockVerdict"][];
+        };
+        /** @description One sorted row in the cove task summary. */
+        WaveTaskSummary: components["schemas"]["TaskSummaryCounts"] & {
+            lifecycle: components["schemas"]["WaveLifecycle"];
+            parentWaveId?: string | null;
+            /** Format: int64 */
+            specTaskCeiling?: number | null;
+            title: string;
+            /** Format: int64 */
+            treeTaskBudget?: number | null;
+            waveId: string;
         };
         /**
          * @description Issue #250 PR 2 — calendar window query parameters for
@@ -3201,6 +3261,47 @@ export interface operations {
                 content?: never;
             };
             /** @description Folder not found under this cove */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_cove_task_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Read-time task totals and sorted per-wave rows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoveTaskSummary"];
+                };
+            };
+            /** @description Cove not found */
             404: {
                 headers: {
                     [name: string]: unknown;

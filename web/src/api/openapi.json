@@ -1082,6 +1082,57 @@
         }
       }
     },
+    "/api/coves/{cove_id}/task-summary": {
+      "get": {
+        "tags": [
+          "coves"
+        ],
+        "operationId": "get_cove_task_summary",
+        "parameters": [
+          {
+            "name": "cove_id",
+            "in": "path",
+            "description": "Cove id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Read-time task totals and sorted per-wave rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoveTaskSummary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cove not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/coves/{cove_id}/waves": {
       "get": {
         "tags": [
@@ -4461,6 +4512,32 @@
           }
         }
       },
+      "CoveTaskSummary": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TaskSummaryCounts"
+          },
+          {
+            "type": "object",
+            "required": [
+              "waves",
+              "truncated"
+            ],
+            "properties": {
+              "truncated": {
+                "type": "boolean"
+              },
+              "waves": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/WaveTaskSummary"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Read-time cove aggregation returned by\n`GET /api/coves/{cove_id}/task-summary`."
+      },
       "CreateCardBody": {
         "type": "object",
         "description": "Body payload accepted by `POST /api/waves/:wave_id/cards`.\n\nTwo mutually-exclusive paths:\n  * **Direct create** — `kind`, `sort`, `payload`, `title` set (legacy\n    pre-M2 wire). The kernel writes the row verbatim.\n  * **`via_tool_call`** — kernel invokes the plugin's tool, extracts the\n    `ui://` resource URI from `_meta.ui.resourceUri`, persists a Card with\n    `kind = <resource_uri>` and `payload = structuredContent`.\n\nWhen both are sent, `via_tool_call` wins. Documented in this module's\nheader. We keep the legacy fields alongside via `#[serde(flatten)]` so\nexisting clients (web-calm AddPanel for terminal/doc cards) keep working\nunchanged.",
@@ -5825,6 +5902,59 @@
           }
         }
       },
+      "TaskSummaryCounts": {
+        "type": "object",
+        "description": "Status and attribution buckets shared by the cove total and every\nper-wave row in [`CoveTaskSummary`]. This is a read model only: it is\nderived from `tasks` by one SQLite statement and has no backing table.",
+        "required": [
+          "pending",
+          "inFlight",
+          "done",
+          "failed",
+          "canceled",
+          "legacyLive",
+          "blockLive",
+          "specLive",
+          "userLive"
+        ],
+        "properties": {
+          "blockLive": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "canceled": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "done": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "inFlight": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "legacyLive": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "pending": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "specLive": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "userLive": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Terminal": {
         "type": "object",
         "required": [
@@ -6883,6 +7013,53 @@
             }
           }
         }
+      },
+      "WaveTaskSummary": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/TaskSummaryCounts"
+          },
+          {
+            "type": "object",
+            "required": [
+              "waveId",
+              "title",
+              "lifecycle"
+            ],
+            "properties": {
+              "lifecycle": {
+                "$ref": "#/components/schemas/WaveLifecycle"
+              },
+              "parentWaveId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "specTaskCeiling": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "title": {
+                "type": "string"
+              },
+              "treeTaskBudget": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "waveId": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "One sorted row in the cove task summary."
       },
       "WavesWindowQuery": {
         "type": "object",

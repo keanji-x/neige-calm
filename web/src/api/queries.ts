@@ -34,6 +34,7 @@ import type {
   CovePatchBody,
   KernelCard,
   KernelCove,
+  KernelCoveTaskSummary,
   KernelOverlay,
   KernelWave,
   KernelWaveDetail,
@@ -56,6 +57,9 @@ type WaveFileQueryOpts = {
 
 export const queryKeys = {
   coves: () => ['coves'] as const,
+  coveTaskSummaries: () => ['cove-task-summary'] as const,
+  coveTaskSummary: (coveId: string) =>
+    [...queryKeys.coveTaskSummaries(), coveId] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveReport: (waveId: string) => ['wave-report', waveId] as const,
@@ -111,6 +115,11 @@ export const covesQueryOptions = () => ({
 export const wavesByCoveQueryOptions = (coveId: string) => ({
   queryKey: queryKeys.wavesInCove(coveId),
   queryFn: () => api.wavesInCove(coveId),
+});
+
+export const coveTaskSummaryQueryOptions = (coveId: string) => ({
+  queryKey: queryKeys.coveTaskSummary(coveId),
+  queryFn: () => api.coveTaskSummary(coveId),
 });
 
 export const waveDetailQueryOptions = (waveId: string) => ({
@@ -172,6 +181,18 @@ export function useWavesByCoveQuery(
 ) {
   return useQuery<KernelWave[], Error>({
     ...wavesByCoveQueryOptions(coveId ?? ''),
+    enabled: !!coveId,
+    ...opts,
+  });
+}
+
+/** Read-time task counts for every wave in a cove. Empty `coveId` disables it. */
+export function useCoveTaskSummaryQuery(
+  coveId: string | undefined | null,
+  opts?: Partial<UseQueryOptions<KernelCoveTaskSummary, Error>>,
+) {
+  return useQuery<KernelCoveTaskSummary, Error>({
+    ...coveTaskSummaryQueryOptions(coveId ?? ''),
     enabled: !!coveId,
     ...opts,
   });

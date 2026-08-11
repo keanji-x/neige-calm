@@ -110,6 +110,7 @@ function runtimeContextKeys(
 
 const waveMutationKeys = (ev: EventOf<'wave.updated'> | EventOf<'wave.lifecycle_changed'>) => [
   queryKeys.wavesInCove(ev.data.cove_id),
+  queryKeys.coveTaskSummary(ev.data.cove_id),
   queryKeys.waveDetail(ev.data.id),
   waveFilesKey(ev.data.id),
   ['waves-range'],
@@ -143,6 +144,7 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
   'wave.deleted': {
     keys: (ev) => [
       queryKeys.wavesInCove(ev.data.cove_id),
+      queryKeys.coveTaskSummary(ev.data.cove_id),
       queryKeys.overlaysByKind('wave'),
       ['waves-range'],
     ],
@@ -228,17 +230,22 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     reason: 'Dispatcher consumes terminal worker requests directly from the event bus.',
   },
   'task.completed': {
+    keys: () => [queryKeys.coveTaskSummaries()],
     requiresContext: waveFilesDerivedEventKeys,
     reason: 'Dispatcher and spec-agent waiters consume task completion directly.',
   },
   'task.failed': {
+    keys: () => [queryKeys.coveTaskSummaries()],
     requiresContext: waveFilesDerivedEventKeys,
     reason: 'Dispatcher and spec-agent waiters consume task failure directly.',
   },
-  'plan.updated': noop(
-    'No task-plan query exists yet; the PR-B scheduler consumes plan revisions server-side.',
-  ),
+  'plan.updated': {
+    keys: () => [queryKeys.coveTaskSummaries()],
+    reason:
+      'The payload has wave_id but no cove_id; invalidate the summary prefix without relying on a loaded wave cache.',
+  },
   'task.dispatched': {
+    keys: () => [queryKeys.coveTaskSummaries()],
     requiresContext: waveFilesDerivedEventKeys,
     reason:
       'Scheduler claim record (#644 PR-B) — the runs views derive their requested-record from it; same surface task.completed/failed refresh.',
@@ -301,6 +308,7 @@ export const invalidationPolicies: { [K in EventKind]: InvalidationPolicy<K> } =
     'Git worktree teardown is card-scoped; no React Query cache consumes worktree rows yet.',
   ),
   'task.gate_result': {
+    keys: () => [queryKeys.coveTaskSummaries()],
     requiresContext: waveFilesDerivedEventKeys,
     reason:
       'Gate-runner verdict (#644 PR-C) — flips the plan-task row done/failed; refreshes the same runs/wave-files surface as task.completed/failed.',

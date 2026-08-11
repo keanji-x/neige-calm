@@ -39,6 +39,7 @@ subtle = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+libsqlite3-sys = "=0.30.1"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full"] }
 tempfile = "3"
