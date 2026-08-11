@@ -1093,6 +1093,75 @@ async fn task_bytes(boot: &Boot) -> Vec<String> {
         .bind(boot.wave_id.as_str()).fetch_all(&boot.repo.sqlite_pool().unwrap()).await.unwrap()
 }
 
+/// D.1 #11 property samples for #1049. Each sample fills the member share
+/// with legacy pending rows, then compares the ordinary report-write path with
+/// the production rebuild entrypoint. Explicit origin assertions ensure the
+/// equality cannot pass vacuously with both paths refusing the transfer.
+#[tokio::test]
+async fn transfer_rebuild_matches_incremental_across_full_share_samples() {
+    for (legacy_count, touched_index) in [(1_i64, 0_usize), (2, 1), (3, 1)] {
+        let boot = new_boot().await;
+        boot.repo
+            .wave_update(
+                boot.wave_id.as_str(),
+                calm_server::model::WavePatch {
+                    spec_task_ceiling: Some(Some(legacy_count)),
+                    tree_task_budget: Some(Some(legacy_count)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("set exact member share");
+
+        let mut blocks = Vec::new();
+        for index in 0..legacy_count {
+            let payload = task(&format!("legacy-{index}"));
+            let (id, rev) = upsert(&boot, None, payload.clone()).await;
+            blocks.push((id, rev, payload));
+        }
+        sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+            .bind(boot.wave_id.as_str())
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+
+        let (id, rev, payload) = &blocks[touched_index];
+        upsert(&boot, Some((id, *rev)), payload.clone()).await;
+        let incremental = task_bytes(&boot).await;
+        let incremental_origins: Vec<String> =
+            sqlx::query_scalar("SELECT origin FROM tasks WHERE wave_id=?1 ORDER BY key")
+                .bind(boot.wave_id.as_str())
+                .fetch_all(&boot.repo.sqlite_pool().unwrap())
+                .await
+                .unwrap();
+        assert_eq!(
+            incremental_origins,
+            vec!["block"; legacy_count as usize],
+            "sample K={legacy_count}: incremental path must transfer"
+        );
+
+        sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+            .bind(boot.wave_id.as_str())
+            .execute(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+        let rebuilt = rebuild(&boot).await;
+        assert!(
+            rebuilt
+                .diagnostics
+                .iter()
+                .all(|verdict| verdict.schedulable),
+            "sample K={legacy_count}: rebuild must transfer"
+        );
+        assert!(rebuilt.kernel_events.is_empty());
+        assert_eq!(
+            task_bytes(&boot).await,
+            incremental,
+            "sample K={legacy_count}: rebuild/incremental declaration and state bytes"
+        );
+    }
+}
+
 #[tokio::test]
 async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     let boot = new_boot().await;

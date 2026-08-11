@@ -399,6 +399,11 @@ struct WaveProjectionState {
     /// 0068 legacy rows live here, including legacy pending rows: they must
     /// consume tree share but must never be culled to make room.
     non_block_live_spec: i64,
+    /// Legacy pending spec rows which a clean same-key declaration would
+    /// adopt in this transaction. They remain part of
+    /// `non_block_live_spec`, but their declarations have zero inventory
+    /// delta and therefore do not compete for a second capacity slot.
+    legacy_pending_spec_keys: BTreeSet<String>,
     task_read_state: Vec<TaskReadState>,
 }
 
@@ -410,6 +415,7 @@ struct WaveProjectionStateRow {
     cove_id: String,
     inflight_json: String,
     non_block_live_spec: i64,
+    legacy_pending_spec_keys_json: String,
     task_read_state_json: String,
 }
 
@@ -446,8 +452,12 @@ async fn wave_projection_state(
                       AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    (SELECT count(*) FROM tasks t
                     WHERE t.wave_id = w.id AND t.declared_by = 'spec'
-                      AND t.origin != 'block'
-                      AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                       AND t.origin != 'block'
+                       AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                   (SELECT json_group_array(t.key) FROM tasks t
+                    WHERE t.wave_id = w.id AND t.declared_by = 'spec'
+                      AND t.origin = 'legacy' AND t.status = 'pending')
+                     AS legacy_pending_spec_keys_json,
                    (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'gate_result_json', t.gate_result_json,
@@ -471,8 +481,12 @@ async fn wave_projection_state(
                       AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    (SELECT count(*) FROM tasks t
                     WHERE t.wave_id = w.id AND t.declared_by = 'spec'
-                      AND t.origin != 'block'
-                      AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                       AND t.origin != 'block'
+                       AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                   (SELECT json_group_array(t.key) FROM tasks t
+                    WHERE t.wave_id = w.id AND t.declared_by = 'spec'
+                      AND t.origin = 'legacy' AND t.status = 'pending')
+                     AS legacy_pending_spec_keys_json,
                    '[]' AS task_read_state_json
            FROM waves w WHERE w.id = ?1"#
     };
@@ -488,6 +502,7 @@ async fn wave_projection_state(
         source_cove: row.cove_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
         non_block_live_spec: row.non_block_live_spec,
+        legacy_pending_spec_keys: serde_json::from_str(&row.legacy_pending_spec_keys_json)?,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
     })
 }
@@ -639,11 +654,10 @@ async fn evaluate_schedulability_with_tree_term(
     let tree_capacity = tree_share.as_ref().map_or(i64::MAX, |share| {
         share.share.saturating_sub(tree_occupied).max(0)
     });
-    let capacity = if tree_root_unresolved
-        || tree_share
-            .as_ref()
-            .is_some_and(|share| share.admission_frozen)
-    {
+    let tree_admission_frozen = tree_share
+        .as_ref()
+        .is_some_and(|share| share.admission_frozen);
+    let capacity = if tree_root_unresolved || tree_admission_frozen {
         0
     } else {
         ceiling_capacity.min(tree_capacity) as usize
@@ -910,7 +924,24 @@ async fn evaluate_schedulability_with_tree_term(
             declarations[*i].key.clone(),
         )
     });
-    let admitted: Vec<usize> = candidates.iter().copied().take(capacity).collect();
+    // A clean declaration adopting a live legacy pending row is a bucket
+    // transfer, not a second inventory item. Keep the row in the fixed leg
+    // above, but do not make its declaration consume net-new capacity. The
+    // exemption is deliberately disabled for the entire tree while any
+    // member's fixed inventory exceeds its share: adopting then would turn
+    // the row into cullable block-pending output and falsely unfreeze siblings.
+    let transfers_allowed = !tree_root_unresolved && !tree_admission_frozen;
+    let (transfer_candidates, net_new_candidates): (Vec<_>, Vec<_>) =
+        candidates.into_iter().partition(|index| {
+            transfers_allowed
+                && state
+                    .legacy_pending_spec_keys
+                    .contains(&declarations[*index].key)
+        });
+    let admitted: Vec<usize> = transfer_candidates
+        .into_iter()
+        .chain(net_new_candidates.iter().copied().take(capacity))
+        .collect();
     let admitted_ids: Vec<String> = declarations
         .iter()
         .enumerate()
@@ -932,7 +963,7 @@ async fn evaluate_schedulability_with_tree_term(
         .as_ref()
         .filter(|share| !share.admission_frozen && tree_capacity == ceiling_capacity)
         .cloned();
-    for index in candidates.into_iter().skip(capacity) {
+    for index in net_new_candidates.into_iter().skip(capacity) {
         let tree_diagnostic = |share: &super::wave_tree::TreeShare, bounds_tied: bool| {
             // The target must gain a genuinely free slot, not merely catch up
             // to immutable occupancy. In a self-overage freeze the first B

@@ -106,7 +106,7 @@ pub const WAVE_TREE_MEMBERS_SQL: &str = concat!(
 /// detecting an upgrade member already above its deterministic share. Block
 /// pending rows are excluded because they re-enter projection as candidates;
 /// all non-block live rows (notably legacy) are immutable occupancy.
-const WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
+pub const WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
     bounded_wave_descendant_cte!(),
     "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
        WHERE t.wave_id=w.id AND t.declared_by='spec' AND ( \
@@ -254,31 +254,39 @@ fn tree_share_from_member_inventory(
         .iter()
         .map(|(id, depth, _)| (id.clone(), *depth))
         .collect::<Vec<_>>();
-    let count = members.len() as i64;
-    let admission_frozen = members
+    let fixed_live = members
         .iter()
-        .enumerate()
-        .any(|(index, (_, _, fixed_live))| {
-            *fixed_live > deterministic_share(budget, count, index as i64)
-        });
-    let minimum_budget_to_unfreeze = admission_frozen.then(|| {
-        (budget.saturating_add(1)..=MAX_TREE_TASK_BUDGET).find(|candidate| {
-            members
-                .iter()
-                .enumerate()
-                .all(|(index, (_, _, fixed_live))| {
-                    *fixed_live <= deterministic_share(*candidate, count, index as i64)
-                })
-        })
-    });
+        .map(|(_, _, fixed_live)| *fixed_live)
+        .collect::<Vec<_>>();
+    let (admission_frozen, minimum_budget_to_unfreeze) = tree_admission_freeze(budget, &fixed_live);
     tree_share_from_members_with_freeze(
         root_id,
         wave_id,
         budget,
         &shape,
         admission_frozen,
-        minimum_budget_to_unfreeze.flatten(),
+        minimum_budget_to_unfreeze,
     )
+}
+
+/// Derive the tree-wide freeze from fixed per-member inventory in the same
+/// deterministic member order used for shares. Whole-tree rebuilds reuse this
+/// pure calculation after reading all members once, so their precomputed terms
+/// cannot accidentally exempt an over-share legacy transfer.
+pub fn tree_admission_freeze(budget: i64, fixed_live: &[i64]) -> (bool, Option<i64>) {
+    let count = fixed_live.len() as i64;
+    let admission_frozen = fixed_live
+        .iter()
+        .enumerate()
+        .any(|(index, fixed)| *fixed > deterministic_share(budget, count, index as i64));
+    let minimum_budget_to_unfreeze = admission_frozen.then(|| {
+        (budget.saturating_add(1)..=MAX_TREE_TASK_BUDGET).find(|candidate| {
+            fixed_live.iter().enumerate().all(|(index, fixed)| {
+                *fixed <= deterministic_share(*candidate, count, index as i64)
+            })
+        })
+    });
+    (admission_frozen, minimum_budget_to_unfreeze.flatten())
 }
 
 fn tree_share_from_members_with_freeze(

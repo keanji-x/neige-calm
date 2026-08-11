@@ -177,6 +177,28 @@ async fn task_bytes(repo: &SqlxRepo) -> Vec<String> {
     .unwrap()
 }
 
+/// Identity plus every worker-owned/status column. A legacy pending transfer
+/// may rewrite declaration ownership (`origin`) but must not recreate the row
+/// or disturb execution state.
+async fn task_identity_and_state_bytes(repo: &SqlxRepo, wave: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT json_object('id',id,'key',key,'status',status, \
+         'status_detail',status_detail,'worker',worker_card_id, \
+         'gate_result',gate_result_json,'gate_attempt',gate_attempt, \
+         'gate_pid',gate_pid,'gate_pid_starttime',gate_pid_starttime, \
+         'gate_pid_boot_id',gate_pid_boot_id,'finished',finished_at_ms, \
+         'deadline',running_deadline_ms,'claim_context',claim_context_json, \
+         'context_stale',context_stale_at_ms, \
+         'closure_truncated',context_closure_truncated, \
+         'verify_failures',context_verify_failures,'child_wave_id',child_wave_id) \
+         FROM tasks WHERE wave_id=?1 ORDER BY key",
+    )
+    .bind(wave)
+    .fetch_all(repo.pool())
+    .await
+    .unwrap()
+}
+
 async fn share_of(repo: &SqlxRepo, wave: &str) -> TreeShare {
     let mut conn = repo.pool().acquire().await.unwrap();
     match wave_tree_term(&mut conn, wave).await.unwrap().term {
@@ -1322,6 +1344,154 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
         2,
         "all legacy termination restores the full B=2"
     );
+}
+
+/// #1049 acceptance 1: declarations which adopt the K legacy pending rows
+/// already filling this member's share are inventory-neutral. Their row
+/// identity/state survives byte-for-byte, while a (K+1)th distinct key still
+/// has no capacity.
+#[tokio::test]
+async fn full_share_legacy_pending_same_key_declarations_transfer_without_new_inventory() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "full-share-transfer").await;
+    set_ceiling(&repo, &root, 3).await;
+    set_tree_budget(&repo, &root, 3).await;
+    let legacy_keys = ["legacy-a", "legacy-b", "legacy-c"];
+    project(&repo, &root, &legacy_keys).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let before_state = task_identity_and_state_bytes(&repo, &root).await;
+    let before_inventory = live_spec_count(&repo, &root).await;
+    let transfer_declarations = declarations(&legacy_keys);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let transfer = project_tasks_tx(
+        &mut tx,
+        &root,
+        &transfer_declarations,
+        &vec![Vec::new(); transfer_declarations.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(
+        transfer
+            .diagnostics
+            .iter()
+            .all(|verdict| verdict.schedulable),
+        "all same-key declarations must transfer: {:?}",
+        transfer.diagnostics
+    );
+    assert_eq!(
+        task_identity_and_state_bytes(&repo, &root).await,
+        before_state,
+        "transfer must preserve row ids and all status bytes"
+    );
+    assert_eq!(live_spec_count(&repo, &root).await, before_inventory);
+    let origins: Vec<String> =
+        sqlx::query_scalar("SELECT origin FROM tasks WHERE wave_id=?1 ORDER BY key")
+            .bind(&root)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(origins, vec!["block"; 3], "all K rows are adopted in place");
+
+    let with_distinct = declarations(&["legacy-a", "legacy-b", "legacy-c", "net-new"]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let outcome = project_tasks_tx(
+        &mut tx,
+        &root,
+        &with_distinct,
+        &vec![Vec::new(); with_distinct.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    assert!(outcome.diagnostics[..3].iter().all(|v| v.schedulable));
+    assert!(!outcome.diagnostics[3].schedulable);
+    assert!(
+        outcome.diagnostics[3]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+    );
+    assert_eq!(live_spec_count(&repo, &root).await, before_inventory);
+    let distinct_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND key='net-new'")
+            .bind(&root)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(distinct_rows, 0, "a distinct key remains net-new");
+}
+
+/// #1049 acceptance 2 and mutation lock: a same-key declaration must not turn
+/// a member's over-share legacy rows into cullable block pending output. If it
+/// did, the next sibling projection would observe the fixed leg as empty and
+/// grow the tree past the upgrade-time inventory K.
+#[tokio::test]
+async fn over_share_same_key_declarations_do_not_unfreeze_sibling_growth() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "over-share-root").await;
+    let child = seed_wave(&repo, &cove, "over-share-child").await;
+    link(&repo, &child, &root).await;
+    stamp_created_at(&repo, &root, 1).await;
+    stamp_created_at(&repo, &child, 2).await;
+    set_ceiling(&repo, &root, 8).await;
+    set_ceiling(&repo, &child, 8).await;
+    set_tree_budget(&repo, &root, 6).await;
+
+    let legacy_keys = ["legacy-a", "legacy-b", "legacy-c"];
+    project(&repo, &root, &legacy_keys).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let upgrade_inventory = live_spec_count(&repo, &root).await;
+    assert_eq!(upgrade_inventory, 3);
+    set_tree_budget(&repo, &root, 4).await;
+
+    let same_key = declarations(&legacy_keys);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let transfer_attempt =
+        project_tasks_tx(&mut tx, &root, &same_key, &vec![Vec::new(); same_key.len()])
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert!(
+        transfer_attempt
+            .diagnostics
+            .iter()
+            .all(|verdict| !verdict.schedulable),
+        "an over-share member must not transfer"
+    );
+    let legacy_origins: Vec<String> =
+        sqlx::query_scalar("SELECT origin FROM tasks WHERE wave_id=?1 ORDER BY key")
+            .bind(&root)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(legacy_origins, vec!["legacy"; 3]);
+
+    project(&repo, &child, &["sibling-a", "sibling-b"]).await;
+    assert_eq!(
+        live_spec_count(&repo, &root).await,
+        upgrade_inventory,
+        "the tree must not grow past upgrade-time K"
+    );
+    let sibling_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1")
+        .bind(&child)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(sibling_rows, 0, "the sibling remains frozen");
 }
 
 /// r6 B1/codex construction: a default-budget singleton with two upgraded

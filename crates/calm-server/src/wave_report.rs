@@ -50,8 +50,9 @@
 use crate::db::RouteRepo;
 use crate::db::sqlite::{
     MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TaskProjectionOutcome, TreeShare,
-    WAVE_TREE_MEMBERS_SQL, WaveTreeTerm, card_body_crdt_get_tx, card_update_with_crdt_tx,
-    deterministic_share, project_tasks_tx, project_tasks_with_tree_term_tx, wave_tree_budget,
+    WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL, WaveTreeTerm, card_body_crdt_get_tx,
+    card_update_with_crdt_tx, deterministic_share, project_tasks_tx,
+    project_tasks_with_tree_term_tx, tree_admission_freeze, wave_tree_budget,
     wave_tree_spec_inventory_by_member,
 };
 use crate::db::write_with_actor_events_typed;
@@ -178,7 +179,7 @@ pub async fn tasks_rebuild_tree_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     root_id: &str,
 ) -> crate::error::Result<Vec<(Wave, TaskProjectionOutcome)>> {
-    let members: Vec<(String, i64)> = sqlx::query_as(WAVE_TREE_MEMBERS_SQL)
+    let members: Vec<(String, i64, i64)> = sqlx::query_as(WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL)
         .bind(root_id)
         .bind(MAX_WAVE_TREE_DEPTH + 1)
         .fetch_all(&mut **tx)
@@ -187,7 +188,7 @@ pub async fn tasks_rebuild_tree_tx(
         || members.len() > MAX_TREE_TASK_BUDGET as usize
         || members
             .iter()
-            .any(|(_, depth)| *depth > MAX_WAVE_TREE_DEPTH)
+            .any(|(_, depth, _)| *depth > MAX_WAVE_TREE_DEPTH)
     {
         return Err(CalmError::Conflict(format!(
             "wave tree rooted at {root_id} is unresolved or exceeds the {MAX_TREE_TASK_BUDGET}-member reprojection bound"
@@ -195,12 +196,17 @@ pub async fn tasks_rebuild_tree_tx(
     }
     let budget = wave_tree_budget(tx, root_id).await?;
     let member_count = members.len() as i64;
+    let fixed_live = members
+        .iter()
+        .map(|(_, _, fixed_live)| *fixed_live)
+        .collect::<Vec<_>>();
+    let (admission_frozen, minimum_budget_to_unfreeze) = tree_admission_freeze(budget, &fixed_live);
     let mut shares = std::collections::BTreeMap::new();
     let mut projections = Vec::with_capacity(members.len());
     // One member walk above and one grouped postcondition walk below. Member
     // projections must contribute zero because their terms are precomputed.
     let mut tree_cte_queries = 2u32;
-    for (index, (member_id, _)) in members.into_iter().enumerate() {
+    for (index, (member_id, _, _)) in members.into_iter().enumerate() {
         let share = deterministic_share(budget, member_count, index as i64);
         shares.insert(member_id.clone(), share);
         let tree_term = WaveTreeTerm::Share(TreeShare {
@@ -209,8 +215,8 @@ pub async fn tasks_rebuild_tree_tx(
             members: member_count,
             member_index: index as i64,
             share,
-            admission_frozen: false,
-            minimum_budget_to_unfreeze: None,
+            admission_frozen,
+            minimum_budget_to_unfreeze,
         });
         let wave = wave_get_tx(tx, &crate::ids::WaveId::from(member_id.clone())).await?;
         let projection = tasks_rebuild_with_tree_term_tx(tx, &member_id, Some(tree_term)).await?;
