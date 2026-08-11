@@ -19,10 +19,19 @@
      *   +1  raised     card, terminal      an object on the page
      *   +2  floating   paper               menus, dialogs, drawer
      *
-     * One step is 1.7 L in light and 3.0 L in dark. The two differ on purpose:
-     * an equal L difference reads weaker on a dark ground, and 1.76x is what it
-     * takes for the two themes to feel like the same ladder. It is one stated
-     * constant per theme, not nine independent choices.
+     * **One step is a constant contrast RATIO of 1.10, not a constant L
+     * difference.** That distinction is the whole rule. sRGB luminance is
+     * violently non-linear, so the same delta-L buys wildly different edges at
+     * different points on the scale: at a flat 3.0 L, dark's own three steps
+     * measured 1.036 / 1.051 / 1.067 — the rail, the largest region on screen,
+     * got the weakest edge of the three. Solving for the ratio instead gives
+     * 1.100 / 1.100 / 1.100 in light and 1.099 / 1.099 / 1.101 in dark: the two
+     * themes are now the same ladder in the only unit that describes what an
+     * eye actually sees.
+     *
+     * Each theme is anchored at its outer end and walked inward — light from
+     * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
+     * that is the end with no room to give.
      *
      * What this replaced was not a looser version of the same thing — it had no
      * direction at all. `--surface-card` sat 3.8 L *below* the ground in light
@@ -31,18 +40,23 @@
      * `--surface-card` collapsed onto the same value in light while sitting 3 L
      * apart in dark. And the light ground was 98.8 out of 100, leaving 1.2 of
      * headroom, so nothing in light *could* be raised — which is why everything
-     * had been pushed down instead. Moving the ground to 96.5 is what makes the
-     * ladder possible at all.
+     * had been pushed down instead.
+     *
+     * Dark had the mirror image of that bug and it survived the first fix: with
+     * the ground at 16 there was almost nothing *below* it, so the recessed
+     * rank had no room — a 1.10 step down from 16 lands at L 0. That is why the
+     * dark ground moves up to 19. Both themes now hold four ranks because both
+     * grounds were moved off their wall.
      *
      * Elevation is absolute; **state is relative** — see `--accent-soft`.
      */
-    --bg: oklch(96.5% 0.003 240);
+    --bg: oklch(93.3% 0.003 240);
     --paper: oklch(99.9% 0.002 240);
-    --hairline: oklch(89.7% 0.005 240);
-    --hairline-strong: oklch(84.6% 0.006 240);
+    --hairline: oklch(85% 0.005 240);
+    --hairline-strong: oklch(78% 0.006 240);
     --text: oklch(20% 0.008 250);
     --text-2: oklch(45% 0.01 250);
-    --text-3: oklch(50% 0.01 250);
+    --text-3: oklch(48.5% 0.01 250);
     --text-4: oklch(74% 0.008 250);
 
     /*
@@ -53,7 +67,7 @@
      * state can never be confused. Chroma drops 0.13 -> 0.10 as well: the app
      * spends one accent, sparingly, on a page that is otherwise greyscale.
      */
-    --accent: oklch(50% 0.10 267);
+    --accent: oklch(49% 0.10 267);
 
     /*
      * State is a *relative* channel: an alpha tint over whatever it sits on,
@@ -64,16 +78,16 @@
      * panel needs it. The same argument applies to the two other soft fills,
      * so all three are alpha.
      */
-    --accent-soft: oklch(50% 0.10 267 / 0.12);
+    --accent-soft: oklch(49% 0.10 267 / 0.14);
     --warn: oklch(52% 0.14 30);
     --warn-soft: oklch(52% 0.14 30 / 0.12);
 
-    --surface-rail: oklch(94.8% 0.004 240);
-    --surface-card: oklch(98.2% 0.003 240);
-    --surface-chip: oklch(94.8% 0.005 240);
+    --surface-rail: oklch(90.2% 0.004 240);
+    --surface-card: oklch(96.5% 0.003 240);
+    --surface-chip: oklch(90.2% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
-    --surface-panel-head: oklch(98.2% 0.003 240);
-    --surface-terminal: oklch(98.2% 0.003 240);
+    --surface-panel-head: oklch(96.5% 0.003 240);
+    --surface-terminal: oklch(96.5% 0.003 240);
     --surface-code: oklch(0% 0 0 / 0.04);
     --overlay-hover-faint: oklch(0% 0 0 / 0.025);
     --overlay-hover: oklch(0% 0 0 / 0.04);
@@ -202,10 +216,10 @@
 
   [data-theme="dark"] {
     /* Same ladder, same directions, one step = 3.0 L. See the note on `:root`. */
-    --bg: oklch(16% 0.008 245);
-    --paper: oklch(22% 0.01 245);
-    --hairline: oklch(28% 0.01 245);
-    --hairline-strong: oklch(37% 0.012 245);
+    --bg: oklch(19% 0.008 245);
+    --paper: oklch(26.6% 0.01 245);
+    --hairline: oklch(32% 0.01 245);
+    --hairline-strong: oklch(41% 0.012 245);
     --text: oklch(96% 0.005 245);
     --text-2: oklch(72% 0.012 245);
     --text-3: oklch(64% 0.012 245);
@@ -214,12 +228,12 @@
     --accent-soft: oklch(74% 0.11 267 / 0.18);
     --warn: oklch(72% 0.15 30);
     --warn-soft: oklch(72% 0.15 30 / 0.18);
-    --surface-rail: oklch(13% 0.008 245);
-    --surface-card: oklch(19% 0.009 245);
-    --surface-chip: oklch(13% 0.008 245);
+    --surface-rail: oklch(12% 0.008 245);
+    --surface-card: oklch(23.2% 0.009 245);
+    --surface-chip: oklch(12% 0.008 245);
     --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
-    --surface-panel-head: oklch(19% 0.009 245);
-    --surface-terminal: oklch(19% 0.009 245);
+    --surface-panel-head: oklch(23.2% 0.009 245);
+    --surface-terminal: oklch(23.2% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
     --overlay-hover: oklch(100% 0 0 / 0.05);
