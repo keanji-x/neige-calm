@@ -88,9 +88,50 @@
     color: var(--text);
   }
 
+  /*
+   * ── The card's internal scale ───────────────────────────────────────────
+   *
+   * There was none. Every module invented its own numbers and the result was
+   * four different text edges inside one card (measured at 1440: 1056 for the
+   * head label and the notes, 1064 for a card row, 1070 for a conversation
+   * title, 1075 for a wave title) and two row heights (28 and 24).
+   *
+   * Three rules, and they are the whole system:
+   *
+   *   1. **One inset.** `--space-4` from the card edge. Every block starts
+   *      there — the head label, a list, a note, an empty state. Nothing
+   *      indents past it; a module that wants to say "this belongs to that"
+   *      says it with the block gap, not with a margin.
+   *
+   *   2. **Rows bleed, text does not.** A row carries `--space-2` of its own
+   *      `padding-inline` — air between the hover fill and the glyphs — and the
+   *      list gives that back as a negative margin. So the fill is wider than
+   *      the text block and sits 4 from the card edge, while the text lands
+   *      exactly on the inset, level with the module's head label. The fill
+   *      stops short of the edge on purpose: it is a 4px-radius rectangle, and
+   *      a rounded rectangle flush against a rounded card reads as a mistake at
+   *      both corners. Rows that carry a leading state dot share one column for
+   *      it (`--dot-sm` + `--space-2`), so their titles line up across modules
+   *      too; a row with no state — a card inventory line — has no such column
+   *      and sits on the inset itself.
+   *
+   *      The rule has no container-specific exception: the main column's
+   *      rows bleed the same way against the page inset. A row that only
+   *      bled inside the card would put the same list at two different
+   *      distances from its own label depending on where it was rendered.
+   *
+   *   3. **Two gaps, not five.** `--space-1` between rows *inside* a block,
+   *      `--space-6` between blocks inside one module. A third value between
+   *      them is what "乱七八糟" looks like. Between modules it is a hairline,
+   *      which is the card's only internal line.
+   *
+   * The row height is `--row-h` for every row in the card. The panel is dense
+   * everywhere or nowhere.
+   */
   .body {
     display: flex;
     flex-direction: column;
+    gap: var(--space-6);
     min-inline-size: 0;
     padding: var(--space-4);
   }

@@ -70,13 +70,15 @@
 
   /* A panel field, not a header row. It wraps rather than truncating: a path
      you came here to read is worth two lines, and the panel has them. */
+  /* A different *kind* of fact from a card, so it is its own block — which the
+     body's `--space-6` block gap now says on its own. It used to say it with a
+     hairline plus 8+8 of margin and padding: a second line inside one module
+     made the card read as three modules, and it was a third block-break value
+     alongside the calendar's 12. */
   .cwd {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
-    margin-block-start: var(--space-4);
-    padding-block-start: var(--space-4);
-    border-block-start: 1px solid var(--hairline);
     overflow-wrap: anywhere;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
@@ -136,6 +138,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+    margin-inline: calc(var(--space-2) * -1);
   }
 
   .cardRow {
@@ -144,7 +147,7 @@
     justify-content: space-between;
     gap: var(--space-2);
     min-block-size: var(--row-h);
-    padding-inline: var(--space-4);
+    padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
   }
 

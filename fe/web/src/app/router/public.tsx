@@ -190,7 +190,7 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
         />
       )}
       conversationList={chat.list}
-      conversationAction={chat.action}
+        conversationAction={chat.action}
     />
     {chat.drawer}
     </>
@@ -245,7 +245,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
         onDeleteCove={() => coveMutations.remove(cove.id).then(() => { go({ name: 'today' }); })}
         onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
         conversationList={chat.list}
-      conversationAction={chat.action}
+        conversationAction={chat.action}
         waveList={(
           <WaveList
             waves={waves}
@@ -307,7 +307,7 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
       cove={cove}
       cards={detail.data.cards}
       conversationList={chat.list}
-      conversationAction={chat.action}
+        conversationAction={chat.action}
       onOpenCove={() => { if (cove !== undefined) go({ name: 'cove', coveId: cove.id }); }}
       onOpenToday={() => go({ name: 'today' })}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}

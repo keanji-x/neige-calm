@@ -53,11 +53,17 @@
     text-transform: uppercase;
   }
 
+  /* Bleeds, in the main column and in the panel alike: a row gives back its own
+     fill padding so its state dot lands on the container's inset, level with
+     the section label above it. See the scale note in ui/panel-card — the rule
+     has no container-specific exception, which is why the agenda needed no
+     class of its own. */
   .rows {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     min-inline-size: 0;
+    margin-inline: calc(var(--space-2) * -1);
   }
 
   /* Header counts: the numbers carry the weight, the words stay quiet. */

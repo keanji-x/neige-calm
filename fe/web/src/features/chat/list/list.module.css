@@ -1,9 +1,13 @@
 @layer features {
+  /* Bleed: the list pulls back by the row's own fill padding so the text lands
+     on the card's inset with the module's head label, while the fill keeps 4px
+     of air from the card edge. See the scale note in ui/panel-card. */
   .list {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     min-inline-size: 0;
+    margin-inline: calc(var(--space-2) * -1);
   }
 
   /* The row recipe, at the panel's density. Same shape as every other row in
@@ -15,7 +19,7 @@
     align-items: center;
     column-gap: var(--space-2);
     inline-size: 100%;
-    min-block-size: var(--row-h-sm);
+    min-block-size: var(--row-h);
     padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
     text-align: start;

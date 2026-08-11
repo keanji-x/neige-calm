@@ -27,8 +27,7 @@
     inline-size: 100%;
     max-inline-size: var(--measure-list);
     padding-block: 0;
-    padding-inline: var(--space-4);
-    border: 1px solid transparent;
+    padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;

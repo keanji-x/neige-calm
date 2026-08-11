@@ -1,9 +1,13 @@
 @layer features {
+  /* This list only ever renders inside a panel module, so it carries the bleed:
+     it pulls back by the row's own fill padding so titles land on the card's
+     inset. See the scale note in ui/panel-card. */
   .list {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
-    margin: 0;
+    margin-block: 0;
+    margin-inline: calc(var(--space-2) * -1);
     padding: 0;
     list-style: none;
   }
