@@ -2,50 +2,50 @@
 //
 // ── Why it does not look like a chat app ──────────────────────────────────
 //
-// Three conventions are deliberately not used, and each is a measurement
-// rather than a preference:
+// **No bubbles.** A bubble is a variable-width column, so the prose inside it
+// has no measure — every turn wraps at a different width. In the 372px this
+// drawer actually has, a bubble with its own padding leaves ~330, and the text
+// inside runs 45 characters a line against the 65–75 prose is read at. A bubble
+// also spends a whole shape to encode one bit: who spoke.
 //
-//   **No bubbles.** A bubble is a variable-width column, so the prose inside it
-//   has no measure — every turn wraps at a different width. In the 372px this
-//   drawer actually has, a bubble with its own padding leaves ~330, and the
-//   text inside it runs 45 characters a line against the 65–75 prose is read
-//   at. A bubble also spends a whole shape to encode one bit: who spoke.
+// **No side-swapping.** Aligning your turns right destroys the one flush left
+// edge that makes a narrow column readable, to gain the same one bit.
 //
-//   **No side-swapping.** Aligning your turns right destroys the one flush left
-//   edge that makes a narrow column readable, and it does it to gain the same
-//   one bit a two-word label already carries.
+// **No per-turn labels, and no per-turn timestamps.** This is where the first
+// version of this file was wrong, and it was wrong by measurement: in a strict
+// alternation "YOU" and "AGENT" appeared eight times down four exchanges, and
+// "now" eight times beside them. Sixteen lines of chrome restating the two
+// facts the reader already had — that they are in this conversation, and that
+// turns alternate.
 //
-//   **No avatars.** Identity here is binary and the label states it. A 24px
-//   glyph restating a five-character word is the widest thing on the row.
+// What carries "who" instead is **register**, which is free: what you wrote is
+// interface type at full ink and medium weight, a directive; what came back is
+// body tone at normal weight, the substance. What carries "when" is a
+// separator, printed only where the conversation actually stopped and started
+// again (`CONVERSATION_GAP_MS`), which is the only time the answer is not
+// "just now".
 //
-// What replaces them is the vocabulary this app already has: an uppercase
-// micro-label (the same tier the rail's sections and the card's module heads
-// use), a relative time, and prose. Who spoke is carried by that label plus the
-// ink weight of the body — `--text` for what you wrote, `--text-2` for what
-// came back — which are two channels the system already spends elsewhere.
+// The unit is the **exchange** — one thing you said and everything that came
+// back — and the layout groups by it: tight inside, loose between.
 
 import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
 
 import {
-  isLiveConversation, labelledTurns,
+  isLiveConversation, opensAfterGap, opensExchange,
   type Conversation, type ConversationTurn,
 } from '../../../../../core/domain/conversation.ts';
 import styles from './thread.module.css';
-
-const AUTHOR_LABEL = Object.freeze({ you: 'You', agent: 'Agent' });
 
 export type ChatThreadProps = Readonly<{
   conversation: Conversation;
   turns: readonly ConversationTurn[];
   /** True while a turn is in flight; the composer stays usable, the dot pulses. */
   pending?: boolean;
-  nowMs?: number;
 }>;
 
-export function ChatThread({ conversation, turns, pending = false, nowMs }: ChatThreadProps) {
-  const now = nowMs ?? Date.now();
+export function ChatThread({ conversation, turns, pending = false }: ChatThreadProps) {
   const live = pending || isLiveConversation(conversation.state);
   const endRef = useRef<HTMLDivElement | null>(null);
 
@@ -75,30 +75,33 @@ export function ChatThread({ conversation, turns, pending = false, nowMs }: Chat
 
   return (
     <div className={styles.thread} data-nc-thread="">
-      {labelledTurns(turns).map(([turn, labelled]) => (
-        <article
-          key={turn.id}
-          className={`${styles.turn} ${labelled ? '' : styles.turnRun}`}
-          data-nc-turn={turn.author}
-        >
-          {/* Only the first turn of a run is labelled — see `labelledTurns`. */}
-          {labelled && (
-            <p className={styles.meta}>
-              <span className={styles.author}>{AUTHOR_LABEL[turn.author]}</span>
-              <span className={styles.time}>{shortAge(turn.atMs, now)}</span>
+      {turns.map((turn, index) => {
+        const last = index === turns.length - 1;
+        return (
+          <div key={turn.id} className={opensExchange(turns, index) ? styles.exchange : undefined}>
+            {/* A time only where the conversation restarted. */}
+            {opensAfterGap(turns, index) && index > 0 && (
+              <p className={styles.gap}>{clockTime(turn.atMs)}</p>
+            )}
+            <p
+              className={turn.author === 'you' ? styles.said : styles.reply}
+              data-nc-turn={turn.author}
+            >
+              {turn.text}
               {/* The one live mark, and it is the same 6px accent dot that means
                   "running" on a wave row. One vocabulary for "something is
                   happening", not a second one for chat. */}
-              {live && turn.author === 'agent' && turn === turns[turns.length - 1] && (
+              {live && last && turn.author === 'agent' && (
                 <span className={styles.live} aria-label="Working" />
               )}
             </p>
-          )}
-          <p className={`${styles.body} ${turn.author === 'you' ? styles.bodyYou : ''}`}>
-            {turn.text}
-          </p>
-        </article>
-      ))}
+          </div>
+        );
+      })}
+      {/* A reply that has not arrived yet still gets a place to arrive in. */}
+      {live && turns[turns.length - 1]?.author === 'you' && (
+        <p className={styles.reply}><span className={styles.live} aria-label="Working" /></p>
+      )}
       <div ref={endRef} aria-hidden="true" />
     </div>
   );
@@ -157,35 +160,25 @@ export function ChatComposer({ onSend, disabled = false }: {
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={onKeyDown}
       />
-      <div className={styles.composerActions}>
-        {/*
-          `aria-disabled`, not `disabled` — §5.1. A truly disabled button drops
-          focus the moment it becomes unusable, which here is the moment you
-          send: focus would land on `<body>` mid-conversation.
-        */}
-        <button
-          type="submit"
-          data-nc-action="primary"
-          aria-disabled={ready ? undefined : 'true'}
-          className={styles.send}
-        >
-          Send
-        </button>
-      </div>
+      {/*
+        `aria-disabled`, not `disabled` — §5.1. A truly disabled button drops
+        focus the moment it becomes unusable, which here is the moment you send:
+        focus would land on `<body>` mid-conversation.
+      */}
+      <button
+        type="submit"
+        data-nc-action="primary"
+        aria-disabled={ready ? undefined : 'true'}
+        className={styles.send}
+      >
+        Send
+      </button>
     </form>
   );
 }
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-
-/** §2.2's relative time, floored to one unit. The same rule the rows use; a
- *  feature may not import a sibling domain, so it is re-declared, not shared. */
-function shortAge(atMs: number, nowMs: number): string {
-  const elapsed = Math.max(0, nowMs - atMs);
-  if (elapsed >= DAY) return `${Math.floor(elapsed / DAY)}d`;
-  if (elapsed >= HOUR) return `${Math.floor(elapsed / HOUR)}h`;
-  if (elapsed >= MINUTE) return `${Math.floor(elapsed / MINUTE)}m`;
-  return 'now';
+/** A wall clock, not a relative time: the separator exists to say *when*, and
+ *  "3h" is only useful when you already know when now is. */
+function clockTime(atMs: number): string {
+  return new Date(atMs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 }

@@ -1,74 +1,107 @@
 @layer features {
   /*
-   * ── Prose at the drawer's width ─────────────────────────────────────────
+   * ── Register, not chrome ────────────────────────────────────────────────
    *
-   * `--text-base`, not the `--text-lg` the report reads at, and the reason is
-   * arithmetic rather than taste. The measure is fixed here — the drawer is
-   * `--drawer-w` (396) less `--space-6` on each side, so 372 — and a size is
-   * only correct for one measure. At the average advance measured for this
-   * face, 372px runs:
+   * Interface type, 13px sans, for the whole transcript. The report reads at
+   * `--text-lg` serif and this deliberately does not: the drawer's measure is
+   * fixed at 372px, and 18px there runs 52 characters a line (choppy) while a
+   * serif at the 13px that *does* land in the band — 71 characters — is below
+   * the size a serif holds up at on screen. A conversation is working type; a
+   * report is published type. Two registers, each at the size its column can
+   * carry.
    *
-   *     --text-lg 18     52 characters   too narrow, reading turns choppy
-   *     --text-md 15     62
-   *     --text-base 13   71              inside the 65–75 band
+   * Who spoke is carried by that register and nothing else:
    *
-   * So prose in this app has two ranks, one per container, each paired with the
-   * width that makes it land in the band. That pairing is the rule; the numbers
-   * follow from it.
+   *   what you said   `--text`, medium weight — a directive, usually one line
+   *   what came back  `--text-2`, normal weight — the substance
    *
-   * `margin-block-start: auto` — a short transcript sits at the *bottom* of the
-   * drawer, against the composer, not at the top with a screen of nothing
-   * between the last thing said and the box you say the next thing in. It is
-   * the margin rather than `justify-content: flex-end` on the scroller because
-   * a flex container that end-justifies its overflow clips the top of it: once
-   * the transcript is longer than the drawer you cannot scroll back to the
-   * first turn.
+   * The alternation does the rest. Eight "YOU"/"AGENT" labels down four
+   * exchanges said what the alternation already said, in a column 372px wide.
    */
   .thread {
     display: flex;
     flex-direction: column;
-    gap: var(--space-8);
     min-inline-size: 0;
+
+    /*
+     * A short transcript sits at the *bottom* of the drawer, against the
+     * composer, not at the top with a screen of nothing between the last thing
+     * said and the box you say the next thing in. The margin rather than
+     * `justify-content: flex-end` on the scroller, because a flex container
+     * that end-justifies its overflow clips the top of it: once the transcript
+     * is longer than the drawer you could not scroll back to the first turn.
+     */
     margin-block-start: auto;
   }
 
-  /* A turn inside a run of the same author: no label, so it sits at the
-     paragraph distance from the one above rather than the turn distance. */
-  .turnRun {
-    margin-block-start: calc(var(--space-8) * -1 + var(--space-4));
+  /*
+   * The exchange is the unit: what you said, and everything that came back
+   * before you said the next thing. Tight inside (`--space-4` between a turn
+   * and the reply under it), loose between (`--space-10`). A flat list at one
+   * distance is what made the first version read as label/text, label/text
+   * rather than as a dialogue.
+   */
+  .thread > * + * {
+    margin-block-start: var(--space-4);
   }
 
-  /* The label tier the whole app uses: uppercase plus tracking, standing in for
-     a size the column has no room to spend. `--space-2` to the body it names,
-     against `--space-8` between turns — the same label-hugs-its-content
-     ordering as the rail and the card. */
-  .meta {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-3);
-    margin-block-end: var(--space-2);
+  .thread > * + .exchange {
+    margin-block-start: var(--space-10);
   }
 
-  .author {
-    font-size: var(--text-xs);
+  /*
+   * Weight and tone alone were not enough — measured by looking at it: at 13px
+   * a 500 against a 400 and `--text` against `--text-2` is a difference you
+   * have to go looking for, and "who spoke" is the one thing you must never
+   * have to look for. So the reply also *hangs*: your line keeps the column's
+   * flush edge, the reply is inset one step under it.
+   *
+   * That is the oldest convention there is for a transcript, it costs 16 of the
+   * 372 (a reply still runs 68 characters, inside the band), and it gives the
+   * column a left-edge rhythm you can scan without reading a word.
+   */
+  .said {
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    font-size: var(--text-base);
     font-weight: var(--weight-semibold);
-    line-height: var(--leading-none);
-    letter-spacing: var(--tracking-wider);
-    color: var(--text-3);
-    text-transform: uppercase;
+    line-height: var(--leading-snug);
+    color: var(--text);
   }
 
-  .time {
+  .reply {
+    min-inline-size: 0;
+    padding-inline-start: var(--space-8);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-base);
+    color: var(--text-2);
+  }
+
+  /* The time, where the conversation stopped and started again. Centred and
+     faint: it is a seam in the transcript, not a property of the turn under
+     it. */
+  .gap {
+    margin-block: var(--space-6) var(--space-4);
     font-family: var(--font-numeric);
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-4);
+    text-align: center;
     font-variant-numeric: tabular-nums;
   }
 
+
+
+
+
   /* The same 6px accent dot and the same pulse a running wave takes. */
   .live {
+    display: inline-block;
     inline-size: var(--dot-sm);
     block-size: var(--dot-sm);
     border-radius: var(--radius-pill);
@@ -76,26 +109,7 @@
     animation: thread-pulse var(--motion-pulse) ease-in-out infinite;
   }
 
-  /*
-   * `pre-wrap`: an instruction's line breaks are the author's. This is the one
-   * place in the app where text is reproduced rather than laid out.
-   */
-  .body {
-    min-inline-size: 0;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-    font-family: var(--font-serif);
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-loose);
-    color: var(--text-2);
-  }
 
-  /* What you wrote takes the full ink; what came back takes the body tone. Two
-     channels for "who", both already in the system: this, and the label. */
-  .bodyYou {
-    color: var(--text);
-  }
 
   .empty {
     display: flex;
@@ -124,20 +138,25 @@
   }
 
   /*
-   * The composer sits on the recessed rank, not behind a rule.
+   * The composer is one row: field, then Send on the same line.
    *
-   * The elevation ladder says −1 is "behind the page" and the drawer's own
-   * surface is `--paper`; a well cut into it reads as somewhere you put things
-   * rather than as another region of the transcript. That is the ladder doing
-   * the job a `border-block-start` would otherwise do, which is the rule this
-   * system runs on.
+   * On its own row the button cost 28px of height plus a gap to say what one
+   * inline button says — in a 396px drawer that turned a one-line message into
+   * a 100px grey slab. It aligns to the *end* of the field so it stays put as
+   * the field grows.
+   *
+   * The well sits on the recessed rank rather than behind a rule: the ladder
+   * says −1 is "behind the page" and the drawer's own surface is `--paper`, so
+   * a well cut into it reads as somewhere you put things. That is the
+   * elevation ladder doing the job a `border-block-start` would otherwise do,
+   * which is this system's rule.
    */
   .composer {
     display: flex;
-    flex-direction: column;
+    align-items: flex-end;
     gap: var(--space-3);
     flex: none;
-    padding: var(--space-4) var(--space-6) var(--space-6);
+    padding: var(--space-3) var(--space-4) var(--space-3) var(--space-6);
     background: var(--surface-chip);
   }
 
@@ -152,9 +171,12 @@
    */
   .field {
     field-sizing: content;
-    min-block-size: var(--control-h);
+    flex: 1;
+    min-inline-size: 0;
+    min-block-size: var(--control-h-sm);
     max-block-size: calc(var(--control-h) * 5);
-    padding: var(--space-0);
+    padding-block: var(--space-1);
+    padding-inline: var(--space-0);
     border: none;
     resize: none;
     font-family: var(--font-sans);
@@ -166,21 +188,17 @@
   /*
    * The focus ring moves to the well, it does not disappear.
    *
-   * A ring drawn around the field alone would trace a shape that has no edges
-   * of its own — the field *is* the well — so it reads as a stray rectangle.
-   * Drawn on the well it is exactly the app's ring (`2px solid --accent`,
-   * `outline-offset: 2px` from base.css) around the thing you are typing into.
+   * A ring around the field alone would trace a shape with no edges of its own
+   * — the field *is* the well — so it reads as a stray rectangle. On the well
+   * it is exactly the app's ring around the thing you are typing into.
    *
-   * `:focus-within`, not `:focus-visible`, because the target is the parent:
-   * this fires for keyboard focus on the field and does not fire for a click on
-   * the drawer around it.
+   * `:focus-within`, not `:focus-visible`, because the target is the parent.
    */
   .field:focus-visible {
     outline: none;
 
-    /* base.css draws a focused field's rule as an inset shadow; the well's own
-       ring replaces it here, and leaving both gives the composer an underline
-       and a ring at once. */
+    /* base.css draws a focused field's rule as an inset shadow; the well's ring
+       replaces it, and both together give an underline and a ring at once. */
     box-shadow: none;
   }
 
@@ -193,12 +211,8 @@
     color: var(--text-4);
   }
 
-  .composerActions {
-    display: flex;
-    justify-content: flex-end;
-  }
-
   .send {
+    flex: none;
     block-size: var(--control-h-sm);
     padding-inline: var(--space-4);
   }

@@ -3,7 +3,10 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import {
+  CONVERSATION_GAP_MS,
+  type Conversation, type ConversationTurn,
+} from '../../../../../core/domain/conversation.ts';
 import { ChatComposer, ChatThread } from './public.tsx';
 
 afterEach(cleanup);
@@ -24,46 +27,65 @@ function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
 
 describe('ChatThread', () => {
   it('renders the empty state before anything is said', () => {
-    render(<ChatThread conversation={conversation()} turns={[]} nowMs={NOW} />);
+    render(<ChatThread conversation={conversation()} turns={[]} />);
     expect(screen.getByText('Nothing said yet.')).toBeTruthy();
   });
 
-  it('labels each turn with its author and keeps the text verbatim', () => {
+  it('keeps each turn verbatim and marks who wrote it', () => {
     const { container } = render(
       <ChatThread
         conversation={conversation()}
         turns={[turn(), turn({ id: 't2', author: 'agent', text: 'test' })]}
-        nowMs={NOW}
       />,
     );
     const turns = [...container.querySelectorAll('[data-nc-turn]')];
     expect(turns.map((element) => element.getAttribute('data-nc-turn'))).toEqual(['you', 'agent']);
-    expect(screen.getByText('You')).toBeTruthy();
-    expect(screen.getByText('Agent')).toBeTruthy();
+    expect(turns.map((element) => element.textContent)).toEqual(['Do the thing.', 'test']);
   });
 
-  // Repeating the label down a 396px column is chrome saying what adjacency
-  // already says — see `labelledTurns` in core.
-  it('labels only the first turn of a run by one author', () => {
-    render(
+  /*
+   * The transcript carries no per-turn label and no per-turn timestamp. In a
+   * strict alternation those are two lines of chrome per turn restating what
+   * the alternation already says; who spoke is carried by register instead.
+   * This asserts the *absence*, because a label is the kind of thing that gets
+   * added back by reflex.
+   */
+  it('prints no author label and no time on an unbroken conversation', () => {
+    const { container } = render(
       <ChatThread
         conversation={conversation()}
-        turns={[turn(), turn({ id: 't2', text: 'And this.' }), turn({ id: 't3', author: 'agent', text: 'test' })]}
-        nowMs={NOW}
+        turns={[
+          turn(),
+          turn({ id: 't2', author: 'agent', text: 'test', atMs: NOW + 1_000 }),
+          turn({ id: 't3', text: 'And this.', atMs: NOW + 2_000 }),
+        ]}
       />,
     );
-    expect(screen.getAllByText('You').length).toBe(1);
-    expect(screen.getAllByText('Agent').length).toBe(1);
+    const text = container.textContent ?? '';
+    expect(text).toBe('Do the thing.testAnd this.');
   });
 
-  it('shows the live mark only on the last agent turn while one is pending', () => {
-    const turns = [turn(), turn({ id: 't2', author: 'agent', text: 'test' })];
-    const { rerender } = render(
-      <ChatThread conversation={conversation()} turns={turns} pending nowMs={NOW} />,
+  // A time is a seam, printed where the conversation stopped and started again.
+  it('stamps a time where the conversation restarts after a gap', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[
+          turn(),
+          turn({ id: 't2', author: 'agent', text: 'test', atMs: NOW + 1_000 }),
+          turn({ id: 't3', text: 'Back.', atMs: NOW + CONVERSATION_GAP_MS + 1_000 }),
+        ]}
+      />,
     );
+    expect(container.textContent).toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it('shows the live mark once while a reply is pending', () => {
+    const turns = [turn()];
+    const { rerender } = render(<ChatThread conversation={conversation()} turns={turns} pending />);
     expect(screen.getAllByLabelText('Working').length).toBe(1);
 
-    rerender(<ChatThread conversation={conversation()} turns={turns} nowMs={NOW} />);
+    rerender(<ChatThread conversation={conversation()} turns={turns} />);
     expect(screen.queryByLabelText('Working')).toBeNull();
   });
 });

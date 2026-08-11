@@ -64,16 +64,34 @@ export type ConversationTurn = Readonly<{
 }>;
 
 /**
- * Consecutive turns by one author are one *block* with one label.
+ * An *exchange* is one thing you said and everything that came back before you
+ * said the next thing. It is the unit a reader actually scans for, and the unit
+ * the layout groups by: tight inside, loose between.
  *
- * Repeating "YOU" three times down a 396px column is three lines of chrome
- * saying what adjacency already says. This returns each turn's index within its
- * run, so the renderer can label only the first — a display rule that belongs
- * here rather than in the component because both the drawer and any future
- * inline transcript have to agree on it.
+ * This returns, per turn, whether it opens an exchange — which is exactly
+ * "authored by you, and the turn before it was not".
  */
-export function labelledTurns(
-  turns: readonly ConversationTurn[],
-): readonly (readonly [ConversationTurn, boolean])[] {
-  return turns.map((turn, index) => [turn, turns[index - 1]?.author !== turn.author] as const);
+export function opensExchange(turns: readonly ConversationTurn[], index: number): boolean {
+  const turn = turns[index];
+  if (turn === undefined) return false;
+  return turn.author === 'you' && turns[index - 1]?.author !== 'you';
+}
+
+/**
+ * The gap after which a transcript is worth stamping with a time.
+ *
+ * A timestamp on every turn is eight repetitions of "now" down a 396px column —
+ * it states the thing you already know (this is the conversation you are in)
+ * and never the thing you would want (that you walked away for an hour in the
+ * middle of it). So the time is a *separator*, printed only where the
+ * conversation actually stopped and restarted.
+ */
+export const CONVERSATION_GAP_MS = 10 * 60 * 1000;
+
+export function opensAfterGap(turns: readonly ConversationTurn[], index: number): boolean {
+  const turn = turns[index];
+  const previous = turns[index - 1];
+  if (turn === undefined) return false;
+  if (previous === undefined) return true;
+  return turn.atMs - previous.atMs >= CONVERSATION_GAP_MS;
 }
