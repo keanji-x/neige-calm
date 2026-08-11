@@ -145,15 +145,20 @@ export function CovePage({
         This overturns §8.2's "这一页*就是*一个列表". The list is still what you
         came for and it is still the card's first module, but a cove is a place
         work happens, and the page had nowhere to put what came *out* of that
-        work. The main column is that place. It is empty today — no cove-level
-        document exists yet — so it renders at §5.3's unbuilt geometry rather
-        than collapsing, because the shape is the useful information.
+        work. The main column is that place.
+
+        No dashed box around it. A document is not a slot with edges — it is the
+        column, and drawing a frame told you where a thing you cannot yet have
+        would end, which is not information. §5.3's "render the shape" is still
+        satisfied: the shape of a document is a full-width column of prose, and
+        that is what an empty one looks like. What is left is one line of hint
+        tone naming the one way to fill it.
       */}
       <div className={styles.content}>
         <div className={styles.doc}>
-          <div className={styles.reportSlot}>
-            <p className={styles.slotNote}>No document yet.</p>
-          </div>
+          <p className={styles.docEmpty}>
+            Nothing written here yet. Start a conversation to add something.
+          </p>
         </div>
 
         <aside className={styles.panel}>

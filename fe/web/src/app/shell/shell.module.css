@@ -42,7 +42,12 @@
        would cut the usable width from 180 to 168 and flatten the asymmetric
        gutter that does most of the work of separating rail from main. */
     padding-inline: var(--space-5);
-    border-inline-end: 1px solid var(--hairline);
+
+    /* No hairline. The surface step alone is the boundary — §6.5's ladder
+       stops at its first satisfied rung, and step ③ (a different functional
+       region) is satisfied here, so step ② is a second statement of the same
+       fact. It needed the line only while `--surface-rail` sat 2.4 L from the
+       ground; see the token's note for why it is now 3.3. */
     background: var(--surface-rail);
     overflow: auto;
   }

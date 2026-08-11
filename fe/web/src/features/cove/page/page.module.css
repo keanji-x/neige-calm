@@ -91,23 +91,16 @@
   }
 
   /*
-   * The unbuilt document. It occupies a document's worth of space because that
-   * shape is precisely what is being taught; it is dashed content, not a void,
-   * so §7.3's empty-rectangle rule does not count it.
+   * The empty document. One line, hint tone, at reading size rather than
+   * metadata size — it is the only thing in the column, so shrinking it to
+   * `--text-xs` would make the page's largest region also its quietest.
    */
-  .reportSlot {
-    display: grid;
-    place-items: center;
+  .docEmpty {
     max-inline-size: var(--measure-prose);
-    min-block-size: calc(var(--slot-h) * 2);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-md);
-  }
-
-  .slotNote {
-    font-size: var(--text-xs);
+    padding-block-start: var(--space-4);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--leading-base);
     color: var(--text-3);
   }
 

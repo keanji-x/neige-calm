@@ -99,35 +99,15 @@
     min-inline-size: 0;
   }
 
-  /*
-   * An empty report still occupies a report's worth of space, because that is
-   * precisely the shape being taught. It is dashed content, not a void, so
-   * §7.3's empty-rectangle rule does not count it.
-   */
-  .reportSlot {
-    display: grid;
-    place-items: center;
+  /* One line, hint tone, at reading size — the same empty document the cove
+     page renders, because it is the same region. */
+  .docEmpty {
     max-inline-size: var(--measure-prose);
-    min-block-size: calc(var(--slot-h) * 2);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-md);
-  }
-
-  .slotNote {
-    font-size: var(--text-xs);
+    padding-block-start: var(--space-4);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
+    line-height: var(--leading-base);
     color: var(--text-3);
-  }
-
-  .cwdLabel {
-    font-family: var(--font-sans);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-none);
-    letter-spacing: var(--tracking-wider);
-    color: var(--text-3);
-    text-transform: uppercase;
   }
 
   .panel {

@@ -158,13 +158,16 @@ export function WavePage({
 
       <div className={styles.content}>
         <div className={styles.doc}>
-          {/* The unbuilt slot renders at the geometry the real content will
-              have: dashed, unfilled, one centred sentence of at most six words,
-              and nothing else — no module path, no slice name, no apology. The
-              shape is the useful information; the sentence is a one-off. */}
-          <div className={styles.reportSlot}>
-            <p className={styles.slotNote}>No report yet.</p>
-          </div>
+          {/*
+            No report slot. A wave's report is not a thing this page is waiting
+            to be handed — it is written *by* the conversation, so a framed
+            placeholder promising one was describing a feature rather than a
+            state. What the column owes an empty wave is the same thing an empty
+            cove is owed: one line naming the one way to fill it.
+          */}
+          <p className={styles.docEmpty}>
+            Nothing written here yet. Start a conversation to add something.
+          </p>
         </div>
 
         {/*

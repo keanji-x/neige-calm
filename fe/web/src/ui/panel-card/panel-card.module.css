@@ -12,7 +12,10 @@
     display: flex;
     flex-direction: column;
     min-inline-size: 0;
-    border: 1px solid var(--hairline);
+
+    /* Colour and radius, no outline. Same reasoning as the rail: one boundary,
+       one channel. `--surface-card` sits 3.8 L from the ground, which is over
+       §6.5's 3.0 threshold for a surface step to stand alone. */
     border-radius: var(--radius-md);
     background: var(--surface-card);
     overflow: hidden;
@@ -29,6 +32,17 @@
     border-block-start: 1px solid var(--hairline);
   }
 
+  /*
+   * No `--surface-panel-head` tint. §6.5 gives a panel head its own surface,
+   * and that worked while the card had an outline: the head was lighter than
+   * the card and the outline still said where the card began. With the outline
+   * gone the head — at 98, against a 98.8 page — dissolved the card's top edge,
+   * and the card read as two loose grey blocks instead of one object.
+   *
+   * One surface for the whole card, then. The label tier (uppercase plus
+   * tracking) already marks a head as a head, and a hairline already separates
+   * one module from the next; a third channel was paying to undo the first two.
+   */
   .head {
     display: flex;
     align-items: center;
@@ -36,7 +50,6 @@
     gap: var(--space-2);
     block-size: var(--control-h-lg);
     padding-inline: var(--space-4);
-    background: var(--surface-panel-head);
   }
 
   /* The label tier: uppercase plus tracking, standing in for a font size the

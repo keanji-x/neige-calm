@@ -7,25 +7,73 @@
     --font-numeric: var(--font-sans);
     --font-code: var(--font-mono);
 
-    --bg: oklch(98.8% 0.003 240);
-    --paper: oklch(99.5% 0.002 240);
-    --hairline: oklch(92% 0.005 240);
-    --hairline-strong: oklch(86% 0.006 240);
+    /*
+     * THE ELEVATION LADDER.
+     *
+     * Surfaces are not picked per component. Each one declares how many ranks
+     * it sits from the ground, and the *direction of every rank is the same in
+     * both themes*: recessed is darker than the ground, raised is lighter.
+     *
+     *   -1  recessed   rail, chip          behind the page
+     *    0  ground     --bg
+     *   +1  raised     card, terminal      an object on the page
+     *   +2  floating   paper               menus, dialogs, drawer
+     *
+     * One step is 1.7 L in light and 3.0 L in dark. The two differ on purpose:
+     * an equal L difference reads weaker on a dark ground, and 1.76x is what it
+     * takes for the two themes to feel like the same ladder. It is one stated
+     * constant per theme, not nine independent choices.
+     *
+     * What this replaced was not a looser version of the same thing — it had no
+     * direction at all. `--surface-card` sat 3.8 L *below* the ground in light
+     * and 5.0 L *above* it in dark, so a card was carved into the page in one
+     * theme and floating over it in the other. `--surface-chip` and
+     * `--surface-card` collapsed onto the same value in light while sitting 3 L
+     * apart in dark. And the light ground was 98.8 out of 100, leaving 1.2 of
+     * headroom, so nothing in light *could* be raised — which is why everything
+     * had been pushed down instead. Moving the ground to 96.5 is what makes the
+     * ladder possible at all.
+     *
+     * Elevation is absolute; **state is relative** — see `--accent-soft`.
+     */
+    --bg: oklch(96.5% 0.003 240);
+    --paper: oklch(99.9% 0.002 240);
+    --hairline: oklch(89.7% 0.005 240);
+    --hairline-strong: oklch(84.6% 0.006 240);
     --text: oklch(20% 0.008 250);
     --text-2: oklch(45% 0.01 250);
-    --text-3: oklch(52% 0.01 250);
-    --text-4: oklch(76% 0.008 250);
-    --accent: oklch(52% 0.13 245);
-    --accent-soft: oklch(95% 0.025 245);
-    --warn: oklch(58% 0.16 30);
-    --warn-soft: oklch(96% 0.03 30);
+    --text-3: oklch(50% 0.01 250);
+    --text-4: oklch(74% 0.008 250);
 
-    --surface-rail: oklch(96.4% 0.004 240);
-    --surface-card: oklch(96% 0.004 240);
-    --surface-chip: oklch(95% 0.005 240);
+    /*
+     * Hue 267, not 245. 245 is the default SaaS blue, and it was also exactly
+     * `--cove-6` — so a cove's identity dot could land on the one colour §7.5
+     * reserves for "you are here". 267 is the point farthest from every hue on
+     * the 8-step cove ring (22.5 degrees from its two nearest), so identity and
+     * state can never be confused. Chroma drops 0.13 -> 0.10 as well: the app
+     * spends one accent, sparingly, on a page that is otherwise greyscale.
+     */
+    --accent: oklch(50% 0.10 267);
+
+    /*
+     * State is a *relative* channel: an alpha tint over whatever it sits on,
+     * not a surface of its own. A selected row appears both on the ground and
+     * inside a raised card, and an absolute fill can only be correct against
+     * one of them — at the old value it was 3.8 L below the ground and would
+     * have been 1.7 L *above* a card, i.e. invisible in exactly the place the
+     * panel needs it. The same argument applies to the two other soft fills,
+     * so all three are alpha.
+     */
+    --accent-soft: oklch(50% 0.10 267 / 0.12);
+    --warn: oklch(52% 0.14 30);
+    --warn-soft: oklch(52% 0.14 30 / 0.12);
+
+    --surface-rail: oklch(94.8% 0.004 240);
+    --surface-card: oklch(98.2% 0.003 240);
+    --surface-chip: oklch(94.8% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
-    --surface-panel-head: oklch(98% 0.003 240);
-    --surface-terminal: oklch(99% 0.003 240);
+    --surface-panel-head: oklch(98.2% 0.003 240);
+    --surface-terminal: oklch(98.2% 0.003 240);
     --surface-code: oklch(0% 0 0 / 0.04);
     --overlay-hover-faint: oklch(0% 0 0 / 0.025);
     --overlay-hover: oklch(0% 0 0 / 0.04);
@@ -128,7 +176,7 @@
     /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
     --warn-text: oklch(45% 0.16 30);
     --success-text: oklch(45% 0.14 145);
-    --error-soft: oklch(96% 0.028 25);
+    --error-soft: oklch(52% 0.15 25 / 0.12);
     --error-border: oklch(85% 0.05 25);
     --text-on-accent: var(--bg);
 
@@ -153,24 +201,25 @@
   }
 
   [data-theme="dark"] {
+    /* Same ladder, same directions, one step = 3.0 L. See the note on `:root`. */
     --bg: oklch(16% 0.008 245);
-    --paper: oklch(19% 0.009 245);
+    --paper: oklch(22% 0.01 245);
     --hairline: oklch(28% 0.01 245);
-    --hairline-strong: oklch(36% 0.012 245);
+    --hairline-strong: oklch(37% 0.012 245);
     --text: oklch(96% 0.005 245);
     --text-2: oklch(72% 0.012 245);
     --text-3: oklch(64% 0.012 245);
     --text-4: oklch(42% 0.012 245);
-    --accent: oklch(72% 0.14 245);
-    --accent-soft: oklch(28% 0.05 245);
-    --warn: oklch(70% 0.16 30);
-    --warn-soft: oklch(28% 0.05 30);
+    --accent: oklch(74% 0.11 267);
+    --accent-soft: oklch(74% 0.11 267 / 0.18);
+    --warn: oklch(72% 0.15 30);
+    --warn-soft: oklch(72% 0.15 30 / 0.18);
     --surface-rail: oklch(13% 0.008 245);
-    --surface-card: oklch(21% 0.009 245);
-    --surface-chip: oklch(24% 0.01 245);
+    --surface-card: oklch(19% 0.009 245);
+    --surface-chip: oklch(13% 0.008 245);
     --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
-    --surface-panel-head: oklch(20% 0.009 245);
-    --surface-terminal: oklch(18% 0.009 245);
+    --surface-panel-head: oklch(19% 0.009 245);
+    --surface-terminal: oklch(19% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
     --overlay-hover: oklch(100% 0 0 / 0.05);
@@ -185,7 +234,7 @@
 
     --warn-text: oklch(78% 0.13 30);
     --success-text: oklch(78% 0.13 145);
-    --error-soft: oklch(26% 0.05 25);
+    --error-soft: oklch(76% 0.13 25 / 0.18);
     --error-border: oklch(40% 0.05 25);
     --text-on-accent: var(--bg);
 
