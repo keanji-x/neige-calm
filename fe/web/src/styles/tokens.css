@@ -227,7 +227,22 @@
      */
     --panel-w: 280px;
     --drawer-w: 396px;
-    --measure-prose: 616px;
+
+    /*
+     * Sized for `--text-lg`, the rank `.calm-prose` reads at, so a line lands
+     * in the middle of the 65–75 character band.
+     *
+     * Measured, not estimated. The average advance of English prose in this
+     * face at 18px is 7.22px — taken from a canvas measurement of a real
+     * sentence, because letter *frequency* sets the average, not the alphabet.
+     * That puts the old 616 at 85 characters a line, and the 13px it was
+     * originally paired with at 118. 504 runs 70.
+     *
+     * A measure is only ever correct for one size. Changing either without the
+     * other is how a document becomes unreadable while every individual token
+     * still looks reasonable — which is exactly what happened here.
+     */
+    --measure-prose: 504px;
     --measure-form: 544px;
     --measure-page: 1180px;
     --measure-board: 1280px;

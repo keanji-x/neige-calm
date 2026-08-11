@@ -1,44 +1,95 @@
 @layer features {
   /*
-   * Prose, at the document column's measure. The block rhythm follows the same
-   * optical-distance rule the rail and the card use — a heading sits closer to
-   * the text it introduces than to the paragraph it follows, so the gap above
-   * a heading is larger than the gap below it.
+   * The report's own layer, on top of `calm-prose`.
+   *
+   * Everything about *prose* — serif, `--text-lg`, `--leading-loose`, the
+   * measure, the block rhythm — lives in base.css and is shared with every
+   * other surface that renders authored text. What is here is what makes a
+   * report a report:
+   *
+   *   **Sections are numbered, and that number is the only accent in the
+   *   document.** `01` in accent mono, the heading, then a hairline running to
+   *   the end of the line. It states what a report is — an ordered account —
+   *   using the one channel a heading has spare. Ported from the legacy web's
+   *   `.report-prose`, which had it and this rewrite had lost.
+   *
+   *   **Nothing is boxed.** The legacy outlined `pre` and every table cell;
+   *   this system's rule is that a boundary a colour can carry may not also be
+   *   a line, so the code block keeps `--surface-code` alone and the table
+   *   keeps one rule per row.
    */
+  /* Only what `calm-prose` does not already say. Measure, serif, size, leading
+     and block rhythm come from there; this adds the section counter, the two
+     heading treatments that are the report's own, and the block kinds the
+     shared recipe has no opinion on. */
   .doc {
     display: flow-root;
-    max-inline-size: var(--measure-prose);
     margin-inline: auto;
-    color: var(--text);
+    counter-reset: report-section;
   }
 
-  .doc > * + * {
-    margin-block-start: var(--space-6);
-  }
-
-  /* A section break. `--space-11` above, `--space-4` below: the heading belongs
-     to what comes after it. */
+  /*
+   * A section. The kernel splits a report at H1, so this is the rank that earns
+   * the number and the rule, and `--space-12 + --space-6` above it is the
+   * largest break in the document — what makes sections read as sections.
+   *
+   * `overflow-x: clip` is load-bearing: the trailing rule is a zero-advance
+   * pseudo-element (`inline-size: 100%` against `margin-inline-end: -100%`) so
+   * it fills whatever the heading text leaves, and without the clip it would
+   * push the document's scroll width past its column.
+   */
   .h1 {
-    margin-block-start: var(--space-11);
-    margin-block-end: var(--space-4);
-    font-family: var(--font-display);
-    font-size: var(--text-lg);
-    font-weight: var(--weight-semibold);
-    line-height: var(--leading-tight);
+    counter-increment: report-section;
+    display: block;
+    overflow-x: clip;
+    margin-block-start: calc(var(--space-12) + var(--space-6));
+    margin-block-end: var(--space-6);
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
     letter-spacing: var(--tracking-tight);
     color: var(--text);
+  }
+
+  .h1::before {
+    content: counter(report-section, decimal-leading-zero);
+    display: inline-block;
+    margin-inline-end: var(--space-7);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    letter-spacing: var(--tracking-wide);
+    color: var(--accent);
+    vertical-align: baseline;
+  }
+
+  .h1::after {
+    content: "";
+    display: inline-block;
+    inline-size: 100%;
+    block-size: 1px;
+    margin-inline-start: var(--space-7);
+
+    /* stylelint-disable-next-line declaration-property-value-disallowed-list -- the rule must take zero advance width */
+    margin-inline-end: -100%;
+    background: var(--hairline);
+    vertical-align: middle;
   }
 
   .doc > .h1:first-child {
     margin-block-start: 0;
   }
 
+  /* A subsection: no number and no rule. One numbered rank, or the numbering
+     stops meaning "section". */
   .h2 {
-    margin-block-start: var(--space-8);
-    margin-block-end: var(--space-3);
+    margin-block-start: var(--space-11);
+    margin-block-end: var(--space-4);
+    font-family: var(--font-serif);
     font-size: var(--text-md);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-tight);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-snug);
     color: var(--text);
   }
 
@@ -49,11 +100,8 @@
     margin-block-start: 0;
   }
 
-  .p {
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
-    color: var(--text-2);
+  .list {
+    padding-inline-start: var(--space-10);
   }
 
   /* The marker is restored explicitly: the app's reset strips `list-style` from
@@ -67,20 +115,13 @@
     list-style: decimal;
   }
 
-  .list {
-    padding-inline-start: var(--space-8);
-    font-size: var(--text-base);
-    line-height: var(--leading-base);
-    color: var(--text-2);
-  }
-
   /* A task item's marker is its checkbox, not a bullet as well. */
   .item:has(> .check) {
     list-style: none;
   }
 
   .item + .item {
-    margin-block-start: var(--space-2);
+    margin-block-start: var(--space-3);
   }
 
   /* A list item's own paragraphs carry no extra block margin: the item is the
@@ -90,22 +131,24 @@
   }
 
   .check {
-    margin-inline-end: var(--space-2);
+    margin-inline-end: var(--space-3);
   }
 
   .quote {
     margin-inline: 0;
-    padding-inline-start: var(--space-4);
+    padding-block: var(--space-2);
+    padding-inline-start: var(--space-7);
     border-inline-start: 2px solid var(--hairline-strong);
     color: var(--text-3);
   }
 
-  /* `--surface-code` is the one recessed fill in the type stack; the block gets
-     its own scroll container so a long line cannot widen the page (§3.2). */
+  /* Its own scroll container so a long line cannot widen the page (§3.2).
+     `--surface-code` and nothing else: the legacy drew a hairline around this
+     too, and a fill that already separates does not also get a line. */
   .code,
   .raw {
     overflow-x: auto;
-    padding: var(--space-4);
+    padding: var(--space-6);
     border-radius: var(--radius-sm);
     background: var(--surface-code);
     font-family: var(--font-code);
@@ -119,11 +162,11 @@
   }
 
   .inlineCode {
-    padding-inline: var(--space-1);
+    padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
     background: var(--surface-code);
     font-family: var(--font-code);
-    font-size: 0.92em;
+    font-size: 0.86em;
   }
 
   .strong {
@@ -135,23 +178,33 @@
     overflow-x: auto;
   }
 
+  /* Sans, and back to interface size: a table is data, and data is scanned down
+     columns rather than read along lines. */
   .table {
+    inline-size: 100%;
     border-collapse: collapse;
+    font-family: var(--font-sans);
     font-size: var(--text-sm);
     line-height: var(--leading-snug);
   }
 
   .cell {
-    padding-block: var(--space-2);
+    padding-block: var(--space-3);
     padding-inline: var(--space-4) var(--space-6);
     border-block-end: 1px solid var(--hairline);
     text-align: start;
+    vertical-align: top;
     color: var(--text-2);
+  }
+
+  th.cell {
+    color: var(--text);
+    font-weight: var(--weight-semibold);
   }
 
   .rule {
     block-size: 1px;
-    margin-block: var(--space-8);
+    margin-block: var(--space-10);
     border: none;
     background: var(--hairline);
   }

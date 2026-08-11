@@ -48,7 +48,12 @@ export function ReportDocument({ body, empty }: ReportDocumentProps) {
 
   const ast = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' });
   return (
-    <article className={styles.doc} data-nc-report="">
+    /* `calm-prose` is the app's one prose recipe (base.css) — measure, serif,
+       size, leading, and the block rhythm. The module class beside it adds only
+       what is specific to a *report*: the numbered sections. Two prose
+       definitions is how the question "what does prose look like" stops having
+       one answer. */
+    <article className={`calm-prose ${styles.doc}`} data-nc-report="">
       {ast.children.map((block, index) => <Block key={index} block={block} />)}
     </article>
   );

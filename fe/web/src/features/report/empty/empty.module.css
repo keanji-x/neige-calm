@@ -29,6 +29,7 @@
    * this would normally lose to does not exist here.
    */
   .lead {
+    font-family: var(--font-serif);
     font-size: var(--text-xl);
     font-weight: var(--weight-normal);
     line-height: var(--leading-tight);

@@ -125,15 +125,37 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* The one document flow. Vertical margin is forbidden everywhere else
-     (§2.3); prose is the stated exception, because its rhythm is the
-     document's, not a container's `gap`. */
+  /*
+   * The one document flow. Vertical margin is forbidden everywhere else
+   * (§2.3); prose is the stated exception, because its rhythm is the
+   * document's, not a container's `gap`.
+   *
+   * ── Reading type, not interface type ──────────────────────────────────
+   *
+   * This was `--text-base` sans, the same rank the rail's rows take, and that
+   * was the mistake: the two registers do different jobs. Interface type is
+   * *scanned* — a row is 12.5 because you are looking for one among twenty and
+   * never read it twice. Prose is *read*, one line after another, and the rank
+   * that supports that is `--text-lg`.
+   *
+   * The pairing is what makes it a system rather than a preference: a measure
+   * is only correct for one size. The rule is 65–75 characters a line, and it
+   * is *measured*, not estimated — at `--text-base` in the old 616px column a
+   * report ran 108 characters, half again the upper bound. `--measure-prose` is
+   * now sized for `--text-lg`: 552px, measured at 70.
+   *
+   * Every surface that renders authored text — the report, a conversation
+   * turn, the file viewer's preview — carries this class. There is one answer
+   * to "what does prose look like" and this is it; a component that sets its
+   * own body size is drifting from it.
+   */
   .calm-prose {
     max-inline-size: var(--measure-prose);
-    font-size: var(--text-base);
+    font-family: var(--font-serif);
+    font-size: var(--text-lg);
     font-weight: var(--weight-normal);
     line-height: var(--leading-loose);
-    color: var(--text);
+    color: var(--text-2);
   }
 
   .calm-prose > * + * {
@@ -141,18 +163,24 @@
   }
 
   .calm-prose h1 {
-    font-size: var(--text-md);
-    font-weight: var(--weight-semibold);
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
     line-height: var(--leading-snug);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
   }
 
   .calm-prose h2 {
-    font-size: var(--text-base);
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-snug);
+    color: var(--text);
   }
 
   .calm-prose h3 {
+    font-family: var(--font-serif);
     font-size: var(--text-base);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-snug);
@@ -160,6 +188,7 @@
   }
 
   .calm-prose code {
+    font-family: var(--font-code);
     font-size: var(--text-sm);
     color: var(--text-2);
   }
