@@ -340,7 +340,12 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
                   styles.day, isToday ? styles.dayToday : '', isSelected ? styles.daySelected : '',
                 ].filter(Boolean).join(' ')}
                 aria-pressed={isSelected}
-                aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+                /* The count belongs in here, not only in the glyph beside the
+                   date: the mark is a superscript annotation and is hidden from
+                   assistive tech, so this is the only route to "how much is on
+                   Thursday?" for anyone not reading it by eye. */
+                aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
+                  + (seen.size === 0 ? '' : `, ${seen.size} wave${seen.size === 1 ? '' : 's'}`)}
                 onClick={() => setSelected(day)}
               >
                 <span className={styles.dayNumber}>{day.getDate()}</span>

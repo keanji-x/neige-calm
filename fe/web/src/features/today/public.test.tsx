@@ -111,7 +111,10 @@ describe('Today agenda', () => {
     render(<TodayPage renderWaveRow={renderWaveRow} waves={[wave(), tomorrowOnly]} coves={[cove()]} nowMs={NOW} />);
     expect(agenda()).not.toContain('Tomorrow only');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Tuesday, Aug 11' }));
+    // The day cell's accessible name carries its count — that is the only route
+    // to it for assistive tech, since the superscript beside the date is
+    // `aria-hidden`. One wave overlaps Tuesday, so the name says so.
+    await userEvent.click(screen.getByRole('button', { name: 'Tuesday, Aug 11, 1 wave' }));
     expect(agenda()).toContain('Tomorrow only');
     expect(agenda()).not.toContain('Open wave');
     expect(screen.getByText('Tuesday, Aug 11')).toBeTruthy();

@@ -279,18 +279,30 @@
    */
   .dayCount {
     font-family: var(--font-numeric);
-    font-size: var(--text-xs);
+
+    /*
+     * A true superscript: two thirds of the date's size, the ratio type has
+     * used for one since footnotes existed. `--text-xs` was the scale's floor
+     * and it was the wrong tool — at 11 against 12.5 the two numerals are the
+     * same size to the eye, so the annotation competed with the thing it
+     * annotates no matter how faint it was.
+     *
+     * Going under the scale's floor is legal *here and only here* because this
+     * glyph is not text: it is `aria-hidden`, and the count it draws is stated
+     * in full in the cell's accessible name. Nothing is readable only at 8px.
+     */
+    font-size: calc(var(--text-sm) * 0.66);
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-4);
     font-variant-numeric: tabular-nums;
 
-    /* Raised off the baseline, i.e. a superscript. On the same baseline the
-       two numerals still read as a pair — "11 10" is a range before it is a
-       date and a count — and two digits made that worse. Raising it is the
-       typographic convention for "this annotates the thing to its left", and
-       `translate` does it without touching the layout the cell is centred by. */
-    translate: 0 calc(var(--text-xs) * -0.34);
+    /* Raised off the baseline. On the same baseline the two numerals read as a
+       pair — "11 10" is a range before it is a date and a count. Raising it is
+       the typographic convention for "this annotates the thing to its left",
+       and `translate` does it without touching the layout the cell is centred
+       by. */
+    translate: 0 calc(var(--text-sm) * -0.3);
   }
 
   .daySelected .dayCount,
