@@ -107,8 +107,10 @@ describe('§6.3 variants differ in what they render, not in what they are', () =
     expect(container.textContent).toContain('1h');
   });
 
-  it('puts the hour label ahead of the title on an agenda row', () => {
-    const { container } = render(<WaveRow wave={wave()} variant="agenda" hourLabel="15:00" onOpen={vi.fn()} nowMs={NOW} />);
+  it('puts the hour label ahead of the title on a panel row, and no relative time after it', () => {
+    const { container } = render(<WaveRow wave={wave()} variant="panel" hourLabel="15:00" onOpen={vi.fn()} nowMs={NOW} />);
+    // The whole text of the row: an hour, a title, nothing else. The panel
+    // variant drops the age, so a scheduled row states one time, not two.
     expect(container.textContent).toBe('15:00Open wave');
   });
 });

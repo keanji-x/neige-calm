@@ -171,6 +171,7 @@ function useConversationPanel(conversations: readonly Conversation[], options?: 
 function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const go = useGo();
+  const waveMutations = useWaveMutations(transport);
   const chat = useConversationPanel(NO_CONVERSATIONS);
   return (
     <>
@@ -187,6 +188,13 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
           hourLabel={options.hourLabel}
           coveName={options.coveName}
           onOpen={(waveId) => go({ name: 'wave', waveId })}
+          /* The panel variant only — that is the calendar's agenda, inside the
+             card, where every other list already puts a delete under the status
+             dot. The main column's sections stay read-only: they are the day's
+             report, and a report is not a place you edit from. */
+          onDelete={options.variant === 'panel'
+            ? (waveId) => { void waveMutations.remove(waveId, wave.coveId); }
+            : undefined}
         />
       )}
       conversationList={chat.list}

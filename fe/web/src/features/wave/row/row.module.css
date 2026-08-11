@@ -148,13 +148,11 @@
     color: var(--text);
   }
 
-  .variantCompact,
-  .variantAgenda {
+  .variantCompact {
     min-block-size: var(--row-h);
   }
 
-  .variantCompact .title,
-  .variantAgenda .title {
+  .variantCompact .title {
     font-weight: var(--weight-normal);
     color: var(--text);
   }

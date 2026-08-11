@@ -13,7 +13,7 @@ import type { TodayPageProps } from './public.tsx';
 // domain, and these suites are about Today's own bucketing and layout. The real
 // row has its own tests, and `app/router` is where the two are composed.
 const renderWaveRow: TodayPageProps['renderWaveRow'] = (wave, options) => (
-  <span data-nc-role="row" data-nc-state={options.variant === 'agenda' ? 'selected' : undefined}>
+  <span data-nc-role="row" data-nc-state={options.variant === 'panel' ? 'selected' : undefined}>
     {options.hourLabel}{wave.title}
   </span>
 );
@@ -65,7 +65,7 @@ describe('Today agenda', () => {
   // Navigation moved into the injected row (app/router owns the destination),
   // so what Today still owns is *which* wave it hands to the renderer and in
   // which variant. That is what this asserts.
-  it('hands each agenda wave to the injected renderer in the agenda variant', () => {
+  it('hands each agenda wave to the injected renderer in the panel variant', () => {
     const seen: { id: string; variant: string }[] = [];
     render(<TodayPage
       renderWaveRow={(candidate, options) => {
@@ -74,7 +74,7 @@ describe('Today agenda', () => {
       }}
       waves={[wave()]} coves={[cove()]} nowMs={NOW}
     />);
-    expect(seen.some((entry) => entry.id === 'w1' && entry.variant === 'agenda')).toBe(true);
+    expect(seen.some((entry) => entry.id === 'w1' && entry.variant === 'panel')).toBe(true);
   });
 
   // Resolving a wave's cove *name* is Today's job — the agenda spans coves, so

@@ -14,7 +14,7 @@ import { useEffect, useMemo, type ReactNode } from 'react';
 import {
   activeWavesOn, isRunning, needsUserAttention, type Wave,
 } from '../../../../core/domain/wave.ts';
-import { coveOf, coveSlotVar, type Cove } from '../../../../core/domain/cove.ts';
+import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -46,7 +46,7 @@ export type ScheduledEvent = Readonly<{ wave: Wave; date: Date; hour: number }>;
  */
 export type WaveRowRenderer = (
   wave: Wave,
-  options: Readonly<{ variant: 'compact' | 'agenda'; hourLabel?: string; coveName?: string }>,
+  options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; coveName?: string }>,
 ) => ReactNode;
 
 export type TodayPageProps = Readonly<{
@@ -321,18 +321,13 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
         <div className={styles.weekGrid}>
           {days.map((day) => {
             // De-dup by wave id: a wave with both a scheduled event and an
-            // overlapping activity window contributes one dot, not two.
+            // overlapping activity window is counted once, not twice.
             const seen = new Set<string>();
-            let dotCoveId: string | undefined;
             for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day))) {
-              if (seen.has(event.wave.id)) continue;
               seen.add(event.wave.id);
-              dotCoveId ??= event.wave.coveId;
             }
             for (const wave of activeWavesOn(waves, day, now)) {
-              if (seen.has(wave.id)) continue;
               seen.add(wave.id);
-              dotCoveId ??= wave.coveId;
             }
             const isToday = sameDay(day, today);
             const isSelected = sameDay(day, selected);
@@ -349,15 +344,24 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
                 onClick={() => setSelected(day)}
               >
                 <span className={styles.dayNumber}>{day.getDate()}</span>
-                {/* At most one dot a day; its colour is the first agenda item's
-                    cove identity. */}
-                {dotCoveId !== undefined && (
-                  <span
-                    className={styles.dayDot}
-                    data-nc-day-dot
-                    style={{ background: `var(${coveSlotVar(dotCoveId)})` }}
-                    aria-hidden="true"
-                  />
+                {/*
+                  A count, in hint tone, not a coloured dot.
+
+                  The dot was one mark for any number of waves, coloured by
+                  whichever cove happened to sort first — so it answered "whose
+                  is the first one?", which nobody asks, while the question you
+                  scan a week for ("how much is on Thursday?") went unanswered.
+                  Seven coloured dots across a 244px week were also the densest
+                  colour on the page, carrying the least information on it.
+
+                  It sits beside the date rather than under it: stacked, the
+                  two numerals read as two calendar facts competing, and a cell
+                  showing "11" over "3" is asking you which one is the date.
+                */}
+                {seen.size > 0 && (
+                  <span className={styles.dayCount} data-nc-day-count={seen.size} aria-hidden="true">
+                    {seen.size}
+                  </span>
                 )}
               </button>
             );
@@ -390,7 +394,7 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
           {scheduledAgenda.map((event) => (
             <span key={`scheduled-${event.wave.id}-${event.hour}`}>
               {renderWaveRow(event.wave, {
-                variant: 'agenda',
+                variant: 'panel',
                 hourLabel: formatHour(event.hour),
                 coveName: coveOf(event.wave.coveId, coves)?.name ?? UNKNOWN_COVE,
               })}
@@ -398,7 +402,7 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
           ))}
           {waveAgenda.filter((wave) => !scheduledIds.has(wave.id)).map((wave) => (
             <span key={`wave-${wave.id}`}>
-              {renderWaveRow(wave, { variant: 'agenda', coveName: coveOf(wave.coveId, coves)?.name ?? UNKNOWN_COVE })}
+              {renderWaveRow(wave, { variant: 'panel', coveName: coveOf(wave.coveId, coves)?.name ?? UNKNOWN_COVE })}
             </span>
           ))}
         </div>

@@ -224,12 +224,17 @@
     text-align: center;
   }
 
+  /* One line. The count rides *beside* the date, not under it: stacked, the
+     two numerals read as two calendar facts fighting each other — a day cell
+     that says "11" over "3" is asking which one is the date. Side by side, at
+     the faintest tone and on the same baseline, only one of them is the date. */
   .day {
-    position: relative;
-    display: grid;
-    place-items: center;
-    block-size: var(--row-h);
-    border: 1px solid transparent;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: var(--space-px);
+    min-block-size: var(--row-h);
+    padding-block: var(--space-2);
     border-radius: var(--radius-sm);
     cursor: pointer;
     transition: background-color var(--motion-quick) ease-out;
@@ -264,12 +269,33 @@
     color: var(--text);
   }
 
-  .dayDot {
-    position: absolute;
-    inset-block-end: var(--space-px);
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
+  /*
+   * Hint tone, not a colour: it is a quantity, and the only colour the panel
+   * spends is on state.
+   *
+   * The size step alone (11 against 12.5) is not enough to say "subordinate" —
+   * that is what `--text-4`, the faintest tone in the ladder, is for. The type
+   * scale stops at 11 on purpose and this does not get to be the exception.
+   */
+  .dayCount {
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-4);
+    font-variant-numeric: tabular-nums;
+
+    /* Raised off the baseline, i.e. a superscript. On the same baseline the
+       two numerals still read as a pair — "11 10" is a range before it is a
+       date and a count — and two digits made that worse. Raising it is the
+       typographic convention for "this annotates the thing to its left", and
+       `translate` does it without touching the layout the cell is centred by. */
+    translate: 0 calc(var(--text-xs) * -0.34);
+  }
+
+  .daySelected .dayCount,
+  .dayToday .dayCount {
+    color: var(--text-3);
   }
 
   @media (prefers-reduced-motion: reduce) {

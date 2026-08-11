@@ -12,16 +12,15 @@
 //
 // §6.3 gives it four variants. They differ in height, in what the leading 6px
 // column carries, and in whether the second line exists at all — the compact,
-// agenda and rail variants *drop* the lifecycle line rather than shrinking it,
+// panel and rail variants *drop* the lifecycle line rather than shrinking it,
 // so a lifecycle phrase simply does not exist on those surfaces.
 
 import {
   isRunning, lifecycleLabel, needsUserAttention, waveDisplayTitle, type Wave,
 } from '../../../../../core/domain/wave.ts';
-import { coveSlotVar } from '../../../../../core/domain/cove.ts';
 import styles from './row.module.css';
 
-export type WaveRowVariant = 'default' | 'compact' | 'agenda' | 'panel' | 'rail';
+export type WaveRowVariant = 'default' | 'compact' | 'panel' | 'rail';
 
 export type WaveRowProps = Readonly<{
   wave: Wave;
@@ -44,7 +43,6 @@ function variantClass(variant: WaveRowVariant): string {
   switch (variant) {
     case 'default': return styles.variantDefault;
     case 'compact': return styles.variantCompact;
-    case 'agenda': return styles.variantAgenda;
     case 'panel': return styles.variantPanel;
     case 'rail': return styles.variantRail;
   }
@@ -96,18 +94,11 @@ export function WaveRow({
   const hasRemove = onDelete !== undefined;
   const now = nowMs ?? Date.now();
 
-  // The agenda column spans coves and is not split by status, so its leading
-  // column answers "whose is this?" instead. Every other surface is already
-  // grouped by cove, or sectioned by status, and uses a status dot.
-  const identity = variant === 'agenda';
-
   const bits = [attention ? 'waiting on you' : '', running ? 'running' : ''].filter(Boolean);
   const label = `Wave ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}, ${lifecycle}`
     + (coveName === undefined ? '' : `, in cove ${coveName}`);
 
-  const dotClass = identity
-    ? styles.dot
-    : `${styles.dot} ${attention ? styles.dotWaiting : running ? styles.dotRunning : ''}`;
+  const dotClass = `${styles.dot} ${attention ? styles.dotWaiting : running ? styles.dotRunning : ''}`;
 
   /*
    * The rail moves the status dot to the *trailing* edge and lets the delete
@@ -130,8 +121,8 @@ export function WaveRow({
    * with the title for the width the title needed, and a wave's page states it
    * properly.
    *
-   * `default` and `agenda` keep the leading dot. Their trailing edge is already
-   * spent on the relative time, and a 720px row does not need the 10px.
+   * `default` keeps the leading dot. Its trailing edge is already spent on the
+   * relative time, and a 720px row does not need the 10px.
    */
   const trailingStatus = variant === 'rail' || variant === 'panel';
 
@@ -156,7 +147,6 @@ export function WaveRow({
         {!trailingStatus && (
           <span
             className={dotClass}
-            style={identity ? { background: `var(${coveSlotVar(wave.coveId)})` } : undefined}
             aria-hidden="true"
           />
         )}
@@ -166,7 +156,7 @@ export function WaveRow({
         </span>
         {/* The agenda is grouped by date already, so a relative time there is
             restating the heading in a 308px column. */}
-        {variant !== 'agenda' && !trailingStatus && (
+        {!trailingStatus && (
           <span className={styles.age}>{relativeTime(wave.updatedAt, now)}</span>
         )}
         {variant === 'default' && (

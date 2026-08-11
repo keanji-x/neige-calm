@@ -13,7 +13,7 @@ import type { TodayPageProps } from './public.tsx';
 // domain, and these suites are about Today's own bucketing and layout. The real
 // row has its own tests, and `app/router` is where the two are composed.
 const renderWaveRow: TodayPageProps['renderWaveRow'] = (wave, options) => (
-  <span data-nc-role="row" data-nc-state={options.variant === 'agenda' ? 'selected' : undefined}>
+  <span data-nc-role="row" data-nc-state={options.variant === 'panel' ? 'selected' : undefined}>
     {options.hourLabel}{wave.title}
   </span>
 );
@@ -61,12 +61,15 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     expect(screen.getByText('Nothing scheduled.')).toBeTruthy();
   });
 
-  it('contributes one dot per wave when both sources carry the same wave', () => {
+  it('counts a wave once when both sources carry it', () => {
+    // The day cell shows how many waves a day holds, so double-counting is the
+    // failure this locks: one wave present in both sources must read as 1.
     const shared = wave({ id: 'w1' });
     const events: ScheduledEvent[] = [{ wave: shared, date: new Date(NOW), hour: 9 }];
     render(<TodayPage renderWaveRow={renderWaveRow} waves={[shared]} coves={[cove()]} scheduledEvents={events} nowMs={NOW} />);
     const today = screen.getByRole('button', { name: 'Monday, Aug 10' });
-    expect(today.querySelectorAll('[data-nc-day-dot]').length).toBe(1);
+    const count = today.querySelector('[data-nc-day-count]');
+    expect(count?.textContent).toBe('1');
   });
 });
 
