@@ -12,10 +12,12 @@
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
+import { useRef } from 'react';
 import { useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
-import { coveOf } from '../../../../core/domain/cove.ts';
+import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
+import { waveDisplayTitle, type Wave, type WaveDetailWire } from '../../../../core/domain/wave.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
@@ -25,10 +27,11 @@ import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
+import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { readWaveReport } from '../../../../core/domain/report.ts';
-import type { Conversation } from '../../../../core/domain/conversation.ts';
+import type { Conversation, ConversationTurn } from '../../../../core/domain/conversation.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
@@ -41,14 +44,86 @@ import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { useGo, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
-import paneStyles from './router.module.css';
 
 /**
- * A frozen empty list, so every route hands the same reference down and React
- * cannot see a "new" array on each render. Production has no conversation
- * endpoint yet; see `core/domain/conversation.ts`.
+ * The conversation store, standing in for an endpoint that does not exist.
+ *
+ * `core/domain/conversation.ts` explains what the kernel really holds — a
+ * `WorkerSessionProjection` per session and `HarnessItem` rows for its turns —
+ * and what it does not have: any HTTP route the frontend can read them from.
+ * So the *composition layer* holds them, in memory, for the length of a visit.
+ *
+ * It lives here rather than in `features/chat` on purpose. Nothing under
+ * `features/**` learns that its data is a stub: the list takes a list, the
+ * thread takes turns, the composer reports a string. When the endpoint lands,
+ * this hook becomes a query plus a mutation and not one line of the chat
+ * feature changes. A stub inside the feature would have had to be unpicked
+ * from it instead.
+ *
+ * The reply is the literal string `test`, which is what was asked for and is
+ * also the honest thing to render: an agent is not attached, and a stub that
+ * wrote something plausible would be claiming one is.
  */
-const NO_CONVERSATIONS: readonly Conversation[] = Object.freeze([]);
+const STUB_REPLY = 'test';
+const STUB_REPLY_DELAY_MS = 400;
+
+type ConversationStore = Readonly<{
+  conversations: readonly Conversation[];
+  turnsOf: (conversationId: string) => readonly ConversationTurn[];
+  pending: string | null;
+  start: (wave: { id: string; title: string }) => Conversation;
+  send: (conversationId: string, text: string) => void;
+}>;
+
+function useConversationStore(): ConversationStore {
+  const [conversations, setConversations] = useState<readonly Conversation[]>([]);
+  const [turns, setTurns] = useState<Readonly<Record<string, readonly ConversationTurn[]>>>({});
+  const [pending, setPending] = useState<string | null>(null);
+  const seq = useRef(0);
+  const nextId = (prefix: string) => { seq.current += 1; return `${prefix}-${seq.current}`; };
+
+  const start = (wave: { id: string; title: string }): Conversation => {
+    const now = Date.now();
+    const conversation: Conversation = {
+      id: nextId('conv'), waveId: wave.id, waveTitle: wave.title,
+      kind: 'codex', state: 'idle', updatedAt: now, turns: 0,
+    };
+    setConversations((current) => [conversation, ...current]);
+    return conversation;
+  };
+
+  const append = (conversationId: string, turn: ConversationTurn) => {
+    setTurns((current) => ({ ...current, [conversationId]: [...(current[conversationId] ?? []), turn] }));
+    setConversations((current) => current.map((conversation) => (
+      conversation.id === conversationId
+        ? { ...conversation, updatedAt: turn.atMs, turns: conversation.turns + 1 }
+        : conversation
+    )));
+  };
+
+  const send = (conversationId: string, text: string) => {
+    append(conversationId, { id: nextId('turn'), author: 'you', text, atMs: Date.now() });
+    setPending(conversationId);
+    // A delay, because the state it puts the surface in is real: the live dot
+    // and the "working" state exist and have to be reachable to be looked at.
+    window.setTimeout(() => {
+      append(conversationId, { id: nextId('turn'), author: 'agent', text: STUB_REPLY, atMs: Date.now() });
+      setPending(null);
+    }, STUB_REPLY_DELAY_MS);
+  };
+
+  return {
+    conversations,
+    turnsOf: (conversationId) => turns[conversationId] ?? EMPTY_TURNS,
+    pending,
+    start,
+    send,
+  };
+}
+
+/** One frozen reference, so a conversation with no turns does not hand React a
+ *  new array on every render. */
+const EMPTY_TURNS: readonly ConversationTurn[] = Object.freeze([]);
 
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
@@ -134,38 +209,55 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
  * same object, and modelling "new" as a null conversation would put an
  * `open === null` check in every branch that reads one.
  */
-function useConversationPanel(conversations: readonly Conversation[], options?: { showWave?: boolean }) {
-  const [open, setOpen] = useState<Conversation | 'new' | null>(null);
-  const current = open === 'new' ? null : open;
+function useConversationPanel(
+  scope: { id: string; title: string } | null,
+  options?: { showWave?: boolean },
+) {
+  const store = useConversationStore();
+  const [openId, setOpenId] = useState<string | null>(null);
+  const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
+
+  /*
+   * The `+` starts a conversation *and* opens it. A control that creates a row
+   * you then have to find and click is two steps for one intention — and on a
+   * route with no wave in scope (Today) there is nothing to attach one to, so
+   * the action is simply not offered there rather than offered and refused.
+   */
+  const start = () => {
+    if (scope === null) return;
+    setOpenId(store.start(scope).id);
+  };
+
   return {
     list: (
       <ChatList
-        conversations={conversations}
-        activeId={current?.id ?? null}
+        conversations={store.conversations}
+        activeId={open?.id ?? null}
         showWave={options?.showWave ?? true}
-        onOpen={setOpen}
+        onOpen={(conversation) => setOpenId(conversation.id)}
       />
     ),
     /* The module head's action, composed by the page — same slot the WAVES and
        CARDS modules already use, which is why this needed no new mechanism. */
-    action: <PanelAction label="New conversation" onClick={() => setOpen('new')}>+</PanelAction>,
+    action: scope === null
+      ? undefined
+      : <PanelAction label="New conversation" onClick={start}>+</PanelAction>,
     drawer: (
       <Drawer
         open={open !== null}
-        title={open === 'new' ? 'New conversation' : open?.waveTitle ?? ''}
-        onClose={() => setOpen(null)}
+        title={open?.waveTitle ?? ''}
+        onClose={() => setOpenId(null)}
+        footer={open === null ? undefined : (
+          <ChatComposer onSend={(text) => store.send(open.id, text)} />
+        )}
       >
-        {/* The transcript is the same unbuilt story as the list: the turns
-            exist in the kernel, the endpoint does not. The drawer still opens,
-            at the width and behaviour §7.6 fixed, so the shape is real even
-            though the content is not.
-
-            The `+` therefore opens a real drawer that says plainly it cannot
-            send yet, rather than a button that does nothing when clicked. A
-            control that no-ops is worse than one that tells you why. */}
-        <p className={paneStyles.drawerNote}>
-          {open === 'new' ? 'Sending is not wired up yet.' : 'No transcript yet.'}
-        </p>
+        {open !== null && (
+          <ChatThread
+            conversation={open}
+            turns={store.turnsOf(open.id)}
+            pending={store.pending === open.id}
+          />
+        )}
       </Drawer>
     ),
   };
@@ -175,7 +267,11 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const go = useGo();
   const waveMutations = useWaveMutations(transport);
-  const chat = useConversationPanel(NO_CONVERSATIONS);
+  /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
+     a card, and cards belong to waves), and this route has no single wave in
+     scope. The module still lists and still opens — it is the starting that
+     needs somewhere to attach. */
+  const chat = useConversationPanel(null);
   return (
     <>
     <TodayPage
@@ -215,7 +311,11 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
   const waveMutations = useWaveMutations(transport);
   const go = useGo();
   const [creating, setCreating] = useState(false);
-  const chat = useConversationPanel(NO_CONVERSATIONS);
+  /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
+     a card, and cards belong to waves), and this route has no single wave in
+     scope. The module still lists and still opens — it is the starting that
+     needs somewhere to attach. */
+  const chat = useConversationPanel(null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -302,14 +402,16 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
   );
 }
 
+/*
+ * Split in two on purpose. The conversation panel's `+` needs the wave in
+ * scope, and the wave is only known after the detail query resolves and three
+ * early returns have run — a hook cannot live below those. So this half owns
+ * the fetching and the returns, and the half below owns the hooks that need a
+ * wave.
+ */
 function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   const waveId = useRouteParam('/wave/');
   const workspace = useWorkspace(transport);
-  // `showWave: false` — on a wave's own page the wave's name is the page title,
-  // so repeating it on every row is one column spent saying nothing.
-  const chat = useConversationPanel(NO_CONVERSATIONS, { showWave: false });
-  const waveMutations = useWaveMutations(transport);
-  const go = useGo();
   const detail = useQuery({
     ...waveDetailQueryOptions(transport, waveId ?? ''),
     enabled: waveId !== undefined,
@@ -325,15 +427,40 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
 
   const wave = workspace.waves.find((candidate) => candidate.id === detail.data.wave.id);
   if (wave === undefined) return null;
-  const cove = coveOf(wave.coveId, workspace.coves);
+
+  return (
+    <WaveRouteBody
+      key={wave.id}
+      transport={transport}
+      wave={wave}
+      cove={coveOf(wave.coveId, workspace.coves)}
+      cards={detail.data.cards}
+    />
+  );
+}
+
+function WaveRouteBody({ transport, wave, cove, cards }: {
+  transport: ApiTransportPort;
+  wave: Wave;
+  cove: Cove | undefined;
+  cards: WaveDetailWire['cards'];
+}) {
+  const waveMutations = useWaveMutations(transport);
+  const go = useGo();
+  // `showWave: false` — on a wave's own page the wave's name is the page title,
+  // so repeating it on every row is one column spent saying nothing.
+  const chat = useConversationPanel(
+    { id: wave.id, title: waveDisplayTitle(wave.title) },
+    { showWave: false },
+  );
 
   return (
     <>
     <WavePage
       wave={wave}
-      cards={detail.data.cards}
+      cards={cards}
       report={<ReportDocument
-        body={readWaveReport(detail.data.cards)?.body ?? null}
+        body={readWaveReport(cards)?.body ?? null}
         empty={<ReportEmpty
           lead="Nothing written here yet."
           hints={[

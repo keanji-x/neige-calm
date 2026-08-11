@@ -44,3 +44,36 @@ export function isLiveConversation(state: ConversationState): boolean {
 export function byRecency(left: Conversation, right: Conversation): number {
   return right.updatedAt - left.updatedAt;
 }
+
+/**
+ * Who wrote a turn.
+ *
+ * The kernel's own vocabulary is wider — `HarnessItem` carries tool calls, shell
+ * runs, reasoning summaries and file edits alongside plain messages, and the
+ * legacy web renders seven kinds. Two is what this surface can render honestly
+ * today; the union is the place the rest arrive when the endpoint does.
+ */
+export type TurnAuthor = 'you' | 'agent';
+
+export type ConversationTurn = Readonly<{
+  id: string;
+  author: TurnAuthor;
+  /** Verbatim. Line breaks are the author's and are preserved on render. */
+  text: string;
+  atMs: number;
+}>;
+
+/**
+ * Consecutive turns by one author are one *block* with one label.
+ *
+ * Repeating "YOU" three times down a 396px column is three lines of chrome
+ * saying what adjacency already says. This returns each turn's index within its
+ * run, so the renderer can label only the first — a display rule that belongs
+ * here rather than in the component because both the drawer and any future
+ * inline transcript have to agree on it.
+ */
+export function labelledTurns(
+  turns: readonly ConversationTurn[],
+): readonly (readonly [ConversationTurn, boolean])[] {
+  return turns.map((turn, index) => [turn, turns[index - 1]?.author !== turn.author] as const);
+}

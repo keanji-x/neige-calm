@@ -13,11 +13,18 @@ import { useEffect, useRef, type ReactNode } from 'react';
 
 import styles from './drawer.module.css';
 
-export function Drawer({ open, title, onClose, children }: {
+export function Drawer({ open, title, onClose, children, footer }: {
   open: boolean;
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /**
+   * Pinned below the scrolling body — a composer, a confirm bar, whatever the
+   * drawer is for. It is a slot rather than the last child of `children`
+   * because the body scrolls and this must not: a message box that drifts off
+   * the bottom of a long transcript is a message box you cannot reach.
+   */
+  footer?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
 
@@ -49,6 +56,7 @@ export function Drawer({ open, title, onClose, children }: {
         </button>
       </div>
       <div className={styles.body}>{children}</div>
+      {footer}
     </div>
   );
 }

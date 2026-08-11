@@ -1,9 +1,0 @@
-@layer features {
-  /* §5.3's unbuilt sentence, at the drawer's density. */
-  .drawerNote {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-  }
-}

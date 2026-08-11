@@ -70,8 +70,13 @@
     color: var(--text);
   }
 
+  /* The one part that scrolls. `flex: 1` so it takes the height the head and
+     the footer leave, and `min-block-size: 0` so it may actually shrink — a
+     flex item defaults to its content's size and would otherwise push the
+     footer off the bottom instead of scrolling. */
   .body {
     display: flex;
+    flex: 1;
     flex-direction: column;
     gap: var(--space-4);
     min-block-size: 0;
