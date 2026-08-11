@@ -102,6 +102,39 @@ describe('CovePage cove task summary', () => {
     expect(screen.getByText('全部任务完成 1')).toBeInTheDocument();
     expect(screen.getByText('全部任务失败 3')).toBeInTheDocument();
     expect(screen.getByText('全部任务取消 4')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('omits only the legacy badge when a summary reports legacyLive zero', () => {
+    const taskSummary = makeTaskSummary();
+    Object.assign(taskSummary.waves[0], {
+      legacyLive: 0,
+      specLive: 5,
+      userLive: 13,
+    });
+
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave()]}
+        taskSummary={taskSummary}
+        onGo={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText(/存量未物化/)).not.toBeInTheDocument();
+    for (const text of [
+      '规格活跃 5',
+      '其中已投影 5',
+      '用户活跃 13',
+      '全部任务排队 8',
+      '全部任务在飞 10',
+      '全部任务完成 1',
+      '全部任务失败 3',
+      '全部任务取消 4',
+    ]) {
+      expect(screen.getByText(text)).toBeInTheDocument();
+    }
   });
 
   it('omits all task counts when no summary snapshot is available', () => {

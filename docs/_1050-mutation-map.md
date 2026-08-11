@@ -64,6 +64,33 @@ MW3 的测试只 mock 全局 `fetch`；真实执行 `coveRoute.loader`、`api.co
 `coveTaskSummaryQueryOptions` / `useCoveTaskSummaryQuery`、`CoveComponent`、`CovePage` 和
 `WaveRow`，并要求请求精确命中 `/api/coves/cove%20route/task-summary`。
 
+## 第 2 轮修复：14 条变异重新实测
+
+证据日期：2026-08-11。每条变异均单独施加并在实跑后反向恢复；Rust 输出每次都明确出现
+`Compiling calm-truth`，不是共享 target 的陈旧产物。Rust 命令统一带
+`RUSTC_WRAPPER= CARGO_TARGET_DIR=/mnt/data2/kenji/neige-calm/target
+PATH=/mnt/data2/kenji/neige-calm/.local-bin:$PATH`；web 命令统一带
+`PATH=/home/kenji/.nvm/versions/node/v22.22.2/bin:$PATH`，实测 Node `v22.22.2`。
+
+| 变异 | 临时改动 | 实跑命令 | 失败测试与断言消息 |
+|---|---|---|---|
+| N0 | wrapper 用 `self.pool.connect_options().connect()` 另开连接执行 `SELECT 1` | `cargo nextest run -p calm-truth --lib -E 'test(b3_static_shape_and_real_sqlite_trace_prove_one_statement)'` | **红** `b3_static_shape_and_real_sqlite_trace_prove_one_statement`：`public cove_task_summary must not bypass its pool with connect_options().connect()` |
+| N1 | `pending` 增加 `declared_by='spec'` | `cargo nextest run -p calm-truth --lib -E 'test(b1_shared_legacy_predicate_has_positive_and_user_legacy_negative_fixture)'` | **红** `b1_shared_legacy_predicate_has_positive_and_user_legacy_negative_fixture`：`all nine real SQL wave buckets`；actual `pending: 1` / expected `2` |
+| N2 | `user_live` 删除终结态过滤 | 同上 | **红** 同一 B1：`all nine real SQL wave buckets`；actual `user_live: 4` / expected `2` |
+| N3 | `COVE_TASK_SUMMARY_MAX_WAVES` 从 200 改为 199 | `cargo nextest run -p calm-truth --lib -E 'test(b10_truncation_boundary_is_strictly_above_limit)'` | **红** `b10_truncation_boundary_is_strictly_above_limit`：`the API/UI cove summary limit is fixed at 200 waves`（left 199 / right 200） |
+| N4 | 提示条件 `taskSummary?.truncated` 改为 `taskSummary` | `npm run test -- --run src/pages/Cove.test.tsx` | **红** `renders every distinct count with explicit, internally consistent scopes`：`expected document not to contain element`，实际出现 `role="status"` |
+| N5 | 真实 router prop 复制响应并强制 `truncated:false` | `npm run test -- --run src/integration/cove-task-summary-route.test.tsx` | **红** `renders the truncation warning from a true response through the production route`：`Unable to find role="status"` |
+| MW6 | legacy 徽章门槛 `> 0` 改成 `>= 0` | `npm run test -- --run src/pages/Cove.test.tsx` | **红** `omits only the legacy badge when a summary reports legacyLive zero`：实际找到 `存量未物化 0` |
+| RN1 | `in_flight` 删除 `'verifying'` | `cargo nextest run -p calm-truth --lib -E 'test(b1_shared_legacy_predicate_has_positive_and_user_legacy_negative_fixture)'` | **红** B1：`all nine real SQL wave buckets`；actual `in_flight: 3` / expected `4` |
+| codex SELECT 1（旧） | pool 内取得的连接在 helper 前执行 `SELECT 1` | `cargo nextest run -p calm-truth --lib -E 'test(b3_static_shape_and_real_sqlite_trace_prove_one_statement)'` | **红** B3：`pool-bound public cove_task_summary must execute exactly one sqlite statement; traced 2`（left 2 / right 1） |
+| MR1（旧） | 外层 `ORDER BY r.ordinal` 改为 `r.wave_id` | `cargo nextest run -p calm-truth --lib -E 'test(b5_truncates_rows_but_keeps_full_totals)'` | **红** B5：`legacy-heavy waves must sort first even when their ids sort last`；left `[a-zero-003, a-zero-004, a-zero-005]` |
+| MR2（旧） | `wave_count > ?2` 改为 `>= ?2` | `cargo nextest run -p calm-truth --lib -E 'test(b10_truncation_boundary_is_strictly_above_limit)'` | **红** B10：`200 waves: truncated must be true only strictly above the 200-wave limit`（left true / right false） |
+| MW1（旧） | `其中已投影` 从 `blockLive` 换成 `pending` | `npm run test -- --run src/pages/Cove.test.tsx` | **红** `renders every distinct count with explicit, internally consistent scopes`：`Unable to find ... 其中已投影 5`，实际为 8 |
+| MW2（旧） | 删除五个「全部任务…」span | `npm run test -- --run src/pages/Cove.test.tsx` | **红** 同一测试：`Unable to find ... 全部任务排队 8` |
+| MW3（旧） | 删除 router 的 `taskSummary={taskSummaryQ.data}` | `npm run test -- --run src/integration/cove-task-summary-route.test.tsx` | **红** `fetches the encoded production URL and renders its summary through CoveComponent`：`Unable to find ... 其中已投影 5` |
+
+14/14 均为预期红灯；最终工作树已恢复全部生产变异。
+
 ## 可登记项裁决
 
 - F6：本轮选择补最小提示；`truncated=true` 时 Cove 页明确说明只显示 legacy 存量最高的前

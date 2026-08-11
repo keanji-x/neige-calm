@@ -13,6 +13,7 @@ import { queryClient } from '../app/providers';
 import { router } from '../app/router';
 import { SessionContext } from '../app/SessionProvider';
 import { ThemeProvider } from '../app/theme';
+import type { KernelCoveTaskSummary } from '../api/wire';
 
 const COVE_ID = 'cove route';
 const SUMMARY_PATH = '/api/coves/cove%20route/task-summary';
@@ -45,6 +46,72 @@ function response(body: unknown): Response {
   } as Response;
 }
 
+function summaryResponse(truncated: boolean): KernelCoveTaskSummary {
+  return {
+    ...counts,
+    truncated,
+    waves: [{
+      ...counts,
+      waveId: 'w-production',
+      title: 'Production route wave',
+      lifecycle: 'draft',
+      parentWaveId: null,
+      specTaskCeiling: 32,
+      treeTaskBudget: null,
+    }],
+  };
+}
+
+function installFetchMock(truncated: boolean): string[] {
+  const requested: string[] = [];
+  const taskSummary: KernelCoveTaskSummary = summaryResponse(truncated);
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    requested.push(path);
+    if (path === '/api/coves') {
+      return response([{
+        id: COVE_ID,
+        name: 'Production Cove',
+        color: '#5a9',
+        sort: 0,
+        kind: 'user',
+        created_at: 1,
+        updated_at: 2,
+      }]);
+    }
+    if (path === '/api/coves/cove%20route/waves') {
+      return response([{
+        id: 'w-production',
+        cove_id: COVE_ID,
+        title: 'Production route wave',
+        sort: 0,
+        lifecycle: 'draft',
+        created_at: 1,
+        updated_at: 2,
+        terminal_at: null,
+        pinned_at: null,
+      }]);
+    }
+    if (path === SUMMARY_PATH) return response(taskSummary);
+    if (path === '/api/overlays?entity_kind=wave') return response([]);
+    throw new Error(`unmocked fetch: ${path}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return requested;
+}
+
+function renderProductionRoute() {
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+        <SessionContext.Provider value={session}>
+          <RouterProvider router={router} />
+        </SessionContext.Provider>
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+}
+
 describe('cove task summary production route', () => {
   beforeEach(() => {
     queryClient.clear();
@@ -59,68 +126,24 @@ describe('cove task summary production route', () => {
   });
 
   it('fetches the encoded production URL and renders its summary through CoveComponent', async () => {
-    const requested: string[] = [];
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const path = String(input);
-      requested.push(path);
-      if (path === '/api/coves') {
-        return response([{
-          id: COVE_ID,
-          name: 'Production Cove',
-          color: '#5a9',
-          sort: 0,
-          kind: 'user',
-          created_at: 1,
-          updated_at: 2,
-        }]);
-      }
-      if (path === '/api/coves/cove%20route/waves') {
-        return response([{
-          id: 'w-production',
-          cove_id: COVE_ID,
-          title: 'Production route wave',
-          sort: 0,
-          lifecycle: 'draft',
-          created_at: 1,
-          updated_at: 2,
-          terminal_at: null,
-          pinned_at: null,
-        }]);
-      }
-      if (path === SUMMARY_PATH) {
-        return response({
-          ...counts,
-          truncated: false,
-          waves: [{
-            ...counts,
-            waveId: 'w-production',
-            title: 'Production route wave',
-            lifecycle: 'draft',
-            parentWaveId: null,
-            specTaskCeiling: 32,
-            treeTaskBudget: null,
-          }],
-        });
-      }
-      if (path === '/api/overlays?entity_kind=wave') return response([]);
-      throw new Error(`unmocked fetch: ${path}`);
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <SessionContext.Provider value={session}>
-            <RouterProvider router={router} />
-          </SessionContext.Provider>
-        </ThemeProvider>
-      </QueryClientProvider>,
-    );
+    const requested = installFetchMock(false);
+    renderProductionRoute();
 
     await waitFor(() => {
       expect(screen.getByText('其中已投影 5')).toBeInTheDocument();
       expect(screen.getByText('存量未物化 2')).toBeInTheDocument();
     });
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(requested.filter((path) => path === SUMMARY_PATH)).toHaveLength(1);
+  });
+
+  it('renders the truncation warning from a true response through the production route', async () => {
+    const requested = installFetchMock(true);
+    renderProductionRoute();
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      '任务统计仅显示存量未物化最多的前 200 个 wave；汇总仍包含全部 wave。',
+    );
     expect(requested.filter((path) => path === SUMMARY_PATH)).toHaveLength(1);
   });
 });

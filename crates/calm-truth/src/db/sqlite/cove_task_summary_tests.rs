@@ -9,7 +9,20 @@ use super::read::{COVE_TASK_SUMMARY_SQL, cove_task_summary_on};
 use super::wave_tree::{MAX_WAVE_TREE_DEPTH, WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL};
 use super::{SqlxRepo, cove_create_tx, wave_create_tx};
 use crate::db::{COVE_TASK_SUMMARY_MAX_WAVES, RepoRead};
-use crate::model::{CoveTaskSummary, NewCove, NewWave, RequestTheme};
+use crate::model::{CoveTaskSummary, NewCove, NewWave, RequestTheme, TaskSummaryCounts};
+
+fn assert_summary_identities(counts: &TaskSummaryCounts) {
+    assert_eq!(
+        counts.spec_live,
+        counts.block_live + counts.legacy_live,
+        "real SQL result must satisfy specLive = blockLive + legacyLive"
+    );
+    assert_eq!(
+        counts.pending + counts.in_flight,
+        counts.spec_live + counts.user_live,
+        "real SQL result must satisfy pending + inFlight = specLive + userLive"
+    );
+}
 
 async fn fresh_repo() -> SqlxRepo {
     SqlxRepo::open("sqlite::memory:").await.expect("open repo")
@@ -104,13 +117,58 @@ async fn b1_shared_legacy_predicate_has_positive_and_user_legacy_negative_fixtur
     let cove = seed_cove(&repo, "B1").await;
     let wave = seed_wave(&repo, &cove, "predicate").await;
     seed_task(&repo, &wave, "spec-legacy", "pending", "spec", "legacy").await;
+    seed_task(
+        &repo,
+        &wave,
+        "spec-legacy-verifying",
+        "verifying",
+        "spec",
+        "legacy",
+    )
+    .await;
+    seed_task(
+        &repo,
+        &wave,
+        "spec-legacy-running",
+        "running",
+        "spec",
+        "legacy",
+    )
+    .await;
+    seed_task(
+        &repo,
+        &wave,
+        "spec-block-dispatched",
+        "dispatched",
+        "spec",
+        "block",
+    )
+    .await;
     seed_task(&repo, &wave, "user-legacy", "pending", "user", "legacy").await;
     seed_task(&repo, &wave, "user-legacy-2", "running", "user", "legacy").await;
+    seed_task(&repo, &wave, "spec-done", "done", "spec", "legacy").await;
+    seed_task(&repo, &wave, "user-failed", "failed", "user", "legacy").await;
+    seed_task(&repo, &wave, "user-canceled", "canceled", "user", "legacy").await;
 
     let got = summary(&repo, &cove).await;
-    assert_eq!(got.waves[0].counts.legacy_live, 1);
-    assert_eq!(got.waves[0].counts.user_live, 2);
-    assert_eq!(got.waves[0].counts.spec_live, 1);
+    let expected = TaskSummaryCounts {
+        pending: 2,
+        in_flight: 4,
+        done: 1,
+        failed: 1,
+        canceled: 1,
+        legacy_live: 3,
+        block_live: 1,
+        spec_live: 4,
+        user_live: 2,
+    };
+    assert_eq!(
+        got.waves[0].counts, expected,
+        "all nine real SQL wave buckets"
+    );
+    assert_eq!(got.totals, expected, "all nine real SQL total buckets");
+    assert_summary_identities(&got.waves[0].counts);
+    assert_summary_identities(&got.totals);
 
     let fixed: Vec<(String, i64, i64)> = sqlx::query_as(WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL)
         .bind(&wave)
@@ -118,13 +176,10 @@ async fn b1_shared_legacy_predicate_has_positive_and_user_legacy_negative_fixtur
         .fetch_all(repo.pool())
         .await
         .unwrap();
-    assert_eq!(fixed[0].2, got.waves[0].counts.legacy_live);
+    assert_eq!(fixed[0].2, got.waves[0].counts.spec_live);
     // A user-declared row may have legacy origin, but intentionally belongs
     // to userLive rather than the spec-only legacyLive/fixed-live leg.
-    assert_ne!(
-        got.waves[0].counts.user_live,
-        got.waves[0].counts.legacy_live
-    );
+    assert_eq!(fixed[0].2, 4);
 }
 
 #[tokio::test]
@@ -171,6 +226,32 @@ unsafe extern "C" fn trace_statement(
 
 #[tokio::test]
 async fn b3_static_shape_and_real_sqlite_trace_prove_one_statement() {
+    let read_source = include_str!("read.rs");
+    let public_wrapper = read_source
+        .split_once("async fn cove_task_summary")
+        .expect("public cove_task_summary wrapper exists")
+        .1
+        .split_once("async fn cove_get_system")
+        .expect("cove_get_system follows the summary wrapper")
+        .0;
+    assert!(
+        !public_wrapper.contains("connect_options"),
+        "public cove_task_summary must not bypass its pool with connect_options().connect()"
+    );
+    assert!(
+        !public_wrapper.contains(".connect(") && !public_wrapper.contains("connect_with("),
+        "public cove_task_summary must not open any connection outside its pool acquire"
+    );
+    assert!(
+        !public_wrapper.contains("SqliteConnection::connect"),
+        "public cove_task_summary must not open a direct SQLite connection"
+    );
+    assert_eq!(
+        public_wrapper.matches("self.pool.acquire()").count(),
+        1,
+        "public cove_task_summary must acquire exactly one pool connection"
+    );
+
     let total_pos = COVE_TASK_SUMMARY_SQL.find("SUM(pending) OVER ()").unwrap();
     let limit_pos = COVE_TASK_SUMMARY_SQL
         .find("LEFT JOIN ranked r ON r.ordinal <= ?2")
@@ -238,7 +319,7 @@ async fn b3_static_shape_and_real_sqlite_trace_prove_one_statement() {
     let traced = unsafe { Box::from_raw(counter_ptr) }.load(Ordering::SeqCst);
     assert_eq!(
         traced, 1,
-        "public cove_task_summary must execute exactly one sqlite statement; traced {traced}"
+        "pool-bound public cove_task_summary must execute exactly one sqlite statement; traced {traced}"
     );
 }
 
@@ -372,12 +453,12 @@ async fn b5_truncates_rows_but_keeps_full_totals() {
 
 #[tokio::test]
 async fn b10_truncation_boundary_is_strictly_above_limit() {
+    assert_eq!(
+        COVE_TASK_SUMMARY_MAX_WAVES, 200,
+        "the API/UI cove summary limit is fixed at 200 waves"
+    );
     let repo = fresh_repo().await;
-    for wave_count in [
-        COVE_TASK_SUMMARY_MAX_WAVES - 1,
-        COVE_TASK_SUMMARY_MAX_WAVES,
-        COVE_TASK_SUMMARY_MAX_WAVES + 1,
-    ] {
+    for wave_count in [199, 200, 201] {
         let cove = seed_cove(&repo, &format!("boundary-{wave_count}")).await;
         for index in 0..wave_count {
             let wave = format!("boundary-{wave_count}-{index:03}");
@@ -386,13 +467,10 @@ async fn b10_truncation_boundary_is_strictly_above_limit() {
 
         let got = summary(&repo, &cove).await;
         assert!(!got.waves.is_empty(), "boundary fixture must be non-empty");
-        assert_eq!(
-            got.waves.len(),
-            wave_count.min(COVE_TASK_SUMMARY_MAX_WAVES) as usize
-        );
+        assert_eq!(got.waves.len(), wave_count.min(200) as usize);
         assert_eq!(
             got.truncated,
-            wave_count > COVE_TASK_SUMMARY_MAX_WAVES,
+            wave_count > 200,
             "{wave_count} waves: truncated must be true only strictly above the 200-wave limit"
         );
     }
@@ -448,14 +526,24 @@ async fn b8_terminal_rows_never_enter_live_origin_buckets() {
             "block",
         )
         .await;
+        seed_task(
+            &repo,
+            &wave,
+            &format!("user-{index}"),
+            status,
+            "user",
+            "legacy",
+        )
+        .await;
     }
     let got = summary(&repo, &cove).await;
     assert_eq!(
         (got.totals.done, got.totals.failed, got.totals.canceled),
-        (2, 2, 2)
+        (3, 3, 3)
     );
     assert_eq!((got.totals.legacy_live, got.totals.block_live), (0, 0));
     assert_eq!(got.totals.spec_live, 0);
+    assert_eq!(got.totals.user_live, 0);
 }
 
 #[tokio::test]
