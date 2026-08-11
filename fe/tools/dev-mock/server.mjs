@@ -55,9 +55,66 @@ const overlays = [{
   kind: 'any_card_needs_input', payload: { value: true }, updated_at: now - 60_000,
 }];
 
+// A written report, in the shape the kernel persists (`WaveReportPayload`:
+// schemaVersion / docRev / summary / body, body being Markdown whose H1s the
+// frontend splits into sections). w-2 keeps an empty payload on purpose — the
+// empty state is a state worth being able to look at.
+const w1Report = {
+  schemaVersion: 3,
+  docRev: 7,
+  summary: 'Reference resolution now runs off the frozen index; two call sites still bypass it.',
+  body: [
+    '# What this wave is for',
+    '',
+    'Reference resolution was walking the card graph on every read. On a workspace',
+    'with a few thousand cards that is a hundred milliseconds a keystroke, and it',
+    'got worse the longer you used it. The fix is a frozen reverse index built once',
+    'per projection and invalidated by the same events that invalidate the cards.',
+    '',
+    '# What changed',
+    '',
+    '- `resolve_reference` reads the index instead of walking; the walk is gone, not',
+    '  kept as a fallback, because a fallback that never runs is a fallback nobody',
+    '  notices has broken.',
+    '- The index is built inside the projection transaction, so it cannot observe a',
+    '  half-applied batch.',
+    '- Invalidation is keyed on `card.updated_at`, not on a manual dirty flag.',
+    '',
+    'The measured read path on the 4k-card fixture:',
+    '',
+    '| step | before | after |',
+    '| --- | --- | --- |',
+    '| resolve one reference | 84ms | 0.3ms |',
+    '| rebuild after one edit | — | 11ms |',
+    '| cold projection | 260ms | 271ms |',
+    '',
+    'The cold path pays 11ms for the index. That is the whole cost.',
+    '',
+    '# Still open',
+    '',
+    'Two call sites reach the graph directly and do not go through the resolver:',
+    '',
+    '```rust',
+    '// crates/calm-truth/src/projection.rs:412',
+    'let target = cards.iter().find(|c| c.id == reference.target_id);',
+    '```',
+    '',
+    'Both are on the ingest path, where the index does not exist yet. Neither is',
+    'wrong today, but the moment ingest starts reading references they become the',
+    'two places the frozen index is silently not in force.',
+    '',
+    '> Left alone deliberately. Making them go through the resolver means building',
+    '> the index during ingest, which is a different wave.',
+    '',
+    '- [x] Frozen reverse index',
+    '- [x] Invalidation keyed on the projection',
+    '- [ ] Ingest-path call sites',
+  ].join('\n'),
+};
+
 const cards = {
   'w-1': [
-    { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', title: null, sort: 0, payload: {}, deletable: false },
+    { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', title: null, sort: 0, payload: w1Report, deletable: false },
     { id: 'c-2', wave_id: 'w-1', kind: 'codex', title: 'agent', sort: 1, payload: {}, deletable: true },
   ],
   'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', title: null, sort: 0, payload: {}, deletable: false }],

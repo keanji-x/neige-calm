@@ -76,16 +76,6 @@
     min-inline-size: 0;
   }
 
-  /* One line, hint tone, at reading size — the same empty document the cove
-     page renders, because it is the same region. */
-  .docEmpty {
-    max-inline-size: var(--measure-prose);
-    padding-block-start: var(--space-4);
-    font-size: var(--text-md);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
-    color: var(--text-3);
-  }
 
   .panel {
     display: flex;

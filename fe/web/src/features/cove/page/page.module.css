@@ -90,19 +90,6 @@
     min-inline-size: 0;
   }
 
-  /*
-   * The empty document. One line, hint tone, at reading size rather than
-   * metadata size — it is the only thing in the column, so shrinking it to
-   * `--text-xs` would make the page's largest region also its quietest.
-   */
-  .docEmpty {
-    max-inline-size: var(--measure-prose);
-    padding-block-start: var(--space-4);
-    font-size: var(--text-md);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
-    color: var(--text-3);
-  }
 
   .panel {
     min-inline-size: 0;

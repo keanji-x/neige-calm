@@ -1,0 +1,164 @@
+@layer features {
+  /*
+   * Prose, at the document column's measure. The block rhythm follows the same
+   * optical-distance rule the rail and the card use — a heading sits closer to
+   * the text it introduces than to the paragraph it follows, so the gap above
+   * a heading is larger than the gap below it.
+   */
+  .doc {
+    display: flow-root;
+    max-inline-size: var(--measure-prose);
+    color: var(--text);
+  }
+
+  .doc > * + * {
+    margin-block-start: var(--space-6);
+  }
+
+  /* A section break. `--space-11` above, `--space-4` below: the heading belongs
+     to what comes after it. */
+  .h1 {
+    margin-block-start: var(--space-11);
+    margin-block-end: var(--space-4);
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  .doc > .h1:first-child {
+    margin-block-start: 0;
+  }
+
+  .h2 {
+    margin-block-start: var(--space-8);
+    margin-block-end: var(--space-3);
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    color: var(--text);
+  }
+
+  /* Both headings own their spacing outright, so the generic sibling rule must
+     not add to it. */
+  .doc > .h1 + *,
+  .doc > .h2 + * {
+    margin-block-start: 0;
+  }
+
+  .p {
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-base);
+    color: var(--text-2);
+  }
+
+  /* The marker is restored explicitly: the app's reset strips `list-style` from
+     every list, which is right for the dozen navigation lists in the UI and
+     wrong for the one place a list is prose. */
+  ul.list {
+    list-style: disc;
+  }
+
+  ol.list {
+    list-style: decimal;
+  }
+
+  .list {
+    padding-inline-start: var(--space-8);
+    font-size: var(--text-base);
+    line-height: var(--leading-base);
+    color: var(--text-2);
+  }
+
+  /* A task item's marker is its checkbox, not a bullet as well. */
+  .item:has(> .check) {
+    list-style: none;
+  }
+
+  .item + .item {
+    margin-block-start: var(--space-2);
+  }
+
+  /* A list item's own paragraphs carry no extra block margin: the item is the
+     unit, and a one-paragraph item is the overwhelmingly common case. */
+  .item > .p {
+    margin-block: 0;
+  }
+
+  .check {
+    margin-inline-end: var(--space-2);
+  }
+
+  .quote {
+    margin-inline: 0;
+    padding-inline-start: var(--space-4);
+    border-inline-start: 2px solid var(--hairline-strong);
+    color: var(--text-3);
+  }
+
+  /* `--surface-code` is the one recessed fill in the type stack; the block gets
+     its own scroll container so a long line cannot widen the page (§3.2). */
+  .code,
+  .raw {
+    overflow-x: auto;
+    padding: var(--space-4);
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    font-family: var(--font-code);
+    font-size: var(--text-sm);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+  }
+
+  .raw {
+    white-space: pre-wrap;
+  }
+
+  .inlineCode {
+    padding-inline: var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    font-family: var(--font-code);
+    font-size: 0.92em;
+  }
+
+  .strong {
+    font-weight: var(--weight-semibold);
+    color: var(--text);
+  }
+
+  .tableWrap {
+    overflow-x: auto;
+  }
+
+  .table {
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+    line-height: var(--leading-snug);
+  }
+
+  .cell {
+    padding-block: var(--space-2);
+    padding-inline: var(--space-4) var(--space-6);
+    border-block-end: 1px solid var(--hairline);
+    text-align: start;
+    color: var(--text-2);
+  }
+
+  .rule {
+    block-size: 1px;
+    margin-block: var(--space-8);
+    border: none;
+    background: var(--hairline);
+  }
+
+  /* A dropped image's alt text, which is the only part of it this surface
+     renders. It reads as a caption, not as a broken image. */
+  .imageAlt {
+    color: var(--text-3);
+    font-style: italic;
+  }
+}

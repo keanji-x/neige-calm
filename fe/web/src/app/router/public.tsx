@@ -25,6 +25,9 @@ import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
+import { ReportDocument } from '../../features/report/document/public.tsx';
+import { ReportEmpty } from '../../features/report/empty/public.tsx';
+import { readWaveReport } from '../../../../core/domain/report.ts';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
@@ -249,6 +252,21 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
       <CovePage
         cove={cove}
         waveCount={waves.length}
+        /*
+         * Always empty, and honestly so: the kernel has no cove-level document.
+         * `wave-report` is a card, and cards belong to waves — there is no
+         * cove-report card kind, no column, no writer. Rendering the empty
+         * state here is not a placeholder for a feature being built; it is this
+         * column saying what it would hold, which is what the reader needs
+         * either way.
+         */
+        report={<ReportEmpty
+          lead="This cove has no document yet."
+          hints={[
+            'A cove document is written by hand — notes, decisions, links you want on the way in.',
+            'Each wave keeps its own report, which the agent writes as it works.',
+          ]}
+        />}
         onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
         onDeleteCove={() => coveMutations.remove(cove.id).then(() => { go({ name: 'today' }); })}
         onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
@@ -314,6 +332,16 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
     <WavePage
       wave={wave}
       cards={detail.data.cards}
+      report={<ReportDocument
+        body={readWaveReport(detail.data.cards)?.body ?? null}
+        empty={<ReportEmpty
+          lead="Nothing written here yet."
+          hints={[
+            'The agent writes this report as it works — start a conversation and it fills in.',
+            'It stays with the wave, so it is here the next time you open it.',
+          ]}
+        />}
+      />}
       conversationList={chat.list}
       conversationAction={chat.action}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}

@@ -30,6 +30,8 @@ export type WavePageProps = Readonly<{
   wave: Wave;
   cards: readonly CardWire[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
+  /** The report document, composed by `app/router` (features/report). */
+  report?: ReactNode;
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
@@ -41,7 +43,7 @@ export type WavePageProps = Readonly<{
 
 
 export function WavePage({
-  wave, cards, conversationList, conversationAction, pageTitleRef,
+  wave, cards, report, conversationList, conversationAction, pageTitleRef,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -145,18 +147,13 @@ export function WavePage({
       />
 
       <div className={styles.content}>
-        <div className={styles.doc}>
-          {/*
-            No report slot. A wave's report is not a thing this page is waiting
-            to be handed — it is written *by* the conversation, so a framed
-            placeholder promising one was describing a feature rather than a
-            state. What the column owes an empty wave is the same thing an empty
-            cove is owed: one line naming the one way to fill it.
-          */}
-          <p className={styles.docEmpty}>
-            Nothing written here yet. Start a conversation to add something.
-          </p>
-        </div>
+        {/*
+          The wave report, composed by `app/router` from this wave's
+          `wave-report` card. No frame around it: a document is the column, and
+          drawing a box told you where a thing you cannot yet have would end.
+          It owns its own empty state.
+        */}
+        <div className={styles.doc}>{report}</div>
 
         {/*
           The same card every route has. CARDS is this route's own module —

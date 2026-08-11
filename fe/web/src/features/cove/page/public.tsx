@@ -30,6 +30,8 @@ export type CovePageProps = Readonly<{
   /** The wave list, composed by `app/router`. Owns the empty state too. */
   waveList: ReactNode;
   /** The panel card's second module, composed by `app/router` (features/chat). */
+  /** The report document, composed by `app/router` (features/report). */
+  report?: ReactNode;
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
@@ -50,7 +52,7 @@ export type CovePageProps = Readonly<{
  * clears both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
  */
 export function CovePage({
-  cove, waveCount, waveList, conversationList, conversationAction, pageTitleRef,
+  cove, waveCount, waveList, report, conversationList, conversationAction, pageTitleRef,
   onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -157,11 +159,11 @@ export function CovePage({
         tone naming the one way to fill it.
       */}
       <div className={styles.content}>
-        <div className={styles.doc}>
-          <p className={styles.docEmpty}>
-            Nothing written here yet. Start a conversation to add something.
-          </p>
-        </div>
+        {/* The document itself comes from `features/report`, which is a sibling
+            domain — so `app/router` composes it and this page only says where
+            it goes. It owns its own empty state, because "empty" is a state of
+            the document and not of the page around it. */}
+        <div className={styles.doc}>{report}</div>
 
         <aside className={styles.panel}>
           <PanelCard>

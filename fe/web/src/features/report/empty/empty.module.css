@@ -1,0 +1,42 @@
+@layer features {
+  .empty {
+    max-inline-size: var(--measure-prose);
+  }
+
+  /*
+   * Document weight, hint tone. It is the size a paragraph in this column will
+   * be, which is the point: the empty state shows the measure and the rhythm
+   * the report will arrive in, rather than a small grey label floating in a
+   * large blank area.
+   */
+  .lead {
+    font-size: var(--text-md);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+  }
+
+  .hints {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-block-start: var(--space-6);
+    padding: 0;
+    list-style: none;
+  }
+
+  /*
+   * `--text-3`, the hint tone — not `--text-4`. `--text-4` is the decorative
+   * rank (the day-count superscript, a disabled glyph); at 74 L on a 92.2 L
+   * ground it measures about 1.9:1, which is a mark you notice rather than text
+   * you read. These two lines are the whole guidance this column offers, so
+   * they have to be legible. The step down from the lead is carried by size and
+   * by `--text-2` → `--text-3`, both of which clear AA.
+   */
+  .hint {
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+}
