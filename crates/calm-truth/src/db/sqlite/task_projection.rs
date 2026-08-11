@@ -657,12 +657,6 @@ async fn evaluate_schedulability_with_tree_term(
     let tree_admission_frozen = tree_share
         .as_ref()
         .is_some_and(|share| share.admission_frozen);
-    let capacity = if tree_root_unresolved || tree_admission_frozen {
-        0
-    } else {
-        ceiling_capacity.min(tree_capacity) as usize
-    };
-
     let unknown: BTreeSet<_> = unknown_deps(declarations, &inflight_keys)
         .into_iter()
         .collect();
@@ -925,23 +919,39 @@ async fn evaluate_schedulability_with_tree_term(
         )
     });
     // A clean declaration adopting a live legacy pending row is a bucket
-    // transfer, not a second inventory item. Keep the row in the fixed leg
-    // above, but do not make its declaration consume net-new capacity. The
-    // exemption is deliberately disabled for the entire tree while any
-    // member's fixed inventory exceeds its share: adopting then would turn
-    // the row into cullable block-pending output and falsely unfreeze siblings.
+    // transfer for the tree inventory, but it still creates one block-origin
+    // row for the per-wave ceiling. Walk candidates once in document order and
+    // debit those two inventories independently: transfers consume only a
+    // ceiling slot, while net-new declarations consume both slots. The tree
+    // exemption is deliberately disabled while any member's fixed inventory
+    // exceeds its share: adopting then would turn the row into cullable
+    // block-pending output and falsely unfreeze siblings.
     let transfers_allowed = !tree_root_unresolved && !tree_admission_frozen;
-    let (transfer_candidates, net_new_candidates): (Vec<_>, Vec<_>) =
-        candidates.into_iter().partition(|index| {
-            transfers_allowed
-                && state
-                    .legacy_pending_spec_keys
-                    .contains(&declarations[*index].key)
-        });
-    let admitted: Vec<usize> = transfer_candidates
-        .into_iter()
-        .chain(net_new_candidates.iter().copied().take(capacity))
-        .collect();
+    let mut remaining_ceiling = ceiling_capacity;
+    let mut remaining_tree = if tree_root_unresolved || tree_admission_frozen {
+        0
+    } else {
+        tree_capacity
+    };
+    let mut admitted = Vec::new();
+    let mut rejected = Vec::new();
+    for index in candidates {
+        let transfer = transfers_allowed
+            && state
+                .legacy_pending_spec_keys
+                .contains(&declarations[index].key);
+        let ceiling_blocked = remaining_ceiling == 0;
+        let tree_blocked = !transfer && remaining_tree == 0;
+        if ceiling_blocked || tree_blocked {
+            rejected.push((index, ceiling_blocked, tree_blocked));
+            continue;
+        }
+        admitted.push(index);
+        remaining_ceiling = remaining_ceiling.saturating_sub(1);
+        if !transfer {
+            remaining_tree = remaining_tree.saturating_sub(1);
+        }
+    }
     let admitted_ids: Vec<String> = declarations
         .iter()
         .enumerate()
@@ -955,15 +965,7 @@ async fn evaluate_schedulability_with_tree_term(
     // equality names BOTH, because raising either one alone leaves the other
     // at the same minimum. A legacy overage freeze always binds the tree and
     // also binds the local ceiling when that ceiling has no remaining slot.
-    let tree_bound = tree_share
-        .as_ref()
-        .filter(|share| share.admission_frozen || tree_capacity < ceiling_capacity)
-        .cloned();
-    let tied_bounds = tree_share
-        .as_ref()
-        .filter(|share| !share.admission_frozen && tree_capacity == ceiling_capacity)
-        .cloned();
-    for index in net_new_candidates.into_iter().skip(capacity) {
+    for (index, ceiling_blocked, tree_blocked) in rejected {
         let tree_diagnostic = |share: &super::wave_tree::TreeShare, bounds_tied: bool| {
             // The target must gain a genuinely free slot, not merely catch up
             // to immutable occupancy. In a self-overage freeze the first B
@@ -1070,25 +1072,26 @@ async fn evaluate_schedulability_with_tree_term(
                     .map(str::to_owned),
             )
         };
-        if let Some(share) = &tree_bound {
-            let tree = tree_diagnostic(share, false);
-            if share.admission_frozen && ceiling_capacity == 0 {
-                verdicts[index].diagnostics.push(ceiling_diagnostic(
-                    Some(share),
-                    true,
-                    tree.action.is_some(),
-                ));
-            }
-            verdicts[index].diagnostics.push(tree);
-        } else if let Some(share) = &tied_bounds {
-            let tree = tree_diagnostic(share, true);
+        if ceiling_blocked && tree_blocked {
+            let share = tree_share
+                .as_ref()
+                .expect("a resolved tree bound rejected this candidate");
+            let tree = tree_diagnostic(share, !share.admission_frozen);
             verdicts[index].diagnostics.push(ceiling_diagnostic(
                 Some(share),
-                false,
+                share.admission_frozen,
                 tree.action.is_some(),
             ));
             verdicts[index].diagnostics.push(tree);
+        } else if tree_blocked {
+            let share = tree_share
+                .as_ref()
+                .expect("a resolved tree bound rejected this candidate");
+            verdicts[index]
+                .diagnostics
+                .push(tree_diagnostic(share, false));
         } else {
+            debug_assert!(ceiling_blocked);
             verdicts[index]
                 .diagnostics
                 .push(ceiling_diagnostic(None, false, true));

@@ -1346,16 +1346,16 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
     );
 }
 
-/// #1049 acceptance 1: declarations which adopt the K legacy pending rows
-/// already filling this member's share are inventory-neutral. Their row
-/// identity/state survives byte-for-byte, while a (K+1)th distinct key still
-/// has no capacity.
+/// #1049 tree-leg oracle: declarations which adopt the K legacy pending rows
+/// already filling this member's share are inventory-neutral. The local
+/// ceiling is deliberately loose, so only an incorrect tree debit can reject
+/// a transfer; a (K+1)th distinct key must still hit the tree bound.
 #[tokio::test]
 async fn full_share_legacy_pending_same_key_declarations_transfer_without_new_inventory() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "full-share-transfer").await;
-    set_ceiling(&repo, &root, 3).await;
+    set_ceiling(&repo, &root, 8).await;
     set_tree_budget(&repo, &root, 3).await;
     let legacy_keys = ["legacy-a", "legacy-b", "legacy-c"];
     project(&repo, &root, &legacy_keys).await;
@@ -1428,6 +1428,126 @@ async fn full_share_legacy_pending_same_key_declarations_transfer_without_new_in
             .await
             .unwrap();
     assert_eq!(distinct_rows, 0, "a distinct key remains net-new");
+}
+
+/// #1049 ceiling-leg oracle: a tree-neutral transfer still adds one
+/// block-origin row, so a zero per-wave ceiling rejects it and explains the
+/// rejection with the local ceiling diagnostic.
+#[tokio::test]
+async fn legacy_pending_transfer_is_rejected_at_zero_ceiling_with_a_diagnostic() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "zero-ceiling-transfer").await;
+    set_ceiling(&repo, &root, 1).await;
+    set_tree_budget(&repo, &root, 1).await;
+    project(&repo, &root, &["legacy"]).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    set_ceiling(&repo, &root, 0).await;
+
+    let before_state = task_identity_and_state_bytes(&repo, &root).await;
+    let declarations = declarations(&["legacy"]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let outcome = project_tasks_tx(
+        &mut tx,
+        &root,
+        &declarations,
+        &vec![Vec::new(); declarations.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert!(!outcome.diagnostics[0].schedulable);
+    assert_eq!(
+        outcome.diagnostics[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["spec_task_ceiling"]
+    );
+    assert_eq!(
+        task_identity_and_state_bytes(&repo, &root).await,
+        before_state
+    );
+    let origin: String =
+        sqlx::query_scalar("SELECT origin FROM tasks WHERE wave_id=?1 AND key='legacy'")
+            .bind(&root)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        origin, "legacy",
+        "a rejected transfer must not adopt the row"
+    );
+}
+
+/// #1049 mixed-capacity oracle: K legacy rows have ample tree space but only
+/// K-1 ceiling slots. Exactly the first K-1 declarations in document order are
+/// adopted, and the remaining transfer is diagnosed against the ceiling.
+#[tokio::test]
+async fn legacy_transfers_partially_admit_in_document_order_at_k_minus_one_ceiling() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "partial-transfer").await;
+    set_ceiling(&repo, &root, 3).await;
+    set_tree_budget(&repo, &root, 8).await;
+    project(&repo, &root, &["legacy-a", "legacy-b", "legacy-c"]).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    set_ceiling(&repo, &root, 2).await;
+
+    let declarations = declarations(&["legacy-c", "legacy-a", "legacy-b"]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let outcome = project_tasks_tx(
+        &mut tx,
+        &root,
+        &declarations,
+        &vec![Vec::new(); declarations.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        outcome
+            .diagnostics
+            .iter()
+            .map(|verdict| verdict.schedulable)
+            .collect::<Vec<_>>(),
+        [true, true, false],
+        "the first K-1 document-order transfers consume the ceiling slots"
+    );
+    assert_eq!(
+        outcome.diagnostics[2]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["spec_task_ceiling"]
+    );
+    let origins: Vec<(String, String)> =
+        sqlx::query_as("SELECT key,origin FROM tasks WHERE wave_id=?1 ORDER BY key")
+            .bind(&root)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        origins,
+        [
+            ("legacy-a".into(), "block".into()),
+            ("legacy-b".into(), "legacy".into()),
+            ("legacy-c".into(), "block".into()),
+        ]
+    );
+    assert_eq!(live_spec_count(&repo, &root).await, 3);
 }
 
 /// #1049 acceptance 2 and mutation lock: a same-key declaration must not turn

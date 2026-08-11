@@ -1124,6 +1124,90 @@ mod tests {
         );
     }
 
+    /// #1049 whole-tree rebuild contract: when one member's fixed legacy
+    /// inventory exceeds its deterministic share, the frozen tree must not
+    /// materialize a clean declaration from a sibling before the member
+    /// postcondition rejects the transaction.
+    #[tokio::test]
+    async fn frozen_whole_tree_rebuild_does_not_admit_sibling_declarations() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let root = seed_parent(&repo, false).await;
+        let mut tx = repo.pool().begin().await.unwrap();
+        wave_update_tx(
+            &mut tx,
+            &root,
+            WavePatch {
+                tree_task_budget: Some(Some(2)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        project_pending_tasks(&repo, &root, "legacy", 2).await;
+        sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+            .bind(&root)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let cove_id: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE id=?1")
+            .bind(&root)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+        let mut tx = repo.pool().begin().await.unwrap();
+        let child = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove_id.into(),
+                title: "frozen sibling".into(),
+                sort: None,
+                cwd: "/child-cwd".into(),
+                workflow_id: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let child = child.id.to_string();
+        project_pending_tasks(&repo, &child, "sibling", 1).await;
+        sqlx::query("DELETE FROM tasks WHERE wave_id=?1")
+            .bind(&child)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
+            .bind(&root)
+            .bind(&child)
+            .execute(repo.pool())
+            .await
+            .unwrap();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let error = tasks_rebuild_tree_tx(&mut tx, &root).await.unwrap_err();
+        assert!(matches!(error, CalmError::Conflict(_)), "{error}");
+        let child_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1")
+            .bind(&child)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            child_rows, 0,
+            "a frozen rebuild must not admit a sibling declaration"
+        );
+        assert_eq!(
+            wave_tree_spec_inventory(&mut tx, &root).await.unwrap(),
+            2,
+            "the failed rebuild must not grow live inventory past B"
+        );
+        tx.rollback().await.unwrap();
+    }
+
     /// The member postcondition is the only guard that can reject this legal
     /// point-one admission: inventory 5 < B=8 and N+1=2 <= B, but the new
     /// two-member share is 4 while all five root rows are already in-flight.
