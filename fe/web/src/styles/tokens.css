@@ -27,7 +27,7 @@
      * from the text standing on it, and the top rank was the one making
      * `--text-3` fail AA.
      *
-     * **One step is a constant contrast RATIO of 1.15, not a constant L
+     * **One step is a constant contrast RATIO of 1.25, not a constant L
      * difference.** That distinction is the whole rule. sRGB luminance is
      * violently non-linear, so the same delta-L buys wildly different edges at
      * different points on the scale: at a flat 3.0 L, dark's own three steps
@@ -62,13 +62,13 @@
      *
      * Elevation is absolute; **state is relative** — see `--accent-soft`.
      */
-    --bg: oklch(95% 0.003 240);
+    --bg: oklch(92.2% 0.003 240);
     --paper: oklch(99.9% 0.002 240);
-    --hairline: oklch(86% 0.005 240);
-    --hairline-strong: oklch(79% 0.006 240);
+    --hairline: oklch(80% 0.005 240);
+    --hairline-strong: oklch(72% 0.006 240);
     --text: oklch(20% 0.008 250);
-    --text-2: oklch(45% 0.01 250);
-    --text-3: oklch(48.5% 0.01 250);
+    --text-2: oklch(38% 0.01 250);
+    --text-3: oklch(44% 0.01 250);
     --text-4: oklch(74% 0.008 250);
 
     /*
@@ -79,7 +79,7 @@
      * state can never be confused. Chroma drops 0.13 -> 0.10 as well: the app
      * spends one accent, sparingly, on a page that is otherwise greyscale.
      */
-    --accent: oklch(49% 0.10 267);
+    --accent: oklch(45% 0.10 267);
 
     /*
      * State is a *relative* channel: an alpha tint over whatever it sits on,
@@ -94,9 +94,9 @@
     --warn: oklch(52% 0.14 30);
     --warn-soft: oklch(52% 0.14 30 / 0.12);
 
-    --surface-rail: oklch(90.4% 0.004 240);
+    --surface-rail: oklch(85.1% 0.004 240);
     --surface-card: oklch(99.9% 0.003 240);
-    --surface-chip: oklch(90.4% 0.005 240);
+    --surface-chip: oklch(85.1% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
     --surface-panel-head: oklch(99.9% 0.003 240);
     --surface-terminal: oklch(99.9% 0.003 240);
@@ -165,7 +165,7 @@
     --error: oklch(56% 0.14 25);
     --overlay-scrim: rgba(20, 30, 55, 0.32);
     --cal-event-waiting-bg: oklch(97% 0.018 30);
-    --error-text: oklch(50% 0.18 25);
+    --error-text: oklch(42% 0.17 25);
     --warn-border: oklch(85% 0.05 30);
 
     /* Weights: three steps only (§2.2). 300/700/bold are forbidden. */
@@ -200,8 +200,8 @@
     --menu-w-max: 320px;
 
     /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
-    --warn-text: oklch(45% 0.16 30);
-    --success-text: oklch(45% 0.14 145);
+    --warn-text: oklch(42% 0.16 30);
+    --success-text: oklch(42% 0.14 145);
     --error-soft: oklch(52% 0.15 25 / 0.12);
     --error-border: oklch(85% 0.05 25);
     --text-on-accent: var(--bg);
@@ -228,24 +228,24 @@
 
   [data-theme="dark"] {
     /* Same ladder, same directions, one step = 3.0 L. See the note on `:root`. */
-    --bg: oklch(21.2% 0.008 245);
-    --paper: oklch(26.4% 0.01 245);
-    --hairline: oklch(35% 0.01 245);
-    --hairline-strong: oklch(45% 0.012 245);
+    --bg: oklch(24.5% 0.008 245);
+    --paper: oklch(31.4% 0.01 245);
+    --hairline: oklch(42% 0.01 245);
+    --hairline-strong: oklch(50% 0.012 245);
     --text: oklch(96% 0.005 245);
-    --text-2: oklch(72% 0.012 245);
-    --text-3: oklch(64% 0.012 245);
-    --text-4: oklch(42% 0.012 245);
-    --accent: oklch(74% 0.11 267);
+    --text-2: oklch(84% 0.012 245);
+    --text-3: oklch(78% 0.012 245);
+    --text-4: oklch(50% 0.012 245);
+    --accent: oklch(80% 0.11 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
     --warn: oklch(72% 0.15 30);
     --warn-soft: oklch(72% 0.15 30 / 0.18);
     --surface-rail: oklch(12% 0.008 245);
-    --surface-card: oklch(26.4% 0.009 245);
+    --surface-card: oklch(31.4% 0.009 245);
     --surface-chip: oklch(12% 0.008 245);
     --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
-    --surface-panel-head: oklch(26.4% 0.009 245);
-    --surface-terminal: oklch(26.4% 0.009 245);
+    --surface-panel-head: oklch(31.4% 0.009 245);
+    --surface-terminal: oklch(31.4% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
     --overlay-hover: oklch(100% 0 0 / 0.05);
@@ -258,8 +258,8 @@
     --error-text: oklch(74% 0.14 25);
     --warn-border: oklch(40% 0.05 30);
 
-    --warn-text: oklch(78% 0.13 30);
-    --success-text: oklch(78% 0.13 145);
+    --warn-text: oklch(82% 0.13 30);
+    --success-text: oklch(82% 0.13 145);
     --error-soft: oklch(76% 0.13 25 / 0.18);
     --error-border: oklch(40% 0.05 25);
     --text-on-accent: var(--bg);
