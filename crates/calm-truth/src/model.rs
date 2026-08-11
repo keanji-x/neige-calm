@@ -175,6 +175,12 @@ pub struct WavePatch {
     /// the kernel default.
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub automation_policy: Option<Option<String>>,
+    /// Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
+    /// the WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a
+    /// wave with a parent, since a per-child budget would make the tree bound
+    /// vacuous. A present null resets to the kernel default (32).
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub tree_task_budget: Option<Option<i64>>,
     /// Issue #644 — wave-level gate policy (`waves.require_task_gates`,
     /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
     /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.

@@ -39,5 +39,8 @@ subtle = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+proc-macro2 = "1"
+syn = { version = "2", features = ["full"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+toml = "0.8"

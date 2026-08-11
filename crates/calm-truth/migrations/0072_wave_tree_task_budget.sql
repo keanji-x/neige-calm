@@ -1,0 +1,11 @@
+-- #985 slice 6 PR-B. Additive by construction: rebuilding `waves` would fire
+-- the self-FK's ON DELETE actions added by 0071 and would also require
+-- reproducing every historical partial index and CHECK constraint.
+--
+-- `tree_task_budget` is meaningful ONLY on a tree root (`parent_wave_id IS
+-- NULL`). It deliberately has NO column DEFAULT: the kernel default (32) lives
+-- in code (`DEFAULT_TREE_TASK_BUDGET`), so a child wave created by the
+-- `child-wave` operation lands NULL and can never carry a budget of its own.
+-- A DB DEFAULT of 32 (the `spec_task_ceiling` shape from 0068) would hand every
+-- child wave its own tree budget and make the tree bound vacuous.
+ALTER TABLE waves ADD COLUMN tree_task_budget INTEGER NULL;

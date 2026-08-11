@@ -31,9 +31,10 @@
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx, cove_folder_create_tx,
-    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx,
+    cove_folder_create_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
+    overlay_upsert_tx, project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
+    wave_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -64,7 +65,7 @@ use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::{validate_transition, wave_get_tx};
 use crate::wave_report::{
     ReportBlock, WaveReportPayload, persist_report, report_blocks_snapshot_tx,
-    resolve_report_for_wave, tasks_rebuild_tx,
+    resolve_report_for_wave, tasks_rebuild_tree_tx, tasks_rebuild_tx,
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
@@ -1218,11 +1219,13 @@ pub(crate) async fn update_wave(
     // Issue #985 — wave-level automation controls are human decisions.
     // Reject non-user actors before entering the eventized write so neither
     // the row nor a WaveUpdated event can land.
-    if (p.spec_task_ceiling.is_some() || p.automation_policy.is_some())
+    if (p.spec_task_ceiling.is_some()
+        || p.automation_policy.is_some()
+        || p.tree_task_budget.is_some())
         && !matches!(actor_id, ActorId::User)
     {
         return Err(CalmError::Forbidden(
-            "automation_policy and spec_task_ceiling are user-only".into(),
+            "automation_policy, spec_task_ceiling and tree_task_budget are user-only".into(),
         ));
     }
 
@@ -1276,6 +1279,16 @@ pub(crate) async fn update_wave(
             "spec_task_ceiling must be >= 0 (got {ceiling}); pass null to reset to the kernel default"
         )));
     }
+    // Issue #985 slice 6 PR-B — same shape as `spec_task_ceiling`. 0 is legal
+    // ("no new spec inventory anywhere in this tree"); the root-only rule is
+    // enforced inside `wave_update_tx`, which every writer shares.
+    if let Some(Some(budget)) = p.tree_task_budget
+        && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
+    {
+        return Err(CalmError::BadRequest(format!(
+            "tree_task_budget must be between 0 and {MAX_TREE_TASK_BUDGET} (got {budget}); pass null to reset to the kernel default"
+        )));
+    }
     if let Some(Some(policy)) = &p.automation_policy
         && !matches!(policy.as_str(), "auto-declare" | "declare-and-wait")
     {
@@ -1295,7 +1308,8 @@ pub(crate) async fn update_wave(
         || p.task_budget.is_some()
         || p.require_task_gates.is_some()
         || p.spec_task_ceiling.is_some()
-        || p.automation_policy.is_some();
+        || p.automation_policy.is_some()
+        || p.tree_task_budget.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
         return Ok(Json(existing));
     }
@@ -1307,17 +1321,28 @@ pub(crate) async fn update_wave(
     // row shape. Both share scope + actor; both land or neither does.
     let cove_id_for_event = existing.cove_id.clone();
     let wave_id_for_event = existing.id.clone();
-    let projection_policy_changed = p.spec_task_ceiling.is_some() || p.automation_policy.is_some();
+    // `tree_task_budget` feeds every member's deterministic share, so changing
+    // it invalidates every member's projection. Rebuild the bounded member set
+    // in this same write transaction: after PATCH returns, no descendant can
+    // retain a pending row admitted by the old budget and race a later claim.
+    let projection_policy_changed = p.spec_task_ceiling.is_some()
+        || p.automation_policy.is_some()
+        || p.tree_task_budget.is_some();
+    let tree_budget_changed = p.tree_task_budget.is_some();
     let p_for_tx = p.clone();
     let (wave, _ids) =
         write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
             let scope = scope.clone();
             Box::pin(async move {
                 let wave = wave_update_tx(tx, &id, p_for_tx).await?;
-                let projection = if projection_policy_changed {
-                    Some(tasks_rebuild_tx(tx, &id).await?)
+                let projections = if projection_policy_changed {
+                    if tree_budget_changed {
+                        tasks_rebuild_tree_tx(tx, &id).await?
+                    } else {
+                        vec![(wave.clone(), tasks_rebuild_tx(tx, &id).await?)]
+                    }
                 } else {
-                    None
+                    Vec::new()
                 };
                 let mut events: Vec<(ActorId, EventScope, Event)> = Vec::new();
                 if let Some((from, to)) = lifecycle_change {
@@ -1338,13 +1363,16 @@ pub(crate) async fn update_wave(
                     scope.clone(),
                     Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
                 ));
-                if let Some(projection) = projection {
+                for (projected_wave, projection) in projections {
                     if !projection.changed_keys.is_empty() {
                         events.push((
                             actor_id.clone(),
-                            scope,
+                            EventScope::Wave {
+                                wave: projected_wave.id.clone(),
+                                cove: projected_wave.cove_id.clone(),
+                            },
                             Event::PlanUpdated {
-                                wave_id: wave_id_for_event,
+                                wave_id: projected_wave.id,
                                 changed_keys: projection.changed_keys,
                                 agent_message: None,
                             },

@@ -49,7 +49,10 @@
 
 use crate::db::RouteRepo;
 use crate::db::sqlite::{
-    TaskProjectionOutcome, card_body_crdt_get_tx, card_update_with_crdt_tx, project_tasks_tx,
+    MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TaskProjectionOutcome, TreeShare,
+    WAVE_TREE_MEMBERS_SQL, WaveTreeTerm, card_body_crdt_get_tx, card_update_with_crdt_tx,
+    deterministic_share, project_tasks_tx, project_tasks_with_tree_term_tx, wave_tree_budget,
+    wave_tree_spec_inventory_by_member,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::CalmError;
@@ -58,7 +61,9 @@ use crate::ids::ActorId;
 use crate::model::{Card, CardPatch, Wave, WaveLifecycle};
 use crate::recorder_shadow::{RecorderShadowDecisionKind, RecorderShadowProbe};
 use crate::state::WriteContext;
-use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
+use crate::wave_lifecycle::{
+    apply_requested_transition_in_tx, auto_promote_draft_in_tx, wave_get_tx,
+};
 use crate::wave_report_doc::ReportDoc;
 
 /// Read the report snapshot from the caller's transaction. A missing report
@@ -117,6 +122,14 @@ pub async fn tasks_rebuild_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     wave_id: &str,
 ) -> crate::error::Result<TaskProjectionOutcome> {
+    tasks_rebuild_with_tree_term_tx(tx, wave_id, None).await
+}
+
+async fn tasks_rebuild_with_tree_term_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wave_id: &str,
+    tree_term: Option<WaveTreeTerm>,
+) -> crate::error::Result<TaskProjectionOutcome> {
     let report: Option<(String, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT json(payload),body_crdt FROM cards WHERE wave_id=?1 AND kind='wave-report'",
     )
@@ -144,7 +157,99 @@ pub async fn tasks_rebuild_tx(
     })?;
     let (declarations, diagnostics) =
         calm_types::report_blocks::tasks::project_task_declarations(&blocks);
-    Ok(project_tasks_tx(tx, wave_id, &declarations, &diagnostics).await?)
+    Ok(match tree_term {
+        Some(tree_term) => {
+            project_tasks_with_tree_term_tx(tx, wave_id, &declarations, &diagnostics, tree_term)
+                .await?
+        }
+        None => project_tasks_tx(tx, wave_id, &declarations, &diagnostics).await?,
+    })
+}
+
+/// Reproject every member after either input to the deterministic quota split
+/// changes: the root budget `B` or the member count `N`.
+///
+/// The recursive member set and budget are read once, then the precomputed
+/// [`WaveTreeTerm`] is supplied to each projection. Production admission plus
+/// [`MAX_TREE_TASK_BUDGET`] bounds this loop to 64 members. The final grouped
+/// inventory check is the transaction's postcondition: pending overage has
+/// been culled, and any remaining in-flight overage rejects the B/N change.
+pub async fn tasks_rebuild_tree_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    root_id: &str,
+) -> crate::error::Result<Vec<(Wave, TaskProjectionOutcome)>> {
+    let members: Vec<(String, i64)> = sqlx::query_as(WAVE_TREE_MEMBERS_SQL)
+        .bind(root_id)
+        .bind(MAX_WAVE_TREE_DEPTH + 1)
+        .fetch_all(&mut **tx)
+        .await?;
+    if members.is_empty()
+        || members.len() > MAX_TREE_TASK_BUDGET as usize
+        || members
+            .iter()
+            .any(|(_, depth)| *depth > MAX_WAVE_TREE_DEPTH)
+    {
+        return Err(CalmError::Conflict(format!(
+            "wave tree rooted at {root_id} is unresolved or exceeds the {MAX_TREE_TASK_BUDGET}-member reprojection bound"
+        )));
+    }
+    let budget = wave_tree_budget(tx, root_id).await?;
+    let member_count = members.len() as i64;
+    let mut shares = std::collections::BTreeMap::new();
+    let mut projections = Vec::with_capacity(members.len());
+    // One member walk above and one grouped postcondition walk below. Member
+    // projections must contribute zero because their terms are precomputed.
+    let mut tree_cte_queries = 2u32;
+    for (index, (member_id, _)) in members.into_iter().enumerate() {
+        let share = deterministic_share(budget, member_count, index as i64);
+        shares.insert(member_id.clone(), share);
+        let tree_term = WaveTreeTerm::Share(TreeShare {
+            root_id: root_id.to_owned(),
+            budget,
+            members: member_count,
+            member_index: index as i64,
+            share,
+            admission_frozen: false,
+            minimum_budget_to_unfreeze: None,
+        });
+        let wave = wave_get_tx(tx, &crate::ids::WaveId::from(member_id.clone())).await?;
+        let projection = tasks_rebuild_with_tree_term_tx(tx, &member_id, Some(tree_term)).await?;
+        tree_cte_queries = tree_cte_queries.saturating_add(projection.tree_cte_queries);
+        projections.push((wave, projection));
+    }
+
+    let inventories = wave_tree_spec_inventory_by_member(tx, root_id).await?;
+    require_tree_budget_postcondition(root_id, budget, &shares, &inventories)?;
+    if tree_cte_queries != 2 {
+        return Err(CalmError::Internal(format!(
+            "whole-tree reprojection executed {tree_cte_queries} recursive tree queries; expected exactly 2 independent of member count"
+        )));
+    }
+    Ok(projections)
+}
+
+fn require_tree_budget_postcondition(
+    root_id: &str,
+    budget: i64,
+    shares: &std::collections::BTreeMap<String, i64>,
+    inventories: &[(String, i64)],
+) -> crate::error::Result<()> {
+    let total: i64 = inventories.iter().map(|(_, live)| *live).sum();
+    let member_overage = inventories
+        .iter()
+        .find(|(member_id, live)| shares.get(member_id).is_none_or(|share| *live > *share));
+    if let Some((member_id, live)) = member_overage {
+        let share = shares.get(member_id).copied().unwrap_or(0);
+        return Err(CalmError::Conflict(format!(
+            "wave tree change would leave member {member_id} with {live} unfinished spec task(s), above its new share of {share}; wait for in-flight work to finish"
+        )));
+    }
+    if total > budget {
+        return Err(CalmError::Conflict(format!(
+            "wave tree rooted at {root_id} would hold {total} unfinished spec task(s), above its tree_task_budget of {budget}"
+        )));
+    }
+    Ok(())
 }
 use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
 use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
@@ -781,6 +886,21 @@ pub(crate) async fn persist_report_with_shadow(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn whole_tree_total_postcondition_rejects_an_over_budget_inventory() {
+        // Exact production share construction makes member-overage imply this
+        // branch. Feed a deliberately inconsistent share map to prove the
+        // independent fail-closed guard remains live if that construction is
+        // ever corrupted without changing the grouped inventory.
+        let shares = std::collections::BTreeMap::from([("root".to_owned(), 9)]);
+        let error =
+            require_tree_budget_postcondition("root", 8, &shares, &[("root".to_owned(), 9)])
+                .unwrap_err();
+        assert!(
+            matches!(error, CalmError::Conflict(message) if message.contains("9 unfinished spec task(s)") && message.contains("tree_task_budget of 8"))
+        );
+    }
 
     #[test]
     fn initial_carries_current_schema_version() {
