@@ -227,7 +227,9 @@
   }
 
   [data-theme="dark"] {
-    /* Same ladder, same directions, one step = 3.0 L. See the note on `:root`. */
+    /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which
+       is *not* a fixed L step, and is the whole reason this block's numbers are
+       not light's mirrored. See the note on `:root`. */
     --bg: oklch(24.5% 0.008 245);
     --paper: oklch(31.4% 0.01 245);
     --hairline: oklch(42% 0.01 245);
