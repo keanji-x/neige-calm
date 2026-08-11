@@ -28,12 +28,12 @@ export type WaveListProps = Readonly<{
   nowMs?: number;
   emptyMessage: string;
   /**
-   * §6.3's variant. `compact` inside a 308px panel module, `default` when the
+   * §6.3's variant. `panel` inside a 308px panel module, `default` when the
    * list owns a main column. The two-line variant in a panel is 48px of row for
    * a lifecycle phrase the panel has no width to set — and its hover actions
    * sit at the row's own edge, which in a panel is the card's edge.
    */
-  variant?: 'default' | 'compact';
+  variant?: 'default' | 'compact' | 'panel';
 }>;
 
 export function WaveList({

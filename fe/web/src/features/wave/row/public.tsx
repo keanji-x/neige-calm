@@ -21,7 +21,7 @@ import {
 import { coveSlotVar } from '../../../../../core/domain/cove.ts';
 import styles from './row.module.css';
 
-export type WaveRowVariant = 'default' | 'compact' | 'agenda' | 'rail';
+export type WaveRowVariant = 'default' | 'compact' | 'agenda' | 'panel' | 'rail';
 
 export type WaveRowProps = Readonly<{
   wave: Wave;
@@ -45,6 +45,7 @@ function variantClass(variant: WaveRowVariant): string {
     case 'default': return styles.variantDefault;
     case 'compact': return styles.variantCompact;
     case 'agenda': return styles.variantAgenda;
+    case 'panel': return styles.variantPanel;
     case 'rail': return styles.variantRail;
   }
 }
@@ -122,13 +123,24 @@ export function WaveRow({
    * accessible name. The dot is `aria-hidden` decoration either way, which is
    * what lets it move outside the button at all.
    *
-   * The other three variants keep the leading dot. Their trailing edge is
-   * already spent on the relative time, and a 720px row does not need the 10px.
+   * The panel variant does the same, for the same reason and one more: a card
+   * module is 308px wide and its head already carries a `+` on that edge, so
+   * the row's status and its delete land in the column the module head started.
+   * The relative time goes with it — in a 308px column an age was competing
+   * with the title for the width the title needed, and a wave's page states it
+   * properly.
+   *
+   * `default` and `agenda` keep the leading dot. Their trailing edge is already
+   * spent on the relative time, and a 720px row does not need the 10px.
    */
-  const railStatus = variant === 'rail';
+  const trailingStatus = variant === 'rail' || variant === 'panel';
 
   return (
-    <div className={`${styles.wrapper} ${railStatus ? styles.wrapperRail : ''}`}>
+    <div className={[
+      styles.wrapper,
+      variant === 'rail' ? styles.wrapperRail : '',
+      variant === 'panel' ? styles.wrapperPanel : '',
+    ].filter(Boolean).join(' ')}>
       <button
         type="button"
         data-nc-role="row"
@@ -141,7 +153,7 @@ export function WaveRow({
         aria-label={label}
         onClick={() => onOpen(wave.id)}
       >
-        {!railStatus && (
+        {!trailingStatus && (
           <span
             className={dotClass}
             style={identity ? { background: `var(${coveSlotVar(wave.coveId)})` } : undefined}
@@ -154,7 +166,7 @@ export function WaveRow({
         </span>
         {/* The agenda is grouped by date already, so a relative time there is
             restating the heading in a 308px column. */}
-        {variant !== 'agenda' && variant !== 'rail' && (
+        {variant !== 'agenda' && !trailingStatus && (
           <span className={styles.age}>{relativeTime(wave.updatedAt, now)}</span>
         )}
         {variant === 'default' && (
@@ -162,7 +174,7 @@ export function WaveRow({
         )}
       </button>
 
-      {railStatus && <span className={`${dotClass} ${styles.statusSlot}`} aria-hidden="true" />}
+      {trailingStatus && <span className={`${dotClass} ${styles.statusSlot}`} aria-hidden="true" />}
       {onSetPinned !== undefined && (
         <button
           type="button"

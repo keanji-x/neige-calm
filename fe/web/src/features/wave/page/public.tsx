@@ -16,12 +16,11 @@
 
 import type { ReactNode, RefObject } from 'react';
 
-import { coveSlotVar, type Cove } from '../../../../../core/domain/cove.ts';
 import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
-import { Breadcrumb, PageHeader } from '../../../ui/page-header/public.tsx';
+import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
@@ -29,8 +28,6 @@ import styles from './page.module.css';
 
 export type WavePageProps = Readonly<{
   wave: Wave;
-  /** Absent when the wave points at a cove the current read cannot see. */
-  cove: Cove | undefined;
   cards: readonly CardWire[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
   conversationList?: ReactNode;
@@ -38,22 +35,18 @@ export type WavePageProps = Readonly<{
   conversationAction?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
-  onOpenCove: () => void;
-  onOpenToday: () => void;
   onRenameWave: (title: string) => void | Promise<void>;
   onDeleteWave: () => void | Promise<void>;
 }>;
 
-const UNKNOWN_COVE_LABEL = 'Unknown cove';
 
 export function WavePage({
-  wave, cove, cards, conversationList, conversationAction, pageTitleRef,
-  onOpenCove, onOpenToday, onRenameWave, onDeleteWave,
+  wave, cards, conversationList, conversationAction, pageTitleRef,
+  onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  const coveName = cove?.name ?? UNKNOWN_COVE_LABEL;
 
   /**
    * The confirm stays mounted for the whole round trip — Confirm busy, Cancel
@@ -79,27 +72,20 @@ export function WavePage({
 
   return (
     <section className={styles.page} data-nc-wave-page="">
-      {/* All three rows: the only route in the app whose --header-h is 92. */}
+      {/*
+        One row, like every other route.
+
+        The breadcrumb row is gone. "Today / ● atlas" cost a full row of chrome
+        on every visit to restate two things the rail states permanently and in
+        the same words — the rail is a tree with the cove above the wave, and
+        the current wave is the row marked in it. A breadcrumb earns its place
+        where the ancestor is otherwise unreachable; here it never was.
+
+        The cove dot went with it. It was the only colour in the header, and it
+        was sitting next to the cove's own name — the same defect the cove page
+        header had, one level down.
+      */}
       <PageHeader
-        breadcrumb={
-          <Breadcrumb
-            ancestor="Today"
-            onNavigate={onOpenToday}
-            onBack={onOpenCove}
-            onNavigateCurrent={onOpenCove}
-            backLabel="Back to cove"
-            current={
-              <>
-                <span
-                  className={styles.coveDot}
-                  style={cove === undefined ? undefined : { background: `var(${coveSlotVar(cove.id)})` }}
-                  aria-hidden="true"
-                />
-                {coveName}
-              </>
-            }
-          />
-        }
         title={
           <EditableTitle
             value={waveDisplayTitle(wave.title)}
@@ -195,17 +181,6 @@ export function WavePage({
                     ))}
                   </ul>
                 )}
-              {/* The folder is a fact about the same object, so it rides in
-                  this module rather than earning a third one — but it is a
-                  different *kind* of fact from a card, so a hairline separates
-                  them (boundary ladder step ②). Without it the path read as a
-                  second line of the empty state. */}
-              {wave.cwd !== '' && (
-                <p className={styles.cwd}>
-                  <span className={styles.cwdLabel}>Folder</span>
-                  {wave.cwd}
-                </p>
-              )}
             </PanelModule>
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>

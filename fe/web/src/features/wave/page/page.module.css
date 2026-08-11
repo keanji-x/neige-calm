@@ -17,12 +17,6 @@
     color: var(--text);
   }
 
-  .coveDot {
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
-  }
-
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry
      a page's attention — unlike progress/eta/now, which have no writer at all. */
   .needsInput {
@@ -66,25 +60,6 @@
     .headerDelete {
       transition: none;
     }
-  }
-
-  /* A panel field, not a header row. It wraps rather than truncating: a path
-     you came here to read is worth two lines, and the panel has them. */
-  /* A different *kind* of fact from a card, so it is its own block — which the
-     body's `--space-6` block gap now says on its own. It used to say it with a
-     hairline plus 8+8 of margin and padding: a second line inside one module
-     made the card read as three modules, and it was a third block-break value
-     alongside the calendar's 12. */
-  .cwd {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-    overflow-wrap: anywhere;
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
   }
 
   /* Main column plus a 308 panel column, separated by the standard 24px gutter.

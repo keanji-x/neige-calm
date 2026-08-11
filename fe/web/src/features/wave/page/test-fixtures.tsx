@@ -6,13 +6,8 @@
 import { render, type RenderResult } from '@testing-library/react';
 import { vi } from 'vitest';
 
-import type { Cove } from '../../../../../core/domain/cove.ts';
 import { NEUTRAL_ACTIVITY, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
 import { WavePage, type WavePageProps } from './public.tsx';
-
-export function cove(overrides: Partial<Cove> = {}): Cove {
-  return { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0, ...overrides };
-}
 
 export function wave(overrides: Partial<Wave> = {}): Wave {
   return {
@@ -34,10 +29,7 @@ export function card(overrides: Partial<CardWire> = {}): CardWire {
 export function renderPage(overrides: Partial<WavePageProps> = {}): RenderResult {
   const props: WavePageProps = {
     wave: wave(),
-    cove: cove(),
     cards: [],
-    onOpenCove: vi.fn(),
-    onOpenToday: vi.fn(),
     onRenameWave: vi.fn(),
     onDeleteWave: vi.fn(),
     ...overrides,

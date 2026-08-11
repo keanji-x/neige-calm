@@ -159,6 +159,14 @@
     color: var(--text);
   }
 
+  /* One column, like the rail and for the same reason: the status dot left the
+     grid for the trailing edge, and with the age gone too the title is the
+     whole row. It keeps the panel's own row height and fill padding. */
+  .variantPanel {
+    min-block-size: var(--row-h);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   /* One column. The status dot left the grid for the trailing edge (see
      `.statusSlot`), and this variant has neither a relative time nor a second
      line, so the title is the whole row. */
@@ -237,6 +245,19 @@
    * Without it that rule reserved 52px and the rail lost 26px of title to a
    * gutter it was not using.
    */
+  /*
+   * The panel's trailing slot is likewise occupied at rest by the status dot,
+   * so its gutter is unconditional too. It is one `--space-2` narrower than the
+   * rail's because the panel row's fill padding is 4, not 6, and the slot is
+   * flush with the module head's `+` rather than inset from a rail edge.
+   */
+  .row.variantPanel,
+  .row.variantPanel.hasPin,
+  .row.variantPanel.hasRemove,
+  .row.variantPanel.hasPin.hasRemove {
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
+  }
+
   .row.variantRail {
     padding-inline-start: calc(var(--space-2) * 2 + var(--control-h-sm));
     padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
@@ -350,6 +371,17 @@
   }
 
   /*
+   * Flush, not inset. The module head's `+` pulls itself out by `--space-2` to
+   * sit on the card's own trailing edge, and the row list bleeds by the same 4,
+   * so a row control at inset 0 lands its 20px box exactly under the head's.
+   * One trailing column for the whole module: `+`, then every `×`, then every
+   * status dot, all on one centre line.
+   */
+  .wrapperPanel .remove {
+    inset-inline-end: 0;
+  }
+
+  /*
    * The dot and the delete share one 20px slot, so the dot is centred inside
    * that box rather than flush to the same 4px: 4 + (20 − 6) / 2 = 11. Sharing
    * the slot is the point — nothing shifts on hover, one mark simply becomes
@@ -364,8 +396,14 @@
     transition: opacity var(--motion-quick) ease-out;
   }
 
+  .wrapperPanel .statusSlot {
+    inset-inline-end: calc((var(--control-h-sm) - var(--dot-sm)) / 2);
+  }
+
   .wrapperRail:hover .statusSlot,
-  .wrapperRail:focus-within .statusSlot {
+  .wrapperRail:focus-within .statusSlot,
+  .wrapperPanel:hover .statusSlot,
+  .wrapperPanel:focus-within .statusSlot {
     opacity: 0;
   }
 

@@ -8,19 +8,35 @@
     gap: var(--space-1);
     min-inline-size: 0;
     margin-inline: calc(var(--space-2) * -1);
+    /* Eight rows, then it scrolls. A panel module has no business setting the
+       height of the page it sits next to, and an unbounded list does exactly
+       that: one busy cove pushed the conversation module below the fold and
+       moved it every time a wave appeared. Eight is the count at which the last
+       row is still findable by eye rather than by reading — past that you are
+       scanning either way, so scrolling costs nothing. */
+    max-block-size: calc(var(--row-h) * 8 + var(--space-1) * 7);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   /* The row recipe, at the panel's density. Same shape as every other row in
      the app: no border, no background of its own, a 6px leading state column
      and a fixed trailing column for the age (§6.0). */
+  /* One text column. The state dot moved to the trailing edge (see
+     `.statusSlot`) and the age is gone with it, so the label is the whole row —
+     the same shape a wave row takes in a panel. */
+  .item {
+    position: relative;
+  }
+
   .row {
     display: grid;
-    grid-template-columns: var(--dot-sm) minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr);
     align-items: center;
-    column-gap: var(--space-2);
     inline-size: 100%;
     min-block-size: var(--row-h);
-    padding-inline: var(--space-2);
+    padding-inline-start: var(--space-2);
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
     border-radius: var(--radius-sm);
     text-align: start;
     cursor: pointer;
@@ -48,6 +64,16 @@
     background: var(--text-4);
   }
 
+  /* Centred inside the 20px trailing slot the module head's `+` also occupies:
+     (20 − 6) / 2 = 7 from the list's edge puts the dot's centre on the `+`'s.
+     One trailing column for the whole module. */
+  .statusSlot {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: calc((var(--control-h-sm) - var(--dot-sm)) / 2);
+    translate: 0 -50%;
+  }
+
   .dotLive {
     background: var(--accent);
     animation: chat-pulse var(--motion-pulse) ease-in-out infinite;
@@ -67,15 +93,6 @@
   .rowActive .label {
     font-weight: var(--weight-semibold);
     color: var(--text);
-  }
-
-  .age {
-    font-family: var(--font-numeric);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
-    color: var(--text-3);
-    font-variant-numeric: tabular-nums;
   }
 
   @keyframes chat-pulse {

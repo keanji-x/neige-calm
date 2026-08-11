@@ -4,21 +4,15 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { WavePage } from './public.tsx';
-import { card, cove, renderPage, wave } from './test-fixtures.tsx';
+import { card, renderPage, wave } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
 describe('WavePage header', () => {
-  it('shows the wave title, the cove crumb and the lifecycle badge', () => {
+  it('shows the wave title and the lifecycle badge', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
     expect(screen.getByRole('button', { name: 'Rename wave' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getByRole('button', { name: 'Work' })).toBeTruthy();
     expect(screen.getByRole('img', { name: 'Wave lifecycle: Blocked' })).toBeTruthy();
-  });
-
-  it('falls back to Unknown cove when the cove is not readable', () => {
-    renderPage({ cove: undefined });
-    expect(screen.getByRole('button', { name: 'Unknown cove' })).toBeTruthy();
   });
 
   it('falls back to the untitled label for a blank title', () => {
@@ -26,19 +20,15 @@ describe('WavePage header', () => {
     expect(screen.getByRole('button', { name: 'Rename wave' }).textContent).toBe('Untitled wave');
   });
 
-  it('navigates to the cove from both the back button and the crumb', async () => {
-    const onOpenCove = vi.fn();
-    renderPage({ onOpenCove });
-    await userEvent.click(screen.getByRole('button', { name: 'Back to cove' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Work' }));
-    expect(onOpenCove).toHaveBeenCalledTimes(2);
-  });
-
-  it('navigates to Today from the Today crumb', async () => {
-    const onOpenToday = vi.fn();
-    renderPage({ onOpenToday });
-    await userEvent.click(screen.getByRole('button', { name: 'Today' }));
-    expect(onOpenToday).toHaveBeenCalledTimes(1);
+  /* The header is one row now. It used to carry "Today / ● atlas" above the
+     title, restating in chrome what the rail states permanently — so the crumb,
+     its back button and the cove dot are gone, and with them the page's whole
+     reason to know which cove it is in. This asserts the *absence*, because the
+     row is the kind of thing that gets added back by reflex. */
+  it('carries no ancestor navigation of its own', () => {
+    renderPage({ wave: wave({ title: 'Ship the rewrite' }) });
+    expect(screen.queryByRole('button', { name: 'Back to cove' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Today' })).toBeNull();
   });
 });
 
@@ -63,10 +53,7 @@ describe('WavePage card inventory', () => {
   it('falls back to the kind when a card has no title', () => {
     const { container } = render(<WavePage
       wave={wave()}
-      cove={cove()}
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
-      onOpenCove={vi.fn()}
-      onOpenToday={vi.fn()}
       onRenameWave={vi.fn()}
       onDeleteWave={vi.fn()}
     />);

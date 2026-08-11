@@ -250,12 +250,13 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
           <WaveList
             waves={waves}
             coves={workspace.coves}
-            variant="compact"
+            variant="panel"
             emptyMessage="This cove is quiet. Start a wave."
             onOpenWave={(waveId) => go({ name: 'wave', waveId })}
-            onSetPinned={(waveId, pinned) => {
-              void waveMutations.setPinned(waveId, cove.id, pinned, Date.now());
-            }}
+            /* No pin here. The trailing column in a panel row holds exactly one
+               thing at a time — the status dot, becoming the delete on hover —
+               and pinning already has a permanent home in the rail, which is
+               also the only place a pinned wave surfaces. */
             onDeleteWave={(waveId) => { void waveMutations.remove(waveId, cove.id); }}
           />
         )}
@@ -304,12 +305,9 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
     <>
     <WavePage
       wave={wave}
-      cove={cove}
       cards={detail.data.cards}
       conversationList={chat.list}
-        conversationAction={chat.action}
-      onOpenCove={() => { if (cove !== undefined) go({ name: 'cove', coveId: cove.id }); }}
-      onOpenToday={() => go({ name: 'today' })}
+      conversationAction={chat.action}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
       onDeleteWave={() => waveMutations.remove(wave.id, wave.coveId).then(() => {
         if (cove !== undefined) go({ name: 'cove', coveId: cove.id });
