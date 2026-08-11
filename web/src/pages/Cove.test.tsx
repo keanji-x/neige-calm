@@ -38,17 +38,17 @@ function makeWave(overrides: Partial<Wave> = {}): Wave {
   };
 }
 
-function makeTaskSummary(legacyLive: number): KernelCoveTaskSummary {
+function makeTaskSummary(): KernelCoveTaskSummary {
   const counts = {
-    pending: 2,
-    inFlight: 1,
-    done: 3,
-    failed: 1,
-    canceled: 0,
-    legacyLive,
-    blockLive: 2,
-    specLive: 3,
-    userLive: 1,
+    pending: 8,
+    inFlight: 10,
+    done: 1,
+    failed: 3,
+    canceled: 4,
+    legacyLive: 2,
+    blockLive: 5,
+    specLive: 7,
+    userLive: 11,
   };
   return {
     ...counts,
@@ -66,33 +66,70 @@ function makeTaskSummary(legacyLive: number): KernelCoveTaskSummary {
 }
 
 describe('CovePage cove task summary', () => {
-  it('renders the projected-task wording and the legacy badge when legacyLive is positive', () => {
+  it('renders every distinct count with explicit, internally consistent scopes', () => {
+    const taskSummary = makeTaskSummary();
+    const row = taskSummary.waves[0];
+    const countValues = [
+      row.pending,
+      row.inFlight,
+      row.done,
+      row.failed,
+      row.canceled,
+      row.legacyLive,
+      row.blockLive,
+      row.specLive,
+      row.userLive,
+    ];
+    expect(new Set(countValues).size).toBe(countValues.length);
+    expect(row.specLive).toBe(row.blockLive + row.legacyLive);
+    expect(row.pending + row.inFlight).toBe(row.specLive + row.userLive);
+
     render(
       <CovePage
         cove={makeCove()}
         waves={[makeWave()]}
-        taskSummary={makeTaskSummary(2)}
+        taskSummary={taskSummary}
         onGo={() => {}}
       />,
     );
 
-    expect(screen.getByLabelText('已投影任务（排队与在飞）')).toHaveTextContent(
-      '已投影任务（排队与在飞） 2',
-    );
+    expect(screen.getByText('规格活跃 7')).toBeInTheDocument();
+    expect(screen.getByText('其中已投影 5')).toBeInTheDocument();
     expect(screen.getByText('存量未物化 2')).toBeInTheDocument();
+    expect(screen.getByText('用户活跃 11')).toBeInTheDocument();
+    expect(screen.getByText('全部任务排队 8')).toBeInTheDocument();
+    expect(screen.getByText('全部任务在飞 10')).toBeInTheDocument();
+    expect(screen.getByText('全部任务完成 1')).toBeInTheDocument();
+    expect(screen.getByText('全部任务失败 3')).toBeInTheDocument();
+    expect(screen.getByText('全部任务取消 4')).toBeInTheDocument();
   });
 
-  it('omits the legacy badge when legacyLive is zero', () => {
+  it('omits all task counts when no summary snapshot is available', () => {
     render(
       <CovePage
         cove={makeCove()}
         waves={[makeWave()]}
-        taskSummary={makeTaskSummary(0)}
         onGo={() => {}}
       />,
     );
 
     expect(screen.queryByText(/存量未物化/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/全部任务排队/)).not.toBeInTheDocument();
+  });
+
+  it('warns when the summary rows are truncated', () => {
+    render(
+      <CovePage
+        cove={makeCove()}
+        waves={[makeWave()]}
+        taskSummary={{ ...makeTaskSummary(), truncated: true }}
+        onGo={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      '任务统计仅显示存量未物化最多的前 200 个 wave；汇总仍包含全部 wave。',
+    );
   });
 });
 

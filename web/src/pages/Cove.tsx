@@ -162,6 +162,12 @@ export function CovePage({
         />
       )}
 
+      {taskSummary?.truncated && (
+        <p className="synth" role="status">
+          任务统计仅显示存量未物化最多的前 200 个 wave；汇总仍包含全部 wave。
+        </p>
+      )}
+
       {waves.length === 0 && (
         <div
           style={{

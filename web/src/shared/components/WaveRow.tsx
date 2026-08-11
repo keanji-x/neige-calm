@@ -91,21 +91,20 @@ export function WaveRow({
             <WaveLifecycleBadge lifecycle={wave.lifecycle} compact />
           </div>
           {taskSummary && (
-            <div
-              className="wave-task-summary"
-              aria-label="已投影任务（排队与在飞）"
-            >
-              <span>已投影任务（排队与在飞） {taskSummary.blockLive}</span>
-              <span>排队 {taskSummary.pending}</span>
-              <span>在飞 {taskSummary.inFlight}</span>
-              <span>完成 {taskSummary.done}</span>
-              <span>失败 {taskSummary.failed}</span>
-              <span>取消 {taskSummary.canceled}</span>
+            <div className="wave-task-summary">
+              <span>规格活跃 {taskSummary.specLive}</span>
+              <span>其中已投影 {taskSummary.blockLive}</span>
               {taskSummary.legacyLive > 0 && (
                 <span className="wave-task-legacy-badge">
                   存量未物化 {taskSummary.legacyLive}
                 </span>
               )}
+              <span>用户活跃 {taskSummary.userLive}</span>
+              <span>全部任务排队 {taskSummary.pending}</span>
+              <span>全部任务在飞 {taskSummary.inFlight}</span>
+              <span>全部任务完成 {taskSummary.done}</span>
+              <span>全部任务失败 {taskSummary.failed}</span>
+              <span>全部任务取消 {taskSummary.canceled}</span>
             </div>
           )}
         </div>

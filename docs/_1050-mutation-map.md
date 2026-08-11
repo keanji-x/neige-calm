@@ -21,7 +21,7 @@
 未缓存的 wave；缓存映射会把正确性依赖变成 UI 是否访问过该 wave。前缀失效只影响这一类
 summary 查询，范围可控且不会漏后台变化。
 
-## B1–B10 变异记录
+## 原实现 B1–B10 变异记录
 
 以下每项都在最终实现上临时施加生产代码变异，实际运行命令确认红后用反向补丁恢复。
 证据日期：2026-08-11。Rust 测试命令均在仓库根执行；web 命令在 `web/`、Node 22.22.2
@@ -43,3 +43,30 @@ summary 查询，范围可控且不会漏后台变化。
 B10 使用同一个 `it.each` 表逐事件喂 bridge，并从全部 `invalidateQueries` 调用中只筛
 `cove-task-summary` key 后做精确数组比较；因此删掉八行中的任一 policy，都会由它自己的
 case 报出缺失，而不是靠 golden 调用总数间接覆盖。
+
+## 第 1 轮修复后：评审发现的 6 条覆盖缺口
+
+以下 6 个评审变异于 2026-08-11 在修复后的工作树逐条重新注入、实跑并反向恢复。Rust
+命令环境均为 `RUSTC_WRAPPER=`、`CARGO_TARGET_DIR=/mnt/data2/kenji/neige-calm/target`、
+`PATH=/mnt/data2/kenji/neige-calm/.local-bin:$PATH`；web 使用 Node 22.22.2。表中的失败均为
+预期红灯，没有仍然全绿的变异。
+
+| 变异 | 临时改动 | 实跑命令 | 失败测试与断言消息 |
+|---|---|---|---|
+| codex SELECT 1 | `RepoRead::cove_task_summary` acquire 后插入 `sqlx::query("SELECT 1")` | `cargo nextest run -p calm-truth --lib -E 'test(b3_static_shape_and_real_sqlite_trace_prove_one_statement)'` | **红** `b3_static_shape_and_real_sqlite_trace_prove_one_statement`：`public cove_task_summary must execute exactly one sqlite statement; traced 2`（left 2 / right 1） |
+| MR1 | 外层 `ORDER BY r.ordinal` 改为 `r.wave_id` | `cargo nextest run -p calm-truth --lib -E 'test(b5_truncates_rows_but_keeps_full_totals)'` | **红** `b5_truncates_rows_but_keeps_full_totals`：`legacy-heavy waves must sort first even when their ids sort last`；left `[a-zero-003, a-zero-004, a-zero-005]`，right `[z-legacy-a, z-legacy-b, z-legacy-c]` |
+| MR2 | `wave_count > ?2` 改为 `>= ?2` | `cargo nextest run -p calm-truth --lib -E 'test(b10_truncation_boundary_is_strictly_above_limit)'` | **红** `b10_truncation_boundary_is_strictly_above_limit`：`200 waves: truncated must be true only strictly above the 200-wave limit`（left true / right false） |
+| MW1 | `其中已投影` 从 `blockLive` 换成 `pending` | `npm run test -- --run src/pages/Cove.test.tsx` | **红** `renders every distinct count with explicit, internally consistent scopes`：`Unable to find an element with the text: 其中已投影 5`（DOM 实际为 8） |
+| MW2 | 删除全部任务排队/在飞/完成/失败/取消五个 span | `npm run test -- --run src/pages/Cove.test.tsx` | **红** 同一测试：`Unable to find an element with the text: 全部任务排队 8` |
+| MW3 | (a) 删除 `router.tsx` 的 `taskSummary={taskSummaryQ.data}`；(b) 独立恢复后把 client URL 的 `/task-summary` 删除 | `npm run test -- --run src/integration/cove-task-summary-route.test.tsx`（两次） | **两次均红** `fetches the encoded production URL and renders its summary through CoveComponent`：`Unable to find an element with the text: 其中已投影 5`；因此 prop 与 URL 两处生产接线均被同一真实路由→fetch oracle 覆盖 |
+
+MW3 的测试只 mock 全局 `fetch`；真实执行 `coveRoute.loader`、`api.coveTaskSummary`、
+`coveTaskSummaryQueryOptions` / `useCoveTaskSummaryQuery`、`CoveComponent`、`CovePage` 和
+`WaveRow`，并要求请求精确命中 `/api/coves/cove%20route/task-summary`。
+
+## 可登记项裁决
+
+- F6：本轮选择补最小提示；`truncated=true` 时 Cove 页明确说明只显示 legacy 存量最高的前
+  200 个 wave、汇总仍覆盖全部 wave。cove totals 保留为后端契约，暂不重复渲染九项总计。
+- F7：带 wave 的 HTTP wire 形状仍未由 Rust HTTP contract 逐字段观察，登记后续补齐。
+- F8：本轮随口径重写移除了无 role `div` 上的 summary `aria-label`；wire 冗余字段消费仍登记。

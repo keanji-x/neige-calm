@@ -193,11 +193,19 @@ async fn b3_static_shape_and_real_sqlite_trace_prove_one_statement() {
 
     let repo = fresh_repo().await;
     let cove = seed_cove(&repo, "B3").await;
-    let mut conn = repo.pool().acquire().await.unwrap();
+    // Occupy every pool slot, then release exactly one traced connection.
+    // The public RepoRead entrypoint must acquire that sole connection, so
+    // the trace covers both its wrapper and the summary helper it calls.
+    let max_connections = repo.pool().options().get_max_connections();
+    let mut held_connections = Vec::with_capacity(max_connections as usize);
+    for _ in 0..max_connections {
+        held_connections.push(repo.pool().acquire().await.unwrap());
+    }
+    let mut traced_conn = held_connections.pop().unwrap();
     let counter = Box::new(AtomicUsize::new(0));
     let counter_ptr = Box::into_raw(counter);
     {
-        let mut handle = conn.lock_handle().await.unwrap();
+        let mut handle = traced_conn.lock_handle().await.unwrap();
         let rc = unsafe {
             libsqlite3_sys::sqlite3_trace_v2(
                 handle.as_raw_handle().as_ptr(),
@@ -208,10 +216,16 @@ async fn b3_static_shape_and_real_sqlite_trace_prove_one_statement() {
         };
         assert_eq!(rc, libsqlite3_sys::SQLITE_OK);
     }
-    let got = cove_task_summary_on(&mut conn, &cove).await.unwrap();
+    drop(traced_conn);
+
+    let got = repo.cove_task_summary(&cove).await.unwrap();
     assert!(got.is_some());
+
+    // The other slots are still occupied, so this reacquires the same
+    // traced connection and lets us unregister before reclaiming context.
+    let mut traced_conn = repo.pool().acquire().await.unwrap();
     {
-        let mut handle = conn.lock_handle().await.unwrap();
+        let mut handle = traced_conn.lock_handle().await.unwrap();
         unsafe {
             libsqlite3_sys::sqlite3_trace_v2(
                 handle.as_raw_handle().as_ptr(),
@@ -222,7 +236,10 @@ async fn b3_static_shape_and_real_sqlite_trace_prove_one_statement() {
         }
     }
     let traced = unsafe { Box::from_raw(counter_ptr) }.load(Ordering::SeqCst);
-    assert_eq!(traced, 1, "real sqlite statement trace: {traced}");
+    assert_eq!(
+        traced, 1,
+        "public cove_task_summary must execute exactly one sqlite statement; traced {traced}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -298,17 +315,87 @@ async fn b4_barrier_result_is_one_complete_snapshot() {
 async fn b5_truncates_rows_but_keeps_full_totals() {
     let repo = fresh_repo().await;
     let cove = seed_cove(&repo, "B5").await;
-    for index in 0..COVE_TASK_SUMMARY_MAX_WAVES + 3 {
-        let wave = format!("wave-{index:03}");
+    for index in 0..COVE_TASK_SUMMARY_MAX_WAVES {
+        let wave = format!("a-zero-{index:03}");
         seed_wave_with_id(&repo, &cove, &wave, index).await;
-        seed_task(&repo, &wave, "p", "pending", "spec", "legacy").await;
+    }
+    let high_legacy_waves = ["z-legacy-a", "z-legacy-b", "z-legacy-c"];
+    for wave in high_legacy_waves {
+        seed_wave_with_id(&repo, &cove, wave, 999).await;
+        for task in 0..5 {
+            seed_task(
+                &repo,
+                wave,
+                &format!("legacy-{task}"),
+                "pending",
+                "spec",
+                "legacy",
+            )
+            .await;
+        }
     }
     let got = summary(&repo, &cove).await;
     assert_eq!(got.waves.len(), COVE_TASK_SUMMARY_MAX_WAVES as usize);
     assert!(got.truncated);
-    assert_eq!(got.totals.pending, COVE_TASK_SUMMARY_MAX_WAVES + 3);
-    assert_eq!(got.totals.legacy_live, COVE_TASK_SUMMARY_MAX_WAVES + 3);
-    assert_eq!(got.waves.iter().map(|w| w.counts.pending).sum::<i64>(), 200);
+    assert_eq!(got.totals.pending, 15);
+    assert_eq!(got.totals.legacy_live, 15);
+    assert_eq!(
+        got.waves
+            .iter()
+            .take(high_legacy_waves.len())
+            .map(|wave| wave.wave_id.as_str())
+            .collect::<Vec<_>>(),
+        high_legacy_waves,
+        "legacy-heavy waves must sort first even when their ids sort last"
+    );
+    assert!(high_legacy_waves.into_iter().all(|wave_id| {
+        got.waves
+            .iter()
+            .any(|wave| wave.wave_id == wave_id && wave.counts.legacy_live == 5)
+    }));
+    assert_eq!(
+        got.waves
+            .iter()
+            .filter(|wave| wave.counts.legacy_live == 0)
+            .count(),
+        COVE_TASK_SUMMARY_MAX_WAVES as usize - high_legacy_waves.len(),
+        "truncation must drop legacyLive=0 waves before legacy-heavy waves"
+    );
+    assert!(
+        (0..3).all(|index| !got
+            .waves
+            .iter()
+            .any(|wave| wave.wave_id == format!("a-zero-{index:03}"))),
+        "the three truncated rows must all have legacyLive=0"
+    );
+}
+
+#[tokio::test]
+async fn b10_truncation_boundary_is_strictly_above_limit() {
+    let repo = fresh_repo().await;
+    for wave_count in [
+        COVE_TASK_SUMMARY_MAX_WAVES - 1,
+        COVE_TASK_SUMMARY_MAX_WAVES,
+        COVE_TASK_SUMMARY_MAX_WAVES + 1,
+    ] {
+        let cove = seed_cove(&repo, &format!("boundary-{wave_count}")).await;
+        for index in 0..wave_count {
+            let wave = format!("boundary-{wave_count}-{index:03}");
+            seed_wave_with_id(&repo, &cove, &wave, index).await;
+        }
+
+        let got = summary(&repo, &cove).await;
+        assert!(!got.waves.is_empty(), "boundary fixture must be non-empty");
+        assert_eq!(
+            got.waves.len(),
+            wave_count.min(COVE_TASK_SUMMARY_MAX_WAVES) as usize
+        );
+        assert_eq!(
+            got.truncated,
+            wave_count > COVE_TASK_SUMMARY_MAX_WAVES,
+            "{wave_count} waves: truncated must be true only strictly above the 200-wave limit"
+        );
+    }
 }
 
 #[tokio::test]
