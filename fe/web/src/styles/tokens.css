@@ -19,15 +19,27 @@
      *   +1  raised     card, terminal      an object on the page
      *   +2  floating   paper               menus, dialogs, drawer
      *
-     * **One step is a constant contrast RATIO of 1.10, not a constant L
+     * **+2 spends no lightness.** `--paper` equals `--surface-card`, and what
+     * separates it is `--shadow-float` — which §6.5 already grants to exactly
+     * those four surfaces and to nothing else, so the signal was there and a
+     * fourth lightness rank was paying for it twice. That matters because the
+     * ladder is bounded: every rank spent on elevation is contrast taken away
+     * from the text standing on it, and the top rank was the one making
+     * `--text-3` fail AA.
+     *
+     * **One step is a constant contrast RATIO of 1.15, not a constant L
      * difference.** That distinction is the whole rule. sRGB luminance is
      * violently non-linear, so the same delta-L buys wildly different edges at
      * different points on the scale: at a flat 3.0 L, dark's own three steps
      * measured 1.036 / 1.051 / 1.067 — the rail, the largest region on screen,
      * got the weakest edge of the three. Solving for the ratio instead gives
-     * 1.100 / 1.100 / 1.100 in light and 1.099 / 1.099 / 1.101 in dark: the two
-     * themes are now the same ladder in the only unit that describes what an
-     * eye actually sees.
+     * a uniform 1.15 in both themes — the same ladder, in the only unit that
+     * describes what an eye actually sees.
+     *
+     * 1.15 is the largest step this palette can hold. The binding constraint is
+     * `--text-3` on the outermost surface: at 1.20 it reads 4.20 against a dark
+     * card and fails AA. The number is a knob, but it is a knob with a wall
+     * behind it, and the wall is measured rather than guessed.
      *
      * Each theme is anchored at its outer end and walked inward — light from
      * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
@@ -50,10 +62,10 @@
      *
      * Elevation is absolute; **state is relative** — see `--accent-soft`.
      */
-    --bg: oklch(93.3% 0.003 240);
+    --bg: oklch(95% 0.003 240);
     --paper: oklch(99.9% 0.002 240);
-    --hairline: oklch(85% 0.005 240);
-    --hairline-strong: oklch(78% 0.006 240);
+    --hairline: oklch(86% 0.005 240);
+    --hairline-strong: oklch(79% 0.006 240);
     --text: oklch(20% 0.008 250);
     --text-2: oklch(45% 0.01 250);
     --text-3: oklch(48.5% 0.01 250);
@@ -82,12 +94,12 @@
     --warn: oklch(52% 0.14 30);
     --warn-soft: oklch(52% 0.14 30 / 0.12);
 
-    --surface-rail: oklch(90.2% 0.004 240);
-    --surface-card: oklch(96.5% 0.003 240);
-    --surface-chip: oklch(90.2% 0.005 240);
+    --surface-rail: oklch(90.4% 0.004 240);
+    --surface-card: oklch(99.9% 0.003 240);
+    --surface-chip: oklch(90.4% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
-    --surface-panel-head: oklch(96.5% 0.003 240);
-    --surface-terminal: oklch(96.5% 0.003 240);
+    --surface-panel-head: oklch(99.9% 0.003 240);
+    --surface-terminal: oklch(99.9% 0.003 240);
     --surface-code: oklch(0% 0 0 / 0.04);
     --overlay-hover-faint: oklch(0% 0 0 / 0.025);
     --overlay-hover: oklch(0% 0 0 / 0.04);
@@ -216,10 +228,10 @@
 
   [data-theme="dark"] {
     /* Same ladder, same directions, one step = 3.0 L. See the note on `:root`. */
-    --bg: oklch(19% 0.008 245);
-    --paper: oklch(26.6% 0.01 245);
-    --hairline: oklch(32% 0.01 245);
-    --hairline-strong: oklch(41% 0.012 245);
+    --bg: oklch(21.2% 0.008 245);
+    --paper: oklch(26.4% 0.01 245);
+    --hairline: oklch(35% 0.01 245);
+    --hairline-strong: oklch(45% 0.012 245);
     --text: oklch(96% 0.005 245);
     --text-2: oklch(72% 0.012 245);
     --text-3: oklch(64% 0.012 245);
@@ -229,11 +241,11 @@
     --warn: oklch(72% 0.15 30);
     --warn-soft: oklch(72% 0.15 30 / 0.18);
     --surface-rail: oklch(12% 0.008 245);
-    --surface-card: oklch(23.2% 0.009 245);
+    --surface-card: oklch(26.4% 0.009 245);
     --surface-chip: oklch(12% 0.008 245);
     --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
-    --surface-panel-head: oklch(23.2% 0.009 245);
-    --surface-terminal: oklch(23.2% 0.009 245);
+    --surface-panel-head: oklch(26.4% 0.009 245);
+    --surface-terminal: oklch(26.4% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
     --overlay-hover: oklch(100% 0 0 / 0.05);
