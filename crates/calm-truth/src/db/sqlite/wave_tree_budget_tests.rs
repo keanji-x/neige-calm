@@ -1486,6 +1486,175 @@ async fn legacy_pending_transfer_is_rejected_at_zero_ceiling_with_a_diagnostic()
     );
 }
 
+/// #1049 mixed-order debit oracle: a successful transfer consumes the local
+/// ceiling slot it creates, but not the tree slot already occupied by its
+/// legacy row. The following net-new declaration must still use that tree slot.
+#[tokio::test]
+async fn successful_transfer_preserves_tree_capacity_for_a_later_net_new_declaration() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "transfer-before-net-new").await;
+    set_ceiling(&repo, &root, 2).await;
+    set_tree_budget(&repo, &root, 2).await;
+    project(&repo, &root, &["legacy"]).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let declarations = declarations(&["legacy", "net-new"]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let outcome = project_tasks_tx(
+        &mut tx,
+        &root,
+        &declarations,
+        &vec![Vec::new(); declarations.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        outcome
+            .diagnostics
+            .iter()
+            .map(|verdict| verdict.schedulable)
+            .collect::<Vec<_>>(),
+        [true, true],
+        "a transfer must not spend the tree slot needed by the following net-new declaration"
+    );
+    let origins: Vec<(String, String)> =
+        sqlx::query_as("SELECT key,origin FROM tasks WHERE wave_id=?1 ORDER BY key")
+            .bind(&root)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        origins,
+        [
+            ("legacy".into(), "block".into()),
+            ("net-new".into(), "block".into()),
+        ]
+    );
+    assert_eq!(live_spec_count(&repo, &root).await, 2);
+}
+
+/// #1049 rejected-debit oracle: with tree share already occupied, a net-new
+/// declaration is rejected by the tree leg alone. It must not reserve the
+/// ceiling slot that the following tree-neutral transfer can still use.
+#[tokio::test]
+async fn tree_only_rejection_preserves_ceiling_capacity_for_a_later_transfer() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "rejection-before-transfer").await;
+    set_ceiling(&repo, &root, 1).await;
+    set_tree_budget(&repo, &root, 1).await;
+    project(&repo, &root, &["legacy"]).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let declarations = declarations(&["net-new", "legacy"]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let outcome = project_tasks_tx(
+        &mut tx,
+        &root,
+        &declarations,
+        &vec![Vec::new(); declarations.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        outcome
+            .diagnostics
+            .iter()
+            .map(|verdict| verdict.schedulable)
+            .collect::<Vec<_>>(),
+        [false, true],
+        "a tree-only rejection must not spend the ceiling slot needed by a later transfer"
+    );
+    assert_eq!(
+        outcome.diagnostics[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["tree_budget_exhausted"]
+    );
+    let origins: Vec<(String, String)> =
+        sqlx::query_as("SELECT key,origin FROM tasks WHERE wave_id=?1 ORDER BY key")
+            .bind(&root)
+            .fetch_all(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(origins, [("legacy".into(), "block".into())]);
+    assert_eq!(live_spec_count(&repo, &root).await, 1);
+}
+
+/// #1049 attribution oracle: ceiling starts one slot above tree capacity. A
+/// transfer spends only that excess ceiling slot, then a net-new declaration
+/// exhausts both legs together, so the following rejection must name a tie.
+#[tokio::test]
+async fn transfer_then_net_new_exhaustion_marks_both_capacity_bounds_as_tied() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let root = seed_wave(&repo, &cove, "transfer-aligns-bounds").await;
+    set_ceiling(&repo, &root, 2).await;
+    set_tree_budget(&repo, &root, 2).await;
+    project(&repo, &root, &["legacy"]).await;
+    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let declarations = declarations(&["legacy", "net-new-a", "net-new-b"]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    let outcome = project_tasks_tx(
+        &mut tx,
+        &root,
+        &declarations,
+        &vec![Vec::new(); declarations.len()],
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(
+        outcome
+            .diagnostics
+            .iter()
+            .map(|verdict| verdict.schedulable)
+            .collect::<Vec<_>>(),
+        [true, true, false]
+    );
+    assert_eq!(
+        outcome.diagnostics[2]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>(),
+        ["spec_task_ceiling", "tree_budget_exhausted"]
+    );
+    let tree = outcome.diagnostics[2]
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+        .expect("both-blocked rejection must include a tree diagnostic");
+    assert_eq!(
+        tree.message_args
+            .get("bounds_tied")
+            .and_then(serde_json::Value::as_bool),
+        Some(true),
+        "a transfer can align initially unequal capacities before both are exhausted"
+    );
+}
+
 /// #1049 mixed-capacity oracle: K legacy rows have ample tree space but only
 /// K-1 ceiling slots. Exactly the first K-1 declarations in document order are
 /// adopted, and the remaining transfer is diagnosed against the ceiling.
