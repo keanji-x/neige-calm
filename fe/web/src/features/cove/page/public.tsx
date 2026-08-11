@@ -19,7 +19,7 @@ import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { deleteCoveCopy } from '../../../ui/confirm-dialog/copy.ts';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
-import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
+import { PanelAction, PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../../ui/typed-confirm/public.tsx';
 import styles from './page.module.css';
@@ -31,6 +31,8 @@ export type CovePageProps = Readonly<{
   waveList: ReactNode;
   /** The panel card's second module, composed by `app/router` (features/chat). */
   conversationList?: ReactNode;
+  /** The conversation module head's `+`, composed by `app/router`. */
+  conversationAction?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the next page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameCove: (name: string) => void | Promise<void>;
@@ -48,7 +50,7 @@ export type CovePageProps = Readonly<{
  * clears both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
  */
 export function CovePage({
-  cove, waveCount, waveList, conversationList, pageTitleRef,
+  cove, waveCount, waveList, conversationList, conversationAction, pageTitleRef,
   onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -163,21 +165,13 @@ export function CovePage({
 
         <aside className={styles.panel}>
           <PanelCard>
-            <PanelModule title="Waves" action={
-              <button
-                type="button"
-                data-nc-role="icon"
-                className={styles.moduleAction}
-                aria-label="New wave"
-                title="New wave"
-                onClick={onRequestNewWave}
-              >
-                +
-              </button>
-            }>
+            <PanelModule
+              title="Waves"
+              action={<PanelAction label="New wave" onClick={onRequestNewWave}>+</PanelAction>}
+            >
               {waveList}
             </PanelModule>
-            <PanelModule title="Conversations">{conversationList}</PanelModule>
+            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
       </div>

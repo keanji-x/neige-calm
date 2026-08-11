@@ -11,15 +11,4 @@
   .item {
     display: block;
   }
-
-  .empty {
-    margin: 0;
-    padding: var(--space-4);
-    border: 1px dashed var(--hairline);
-    border-radius: var(--radius-md);
-    color: var(--text-3);
-    font-family: var(--font-sans);
-    font-size: var(--text-sm);
-    line-height: var(--leading-snug);
-  }
 }

@@ -10,6 +10,7 @@
 
 import { coveOf, type Cove } from '../../../../../core/domain/cove.ts';
 import { sortByLifecycleRank, type Wave } from '../../../../../core/domain/wave.ts';
+import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
 import { WaveRow } from '../row/public.tsx';
 import styles from './list.module.css';
 
@@ -42,7 +43,13 @@ export function WaveList({
   const ordered = sortByLifecycleRank(waves);
 
   if (ordered.length === 0) {
-    return <p className={styles.empty} data-nc-wave-list-empty="">{emptyMessage}</p>;
+    // The same empty state the conversation module renders, because the two sit
+    // one above the other in the same card. This used to be a dashed box at
+    // `--radius-md` — the card's own radius — so an object was drawing a corner
+    // equal to the corner of the thing containing it, and the inner one read as
+    // tighter. It also paid `--space-4` of padding inside a body that already
+    // pays `--space-4`. One empty-state vocabulary, no box.
+    return <PanelEmpty>{emptyMessage}</PanelEmpty>;
   }
 
   return (

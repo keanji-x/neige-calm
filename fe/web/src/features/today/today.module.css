@@ -137,6 +137,28 @@
     color: var(--text-2);
   }
 
+  /*
+   * The calendar's own vertical scale. It had none: five blocks in a flex
+   * column with no gap, so the week grid's day dots — 1px off each cell's
+   * bottom edge — sat against the line below them.
+   *
+   * Same optical-distance rule as the rail. A label is 4 from what it names
+   * (month row → week, day names → grid, date → agenda rows), a structural
+   * break is 12 (the week is one group, the agenda is the next).
+   */
+  .calendar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+
+  .week,
+  .agenda {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
   .weekHead {
     display: grid;
     grid-template-columns: var(--control-h) minmax(0, 1fr) var(--control-h);

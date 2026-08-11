@@ -34,6 +34,8 @@ export type WavePageProps = Readonly<{
   cards: readonly CardWire[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
   conversationList?: ReactNode;
+  /** The conversation module head's `+`, composed by `app/router`. */
+  conversationAction?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onOpenCove: () => void;
@@ -45,7 +47,7 @@ export type WavePageProps = Readonly<{
 const UNKNOWN_COVE_LABEL = 'Unknown cove';
 
 export function WavePage({
-  wave, cove, cards, conversationList, pageTitleRef,
+  wave, cove, cards, conversationList, conversationAction, pageTitleRef,
   onOpenCove, onOpenToday, onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -205,7 +207,7 @@ export function WavePage({
                 </p>
               )}
             </PanelModule>
-            <PanelModule title="Conversations">{conversationList}</PanelModule>
+            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
       </div>

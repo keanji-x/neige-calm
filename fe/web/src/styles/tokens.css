@@ -133,11 +133,29 @@
     --tracking-wider: 0.06em;
     --tracking-widest: 0.08em;
 
-    --radius-xs: 2px;
+    /*
+     * Three steps and a pill, chosen by **what the corner belongs to**, not by
+     * how big the thing is:
+     *
+     *   sm  — something *inside* something: rows, chips, buttons, inputs,
+     *         menu items, day cells.
+     *   md  — an object that owns its own boundary on the page: the panel
+     *         card, the settings error box, a placeholder slot.
+     *   lg  — something floating *over* the page: dialog, drawer, menu.
+     *   pill — a status dot or a badge, where the shape *is* the meaning.
+     *
+     * The ladder is therefore also a nesting rule: an `md` object may only
+     * contain `sm` corners. Two equal radii nested read as a mistake — the
+     * inner corner looks tighter than the outer one at the same value,
+     * because it is cut from a shorter edge.
+     *
+     * There is no `xs` and no `xl`. Both existed and neither was ever used;
+     * an unused step is not a spare, it is the next arbitrary pick waiting to
+     * happen. Add one back only together with the rank it names.
+     */
     --radius-sm: 4px;
     --radius-md: 6px;
     --radius-lg: 8px;
-    --radius-xl: 10px;
     --radius-pill: 999px;
 
     --space-0: 0;

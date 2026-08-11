@@ -49,6 +49,34 @@ export function PanelModule({ title, action, children }: {
 }
 
 /**
+ * The one control a module head may carry, trailing the title.
+ *
+ * It lives here rather than in each page because the head belongs to the
+ * module: two pages hand-rolling the same 20px glyph button is how the second
+ * one drifts. `label` is the accessible name *and* the hover title — §4.4 is
+ * explicit that a tooltip may not stand in for the accessible name, so both
+ * come from one argument and cannot disagree.
+ */
+export function PanelAction({ label, onClick, children }: {
+  label: string;
+  onClick: () => void;
+  children: string;
+}) {
+  return (
+    <button
+      type="button"
+      data-nc-role="icon"
+      className={styles.action}
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
  * §5.3 — an unbuilt region shows the *shape* of what is coming and one short
  * sentence, with no module path, no slice name and no apology.
  */

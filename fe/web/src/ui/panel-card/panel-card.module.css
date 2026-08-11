@@ -64,6 +64,30 @@
     text-transform: uppercase;
   }
 
+  /* The head's trailing control. 20px, not 28: unlike a rail section action it
+     sits inside a 32px head that is itself a bigger target, which is the
+     exemption §2.5 grants (WCAG 2.5.8's 24px-offset rule). The negative end
+     margin pulls the glyph box flush with the `--space-4` body padding below
+     it. */
+  .action {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    margin-inline-end: calc(var(--space-2) * -1);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .action:hover,
+  .action:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
   .body {
     display: flex;
     flex-direction: column;

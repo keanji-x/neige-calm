@@ -65,6 +65,8 @@ export type TodayPageProps = Readonly<{
    * second module is the point of the skeleton.
    */
   conversationList?: ReactNode;
+  /** The conversation module head's `+`, composed by `app/router`. */
+  conversationAction?: ReactNode;
   pageTitleRef?: React.RefObject<HTMLElement | null>;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
   nowMs?: number;
@@ -107,7 +109,7 @@ function formatHour(hour: number): string {
 }
 
 export function TodayPage({
-  waves, coves, renderWaveRow, scheduledEvents = [], conversationList,
+  waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
   pageTitleRef, nowMs,
 }: TodayPageProps) {
   const today = useMemo(() => {
@@ -184,7 +186,7 @@ export function TodayPage({
                 nowMs={nowMs}
               />
             </PanelModule>
-            <PanelModule title="Conversations">{conversationList}</PanelModule>
+            <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
       </div>
@@ -283,98 +285,124 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
   const scheduledIds = new Set(scheduledAgenda.map((event) => event.wave.id));
 
   return (
-    <>
-      {/* The calendar is not inside a panel: the month row *is* its section
-          label. Wrapping it would cost another 8px of padding on each side and
-          drop every column from 42px to 40. */}
-      <div className={styles.weekHead}>
-        <button type="button" data-nc-role="icon" className={styles.navButton}
-          aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}>‹</button>
-        <span className={styles.monthLabel}>
-          {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-        </span>
-        <button type="button" data-nc-role="icon" className={styles.navButton}
-          aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}>›</button>
-      </div>
+    /*
+      The calendar's five blocks used to be a bare fragment dropped straight
+      into the panel body, which is `display: flex` with no `gap` — so month
+      row, day names, week grid and agenda all stacked at zero distance and the
+      day dots, which sit 1px off each cell's bottom edge, nearly touched the
+      line below. Nothing here was "too tight" relative to anything else,
+      because there was no scale at all.
 
-      <div className={styles.dayNames} aria-hidden="true">
-        {SHORT_DAYS.map((day, index) => (
-          <span key={index} className={styles.dayName}>{day}</span>
-        ))}
-      </div>
-
-      <div className={styles.weekGrid}>
-        {days.map((day) => {
-          // De-dup by wave id: a wave with both a scheduled event and an
-          // overlapping activity window contributes one dot, not two.
-          const seen = new Set<string>();
-          let dotCoveId: string | undefined;
-          for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day))) {
-            if (seen.has(event.wave.id)) continue;
-            seen.add(event.wave.id);
-            dotCoveId ??= event.wave.coveId;
-          }
-          for (const wave of activeWavesOn(waves, day, now)) {
-            if (seen.has(wave.id)) continue;
-            seen.add(wave.id);
-            dotCoveId ??= wave.coveId;
-          }
-          const isToday = sameDay(day, today);
-          const isSelected = sameDay(day, selected);
-          return (
-            <button
-              key={day.toDateString()}
-              type="button"
-              data-nc-role="cell"
-              className={[
-                styles.day, isToday ? styles.dayToday : '', isSelected ? styles.daySelected : '',
-              ].filter(Boolean).join(' ')}
-              aria-pressed={isSelected}
-              aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-              onClick={() => setSelected(day)}
-            >
-              <span className={styles.dayNumber}>{day.getDate()}</span>
-              {/* At most one dot a day; its colour is the first agenda item's
-                  cove identity. */}
-              {dotCoveId !== undefined && (
-                <span
-                  className={styles.dayDot}
-                  data-nc-day-dot
-                  style={{ background: `var(${coveSlotVar(dotCoveId)})` }}
-                  aria-hidden="true"
-                />
-              )}
-            </button>
-          );
-        })}
-      </div>
-
-      <h2 className={styles.sectionLabel}>
-        {sameDay(selected, today)
-          ? 'Today'
-          : selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
-      </h2>
-      <div className={styles.rows}>
-        {/* Only when *both* sources are empty. The string is the one the live
-            contract pins; it satisfies §5.3 as well as any rewrite would. */}
-        {scheduledAgenda.length === 0 && waveAgenda.length === 0 && (
-          <p className={styles.inlineEmpty}>Nothing scheduled.</p>
-        )}
-        {scheduledAgenda.map((event) => (
-          <span key={`scheduled-${event.wave.id}-${event.hour}`}>
-            {renderWaveRow(event.wave, {
-              variant: 'agenda',
-              hourLabel: formatHour(event.hour),
-              coveName: coveOf(event.wave.coveId, coves)?.name ?? UNKNOWN_COVE,
-            })}
+      Same optical-distance rule as the rail: a label sits 4 from the thing it
+      names, and a structural break is 12. The week is one group (month row
+      labels it, day names label the grid), the agenda is the next.
+    */
+    <div className={styles.calendar}>
+      <div className={styles.week}>
+        {/* The calendar is not inside a panel of its own: the month row *is* its
+            section label. Wrapping it would cost another 8px of padding on each
+            side and drop every column from 42px to 40. */}
+        <div className={styles.weekHead}>
+          <button type="button" data-nc-role="icon" className={styles.navButton}
+            aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}>‹</button>
+          <span className={styles.monthLabel}>
+            {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           </span>
-        ))}
-        {waveAgenda.filter((wave) => !scheduledIds.has(wave.id)).map((wave) => (
-          <span key={`wave-${wave.id}`}>
-            {renderWaveRow(wave, { variant: 'agenda', coveName: coveOf(wave.coveId, coves)?.name ?? UNKNOWN_COVE })}
-          </span>
-        ))}
+          <button type="button" data-nc-role="icon" className={styles.navButton}
+            aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}>›</button>
+        </div>
+
+        <div className={styles.dayNames} aria-hidden="true">
+          {SHORT_DAYS.map((day, index) => (
+            <span key={index} className={styles.dayName}>{day}</span>
+          ))}
+        </div>
+
+        <div className={styles.weekGrid}>
+          {days.map((day) => {
+            // De-dup by wave id: a wave with both a scheduled event and an
+            // overlapping activity window contributes one dot, not two.
+            const seen = new Set<string>();
+            let dotCoveId: string | undefined;
+            for (const event of scheduledEvents.filter((candidate) => sameDay(candidate.date, day))) {
+              if (seen.has(event.wave.id)) continue;
+              seen.add(event.wave.id);
+              dotCoveId ??= event.wave.coveId;
+            }
+            for (const wave of activeWavesOn(waves, day, now)) {
+              if (seen.has(wave.id)) continue;
+              seen.add(wave.id);
+              dotCoveId ??= wave.coveId;
+            }
+            const isToday = sameDay(day, today);
+            const isSelected = sameDay(day, selected);
+            return (
+              <button
+                key={day.toDateString()}
+                type="button"
+                data-nc-role="cell"
+                className={[
+                  styles.day, isToday ? styles.dayToday : '', isSelected ? styles.daySelected : '',
+                ].filter(Boolean).join(' ')}
+                aria-pressed={isSelected}
+                aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+                onClick={() => setSelected(day)}
+              >
+                <span className={styles.dayNumber}>{day.getDate()}</span>
+                {/* At most one dot a day; its colour is the first agenda item's
+                    cove identity. */}
+                {dotCoveId !== undefined && (
+                  <span
+                    className={styles.dayDot}
+                    data-nc-day-dot
+                    style={{ background: `var(${coveSlotVar(dotCoveId)})` }}
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
       </div>
-    </>
+
+      <div className={styles.agenda}>
+          {/*
+            No label when the selection is today. It said "Today" directly under
+            a grid whose today cell is already weighted and filled, on a page
+            whose header already reads "Monday, August 10" in full — the third
+            statement of one fact, and the one closest to the day dots.
+
+            It stays for every other day, where it is the only place the date is
+            written out: the grid shows that day as a bare "13".
+          */}
+          {!sameDay(selected, today) && (
+            <h2 className={styles.sectionLabel}>
+              {selected.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}
+            </h2>
+          )}
+
+        <div className={styles.rows}>
+          {/* Only when *both* sources are empty. The string is the one the live
+              contract pins; it satisfies §5.3 as well as any rewrite would. */}
+          {scheduledAgenda.length === 0 && waveAgenda.length === 0 && (
+            <p className={styles.inlineEmpty}>Nothing scheduled.</p>
+          )}
+          {scheduledAgenda.map((event) => (
+            <span key={`scheduled-${event.wave.id}-${event.hour}`}>
+              {renderWaveRow(event.wave, {
+                variant: 'agenda',
+                hourLabel: formatHour(event.hour),
+                coveName: coveOf(event.wave.coveId, coves)?.name ?? UNKNOWN_COVE,
+              })}
+            </span>
+          ))}
+          {waveAgenda.filter((wave) => !scheduledIds.has(wave.id)).map((wave) => (
+            <span key={`wave-${wave.id}`}>
+              {renderWaveRow(wave, { variant: 'agenda', coveName: coveOf(wave.coveId, coves)?.name ?? UNKNOWN_COVE })}
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

@@ -53,7 +53,7 @@ const TRACKING = [
   '--tracking-wider', '--tracking-widest',
 ] as const;
 const RADIUS = [
-  '--radius-xs', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-pill',
+  '--radius-sm', '--radius-md', '--radius-lg', '--radius-pill',
 ] as const;
 const SPACING = [
   '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4', '--space-5',

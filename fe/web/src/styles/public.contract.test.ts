@@ -31,7 +31,7 @@ const TOKEN_INVENTORY = [
   '--text-lg', '--text-xl', '--text-display-sm', '--text-display', '--leading-none',
   '--leading-tight', '--leading-snug', '--leading-base', '--leading-loose', '--tracking-tighter',
   '--tracking-tight', '--tracking-normal', '--tracking-wide', '--tracking-wider',
-  '--tracking-widest', '--radius-xs', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl',
+  '--tracking-widest', '--radius-sm', '--radius-md', '--radius-lg',
   '--radius-pill', '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4',
   '--space-5', '--space-6', '--space-7', '--space-8', '--space-9', '--space-10', '--space-11',
   '--space-12', '--motion-instant', '--motion-quick', '--motion-snappy', '--motion-medium',

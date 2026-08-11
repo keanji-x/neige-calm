@@ -43,8 +43,7 @@ export type SpacingToken =
   | '--space-11' | '--space-12';
 
 export type RadiusToken =
-  | '--radius-xs' | '--radius-sm' | '--radius-md'
-  | '--radius-lg' | '--radius-xl' | '--radius-pill';
+  | '--radius-sm' | '--radius-md' | '--radius-lg' | '--radius-pill';
 
 export type MotionToken =
   | '--motion-instant' | '--motion-quick' | '--motion-snappy'

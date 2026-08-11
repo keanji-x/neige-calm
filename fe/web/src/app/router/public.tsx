@@ -28,6 +28,7 @@ import { ChatList } from '../../features/chat/list/public.tsx';
 import type { Conversation } from '../../../../core/domain/conversation.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
+import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, prefetchCoveList, settingsQueryOptions, useCoveMutations, useSettingsMutation,
@@ -120,28 +121,48 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
  * yet, so the list renders §5.3's unbuilt shape. See
  * `core/domain/conversation.ts`.
  */
+/**
+ * The conversation module, identical on all three routes: a list, a `+` in the
+ * module head, and the drawer both of them open.
+ *
+ * `'new'` is a third open state, not a flag on the second. Starting a
+ * conversation and reading one land in the same place — the drawer is *where a
+ * conversation is*, so a new one has nowhere else to go — but they are not the
+ * same object, and modelling "new" as a null conversation would put an
+ * `open === null` check in every branch that reads one.
+ */
 function useConversationPanel(conversations: readonly Conversation[], options?: { showWave?: boolean }) {
-  const [open, setOpen] = useState<Conversation | null>(null);
+  const [open, setOpen] = useState<Conversation | 'new' | null>(null);
+  const current = open === 'new' ? null : open;
   return {
     list: (
       <ChatList
         conversations={conversations}
-        activeId={open?.id ?? null}
+        activeId={current?.id ?? null}
         showWave={options?.showWave ?? true}
         onOpen={setOpen}
       />
     ),
+    /* The module head's action, composed by the page — same slot the WAVES and
+       CARDS modules already use, which is why this needed no new mechanism. */
+    action: <PanelAction label="New conversation" onClick={() => setOpen('new')}>+</PanelAction>,
     drawer: (
       <Drawer
         open={open !== null}
-        title={open === null ? '' : open.waveTitle}
+        title={open === 'new' ? 'New conversation' : open?.waveTitle ?? ''}
         onClose={() => setOpen(null)}
       >
         {/* The transcript is the same unbuilt story as the list: the turns
             exist in the kernel, the endpoint does not. The drawer still opens,
             at the width and behaviour §7.6 fixed, so the shape is real even
-            though the content is not. */}
-        <p className={paneStyles.drawerNote}>No transcript yet.</p>
+            though the content is not.
+
+            The `+` therefore opens a real drawer that says plainly it cannot
+            send yet, rather than a button that does nothing when clicked. A
+            control that no-ops is worse than one that tells you why. */}
+        <p className={paneStyles.drawerNote}>
+          {open === 'new' ? 'Sending is not wired up yet.' : 'No transcript yet.'}
+        </p>
       </Drawer>
     ),
   };
@@ -169,6 +190,7 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
         />
       )}
       conversationList={chat.list}
+      conversationAction={chat.action}
     />
     {chat.drawer}
     </>
@@ -223,6 +245,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
         onDeleteCove={() => coveMutations.remove(cove.id).then(() => { go({ name: 'today' }); })}
         onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
         conversationList={chat.list}
+      conversationAction={chat.action}
         waveList={(
           <WaveList
             waves={waves}
@@ -284,6 +307,7 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
       cove={cove}
       cards={detail.data.cards}
       conversationList={chat.list}
+      conversationAction={chat.action}
       onOpenCove={() => { if (cove !== undefined) go({ name: 'cove', coveId: cove.id }); }}
       onOpenToday={() => go({ name: 'today' })}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
