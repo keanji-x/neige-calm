@@ -202,6 +202,23 @@ ceiling（判断剩余容量而不是裸设置值，所以 `ceiling=3, occupied=
   已如实登记在 mutation map。N3：删掉“网格只变化剩余 local capacity”的失真注释，改为声明网格已
   覆盖全部文档 local occupancy 关系。其余 r9 MINOR 均已处置，无另行登记缺口。
 
+## 3.9 修复轮 10 实现收口
+
+- B1：`legacy_member_overage_freezes_new_blocks_across_the_tree` 在 link 后固定 root
+  `created_at=1`、child `=2`，继续精确断言 minimum=9，不用 `{9,10}` 放宽 oracle。新增
+  `equal_created_at_with_child_id_first_requires_ten_to_unfreeze`：按实际 UUID 字符序选择较小 id
+  作为 child，把 root/child 同时固定为 `created_at=1`，精确断言 minimum=10，并实际执行该动作
+  验证准入恢复。两条一起固定余数 tie-break 的两种走向。
+- B2：设计 v5 明确 `(created_at,id)` 持久化全序购买的是同一批行的 rebuild 稳定与
+  `Σ share=B`，不购买对创建序列可预测；doc-as-plan §12.1 #24 登记同毫秒 UUID 抽签的公平性/
+  可预测性缺口及可选完整修法。复核没有发现它破坏任何已声称性质，因此不重做裁决、不新增
+  `quota_order` 或其它持久载体。
+- MINOR：排查报告除根因、测试修法与生产语义裁决外没有独立未处置项；三者均已落到测试、设计
+  与权威风险表，没有另留隐含待办。
+- 变异与稳定性：删掉时间夹具后循环第 8 次复现 minimum=10；冻结 minimum 退回朴素 `B+1`
+  时 9/10 两条分别红为错误的 5；反转同毫秒 id 顺序时新用例红为 9。全部反向复原后，原 flaky
+  用例以 CI profile、独立测试进程连续 **30/30 PASS**。
+
 ## 4. 停下来没做的（**不就地扩范围**）
 
 - **N1. 既有 `non_user_policy_patches_are_forbidden_without_rows_or_events` 是恒真断言。**
@@ -234,6 +251,9 @@ ceiling（判断剩余容量而不是裸设置值，所以 `ceiling=3, occupied=
   就存在的 `waves.created_at`；把所有旧版本夹具统一改成从 head schema 派生，会改变 migration replay
   所要模拟的历史边界并扩大到全仓迁移治理。当前缺列会 fail-closed 为 `no such column`，不会静默放行；
   本轮不另造一套可能掩盖历史 schema 差异的结构生成器。
+- **N10. 不新增持久 `quota_order`。** 同毫秒 UUID tie-break 不破坏持久行重建稳定、份额守恒或
+  D.1 #11，只让余数归属对创建序列不可预测。完整修复需要在事务内分配新的持久单调序号；依本片
+  “牵出新持久载体就停下来登记”的边界，本轮只在设计 v5 与 doc-as-plan §12.1 #24 明示该缺口。
 
 ## 5. 门（实际数字）
 
@@ -318,6 +338,24 @@ fe 首轮 test 的 oracle 抓到本轮 web 文案增行造成 `CAP-REPORT-TASK-0
 
 r9 的 web local recovery 文案增行后同步校准 `CAP-REPORT-TASK-023` 与 `INV-REPORT-TASK-024` 的
 source range；fe 的 tracked-fixture/oracle 门一次通过，无新增 baseline 债务。
+
+### 5.4 修复轮 10 复原态全门
+
+环境：`CARGO_BUILD_JOBS=6`，nextest 取自仓库 `.local-bin`，`NEIGE_CODEX_BIN` 未设置；web/fe
+正式三门均显式 `nvm use 22.22.2`，命令内复核 `node --version` 为 `v22.22.2`。
+
+| 门 | 实际结果 |
+|---|---|
+| `cargo fmt --all --check` + `git diff --check` | 干净 |
+| workspace clippy（CI 原命令） | `Finished dev profile in 1m 16s`，0 warning |
+| workspace nextest ci（CI 原命令） | **3407/3407 PASS，89 skipped**（104 binaries，92.384s） |
+| migration replay gate（CI 原命令） | **2/2 PASS**（35.591s） |
+| web 生成物 | `npm run gen:api`：bindings **49/49 + 15/15**、emit-openapi **1/1**；目标生成文件 diff 干净 |
+| web build | 成功，`built in 798ms`（仅既有 CSS highlight / chunk-size 警告） |
+| web test | **85 files / 1238 tests PASS**，Type Errors 0（12.91s） |
+| fe lint | 通过；dependency cruise **102 modules / 232 dependencies**，0 violation |
+| fe build | 成功，`built in 218ms` |
+| fe test | **758 PASS / 1 skipped**（61 files pass / 1 skipped，8.86s），wire 与 mock drift 均通过 |
 
 ## 6. 已知代价（已登记进 doc-as-plan §12.1 #19）
 

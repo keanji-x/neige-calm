@@ -1391,6 +1391,8 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
     let root = seed_wave(&repo, &cove, "upgrade-root").await;
     let child = seed_wave(&repo, &cove, "upgrade-child").await;
     link(&repo, &child, &root).await;
+    stamp_created_at(&repo, &root, 1).await;
+    stamp_created_at(&repo, &child, 2).await;
     set_ceiling(&repo, &root, 8).await;
     set_ceiling(&repo, &child, 8).await;
     set_tree_budget(&repo, &root, 16).await;
@@ -1583,6 +1585,80 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
         "capacity returns once every member fits its share"
     );
     assert_eq!(wave_tree_spec_inventory(&mut conn, &root).await.unwrap(), 8);
+}
+
+/// Equal creation timestamps deliberately fall through to the persisted id
+/// order. When the child id sorts first it receives B=9's remainder, leaving
+/// the root's five immutable rows over its share until B reaches 10.
+#[tokio::test]
+async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
+    let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+    let cove = seed_cove(&repo).await;
+    let first = seed_wave(&repo, &cove, "equal-time-first").await;
+    let second = seed_wave(&repo, &cove, "equal-time-second").await;
+    let (child, root) = if first < second {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    link(&repo, &child, &root).await;
+    stamp_created_at(&repo, &root, 1).await;
+    stamp_created_at(&repo, &child, 1).await;
+    assert!(child < root, "the fixture must put the child id first");
+
+    set_ceiling(&repo, &root, 8).await;
+    set_ceiling(&repo, &child, 8).await;
+    set_tree_budget(&repo, &root, 16).await;
+    project(
+        &repo,
+        &root,
+        &["root-a", "root-b", "root-c", "root-d", "root-e"],
+    )
+    .await;
+    project(&repo, &child, &["child-a", "child-b", "child-c"]).await;
+    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id IN (?1,?2)")
+        .bind(&root)
+        .bind(&child)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET tree_task_budget=4 WHERE id=?1")
+        .bind(&root)
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let new_declarations = declarations(&["new-a"]);
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let verdicts = evaluate_schedulability(&mut conn, &child, &new_declarations, &[vec![]], false)
+        .await
+        .unwrap();
+    let tree_diagnostic = verdicts[0]
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+        .expect("tree diagnostic");
+    let minimum = tree_diagnostic
+        .message_args
+        .get("minimum_tree_task_budget")
+        .and_then(serde_json::Value::as_i64);
+    assert!(
+        tree_diagnostic.message.contains("at least 10"),
+        "the server copy must carry the id-ordered executable minimum: {}",
+        tree_diagnostic.message
+    );
+    drop(conn);
+    assert_eq!(minimum, Some(10), "the root must also fit its five rows");
+
+    set_tree_budget(&repo, &root, minimum.unwrap()).await;
+    let mut conn = repo.pool().acquire().await.unwrap();
+    let raised = evaluate_schedulability(&mut conn, &child, &new_declarations, &[vec![]], false)
+        .await
+        .unwrap();
+    assert!(
+        raised[0].schedulable,
+        "the id-ordered sibling-freeze minimum must increase admission"
+    );
 }
 
 /// PATCH back to NULL restores the kernel default; it does not remove the

@@ -1627,6 +1627,7 @@ PR-A 已交付冻结 `tasks.spawn`、child-wave operation、`parent_wave_id`、�
 | 21 | **父 wave cancel 不自动 cancel 子树** | live/sweep 按 child 的最终 lifecycle 闭合；活着但永不终态的 child 由人工 cancel/delete 恢复 |
 | 22 | **`MAX_WAVE_TREE_DEPTH = 3` 是猜的** | 以深度拒绝率校准。PR-B 后它还多了一层含义：**它也是求根 / 树成员枚举的 fail-closed 边界** —— 超过该深度的链求不到根 ⇒ 整条链 `tree_root_unresolved`、一条都不准入。调大它就是调大这个边界 |
 | 23 | **wave route 的 descendant 前检与最终删除之间可新建 child** | 前检只负责 teardown 前快失败；`wave_delete_tx` 的事务 guard 是唯一正确性载体。命中时 teardown 后返回 409；事务回滚后 `terminals` / `worker_sessions` 行仍是 active，但 terminal 进程已被杀、spec harness 已退出 registry（shutdown 不改 session 行），所以读端暂时显示 live、实际运行时已死，直到重试删除或进程重启后恢复/清理。不产生孤儿或越权写；消除此窗口所需的两阶段持久删除另开 issue，不扩入切片 6 PR-A |
+| 24 | **同毫秒兄弟的余数归属、容量与恢复 minimum 呈 UUID 抽签** | `(created_at,id)` 仍是持久化全序，所以同一批行的 rebuild 稳定、`Σ share=B`，D.1 #11 不受影响；缺的是对创建序列的公平性/可预测性。同一毫秒时 UUIDv4 `id` 决胜，等价创建序列可能得到不同余数归属与 minimum。可选的完整修法是新增持久单调 `quota_order` 并在创建事务内分配；本轮按“修法牵出新持久载体就停下来登记”不实现。只提高时间精度仍会 tie；继续用随机 id 兜底也没有解决抽签。 |
 
 ### 12.2 产品侧裁决（2026-08-03 已拍板，四条全部按倾向落）
 

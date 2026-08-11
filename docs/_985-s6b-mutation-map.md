@@ -369,3 +369,18 @@ Node 22.23.2。所有实现、测试与文案变异都以 `apply_patch` 单点�
 
 复原搜索确认没有 `_removed` minimum key、`false &&`、裸 `ceiling==0`、反向/放宽容量比较、
 `minimum_for_target=Some(B+1)`、强制 `bounds_tied=true` 或 web unavailable 反向条件残留。
+
+## 十四、修复轮 10（flaky oracle + 同毫秒 tie-break 裁决，全部实际执行并复原）
+
+环境：`.local-bin` nextest、`CARGO_BUILD_JOBS=6`、`NEIGE_CODEX_BIN` 未设置。所有变异均以
+`apply_patch` 单点施加，运行后立即反向复原。
+
+| # | 改坏什么 | 变红的测试 | 实际结果 |
+|---|---|---|---|
+| R10-B1 | 删除 `legacy_member_overage_freezes_new_blocks_across_the_tree` 在 link 后固定 root=1、child=2 的两行 fixture | `legacy_member_overage_freezes_new_blocks_across_the_tree` | **RED（循环第 8 次）**：前 7 次 PASS，第 8 次实际诊断 `at least 10`，精确 9 oracle 在 0.108s 红；证明不固定时间仍会复现，而不是把断言放宽掩盖 |
+| R10-B2a | 冻结 minimum 退回朴素 `B+1` | `legacy_member_overage_freezes_new_blocks_across_the_tree` | **RED 0/1**：生产错报 `at least 5`，期望精确 9 |
+| R10-B2b | 同一个朴素 `B+1` 变异独立运行新 tie-break 用例 | `equal_created_at_with_child_id_first_requires_ten_to_unfreeze` | **RED 0/1**：生产错报 `at least 5`，期望精确 10 |
+| R10-B3 | 把固定占用成员 SQL 的同毫秒 id 次序反成 `ORDER BY w.created_at,w.id DESC` | `equal_created_at_with_child_id_first_requires_ten_to_unfreeze` | **RED 0/1**：child 不再先拿余数，minimum 从精确 10 变成 9；新用例确实钉住已裁决的 UUID tie-break 方向 |
+
+本轮没有 STILL-GREEN 运行时变异。复原搜索/`git diff` 确认生产
+`task_projection.rs`、`wave_tree.rs` 无残留变更；正式差异只含两条测试与设计/实施文档。
