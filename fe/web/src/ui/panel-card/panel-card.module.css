@@ -64,7 +64,7 @@
     justify-content: space-between;
     gap: var(--space-2);
     block-size: var(--control-h-lg);
-    padding-inline: var(--space-4);
+    padding-inline: var(--space-6);
     padding-block-end: var(--space-4);
   }
 
@@ -114,10 +114,16 @@
    *
    * Three rules, and they are the whole system:
    *
-   *   1. **One inset.** `--space-4` from the card edge. Every block starts
+   *   1. **One inset.** `--space-6` from the card edge. Every block starts
    *      there — the head label, a list, a note, an empty state. Nothing
    *      indents past it; a module that wants to say "this belongs to that"
    *      says it with the block gap, not with a margin.
+   *
+   *      It is 12 rather than 8 because the corner depends on it: a row bleeds
+   *      4 of it back, so the gap between the row's fill and the card's edge is
+   *      the inset minus 4, and the concentric rule makes the card's radius
+   *      exactly `--radius-sm` plus that gap. An 8 inset capped the card at an
+   *      8px corner. See the note in tokens.css.
    *
    *   2. **Rows bleed, text does not.** A row carries `--space-2` of its own
    *      `padding-inline` — air between the hover fill and the glyphs — and the
@@ -163,7 +169,7 @@
     min-inline-size: 0;
     padding-block-start: var(--space-1);
     padding-block-end: var(--space-4);
-    padding-inline: var(--space-4);
+    padding-inline: var(--space-6);
   }
 
   /* An empty state occupies a row. Without a row's height it has no half-leading

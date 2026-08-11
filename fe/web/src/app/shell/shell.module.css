@@ -483,9 +483,9 @@
     min-inline-size: var(--menu-w-min);
     max-inline-size: var(--menu-w-max);
 
-    /* 8, not 2: its items are `--radius-sm`, so inner + gap = 4 + 8 = 12 is the
-       only padding at which the item's corner and the menu's share a centre. */
-    padding: var(--space-4);
+    /* Its items are `--radius-sm`, so the padding is whatever makes
+       4 + padding = `--radius-lg`: 12. */
+    padding: var(--space-6);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
     background: var(--paper);

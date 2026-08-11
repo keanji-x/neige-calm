@@ -158,13 +158,21 @@
      * the grid and wrong by the rule above: a 6px card around 4px rows inset by
      * 4 put the two arc centres 2px apart, and the corner read as pinched.
      *
+     * Note what the rule *costs*: a card's corner is bounded by how close its
+     * rows sit to the edge. At an 8px inset with a 4px bleed the gap was 4, so
+     * the card could be no rounder than 8 — and 8 on a 308px card barely reads
+     * as rounded at all. The fix is not a bigger number here, it is a wider
+     * inset there: the card's inset is 12, the bleed is still 4, so the gap is
+     * 8 and the card is 12. The corner follows the layout, never the other way
+     * round.
+     *
      * There is no `xs` and no `xl`. Both existed and neither was ever used;
      * an unused step is not a spare, it is the next arbitrary pick waiting to
      * happen. Add one back only together with the rank it names.
      */
     --radius-sm: 4px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
     --radius-pill: 999px;
 
     --space-0: 0;
@@ -209,7 +217,15 @@
     --control-h-lg: 32px;
     --rail-w: 200px;
     --rail-w-collapsed: 44px;
-    --panel-w: 308px;
+
+    /*
+     * 280, not 308. The panel is a *sidecar*: it holds a week of seven columns
+     * and a list of one-line rows, neither of which wanted the extra 28px —
+     * the calendar spent it on wider day cells nobody clicks by pixel, and the
+     * rows spent it on titles that already fitted. What did want it is the
+     * document beside it, which is the thing you came to read.
+     */
+    --panel-w: 280px;
     --drawer-w: 396px;
     --measure-prose: 616px;
     --measure-form: 544px;
