@@ -169,7 +169,7 @@
      *is* the document and an unbounded list there is the point. Same eight-row
      cap the other panel lists take — this was the longest list in the card. */
   .agenda .rows {
-    max-block-size: calc(var(--row-h) * 8 + var(--space-1) * 7);
+    max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
     overflow-y: auto;
     overscroll-behavior: contain;
   }

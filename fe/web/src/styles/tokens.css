@@ -144,18 +144,27 @@
      *   lg  — something floating *over* the page: dialog, drawer, menu.
      *   pill — a status dot or a badge, where the shape *is* the meaning.
      *
-     * The ladder is therefore also a nesting rule: an `md` object may only
-     * contain `sm` corners. Two equal radii nested read as a mistake — the
-     * inner corner looks tighter than the outer one at the same value,
-     * because it is cut from a shorter edge.
+     * The ladder is therefore also a nesting rule, and the rule is geometric
+     * rather than aesthetic: **inner = outer − gap**. Two rounded rectangles
+     * look right in each other only when their arcs share a centre, and the
+     * distance between those centres is exactly the gap between the shapes.
+     *
+     * It is a *corner* rule, not a padding rule. It binds only where an inner
+     * element actually sits in the outer one's corner — a panel row does, at 4
+     * from the card's edge, so the card is 4 + 4 = 8. The calendar's day cells
+     * sit mid-card and are bound by nothing.
+     *
+     * Every step is a multiple of 4, which is why 6 is gone. It was both off
+     * the grid and wrong by the rule above: a 6px card around 4px rows inset by
+     * 4 put the two arc centres 2px apart, and the corner read as pinched.
      *
      * There is no `xs` and no `xl`. Both existed and neither was ever used;
      * an unused step is not a spare, it is the next arbitrary pick waiting to
      * happen. Add one back only together with the rank it names.
      */
     --radius-sm: 4px;
-    --radius-md: 6px;
-    --radius-lg: 8px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
     --radius-pill: 999px;
 
     --space-0: 0;

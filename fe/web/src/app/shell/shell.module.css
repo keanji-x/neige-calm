@@ -482,7 +482,10 @@
     flex-direction: column;
     min-inline-size: var(--menu-w-min);
     max-inline-size: var(--menu-w-max);
-    padding: var(--space-1);
+
+    /* 8, not 2: its items are `--radius-sm`, so inner + gap = 4 + 8 = 12 is the
+       only padding at which the item's corner and the menu's share a centre. */
+    padding: var(--space-4);
     border: 1px solid var(--hairline);
     border-radius: var(--radius-lg);
     background: var(--paper);

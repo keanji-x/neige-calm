@@ -163,7 +163,7 @@
      grid for the trailing edge, and with the age gone too the title is the
      whole row. It keeps the panel's own row height and fill padding. */
   .variantPanel {
-    min-block-size: var(--row-h);
+    min-block-size: var(--row-h-sm);
     grid-template-columns: minmax(0, 1fr);
   }
 
