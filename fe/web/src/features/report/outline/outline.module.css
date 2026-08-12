@@ -13,11 +13,10 @@
     align-self: start;
     justify-self: start;
 
-    /* The gutter's own width, so the whole strip is a hover target rather than
-       six 6px dots. The expanded labels overflow it and overlay the prose
-       instead of reserving room — reserving it would make this a third column,
-       which is exactly what it is not. */
-    inline-size: var(--document-start);
+    /* The dots' own column, wide enough to be a hover target rather than six
+       6px points. The expanded card grows into the reserved margin beside it,
+       so it never reaches the text. */
+    inline-size: var(--control-h);
   }
 
   /*
@@ -74,7 +73,7 @@
 
   .rail:hover .row,
   .rail:focus-within .row {
-    inline-size: calc(var(--measure-prose) / 2);
+    inline-size: var(--rail-w);
   }
 
   .rail:hover .row:hover,
@@ -117,7 +116,9 @@
     white-space: nowrap;
   }
 
-  .label > * {
+  /* The label's own element, so a long section name ends in an ellipsis rather
+     than at the card's edge mid-word. A bare text node cannot be clipped. */
+  .text {
     overflow: hidden;
     text-overflow: ellipsis;
   }

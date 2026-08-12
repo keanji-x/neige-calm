@@ -6,8 +6,12 @@
      * so the title and the first character of the prose sit on one vertical.
      * One declaration, two consumers — the alternative is the same number typed
      * in two files that then drift.
+     *
+     * It is `--rail-w` wide plus a gutter, because that is what the outline's
+     * expanded card needs: the card is the reason the margin is reserved, and a
+     * margin narrower than the card would put the card back over the text.
      */
-    --document-start: calc(var(--space-10) + var(--space-8));
+    --document-start: calc(var(--rail-w) + var(--space-10));
 
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -103,7 +107,6 @@
    * page it is the content of.
    */
   .doc {
-    max-inline-size: calc(var(--document-start) + var(--measure-doc));
     min-inline-size: 0;
   }
 

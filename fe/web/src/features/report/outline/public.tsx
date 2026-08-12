@@ -105,7 +105,7 @@ export function ReportOutline({ items, onSelect = revealReportAnchor }: ReportOu
                   {row.number !== null && (
                     <span className={styles.number}>{String(row.number).padStart(2, '0')}</span>
                   )}
-                  {row.label}
+                  <span className={styles.text}>{row.label}</span>
                 </span>
               </button>
             </li>

@@ -2,9 +2,13 @@
 //
 // **A report is a sequence of typed blocks, not one Markdown string** (§8.3).
 // `prose` blocks render through `core/markdown`'s sanitized AST; `table`,
-// `chart.candles`, `task` and `app` break out from the 504 prose measure to
-// the 748 document width, **flush-left on the same edge as the prose** — each
-// one centering itself would give a three-figure report four left edges.
+// `chart.candles`, `task` and `app` render themselves.
+//
+// **Every block is the same width.** The blocks used to break out from the
+// prose measure to the full document width, on the theory that a table wants
+// room; what that actually produced was a document with two left-to-right
+// rhythms, where the eye had to re-find the column at every figure. One
+// measure for every kind is the simpler promise, and the one a reader can see.
 //
 // A v1 report has no blocks, only the flat `body` projection. That renders as
 // a single prose block, which is exactly what it is; it simply has no block
@@ -72,8 +76,8 @@ export function ReportDocument({
   return (
     /* `calm-prose` is the app's one prose recipe (base.css) — measure, serif,
        size, leading, and the block rhythm. The module class beside it adds only
-       what is specific to a *report*: the numbered sections, the breakout
-       columns and the sidenote. Two prose definitions is how the question
+       what is specific to a *report*: the numbered sections, the outline
+       gutter and the sidenote. Two prose definitions is how the question
        "what does prose look like" stops having one answer. */
     <article className={`calm-prose ${styles.doc}`} data-nc-report="">
       {rail}
@@ -83,7 +87,7 @@ export function ReportDocument({
           // A v1 report is one prose block that happens to have no id: same
           // column, same measure, just nothing to anchor to.
           <div className={styles.row}>
-            <div className={styles.prose}>
+            <div className={styles.block}>
               <ProseBlock markdown={report.body} blockId={null} onOpenLink={onOpenLink} />
             </div>
           </div>
@@ -112,37 +116,21 @@ function BlockSlot({ block, backlinks, onOpenLink }: {
   backlinks: number;
   onOpenLink?: (target: ReportLinkTarget) => void;
 }) {
-  const marker = backlinks > 0
-    ? (
-      // Lives in the 244 the document already had spare beside the measure.
-      // Inside the prose it would interrupt the reading; here peripheral
-      // vision finds it and nothing is in the way if you ignore it.
-      <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
-        ◂ {backlinks}
-      </span>
-    )
-    : null;
-
-  if (block.kind === 'prose') {
-    return (
-      <div className={styles.row}>
-        <div className={styles.prose} id={block.id}>
-          <ProseBlock markdown={block.payload.markdown} blockId={block.id} onOpenLink={onOpenLink} />
-        </div>
-        {marker}
-      </div>
-    );
-  }
-
-  // A breakout block occupies the sidenote's column too, so its marker cannot
-  // sit beside it. It goes above instead, at the trailing edge — where a
-  // figure's caption is not, so the two never collide.
   return (
-    <div className={`${styles.row} ${styles.rowBreakout}`}>
-      {marker}
-      <div className={styles.breakout} id={block.id}>
-        <BlockBody block={block} />
+    <div className={styles.row}>
+      <div className={styles.block} id={block.id}>
+        {block.kind === 'prose'
+          ? <ProseBlock markdown={block.payload.markdown} blockId={block.id} onOpenLink={onOpenLink} />
+          : <BlockBody block={block} />}
       </div>
+      {backlinks > 0 && (
+        // In the trailing gutter, aligned to the block's first line. Inside the
+        // prose it would interrupt the reading; out here peripheral vision
+        // finds it and nothing is in the way if you ignore it.
+        <span className={styles.sidenote} title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}>
+          ◂ {backlinks}
+        </span>
+      )}
     </div>
   );
 }
@@ -161,7 +149,7 @@ function BlockBody({ block }: { block: ReportBlock }): ReactNode {
           unsupported block kind {block.declaredKind}
         </div>
       );
-    // `prose` is handled by the slot, which puts it in the measure column.
+    // `prose` is handled by the slot, which owns the markdown pipeline.
     case 'prose': return null;
   }
 }
