@@ -18,14 +18,155 @@
    *   a line, so the code block keeps `--surface-code` alone and the table
    *   keeps one rule per row.
    */
-  /* Only what `calm-prose` does not already say. Measure, serif, size, leading
-     and block rhythm come from there; this adds the section counter, the two
-     heading treatments that are the report's own, and the block kinds the
-     shared recipe has no opinion on. */
+  /*
+   * Only what `calm-prose` does not already say. Measure, serif, size, leading
+   * and block rhythm come from there; this adds the section counter, the two
+   * heading treatments that are the report's own, and the block kinds the
+   * shared recipe has no opinion on.
+   *
+   * The container is 748 and centred in the main column; the prose inside it is
+   * 504 and **flush left**, which leaves the trailing side for the sidenote.
+   * Two different things, for two different reasons: the container centres so
+   * the column's slack does not all pile up between the text and the panel
+   * card, and the prose stays left so every breakout block has one shared left
+   * edge to align to (§8.3). `.calm-prose` caps itself at the prose measure; a
+   * report is the one consumer that is wider than its own text, so it overrides
+   * that here and hands the measure to the prose column instead.
+   *
+   * `inline-size`, not merely `max-inline-size`: the slot this lands in is
+   * `margin-inline: auto` inside its grid column, which makes it shrink-to-fit
+   * — so a document that only *allowed* itself 748 got sized by its widest row
+   * instead, and the breakout blocks stopped short of the column they were
+   * supposed to break out to. Asking for the measure outright is what makes
+   * "the document is 748 wide" true rather than aspirational.
+   */
   .doc {
-    display: flow-root;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    inline-size: var(--measure-doc);
+    max-inline-size: 100%;
     margin-inline: auto;
     counter-reset: report-section;
+  }
+
+  /* One block: the block itself in the measure (or across the full width) and
+     its sidenote beside it. */
+  .row {
+    display: grid;
+    grid-template-columns: var(--measure-prose) minmax(0, 1fr);
+    column-gap: var(--space-8);
+    align-items: start;
+  }
+
+  /* A breakout row is one column: the block owns the whole document width, and
+     its marker takes the row above rather than a column it cannot have. */
+  .rowBreakout {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: end;
+  }
+
+
+  .prose {
+    grid-column: 1;
+    min-inline-size: 0;
+  }
+
+  /* The block rhythm `calm-prose` gives its own direct children, given to the
+     blocks inside a prose block — which are now one level deeper. */
+  .prose > * + * {
+    margin-block-start: var(--space-8);
+  }
+
+  /* Breakout: from the 504 measure to the full 748, on the same left edge.
+     Never `margin-inline: auto` — a centred figure invents a new left edge,
+     and a report with three of them has four. */
+  .breakout {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    min-inline-size: 0;
+  }
+
+  /*
+   * The backlink marker (§8.3). It sits in the 244 the measure was never using,
+   * aligned to the first line of the block it belongs to. Inside the prose it
+   * would interrupt a sentence to say something the reader did not ask about;
+   * out here, peripheral vision finds it and nothing is in the way.
+   */
+  .sidenote {
+    grid-column: 2;
+    align-self: start;
+    padding-block-start: var(--space-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  /* Back into the single column, or the sidenote's own `grid-column: 2` would
+     conjure an implicit second one and take 16px of gap plus its own width out
+     of the block's 748. */
+  .rowBreakout > .sidenote {
+    grid-column: 1;
+    padding-block: 0 var(--space-2);
+  }
+
+  /*
+   * Arrival (§2.6): the one non-overlay entrance effect in the app. The block
+   * was already on the page — this is the document pointing at it, then
+   * getting out of the way. One property, one direction, no loop.
+   */
+  .doc [data-nc-arrived] {
+    animation: report-arrival var(--motion-slow) ease-in;
+  }
+
+  @keyframes report-arrival {
+    from {
+      background-color: var(--accent-soft);
+    }
+
+    to {
+      background-color: transparent;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .doc [data-nc-arrived] {
+      animation: none;
+    }
+  }
+
+  /* A block this build cannot draw. One line, in the machine register, so it
+     reads as a gap in the *viewer* rather than as a defect in the report. */
+  .unsupported {
+    padding-block: var(--space-4);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  /*
+   * A `neige://` citation. It is a button (INV-A11Y-061), so it has to be
+   * un-buttoned back into a run of prose: inherited type, baseline alignment,
+   * and the underline is the only thing that says it leads anywhere.
+   */
+  .link {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    text-align: start;
+    text-decoration: underline;
+    text-decoration-color: var(--hairline-strong);
+    text-underline-offset: 0.18em;
+    cursor: pointer;
+  }
+
+  .link:hover,
+  .link:focus-visible {
+    text-decoration-color: var(--accent);
   }
 
   /*
@@ -77,7 +218,7 @@
     vertical-align: middle;
   }
 
-  .doc > .h1:first-child {
+  .prose > .h1:first-child {
     margin-block-start: 0;
   }
 
@@ -95,8 +236,8 @@
 
   /* Both headings own their spacing outright, so the generic sibling rule must
      not add to it. */
-  .doc > .h1 + *,
-  .doc > .h2 + * {
+  .prose > .h1 + *,
+  .prose > .h2 + * {
     margin-block-start: 0;
   }
 

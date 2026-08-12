@@ -20,6 +20,9 @@ import {
   type Cove, type CovePatchBody, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
+  waveBacklinksOperation, type WaveBacklinks,
+} from '../../../../core/domain/report.ts';
+import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
@@ -55,6 +58,7 @@ export const queryKeys = Object.freeze({
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
 });
@@ -105,6 +109,20 @@ export function waveDetailQueryOptions(transport: ApiTransportPort, waveId: stri
   return {
     queryKey: queryKeys.waveDetail(waveId),
     queryFn: (): Promise<WaveDetailWire> => runOperation(transport, waveDetailOperation(waveId)),
+  };
+}
+
+/**
+ * Who cites this wave (§8.3).
+ *
+ * Its own cache entry rather than a field on the detail: backlinks are written
+ * by *other* waves, so they go stale on edits this wave never sees, and folding
+ * them into the detail would tie the document's freshness to theirs.
+ */
+export function waveBacklinksQueryOptions(transport: ApiTransportPort, waveId: string) {
+  return {
+    queryKey: queryKeys.waveBacklinks(waveId),
+    queryFn: (): Promise<WaveBacklinks> => runOperation(transport, waveBacklinksOperation(waveId)),
   };
 }
 

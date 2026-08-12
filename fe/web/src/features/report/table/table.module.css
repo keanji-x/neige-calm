@@ -1,0 +1,67 @@
+@layer features {
+  /* Its own scroll container: a wide table may not make the page scroll
+     sideways (§3.2). */
+  .wrap {
+    overflow-x: auto;
+  }
+
+  /* Sans, and back to interface size: a table is data, and data is scanned
+     down columns rather than read along lines. No outer frame — the breakout
+     to 748 is the visual event, and §6.5's boundary ladder stops at one
+     hairline per row. */
+  .table {
+    inline-size: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-snug);
+  }
+
+  .caption {
+    margin-block-end: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    text-align: start;
+  }
+
+  /* The editorial header: small, uppercase, tracked. It is a label, so it takes
+     the label register rather than a bolder version of the data. */
+  .head {
+    padding-block: var(--space-2) var(--space-3);
+    padding-inline: var(--space-4) var(--space-6);
+    border-block-end: 1px solid var(--hairline-strong);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wider);
+    text-align: start;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .cell {
+    padding-block: var(--space-3);
+    padding-inline: var(--space-4) var(--space-6);
+    border-block-end: 1px solid var(--hairline);
+    color: var(--text-2);
+    text-align: start;
+    vertical-align: baseline;
+  }
+
+  /* Right-aligned columns are the numeric ones, and digits only line up if they
+     are all the same width. This pairing is the whole reason a table beats a
+     list. */
+  .right {
+    font-variant-numeric: tabular-nums;
+    text-align: end;
+  }
+
+  /* The row the report is actually talking about. `--accent-soft` is the same
+     selection language §5.1 gives every list; nothing else in the table is
+     coloured, so one row reads as one answer. */
+  .highlighted > .cell {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+}

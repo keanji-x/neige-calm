@@ -1,0 +1,102 @@
+@layer features {
+  /*
+   * A task is a *record inside a document*, so it is set as one: no card, no
+   * frame, one hairline above it to say where it starts. It sits in the
+   * interface register rather than the prose one because it is a structured
+   * declaration, not a paragraph.
+   */
+  .task {
+    padding-block-start: var(--space-4);
+    border-block-start: 1px solid var(--hairline);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-snug);
+  }
+
+  .head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+
+  .key {
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    color: var(--text);
+  }
+
+  .kind {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wider);
+    text-transform: uppercase;
+  }
+
+  .withdrawn {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wider);
+    text-decoration: line-through;
+    text-transform: uppercase;
+  }
+
+  .meta {
+    margin-block: var(--space-2) 0;
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  /* Ready carries a colour and Not ready does not: only one of the two is a
+     state you might act on, and colouring both would make the pair decorative. */
+  .ready {
+    color: var(--success-text);
+  }
+
+  .notReady {
+    color: var(--text-3);
+  }
+
+  .goal {
+    margin-block: var(--space-3) 0;
+    color: var(--text-2);
+  }
+
+  .acceptance {
+    margin-block: var(--space-2) 0;
+    color: var(--text-3);
+  }
+
+  .label {
+    margin-inline-end: var(--space-3);
+    font-size: var(--text-xs);
+    letter-spacing: var(--tracking-wider);
+    text-transform: uppercase;
+  }
+
+  .gate {
+    margin-block-start: var(--space-3);
+  }
+
+  .step {
+    display: flex;
+    gap: var(--space-4);
+    font-size: var(--text-xs);
+    line-height: var(--row-h-sm);
+  }
+
+  .stepName {
+    flex: none;
+    inline-size: 96px;
+    color: var(--text-3);
+  }
+
+  /* The command is a literal, so mono says so without spending a colour. */
+  .stepCmd {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    color: var(--text-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

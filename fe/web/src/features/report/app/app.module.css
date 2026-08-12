@@ -1,0 +1,57 @@
+@layer features {
+  /*
+   * The one framed block in the document. Everywhere else a border would be
+   * decoration; here it is the semantics — it marks content this app did not
+   * write and is holding in a sandbox. §6.5's ladder allows it at step ②: a
+   * visible boundary between different *kinds* of thing.
+   */
+  .frame {
+    overflow: hidden;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+  }
+
+  .head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding-block: var(--space-2);
+    padding-inline: var(--space-4);
+    border-block-end: 1px solid var(--hairline);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .title {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    color: var(--text-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sandboxed {
+    margin-inline-start: auto;
+    letter-spacing: var(--tracking-wider);
+    text-transform: uppercase;
+  }
+
+  .iframe {
+    display: block;
+    inline-size: 100%;
+    border: none;
+  }
+
+  /* A payload that claims a foreign origin. It says what it refused, in the
+     machine register, and loads nothing. */
+  .refused {
+    padding: var(--space-4);
+    border: 1px solid var(--error-border);
+    border-radius: var(--radius-md);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--error-text);
+  }
+}

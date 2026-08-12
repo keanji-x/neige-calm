@@ -1,0 +1,152 @@
+@layer features {
+  /* The positioning context for the overlay. It has to be the trigger's own
+     wrapper: the header is a `ui/**` module and may not learn that one of the
+     things it is handed wants to anchor a layer to it. */
+  .wrap {
+    position: relative;
+    display: flex;
+  }
+
+  /* Chrome-tier icon button, same box and glyph pairing as the delete action
+     beside it (§6.7). */
+  .trigger {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .trigger:hover,
+  .trigger:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text-2);
+  }
+
+  /* Open is a state of the trigger, carried the same way selection is carried
+     everywhere else. */
+  .trigger[aria-expanded="true"] {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  /*
+   * §7.6's inline-end overlay family: fixed to the main region's trailing edge,
+   * `--z-overlay`, `--shadow-float`, paper + hairline, and the radius only on
+   * the inline-start corners because the trailing pair would be rounding a
+   * corner that is flush against the edge of the region.
+   *
+   * `--panel-w` is not a coincidence: it is exactly the panel card's width, so
+   * what the overlay covers is the card and nothing else.
+   */
+  .panel {
+    position: absolute;
+
+    /* Below the header row it hangs from, by the page's own gutter. */
+    inset-block-start: calc(var(--control-h) + var(--space-8));
+
+    /*
+     * Trailing edge aligned with the *action group's* trailing edge, not with
+     * the trigger's — that edge is the page's content edge, which is also the
+     * panel card's. The offset is therefore exactly the one control and one gap
+     * that sit between this trigger and the end of the row: the destructive
+     * action. Written in the same tokens that put it there, so moving it moves
+     * this with it.
+     */
+    inset-inline-end: calc(-1 * (var(--control-h) + var(--space-3)));
+    z-index: var(--z-overlay);
+    max-block-size: calc(var(--slot-h) * 2);
+    overflow-y: auto;
+    inline-size: var(--panel-w);
+    padding: var(--space-1);
+    border: 1px solid var(--hairline);
+    border-start-start-radius: var(--radius-lg);
+    border-end-start-radius: var(--radius-lg);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    animation: report-outline-in var(--motion-snappy) ease-out;
+  }
+
+  @keyframes report-outline-in {
+    from {
+      opacity: 0;
+      translate: 2px 0;
+    }
+
+    to {
+      opacity: 1;
+      translate: 0 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .panel {
+      animation: none;
+    }
+  }
+
+  .legend {
+    padding-block: var(--space-2);
+    padding-inline: var(--space-4);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wider);
+    text-transform: uppercase;
+  }
+
+  .list {
+    margin: 0;
+  }
+
+  /* §6.0's generic row at the small height — the same row the rail and the
+     panel modules use, because this is the same kind of thing. */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-4);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .row:hover,
+  .row[data-nc-active] {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  .child {
+    padding-inline-start: var(--space-9);
+    color: var(--text-3);
+  }
+
+  .number {
+    flex: none;
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
+  }
+
+  .label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

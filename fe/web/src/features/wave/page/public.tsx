@@ -32,6 +32,11 @@ export type WavePageProps = Readonly<{
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
+  /** The outline trigger + overlay (§6.16), composed by `app/router`. It sits
+   *  in the header's action group, before the destructive action. */
+  outline?: ReactNode;
+  /** `REFERENCED BY` — omitted entirely when nothing cites this wave (§6.1). */
+  backlinks?: ReactNode;
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
@@ -43,7 +48,7 @@ export type WavePageProps = Readonly<{
 
 
 export function WavePage({
-  wave, cards, report, conversationList, conversationAction, pageTitleRef,
+  wave, cards, report, outline, backlinks, conversationList, conversationAction, pageTitleRef,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -118,6 +123,11 @@ export function WavePage({
           // creating a card is a gesture on the board, renaming is in place.
           // Same icon + tooltip treatment as the cove page — one destructive
           // affordance, one glyph, wherever it appears.
+          //
+          // The outline goes first: it is a gesture about the document itself,
+          // and the destructive action is always last in its group.
+          <>
+          {outline}
           <button
             type="button"
             data-nc-role="icon"
@@ -128,6 +138,7 @@ export function WavePage({
           >
             ×
           </button>
+          </>
         }
         /*
          * No identity row — `--header-h` is 62 here now, not 92.
@@ -180,6 +191,15 @@ export function WavePage({
                   </ul>
                 )}
             </PanelModule>
+            {/*
+              `REFERENCED BY` is absent, not empty, when nothing cites this wave
+              (§6.1: a section with zero rows is not rendered). Being uncited is
+              the normal state of a new wave, and a permanent "No backlinks yet."
+              would make the common case look like a deficiency.
+            */}
+            {backlinks !== undefined && (
+              <PanelModule title="Referenced by">{backlinks}</PanelModule>
+            )}
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
