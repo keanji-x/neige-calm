@@ -14,6 +14,9 @@ module.exports = {
     { name: 'cards-public-entry-only', severity: 'error', from: { path: '^(core/|web/src/)', pathNot: '^web/src/systems/cards/' }, to: { path: '^web/src/systems/cards/(?!public\\.ts$)' } },
     { name: 'markdown-public-entry-only', severity: 'error', from: { path: '^(core/|web/src/)' }, to: { path: '^core/markdown/(?!public\\.ts$)' } },
     { name: 'no-shared-directory', severity: 'error', from: {}, to: { path: '(^|/)shared(/|$)' } },
+    { name: 'styles-no-runtime-layers', severity: 'error', from: { path: '^web/src/styles/' }, to: { path: '^(web/src/(app|features|systems|ui)/|web/src/main\\.tsx$)' } },
+    { name: 'runtime-no-verification-domains', severity: 'error', from: { path: '^(core/|web/src/)', pathNot: '\\.(test|contract\\.test)\\.tsx?$' }, to: { path: '^(mock|tools|web/e2e)/' } },
+    { name: 'not-to-unresolvable', severity: 'error', from: {}, to: { couldNotResolve: true } },
     { name: 'no-circular', severity: 'error', from: {}, to: { circular: true } },
   ],
   options: {
