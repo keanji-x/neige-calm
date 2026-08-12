@@ -239,7 +239,9 @@
       "web/src/app/providers/providers.browser.test.tsx"
     ],
     "expected_red": [
-      "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel"
+      "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel",
+      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
+      "browser provider contracts INV-APP-009 routes button and Escape through the same reload handler"
     ],
     "why_more_than_one": "Removing Dialog and the client-version text simultaneously removes initial modal focus and dual-version reporting; the button still calls reload directly, but Escape no longer reaches the same handler, so the consolidated button-and-Escape routing contract also fails."
   },
@@ -303,6 +305,7 @@
     ],
     "expected_red": [
       "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
+      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
       "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel",
       "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"
     ],
@@ -839,7 +842,8 @@
     "target": "web/src/styles/tokens.css",
     "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
     "expected_red": [
-      "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground"
+      "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
+      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"
     ],
     "selection_paths": [
       "tools/styles/styles.test.ts",
