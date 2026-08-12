@@ -7,25 +7,121 @@
     --font-numeric: var(--font-sans);
     --font-code: var(--font-mono);
 
-    --bg: oklch(98.8% 0.003 240);
-    --paper: oklch(99.5% 0.002 240);
-    --hairline: oklch(92% 0.005 240);
-    --hairline-strong: oklch(86% 0.006 240);
+    /*
+     * THE ELEVATION LADDER.
+     *
+     * Surfaces are not picked per component. Each one declares how many ranks
+     * it sits from the ground, and the *direction of every rank is the same in
+     * both themes*: recessed is darker than the ground, raised is lighter.
+     *
+     *   -1  recessed   rail, chip          behind the page
+     *    0  ground     --bg
+     *   +1  raised     card, terminal      an object on the page
+     *   +2  floating   paper               menus, dialogs, drawer
+     *
+     * **+2 spends no lightness.** `--paper` equals `--surface-card`, and what
+     * separates it is `--shadow-float` — which §6.5 already grants to exactly
+     * those four surfaces and to nothing else, so the signal was there and a
+     * fourth lightness rank was paying for it twice. That matters because the
+     * ladder is bounded: every rank spent on elevation is contrast taken away
+     * from the text standing on it, and the top rank was the one making
+     * `--text-3` fail AA.
+     *
+     * **One step is a constant contrast RATIO of 1.25, not a constant L
+     * difference.** That distinction is the whole rule. sRGB luminance is
+     * violently non-linear, so the same delta-L buys wildly different edges at
+     * different points on the scale: at a flat 3.0 L, dark's own three steps
+     * measured 1.036 / 1.051 / 1.067 — the rail, the largest region on screen,
+     * got the weakest edge of the three. Solving for the ratio instead gives
+     * the same ladder in both themes, in the only unit that describes what an
+     * eye actually sees. The shipped 1.25 step measures 1.251 rail → ground
+     * and 1.261 ground → paper in light, then 1.252 for both steps in dark.
+     *
+     * The text scale's alignment with M3 created the headroom for 1.25: the
+     * audit script's worst foreground/surface pair across both themes is 4.80,
+     * above AA's 4.5 requirement. The number is a knob with a measured wall,
+     * not a guess.
+     *
+     * Each theme is anchored at its outer end and walked inward — light from
+     * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
+     * that is the end with no room to give.
+     *
+     * What this replaced was not a looser version of the same thing — it had no
+     * direction at all. `--surface-card` sat 3.8 L *below* the ground in light
+     * and 5.0 L *above* it in dark, so a card was carved into the page in one
+     * theme and floating over it in the other. `--surface-chip` and
+     * `--surface-card` collapsed onto the same value in light while sitting 3 L
+     * apart in dark. And the light ground was 98.8 out of 100, leaving 1.2 of
+     * headroom, so nothing in light *could* be raised — which is why everything
+     * had been pushed down instead.
+     *
+     * Dark had the mirror image of that bug and it survived the first fix: the
+     * recessed rank had almost no room below the ground. At the shipped 24.5%
+     * ground, both dark steps can hold the same 1.25 ratio. Both themes now
+     * hold four ranks because both grounds were moved off their wall.
+     *
+     * Elevation is absolute; **state is relative** — see `--accent-soft`.
+     */
+    --bg: oklch(92.2% 0.003 240);
+    --paper: oklch(99.9% 0.002 240);
+    --hairline: oklch(80% 0.005 240);
+    --hairline-strong: oklch(72% 0.006 240);
     --text: oklch(20% 0.008 250);
-    --text-2: oklch(45% 0.01 250);
-    --text-3: oklch(52% 0.01 250);
-    --text-4: oklch(76% 0.008 250);
-    --accent: oklch(52% 0.13 245);
-    --accent-soft: oklch(95% 0.025 245);
-    --warn: oklch(58% 0.16 30);
-    --warn-soft: oklch(96% 0.03 30);
+    --text-2: oklch(38% 0.01 250);
+    --text-3: oklch(44% 0.01 250);
+    --text-4: oklch(74% 0.008 250);
 
-    --surface-rail: oklch(98% 0.003 240);
-    --surface-card: oklch(96% 0.004 240);
-    --surface-chip: oklch(95% 0.005 240);
+    /*
+     * Hue 267, not 245. 245 is the default SaaS blue, and it was also exactly
+     * `--cove-6` — so a cove's identity dot could land on the one colour §7.5
+     * reserves for "you are here". 267 is the point farthest from every hue on
+     * the 8-step cove ring (22.5 degrees from its two nearest), so identity and
+     * state can never be confused. Chroma drops 0.13 -> 0.10 as well: the app
+     * spends one accent, sparingly, on a page that is otherwise greyscale.
+     */
+    --accent: oklch(45% 0.10 267);
+
+    /*
+     * State is a *relative* channel: an alpha tint over whatever it sits on,
+     * not a surface of its own. A selected row appears both on the ground and
+     * inside a raised card, and an absolute fill can only be correct against
+     * one of them — at the old value it was 3.8 L below the ground and would
+     * have been 1.7 L *above* a card, i.e. invisible in exactly the place the
+     * panel needs it. The same argument applies to the two other soft fills,
+     * so all three are alpha.
+     */
+    --accent-soft: oklch(49% 0.10 267 / 0.14);
+    --warn: oklch(52% 0.14 30);
+    --warn-soft: oklch(52% 0.14 30 / 0.12);
+
+    --surface-rail: oklch(85.1% 0.004 240);
+    --surface-card: oklch(99.9% 0.003 240);
+    --surface-chip: oklch(85.1% 0.005 240);
+
+    /*
+     * A well that has taken focus, one step further from the page.
+     *
+     * This cannot be an overlay, and that is the point of it existing. The
+     * `--overlay-*` tokens are defined relative to **ink** — black in light,
+     * white in dark — so "darken by 4%" flips direction with the theme. A
+     * recessed well needs the opposite: further from the page ground, which is
+     * darker in both. Measured on the real pixels with the old overlay in
+     * place, focus moved the well's contrast against the page in the right
+     * direction in light but the wrong direction in dark, from one declaration.
+     *
+     * Elevation is absolute, so this is absolute. Measured well against page,
+     * blur → focus is 1.577 → 1.864 in light and 1.567 → 1.620 in dark.
+     *
+     * The dark value is honest rather than effective. Dark's well already sits
+     * at luminance 0.0017 — the floor — so the dark change buys very little
+     * and you cannot see it. There is no room left in that direction and the
+     * other direction is wrong. In dark, the send arrow appearing is the
+     * whole signal, which is what it was designed to be.
+     */
+    --surface-chip-focus: oklch(80% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
-    --surface-panel-head: oklch(98% 0.003 240);
-    --surface-terminal: oklch(99% 0.003 240);
+    --surface-panel-head: oklch(99.9% 0.003 240);
+    --surface-terminal: oklch(99.9% 0.003 240);
     --surface-code: oklch(0% 0 0 / 0.04);
     --overlay-hover-faint: oklch(0% 0 0 / 0.025);
     --overlay-hover: oklch(0% 0 0 / 0.04);
@@ -39,14 +135,75 @@
     --text-meta: var(--text-3);
     --text-decorative: var(--text-4);
 
+    /*
+     * ── The type scale ────────────────────────────────────────────────────
+     *
+     * Every other block in this file carries its reasoning; this one carried
+     * none, and it showed. Eight ranks were declared, six were used, and the
+     * two most-used sat 0.5px apart:
+     *
+     *   xs 11 · sm 12.5 · base 13 · md 15 · lg 18 · xl 22 · 26 · 36
+     *            └─ 34 uses ─┴─ 32 ─┘└ 6 ┘   4     4     5    0    0
+     *
+     * 12.5 → 13 is a 4% step. A step you cannot see is not a step: it is two
+     * names for one rank, and with nothing written down to say which to reach
+     * for, "which small size does this take" was answered by whichever file was
+     * copied. That is the whole of the inconsistency, and it is arithmetic, not
+     * taste.
+     *
+     * So: 12.5 is gone (its 32 uses grew 0.5px, which is nothing), and the two
+     * display ranks nobody ever called are gone with it. Five ranks remain,
+     * every one of them in use, each with one job:
+     *
+     *   --text-xs    11    label      a word you read once — eyebrows, crumbs,
+     *                                 counts, units. Never a sentence.
+     *   --text-base  13    interface  everything you operate: rows, buttons,
+     *                                 fields, chips, menus. The default.
+     *   --text-md    15    section    a title over a group, and prose in a
+     *                                 column too narrow to carry 18.
+     *   --text-lg    18    prose      running text meant to be read, at the
+     *                                 measure `--measure-prose` is paired to.
+     *   --text-xl    22    page       the one title a route gets. §3.3 allows
+     *                                 exactly one P0 per surface; this is it.
+     *
+     * Steps: 1.18 · 1.15 · 1.20 · 1.22. Even, and every one of them visible.
+     * A new rank needs a job no rank above has, not a size between two.
+     */
+    /*
+     * ── One header baseline for the whole window ──────────────────────────
+     *
+     * The three regions each grew their own header — the rail's wordmark, the
+     * route's title, the drawer's title — and nothing tied them together.
+     * Measured with the drawer open, the three baselines sat at:
+     *
+     *   rail "neige · calm"   20.0
+     *   route title           41.7
+     *   drawer title          30.0
+     *
+     * Three lines of the same kind of thing, at three heights, across a window
+     * you see all of at once. Nobody chose that; it is what three independent
+     * paddings add up to.
+     *
+     * This is the distance from the top of the window to the baseline of the
+     * first line of *every* region's header. The number is the route title's,
+     * because the route title is the one that cannot move: it belongs to the
+     * document, and the chrome around a document aligns to it, not the other
+     * way round. (41.7 → 42, the 0.3 being where its 32px title row centres a
+     * 18px line.)
+     *
+     * A region cannot compute its own padding from this in CSS — the offset
+     * from a line box's top to its baseline depends on font metrics CSS cannot
+     * read — so each header subtracts a measured constant and says so at the
+     * point of use. The rule stays checkable: open the app and all three
+     * baselines are one number.
+     */
+    --header-baseline: 42px;
+
     --text-xs: 11px;
-    --text-sm: 12.5px;
     --text-base: 13px;
     --text-md: 15px;
     --text-lg: 18px;
     --text-xl: 22px;
-    --text-display-sm: 26px;
-    --text-display: 36px;
     --leading-none: 1;
     --leading-tight: 1.15;
     --leading-snug: 1.3;
@@ -59,11 +216,46 @@
     --tracking-wider: 0.06em;
     --tracking-widest: 0.08em;
 
-    --radius-xs: 2px;
+    /*
+     * Three steps and a pill, chosen by **what the corner belongs to**, not by
+     * how big the thing is:
+     *
+     *   sm  — something *inside* something: rows, chips, buttons, inputs,
+     *         menu items, day cells.
+     *   md  — an object that owns its own boundary on the page: the panel
+     *         card, the settings error box, a placeholder slot.
+     *   lg  — something floating *over* the page: dialog, drawer, menu.
+     *   pill — a status dot or a badge, where the shape *is* the meaning.
+     *
+     * The ladder is therefore also a nesting rule, and the rule is geometric
+     * rather than aesthetic: **inner = outer − gap**. Two rounded rectangles
+     * look right in each other only when their arcs share a centre, and the
+     * distance between those centres is exactly the gap between the shapes.
+     *
+     * It is a *corner* rule, not a padding rule. It binds only where an inner
+     * element actually sits in the outer one's corner — a panel row does, at 4
+     * from the card's edge, so the card is 4 + 4 = 8. The calendar's day cells
+     * sit mid-card and are bound by nothing.
+     *
+     * Every step is a multiple of 4, which is why 6 is gone. It was both off
+     * the grid and wrong by the rule above: a 6px card around 4px rows inset by
+     * 4 put the two arc centres 2px apart, and the corner read as pinched.
+     *
+     * Note what the rule *costs*: a card's corner is bounded by how close its
+     * rows sit to the edge. At an 8px inset with a 4px bleed the gap was 4, so
+     * the card could be no rounder than 8 — and 8 on a 308px card barely reads
+     * as rounded at all. The fix is not a bigger number here, it is a wider
+     * inset there: the card's inset is 12, the bleed is still 4, so the gap is
+     * 8 and the card is 12. The corner follows the layout, never the other way
+     * round.
+     *
+     * There is no `xs` and no `xl`. Both existed and neither was ever used;
+     * an unused step is not a spare, it is the next arbitrary pick waiting to
+     * happen. Add one back only together with the rank it names.
+     */
     --radius-sm: 4px;
-    --radius-md: 6px;
-    --radius-lg: 8px;
-    --radius-xl: 10px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
     --radius-pill: 999px;
 
     --space-0: 0;
@@ -91,8 +283,81 @@
     --error: oklch(56% 0.14 25);
     --overlay-scrim: rgba(20, 30, 55, 0.32);
     --cal-event-waiting-bg: oklch(97% 0.018 30);
-    --error-text: oklch(50% 0.18 25);
+    --error-text: oklch(42% 0.17 25);
     --warn-border: oklch(85% 0.05 30);
+
+    /* Weights: three steps only (§2.2). 300/700/bold are forbidden. */
+    --weight-normal: 400;
+    --weight-medium: 500;
+    --weight-semibold: 600;
+
+    /* Box scale: declared densities, never padding+line-height accidents (§2.5). */
+    --row-h-sm: 24px;
+    --row-h: 28px;
+    --row-h-lg: 48px;
+    --control-h-sm: 20px;
+    --control-h: 28px;
+    --control-h-lg: 32px;
+    --rail-w: 200px;
+    --rail-w-collapsed: 44px;
+
+    /*
+     * 280, not 308. The panel is a *sidecar*: it holds a week of seven columns
+     * and a list of one-line rows, neither of which wanted the extra 28px —
+     * the calendar spent it on wider day cells nobody clicks by pixel, and the
+     * rows spent it on titles that already fitted. What did want it is the
+     * document beside it, which is the thing you came to read.
+     */
+    --panel-w: 280px;
+    --drawer-w: 396px;
+
+    /*
+     * Sized for `--text-lg`, the rank `.calm-prose` reads at, so a line lands
+     * in the middle of the 65–75 character band.
+     *
+     * Measured, not estimated. The average advance of English prose in this
+     * face at 18px is 7.22px — taken from a canvas measurement of a real
+     * sentence, because letter *frequency* sets the average, not the alphabet.
+     * That puts the old 616 at 85 characters a line, and the 13px it was
+     * originally paired with at 118. 504 runs 70.
+     *
+     * A measure is only ever correct for one size. Changing either without the
+     * other is how a document becomes unreadable while every individual token
+     * still looks reasonable — which is exactly what happened here.
+     */
+    --measure-prose: 504px;
+    --measure-form: 544px;
+    --measure-page: 1180px;
+    --measure-board: 1280px;
+    --measure-list: 720px;
+    --measure-doc: 748px;
+    --slot-h: 240px;
+    --rule-h: 2px;
+    --dot-sm: 6px;
+    --dot-md: 8px;
+    --glyph-sm: 14px;
+    --glyph: 16px;
+    --menu-w-min: 180px;
+    --menu-w-max: 320px;
+
+    /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
+    --warn-text: oklch(42% 0.16 30);
+    --success-text: oklch(42% 0.14 145);
+    --error-soft: oklch(52% 0.15 25 / 0.12);
+    --error-border: oklch(85% 0.05 25);
+    --text-on-accent: var(--bg);
+
+    --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.05), 0 12px 32px oklch(0% 0 0 / 0.08);
+
+    /* Cove identity slots: id hash mod 8. Never a free-form hex (§6.2). */
+    --cove-1: oklch(62% 0.09 20);
+    --cove-2: oklch(62% 0.09 60);
+    --cove-3: oklch(62% 0.09 110);
+    --cove-4: oklch(62% 0.09 150);
+    --cove-5: oklch(62% 0.09 200);
+    --cove-6: oklch(62% 0.09 245);
+    --cove-7: oklch(62% 0.09 290);
+    --cove-8: oklch(62% 0.09 330);
 
     --z-base: 0;
     --z-raised: 2;
@@ -103,24 +368,31 @@
   }
 
   [data-theme="dark"] {
-    --bg: oklch(16% 0.008 245);
-    --paper: oklch(19% 0.009 245);
-    --hairline: oklch(28% 0.01 245);
-    --hairline-strong: oklch(36% 0.012 245);
+    /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which
+       is *not* a fixed L step, and is the whole reason this block's numbers are
+       not light's mirrored. See the note on `:root`. */
+    --bg: oklch(24.5% 0.008 245);
+    --paper: oklch(31.4% 0.01 245);
+    --hairline: oklch(42% 0.01 245);
+    --hairline-strong: oklch(50% 0.012 245);
     --text: oklch(96% 0.005 245);
-    --text-2: oklch(72% 0.012 245);
-    --text-3: oklch(64% 0.012 245);
-    --text-4: oklch(42% 0.012 245);
-    --accent: oklch(72% 0.14 245);
-    --accent-soft: oklch(28% 0.05 245);
-    --warn: oklch(70% 0.16 30);
-    --warn-soft: oklch(28% 0.05 30);
-    --surface-rail: oklch(15% 0.008 245);
-    --surface-card: oklch(21% 0.009 245);
-    --surface-chip: oklch(24% 0.01 245);
+    --text-2: oklch(84% 0.012 245);
+    --text-3: oklch(78% 0.012 245);
+    --text-4: oklch(50% 0.012 245);
+    --accent: oklch(80% 0.11 267);
+    --accent-soft: oklch(74% 0.11 267 / 0.18);
+    --warn: oklch(72% 0.15 30);
+    --warn-soft: oklch(72% 0.15 30 / 0.18);
+    --surface-rail: oklch(12% 0.008 245);
+    --surface-card: oklch(31.4% 0.009 245);
+    --surface-chip: oklch(12% 0.008 245);
+
+    /* See the light block: the direction is the same (further from the page),
+       the room is not. This is the floor. */
+    --surface-chip-focus: oklch(5% 0.008 245);
     --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
-    --surface-panel-head: oklch(20% 0.009 245);
-    --surface-terminal: oklch(18% 0.009 245);
+    --surface-panel-head: oklch(31.4% 0.009 245);
+    --surface-terminal: oklch(31.4% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
     --overlay-hover: oklch(100% 0 0 / 0.05);
@@ -132,5 +404,23 @@
     --cal-event-waiting-bg: oklch(24% 0.03 30);
     --error-text: oklch(74% 0.14 25);
     --warn-border: oklch(40% 0.05 30);
+
+    --warn-text: oklch(82% 0.13 30);
+    --success-text: oklch(82% 0.13 145);
+    --error-soft: oklch(76% 0.13 25 / 0.18);
+    --error-border: oklch(40% 0.05 25);
+    --text-on-accent: var(--bg);
+
+    /* Dark shadows are heavier: the surface behind them has less contrast to lose. */
+    --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.3), 0 12px 32px oklch(0% 0 0 / 0.45);
+
+    --cove-1: oklch(70% 0.1 20);
+    --cove-2: oklch(70% 0.1 60);
+    --cove-3: oklch(70% 0.1 110);
+    --cove-4: oklch(70% 0.1 150);
+    --cove-5: oklch(70% 0.1 200);
+    --cove-6: oklch(70% 0.1 245);
+    --cove-7: oklch(70% 0.1 290);
+    --cove-8: oklch(70% 0.1 330);
   }
 }

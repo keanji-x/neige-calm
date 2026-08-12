@@ -1,0 +1,122 @@
+@layer features {
+  /*
+   * §7.2 — header row plus a content row that fills. Page padding is the same
+   * on all four routes: 24 inline, 20 block-start, 28 block-end. The extra 8 at
+   * the bottom keeps the last row off the edge when the page is scrolled home.
+   */
+  .page {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--space-8);
+    max-inline-size: var(--measure-page);
+
+    /* Fills the scroll region rather than hugging its content. Without it the
+       page's own `1fr` row resolves against nothing — the grid was 308 tall
+       inside a 900 tall main — so the document column had no space to centre an
+       empty state in. Content taller than the region still grows it. */
+    min-block-size: 100%;
+    padding-block: 0 var(--space-11);
+    padding-inline: var(--space-10);
+  }
+
+  /* 18px, down from 22. 22/13 is 1.7× and reads like a landing page; 18/13 is
+     1.38×, the ratio dense tools use. */
+  .title {
+    min-inline-size: 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  /* Chrome icon button: 28px box, 16px glyph — the one pairing (§4.4). */
+  .headerAction {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out, color var(--motion-quick) ease-out;
+  }
+
+  .headerAction:hover,
+  .headerAction:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  /*
+   * Coloured at rest, not on hover (§4.3): a warning that only appears once the
+   * pointer is already on the control is absent at the moment of the decision,
+   * and absent from the keyboard path entirely. As a 16px glyph it stays quiet
+   * while still being unmistakably the destructive one. At least --space-6 from
+   * the benign action beside it — separation is how destructive actions avoid
+   * alarm fatigue, not hiding their colour.
+   */
+  .headerDelete {
+    /* The title row already contributes a --space-3 flex gap, so this adds the
+       other half: the two controls end up exactly --space-6 apart, which is
+       §4.3's stated *minimum* separation for a destructive action — not 18px,
+       which is what a full --space-6 on top of the gap was producing. */
+    margin-inline-start: var(--space-3);
+    color: var(--error-text);
+  }
+
+  .headerDelete:hover,
+  .headerDelete:focus-visible {
+    background: var(--error-soft);
+    color: var(--error-text);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .headerAction {
+      transition: none;
+    }
+  }
+
+  /* The font itself declares "this is a literal", so it spends no size, weight
+     or colour doing it. */
+
+  /* Main column plus a 308 panel column, separated by the standard 24px gutter
+     — the same content grid every route uses (§7.2). */
+  /*
+   * One row, and it fills. Left implicit, the row is sized by its tallest item
+   * — the panel card — so the document column ended where the card ended and an
+   * empty document could not centre itself in the space it owns. The panel
+   * pins to the top instead of stretching with it.
+   */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-rows: minmax(0, 1fr);
+    gap: var(--space-10);
+    min-block-size: 0;
+  }
+
+  /* Centred, not start-aligned. The prose is 616 in an 828 column, and hanging
+     all 212 of the slack off its trailing edge put a dead band between the last
+     word and the panel card — the two things on the page that carry content
+     were the two things furthest apart. */
+  .doc {
+    max-inline-size: var(--measure-doc);
+    min-inline-size: 0;
+    margin-inline: auto;
+  }
+
+
+  /* Sticky for the same reason the wave page's is, and off the same published
+     header height — see the long note there. */
+  .panel {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    align-self: start;
+    min-inline-size: 0;
+    max-block-size: calc(100dvh - var(--header-band) - var(--header-h) - var(--space-8) * 2);
+    overflow: auto;
+  }
+}

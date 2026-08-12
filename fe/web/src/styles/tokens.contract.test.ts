@@ -30,7 +30,7 @@ const POSITIONAL = [
   '--text-4', '--accent', '--accent-soft', '--warn', '--warn-soft',
 ] as const;
 const CONCRETE_SURFACES = [
-  '--surface-rail', '--surface-card', '--surface-chip', '--surface-toggle-overlay',
+  '--surface-rail', '--surface-card', '--surface-chip', '--surface-chip-focus', '--surface-toggle-overlay',
   '--surface-panel-head',
 ] as const;
 const PROSE_SURFACES = ['--surface-terminal', '--surface-code'] as const;
@@ -42,8 +42,7 @@ const ALIASES = [
   '--text-decorative',
 ] as const;
 const TYPE_SCALE = [
-  '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl',
-  '--text-display-sm', '--text-display',
+  '--text-xs', '--text-base', '--text-md', '--text-lg', '--text-xl',
 ] as const;
 const LEADING = [
   '--leading-none', '--leading-tight', '--leading-snug', '--leading-base', '--leading-loose',
@@ -53,7 +52,7 @@ const TRACKING = [
   '--tracking-wider', '--tracking-widest',
 ] as const;
 const RADIUS = [
-  '--radius-xs', '--radius-sm', '--radius-md', '--radius-lg', '--radius-xl', '--radius-pill',
+  '--radius-sm', '--radius-md', '--radius-lg', '--radius-pill',
 ] as const;
 const SPACING = [
   '--space-0', '--space-px', '--space-1', '--space-2', '--space-3', '--space-4', '--space-5',
@@ -65,14 +64,38 @@ const MOTION = [
 ] as const;
 const STATUS = ['--success', '--error'] as const;
 const FONT_ALIASES = ['--font-display', '--font-numeric', '--font-code'] as const;
-const MISC = ['--overlay-scrim', '--cal-event-waiting-bg', '--error-text', '--warn-border'] as const;
+const MISC = [
+  '--overlay-scrim', '--cal-event-waiting-bg', '--error-text', '--warn-border',
+  '--warn-text', '--success-text', '--error-soft', '--error-border',
+] as const;
+// Every MISC member except the scrim, which is the deliberate rgba exception.
+const MISC_OKLCH = MISC.filter((name) => name !== '--overlay-scrim');
 const Z_INDEX = [
   '--z-base', '--z-raised', '--z-sticky', '--z-overlay', '--z-modal', '--z-toast',
 ] as const;
+const BOX_SCALE = [
+  '--row-h-sm', '--row-h', '--row-h-lg',
+  '--control-h-sm', '--control-h', '--control-h-lg',
+  '--rail-w', '--rail-w-collapsed', '--panel-w', '--drawer-w', '--header-baseline',
+  '--measure-prose', '--measure-form', '--measure-page', '--measure-board',
+  '--measure-list', '--measure-doc',
+  '--slot-h', '--rule-h', '--dot-sm', '--dot-md',
+  '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
+] as const;
+const WEIGHTS = ['--weight-normal', '--weight-medium', '--weight-semibold'] as const;
+const COVE_IDENTITY = [
+  '--cove-1', '--cove-2', '--cove-3', '--cove-4',
+  '--cove-5', '--cove-6', '--cove-7', '--cove-8',
+] as const;
+const SHADOW = ['--shadow-float'] as const;
+// Not in ALIASES: that group asserts `dark.has(name) === false`, and --text-on-accent
+// must resolve in both themes (§0.1 #10).
+const THEMED_ALIASES = ['--text-on-accent'] as const;
 const INVENTORY = [
   ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS, ...ALIASES,
   ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...STATUS, ...FONT_ALIASES,
   ...MISC, ...Z_INDEX,
+  ...BOX_SCALE, ...WEIGHTS, ...COVE_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
 ] as const;
 
 describe('styles/tokens inventory contract', () => {
@@ -124,13 +147,39 @@ describe('styles/tokens themed color contracts', () => {
     expect(dark.get('--overlay-scrim')).toMatch(/^rgba\(.+\)$/);
   });
 
-  it.each(['--cal-event-waiting-bg', '--error-text', '--warn-border'] as const)(
+  it.each(MISC_OKLCH)(
     '%s is an oklch literal in both themes',
     (name) => {
       expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
       expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
     },
   );
+
+  it.each(THEMED_ALIASES)('%s is a var() alias that resolves in both themes', (name) => {
+    expect(root.get(name)).toMatch(/^var\(--[a-z0-9-]+\)$/);
+    expect(dark.get(name)).toMatch(/^var\(--[a-z0-9-]+\)$/);
+  });
+
+  describe('cove identity slots', () => {
+    it.each(COVE_IDENTITY)('%s is a concrete oklch literal in both themes', (name) => {
+      expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
+      expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
+    });
+
+    it('keeps all eight hues pairwise distinct', () => {
+      const hues = COVE_IDENTITY.map((name) => {
+        const parts = (root.get(name) ?? '').replace(/^oklch\(|\)$/g, '').trim().split(/\s+/);
+        return Number(parts[2]);
+      });
+      expect(hues.every(Number.isFinite)).toBe(true);
+      expect(new Set(hues).size).toBe(COVE_IDENTITY.length);
+    });
+  });
+
+  it.each(SHADOW)('%s is a composite value present in both themes', (name) => {
+    expect(root.has(name)).toBe(true);
+    expect(dark.has(name)).toBe(true);
+  });
 
   it('locks the dark status design values', () => {
     expect(dark.get('--success')).toBe('oklch(74% 0.14 145)');
@@ -179,6 +228,20 @@ describe('styles/tokens single-mode scalar contracts', () => {
   it.each(MOTION)('%s uses seconds and has no dark override', (name) => {
     expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?s$/);
     expect(dark.has(name)).toBe(false);
+  });
+
+  it.each(BOX_SCALE)('%s is px and has no dark override', (name) => {
+    expect(root.get(name)).toMatch(/^\d+(?:\.\d+)?px$/);
+    expect(dark.has(name)).toBe(false);
+  });
+
+  it.each(WEIGHTS)('%s is a three-digit weight and has no dark override', (name) => {
+    expect(root.get(name)).toMatch(/^[1-9]00$/);
+    expect(dark.has(name)).toBe(false);
+  });
+
+  it('locks the weight ladder to exactly three steps', () => {
+    expect(WEIGHTS.map((name) => Number(root.get(name)))).toEqual([400, 500, 600]);
   });
 });
 

@@ -1,0 +1,56 @@
+@layer features {
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-6);
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+
+  .title {
+    font-size: var(--text-xl);
+    letter-spacing: var(--tracking-tight);
+    margin: 0;
+  }
+
+  .body {
+    margin: 0;
+    color: var(--text-2);
+    font-size: var(--text-base);
+  }
+
+  .meta {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-1) var(--space-4);
+    margin: 0;
+    color: var(--text-3);
+    font-size: var(--text-base);
+  }
+
+  .meta dt {
+    color: var(--text-4);
+  }
+
+  .meta dd {
+    margin: 0;
+    font-family: var(--font-mono);
+  }
+
+  .back {
+    align-self: start;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: var(--surface-chip);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--text-base);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+  }
+
+  .back:hover {
+    background: var(--overlay-hover);
+  }
+}

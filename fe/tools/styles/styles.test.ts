@@ -350,11 +350,44 @@ describe('P8b2 forward style gates', () => {
     expect(auditModuleLayer(read('module-layer/nested-ui-negative.module.css'), nestedUi))
       .toContain(`${nestedUi}: unknown layer ui`);
     expect(auditModuleLayer(read('module-layer/nested-ui-positive.module.css'), nestedUi)).toEqual([]);
-    for (const layer of ['systems', 'app', 'core']) {
+    for (const layer of ['systems', 'core']) {
       const nestedOwner = layer === 'core' ? 'core/wave/ui/toolbar.module.css'
         : `web/src/${layer}/wave/ui/toolbar.module.css`;
       expect(auditModuleLayer('@layer ui { .local {} }', nestedOwner), layer)
-        .toEqual([`${nestedOwner}: CSS Module must live below ui/ or features/`]);
+        .toEqual([`${nestedOwner}: CSS Module must live below ui/, features/, or app/`]);
+    }
+  });
+
+  it('places app-composition CSS Modules in the features layer', () => {
+    const shell = 'web/src/app/shell/shell.module.css';
+    expect(auditModuleLayer('@layer features { .rail {} }', shell)).toEqual([]);
+    expect(auditModuleLayer('@layer ui { .rail {} }', shell)).toEqual([`${shell}: unknown layer ui`]);
+    expect(auditModuleLayer('.rail {}', shell)).toEqual([`${shell}: unlayered selector: .rail`]);
+  });
+
+  it('admits a colocated CSS Module import and nothing wider', () => {
+    const green = "import styles from './today.module.css';";
+    for (const importer of [
+      'web/src/features/today/public.tsx',
+      'web/src/ui/dialog/public.tsx',
+      'web/src/app/shell/public.tsx',
+    ]) expect(auditCssImports(green, importer), importer).toEqual([]);
+
+    const denied = 'CSS must enter through styles/entry.css, not a source import';
+    const cases: [string, string][] = [
+      ['web/src/main.tsx', green],
+      ['core/markdown/public.ts', green],
+      ['web/src/styles/public.ts', green],
+      ['web/src/features/today/public.tsx', "import styles from './today.module.css?inline';"],
+      ['web/src/features/today/public.tsx', "import styles from './today.module.css?raw';"],
+      ['web/src/features/today/public.tsx', "import styles from './today.module.css#a';"],
+      ['web/src/features/today/public.tsx', "import styles from '../other/x.module.css';"],
+      ['web/src/features/today/public.tsx', "import styles from './sub/x.module.css';"],
+      ['web/src/features/today/public.tsx', "import './plain.css';"],
+      ['web/src/features/today/public.tsx', "const s = await import('./today.module.css?inline');"],
+    ];
+    for (const [importer, source] of cases) {
+      expect(auditCssImports(source, importer), `${importer} :: ${source}`).toEqual([`${importer}: ${denied}`]);
     }
   });
 

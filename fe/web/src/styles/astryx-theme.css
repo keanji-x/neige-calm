@@ -1,0 +1,69 @@
+/*
+ * Astryx theme bridge.
+ *
+ * Astryx ships its components precompiled with their own variable
+ * namespace (`--color-*`, `--spacing-*`, `--radius-*`, `--text-*-size`),
+ * disjoint from ours — measured: zero name collisions against tokens.css.
+ * The vendor package documents `astryx-theme` as the layer where a host
+ * app overrides those variables, and that is exactly what this file is:
+ * behaviour and structure stay Astryx's, appearance stays ours.
+ *
+ * Ordering: entry.css imports vendor.css (which carries Astryx's own
+ * `astryx-base` sublayer) BEFORE this file, and both land inside the
+ * top-level `astryx` layer. Sublayer precedence follows first appearance,
+ * so `astryx-base` loses to this file. Moving this import above vendor.css
+ * silently reverses that and hands the app Astryx's default palette.
+ *
+ * Unmapped variables keep Astryx's defaults on purpose — a half-mapped
+ * palette is easier to review than a wholesale copy, and the hue ramps
+ * (blue/green/…) have no counterpart in our vocabulary yet.
+ */
+@layer astryx {
+  :root {
+    /* Surfaces */
+    --color-background-body: var(--bg);
+    --color-background-surface: var(--paper);
+    --color-background-card: var(--surface-card);
+    --color-background-popover: var(--paper);
+    --color-background-muted: var(--surface-chip);
+
+    /* Text */
+    --color-text-primary: var(--text);
+    --color-text-secondary: var(--text-2);
+    --color-text-disabled: var(--text-4);
+    --color-text-accent: var(--accent);
+    --color-icon-primary: var(--text);
+    --color-icon-secondary: var(--text-2);
+    --color-icon-disabled: var(--text-4);
+    --color-icon-accent: var(--accent);
+
+    /* Accent and status */
+    --color-accent: var(--accent);
+    --color-accent-muted: var(--accent-soft);
+    --color-success: var(--success);
+    --color-error: var(--error);
+    --color-warning: var(--warn);
+
+    /* Structure. The app is hairline-built: borders carry the structure
+       and shadows stay a whisper, so both border tokens map straight
+       across rather than being derived from a surface. */
+    --color-border: var(--hairline);
+    --color-border-emphasized: var(--hairline-strong);
+
+    /* Interaction overlays */
+    --color-overlay: var(--overlay-scrim);
+    --color-overlay-hover: var(--overlay-hover);
+    --color-overlay-pressed: var(--overlay-active);
+
+    /* Radii */
+    --radius-inner: var(--radius-sm);
+    --radius-element: var(--radius-md);
+    --radius-container: var(--radius-lg);
+    --radius-full: var(--radius-pill);
+
+    /* Type families */
+    --font-family-body: var(--font-sans);
+    --font-family-heading: var(--font-display);
+    --font-family-code: var(--font-mono);
+  }
+}

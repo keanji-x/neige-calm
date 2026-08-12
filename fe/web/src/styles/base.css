@@ -1,0 +1,311 @@
+/* Typographic and interaction baseline: the smallest set of global
+   declarations every surface may assume. Component styling belongs to the
+   `ui` / `features` layers, not here. */
+@layer base {
+  /*
+   * `color-scheme` must be declared in CSS, not assigned through
+   * `element.style.colorScheme`. Two things depend on it:
+   *   - native UI (scrollbars, form controls, caret) follows the theme;
+   *   - Lightning CSS, which Vite uses to minify, lowers `light-dark()`
+   *     into a `var(--lightningcss-light/dark)` switch that is keyed on a
+   *     CSS `color-scheme` declaration. A JS-assigned value never arms it,
+   *     so every `light-dark()` colour in a dependency resolves to nothing
+   *     and the element renders transparent. Verified against a production
+   *     build; a dev server does not minify, so this cannot be caught there.
+   */
+  :root[data-theme='light'] { color-scheme: light; }
+  :root[data-theme='dark'] { color-scheme: dark; }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--leading-base);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Weight is a hierarchy channel; UA defaults wire heading weight to
+     element name, which is why every heading looked identical once the
+     components set `font: inherit`. Roles set weight explicitly. */
+  h1, h2, h3, h4, h5, h6 {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  code, kbd, samp, pre {
+    font-family: var(--font-mono);
+    font-size: 1em;
+  }
+
+  /* One focus recipe for the whole app. A component may restyle it, but it
+     may not remove it: with no rule here every control fell back to
+     Chromium's `outline: auto 1px rgb(16,16,16)`, a constant that ignores
+     the theme and disappears on dark surfaces. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /*
+   * Text fields are a rule, not a box — and the rule is grey.
+   *
+   * This replaces §5.2's input recipe ("the border takes the accent, the ring
+   * becomes a soft glow") outright. §5.2 was solving a real problem — a 2px
+   * ring 2px outside a 1px border reads as two borders — but an accent border
+   * plus a 3px `--accent-soft` halo is ~4px of blue around a 28px control, so
+   * on a page whose whole palette is one accent spent sparingly, the loudest
+   * object in the app was an empty text field. Four modules had each rebuilt
+   * some version of it; `ui/editable-title` carried an accent border at rest
+   * and therefore got the halo *and* the outer ring.
+   *
+   * The underline is the classic answer to both at once. There is no box to
+   * double, so the doubling problem disappears rather than being managed; the
+   * field sits on the page's own ground instead of on a second surface, which
+   * is what lets an inline-create input occupy a list row's place without
+   * looking like a dialog dropped into the list (§5.3); and the accent is not
+   * needed to say "focused" — going from a hairline to a full-strength `--text`
+   * rule at double thickness is a larger contrast change than the accent ring
+   * ever made, in the app's own greyscale.
+   *
+   * Element selectors, not a class: this is what a text field *is* here, and
+   * five modules agreeing by copy is how the four variants happened.
+   */
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    padding-inline: var(--space-0);
+    border: none;
+    border-block-end: 1px solid var(--hairline-strong);
+    border-radius: var(--space-0);
+    background: transparent;
+    color: var(--text);
+  }
+
+  /* `inset` so the doubled rule costs no layout: a 1px border growing to 2px
+     would shift every baseline below it by a pixel on focus. */
+  input:not([type='checkbox']):not([type='radio']):focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: none;
+    border-block-end-color: var(--text);
+    box-shadow: inset 0 -1px 0 0 var(--text);
+  }
+
+  /* `[data-nc-page-title]` is in the group because CR-8 focuses it
+     programmatically after a successful delete; a programmatic focus should
+     not paint a ring. */
+  :where(button, [role='button'], a, summary, [data-nc-page-title]):focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+
+  /* Firefox defaults placeholders to opacity .54, which drops them below every
+     contrast floor. Reset it and colour them as the metadata they are. */
+  ::placeholder {
+    color: var(--text-3);
+    opacity: 1;
+  }
+
+  :root {
+    scrollbar-color: var(--hairline-strong) transparent;
+    scrollbar-width: thin;
+  }
+
+  /* Any number that can change in place must not reflow its neighbours. */
+  .tnum {
+    font-family: var(--font-numeric);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * The one document flow. Vertical margin is forbidden everywhere else
+   * (§2.3); prose is the stated exception, because its rhythm is the
+   * document's, not a container's `gap`.
+   *
+   * ── Reading type, not interface type ──────────────────────────────────
+   *
+   * This was `--text-base` sans, the same rank the rail's rows take, and that
+   * was the mistake: the two registers do different jobs. Interface type is
+   * *scanned* because you are looking for one row among twenty and never read
+   * it twice. Prose is *read*, one line after another, and the rank that
+   * supports that is `--text-lg`.
+   *
+   * The pairing is what makes it a system rather than a preference: a measure
+   * is only correct for one size. The rule is 65–75 characters a line, and it
+   * is *measured*, not estimated — at `--text-base` in the old 616px column a
+   * report ran 108 characters, half again the upper bound. `--measure-prose` is
+   * now sized for `--text-lg`: 504px, measured at 70.
+   *
+   * The report document is the one consumer of this class. Conversation turns
+   * are a deliberate exception: their 364px column cannot carry the report's
+   * 18px serif at a readable measure, so replies use `--text-md` instead.
+   */
+  .calm-prose {
+    max-inline-size: var(--measure-prose);
+    font-family: var(--font-serif);
+    font-size: var(--text-lg);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-loose);
+    color: var(--text-2);
+  }
+
+  .calm-prose > * + * {
+    margin-block-start: var(--space-8);
+  }
+
+  .calm-prose h1 {
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  .calm-prose h2 {
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-snug);
+    color: var(--text);
+  }
+
+  .calm-prose h3 {
+    font-family: var(--font-serif);
+    font-size: var(--text-base);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+  }
+
+  .calm-prose code {
+    font-family: var(--font-code);
+    font-size: var(--text-base);
+    color: var(--text-2);
+  }
+
+  /*
+   * The four action tiers (§4.1). This is a baseline, not component styling:
+   * the tiers are keyed on a global attribute, §4.1 gives them one geometry, and
+   * §9's gate measures `[data-nc-action]` as a single vocabulary — so a per-module
+   * copy is exactly the drift that gate exists to catch. Component buttons carry
+   * `data-nc-role` instead and take their geometry from their own §6 entry.
+   *
+   * Geometry is identical across all four; the difference is exactly two
+   * declarations (fill and text colour, with the border following the fill).
+   * Every tier carries a border at rest, transparent where it has no visible
+   * one, so hover cannot change layout.
+   */
+  [data-nc-action] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    block-size: var(--control-h);
+    padding-inline: var(--space-6);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out,
+      color var(--motion-quick) ease-out,
+      border-color var(--motion-quick) ease-out;
+  }
+
+  [data-nc-action='primary'] {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--text-on-accent);
+  }
+
+  [data-nc-action='secondary'] {
+    border-color: var(--hairline-strong);
+    background: var(--surface-chip);
+    color: var(--text);
+  }
+
+  [data-nc-action='tertiary'] {
+    background: transparent;
+    color: var(--text-2);
+  }
+
+  /* Destructive is coloured at rest, not on hover: a warning that only appears
+     once the pointer is already on the button is absent at the moment of the
+     decision, and absent from the keyboard path entirely (§4.3). */
+  [data-nc-action='destructive'] {
+    background: transparent;
+    color: var(--error-text);
+  }
+
+  /* hover only ever raises contrast; it never removes an existing fill. */
+  [data-nc-action='primary']:hover,
+  [data-nc-action='primary']:focus-visible {
+    background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
+  }
+
+  [data-nc-action='secondary']:hover,
+  [data-nc-action='secondary']:focus-visible {
+    background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+  }
+
+  [data-nc-action='tertiary']:hover,
+  [data-nc-action='tertiary']:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  [data-nc-action='destructive']:hover,
+  [data-nc-action='destructive']:focus-visible {
+    border-color: var(--error-border);
+    background: var(--error-soft);
+  }
+
+  [data-nc-action]:active {
+    background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
+    transition: none;
+  }
+
+  /* Genuinely unavailable. Never `opacity`: it multiplies through nesting, fades
+     the border away with the text, and silently pushes metadata under every
+     contrast floor (§5.1). */
+  [data-nc-action]:disabled {
+    border-color: transparent;
+    background: var(--surface-chip);
+    background-image: none;
+    color: var(--text-4);
+    cursor: default;
+  }
+
+  /* busy is not disabled wearing a costume: the fill and border stay, only the
+     label changes. --text-4 belongs to real `:disabled` alone (§5.1, §9). */
+  [data-nc-action][data-nc-state='busy'] {
+    cursor: default;
+  }
+
+  [data-nc-action='secondary'][data-nc-state='busy'],
+  [data-nc-action='tertiary'][data-nc-state='busy'],
+  [data-nc-action='destructive'][data-nc-state='busy'] {
+    color: var(--text-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

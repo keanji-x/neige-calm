@@ -1,0 +1,318 @@
+@layer features {
+  .page {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--space-8);
+    max-inline-size: var(--measure-page);
+    padding-block: 0 var(--space-11);
+    padding-inline: var(--space-10);
+  }
+
+  /* 848 / 24 / 308 at 1440. Start-aligned, not centred: with a permanent left
+     rail, centring decouples the content from the navigation. */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    gap: var(--space-10);
+    min-block-size: 0;
+  }
+
+  /*
+   * Waiting / running / terminal / recent. The last track is
+   * `minmax(min-content, 1fr)` rather than `1fr` because both behaviours are
+   * needed: absorb the slack when the list is short, and push out a scrollbar
+   * when it is long. A plain `1fr` only gives the first.
+   */
+  .mainColumn {
+    display: grid;
+    grid-template-rows: auto auto var(--slot-h) minmax(min-content, 1fr);
+    gap: var(--space-8);
+    min-inline-size: 0;
+  }
+
+  .panelColumn {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
+  .sectionLabel {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+
+  /* Bleeds, in the main column and in the panel alike: a row gives back its own
+     fill padding so its state dot lands on the container's inset, level with
+     the section label above it. See the scale note in ui/panel-card — the rule
+     has no container-specific exception, which is why the agenda needed no
+     class of its own. */
+  .rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    margin-inline: calc(var(--space-2) * -1);
+  }
+
+  /* Header counts: the numbers carry the weight, the words stay quiet. */
+  .counts {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+  .countValue {
+    font-family: var(--font-numeric);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .countWord {
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .countSep {
+    color: var(--text-4);
+  }
+
+  /* Down from 36px and pushed to the far edge: ambient, not actionable.
+     Tabular figures so the minute rolling over does not shift anything. */
+  .clock {
+    font-family: var(--font-numeric);
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .terminalSlot {
+    display: grid;
+    place-items: center;
+    block-size: var(--slot-h);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-md);
+  }
+
+  .slotNote,
+  .inlineEmpty {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .inlineEmpty {
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-4);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-sm);
+  }
+
+  .emptyPage {
+    display: grid;
+    place-items: center;
+    min-block-size: 0;
+  }
+
+  /* The only 22px in the app, and only on a whole-page empty state. */
+  .hero {
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-tight);
+    color: var(--text-2);
+  }
+
+  /*
+   * The calendar's own vertical scale. It had none: five blocks in a flex
+   * column with no gap, so the week grid's day dots — 1px off each cell's
+   * bottom edge — sat against the line below them.
+   *
+   * Same optical-distance rule as the rail. A label is 4 from what it names
+   * (month row → week, day names → grid, date → agenda rows), a structural
+   * break is 12 (the week is one group, the agenda is the next).
+   */
+  .calendar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+
+  .week,
+  .agenda {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  /* Only the agenda's rows are capped, not the main column's: the main column
+     *is* the document and an unbounded list there is the point. Same eight-row
+     cap the other panel lists take — this was the longest list in the card. */
+  .agenda .rows {
+    max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .weekHead {
+    display: grid;
+    grid-template-columns: var(--control-h) minmax(0, 1fr) var(--control-h);
+    align-items: center;
+    min-block-size: var(--row-h);
+  }
+
+  .navButton {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .navButton:hover,
+  .navButton:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .monthLabel {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+    text-align: center;
+  }
+
+  /* Seven fractional columns, never seven fixed 48px ones: 7 × 48 = 336 does
+     not fit a 308px panel. */
+  .dayNames,
+  .weekGrid {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: var(--space-1);
+  }
+
+  .dayName {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    text-align: center;
+  }
+
+  /* One line. The count rides *beside* the date, not under it: stacked, the
+     two numerals read as two calendar facts fighting each other — a day cell
+     that says "11" over "3" is asking which one is the date. Side by side, at
+     the faintest tone and on the same baseline, only one of them is the date. */
+  .day {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: var(--space-px);
+    min-block-size: var(--row-h);
+    padding-block: var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .day:hover {
+    background: var(--overlay-hover);
+  }
+
+  .dayNumber {
+    font-family: var(--font-numeric);
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Today and "the selected day" are two different things: today is always
+     500, the selected day always carries accent. On open they coincide. */
+  .dayToday .dayNumber {
+    font-weight: var(--weight-medium);
+  }
+
+  /* One selection vocabulary across the app: fill + weight, never an outline. */
+  .daySelected {
+    background: var(--accent-soft);
+  }
+
+  .daySelected .dayNumber {
+    font-weight: var(--weight-medium);
+    color: var(--text);
+  }
+
+  /*
+   * Hint tone, not a colour: it is a quantity, and the only colour the panel
+   * spends is on state.
+   *
+   * The size step alone (11 against 12.5) is not enough to say "subordinate" —
+   * that is what `--text-4`, the faintest tone in the ladder, is for. The type
+   * scale stops at 11 on purpose and this does not get to be the exception.
+   */
+  .dayCount {
+    font-family: var(--font-numeric);
+
+    /*
+     * A true superscript: two thirds of the date's size, the ratio type has
+     * used for one since footnotes existed. `--text-xs` was the scale's floor
+     * and it was the wrong tool — at 11 against 12.5 the two numerals are the
+     * same size to the eye, so the annotation competed with the thing it
+     * annotates no matter how faint it was.
+     *
+     * Going under the scale's floor is legal *here and only here* because this
+     * glyph is not text: it is `aria-hidden`, and the count it draws is stated
+     * in full in the cell's accessible name. Nothing is readable only at 8px.
+     */
+    font-size: calc(var(--text-base) * 0.66);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-4);
+    font-variant-numeric: tabular-nums;
+
+    /* Raised off the baseline. On the same baseline the two numerals read as a
+       pair — "11 10" is a range before it is a date and a count. Raising it is
+       the typographic convention for "this annotates the thing to its left",
+       and `translate` does it without touching the layout the cell is centred
+       by. */
+    translate: 0 calc(var(--text-base) * -0.3);
+  }
+
+  .daySelected .dayCount,
+  .dayToday .dayCount {
+    color: var(--text-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .day {
+      transition: none;
+    }
+  }
+}

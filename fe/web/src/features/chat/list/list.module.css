@@ -1,0 +1,113 @@
+@layer features {
+  /* Bleed: the list pulls back by the row's own fill padding so the text lands
+     on the card's inset with the module's head label, while the fill keeps 4px
+     of air from the card edge. See the scale note in ui/panel-card. */
+  .list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+    margin-inline: calc(var(--space-2) * -1);
+    /* Eight rows, then it scrolls. A panel module has no business setting the
+       height of the page it sits next to, and an unbounded list does exactly
+       that: one busy cove pushed the conversation module below the fold and
+       moved it every time a wave appeared. Eight is the count at which the last
+       row is still findable by eye rather than by reading — past that you are
+       scanning either way, so scrolling costs nothing. */
+    max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* The row recipe, at the panel's density. Same shape as every other row in
+     the app: no border, no background of its own, a 6px leading state column
+     and a fixed trailing column for the age (§6.0). */
+  /* One text column. The state dot moved to the trailing edge (see
+     `.statusSlot`) and the age is gone with it, so the label is the whole row —
+     the same shape a wave row takes in a panel. */
+  .item {
+    position: relative;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: center;
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    padding-inline-start: var(--space-2);
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
+    border-radius: var(--radius-sm);
+    text-align: start;
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .row:hover {
+    background: var(--overlay-hover);
+  }
+
+  .row:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Fill + weight, no border — §5.1's two channels, same as every other
+     selected row in the app. */
+  .rowActive {
+    background: var(--accent-soft);
+  }
+
+  .dot {
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--text-4);
+  }
+
+  /* Centred inside the 20px trailing slot the module head's `+` also occupies:
+     (20 − 6) / 2 = 7 from the list's edge puts the dot's centre on the `+`'s.
+     One trailing column for the whole module. */
+  .statusSlot {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: calc((var(--control-h-sm) - var(--dot-sm)) / 2);
+    translate: 0 -50%;
+  }
+
+  .dotLive {
+    background: var(--accent);
+    animation: chat-pulse var(--motion-pulse) ease-in-out infinite;
+  }
+
+  .label {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rowActive .label {
+    font-weight: var(--weight-semibold);
+    color: var(--text);
+  }
+
+  @keyframes chat-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dotLive {
+      animation: none;
+    }
+
+    .row {
+      transition: none;
+    }
+  }
+}

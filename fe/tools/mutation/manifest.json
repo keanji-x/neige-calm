@@ -44,7 +44,7 @@
     "mutation_id": "test-tier-allow-browser-overlap",
     "defends": ["oracle:INV-OVERLAY-006"],
     "target": "vitest.config.ts",
-    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -10,6 +10,6 @@ export default defineConfig({\n           name: 'platform-independent',\n           environment: 'node',\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}'],\n+          exclude: [],\n         },\n       },\n",
+    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -15,7 +15,7 @@ export default defineConfig({\n           environment: 'node',\n           setupFiles,\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}'],\n+          exclude: [],\n         },\n       },\n       {\n",
     "expected_red": [
       "test-tier-project fixtures accepts the positive directory",
       "uses a layout engine for rendered element geometry",
@@ -166,7 +166,7 @@
     "mutation_id": "app-theme-swap-light-dark-bg",
     "defends": ["oracle:E2E-CAP-AXE-005"],
     "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex 95e58ace..eee489d5 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -7,7 +7,7 @@\n     --font-numeric: var(--font-sans);\n     --font-code: var(--font-mono);\n \n-    --bg: oklch(98.8% 0.003 240);\n+    --bg: oklch(16% 0.008 245);\n     --paper: oklch(99.5% 0.002 240);\n     --hairline: oklch(92% 0.005 240);\n     --hairline-strong: oklch(86% 0.006 240);\n@@ -103,7 +103,7 @@\n   }\n \n   [data-theme=\"dark\"] {\n-    --bg: oklch(16% 0.008 245);\n+    --bg: oklch(98.8% 0.003 240);\n     --paper: oklch(19% 0.009 245);\n     --hairline: oklch(28% 0.01 245);\n     --hairline-strong: oklch(36% 0.012 245);\n",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** \u2014 see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 \u2014 which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
     "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
     "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
@@ -195,8 +195,8 @@
     "target": "web/src/app/providers/public.tsx",
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..6a0efb31 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -43,7 +43,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
     "selection_paths": ["web/src/app/providers/public.test.tsx"],
-    "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel", "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"],
-    "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it."
+    "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel", "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id", "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict"],
+    "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it. Re-measured after this PR added web/src/app/events/event-bridge.contract.test.tsx: a gate that returns null never mounts the bridge either, so the bridge-side statement of INV-APP-001 fails on its positive half. Four tests, one cause — the gate rendering nothing."
   },
   {
     "mutation_id": "app-theme-drop-match-media-unsubscribe",
@@ -231,8 +231,8 @@
     "target": "web/src/app/providers/public.tsx",
     "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..1e49b33d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -52,7 +52,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n \n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{query.data && renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n+  return <>{renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
     "selection_paths": ["web/src/app/providers/public.test.tsx"],
-    "expected_red": ["provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain"],
-    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the pending-version contract exercised renderEventBridge before query data existed."
+    "expected_red": ["provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain", "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict"],
+    "why_more_than_one": "Measured, twice. The first measurement predated web/src/app/events/event-bridge.contract.test.tsx, so the red set was a single test. That file now states the same invariant from the bridge's side and renders the pending verdict, so dropping the guard dereferences an absent query.data there too — two tests, one invariant, approached from either end. Nothing else in the suite renders ServerCompatGate before its data arrives."
   },
   {
     "mutation_id": "app-providers-remove-refresh-modal",

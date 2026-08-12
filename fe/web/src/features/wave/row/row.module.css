@@ -1,0 +1,442 @@
+/*
+ * The one wave row, in four variants (§6.3). Everything that differs between
+ * them is in this file's four `.variant*` blocks; the geometry, the grid, and
+ * the state recipes are shared, because a row that is 48px on one surface and
+ * 28px on another is still the same object.
+ *
+ * The row has no border and no background of its own (principle 1): a list is
+ * rows on a shared ground separated by rhythm, not twelve cards.
+ */
+@layer features {
+  /* The cap lives on the wrapper, not only on the row: the hover actions are
+     positioned against the wrapper, so a full-width wrapper would strand them
+     hundreds of pixels away from the row they belong to — the same horizontal
+     hole §8.2 is fixing, just moved onto the buttons. */
+  .wrapper {
+    position: relative;
+    display: grid;
+    max-inline-size: var(--measure-list);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: var(--dot-sm) minmax(0, 1fr) auto;
+    column-gap: var(--space-2);
+    row-gap: var(--space-1);
+    align-items: center;
+    inline-size: 100%;
+    max-inline-size: var(--measure-list);
+    padding-block: 0;
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    text-align: start;
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out,
+      color var(--motion-quick) ease-out;
+  }
+
+  .row:hover {
+    background: var(--overlay-hover);
+  }
+
+  .row:active {
+    background: var(--overlay-active);
+    transition: none;
+  }
+
+  /* Inset, because the row runs the full width of a container that clips. */
+  .row:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* Fill + weight, and no border. §5.1 argues for *two* channels (the soft fill
+     is only ~4% lighter than the ground, so it cannot stand alone) — the 1px
+     accent outline was a third one nothing defended, and it also broke §3.2
+     rule 4, which says a border may never carry importance. The row keeps its
+     transparent 1px so dropping the colour changes no geometry. */
+  .rowActive {
+    background: var(--accent-soft);
+  }
+
+  /* Selected already carries a fill; hovering it uses the faint overlay so the
+     selection does not read as "more selected" under the pointer. */
+  .rowActive:hover {
+    background: var(--accent-soft);
+    background-image: linear-gradient(var(--overlay-hover-faint), var(--overlay-hover-faint));
+  }
+
+  /* The leading 6px column. It spans both lines and centres against the row,
+     not the title baseline: it marks the row, not the sentence. */
+  .dot {
+    align-self: center;
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--text-4);
+  }
+
+  .dotWaiting {
+    background: var(--warn);
+  }
+
+  .dotRunning {
+    background: var(--accent);
+    animation: row-pulse var(--motion-pulse) ease-in-out infinite;
+  }
+
+  .titleRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-inline-size: 0;
+  }
+
+  .hour {
+    flex: none;
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .title {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-base);
+    line-height: var(--leading-tight);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Second line. Only the default variant has one — the others *drop* it rather
+     than shrink it, so the lifecycle phrase simply does not exist there. */
+  .lifecycle {
+    grid-column: 2;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Same rule for the second line: the lifecycle phrase is a fact, not an
+     alarm. Its colour never changes either. */
+
+  /* Right edge means status. A fixed column, never `margin-inline-start: auto`,
+     which would open hundreds of pixels of gap on a 720px row. */
+  .age {
+    grid-row: 1;
+    grid-column: 3;
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .variantDefault {
+    min-block-size: var(--row-h-lg);
+  }
+
+  .variantDefault .title {
+    font-weight: var(--weight-medium);
+    color: var(--text);
+  }
+
+  .variantCompact {
+    min-block-size: var(--row-h);
+  }
+
+  .variantCompact .title {
+    font-weight: var(--weight-normal);
+    color: var(--text);
+  }
+
+  /* One column, like the rail and for the same reason: the status dot left the
+     grid for the trailing edge, and with the age gone too the title is the
+     whole row. It keeps the panel's own row height and fill padding. */
+  .variantPanel {
+    min-block-size: var(--row-h-sm);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* One column. The status dot left the grid for the trailing edge (see
+     `.statusSlot`), and this variant has neither a relative time nor a second
+     line, so the title is the whole row. */
+  .variantRail {
+    min-block-size: var(--row-h-sm);
+    grid-template-columns: minmax(0, 1fr);
+    padding-inline: var(--space-3);
+  }
+
+  /* The rail's waves take the strong tone: they are what you came to find. The
+     cove heading above them is the quiet one (see shell.module.css). */
+  .variantRail .title {
+    font-weight: var(--weight-normal);
+    color: var(--text);
+  }
+
+  /*
+   * Ordering below is load-bearing. Each variant sets its own *rest* weight and
+   * tone with two-class specificity, so waiting and selected have to match that
+   * specificity and come after it — otherwise the variant's rest rule silently
+   * wins and the waiting rows render as ordinary rows, which is exactly the
+   * "everything is the same weight" failure this spec exists to fix.
+   */
+
+  /*
+   * State is carried by the indicator dot, and by nothing else. Titles keep one
+   * tone and one weight whatever the wave is doing.
+   *
+   * This overrides §6.3's variant table, which recoloured and re-weighted the
+   * title as well. Three channels on one row made a list of waiting waves read
+   * as a wall of alarm; the dot is already a colour signal in an otherwise
+   * greyscale column, and Today's P0 still has position and its section label
+   * on top of it. A title that changes colour is the interface shouting a fact
+   * the 6px dot beside it has already stated.
+   */
+
+  /* Selected is always 600 flat, never "one step up from rest": rest weights
+     differ per variant, and +1 from 400 would collide with the waiting 500. */
+  .rowActive .title,
+  .rowActive .titleWaiting {
+    font-weight: var(--weight-semibold);
+    color: var(--text);
+  }
+
+  /*
+   * Gutters. Every one of these is a box-scale question — the space a control
+   * will occupy — which is why §9.1's spacing group admits a calc() carrying a
+   * --space-* term. `--space-2` is the 4px alignment inset (see `.pin`),
+   * `--control-h-sm` the 20px control, and the extra `--space-2` its clearance
+   * from the text.
+   *
+   * They must come after the variant rules: `.variantRail` sets the
+   * `padding-inline` shorthand, which would otherwise reset either end and let
+   * a button sit on top of the title.
+   */
+  .row.hasRemove {
+    padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+  }
+
+  .row.hasPin.hasRemove {
+    padding-inline-end: calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
+  }
+
+  /*
+   * The rail, and only the rail, moves the pin to the leading edge — see the
+   * `.pin` note. So the rail is the only variant with a leading gutter, and its
+   * trailing gutter shrinks back to one control.
+   */
+  /*
+   * The rail has one control per side, so both its gutters are one control
+   * wide — the trailing one unconditionally, because in the rail that slot is
+   * occupied at rest by the status dot and only *becomes* the delete on hover.
+   *
+   * `.hasPin` is on the selector purely to out-specify `.row.hasPin.hasRemove`
+   * above, which is the two-controls-on-one-side case and does not apply here.
+   * Without it that rule reserved 52px and the rail lost 26px of title to a
+   * gutter it was not using.
+   */
+  /*
+   * The panel's trailing slot is likewise occupied at rest by the status dot,
+   * so its gutter is unconditional too. It is one `--space-2` narrower than the
+   * rail's because the panel row's fill padding is 4, not 6, and the slot is
+   * flush with the module head's `+` rather than inset from a rail edge.
+   */
+  .row.variantPanel,
+  .row.variantPanel.hasPin,
+  .row.variantPanel.hasRemove,
+  .row.variantPanel.hasPin.hasRemove {
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
+  }
+
+  .row.variantRail {
+    padding-inline-start: calc(var(--space-2) * 2 + var(--control-h-sm));
+    padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+  }
+
+  .row.variantRail.hasPin {
+    padding-inline-start: calc(var(--space-2) * 2 + var(--control-h-sm));
+    padding-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+  }
+
+  /*
+   * There is no tree indent in the rail, and that is deliberate.
+   *
+   * The rail has exactly two vertical icon columns — state on the left (a
+   * cove's disclosure chevron, a wave's pin) and action on the right (the
+   * section `+`, every `×`) — and one text column that every row starts in,
+   * cove and wave alike. An indent would have been a third alignment fighting
+   * the first two: a child's title would sit right of its parent's while its
+   * pin sat directly under its parent's chevron, so one row would read as
+   * indented and flush at once.
+   *
+   * Depth is carried by the chevron that collapses the group, by the cove
+   * heading's own type treatment, by the 10px that separates one cove group
+   * from the next, and by adjacency.
+   */
+
+  /* Row-level shortcuts. They are hover-revealed only because every one of them
+     has a second route (the wave's own page); the space is reserved at rest so
+     revealing them never reflows the row. */
+  .action {
+    position: absolute;
+    inset-block-start: 50%;
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    padding: 0;
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph-sm);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    opacity: 0;
+    cursor: pointer;
+    translate: 0 -50%;
+    transition: opacity var(--motion-quick) ease-out,
+      background-color var(--motion-quick) ease-out;
+
+    /* `opacity: 0` must block clicks, but it may not use `visibility: hidden`:
+       that removes the element from the focus order, so `:focus-within` would
+       never fire and the keyboard path would lose these entirely (§2.6). */
+    pointer-events: none;
+  }
+
+  .action:hover,
+  .action:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .wrapper:hover .action,
+  .wrapper:focus-within .action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /*
+   * Two sides, two meanings — **left is state, right is action** — but only
+   * where a left column actually exists.
+   *
+   * In the rail it does: every cove row carries a disclosure chevron there, so
+   * a wave's pin joins an established column and the whole rail reads down two
+   * clean icon rules. In the main column there is no chevron and nothing else
+   * to join, so a leading gutter would indent the entire list 28px away from
+   * the page title it belongs to — to reserve room for a control that is
+   * invisible until you hover. There the pin stays trailing, outboard of the
+   * delete for the reason §4.5 gives: pin is the one of the two that persists
+   * at rest, so putting it outermost means a pinned row shows one control flush
+   * to its edge rather than one floating beside an empty slot.
+   *
+   * The 4px is (--control-h - --control-h-sm) / 2: a 20px row icon inset by
+   * half the difference lands its glyph on the centre line of the rail's 28px
+   * chrome icons. Mirrored in `app/shell/shell.module.css`.
+   */
+  .pin {
+    inset-inline-end: var(--space-2);
+
+    /*
+     * 11px, not the 14px every other 20px icon box takes. Nominal size is not
+     * optical size: `x` and `+` have side bearings and sit around the
+     * x-height, while the arrows are drawn to fill the em box top to bottom,
+     * so at 14px the arrow stood a third taller than the 12.5px title beside
+     * it and was the loudest thing in the row. The constraint here is matching
+     * the title, not matching the other glyphs.
+     */
+    font-size: var(--text-xs);
+  }
+
+  .remove {
+    inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+  }
+
+  .wrapperRail .pin {
+    inset-inline-start: var(--space-2);
+    inset-inline-end: auto;
+  }
+
+  .wrapperRail .remove {
+    inset-inline-end: var(--space-2);
+  }
+
+  /*
+   * Flush, not inset. The module head's `+` pulls itself out by `--space-2` to
+   * sit on the card's own trailing edge, and the row list bleeds by the same 4,
+   * so a row control at inset 0 lands its 20px box exactly under the head's.
+   * One trailing column for the whole module: `+`, then every `×`, then every
+   * status dot, all on one centre line.
+   */
+  .wrapperPanel .remove {
+    inset-inline-end: 0;
+  }
+
+  /*
+   * The dot and the delete share one 20px slot, so the dot is centred inside
+   * that box rather than flush to the same 4px: 4 + (20 − 6) / 2 = 11. Sharing
+   * the slot is the point — nothing shifts on hover, one mark simply becomes
+   * the other.
+   */
+  .statusSlot {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: calc(var(--space-2) + (var(--control-h-sm) - var(--dot-sm)) / 2);
+    align-self: auto;
+    translate: 0 -50%;
+    transition: opacity var(--motion-quick) ease-out;
+  }
+
+  .wrapperPanel .statusSlot {
+    inset-inline-end: calc((var(--control-h-sm) - var(--dot-sm)) / 2);
+  }
+
+  .wrapperRail:hover .statusSlot,
+  .wrapperRail:focus-within .statusSlot,
+  .wrapperPanel:hover .statusSlot,
+  .wrapperPanel:focus-within .statusSlot {
+    opacity: 0;
+  }
+
+  /* "On" is expressed by staying put, not by a heavier glyph. One tone step is
+     all the extra it gets — the rail is greyscale apart from the current
+     location and the waiting section (§7.5). */
+  .pinOn {
+    opacity: 1;
+    pointer-events: auto;
+    color: var(--text-2);
+  }
+
+
+  .remove:hover {
+    color: var(--error-text);
+  }
+
+  @keyframes row-pulse {
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .statusSlot {
+      transition: none;
+    }
+
+    .dotRunning {
+      animation: none;
+    }
+
+    .row,
+    .action {
+      transition: none;
+    }
+  }
+}

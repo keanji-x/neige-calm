@@ -9,11 +9,12 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 const mutationRunner = await import('./runner.ts');
 const {
   byteSequencesEqual, gitApplyDirectory, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
-  parseVitestReport, selectedEntries, trackedFixtureSetMatches, validateManifest,
+  parseShard, parseVitestReport, selectedEntries, shardEntries, trackedFixtureSetMatches, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
-const { values } = parseArgs({ options: { base: { type: 'string' }, report: { type: 'string' } } });
+const { values } = parseArgs({ options: { base: { type: 'string' }, report: { type: 'string' }, shard: { type: 'string' } } });
+const shard = values.shard ? parseShard(values.shard) : null;
 const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8'));
 
 /** @param {string[]} args */
@@ -49,11 +50,12 @@ validateTrackedFixtures();
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner requires a clean worktree');
 const changed = values.base ? changedPaths() : [];
 const selected = values.base ? selectedEntries(manifest, changed) : manifest;
+const entriesToRun = shardEntries(selected, shard);
 const infrastructureChanged = changed.some((path) => path.startsWith('fe/tools/mutation/'));
 const report = [];
 const temporary = mkdtempSync(resolve(tmpdir(), 'neige-mutation-'));
 try {
-  for (const entry of selected) {
+  for (const entry of entriesToRun) {
     const target = resolve(feRoot, entry.target);
     const before = readFileSync(target);
     const patchPath = resolve(temporary, `${entry.mutation_id}.diff`);
@@ -102,7 +104,9 @@ try {
   rmSync(temporary, { recursive: true, force: true });
 }
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner left worktree dirty');
-const output = JSON.stringify({ selected: selected.length, total: manifest.length, mutations: report }, null, 2);
+const output = JSON.stringify({ shard, selected: selected.length, ran: entriesToRun.length, total: manifest.length, mutations: report }, null, 2);
 if (values.report) writeFileSync(resolve(feRoot, values.report), `${output}\n`);
 console.log(output);
-process.exitCode = mutationRunExitCode(report.map(({ verdict }) => verdict), infrastructureChanged, Boolean(values.base));
+process.exitCode = mutationRunExitCode(
+  report.map(({ verdict }) => verdict), infrastructureChanged, Boolean(values.base), selected.length,
+);

@@ -1,0 +1,96 @@
+@layer features {
+  .form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .label {
+    color: var(--text-2);
+    font-size: var(--text-base);
+  }
+
+  /* Rule, box and colour come from base.css's one text-field recipe. */
+  .textarea,
+  .input,
+  .select {
+    padding-block: var(--space-2);
+    font: inherit;
+    font-size: var(--text-base);
+    width: 100%;
+  }
+
+  .textarea {
+    font-family: var(--font-mono);
+    resize: vertical;
+  }
+
+  .input {
+    font-family: var(--font-mono);
+  }
+
+  .hint {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+  }
+
+  .error {
+    border: 1px solid var(--warn-border);
+    border-radius: var(--radius-sm);
+    background: var(--warn-soft);
+    color: var(--warn);
+    padding: var(--space-2);
+    font-size: var(--text-base);
+  }
+
+  .checkboxRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--text-2);
+    font-size: var(--text-base);
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .cancel,
+  .submit {
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-2);
+    padding: var(--space-1) var(--space-3);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--text-base);
+  }
+
+  .submit {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .cancel:hover,
+  .submit:hover {
+    background: var(--overlay-hover);
+  }
+
+  .submit:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
