@@ -66,8 +66,8 @@
     /* No hairline. The surface step alone is the boundary — §6.5's ladder
        stops at its first satisfied rung, and step ③ (a different functional
        region) is satisfied here, so step ② is a second statement of the same
-       fact. It needed the line only while `--surface-rail` sat 2.4 L from the
-       ground; see the token's note for why it is now 3.3. */
+       fact. The rail and ground are one 1.25 contrast-ratio ladder step apart
+       in both themes, which is the unit the ladder is defined in. */
     background: var(--surface-rail);
     overflow: auto;
   }

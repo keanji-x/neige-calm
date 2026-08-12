@@ -4,10 +4,10 @@
    *
    * Interface type, 13px sans, for the whole transcript. The report reads at
    * `--text-lg` serif and this deliberately does not: the drawer's measure is
-   * fixed at 364px, and 18px there runs 52 characters a line (choppy) while a
-   * serif at the 13px that *does* land in the band is below the size a serif
-   * holds up at on screen. A conversation is working type; a report is
-   * published type.
+   * fixed at 364px, while a serif at the 13px that lands in the reading band is
+   * below the size a serif holds up at on screen. A conversation is working
+   * type; a report is published type. The measured tradeoff is recorded with
+   * the reply rule below.
    *
    * Who spoke is carried by **which side of the column it is on**, and by
    * nothing else — no fill, no bubble, no label, no weight step:

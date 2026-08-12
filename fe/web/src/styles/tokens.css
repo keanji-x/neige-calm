@@ -33,13 +33,14 @@
      * different points on the scale: at a flat 3.0 L, dark's own three steps
      * measured 1.036 / 1.051 / 1.067 — the rail, the largest region on screen,
      * got the weakest edge of the three. Solving for the ratio instead gives
-     * a uniform 1.15 in both themes — the same ladder, in the only unit that
-     * describes what an eye actually sees.
+     * the same ladder in both themes, in the only unit that describes what an
+     * eye actually sees. The shipped 1.25 step measures 1.251 rail → ground
+     * and 1.261 ground → paper in light, then 1.252 for both steps in dark.
      *
-     * 1.15 is the largest step this palette can hold. The binding constraint is
-     * `--text-3` on the outermost surface: at 1.20 it reads 4.20 against a dark
-     * card and fails AA. The number is a knob, but it is a knob with a wall
-     * behind it, and the wall is measured rather than guessed.
+     * The text scale's alignment with M3 created the headroom for 1.25: the
+     * audit script's worst foreground/surface pair across both themes is 4.80,
+     * above AA's 4.5 requirement. The number is a knob with a measured wall,
+     * not a guess.
      *
      * Each theme is anchored at its outer end and walked inward — light from
      * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
@@ -54,11 +55,10 @@
      * headroom, so nothing in light *could* be raised — which is why everything
      * had been pushed down instead.
      *
-     * Dark had the mirror image of that bug and it survived the first fix: with
-     * the ground at 16 there was almost nothing *below* it, so the recessed
-     * rank had no room — a 1.10 step down from 16 lands at L 0. That is why the
-     * dark ground moves up to 19. Both themes now hold four ranks because both
-     * grounds were moved off their wall.
+     * Dark had the mirror image of that bug and it survived the first fix: the
+     * recessed rank had almost no room below the ground. At the shipped 24.5%
+     * ground, both dark steps can hold the same 1.25 ratio. Both themes now
+     * hold four ranks because both grounds were moved off their wall.
      *
      * Elevation is absolute; **state is relative** — see `--accent-soft`.
      */
@@ -106,18 +106,17 @@
      * white in dark — so "darken by 4%" flips direction with the theme. A
      * recessed well needs the opposite: further from the page ground, which is
      * darker in both. Measured on the real pixels with the old overlay in
-     * place, focus moved the well's contrast against the page 1.58 → 1.70 in
-     * light and 2.29 → **2.11** in dark. Right in one theme, backwards in the
-     * other, from one declaration.
+     * place, focus moved the well's contrast against the page in the right
+     * direction in light but the wrong direction in dark, from one declaration.
      *
-     * Elevation is absolute, so this is absolute: 85.1 → 80 takes the light
-     * well from 1.58 to 1.86 against the page.
+     * Elevation is absolute, so this is absolute. Measured well against page,
+     * blur → focus is 1.577 → 1.864 in light and 1.567 → 1.620 in dark.
      *
      * The dark value is honest rather than effective. Dark's well already sits
-     * at luminance 0.0017 — the floor — so 12 → 5 buys 2.29 → 2.35 and you
-     * cannot see it. There is no room left in that direction and the other
-     * direction is wrong. In dark, the send arrow appearing is the whole
-     * signal, which is what it was designed to be.
+     * at luminance 0.0017 — the floor — so the dark change buys very little
+     * and you cannot see it. There is no room left in that direction and the
+     * other direction is wrong. In dark, the send arrow appearing is the
+     * whole signal, which is what it was designed to be.
      */
     --surface-chip-focus: oklch(80% 0.005 240);
     --surface-toggle-overlay: oklch(0% 0 0 / 0.045);

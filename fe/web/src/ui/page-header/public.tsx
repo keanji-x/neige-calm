@@ -35,7 +35,7 @@ export type PageHeaderProps = Readonly<{
    *
    * `document` starts it at the prose column instead. The document routes
    * centre their prose inside the main column, and the title is that
-   * document's first line: left at the page inset it hangs 106px out to the
+   * document's first line: left at the page inset it hangs 162px out to the
    * side of every word below it. Actions are unaffected — they belong to the
    * page's trailing edge, not to the document.
    */

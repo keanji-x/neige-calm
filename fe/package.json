@@ -18,7 +18,7 @@
     "mock:generate": "node --experimental-strip-types tools/mock/generate.mjs",
     "test:mock-drift": "node --experimental-strip-types tools/mock/check-drift.mjs",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
-    "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
+    "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/architecture/check-breakpoint-literals.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
     "lint:css": "stylelint 'web/src/**/*.css' --allow-empty-input",
     "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs . && node tools/architecture/check-core-no-jsx.mjs core",
     "e2e": "playwright test"

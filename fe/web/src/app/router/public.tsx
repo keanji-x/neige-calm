@@ -221,7 +221,9 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
  * the drawer overlays the entire main region (§7.6), which is not something a
  * 308px module inside one page should own.
  *
- * `conversations` is empty in production: the kernel holds this data
+ * The store is a route-local `useState` stub, so each route component creates
+ * a fresh instance: conversations do not survive navigation, and Today's
+ * cross-wave list is always empty. The kernel holds this data
  * (`WorkerSessionProjection` + `HarnessItem`) but no HTTP endpoint serves it
  * yet, so the list renders §5.3's unbuilt shape. See
  * `core/domain/conversation.ts`.

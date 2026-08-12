@@ -37,7 +37,7 @@
    * the page's inner width less the panel and its gutter, and the prose is
    * centred in it, so the title's start is half the difference.
    *
-   *   (1180 − 3×24 − 280 − 616) / 2 = 106
+   *   (1180 − 3×24 − 280 − 504) / 2 = 162
    *
    * `padding-inline-start`, not a max-width — the sticky header's background
    * must still span the full page, or content scrolls out from under it at the
@@ -56,7 +56,7 @@
      * One `--space-10` is the size chosen, and the reason it is not free: the
      * page's own inset and the grid's gutter are both `--space-10`, so a hang
      * of exactly one gutter is a distance already on the page rather than a new
-     * one. Bigger reads as misalignment (the 106 it started at was the whole
+     * one. Bigger reads as misalignment (the 162 it started at was the whole
      * offset, and looked like a bug); smaller stops registering as deliberate.
      */
     --title-hang: var(--space-10);

@@ -63,13 +63,13 @@ describe('Today clock', () => {
     expect(screen.getByText('3:00 PM')).toBeTruthy();
   });
 
-  it('moves the page date across midnight on the clock tick', () => {
+  it('moves the page date across midnight on the clock tick', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 7, 10, 23, 59, 50));
     render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} coves={[]} />);
     expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
 
-    act(() => vi.advanceTimersByTime(15_000));
+    await act(() => vi.advanceTimersByTime(15_000));
     expect(screen.getByRole('heading', { name: 'Tuesday, August 11' })).toBeTruthy();
   });
 });
