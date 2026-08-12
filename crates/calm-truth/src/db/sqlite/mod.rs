@@ -103,11 +103,10 @@ pub use session_row::{
 pub use task::{
     SuccessReportFlip, TaskReporter, require_wave_exists_tx, task_apply_gate_result_tx,
     task_cancel_tx, task_claim_pending_tx, task_complete_from_worker_tx, task_fail_from_worker_tx,
-    task_gate_attempt_bump_tx, task_get_tx, task_insert_tx, task_mark_running_tx,
-    task_mark_sub_wave_running_tx, task_report_success_from_worker_tx,
-    task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
-    task_update_pending_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
-    wave_require_task_gates_tx, worker_op_targets_card_tx,
+    task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx, task_mark_sub_wave_running_tx,
+    task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx,
+    task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_wave_tx,
+    wave_lifecycle_and_budget_tx, wave_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,

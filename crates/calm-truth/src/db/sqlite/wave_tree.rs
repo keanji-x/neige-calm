@@ -103,16 +103,13 @@ pub const WAVE_TREE_MEMBERS_SQL: &str = concat!(
 
 /// Membership plus fixed (non-cullable in this projection) spec occupancy.
 /// The outer correlated count preserves the same recursive shape/order while
-/// detecting an upgrade member already above its deterministic share. Block
-/// pending rows are excluded because they re-enter projection as candidates;
-/// all non-block live rows (notably legacy) are immutable occupancy.
+/// detecting a member already above its deterministic share. Pending rows are
+/// excluded because they re-enter projection as candidates.
 const WAVE_TREE_MEMBERS_WITH_FIXED_SPEC_SQL: &str = concat!(
     bounded_wave_descendant_cte!(),
     "SELECT w.id, d.depth, (SELECT count(*) FROM tasks t \
-       WHERE t.wave_id=w.id AND t.declared_by='spec' AND ( \
-         (t.origin='block' AND t.status IN ('dispatched','running','verifying')) \
-         OR (t.origin!='block' AND t.status NOT IN ('done','failed','canceled')) \
-       )) AS fixed_live \
+       WHERE t.wave_id=w.id AND t.declared_by='spec' \
+         AND t.status IN ('dispatched','running','verifying')) AS fixed_live \
      FROM waves w \
      JOIN (SELECT id, min(depth) AS depth FROM down GROUP BY id) d ON w.id = d.id \
      ORDER BY w.created_at, w.id"
