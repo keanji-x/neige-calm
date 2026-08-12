@@ -1,0 +1,4 @@
+- sha: push-negative
+  message: change frozen tokens without approval
+  paths:
+    - fe/web/src/styles/tokens.css

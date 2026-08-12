@@ -118,13 +118,36 @@ export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef =
 }
 
 export function ownershipCommitsForEvent(
-  eventName: string | undefined,
+  _eventName: string | undefined,
   load: () => readonly OwnershipCommit[],
 ): readonly OwnershipCommit[] {
-  return eventName === 'push' ? [] : load();
+  return load();
 }
 
-export function resolveOwnershipBase(repoRoot: string, injectedBase = process.env.OWNERSHIP_BASE_SHA ?? '', headRef = 'HEAD'): string {
+export function resolveOwnershipBase(
+  repoRoot: string,
+  injectedBase = process.env.OWNERSHIP_BASE_SHA ?? '',
+  headRef = process.env.OWNERSHIP_HEAD_SHA ?? 'HEAD',
+  eventName = process.env.OWNERSHIP_EVENT_NAME,
+  pushForced = process.env.OWNERSHIP_PUSH_FORCED === 'true',
+): string {
+  if (eventName === 'push') {
+    if (pushForced) throw new Error('cannot audit ownership for a forced push');
+    if (!/^[0-9a-f]{40}$/i.test(injectedBase) || /^0{40}$/.test(injectedBase)) {
+      throw new Error('cannot audit ownership push: github.event.before is missing or zero');
+    }
+    if (!/^[0-9a-f]{40}$/i.test(headRef) || /^0{40}$/.test(headRef)) {
+      throw new Error('cannot audit ownership push: github.event.after is missing or zero');
+    }
+    try {
+      execFileSync('git', ['cat-file', '-e', `${injectedBase}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+      execFileSync('git', ['cat-file', '-e', `${headRef}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+      execFileSync('git', ['merge-base', '--is-ancestor', injectedBase, headRef], { cwd: repoRoot, stdio: 'ignore' });
+    } catch {
+      throw new Error(`cannot audit ownership push range ${injectedBase}..${headRef}; history is unavailable or non-linear`);
+    }
+    return injectedBase;
+  }
   if (injectedBase !== '') {
     try {
       if (!/^0{40}$/.test(injectedBase)) {
