@@ -242,5 +242,86 @@
     "selection_paths": ["web/src/app/providers/public.test.tsx", "web/src/app/providers/providers.browser.test.tsx"],
     "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "browser provider contracts INV-APP-009 routes button and Escape through the same reload handler", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel"],
     "why_more_than_one": "Removing Dialog and the client-version text simultaneously removes initial modal focus and dual-version reporting; the button still calls reload directly, but Escape no longer reaches the same handler, so the consolidated button-and-Escape routing contract also fails."
+  },
+  {
+    "mutation_id": "app-cursor-read-from-storage",
+    "defends": ["design:§5.1(1)"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -54,7 +54,7 @@ export function createBrowserCursorStore(\n   };\n \n   return {\n-    read: () => adoptedInstanceId === null ? null : cursor,\n+    read: () => adoptedInstanceId === null ? null : persistedCursor(storage.getItem(SYNC_CURSOR_KEY), adoptedInstanceId),\n     write: (value) => {\n       cursor = value;\n       if (adoptedInstanceId === null) {\n",
+    "expected_red": ["browser cursor store T-C1 write is synchronously visible from memory"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "Only the synchronous memory-authority assertion reads before the queued idle flush."
+  },
+  {
+    "mutation_id": "app-cursor-drop-idle-batching",
+    "defends": ["oracle:INV-APP-050"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -61,7 +61,7 @@ export function createBrowserCursorStore(\n         writtenBeforeAdopt = true;\n         return;\n       }\n-      if (idleHandle === null) idleHandle = idle.schedule(flush);\n+      idleHandle = idle.schedule(flush);\n     },\n     adopt: (dbInstanceId) => {\n       const changed = adoptedInstanceId !== dbInstanceId;\n",
+    "expected_red": ["browser cursor store T-C2 batches writes into one idle flush carrying the latest cursor"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "Only T-C2 performs multiple writes before draining idle work."
+  },
+  {
+    "mutation_id": "app-cursor-clear-allows-stale-flush",
+    "defends": ["design:§5.1(4)"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -47,7 +47,7 @@ export function createBrowserCursorStore(\n \n   const flush = (): void => {\n     idleHandle = null;\n-    if (adoptedInstanceId === null || cursor === null) return;\n+    if (adoptedInstanceId === null) return;\n     try {\n       storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n     } catch { /* persistence is best-effort; memory remains authoritative */ }\n@@ -75,7 +75,6 @@ export function createBrowserCursorStore(\n       catch { cursor = null; }\n     },\n     clear: () => {\n-      if (idleHandle !== null) idle.cancel(idleHandle);\n       idleHandle = null;\n       cursor = null;\n       writtenBeforeAdopt = false;\n",
+    "expected_red": ["browser cursor store T-C3 clear prevents even an already-dequeued idle callback from restoring a cursor"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "The combined patch removes both independent stale-flush defenses; deleting either one alone is intentionally absorbed by the other."
+  },
+  {
+    "mutation_id": "app-cursor-ignore-database-stamp",
+    "defends": ["design:§5.1(3)"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -28,7 +28,6 @@ function persistedCursor(raw: string | null, dbInstanceId: string): number | nul\n     const value: unknown = JSON.parse(raw);\n     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;\n     const record = value as Record<string, unknown>;\n-    if (record.dbInstanceId !== dbInstanceId) return null;\n     return typeof record.cursor === 'number' && Number.isSafeInteger(record.cursor) && record.cursor >= 0\n       ? record.cursor : null;\n   } catch {\n",
+    "expected_red": ["browser cursor store T-C4 rejects a persisted cursor stamped for another database instance"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "Only T-C4 supplies a valid persisted object stamped for a different instance."
+  },
+  {
+    "mutation_id": "app-cursor-let-flush-storage-error-escape",
+    "defends": ["design:T-C5"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -48,9 +48,7 @@ export function createBrowserCursorStore(\n   const flush = (): void => {\n     idleHandle = null;\n     if (adoptedInstanceId === null || cursor === null) return;\n-    try {\n-      storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n-    } catch { /* persistence is best-effort; memory remains authoritative */ }\n+    storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n   };\n \n   return {\n",
+    "expected_red": ["browser cursor store T-C5 contains storage failures without losing the in-memory cursor"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "Only T-C5 injects a setItem failure and drains the scheduled flush."
+  },
+  {
+    "mutation_id": "app-cursor-read-before-adopt",
+    "defends": ["design:§5.1(2)"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -54,7 +54,7 @@ export function createBrowserCursorStore(\n   };\n \n   return {\n-    read: () => adoptedInstanceId === null ? null : cursor,\n+    read: () => adoptedInstanceId === null ? (JSON.parse(storage.getItem(SYNC_CURSOR_KEY) ?? 'null')?.cursor ?? null) : cursor,\n     write: (value) => {\n       cursor = value;\n       if (adoptedInstanceId === null) {\n",
+    "expected_red": ["browser cursor store T-C6 fails closed before adopt and does not persist pre-adopt writes"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "Only T-C6 reads a valid persisted object before adopt."
+  },
+  {
+    "mutation_id": "app-cursor-accept-bare-number",
+    "defends": ["design:§5.1 容错"],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -26,6 +26,7 @@ function persistedCursor(raw: string | null, dbInstanceId: string): number | nul\n   if (raw === null) return null;\n   try {\n     const value: unknown = JSON.parse(raw);\n+    if (typeof value === 'number') return value;\n     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;\n     const record = value as Record<string, unknown>;\n     if (record.dbInstanceId !== dbInstanceId) return null;\n",
+    "expected_red": ["browser cursor store T-C7 rejects the legacy web bare-number value without throwing"],
+    "selection_paths": ["web/src/app/events/browser-cursor-store.test.ts"],
+    "why_more_than_one": "Only T-C7 supplies the legacy bare-number representation."
+  },
+  {
+    "mutation_id": "app-providers-render-bridge-before-instance-verdict",
+    "defends": ["design:§5.1 门禁"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -59,5 +59,5 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}</>;\n+  return <>{query.data && renderEventBridge?.(query.data)}{children}</>;\n }\n",
+    "expected_red": ["provider behavior T-A2 never constructs the bridge when the persisted database instance has switched"],
+    "selection_paths": ["web/src/app/providers/public.test.tsx"],
+    "why_more_than_one": "Only T-A2 combines a persisted old instance with a newly fetched instance and observes bridge construction during that render."
+  },
+  {
+    "mutation_id": "app-providers-retry-reads-top-level-status",
+    "defends": ["design:T-R1"],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -17,11 +17,7 @@ export interface ProviderRuntime {\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'failure' in error) {\n-    const failure = error.failure;\n-    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n-  }\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n   return failureCount < 1;\n }\n",
+    "expected_red": ["app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"],
+    "selection_paths": ["web/src/app/providers/public.contract.test.tsx"],
+    "why_more_than_one": "Only the retry-policy contract passes real ApiError instances whose HTTP status is nested under failure."
   }
 ]

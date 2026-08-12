@@ -57,11 +57,21 @@ describe('provider behavior', () => {
     const storage = memoryStorage(); storage.setItem(DB_INSTANCE_ID_KEY, 'db-old'); storage.setItem(SYNC_CURSOR_KEY, 'cursor');
     const clear = vi.fn(); const client = new QueryClient(); vi.spyOn(client, 'clear').mockImplementation(clear);
     const reload = vi.fn(); const deleteDatabase = vi.fn(); const r = runtime({ storage, reload, deleteDatabase }); const confirm = vi.spyOn(window, 'confirm');
-    render(<ServerCompatGate client={client} runtime={r}>route</ServerCompatGate>);
+    const cursorStore = { clear: vi.fn(() => { storage.removeItem(SYNC_CURSOR_KEY); }) };
+    render(<ServerCompatGate client={client} runtime={r} cursorStore={cursorStore}>route</ServerCompatGate>);
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
     expect(clear).toHaveBeenCalledOnce(); expect(deleteDatabase).toHaveBeenCalledWith('neige-calm');
-    expect(storage.getItem(SYNC_CURSOR_KEY)).toBeNull(); expect(storage.getItem(DB_INSTANCE_ID_KEY)).toBe('db-a');
+    expect(cursorStore.clear).toHaveBeenCalledOnce(); expect(storage.getItem(SYNC_CURSOR_KEY)).toBeNull(); expect(storage.getItem(DB_INSTANCE_ID_KEY)).toBe('db-a');
     expect(confirm).not.toHaveBeenCalled(); expect(screen.queryByText('route')).toBeNull();
+  });
+
+  it('T-A2 never constructs the bridge when the persisted database instance has switched', async () => {
+    const storage = memoryStorage(); storage.setItem(DB_INSTANCE_ID_KEY, 'db-old');
+    storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: 'db-old', cursor: 99 }));
+    const renderEventBridge = vi.fn(() => <i>bridge</i>); const cursorStore = { clear: vi.fn() };
+    render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ storage })} cursorStore={cursorStore} renderEventBridge={renderEventBridge}>route</ServerCompatGate>);
+    await waitFor(() => expect(cursorStore.clear).toHaveBeenCalledOnce());
+    expect(renderEventBridge).not.toHaveBeenCalled(); expect(screen.queryByText('bridge')).toBeNull();
   });
 
   it('INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id', async () => {
