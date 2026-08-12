@@ -365,6 +365,7 @@
     "target": "web/src/app/events/browser-cursor-store.ts",
     "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -47,7 +47,7 @@\n \n   const flush = (): void => {\n     idleHandle = null;\n-    if (adoptedInstanceId === null || cursor === null) return;\n+    if (adoptedInstanceId === null) return;\n     try {\n       storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n     } catch { /* persistence is best-effort; memory remains authoritative */ }\n@@ -81,7 +81,6 @@\n       catch { cursor = null; }\n     },\n     clear: () => {\n-      if (idleHandle !== null) idle.cancel(idleHandle);\n       idleHandle = null;\n       cursor = null;\n       writtenBeforeAdopt = false;\n",
     "expected_red": [
+      "accepts all real oracle data without exceptions",
       "browser cursor store T-C3 clear prevents even an already-dequeued idle callback from restoring a cursor"
     ],
     "selection_paths": [
@@ -380,6 +381,7 @@
     "target": "web/src/app/events/browser-cursor-store.ts",
     "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -28,7 +28,6 @@\n     const value: unknown = JSON.parse(raw);\n     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;\n     const record = value as Record<string, unknown>;\n-    if (record.dbInstanceId !== dbInstanceId) return null;\n     return typeof record.cursor === 'number' && Number.isSafeInteger(record.cursor) && record.cursor >= 0\n       ? record.cursor : null;\n   } catch {\n",
     "expected_red": [
+      "accepts all real oracle data without exceptions",
       "browser cursor store T-C4 rejects a persisted cursor stamped for another database instance"
     ],
     "selection_paths": [
@@ -395,6 +397,7 @@
     "target": "web/src/app/events/browser-cursor-store.ts",
     "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -48,9 +48,7 @@\n   const flush = (): void => {\n     idleHandle = null;\n     if (adoptedInstanceId === null || cursor === null) return;\n-    try {\n-      storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n-    } catch { /* persistence is best-effort; memory remains authoritative */ }\n+    storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n   };\n \n   return {\n",
     "expected_red": [
+      "accepts all real oracle data without exceptions",
       "browser cursor store T-C5 contains storage failures without losing the in-memory cursor"
     ],
     "selection_paths": [
@@ -472,6 +475,7 @@
     "expected_red": [
       "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
       "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "accepts all real oracle data without exceptions",
       "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
       "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
     ],
@@ -554,7 +558,8 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -68,7 +68,6 @@\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n     this.retryTimer = null;\n     const socket = this.socket;\n     this.socket = null;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket"
+      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket",
+      "accepts all real oracle data without exceptions"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -588,7 +593,8 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -95,7 +95,6 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n-      this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n@@ -126,7 +125,7 @@\n   private scheduleRetry(epoch: number): void {\n     if (this.closed || epoch !== this.epoch || this.retryTimer !== null) return;\n     const delay = this.retryDelay;\n-    this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n+    this.retryDelay *= 2;\n     this.retryTimer = setTimeout(() => {\n       if (this.closed || epoch !== this.epoch) return;\n       this.retryTimer = null;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open"
+      "WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open",
+      "accepts all real oracle data without exceptions"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -618,7 +624,8 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -135,7 +135,6 @@\n   }\n \n   private probe(epoch: number): void {\n-    if (this.probeInFlight) return;\n     this.probeInFlight = true;\n     void this.probeUnauthorized().then(() => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D8 permits only one unauthorized probe in flight"
+      "WebSocketDriver contracts T-D8 permits only one unauthorized probe in flight",
+      "accepts all real oracle data without exceptions"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -648,7 +655,8 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -87,8 +87,7 @@\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n     let socket: SocketPort;\n-    try { socket = this.socketFactory(this.url); }\n-    catch { this.scheduleRetry(epoch); return; }\n+    socket = this.socketFactory(this.url);\n     if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n     this.socket = socket;\n     let opened = false;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D10 contains socket construction failures and retries"
+      "WebSocketDriver contracts T-D10 contains socket construction failures and retries",
+      "accepts all real oracle data without exceptions"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -730,7 +738,8 @@
     "expected_red": [
       "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete",
       "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation",
-      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation"
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
+      "accepts all real oracle data without exceptions"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -760,7 +769,8 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -116,10 +116,9 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n-      if (this.closed || epoch !== this.epoch) return;\n     };\n   }\n \n",
     "expected_red": [
-      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary"
+      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary",
+      "accepts all real oracle data without exceptions"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
