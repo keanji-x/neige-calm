@@ -1,3 +1,5 @@
+mod support;
+
 #[path = "cases/harness_turn_start_invariant.rs"]
 mod harness_turn_start_invariant;
 #[path = "cases/spec_harness_backpressure.rs"]

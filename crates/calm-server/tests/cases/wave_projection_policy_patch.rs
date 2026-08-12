@@ -141,7 +141,7 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str
         .unwrap();
 
     let task_id = format!("{wave_id}:{key}");
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,'pending','spec','block',0,0)")
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,'pending','spec',0,0)")
         .bind(&task_id)
         .bind(wave_id)
         .bind(key)
@@ -378,7 +378,7 @@ async fn tightening_policy_immediately_deletes_pending_projection_and_emits_plan
         .execute(&repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec','block',0,0)")
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
         .bind(format!("{wave_id}:queued")).bind(&wave_id).execute(&repo.sqlite_pool().unwrap()).await.unwrap();
 
     let response = patch(
@@ -438,7 +438,7 @@ async fn tightening_tree_budget_immediately_deletes_pending_projection_and_emits
         .execute(&repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec','block',0,0)")
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'queued','codex','queued goal','{}','[]',0,'pending','spec',0,0)")
         .bind(format!("{wave_id}:queued")).bind(&wave_id).execute(&repo.sqlite_pool().unwrap()).await.unwrap();
 
     let response = patch(state, &wave_id, None, json!({"tree_task_budget": 0})).await;

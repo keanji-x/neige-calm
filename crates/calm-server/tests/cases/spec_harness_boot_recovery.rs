@@ -1170,7 +1170,6 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,
@@ -1190,9 +1189,9 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     let gated_failed_id = gated_failed.id.clone();
     calm_server::db::write_in_tx_typed(repo.as_ref() as &dyn Repo, move |tx| {
         Box::pin(async move {
-            calm_server::db::sqlite::task_insert_tx(tx, &gated).await?;
-            calm_server::db::sqlite::task_insert_tx(tx, &ungated).await?;
-            calm_server::db::sqlite::task_insert_tx(tx, &gated_failed).await?;
+            crate::support::task::insert_task_tx(tx, &gated).await?;
+            crate::support::task::insert_task_tx(tx, &ungated).await?;
+            crate::support::task::insert_task_tx(tx, &gated_failed).await?;
             Ok(())
         })
     })

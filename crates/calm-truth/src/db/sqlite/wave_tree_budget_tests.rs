@@ -1398,6 +1398,14 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     .await
     .unwrap();
     assert!(
+        verdicts.len() >= new_declarations.len(),
+        "each new declaration must have a verdict: {verdicts:#?}"
+    );
+    assert!(
+        verdicts.len() > new_declarations.len(),
+        "the in-flight rows must contribute synthetic withdrawal verdicts: {verdicts:#?}"
+    );
+    assert!(
         verdicts.iter().take(new_declarations.len()).all(|verdict| {
             !verdict.schedulable
                 && verdict
@@ -1406,6 +1414,16 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
                     .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
         }),
         "{verdicts:#?}"
+    );
+    assert!(
+        verdicts.iter().skip(new_declarations.len()).all(|verdict| {
+            !verdict.schedulable
+                && verdict
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("cannot be withdrawn"))
+        }),
+        "extra verdicts must describe synthetic withdrawals: {verdicts:#?}"
     );
     for diagnostic in verdicts
         .iter()
