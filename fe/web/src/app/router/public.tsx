@@ -28,9 +28,14 @@ import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
+import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
-import { readWaveReport } from '../../../../core/domain/report.ts';
+import { ReportOutline } from '../../features/report/outline/public.tsx';
+import { revealReportAnchor } from '../../features/report/anchor/public.ts';
+import {
+  backlinkCountsByBlock, deriveReportOutline, readWaveReport, type ReportLinkTarget,
+} from '../../../../core/domain/report.ts';
 import {
   conversationName, conversationNameFrom, harnessItemToTurn, reconcileUserEchoes,
   type Conversation, type ConversationTurn,
@@ -42,11 +47,11 @@ import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, harnessItemsQueryOptions, prefetchCoveList, settingsQueryOptions, specRunQueryOptions,
   useCoveMutations, useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
-  waveDetailQueryOptions,
+  waveBacklinksQueryOptions, waveDetailQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
-import { useGo, useRouteParam } from './navigation.ts';
+import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
 
 type ConversationStore = Readonly<{
@@ -572,13 +577,44 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
     { showWave: false },
   );
 
+  const { report, outline } = useMemo(() => {
+    const nextReport = readWaveReport(cards);
+    return {
+      report: nextReport,
+      outline: deriveReportOutline(nextReport?.blocks ?? null),
+    };
+  }, [cards]);
+  const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id));
+  const backlinks = backlinksQuery.data;
+
+  /*
+   * A `neige://wave/…` citation. Same wave — the common case, since a report
+   * mostly cites its own sections — reveals immediately so activating an
+   * unchanged hash still flashes the destination, then records that destination
+   * in the URL. The route body is keyed by wave id, so the hash update preserves
+   * the document. Another wave is a real navigation carrying the same hash.
+   */
+  const arrivalAnchorId = useRouteHash();
+  const openReportLink = (target: ReportLinkTarget) => {
+    if (target.waveId === wave.id) {
+      if (target.blockId !== null) revealReportAnchor(target.blockId);
+      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+      return;
+    }
+    go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+  };
+
   return (
     <>
     <WavePage
       wave={wave}
       cards={cards}
       report={<ReportDocument
-        body={readWaveReport(cards)?.body ?? null}
+        report={report}
+        rail={<ReportOutline items={outline} />}
+        backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
+        onOpenLink={openReportLink}
+        arrivalAnchorId={arrivalAnchorId}
         empty={<ReportEmpty
           lead="Nothing written here yet."
           hints={[
@@ -587,6 +623,15 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
           ]}
         />}
       />}
+      backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
+        ? (
+          <ReportBacklinks
+            waveId={wave.id}
+            backlinks={backlinks}
+            onOpen={(waveId, blockId) => { go({ name: 'wave', waveId, blockId }); }}
+          />
+        )
+        : undefined}
       conversationList={chat.list}
       conversationAction={chat.action}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}

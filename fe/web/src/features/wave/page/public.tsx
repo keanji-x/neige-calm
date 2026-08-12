@@ -32,6 +32,8 @@ export type WavePageProps = Readonly<{
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
+  /** `REFERENCED BY` — omitted entirely when nothing cites this wave (§6.1). */
+  backlinks?: ReactNode;
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
@@ -43,7 +45,7 @@ export type WavePageProps = Readonly<{
 
 
 export function WavePage({
-  wave, cards, report, conversationList, conversationAction, pageTitleRef,
+  wave, cards, report, backlinks, conversationList, conversationAction, pageTitleRef,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -180,6 +182,33 @@ export function WavePage({
                   </ul>
                 )}
             </PanelModule>
+            {/*
+              The wave's folder. It has been homeless since the page header lost
+              its identity row: you choose it once at creation and then the app
+              never showed it again. It is one line, in mono because the font is
+              what says "literal" (§2.2), and it sits with CARDS because "what
+              this wave is made of" and "where it works" are the same question.
+
+              It is *not* a file browser. §8.3's FILES module was cut: a tree
+              plus a viewer makes the document slot mean two different things,
+              and a file has no block id, so every link, anchor and backlink in
+              the app stops working the moment you open one. Evidence a report
+              wants you to see belongs in the report, as a block.
+            */}
+            <PanelModule title="Folder">
+              {wave.cwd === ''
+                ? <PanelEmpty>No folder.</PanelEmpty>
+                : <p className={styles.cwd} title={wave.cwd}>{wave.cwd}</p>}
+            </PanelModule>
+            {/*
+              `REFERENCED BY` is absent, not empty, when nothing cites this wave
+              (§6.1: a section with zero rows is not rendered). Being uncited is
+              the normal state of a new wave, and a permanent "No backlinks yet."
+              would make the common case look like a deficiency.
+            */}
+            {backlinks !== undefined && (
+              <PanelModule title="Referenced by">{backlinks}</PanelModule>
+            )}
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>

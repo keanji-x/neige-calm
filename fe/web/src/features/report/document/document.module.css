@@ -18,14 +18,145 @@
    *   a line, so the code block keeps `--surface-code` alone and the table
    *   keeps one rule per row.
    */
-  /* Only what `calm-prose` does not already say. Measure, serif, size, leading
-     and block rhythm come from there; this adds the section counter, the two
-     heading treatments that are the report's own, and the block kinds the
-     shared recipe has no opinion on. */
+  /*
+   * Only what `calm-prose` does not already say. Measure, serif, size, leading
+   * and block rhythm come from there; this adds the section counter, the two
+   * heading treatments that are the report's own, and the block kinds the
+   * shared recipe has no opinion on.
+   *
+   * Three columns:
+   *
+   *   `--document-start`  the outline gutter. The rail's dots hang at its
+   *                       leading edge and its expanded card fills it, so the
+   *                       card never covers a word. The page publishes the same
+   *                       distance to `ui/page-header`, which is what puts the
+   *                       title on the prose's first character.
+   *   `--document-measure` every block, whatever its kind. The page owns the
+   *                       number and the note explaining why it is not the
+   *                       global prose measure; the fallback keeps this module
+   *                       renderable on a route that publishes neither.
+   *   the rest           the sidenote gutter.
+   *
+   * `.calm-prose` caps itself at the prose measure; the document is wider than
+   * its own text — it has two margins — so it overrides that here and hands the
+   * measure to the block column instead.
+   */
   .doc {
-    display: flow-root;
-    margin-inline: auto;
+    position: relative;
+    display: grid;
+    grid-template-columns:
+      var(--document-start)
+      var(--document-measure, var(--measure-prose))
+      minmax(0, 1fr);
+    row-gap: var(--space-8);
+
+    inline-size: 100%;
+    max-inline-size: none;
     counter-reset: report-section;
+  }
+
+  /* One block, plus its sidenote. Placed explicitly — the rail claims column 1,
+     and auto-placement would put the first block there whenever a document is
+     rendered without one. */
+  .row {
+    display: contents;
+  }
+
+  /*
+   * Every kind, one width. Blocks used to break out to the document width;
+   * what that bought was a second left-to-right rhythm in the same document,
+   * and the eye had to re-find the column at every figure.
+   */
+  .block {
+    grid-column: 2;
+    min-inline-size: 0;
+  }
+
+  /* The block rhythm `calm-prose` gives its own direct children, given to the
+     blocks inside a block — which are now one level deeper. */
+  .block > * + * {
+    margin-block-start: var(--space-8);
+  }
+
+  .byline,
+  .raw {
+    grid-column: 2;
+  }
+
+  /*
+   * The backlink marker (§8.3), in the trailing gutter, aligned to the first
+   * line of the block it belongs to. Inside the prose it would interrupt a
+   * sentence to say something the reader did not ask about; out here,
+   * peripheral vision finds it and nothing is in the way.
+   */
+  .sidenote {
+    grid-column: 3;
+    align-self: start;
+    padding-block-start: var(--space-2);
+    padding-inline-start: var(--space-8);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  /*
+   * Arrival (§2.6): the one non-overlay entrance effect in the app. The block
+   * was already on the page — this is the document pointing at it, then
+   * getting out of the way. One property, one direction, no loop.
+   */
+  .doc [data-nc-arrived] {
+    animation: report-arrival var(--motion-slow) ease-in;
+  }
+
+  @keyframes report-arrival {
+    from {
+      background-color: var(--accent-soft);
+    }
+
+    to {
+      background-color: transparent;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .doc [data-nc-arrived] {
+      animation: none;
+    }
+  }
+
+  /* A block this build cannot draw. One line, in the machine register, so it
+     reads as a gap in the *viewer* rather than as a defect in the report. */
+  .unsupported {
+    padding-block: var(--space-4);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  /*
+   * A `neige://` citation. It is a button (INV-A11Y-061), so it has to be
+   * un-buttoned back into a run of prose: inherited type, baseline alignment,
+   * and the underline is the only thing that says it leads anywhere.
+   */
+  .link {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: var(--accent);
+    text-align: start;
+    text-decoration: underline;
+    text-decoration-color: var(--hairline-strong);
+    text-underline-offset: 0.18em;
+    cursor: pointer;
+  }
+
+  .link:hover,
+  .link:focus-visible {
+    text-decoration-color: var(--accent);
   }
 
   /*
@@ -33,15 +164,17 @@
    * the number and the rule, and `--space-12 + --space-6` above it is the
    * largest break in the document — what makes sections read as sections.
    *
-   * `overflow-x: clip` is load-bearing: the trailing rule is a zero-advance
-   * pseudo-element (`inline-size: 100%` against `margin-inline-end: -100%`) so
-   * it fills whatever the heading text leaves, and without the clip it would
-   * push the document's scroll width past its column.
+   * The heading is a flex row: its text, then the trailing rule taking exactly
+   * what the text leaves. No overflow and no clip — which matters now that the
+   * section number is painted outside this box, in the margin, where a clip
+   * would have swallowed it.
    */
   .h1 {
+    position: relative;
     counter-increment: report-section;
-    display: block;
-    overflow-x: clip;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-7);
     margin-block-start: calc(var(--space-12) + var(--space-6));
     margin-block-end: var(--space-6);
     font-family: var(--font-serif);
@@ -52,32 +185,64 @@
     color: var(--text);
   }
 
+  /*
+   * **The section number lives in the margin, not in the heading.**
+   *
+   * It used to sit inline, in front of the title, which made every heading two
+   * things — a label and a counter — and left the leading margin with nothing
+   * in it but air. Out here it is marginalia: it says what number this section
+   * is without taking a word of the heading's line, and it is what stops 162px
+   * of reserved margin from reading as a hole in the page.
+   *
+   * Absolute, against the trailing edge of the margin, so the numbers line up
+   * as a column of their own however wide they get.
+   */
   .h1::before {
     content: counter(report-section, decimal-leading-zero);
-    display: inline-block;
-    margin-inline-end: var(--space-7);
+    position: absolute;
+    inset-inline-end: calc(100% + var(--space-10));
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
+    line-height: var(--leading-loose);
     letter-spacing: var(--tracking-wide);
     color: var(--accent);
-    vertical-align: baseline;
+    transition: opacity var(--motion-quick) ease-out;
+  }
+
+  /*
+   * While the outline is up, the numbers step aside. Both live in the same
+   * margin and both are transparent text — overlapping them would be text on
+   * text, the one combination that is never legible. The outline is the fuller
+   * answer to the same question, so it is the one that stays.
+   *
+   * Keyed on the *list*, not on the rail: the rail is the whole margin, and
+   * hovering the margin is not the gesture — hovering the dots is.
+   */
+  .doc:has(nav ol:hover) .h1::before,
+  .doc:has(nav ol:focus-within) .h1::before {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .h1::before {
+      transition: none;
+    }
+  }
+
+  .headingText {
+    min-inline-size: 0;
   }
 
   .h1::after {
     content: "";
-    display: inline-block;
-    inline-size: 100%;
+    flex: 1;
+    align-self: center;
     block-size: 1px;
-    margin-inline-start: var(--space-7);
-
-    /* stylelint-disable-next-line declaration-property-value-disallowed-list -- the rule must take zero advance width */
-    margin-inline-end: -100%;
     background: var(--hairline);
-    vertical-align: middle;
   }
 
-  .doc > .h1:first-child {
+  .block > .h1:first-child {
     margin-block-start: 0;
   }
 
@@ -95,8 +260,8 @@
 
   /* Both headings own their spacing outright, so the generic sibling rule must
      not add to it. */
-  .doc > .h1 + *,
-  .doc > .h2 + * {
+  .block > .h1 + *,
+  .block > .h2 + * {
     margin-block-start: 0;
   }
 
