@@ -203,12 +203,23 @@ function Block({ block, headingIds, onOpenLink }: { block: SafeBlock } & BlockCo
       // header, and a document may not carry a second one. H1 and H2 are all
       // `REPORT_MAX_DEPTH` admits; anything deeper renders as H2 rather than
       // vanishing, because dropping a heading loses the text under it.
-      const Tag = block.depth === 1 ? 'h2' : 'h3';
-      const className = block.depth === 1 ? styles.h1 : styles.h2;
+      const id = headingIds.get(block.position.start.offset ?? -1);
+      if (block.depth !== 1) {
+        return (
+          <h3 className={styles.h2} id={id}>
+            <Inlines nodes={block.children} {...context} />
+          </h3>
+        );
+      }
       return (
-        <Tag className={className} id={headingIds.get(block.position.start.offset ?? -1)}>
-          <Inlines nodes={block.children} {...context} />
-        </Tag>
+        // The section's text is wrapped so the trailing rule can be a flex
+        // sibling that takes the space the words leave. The rule used to be a
+        // 100%-wide pseudo-element pulled back by a negative margin, which
+        // worked only under a clip — and the clip would have taken the margin's
+        // section number with it once that moved out of the heading.
+        <h2 className={styles.h1} id={id}>
+          <span className={styles.headingText}><Inlines nodes={block.children} {...context} /></span>
+        </h2>
       );
     }
     case 'paragraph':

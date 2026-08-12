@@ -1,17 +1,17 @@
-// The outline (§6.16) — a rail of dots in the document's leading gutter.
+// The outline (§6.16) — the document's leading margin, read as a list.
 //
-// **Not a column, not a header button, and not a panel.** It is the document's
-// own margin: one dot per section, hanging where a manuscript's marginalia
-// would be, taking 24px that no text was using. Hovering (or tabbing into) the
-// rail turns the dots into their labels; everything else on the page stays
-// exactly where it was.
+// **Not a column, not a header button, not a panel, and not a card.** The
+// margin already carries the section numbers (`document.module.css` hangs them
+// there); hovering it swaps those numbers for the same numbers *with their
+// names on*. Nothing moves, nothing is covered, and there is no surface —
+// because a surface is what you need when a layer covers something, and this
+// one never leaves the margin.
 //
-// Why this and not the overlay it started as: an overlay had to live on the
-// trailing side, over the panel card, which made "where am I in this document"
-// a thing you looked for on the opposite side of the screen from the text —
-// and it cost the document its alignment with its own title, because the
-// leading gutter had nothing in it and the document drifted to the middle of
-// the column to compensate.
+// Two designs came before it. An overlay on the trailing side put "where am I
+// in this document" on the opposite side of the screen from the text. A card
+// in the leading margin fixed that but needed 224px of reserved emptiness to
+// avoid covering the prose, which read as a hole in the page. The margin is
+// now the symmetric one a document has anyway, and the thing in it is content.
 //
 // The shape of the list is decided in `core/domain/report.ts`
 // (`deriveReportOutline`): sections are numbered continuously across blocks,
@@ -85,28 +85,25 @@ export function ReportOutline({ items, onSelect = revealReportAnchor }: ReportOu
         {rows.map((row, index) => (
             <li key={`${row.anchorId}:${index}`}>
               {/*
-                The dot is the button, and the label is inside it — collapsed to
-                a dot at rest, revealed on hover or focus. One element in both
-                states means the accessible name never depends on the visual
-                one: a screen reader has always read the label.
+                The row is in the DOM at rest and only *looks* absent — it is
+                the list's opacity that changes, never its contents. Rendering
+                the labels on hover instead would take the accessible names with
+                them, and hide the whole outline from anything that is not a
+                mouse.
               */}
               <button
                 ref={(element) => { refs.current[index] = element; }}
                 type="button"
                 tabIndex={index === activeIndex ? 0 : -1}
                 className={row.child ? `${styles.row} ${styles.child}` : styles.row}
-                data-nc-active={index === activeIndex ? '' : undefined}
                 onKeyDown={(event) => onKeyDown(event, index)}
                 onFocus={() => setActiveIndex(index)}
                 onClick={() => onSelect(row.anchorId)}
               >
-                <span className={styles.dot} aria-hidden="true" />
-                <span className={styles.label}>
-                  {row.number !== null && (
-                    <span className={styles.number}>{String(row.number).padStart(2, '0')}</span>
-                  )}
-                  <span className={styles.text}>{row.label}</span>
-                </span>
+                {row.number !== null && (
+                  <span className={styles.number}>{String(row.number).padStart(2, '0')}</span>
+                )}
+                <span className={styles.text}>{row.label}</span>
               </button>
             </li>
         ))}

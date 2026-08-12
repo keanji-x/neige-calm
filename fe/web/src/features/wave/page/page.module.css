@@ -7,11 +7,21 @@
      * One declaration, two consumers — the alternative is the same number typed
      * in two files that then drift.
      *
-     * It is `--rail-w` wide plus a gutter, because that is what the outline's
-     * expanded card needs: the card is the reason the margin is reserved, and a
-     * margin narrower than the card would put the card back over the text.
+     * The value is the *symmetric* margin: half of what the main column has
+     * left over once the prose measure is taken out of it. A document with two
+     * equal margins reads as a page; the lopsided one it had before read as a
+     * mistake, and the extra 60px it hoarded on the leading side were doing
+     * nothing but being wide.
+     *
+     *   (1180 − 3×24 − 280 − 504) / 2 = 162
+     *
+     * This is the same expression `ui/page-header` keeps as its fallback, which
+     * is the point: the header was always aligning to the right number, and the
+     * document was the one that had drifted.
      */
-    --document-start: calc(var(--rail-w) + var(--space-10));
+    --document-start: calc(
+      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--measure-prose)) / 2
+    );
 
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);

@@ -1,152 +1,102 @@
 @layer features {
   /*
-   * The rail lives in the document's leading gutter and sticks under the
-   * header, so it is in reach at any scroll depth without ever being a column
-   * that pushes the text.
+   * The outline lives in the document's leading margin — the same margin the
+   * section numbers hang in — and it is **not a card**.
+   *
+   * A surface is what you need when a layer covers something; this one never
+   * does. It is the width of the margin, it stops at the margin's trailing
+   * edge, and the only thing it ever paints over is those numbers, which step
+   * aside for it (see `document.module.css`). So it is exactly what it looks
+   * like: a list of words in a margin.
+   *
+   * The whole margin is the hover zone. Six 6px dots would have been a poor
+   * target, and the margin has nothing else to do.
+   */
+  /*
+   * Absolute, not a grid item. `grid-row: 1 / -1` spans the *explicit* grid,
+   * and this document's rows are all implicit — the rail came out one block
+   * tall and the rest of the margin was not hoverable. Taking it out of the
+   * flow gives it the margin's full height, and its sticky child still tracks
+   * the scroll container above it.
    */
   .rail {
-    position: sticky;
-    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
-    z-index: var(--z-raised);
-    grid-column: 1;
-    grid-row: 1 / -1;
-    align-self: start;
-    justify-self: start;
-
-    /* The dots' own column, wide enough to be a hover target rather than six
-       6px points. The expanded card grows into the reserved margin beside it,
-       so it never reaches the text. */
-    inline-size: var(--control-h);
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    inline-size: var(--document-start);
   }
 
-  /*
-   * One surface, not one per row. Expanded, this is a single sheet of paper
-   * with the rows inside it — rows that each carried their own background and
-   * shadow read as eight cards, and the prose showed through the gaps between
-   * them.
-   */
   .list {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
     display: flex;
     flex-direction: column;
-    inline-size: fit-content;
     margin: 0;
-    padding: var(--space-1);
-    border: 1px solid transparent;
-    border-radius: var(--radius-lg);
-    transition:
-      background-color var(--motion-snappy) ease-out,
-      border-color var(--motion-snappy) ease-out;
+
+    /* Stops one gutter short of the prose, on the same edge the numbers align
+       to. */
+    padding-inline-end: var(--space-10);
+    opacity: 0;
+    transition: opacity var(--motion-snappy) ease-out;
   }
 
   .rail:hover .list,
   .rail:focus-within .list {
-    border-color: var(--hairline);
-    background: var(--paper);
-    box-shadow: var(--shadow-float);
+    opacity: 1;
   }
 
   /*
-   * One row, two states in one element. At rest the button is the dot's hit
-   * box; hovering or focusing anywhere in the rail widens every row and fades
-   * its label in. `inline-size` is what animates, and it animates on a layer
-   * that overlays the prose — no text moves.
+   * §6.0's small row, in the margin's register. No fill at rest: the list is
+   * text, and a background per row would rebuild the card this deliberately is
+   * not.
    */
   .row {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: var(--space-3);
-    inline-size: var(--control-h);
+    inline-size: 100%;
     min-block-size: var(--row-h-sm);
     padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
-    background: transparent;
     font-family: var(--font-sans);
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
     line-height: var(--leading-snug);
-    color: var(--text-2);
+    color: var(--text-3);
     text-align: start;
     cursor: pointer;
-    transition:
-      inline-size var(--motion-snappy) ease-out,
-      background-color var(--motion-quick) ease-out;
   }
 
-  .rail:hover .row,
-  .rail:focus-within .row {
-    inline-size: var(--rail-w);
-  }
-
-  .rail:hover .row:hover,
-  .rail:focus-within .row:focus-visible {
+  .row:hover,
+  .row:focus-visible {
     background: var(--overlay-hover);
     color: var(--text);
   }
 
-  /* The dot itself: the same 6px dot the rest of the app uses for a state
-     marker, in the quietest grey there is — at rest this must read as texture,
-     not as a control. */
-  .dot {
+  /* A child block hangs under its section, indented by the number column so the
+     two levels share one edge. */
+  .child {
+    padding-inline-start: var(--space-9);
+  }
+
+  /* The number reads as the same object as the marginalia it stands in for:
+     mono, accent, tabular. The list is those numbers with their names on. */
+  .number {
     flex: none;
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
-    border-radius: var(--radius-pill);
-    background: var(--text-4);
-    transition: background-color var(--motion-quick) ease-out;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
   }
 
-  /* A child block's dot is smaller and its label is indented: the outline's two
-     levels, said at rest as well as expanded. */
-  .child .dot {
-    inline-size: var(--space-2);
-    block-size: var(--space-2);
-    background: var(--hairline-strong);
-  }
-
-  .rail:hover .dot,
-  .rail:focus-within .dot {
-    background: var(--accent);
-  }
-
-  .label {
-    display: flex;
-    gap: var(--space-4);
-    overflow: hidden;
-    opacity: 0;
-    transition: opacity var(--motion-quick) ease-out;
-    white-space: nowrap;
-  }
-
-  /* The label's own element, so a long section name ends in an ellipsis rather
-     than at the card's edge mid-word. A bare text node cannot be clipped. */
+  /* Its own element, so a long section name ends in an ellipsis rather than at
+     the margin's edge mid-word. A bare text node cannot be clipped. */
   .text {
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .child .label {
-    padding-inline-start: var(--space-4);
-    color: var(--text-3);
-  }
-
-  .rail:hover .label,
-  .rail:focus-within .label {
-    opacity: 1;
-  }
-
-  .number {
-    flex: none;
-    font-family: var(--font-numeric);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-    color: var(--text-3);
-  }
-
-  /* "Reduced" is not "broken" (§2.6): the rail still expands, it just does it
-     at once instead of over 150ms. */
   @media (prefers-reduced-motion: reduce) {
-    .row,
-    .dot,
-    .label {
+    .list {
       transition: none;
     }
   }
