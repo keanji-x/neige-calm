@@ -347,6 +347,105 @@ async fn upgrade_from_pre_0068_with_nonterminal_task_aborts_cleanly_at_0072() {
 }
 
 #[tokio::test]
+async fn sqlx_repo_open_accepts_nonterminal_block_row_at_0073_without_data_loss() {
+    const HEAD_TASK_COLUMNS: &[&str] = &[
+        "id",
+        "wave_id",
+        "key",
+        "kind",
+        "goal",
+        "context_json",
+        "acceptance_criteria",
+        "cwd",
+        "depends_on_json",
+        "priority",
+        "gate_json",
+        "status",
+        "status_detail",
+        "worker_card_id",
+        "gate_result_json",
+        "gate_attempt",
+        "gate_pid",
+        "gate_pid_starttime",
+        "gate_pid_boot_id",
+        "running_deadline_ms",
+        "created_at_ms",
+        "updated_at_ms",
+        "finished_at_ms",
+        "claim_context_json",
+        "context_stale_at_ms",
+        "context_closure_truncated",
+        "declared_by",
+        "decl_ready",
+        "decl_released_by_user",
+        "context_verify_failures",
+        "spawn",
+        "child_wave_id",
+    ];
+
+    let dir = tempfile::tempdir().expect("temporary database directory");
+    let path = dir.path().join("nonterminal-block-at-0072.sqlite");
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("open migration fixture");
+    migrator_through_0072()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0072");
+    sqlx::query(
+        "INSERT INTO tasks (\
+           id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,\
+           priority,gate_json,status,status_detail,worker_card_id,gate_result_json,gate_attempt,\
+           gate_pid,gate_pid_starttime,gate_pid_boot_id,running_deadline_ms,created_at_ms,\
+           updated_at_ms,finished_at_ms,claim_context_json,context_stale_at_ms,\
+           context_closure_truncated,declared_by,origin,decl_ready,decl_released_by_user,\
+           context_verify_failures,spawn,child_wave_id\
+         ) VALUES (\
+           'block-flight','w','block-flight','claude','keep me','{\"source\":\"block\"}',\
+           'accept','/tmp','[\"dep\"]',7,'{\"cmd\":\"true\"}','running','working','worker',\
+           '{\"ok\":true}',2,101,202,'boot',303,11,12,NULL,'[]',404,1,'spec','block',1,1,5,\
+           'child-wave',NULL\
+         )",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed pre-0073 in-flight block task");
+    let snapshot_sql = format!(
+        "SELECT json_array({}) FROM tasks WHERE id='block-flight'",
+        HEAD_TASK_COLUMNS.join(",")
+    );
+    let before: String = sqlx::query_scalar(&snapshot_sql)
+        .fetch_one(&pool)
+        .await
+        .expect("snapshot complete 0072 task row except origin");
+    pool.close().await;
+
+    let repo = SqlxRepo::open(&url)
+        .await
+        .expect("0073 must allow a normal in-flight block task");
+    let columns: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('tasks') ORDER BY cid")
+            .fetch_all(repo.pool())
+            .await
+            .expect("read task columns after 0073");
+    assert_eq!(
+        columns, HEAD_TASK_COLUMNS,
+        "0073 must remove origin and retain every other task column"
+    );
+    let after: String = sqlx::query_scalar(&snapshot_sql)
+        .fetch_one(repo.pool())
+        .await
+        .expect("read preserved in-flight block task after 0073");
+    assert_eq!(
+        after, before,
+        "0073 must preserve every persistent value of an in-flight block task"
+    );
+}
+
+#[tokio::test]
 async fn upgrade_0073_accepts_terminal_legacy_rows_and_an_empty_database() {
     let terminal_pool = SqlitePoolOptions::new()
         .max_connections(1)
