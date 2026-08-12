@@ -95,19 +95,19 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
         out of whatever was to hand.
       */}
       <dl className={styles.fields}>
-        {live.acceptance !== undefined && live.acceptance !== '' && (
+        {live.acceptance != null && live.acceptance !== '' && (
           <>
             <dt className={styles.label}>Done when</dt>
             <dd className={styles.value}>{live.acceptance}</dd>
           </>
         )}
-        {live.gate !== undefined && live.gate.steps.length > 0 && (
+        {live.gate != null && live.gate.steps.length > 0 && (
           <>
             <dt className={styles.label}>Checks</dt>
             <dd className={styles.value}>
               <ul>
-                {live.gate.steps.map((step) => (
-                  <li key={step.name} className={styles.step}>
+                {live.gate.steps.map((step, index) => (
+                  <li key={`${step.name}-${index}`} className={styles.step}>
                     <span className={styles.stepCmd}>{step.cmd}</span>
                   </li>
                 ))}

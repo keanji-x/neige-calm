@@ -24,7 +24,7 @@ export function ReportTableBlock({ payload }: { payload: TableBlockPayload }) {
     // sideways (§3.2).
     <div className={styles.wrap}>
       <table className={styles.table}>
-        {caption !== undefined && caption !== '' && <caption className={styles.caption}>{caption}</caption>}
+        {caption != null && caption !== '' && <caption className={styles.caption}>{caption}</caption>}
         <thead>
           <tr>
             {columns.map((column) => (
@@ -40,7 +40,7 @@ export function ReportTableBlock({ payload }: { payload: TableBlockPayload }) {
         </thead>
         <tbody>
           {rows.map((row, index) => {
-            const highlighted = highlight !== undefined && highlight !== ''
+            const highlighted = highlight != null && highlight !== ''
               && keyColumn !== undefined && cellText(row[keyColumn]) === highlight;
             return (
               <tr key={index} className={highlighted ? styles.highlighted : undefined}>

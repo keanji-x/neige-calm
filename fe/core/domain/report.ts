@@ -39,32 +39,36 @@ export const WAVE_REPORT_CARD_KIND = 'wave-report';
 
 export const proseBlockPayloadSchema = z.object({ markdown: z.string() });
 
+function max2048CodePoints(schema: z.ZodString) {
+  return schema.refine((value) => [...value].length <= 2048, { message: 'String must contain at most 2048 character(s)' });
+}
+
 /** One candle: `[ts_ms, open, high, low, close, volume?]`. */
 export const candleTupleSchema = z.tuple([
-  z.number(), z.number(), z.number(), z.number(), z.number(), z.number().optional(),
+  z.number(), z.number(), z.number(), z.number(), z.number(), z.number().nullish(),
 ]);
 
 export const chartCandlesPayloadSchema = z.strictObject({
-  symbol: z.string().min(1).max(2048),
-  period: z.enum(['day', 'week', 'month']).optional(),
+  symbol: max2048CodePoints(z.string().min(1)),
+  period: z.enum(['day', 'week', 'month']).nullish(),
   /** Data is inlined; range switching is a pure client-side filter. */
   candles: z.array(candleTupleSchema).min(2).max(5000),
-  overlays: z.array(z.enum(['ma20', 'ma60'])).optional(),
-  caption: z.string().max(2048).optional(),
+  overlays: z.array(z.enum(['ma20', 'ma60'])).nullish(),
+  caption: max2048CodePoints(z.string()).nullish(),
 });
 
 export const tableBlockPayloadSchema = z.strictObject({
   columns: z.array(z.strictObject({
-    key: z.string().min(1).max(2048),
-    label: z.string().max(2048),
-    align: z.enum(['left', 'right']).optional(),
+    key: max2048CodePoints(z.string().min(1)),
+    label: max2048CodePoints(z.string()),
+    align: z.enum(['left', 'right']).nullish(),
   })).min(1).max(32),
   rows: z.array(z.record(
     z.string(),
-    z.union([z.string().max(2048), z.number(), z.null()]),
+    z.union([max2048CodePoints(z.string()), z.number(), z.null()]),
   )).max(500),
-  caption: z.string().max(2048).optional(),
-  highlight: z.string().max(2048).optional(),
+  caption: max2048CodePoints(z.string()).nullish(),
+  highlight: max2048CodePoints(z.string()).nullish(),
 })
   .refine((table) => new Set(table.columns.map((column) => column.key)).size === table.columns.length,
     { message: 'column keys must be unique' })
@@ -82,7 +86,7 @@ export const tableBlockPayloadSchema = z.strictObject({
  * is the one block that loads someone else's markup, so it gets two checks.
  */
 export const appBlockPayloadSchema = z.strictObject({
-  src: z.string().max(2048)
+  src: max2048CodePoints(z.string()
     .regex(/^\/(?!\/)[^\\]*$/, { message: 'src must be a same-origin absolute path' })
     .refine((value) => {
       for (let index = 0; index < value.length; index += 1) {
@@ -90,9 +94,9 @@ export const appBlockPayloadSchema = z.strictObject({
         if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
       }
       return true;
-    }, { message: 'src must not contain control characters' }),
-  title: z.string().max(2048).optional(),
-  height: z.number().min(120).max(2000).optional(),
+    }, { message: 'src must not contain control characters' })),
+  title: max2048CodePoints(z.string()).nullish(),
+  height: z.number().min(120).max(2000).nullish(),
 });
 
 const taskGateStepSchema = z.strictObject({ name: z.string(), cmd: z.string() });
@@ -101,23 +105,23 @@ const liveTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
   kind: z.enum(['codex', 'claude', 'terminal']),
   goal: z.string(),
-  acceptance: z.string().optional(),
+  acceptance: z.string().nullish(),
   gate: z.strictObject({
-    cwd: z.string().optional(),
-    timeout_secs: z.number().int().optional(),
+    cwd: z.string().nullish(),
+    timeout_secs: z.number().int().nullish(),
     steps: z.array(taskGateStepSchema),
-  }).optional(),
-  no_gate_reason: z.string().optional(),
-  depends_on: z.array(z.string()).optional(),
-  priority: z.number().int().optional(),
-  cwd: z.string().optional(),
-  context: z.unknown().optional(),
-  refs: z.array(z.string()).optional(),
+  }).nullish(),
+  no_gate_reason: z.string().nullish(),
+  depends_on: z.array(z.string()).nullish(),
+  priority: z.number().int().nullish(),
+  cwd: z.string().nullish(),
+  context: z.unknown().nullish(),
+  refs: z.array(z.string()).nullish(),
   ready: z.boolean(),
   declared_by: z.enum(['spec', 'user']),
-  released_by_user: z.boolean().optional(),
-  spawn: z.enum(['in-wave', 'sub-wave']).optional(),
-  tombstone: z.null().optional(),
+  released_by_user: z.boolean().nullish(),
+  spawn: z.enum(['in-wave', 'sub-wave']).nullish(),
+  tombstone: z.null().nullish(),
 });
 
 /** A withdrawn task keeps its key and both attributions: who declared it and
@@ -125,7 +129,7 @@ const liveTaskBlockPayloadSchema = z.strictObject({
  *  carried simply vanish from a document people cite by block id. */
 const tombstoneTaskBlockPayloadSchema = z.strictObject({
   key: z.string(),
-  tombstone: z.strictObject({ reason: z.string().nullable().optional() }),
+  tombstone: z.strictObject({ reason: z.string().nullish() }),
   declared_by: z.enum(['spec', 'user']),
   tombstoned_by: z.enum(['spec', 'user']),
 });
@@ -204,7 +208,7 @@ function toReportBlock(wire: z.infer<typeof blockWireSchema>): ReportBlock {
 export const waveReportPayloadSchema = z.object({
   summary: z.string().default(''),
   body: z.string().default(''),
-  blocks: z.array(blockWireSchema).nullish(),
+  blocks: z.unknown().nullish(),
 });
 
 export type WaveReport = Readonly<{
@@ -229,7 +233,14 @@ export function readWaveReport(cards: readonly CardWire[]): WaveReport | null {
   const parsed = waveReportPayloadSchema.safeParse(card.payload);
   if (!parsed.success) return null;
   const body = parsed.data.body.trim();
-  const blocks = parsed.data.blocks?.map(toReportBlock) ?? null;
+  // One malformed block must cost only that block: `body` is still a complete
+  // flat projection, and the other blocks still carry usable layout and ids.
+  const blocks = Array.isArray(parsed.data.blocks)
+    ? parsed.data.blocks.flatMap((candidate) => {
+      const wire = blockWireSchema.safeParse(candidate);
+      return wire.success ? [toReportBlock(wire.data)] : [];
+    })
+    : null;
   // A blocks array that exists but is empty is the same emptiness as a blank
   // body; it is not a document with zero sections that deserves a frame.
   if (body === '' && (blocks === null || blocks.length === 0)) return null;
@@ -413,8 +424,14 @@ export function parseReportLink(destination: string): ReportLinkTarget | null {
   const waveId = match[1] ?? '';
   const blockId = match[2];
   if (waveId === '') return null;
+  let decodedWaveId = waveId;
+  try {
+    decodedWaveId = decodeURIComponent(waveId);
+  } catch {
+    // Agent-written links must remain navigable even when an escape is malformed.
+  }
   return {
-    waveId: decodeURIComponent(waveId),
+    waveId: decodedWaveId,
     blockId: blockId !== undefined && BLOCK_ID_PATTERN.test(blockId) ? blockId : null,
   };
 }

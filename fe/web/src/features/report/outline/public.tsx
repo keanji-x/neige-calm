@@ -59,6 +59,10 @@ export function ReportOutline({ items, onSelect = revealReportAnchor }: ReportOu
    */
   const [activeIndex, setActiveIndex] = useState(0);
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const clampedActiveIndex = Math.min(activeIndex, Math.max(0, rows.length - 1));
+  // Live report edits can remove rows without unmounting the outline; stale
+  // refs must not outlive the buttons they used to address.
+  refs.current.length = rows.length;
 
   const focusRow = (index: number) => {
     const next = ((index % rows.length) + rows.length) % rows.length;
@@ -96,7 +100,7 @@ export function ReportOutline({ items, onSelect = revealReportAnchor }: ReportOu
               <button
                 ref={(element) => { refs.current[index] = element; }}
                 type="button"
-                tabIndex={index === activeIndex ? 0 : -1}
+                tabIndex={index === clampedActiveIndex ? 0 : -1}
                 className={row.child ? `${styles.row} ${styles.child}` : styles.row}
                 onKeyDown={(event) => onKeyDown(event, index)}
                 onFocus={() => setActiveIndex(index)}

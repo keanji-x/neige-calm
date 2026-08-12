@@ -106,7 +106,7 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
   const volumes = candles.map((candle) => candle[5] ?? 0);
   const high = Math.max(...highs);
   const low = Math.min(...lows);
-  const span = high - low || 1;
+  const span = high > low ? high - low : 1;
   const volumeMax = Math.max(...volumes) || 1;
 
   const step = (VIEW_W - PAD_X * 2) / candles.length;
@@ -135,7 +135,7 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
     <figure className={styles.figure}>
       <figcaption className={styles.head}>
         <span className={styles.symbol}>{payload.symbol}</span>
-        {payload.period !== undefined && <span className={styles.period}>{PERIOD_LABELS[payload.period]}</span>}
+        {payload.period != null && <span className={styles.period}>{PERIOD_LABELS[payload.period]}</span>}
         {last !== undefined && <span className={styles.last}>{formatPrice(last[4])}</span>}
         <span className={rising ? styles.changeUp : styles.changeDown}>
           {rising ? '+' : ''}{change.toFixed(2)}%
@@ -181,7 +181,7 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
             const bodyBottom = priceY(Math.min(open, close));
             const volumeHeight = ((volume ?? 0) / volumeMax) * VOLUME_H;
             return (
-              <g key={ts} className={up ? styles.up : styles.down}>
+              <g key={`${ts}-${index}`} className={up ? styles.up : styles.down}>
                 <line
                   className={styles.wick}
                   x1={x} x2={x}
@@ -199,7 +199,7 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
                   height={Math.max(1, bodyBottom - bodyTop)}
                   vectorEffect="non-scaling-stroke"
                 />
-                {volume !== undefined && (
+                {volume != null && (
                   <rect
                     className={styles.volume}
                     x={x - bodyWidth / 2}
@@ -243,7 +243,7 @@ export function ReportCandlesBlock({ payload }: { payload: ChartCandlesPayload }
         </span>
       </div>
 
-      {payload.caption !== undefined && payload.caption !== '' && (
+      {payload.caption != null && payload.caption !== '' && (
         <p className={styles.caption}>{payload.caption}</p>
       )}
     </figure>

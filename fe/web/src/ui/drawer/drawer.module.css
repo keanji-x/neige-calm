@@ -55,8 +55,8 @@
      *
      * `max(0px, …)` is the narrow case: once the window is smaller than the
      * page's own maximum there is no slack, the expression goes negative, and
-     * the drawer welds to the window edge as before. That is also where the
-     * rail collapses, so `--rail-w` being the wrong term there costs nothing.
+     * the drawer welds to the window edge as before. `--rail-w` follows the
+     * shell's actual column so wider collapsed layouts keep this edge aligned.
      */
     inset-inline-end: max(0px, calc(100vw - var(--rail-w) - var(--measure-page)));
     z-index: var(--z-overlay);

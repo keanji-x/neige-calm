@@ -577,22 +577,28 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
     { showWave: false },
   );
 
-  const report = readWaveReport(cards);
-  const outline = deriveReportOutline(report?.blocks ?? null);
+  const { report, outline } = useMemo(() => {
+    const nextReport = readWaveReport(cards);
+    return {
+      report: nextReport,
+      outline: deriveReportOutline(nextReport?.blocks ?? null),
+    };
+  }, [cards]);
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id));
   const backlinks = backlinksQuery.data;
 
   /*
    * A `neige://wave/…` citation. Same wave — the common case, since a report
-   * mostly cites its own sections — is a scroll, not a navigation: routing to
-   * the URL you are already on would remount the document and lose the
-   * reader's place. Another wave is a real navigation carrying the block in the
-   * hash, which is also what makes a pasted deep link land in the right place.
+   * mostly cites its own sections — reveals immediately so activating an
+   * unchanged hash still flashes the destination, then records that destination
+   * in the URL. The route body is keyed by wave id, so the hash update preserves
+   * the document. Another wave is a real navigation carrying the same hash.
    */
   const arrivalAnchorId = useRouteHash();
   const openReportLink = (target: ReportLinkTarget) => {
     if (target.waveId === wave.id) {
       if (target.blockId !== null) revealReportAnchor(target.blockId);
+      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
       return;
     }
     go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });

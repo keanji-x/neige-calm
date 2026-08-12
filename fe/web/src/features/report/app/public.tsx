@@ -30,8 +30,8 @@ const MIN_HEIGHT = 120;
 const MAX_HEIGHT = 2000;
 const DEFAULT_HEIGHT = 360;
 
-function clampHeight(height: number | undefined): number {
-  if (height === undefined || Number.isNaN(height)) return DEFAULT_HEIGHT;
+function clampHeight(height: number | null | undefined): number {
+  if (height == null || Number.isNaN(height)) return DEFAULT_HEIGHT;
   return Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, height));
 }
 
@@ -44,7 +44,7 @@ function isSameOrigin(src: string): boolean {
 }
 
 export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
-  const title = payload.title !== undefined && payload.title.trim() !== '' ? payload.title : payload.src;
+  const title = payload.title != null && payload.title.trim() !== '' ? payload.title : payload.src;
 
   if (!isSameOrigin(payload.src)) {
     return (
