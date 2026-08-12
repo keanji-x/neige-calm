@@ -300,6 +300,27 @@ const backlinks = {
         },
         updated_at: now - HOUR,
       },
+      // A second citing wave, mentioning this one from two different blocks —
+      // the case the row's count exists for. One wave citing you twice from
+      // *one* block (above) is one mention; twice from two blocks is two.
+      {
+        src_wave_id: 'w-3', src_wave_title: 'Backfill the projection table',
+        src_block_id: 'b-plan', dst_block_id: 'b-comps', label: 'the comparables',
+        quote: {
+          before: 'Numbers come from ', label: 'the comparables',
+          after: ' rather than from the screen.', head_elided: false, tail_elided: true,
+        },
+        updated_at: now - 3 * HOUR,
+      },
+      {
+        src_wave_id: 'w-3', src_wave_title: 'Backfill the projection table',
+        src_block_id: 'b-risks', dst_block_id: null, label: 'the valuation wave',
+        quote: {
+          before: 'If ', label: 'the valuation wave',
+          after: ' moves the rate, this backfill has to run again.', head_elided: true, tail_elided: false,
+        },
+        updated_at: now - 3 * HOUR,
+      },
     ],
   },
 };

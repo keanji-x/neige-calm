@@ -3,15 +3,13 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { WaveBacklinks } from '../../../../../core/domain/report.ts';
+import type { WaveBacklink, WaveBacklinks } from '../../../../../core/domain/report.ts';
 import { ReportBacklinks } from './public.tsx';
 
 afterEach(cleanup);
 
-const PAGE: WaveBacklinks = {
-  truncated: false,
-  skipped_sources: 0,
-  backlinks: [{
+function backlink(overrides: Partial<WaveBacklink> = {}): WaveBacklink {
+  return {
     src_wave_id: 'w-1', src_wave_title: 'Reference resolver', src_block_id: 'b-open',
     dst_block_id: 'b-thesis', label: 'the referenced side',
     quote: {
@@ -19,17 +17,52 @@ const PAGE: WaveBacklinks = {
       after: ', and its table is here.', head_elided: true, tail_elided: false,
     },
     updated_at: 0,
-  }],
-};
+    ...overrides,
+  };
+}
+
+const PAGE: WaveBacklinks = { truncated: false, skipped_sources: 0, backlinks: [backlink()] };
 
 describe('ReportBacklinks', () => {
-  it('shows the sentence the citation is written in, with the linking words picked out', () => {
-    const { container } = render(<ReportBacklinks waveId="w-2" backlinks={PAGE} onOpen={vi.fn()} />);
-    expect(container.textContent).toContain('…The valuation this hangs off is in ');
-    expect(container.querySelector('b')?.textContent).toBe('the referenced side');
+  it('is one row per citing wave: its title, on one line', () => {
+    render(<ReportBacklinks waveId="w-2" backlinks={PAGE} onOpen={vi.fn()} />);
+    expect(screen.getByRole('button').textContent).toBe('Reference resolver');
   });
 
-  it('opens the citing wave at the block the citation lives in', async () => {
+  /*
+   * The kernel answers per link. Two links in one sentence are two backlinks
+   * whose quotes are two overlapping slices of it — which is what made this
+   * module print the same words twice. One mention is one source *block*.
+   */
+  it('counts mentions by source block, so two links in one paragraph are one', () => {
+    render(<ReportBacklinks
+      waveId="w-2"
+      onOpen={vi.fn()}
+      backlinks={{ ...PAGE, backlinks: [
+        backlink(),
+        backlink({ dst_block_id: 'b-comps', label: 'here' }),
+        backlink({ src_block_id: 'b-other' }),
+      ] }}
+    />);
+    const row = screen.getByRole('button');
+    expect(row.textContent).toBe('Reference resolver2');
+  });
+
+  // A column of ones says nothing; the count only appears when it does.
+  it('shows no count for a single mention', () => {
+    render(<ReportBacklinks waveId="w-2" backlinks={PAGE} onOpen={vi.fn()} />);
+    expect(screen.getByRole('button').textContent).toBe('Reference resolver');
+  });
+
+  // The sentence is still worth having — just not at three lines in a 280
+  // column. It rides along where it costs nothing until it is asked for.
+  it('keeps the sentence as the row’s tooltip', () => {
+    render(<ReportBacklinks waveId="w-2" backlinks={PAGE} onOpen={vi.fn()} />);
+    expect(screen.getByRole('button').getAttribute('title'))
+      .toBe('…The valuation this hangs off is in the referenced side, and its table is here.');
+  });
+
+  it('opens the citing wave at the block the citation is written in', async () => {
     const onOpen = vi.fn();
     render(<ReportBacklinks waveId="w-2" backlinks={PAGE} onOpen={onOpen} />);
     await userEvent.click(screen.getByRole('button'));
@@ -39,11 +72,7 @@ describe('ReportBacklinks', () => {
   });
 
   it('names a self-reference rather than repeating this wave’s own title', () => {
-    render(<ReportBacklinks
-      waveId="w-1"
-      backlinks={PAGE}
-      onOpen={vi.fn()}
-    />);
+    render(<ReportBacklinks waveId="w-1" backlinks={PAGE} onOpen={vi.fn()} />);
     expect(screen.getByText('This wave (self-reference)')).toBeTruthy();
   });
 
