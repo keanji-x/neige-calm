@@ -183,6 +183,24 @@ export function WavePage({
                 )}
             </PanelModule>
             {/*
+              The wave's folder. It has been homeless since the page header lost
+              its identity row: you choose it once at creation and then the app
+              never showed it again. It is one line, in mono because the font is
+              what says "literal" (§2.2), and it sits with CARDS because "what
+              this wave is made of" and "where it works" are the same question.
+
+              It is *not* a file browser. §8.3's FILES module was cut: a tree
+              plus a viewer makes the document slot mean two different things,
+              and a file has no block id, so every link, anchor and backlink in
+              the app stops working the moment you open one. Evidence a report
+              wants you to see belongs in the report, as a block.
+            */}
+            <PanelModule title="Folder">
+              {wave.cwd === ''
+                ? <PanelEmpty>No folder.</PanelEmpty>
+                : <p className={styles.cwd} title={wave.cwd}>{wave.cwd}</p>}
+            </PanelModule>
+            {/*
               `REFERENCED BY` is absent, not empty, when nothing cites this wave
               (§6.1: a section with zero rows is not rendered). Being uncited is
               the normal state of a new wave, and a permanent "No backlinks yet."

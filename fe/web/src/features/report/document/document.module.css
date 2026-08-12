@@ -215,9 +215,12 @@
    * margin and both are transparent text — overlapping them would be text on
    * text, the one combination that is never legible. The outline is the fuller
    * answer to the same question, so it is the one that stays.
+   *
+   * Keyed on the *list*, not on the rail: the rail is the whole margin, and
+   * hovering the margin is not the gesture — hovering the dots is.
    */
-  .doc:has(nav:hover) .h1::before,
-  .doc:has(nav:focus-within) .h1::before {
+  .doc:has(nav ol:hover) .h1::before,
+  .doc:has(nav ol:focus-within) .h1::before {
     opacity: 0;
   }
 

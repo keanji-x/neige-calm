@@ -197,6 +197,20 @@
     text-overflow: ellipsis;
   }
 
+  /* The wave's folder: one line, mono, ellipsis at the end. The full path is
+     the row's tooltip — `direction: rtl` would keep the informative tail but
+     reorders the punctuation of an LTR path, which is worse than truncating. */
+  .cwd {
+    overflow: hidden;
+    padding-inline: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--row-h-sm);
+    color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .kernelOwned {
     flex: none;
     font-size: var(--text-xs);

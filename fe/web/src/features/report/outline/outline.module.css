@@ -24,6 +24,11 @@
     inset-block: 0;
     inset-inline-start: 0;
     inline-size: var(--document-start);
+
+    /* The margin is not the target — the dots are. The whole margin opening the
+       outline meant it fired on any pointer that crossed the page's left half,
+       which is most of them. The list takes its events back below. */
+    pointer-events: none;
   }
 
   .list {
@@ -36,6 +41,7 @@
     /* Stops short of the prose, but only just: the margin is 130 wide and the
        titles need every pixel of it. */
     padding-inline-end: var(--space-4);
+    pointer-events: auto;
   }
 
   /*
@@ -47,9 +53,12 @@
     display: flex;
     align-items: baseline;
     gap: var(--space-3);
-    inline-size: 100%;
+    /* At rest the row is the width of its dot, so the list's box — and with it
+       the hover target — is the dot column and nothing more. */
+    inline-size: var(--control-h);
     min-block-size: var(--row-h-sm);
     padding-inline: var(--space-1);
+    transition: inline-size var(--motion-snappy) ease-out;
     border-radius: var(--radius-sm);
     font-family: var(--font-sans);
     font-size: var(--text-xs);
@@ -91,8 +100,13 @@
     padding-inline-start: var(--space-6);
   }
 
-  .rail:hover .text,
-  .rail:focus-within .text {
+  .list:hover .row,
+  .list:focus-within .row {
+    inline-size: 100%;
+  }
+
+  .list:hover .text,
+  .list:focus-within .text {
     opacity: 1;
   }
 
@@ -115,12 +129,13 @@
     background: var(--hairline-strong);
   }
 
-  .rail:hover .dot,
-  .rail:focus-within .dot {
+  .list:hover .dot,
+  .list:focus-within .dot {
     background: var(--accent);
   }
 
   @media (prefers-reduced-motion: reduce) {
+    .row,
     .text,
     .dot {
       transition: none;

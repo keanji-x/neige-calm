@@ -206,7 +206,7 @@ const w1Report = {
     },
     {
       id: 'b-app', kind: 'app', rev: 1,
-      payload: { src: '/dev-mock/app.html', title: 'Index rebuild timeline', height: 200 },
+      payload: { src: '/dev-mock/app.html', title: 'Index rebuild timeline', height: 168 },
     },
     // The block this build cannot draw. It is in the fixture on purpose: the
     // degraded state is the one that decides whether the block model is safe to
@@ -330,14 +330,28 @@ const EMPTY_BACKLINKS = { backlinks: [], truncated: false, skipped_sources: 0 };
 // A same-origin page for the `app` block to embed. It is served by this
 // middleware rather than dropped into `web/public` so the demo adds no tracked
 // asset to the app itself.
+//
+// **It is styled like the document that embeds it**, and that is not cheating:
+// an app authored for this product reads the host's theme (that is what the
+// legacy card host's `ui/initialize` + theme push is for). A fixture in a
+// different type stack would have been demonstrating a page nobody wrote.
 const DEV_MOCK_APP_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <style>
-  body { margin: 0; font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; color: #6d7280;
-         background: transparent; padding: 16px 20px; }
-  ol { margin: 0; padding-left: 18px; }
-  li { margin-block: 4px; }
-  b { color: #33363f; }
+  /* html as well as body: a transparent body still leaves the frame's own
+     canvas painted the UA default white, which is a white patch inside a
+     tinted frame, and a glaring one in dark mode. */
+  html, body { background: transparent; }
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 18px 20px;
+    font: 15px/1.5 ui-serif, "New York", Georgia, serif;
+    color: light-dark(oklch(38% 0.01 250), oklch(80% 0.01 245));
+  }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin-block: 6px; }
+  b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 400;
+      color: light-dark(oklch(45% 0.10 267), oklch(80% 0.11 267)); }
 </style></head>
 <body>
   <ol>

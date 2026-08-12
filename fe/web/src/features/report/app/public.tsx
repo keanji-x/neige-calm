@@ -1,8 +1,16 @@
 // The `app` block — an embedded same-origin page in a sandboxed iframe.
 //
-// **The one block in the document that keeps a border.** Everywhere else a box
-// would be decoration; here it carries meaning — it marks an outsider held in
-// a sandbox. Tables and charts are the document's own furniture; this is not.
+// **The frame is quiet, and the caption does the talking.** It used to carry a
+// mono title bar and an uppercase `SANDBOXED` — chrome vocabulary (§2.2) on
+// top of content that already brings its own stylesheet, its own type stack
+// and its own colours. Two foreign voices stacked on each other is how a
+// browser renders an advertisement, and that is exactly what it read as.
+//
+// So it takes the same tint the task block and the code block take — the
+// document's vocabulary for material it did not write — plus one hairline,
+// which is the only block here that earns a boundary: the frame marks an
+// outsider held in a sandbox. Its name goes underneath, in the same caption
+// register as the chart's.
 //
 // The origin is checked twice: `appBlockPayloadSchema` refuses anything that
 // is not a same-origin absolute path, and this resolves the URL the way the
@@ -47,11 +55,7 @@ export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
   }
 
   return (
-    <div className={styles.frame}>
-      <div className={styles.head}>
-        <span className={styles.title}>{title}</span>
-        <span className={styles.sandboxed}>sandboxed</span>
-      </div>
+    <figure className={styles.figure}>
       {/*
         `allow-scripts` without `allow-same-origin`: the frame runs, and it runs
         in an opaque origin, so it cannot reach this document, its storage or
@@ -67,6 +71,7 @@ export function ReportAppBlock({ payload }: { payload: AppBlockPayload }) {
         loading="lazy"
         referrerPolicy="no-referrer"
       />
-    </div>
+      <figcaption className={styles.caption}>{title}</figcaption>
+    </figure>
   );
 }
