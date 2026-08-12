@@ -2,7 +2,7 @@
 
 ## 用途
 
-`event-stream.ts` 冻结事件流资源的 typestate 和 driver port。未配置态先注册 handler，再用一次原子 `configure({ syncEventVersion, topics })` 得到唯一的配置后 handle；只有该 handle 暴露 `start/stop`。当前 slice 只冻结接口与生命周期语义，不提供浏览器 transport。
+`event-stream.ts` 冻结事件流资源的 typestate 和 driver port；`websocket-driver.ts` 提供浏览器 transport、退避重连和 unauthorized 探测。未配置态先注册 handler，再用一次原子 `configure({ syncEventVersion, topics })` 得到唯一的配置后 handle；只有该 handle 暴露 `start/stop`。
 
 ## 契约
 
@@ -17,7 +17,6 @@
 
 ## 故意不做
 
-- 不实现真实 WebSocket、指数退避、unauthorized probe、browser cursor store 或 idle batching；这些是后续 platform adapter，不属于接口冻结。
-- 不实现 `EventBridge.tsx`、React connection hook 或 QueryClient adapter；它们属于后续 `app/events` slice。
+- 不实现 React connection hook；它属于后续 app slice。
 - 不迁移 INV-APP-019 的运行时调用排序守卫；configure 已把 set/subscribe/start 的前三步坍缩为类型上不可倒置的一步。
 - 不迁移 INV-APP-105 的“未配置也能 start”；保留它会重新打开 typestate 正在封死的缺口。

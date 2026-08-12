@@ -15,7 +15,7 @@ export default defineConfig({
           environment: 'node',
           setupFiles,
           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],
-          exclude: ['**/*.browser.test.{ts,tsx}'],
+          exclude: ['**/*.browser.test.{ts,tsx}', 'tools/architecture/fixtures/**'],
         },
       },
       {
@@ -31,6 +31,7 @@ export default defineConfig({
         test: {
           name: 'browser',
           include: ['**/*.browser.test.{ts,tsx}'],
+          exclude: ['tools/architecture/fixtures/**'],
           setupFiles,
           browser: {
             enabled: true,

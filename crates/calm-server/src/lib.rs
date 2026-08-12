@@ -34,6 +34,8 @@ pub mod liveness_feeder;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod worker_flow;
 use crate::session_projection_repo::WorkerSessionState;
 pub use reaper::reaper_on_boot;

@@ -8,8 +8,9 @@ import type { EventFrame, Topic } from '../../../../core/events/protocol.ts';
 import type {
   ConfiguredEventStream, EventFrameHandler, EventStreamConfiguration, UnconfiguredEventStream,
 } from '../../systems/events/event-stream.ts';
+import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import { ServerCompatGate, WEB_COMPAT_VERSION, type ProviderRuntime } from '../providers/public.tsx';
-import { EventBridge, type SyncCursorPort } from './event-bridge.tsx';
+import { EventBridge } from './event-bridge.tsx';
 
 const compatible = {
   webCompatVersion: WEB_COMPAT_VERSION,
@@ -52,6 +53,8 @@ function memoryCursor(initial: number | null = null): SyncCursorPort & { value: 
     value: initial,
     read() { return this.value; },
     write(cursor) { this.value = cursor; },
+    adopt: () => undefined,
+    clear() { this.value = null; },
   };
 }
 
@@ -88,8 +91,9 @@ describe('EventBridge contracts', () => {
       <ServerCompatGate
         client={client}
         runtime={runtime({ fetchVersion })}
-        renderEventBridge={(syncEventVersion) => (
-          <EventBridge client={client} stream={stream} syncEventVersion={syncEventVersion} cursor={memoryCursor()} />
+        cursorStore={{ clear: () => undefined }}
+        renderEventBridge={(server) => (
+          <EventBridge client={client} stream={stream} syncEventVersion={server.syncEventVersion} dbInstanceId={server.dbInstanceId} cursor={memoryCursor()} />
         )}
       >
         <b data-nc-route-child="">route</b>
@@ -124,7 +128,7 @@ describe('EventBridge contracts', () => {
     const client = new QueryClient();
     const cursor = memoryCursor();
     const view = render(
-      <EventBridge client={client} stream={first.stream} syncEventVersion={3} cursor={cursor} />,
+      <EventBridge client={client} stream={first.stream} syncEventVersion={3} dbInstanceId="db-a" cursor={cursor} />,
     );
     await waitFor(() => expect(first.record.startCalls).toBe(1));
 
@@ -136,6 +140,7 @@ describe('EventBridge contracts', () => {
           client={client}
           stream={first.stream}
           syncEventVersion={3}
+          dbInstanceId={`db-${index}`}
           cursor={cursor}
           context={{ findWaveOwningCard: () => null }}
         />,
@@ -152,7 +157,7 @@ describe('EventBridge contracts', () => {
     // A second mount over its own stream starts that stream exactly once, and
     // never re-starts the first.
     const second = fakeStream();
-    render(<EventBridge client={client} stream={second.stream} syncEventVersion={3} cursor={memoryCursor()} />);
+    render(<EventBridge client={client} stream={second.stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
     await waitFor(() => expect(second.record.startCalls).toBe(1));
     expect(first.record.startCalls).toBe(1);
   });
@@ -176,7 +181,7 @@ describe('EventBridge contracts', () => {
         return handle;
       },
     };
-    render(<EventBridge client={new QueryClient()} stream={stream} syncEventVersion={3} cursor={memoryCursor()} />);
+    render(<EventBridge client={new QueryClient()} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
     await waitFor(() => expect(record.connected).toBe(1));
     expect(record.configured).toBe(1);
     expect(configureSeen).toEqual([{ topics: ['*'] }]);
@@ -187,7 +192,7 @@ describe('EventBridge contracts', () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     const clear = vi.spyOn(client, 'clear');
-    render(<EventBridge client={client} stream={stream} syncEventVersion={3} cursor={memoryCursor()} />);
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
     expect(() => emit(eventFrame(1, { ev: 'totally.unknown', data: { nope: true } }))).not.toThrow();
@@ -200,7 +205,7 @@ describe('EventBridge contracts', () => {
     const client = new QueryClient();
     const clear = vi.spyOn(client, 'clear');
     const cursor = memoryCursor(42);
-    render(<EventBridge client={client} stream={stream} syncEventVersion={3} cursor={cursor} />);
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={cursor} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
     emit({ type: 'snapshot-required' });
@@ -216,7 +221,7 @@ describe('EventBridge contracts', () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, 'invalidateQueries').mockImplementation(() => Promise.resolve());
     const cursor = memoryCursor();
-    render(<EventBridge client={client} stream={stream} syncEventVersion={3} cursor={cursor} />);
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={cursor} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
     emit(eventFrame(9, { ev: 'wave.deleted', data: { id: 'w1', cove_id: 'c1' } }));
@@ -231,7 +236,7 @@ describe('EventBridge contracts', () => {
     const { record, stream, emit } = fakeStream();
     const client = new QueryClient();
     const cursor = memoryCursor(20);
-    render(<EventBridge client={client} stream={stream} syncEventVersion={3} cursor={cursor} />);
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={cursor} />);
     await waitFor(() => expect(record.startCalls).toBe(1));
 
     emit(eventFrame(5, { ev: 'cove.deleted', data: { id: 'c1' } }));
