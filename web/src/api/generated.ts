@@ -2242,6 +2242,14 @@ export interface components {
              */
             task_budget?: number | null;
             title?: string | null;
+            /**
+             * Format: int64
+             * @description Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of
+             *     the WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a
+             *     wave with a parent, since a per-child budget would make the tree bound
+             *     vacuous. A present null resets to the kernel default (32).
+             */
+            tree_task_budget?: number | null;
         };
         /**
          * @description The payload persisted in a wave-report card's `payload` JSON column.

@@ -10,6 +10,8 @@ use crate::ids::WaveId;
 use crate::model::*;
 use crate::wave_cove_cache::WaveCoveCache;
 
+use super::wave_tree::MAX_TREE_TASK_BUDGET;
+
 pub async fn wave_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewWave,
@@ -44,10 +46,18 @@ pub async fn wave_create_tx(
     // path shape + cove-folder ownership; this writer stays mechanical.
     // `terminal_at` is `NULL` on every fresh wave (Draft is non-terminal
     // by construction; `WaveLifecycle::is_terminal` returns false for it).
+    // Issue #985 slice 6 PR-B — `tree_task_budget` is stamped NULL by every
+    // wave-create path, the same "declare it in code, never reach it by
+    // omitting the column" rule as `lifecycle` above. It matters more here:
+    // the budget is single-source, meaningful only on a tree root, and the
+    // `child-wave` operation creates children through this very function. A
+    // child that inherited a budget of its own (which a DB DEFAULT would have
+    // given it) would hand each sub-wave a fresh tree budget and make the
+    // whole-tree bound vacuous.
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, NULL, ?8, NULL, ?9, ?10)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, NULL, ?8, NULL, NULL, ?9, ?10)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
@@ -207,6 +217,38 @@ pub async fn wave_update_tx(
     if let Some(policy) = p.automation_policy {
         sqlx::query("UPDATE waves SET automation_policy = ?1 WHERE id = ?2")
             .bind(policy)
+            .bind(w.id.as_str())
+            .execute(&mut **tx)
+            .await?;
+    }
+    // Issue #985 slice 6 PR-B — root-only, enforced HERE rather than at the
+    // route: this in-tx helper is the single writer every entry point shares,
+    // and a route-only guard is exactly the shape §7 #17/#20 caught twice. The
+    // budget divides across the tree's waves, so a child carrying its own value
+    // would be a second, unreachable source of truth.
+    if let Some(budget) = p.tree_task_budget {
+        if let Some(budget) = budget
+            && !(0..=MAX_TREE_TASK_BUDGET).contains(&budget)
+        {
+            return Err(CalmError::BadRequest(format!(
+                "tree_task_budget must be between 0 and {MAX_TREE_TASK_BUDGET} (got {budget})"
+            )));
+        }
+        let parent: Option<(String,)> = sqlx::query_as(
+            "SELECT parent_wave_id FROM waves WHERE id = ?1 AND parent_wave_id IS NOT NULL",
+        )
+        .bind(w.id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some((parent_wave_id,)) = parent {
+            return Err(CalmError::Conflict(format!(
+                "tree_task_budget is tree-root-only; wave {} is a child of {parent_wave_id} — \
+                 set the budget on its root wave instead",
+                w.id.as_str()
+            )));
+        }
+        sqlx::query("UPDATE waves SET tree_task_budget = ?1 WHERE id = ?2")
+            .bind(budget)
             .bind(w.id.as_str())
             .execute(&mut **tx)
             .await?;
