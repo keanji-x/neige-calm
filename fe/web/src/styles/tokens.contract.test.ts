@@ -30,7 +30,7 @@ const POSITIONAL = [
   '--text-4', '--accent', '--accent-soft', '--warn', '--warn-soft',
 ] as const;
 const CONCRETE_SURFACES = [
-  '--surface-rail', '--surface-card', '--surface-chip', '--surface-toggle-overlay',
+  '--surface-rail', '--surface-card', '--surface-chip', '--surface-chip-focus', '--surface-toggle-overlay',
   '--surface-panel-head',
 ] as const;
 const PROSE_SURFACES = ['--surface-terminal', '--surface-code'] as const;

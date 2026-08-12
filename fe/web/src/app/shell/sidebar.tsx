@@ -126,6 +126,7 @@ export function Sidebar({
   const [creatingCove, setCreatingCove] = useState(false);
   const [coveDraft, setCoveDraft] = useState('');
   const coveInputRef = useRef<HTMLInputElement | null>(null);
+  const railRef = useRef<HTMLElement | null>(null);
   const waveConfirm = useDeleteConfirm(onDeleteWave);
   const coveConfirm = useDeleteConfirm(onDeleteCove, () => onGo({ name: 'today' }));
 
@@ -161,6 +162,27 @@ export function Sidebar({
     });
   }, [activeCoveId]);
 
+  /*
+   * …and then brings it into view. Expanding the cove is only half of "show me
+   * where I am": a workspace with a dozen coves puts the open wave below the
+   * fold as often as not, and the rail then shows an expanded cove with nothing
+   * marked in it.
+   *
+   * The target is found by `aria-current="page"`, which is the same fact the
+   * highlight is drawn from rather than a second copy of it — there is exactly
+   * one such row now that the shortcut sections no longer claim to be current.
+   *
+   * `block: 'nearest'` scrolls only when the row is actually outside the
+   * viewport, so arriving at a wave already on screen moves nothing (principle
+   * 3). It re-runs on `expandedOverride` too, because the effect above may have
+   * only just expanded the cove the row lives in.
+   */
+  useEffect(() => {
+    if (activeWaveId === null) return;
+    railRef.current?.querySelector('[aria-current="page"]')
+      ?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeWaveId, expandedOverride]);
+
   useEffect(() => { if (creatingCove) coveInputRef.current?.focus(); }, [creatingCove]);
 
   const submitCove = () => {
@@ -186,7 +208,7 @@ export function Sidebar({
   const showInlineCreate = creatingCove || userCoves.length === 0;
 
   return (
-    <nav className={`${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
+    <nav ref={railRef} className={`${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
       <div className={styles.brandRow}>
         {!collapsed && (
           <button type="button" data-nc-role="row" className={styles.brand} onClick={() => onGo({ name: 'today' })}>
@@ -374,7 +396,18 @@ type RowProps = Readonly<{
 
 /** A section with no rows does not render at all — no label, no dashed box.
  *  That absence is why the rail looks empty when nothing needs you (§6.1). */
-function WaveSection({ title, waves, coves, currentPath, onGo, nowMs, onSetPinned, onDelete }: RowProps & {
+/**
+ * "Waiting on you" and "Pinned" — the two shortcut sections.
+ *
+ * Their rows are **never marked current**, and that is the one thing worth
+ * saying about them. A wave that is open, pinned, and waiting used to light up
+ * three times in one 200px column, which does not tell you where you are three
+ * times as well — it tells you three different places are where you are. These
+ * sections are shortcuts *into* the tree; the tree is where a location is
+ * shown, and the cove list is the tree. One place to look, and it is the one
+ * that also says which cove the wave belongs to.
+ */
+function WaveSection({ title, waves, coves, onGo, nowMs, onSetPinned, onDelete }: RowProps & {
   title: string;
   waves: readonly Wave[];
   coves: readonly Cove[];
@@ -391,7 +424,6 @@ function WaveSection({ title, waves, coves, currentPath, onGo, nowMs, onSetPinne
             coveName={coveOf(wave.coveId, coves)?.name}
             variant="rail"
             nowMs={nowMs}
-            active={currentPath === `/wave/${wave.id}`}
             onOpen={(waveId) => onGo({ name: 'wave', waveId })}
             onSetPinned={onSetPinned}
             onDelete={onDelete}

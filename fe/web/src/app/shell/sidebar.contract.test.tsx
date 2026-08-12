@@ -151,4 +151,19 @@ describe('active row', () => {
     expect(screen.getByRole('button', { name: /^Wave Row/ }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('button', { name: /^Work/ }).getAttribute('aria-current')).toBeNull();
   });
+
+  /*
+   * The open wave is marked in **one** place, however many sections it appears
+   * in. "Waiting on you" and "Pinned" are shortcuts into the tree; the cove
+   * list is the tree, and a location is shown where the thing lives. A wave
+   * that is open, pinned and blocked renders three rows here — this pins that
+   * exactly one of them claims to be the current page.
+   */
+  it('marks the open wave once, in its cove, not in the shortcut sections', () => {
+    const open = wave({ id: 'w9', title: 'Row', lifecycle: 'blocked', pinnedAt: 10 });
+    renderSidebar({ waves: [open], currentPath: '/wave/w9' });
+    const rows = screen.getAllByRole('button', { name: /^Wave Row/ });
+    expect(rows).toHaveLength(3);
+    expect(rows.filter((row) => row.getAttribute('aria-current') === 'page')).toHaveLength(1);
+  });
 });

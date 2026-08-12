@@ -4,7 +4,7 @@ export type PositionalColorToken =
   | '--accent' | '--accent-soft' | '--warn' | '--warn-soft';
 
 export type SurfaceToken =
-  | '--surface-rail' | '--surface-card' | '--surface-chip' | '--surface-toggle-overlay'
+  | '--surface-rail' | '--surface-card' | '--surface-chip' | '--surface-chip-focus' | '--surface-toggle-overlay'
   | '--surface-panel-head' | '--surface-terminal' | '--surface-code'
   | '--surface-paper' | '--surface-bg' | '--surface-hover-overlay';
 

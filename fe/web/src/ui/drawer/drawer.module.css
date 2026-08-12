@@ -1,8 +1,22 @@
 @layer ui {
   /*
-   * §7.6, verbatim: fixed to the main region's inline-end, `--drawer-w` wide,
-   * `--z-overlay`, `--shadow-float`, and `--radius-lg` on the inline-start
-   * corners only — it is attached to the edge, not floating in the middle.
+   * §7.6, verbatim except for one thing: fixed to the main region's inline-end,
+   * `--drawer-w` wide, `--z-overlay`, `--shadow-float`.
+   *
+   * **No corner radius.** §7.6 asked for `--radius-lg` on the inline-start
+   * corners, and built it looked wrong, which is the kind of thing only the
+   * built thing can tell you. A radius says "this object has an edge here" —
+   * true of a card, which sits *in* the page with page on all four sides. The
+   * drawer has no such edge: it is full-height, welded to the window's own
+   * edge, and three of its four sides are the window. Rounding the one
+   * remaining side made it read as a very tall card that had drifted off the
+   * screen. Cards are rounded because they are objects on a page; a region
+   * that reaches the window's edges is not an object, it is a region.
+   *
+   * The `--radius-lg` line here is the last of three related deletions this
+   * change makes to the drawer: the edge hairline, the container focus ring,
+   * and now the corner — every one of them a piece of chrome drawing a boundary
+   * the shadow and the surface step already draw.
    *
    * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
    * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
@@ -23,8 +37,6 @@
     flex-direction: column;
     inline-size: var(--drawer-w);
     max-inline-size: 100%;
-    border-start-start-radius: var(--radius-lg);
-    border-end-start-radius: var(--radius-lg);
     background: var(--paper);
     box-shadow: var(--shadow-float);
     animation: drawer-in var(--motion-medium) ease-out;

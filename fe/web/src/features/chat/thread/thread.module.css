@@ -195,12 +195,10 @@
    *                 an object in the column, not a bar under it
    *   corner        `--radius-lg` (16), 40% of the well's own height
    *
-   * The concentric rule (`inner = outer − gap`) would put the corner at 0 here,
-   * and it does not apply: it governs a shape *nested in* another's corner, and
-   * at a 16 gutter on a 16 corner the well has cleared the drawer's arc
-   * entirely — it floats, it does not nest. That gutter was 4, which did nest,
-   * and the concentric 12 it forced is exactly why the well still read as
-   * welded to the bottom of the drawer.
+   * The concentric rule (`inner = outer − gap`) has nothing to say here: the
+   * drawer has no corner radius at all, being a region welded to the window's
+   * edge rather than an object on a page. The well is the object, and it is
+   * rounded for the reason objects are.
    *
    * The fill is the recessed rank: the ladder says −1 is "behind the page", the
    * drawer's own surface is `--paper`, and a well cut into it reads as somewhere
@@ -252,9 +250,14 @@
    * app should do with the most ordinary action it has.
    *
    * So the ring is gone and the send arrow carries it instead: **no focus, no
-   * arrow.** The well darkens one overlay step at the same moment, so the state
-   * is carried by colour rather than by a line, which is this system's rule
+   * arrow.** The well deepens one step at the same moment, so the state is
+   * carried by colour rather than by a line, which is this system's rule
    * everywhere else.
+   *
+   * `--surface-chip-focus`, not an overlay: an overlay is defined against ink
+   * and therefore flips direction with the theme, which had focus *lowering*
+   * the well's contrast against the page in dark. See the token's own note,
+   * including why the dark half of it is honest rather than effective.
    *
    * There is one deliberate exception to "no focus, no arrow": a well holding
    * an unsent draft keeps its arrow even when focus has gone. Hiding it there
@@ -270,7 +273,7 @@
   }
 
   .composer:focus-within {
-    background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+    background: var(--surface-chip-focus);
   }
 
   .field::placeholder {
