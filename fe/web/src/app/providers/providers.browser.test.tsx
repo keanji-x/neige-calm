@@ -13,7 +13,7 @@ afterEach(() => { cleanup(); reload.mockClear(); values.clear(); });
 
 describe('browser provider contracts', () => {
   it('CAP-APP-006 reports both versions and removes the incompatible tree', async () => {
-    const client = new QueryClient(); render(<QueryClientProvider client={client}><ServerCompatGate client={client} runtime={runtime}><button data-testid="under">under</button></ServerCompatGate></QueryClientProvider>);
+    const client = new QueryClient(); render(<QueryClientProvider client={client}><ServerCompatGate client={client} runtime={runtime} cursorStore={{ clear: () => undefined }}><button data-testid="under">under</button></ServerCompatGate></QueryClientProvider>);
     const overlay = page.getByRole('presentation'); await expect.element(overlay).toBeVisible();
     const dialog = page.getByRole('dialog');
     await expect.element(dialog).toHaveTextContent(`compat v${incompatible.minWebCompatVersion}`); await expect.element(dialog).toHaveTextContent(`compat v${WEB_COMPAT_VERSION}`);
