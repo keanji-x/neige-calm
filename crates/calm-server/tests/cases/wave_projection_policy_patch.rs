@@ -4,12 +4,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, task_claim_pending_tx};
-use calm_server::event::EventBus;
+use calm_server::event::{EditAuthor, EventBus};
+use calm_server::ids::ActorId;
 use calm_server::model::NewCard;
 use calm_server::model::{NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, DaemonClient};
+use calm_server::wave_report::{WaveReportPayload, persist_report};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -211,6 +213,21 @@ async fn wave_policy_snapshots(repo: &Arc<dyn Repo>, wave_ids: &[&str]) -> Vec<S
     snapshots
 }
 
+fn assert_wave_columns_unchanged_except(before: &str, after: &str, except: &[&str]) {
+    let before: Vec<Value> = serde_json::from_str(before).unwrap();
+    let after: Vec<Value> = serde_json::from_str(after).unwrap();
+    assert_eq!(before.len(), WAVE_PERSISTENT_COLUMNS.len());
+    assert_eq!(after.len(), WAVE_PERSISTENT_COLUMNS.len());
+    for (index, column) in WAVE_PERSISTENT_COLUMNS.iter().enumerate() {
+        if !except.contains(column) {
+            assert_eq!(
+                after[index], before[index],
+                "successful ceiling PATCH unexpectedly changed waves.{column}"
+            );
+        }
+    }
+}
+
 async fn event_cursor(repo: &Arc<dyn Repo>) -> i64 {
     sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
         .fetch_one(&repo.sqlite_pool().unwrap())
@@ -218,8 +235,8 @@ async fn event_cursor(repo: &Arc<dyn Repo>) -> i64 {
         .unwrap()
 }
 
-async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str) -> String {
-    let block = calm_types::wave_report::ReportBlock {
+fn report_task_block(key: &str) -> calm_types::wave_report::ReportBlock {
+    calm_types::wave_report::ReportBlock {
         id: format!("b_{key}"),
         rev: 1,
         kind: "task".into(),
@@ -232,7 +249,10 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str
             "declared_by": "spec",
             "ready": true
         }),
-    };
+    }
+}
+
+async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str) -> String {
     let existing: Option<(String, String)> =
         sqlx::query_as("SELECT id,payload FROM cards WHERE wave_id=?1 AND kind='wave-report'")
             .bind(wave_id)
@@ -242,7 +262,7 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str
     let (report_id, mut payload) = if let Some((report_id, payload)) = existing {
         (
             report_id,
-            serde_json::from_str::<calm_server::wave_report::WaveReportPayload>(&payload).unwrap(),
+            serde_json::from_str::<WaveReportPayload>(&payload).unwrap(),
         )
     } else {
         let report = repo
@@ -251,20 +271,14 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str
                 title: None,
                 kind: "wave-report".into(),
                 sort: Some(-1.0),
-                payload: serde_json::to_value(
-                    calm_server::wave_report::WaveReportPayload::initial(),
-                )
-                .unwrap(),
+                payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
             })
             .await
             .unwrap();
-        (
-            report.id.to_string(),
-            calm_server::wave_report::WaveReportPayload::new("", ""),
-        )
+        (report.id.to_string(), WaveReportPayload::new("", ""))
     };
     let blocks = payload.blocks.get_or_insert_default();
-    blocks.push(block);
+    blocks.push(report_task_block(key));
     payload.body = blocks
         .iter()
         .map(calm_types::report_blocks::flat_text)
@@ -287,6 +301,63 @@ async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str
         .await
         .unwrap();
     task_id
+}
+
+async fn write_report_task(
+    state: &AppState,
+    repo: &Arc<dyn Repo>,
+    wave_id: &str,
+    key: &str,
+) -> String {
+    let wave = repo.wave_get(wave_id).await.unwrap().unwrap();
+    let report = if let Some(report) = repo
+        .cards_by_wave(wave_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+    {
+        report
+    } else {
+        repo.card_create(NewCard {
+            wave_id: wave_id.to_owned().into(),
+            title: None,
+            kind: "wave-report".into(),
+            sort: Some(-1.0),
+            payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+        })
+        .await
+        .unwrap()
+    };
+    let current: WaveReportPayload = serde_json::from_value(report.payload.clone()).unwrap();
+    let mut blocks = current.blocks.clone().unwrap_or_default();
+    blocks.push(report_task_block(key));
+    let body = blocks
+        .iter()
+        .map(calm_types::report_blocks::flat_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let next = WaveReportPayload::new(current.summary.clone(), body);
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        state.repo.as_ref(),
+        &state.events,
+        state.write(),
+        ActorId::Kernel,
+        EditAuthor::Spec,
+        wave,
+        report,
+        current,
+        next,
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("production report write commits task declaration");
+
+    format!("{wave_id}:{key}")
 }
 
 #[tokio::test]
@@ -717,6 +788,10 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
     tx.commit().await.unwrap();
 
     let before_task = task_row_snapshot(&repo, &task_id).await;
+    let before_wave = wave_policy_snapshots(&repo, &[&wave_id])
+        .await
+        .pop()
+        .unwrap();
     let before_events = event_cursor(&repo).await;
     let response = patch(
         state.clone(),
@@ -727,6 +802,15 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(columns(&repo, &wave_id).await.0, Some(0));
+    let after_wave = wave_policy_snapshots(&repo, &[&wave_id])
+        .await
+        .pop()
+        .unwrap();
+    assert_wave_columns_unchanged_except(
+        &before_wave,
+        &after_wave,
+        &["updated_at", "spec_task_ceiling"],
+    );
     assert_eq!(
         task_row_snapshot(&repo, &task_id).await,
         before_task,
@@ -763,9 +847,7 @@ async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state
         Some(wave_id.as_str())
     );
 
-    let blocked_task = seed_pending_report_task(&repo, &wave_id, "blocked-after-tighten").await;
-    let response = patch(state, &wave_id, None, json!({"spec_task_ceiling": 0})).await;
-    assert_eq!(response.status(), StatusCode::OK);
+    let blocked_task = write_report_task(&state, &repo, &wave_id, "blocked-after-tighten").await;
     let blocked_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE id=?1")
         .bind(&blocked_task)
         .fetch_one(&repo.sqlite_pool().unwrap())
