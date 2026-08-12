@@ -73,6 +73,11 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
+/*
+ * Conversation liveness depends on the /api/events stream from #1057 and on
+ * its PR-B G4 harness.* invalidation plan. Until both are present, persisted
+ * agent replies and harness phase changes do not appear here automatically.
+ */
 function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
   const cardId = scope?.cardId ?? '';
   const history = useInfiniteQuery({
@@ -267,9 +272,16 @@ function useConversationPanel(
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
 
   useEffect(() => {
-    if (open === null || !store.working || store.stopping || confirmingReset) return;
+    if (open === null) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (confirmingReset) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!store.resetting) setConfirmingReset(false);
+        return;
+      }
+      if (!store.working || store.stopping) return;
       const target = event.target;
       if (!(target instanceof Element) || target.closest('[role="complementary"]') === null) return;
       event.preventDefault();
