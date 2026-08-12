@@ -26,12 +26,14 @@ describe('ReportOutline', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('is one row per outline entry, numbered sections and unnumbered children', () => {
+  it('is one row per outline entry, in document order', () => {
     render(<ReportOutline items={ITEMS} />);
+    // No section numbers here: they are marginalia on the sections themselves,
+    // in this same margin, and 130px cannot afford to print them twice.
     expect(screen.getAllByRole('button').map((row) => row.textContent)).toEqual([
-      '01Valuation conclusion',
+      'Valuation conclusion',
       'Comparables',
-      '02How the rate is taken',
+      'How the rate is taken',
     ]);
   });
 

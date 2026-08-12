@@ -1,26 +1,30 @@
 @layer features {
   .page {
     /*
-     * The outline gutter (§6.16), published to the whole page: the document
-     * hangs its dot rail in it, and `ui/page-header` starts the title after it,
-     * so the title and the first character of the prose sit on one vertical.
-     * One declaration, two consumers — the alternative is the same number typed
-     * in two files that then drift.
+     * The document's measure and its margins, derived from one number.
      *
-     * The value is the *symmetric* margin: half of what the main column has
-     * left over once the prose measure is taken out of it. A document with two
-     * equal margins reads as a page; the lopsided one it had before read as a
-     * mistake, and the extra 60px it hoarded on the leading side were doing
-     * nothing but being wide.
+     * **568, not the global `--measure-prose` 504.** Measured on the real font:
+     * New York at 18px averages 8.2px a character, so 504 is 61 characters a
+     * line and 568 is 69 — both inside the 45–75 comfortable range, but the
+     * narrow one made the column read as a ribbon inside a 1440 window where it
+     * is one of five vertical bands. The global token stays 504: `styles/` is a
+     * frozen interface (§6.8) and every other prose surface on it is a
+     * different shape of page. Widening it globally is a change request, and
+     * this comment is the evidence for it.
      *
-     *   (1180 − 3×24 − 280 − 504) / 2 = 162
+     * The margin is what is left over, halved — a document with two equal
+     * margins reads as a page. It is also, exactly, how much room the outline
+     * has for its labels (§6.16): every pixel the measure takes is a pixel off
+     * a section title.
      *
-     * This is the same expression `ui/page-header` keeps as its fallback, which
-     * is the point: the header was always aligning to the right number, and the
-     * document was the one that had drifted.
+     *   (1180 − 3×24 − 280 − 568) / 2 = 130
+     *
+     * `ui/page-header` reads `--document-start` too, which is what puts the
+     * page title on the first character of the prose.
      */
+    --document-measure: calc(var(--measure-prose) + var(--space-12) * 2);
     --document-start: calc(
-      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--measure-prose)) / 2
+      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--document-measure)) / 2
     );
 
     display: grid;

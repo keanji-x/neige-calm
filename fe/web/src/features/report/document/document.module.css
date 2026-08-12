@@ -31,7 +31,10 @@
    *                       card never covers a word. The page publishes the same
    *                       distance to `ui/page-header`, which is what puts the
    *                       title on the prose's first character.
-   *   `--measure-prose`   every block, whatever its kind.
+   *   `--document-measure` every block, whatever its kind. The page owns the
+   *                       number and the note explaining why it is not the
+   *                       global prose measure; the fallback keeps this module
+   *                       renderable on a route that publishes neither.
    *   the rest           the sidenote gutter.
    *
    * `.calm-prose` caps itself at the prose measure; the document is wider than
@@ -43,7 +46,7 @@
     display: grid;
     grid-template-columns:
       var(--document-start)
-      var(--measure-prose)
+      var(--document-measure, var(--measure-prose))
       minmax(0, 1fr);
     row-gap: var(--space-8);
 

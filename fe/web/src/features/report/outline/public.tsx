@@ -1,10 +1,12 @@
 // The outline (§6.16) — the document's leading margin, read as a list.
 //
-// **Not a column, not a header button, not a panel, and not a card.** The
-// margin already carries the section numbers (`document.module.css` hangs them
-// there); hovering it swaps those numbers for the same numbers *with their
-// names on*. Nothing moves, nothing is covered, and there is no surface —
-// because a surface is what you need when a layer covers something, and this
+// **Not a column, not a header button, not a panel, and not a card.** At rest
+// it is a short column of dots at the margin's leading edge — enough to say
+// that an outline is there, which blank paper cannot. Hovering the margin
+// fades in the numbers and titles beside those dots, and fades out the section
+// numbers the document hangs at the margin's other edge
+// (`document.module.css`). Nothing moves, nothing is covered, and there is no
+// surface — a surface is what you need when a layer covers something, and this
 // one never leaves the margin.
 //
 // Two designs came before it. An overlay on the trailing side put "where am I
@@ -100,9 +102,21 @@ export function ReportOutline({ items, onSelect = revealReportAnchor }: ReportOu
                 onFocus={() => setActiveIndex(index)}
                 onClick={() => onSelect(row.anchorId)}
               >
-                {row.number !== null && (
-                  <span className={styles.number}>{String(row.number).padStart(2, '0')}</span>
-                )}
+                {/*
+                  The dot is the only part that is visible at rest, and it is
+                  why the margin does not read as blank paper: a reader has to
+                  be able to see that there is an outline before they can
+                  discover that hovering opens it. It also never moves — the
+                  labels appear beside it, so nothing jumps under the pointer.
+                */}
+                <span className={styles.dot} aria-hidden="true" />
+                {/*
+                  No section number here, though the outline knows it. The
+                  margin is 130 wide and every glyph it spends is a glyph off
+                  the title — and the number is already in this same margin, on
+                  the section itself. Printing it twice would cost a third of
+                  the room the titles have.
+                */}
                 <span className={styles.text}>{row.label}</span>
               </button>
             </li>
