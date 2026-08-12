@@ -51,7 +51,7 @@
     justify-content: space-between;
     gap: var(--space-4);
     min-block-size: var(--control-h-lg);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-tight);
     color: var(--text);
@@ -62,7 +62,7 @@
     flex-direction: column;
     gap: var(--space-4);
     overflow: auto;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: var(--leading-snug);
     color: var(--text);
   }

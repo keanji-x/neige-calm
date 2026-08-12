@@ -60,11 +60,20 @@ import { PendingRoute } from './pending-route.tsx';
  * feature changes. A stub inside the feature would have had to be unpicked
  * from it instead.
  *
- * The reply is the literal string `test`, which is what was asked for and is
- * also the honest thing to render: an agent is not attached, and a stub that
- * wrote something plausible would be claiming one is.
+ * The reply **says that it is a stub**, and runs the length a real answer runs.
+ *
+ * It was the literal string `test`, which was honest and turned out to be
+ * unusable: a transcript of four one-word replies against four full sentences
+ * cannot be looked at to judge whether the transcript works. It made the demo
+ * lie in the other direction. Length is the thing being demonstrated, so the
+ * stub has to have some — and it stays honest by naming itself, rather than by
+ * being too short to read.
  */
-const STUB_REPLY = 'test';
+const STUB_REPLY =
+  'No agent is attached to this build, so this is a canned reply. It runs a few '
+  + 'sentences on purpose: the length is the point, because a one-word answer '
+  + 'cannot show what a real one does to the column. The reply keeps the full '
+  + 'width and the serif; your own turn stays short, sans, and on the other side.';
 const STUB_REPLY_DELAY_MS = 400;
 
 type ConversationStore = Readonly<{

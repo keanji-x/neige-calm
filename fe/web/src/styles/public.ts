@@ -27,8 +27,8 @@ export type ColorToken =
   | PositionalColorToken | SurfaceToken | OverlayToken | SemanticColorToken | CoveIdentityToken;
 
 export type TypeScaleToken =
-  | '--text-xs' | '--text-sm' | '--text-base' | '--text-md'
-  | '--text-lg' | '--text-xl' | '--text-display-sm' | '--text-display';
+  | '--text-xs' | '--text-base' | '--text-md'
+  | '--text-lg' | '--text-xl';
 
 export type LeadingToken =
   | '--leading-none' | '--leading-tight' | '--leading-snug' | '--leading-base' | '--leading-loose';

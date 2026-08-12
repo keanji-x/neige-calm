@@ -18,7 +18,7 @@ export const DELETE_WAVE_COPY = Object.freeze({
  * page header) call this same function.
  *
  * Four fields, not three: §6.13's body is two sentences with different typography
- * (consequence at --text-sm/--text, prompt at --text-xs/--text-3), and a single
+ * (consequence at --text-base/--text, prompt at --text-xs/--text-3), and a single
  * `description` slot cannot carry both. The component owns the layout; this file
  * owns only the strings.
  */

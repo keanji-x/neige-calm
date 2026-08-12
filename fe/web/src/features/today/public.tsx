@@ -6,7 +6,7 @@
 // me?* That question owns the top of the main column, and it is answered by
 // position plus the only --warn pixels on the page — never by type size. The
 // clock, which used to be 36px, is ambient information and now sits at the
-// header's right edge at --text-sm: a page whose job is "what needs me" cannot
+// header's right edge at --text-base: a page whose job is "what needs me" cannot
 // have a clock as its main emphasis.
 
 import { useEffect, useMemo, type ReactNode } from 'react';

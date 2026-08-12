@@ -8,7 +8,7 @@
   /* The consequence is content the user has to read, so it takes the body
      tone, not the metadata tone. */
   .consequence {
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text);
@@ -35,7 +35,7 @@
     padding-block: 0;
     padding-inline: var(--space-0);
     font-family: var(--font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: var(--leading-none);
     color: var(--text);
   }

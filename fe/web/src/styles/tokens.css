@@ -113,14 +113,45 @@
     --text-meta: var(--text-3);
     --text-decorative: var(--text-4);
 
+    /*
+     * ── The type scale ────────────────────────────────────────────────────
+     *
+     * Every other block in this file carries its reasoning; this one carried
+     * none, and it showed. Eight ranks were declared, six were used, and the
+     * two most-used sat 0.5px apart:
+     *
+     *   xs 11 · sm 12.5 · base 13 · md 15 · lg 18 · xl 22 · 26 · 36
+     *            └─ 34 uses ─┴─ 32 ─┘└ 6 ┘   4     4     5    0    0
+     *
+     * 12.5 → 13 is a 4% step. A step you cannot see is not a step: it is two
+     * names for one rank, and with nothing written down to say which to reach
+     * for, "which small size does this take" was answered by whichever file was
+     * copied. That is the whole of the inconsistency, and it is arithmetic, not
+     * taste.
+     *
+     * So: 12.5 is gone (its 32 uses grew 0.5px, which is nothing), and the two
+     * display ranks nobody ever called are gone with it. Five ranks remain,
+     * every one of them in use, each with one job:
+     *
+     *   --text-xs    11    label      a word you read once — eyebrows, crumbs,
+     *                                 counts, units. Never a sentence.
+     *   --text-base  13    interface  everything you operate: rows, buttons,
+     *                                 fields, chips, menus. The default.
+     *   --text-md    15    section    a title over a group, and prose in a
+     *                                 column too narrow to carry 18.
+     *   --text-lg    18    prose      running text meant to be read, at the
+     *                                 measure `--measure-prose` is paired to.
+     *   --text-xl    22    page       the one title a route gets. §3.3 allows
+     *                                 exactly one P0 per surface; this is it.
+     *
+     * Steps: 1.18 · 1.15 · 1.20 · 1.22. Even, and every one of them visible.
+     * A new rank needs a job no rank above has, not a size between two.
+     */
     --text-xs: 11px;
-    --text-sm: 12.5px;
     --text-base: 13px;
     --text-md: 15px;
     --text-lg: 18px;
     --text-xl: 22px;
-    --text-display-sm: 26px;
-    --text-display: 36px;
     --leading-none: 1;
     --leading-tight: 1.15;
     --leading-snug: 1.3;

@@ -42,8 +42,7 @@ const ALIASES = [
   '--text-decorative',
 ] as const;
 const TYPE_SCALE = [
-  '--text-xs', '--text-sm', '--text-base', '--text-md', '--text-lg', '--text-xl',
-  '--text-display-sm', '--text-display',
+  '--text-xs', '--text-base', '--text-md', '--text-lg', '--text-xl',
 ] as const;
 const LEADING = [
   '--leading-none', '--leading-tight', '--leading-snug', '--leading-base', '--leading-loose',

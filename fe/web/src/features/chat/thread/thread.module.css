@@ -38,19 +38,21 @@
     min-inline-size: 0;
 
     /*
-     * A short transcript sits at the *bottom* of the drawer, against the
-     * composer, not at the top with a screen of nothing between the last thing
-     * said and the box you say the next thing in. The margin rather than
-     * `justify-content: flex-end` on the scroller, because a flex container
-     * that end-justifies its overflow clips the top of it: once the transcript
-     * is longer than the drawer you could not scroll back to the first turn.
+     * A short transcript starts at the **top** and grows down.
+     *
+     * It used to be pushed to the bottom against the composer, which is the
+     * messaging-app convention — and this is not a messaging app. Four short
+     * exchanges in a 900px drawer left roughly 60% of it empty above the first
+     * thing anyone said, which reads as a broken surface, not as a calm one.
+     * Every serious agent surface top-anchors for exactly this reason. The
+     * newest turn is still followed on arrival; that is `scrollIntoView`'s job,
+     * and it only has work to do once the transcript actually overflows.
      */
-    margin-block-start: auto;
   }
 
   /*
    * The exchange is the unit: what you said, and everything that came back
-   * before you said the next thing. Tight inside (`--space-4` between a turn
+   * before you said the next thing. Tight inside (`--space-5` between a turn
    * and the reply under it), loose between (`--space-10`). A flat list at one
    * distance is what made the first version read as label/text, label/text
    * rather than as a dialogue.
@@ -82,11 +84,34 @@
     text-align: end;
   }
 
+  /*
+   * The reply is set in the serif, one rank up. Side alone was too thin a
+   * signal in practice: both turns at 13px sans differ only in which edge they
+   * touch, so a transcript reads as one column of text that jumps sides for no
+   * reason. Two families is a **voice** difference, and it is the one axis that
+   * costs the text nothing — no ink, no shape, no width.
+   *
+   * `--text-md` (15), not the report's `--text-lg` (18): the measure decides the
+   * size, and this column is 364px. Measured on a representative sentence
+   * (letter *frequency*, not the alphabet):
+   *
+   *   18px serif in 364   50.1 characters a line
+   *   15px serif in 364   60.1
+   *   18px serif in 504   69.4   ← the report, inside the 65–75 band
+   *
+   * 60 is still under the band and this is the honest reading: 364px cannot
+   * hold a serif at the band. Closing the last 5 characters would mean ~13.7px,
+   * which is below where this serif holds together on screen. 15 is the closest
+   * the column allows, and it is 10 characters closer than the report's size
+   * would have been. It is the same serif voice as a report, spoken in a
+   * narrower column.
+   */
   .reply {
     min-inline-size: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-    font-size: var(--text-base);
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
     line-height: var(--leading-base);
     color: var(--text);
@@ -142,7 +167,7 @@
   }
 
   .emptyHint {
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-3);

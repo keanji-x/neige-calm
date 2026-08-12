@@ -152,7 +152,7 @@
     border-radius: var(--radius-sm);
     background: var(--surface-code);
     font-family: var(--font-code);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: var(--leading-snug);
     color: var(--text-2);
   }
@@ -184,7 +184,7 @@
     inline-size: 100%;
     border-collapse: collapse;
     font-family: var(--font-sans);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: var(--leading-snug);
   }
 

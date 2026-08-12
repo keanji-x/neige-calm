@@ -75,7 +75,7 @@
 
   .countValue {
     font-family: var(--font-numeric);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-medium);
     line-height: var(--leading-none);
     color: var(--text-2);
@@ -83,7 +83,7 @@
   }
 
   .countWord {
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-3);
@@ -97,7 +97,7 @@
      Tabular figures so the minute rolling over does not shift anything. */
   .clock {
     font-family: var(--font-numeric);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-3);
@@ -246,7 +246,7 @@
 
   .dayNumber {
     font-family: var(--font-numeric);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-2);
@@ -291,7 +291,7 @@
      * glyph is not text: it is `aria-hidden`, and the count it draws is stated
      * in full in the cell's accessible name. Nothing is readable only at 8px.
      */
-    font-size: calc(var(--text-sm) * 0.66);
+    font-size: calc(var(--text-base) * 0.66);
     font-weight: var(--weight-normal);
     line-height: var(--leading-none);
     color: var(--text-4);
@@ -302,7 +302,7 @@
        the typographic convention for "this annotates the thing to its left",
        and `translate` does it without touching the layout the cell is centred
        by. */
-    translate: 0 calc(var(--text-sm) * -0.3);
+    translate: 0 calc(var(--text-base) * -0.3);
   }
 
   .daySelected .dayCount,

@@ -95,8 +95,10 @@
    * darkest thing on screen, out-shouting every reply under it.
    *
    * Measured on both grounds: `--text` is 18.1:1 light and 11.5:1 dark,
-   * `--text-2` is 10.0:1 and 8.0:1. A real step down in loudness, and still
-   * roughly twice AA — quieter costs this nothing in legibility.
+   * `--text-3` is 7.8:1 and 6.5:1. Less than half the loudness, still well
+   * clear of AAA's 7:1 in light and AA's 4.5:1 in dark — quiet costs this
+   * nothing in legibility. `--text-4` (2.3:1) would; that rank is decorative
+   * and is where the label above sits, which is right for a word you read once.
    */
   .title {
     display: -webkit-box;
@@ -106,7 +108,7 @@
     font-weight: var(--weight-medium);
     line-height: var(--leading-snug);
     letter-spacing: var(--tracking-tight);
-    color: var(--text-2);
+    color: var(--text-3);
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
   }

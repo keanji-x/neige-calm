@@ -138,7 +138,7 @@
   .cardKind {
     min-inline-size: 0;
     overflow: hidden;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-tight);
     color: var(--text);
