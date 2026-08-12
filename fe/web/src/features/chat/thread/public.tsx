@@ -2,22 +2,19 @@
 //
 // ── Why it does not look like a chat app ──────────────────────────────────
 //
-// **Not two bubbles.** The reply is never a bubble: a bubble is a
-// variable-width column, so the prose inside it has no measure — every turn
-// wraps at a different width — and in the 364px this drawer actually has, a
-// bubble with its own padding leaves ~320 and runs 45 characters a line against
-// the 65–75 prose is read at. The reply is the substance and takes the whole
-// column flat, at full ink.
+// **No bubbles, and no fill of any kind.** A bubble is a variable-width column,
+// so the prose inside it has no measure — every turn wraps at a different width
+// — and in the 364px this drawer actually has, a bubble with its own padding
+// leaves ~320 and runs 45 characters a line against the 65–75 prose is read at.
+// A flat tinted block avoids that but still puts a slab of grey behind every
+// other paragraph of the column.
 //
-// **One tinted block, for your turn only.** That is the asymmetry every serious
-// agent surface converged on, and the reason it works is that the two turns are
-// not the same kind of object: yours is short, already known to you, and needs
-// only to be *found*; the reply is long and needs to be *read*. A block sized to
-// its own text finds instantly and costs the reply nothing.
-//
-// **No side-swapping.** Right-aligning your turns destroys the one flush left
-// edge that makes a narrow column readable, to gain a bit the fill already
-// carries.
+// **Side carries "who".** Your turn is flush to the inline-end edge, the reply
+// to the inline-start, and that is the whole mechanism. It is the strongest
+// signal available and the only one that costs nothing: no ink, no shape, no
+// width taken from the text. What it spends is the one flush left edge — which
+// is why only *your* turn moves, and the reply, the long thing that is actually
+// read, keeps the column's left edge and its full width.
 //
 // **No per-turn labels, and no per-turn timestamps.** This is where the first
 // version of this file was wrong, and it was wrong by measurement: in a strict

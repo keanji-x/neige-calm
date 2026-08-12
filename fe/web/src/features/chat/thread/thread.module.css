@@ -1,6 +1,6 @@
 @layer features {
   /*
-   * ── Tinted turn, flat reply ─────────────────────────────────────────────
+   * ── Side, not fill ──────────────────────────────────────────────────────
    *
    * Interface type, 13px sans, for the whole transcript. The report reads at
    * `--text-lg` serif and this deliberately does not: the drawer's measure is
@@ -9,21 +9,28 @@
    * holds up at on screen. A conversation is working type; a report is
    * published type.
    *
-   * Who spoke is carried by **fill**, which is this system's first instrument:
+   * Who spoke is carried by **which side of the column it is on**, and by
+   * nothing else — no fill, no bubble, no label, no weight step:
    *
-   *   what you said   a `--surface-chip` block, sized to its own text
-   *   what came back  flat, the full column, full ink
+   *   what you said   flush to the inline-end edge, `--text-2`
+   *   what came back  flush to the inline-start edge, the full column, `--text`
    *
-   * That is the shape every serious agent surface converged on — flat
-   * full-width assistant text with the user's turn differentiated by a subtle
-   * ground, rather than two colours of bubble. It also replaces two weaker
-   * devices that were doing the same job badly: a 500-against-400 weight step
-   * and a 16px hanging indent, neither of which is legible at 13px, and both of
-   * which had to be *looked for* to answer the one question you must never have
-   * to look for.
+   * Side is the strongest signal available and the cheapest: it costs no ink,
+   * no shape, and no width. Two devices this replaced were both weaker and both
+   * cost something —
    *
-   * The reply gets the full column and full ink because it is the substance;
-   * your own line is the shorter thing you already know you wrote.
+   *   a 500-against-400 weight step at 13px, which had to be *looked for*;
+   *   a `--surface-chip` block, which had to be looked for less but put a slab
+   *   of grey behind every other paragraph of a 364px column.
+   *
+   * With side doing the work, tone is only support: your line recedes one rank
+   * because you already know what you wrote, and the reply keeps full ink and
+   * the whole column because it is the thing to be read.
+   *
+   * Your turn sets `text-align: end` rather than being a left-aligned block
+   * pushed right. Without a fill the block has no visible edges, so a
+   * `fit-content` box flush right with its text flush left would align to
+   * neither side and read as an accident; the flush right edge *is* the signal.
    */
   .thread {
     display: flex;
@@ -49,7 +56,7 @@
    * rather than as a dialogue.
    */
   .thread > * + * {
-    margin-block-start: var(--space-4);
+    margin-block-start: var(--space-5);
   }
 
   .thread > * + .exchange {
@@ -57,27 +64,22 @@
   }
 
   /*
-   * `fit-content` up to 92%: the block is the length of what you wrote, so a
-   * three-word instruction is a three-word chip and not a banner across the
-   * column. The 92% ceiling keeps a long one from squaring off against the
-   * edges and turning back into a full-bleed slab.
-   *
-   * `--radius-md`, the same corner the composer takes: what you type and what
-   * you typed are the same object at two moments.
+   * The 88% ceiling is what keeps the side readable: a turn allowed the full
+   * width would start at the inline-start edge too, and then both turns begin
+   * on the same vertical and the only thing distinguishing them is where they
+   * happen to *stop*.
    */
   .said {
-    inline-size: fit-content;
-    max-inline-size: 92%;
+    max-inline-size: 88%;
     min-inline-size: 0;
-    padding: var(--space-3) var(--space-5);
-    border-radius: var(--radius-md);
-    background: var(--surface-chip);
+    margin-inline-start: auto;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
-    color: var(--text);
+    color: var(--text-2);
+    text-align: end;
   }
 
   .reply {
@@ -155,15 +157,20 @@
    * rectangle around the whole 396px width to say a caret had landed in it.
    *
    * Now it is a rounded well that floats clear of the drawer's edges, which is
-   * the shape every agent composer settled on. The geometry is exact rather
-   * than eyeballed:
+   * the shape every agent composer settled on:
    *
-   *   gutter        `--space-2` (4) on both sides and the bottom
-   *   corner        `--radius-md` (12) = the drawer's `--radius-lg` (16) − 4,
-   *                 so the well's arc and the drawer's bottom-inline-start arc
-   *                 share a centre — the concentric rule, satisfied exactly
-   *   text edge     4 gutter + 12 inset = 16, the drawer body's own inset, so
-   *                 the caret sits on the same vertical as the transcript
+   *   gutter        `--space-8` (16) on both sides and the bottom
+   *   box edge      that 16 is the drawer body's own inset, so the well's *box*
+   *                 sits on the same vertical as the transcript — the well is
+   *                 an object in the column, not a bar under it
+   *   corner        `--radius-lg` (16), 40% of the well's own height
+   *
+   * The concentric rule (`inner = outer − gap`) would put the corner at 0 here,
+   * and it does not apply: it governs a shape *nested in* another's corner, and
+   * at a 16 gutter on a 16 corner the well has cleared the drawer's arc
+   * entirely — it floats, it does not nest. That gutter was 4, which did nest,
+   * and the concentric 12 it forced is exactly why the well still read as
+   * welded to the bottom of the drawer.
    *
    * The fill is the recessed rank: the ladder says −1 is "behind the page", the
    * drawer's own surface is `--paper`, and a well cut into it reads as somewhere
@@ -175,9 +182,9 @@
     align-items: flex-end;
     gap: var(--space-3);
     flex: none;
-    margin: 0 var(--space-2) var(--space-2);
+    margin: 0 var(--space-8) var(--space-8);
     padding: var(--space-3) var(--space-3) var(--space-3) var(--space-6);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-lg);
     background: var(--surface-chip);
   }
 
