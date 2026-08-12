@@ -120,11 +120,13 @@ export type SpecRun = Readonly<{
   phase?: z.infer<typeof harnessPhaseSchema> | null;
 }>;
 
+export const HARNESS_ITEMS_PAGE_LIMIT = 300;
+
 export function harnessItemsOperation(cardId: string, afterId = 0, direction: 'asc' | 'desc' = 'desc'):
 ApiOperation<HarnessItem[]> {
   return {
     method: 'GET',
-    path: `/api/cards/${encodeURIComponent(cardId)}/harness/items?after_id=${afterId}&limit=300&direction=${direction}`,
+    path: `/api/cards/${encodeURIComponent(cardId)}/harness/items?after_id=${afterId}&limit=${HARNESS_ITEMS_PAGE_LIMIT}&direction=${direction}`,
     responseSchema: z.array(harnessItemSchema),
   };
 }
@@ -192,6 +194,31 @@ export function harnessItemToTurn(item: HarnessItem): ConversationTurn | null {
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
   };
+}
+
+const ECHO_RECONCILIATION_LOOKBACK = 50;
+
+function userTextMatchesEcho(userText: string, echoText: string): boolean {
+  const user = userText.trim();
+  const echo = echoText.trim();
+  return user !== '' && echo !== '' && (user === echo || user.startsWith(`${echo}\n`));
+}
+
+/** Reconcile recent persisted user rows with optimistic echoes one-to-one. */
+export function reconcileUserEchoes(
+  serverTurns: readonly ConversationTurn[],
+  echoes: readonly ConversationTurn[],
+): readonly ConversationTurn[] {
+  const userTexts = serverTurns.filter((turn) => turn.author === 'you')
+    .slice(-ECHO_RECONCILIATION_LOOKBACK).map((turn) => turn.text);
+  const matchedUserIndexes = new Set<number>();
+  return echoes.filter((echo) => {
+    const match = userTexts.findIndex((text, index) =>
+      !matchedUserIndexes.has(index) && userTextMatchesEcho(text, echo.text));
+    if (match < 0) return true;
+    matchedUserIndexes.add(match);
+    return false;
+  });
 }
 
 /**

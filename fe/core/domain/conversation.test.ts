@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { HarnessItem } from '../api/generated/wire.js';
 import {
   CONVERSATION_NAME_MAX, conversationName, conversationNameFrom, harnessItemToTurn,
-  type Conversation,
+  reconcileUserEchoes, type Conversation, type ConversationTurn,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -24,6 +24,22 @@ describe('conversationName', () => {
     const nameless = conversation({ waveTitle: 'Ship the rewrite' });
     expect(conversationName(nameless)).toBe('Codex');
     expect(conversationName(nameless)).not.toBe('Ship the rewrite');
+  });
+});
+
+describe('reconcileUserEchoes', () => {
+  const turn = (id: string, text: string): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
+
+  it('lets one server row consume only one of two identical echoes', () => {
+    expect(reconcileUserEchoes(
+      [turn('server-1', 'same')],
+      [turn('echo-1', 'same'), turn('echo-2', 'same')],
+    ).map((entry) => entry.id)).toEqual(['echo-2']);
+  });
+
+  it('does not reconcile against server rows outside the bounded lookback', () => {
+    const rows = [turn('old', 'same'), ...Array.from({ length: 50 }, (_, index) => turn(`recent-${index}`, `text-${index}`))];
+    expect(reconcileUserEchoes(rows, [turn('echo', 'same')])).toHaveLength(1);
   });
 });
 

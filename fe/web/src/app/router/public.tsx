@@ -32,7 +32,7 @@ import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { readWaveReport } from '../../../../core/domain/report.ts';
 import {
-  conversationName, conversationNameFrom, harnessItemToTurn,
+  conversationName, conversationNameFrom, harnessItemToTurn, reconcileUserEchoes,
   type Conversation, type ConversationTurn,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
@@ -49,39 +49,29 @@ import { useTheme } from '../theme/public.tsx';
 import { useGo, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
 
-/**
- * The conversation store, standing in for an endpoint that does not exist.
- *
- * `core/domain/conversation.ts` explains what the kernel really holds — a
- * `WorkerSessionProjection` per session and `HarnessItem` rows for its turns —
- * and what it does not have: any HTTP route the frontend can read them from.
- * So the *composition layer* holds them, in memory, for the length of a visit.
- *
- * It lives here rather than in `features/chat` on purpose. Nothing under
- * `features/**` learns that its data is a stub: the list takes a list, the
- * thread takes turns, the composer reports a string. When the endpoint lands,
- * this hook becomes a query plus a mutation and not one line of the chat
- * feature changes. A stub inside the feature would have had to be unpicked
- * from it instead.
- *
- * The reply **says that it is a stub**, and runs the length a real answer runs.
- *
- * It was the literal string `test`, which was honest and turned out to be
- * unusable: a transcript of four one-word replies against four full sentences
- * cannot be looked at to judge whether the transcript works. It made the demo
- * lie in the other direction. Length is the thing being demonstrated, so the
- * stub has to have some — and it stays honest by naming itself, rather than by
- * being too short to read.
- */
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly ConversationTurn[];
   pending: ReadonlySet<string>;
+  working: boolean;
+  stopping: boolean;
+  sending: boolean;
+  resetting: boolean;
+  hasEarlier: boolean;
+  loadingEarlier: boolean;
+  historyError: string | null;
+  actionError: string | null;
+  actionMessage: string | null;
   start: () => Conversation | null;
   send: (conversationId: string, text: string) => void;
   interrupt: () => void;
-  reset: () => void;
+  reset: () => Promise<boolean>;
+  loadEarlier: () => void;
 }>;
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message !== '' ? error.message : fallback;
+}
 
 function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
   const cardId = scope?.cardId ?? '';
@@ -91,27 +81,35 @@ function useConversationStore(transport: ApiTransportPort, scope: SpecConversati
   const run = useQuery({ ...specRunQueryOptions(transport, cardId), enabled: scope !== null });
   const mutations = useSpecMutations(transport, cardId);
   const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
+  const [sending, setSending] = useState(false);
+  const [interruptPending, setInterruptPending] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const sendingRef = useRef(false);
   const seq = useRef(0);
   const serverTurns = useMemo(() => (history.data?.pages ?? [])
     .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
       const turn = harnessItemToTurn(item);
       return turn === null ? [] : [turn];
     }), [history.data]);
-  const { fetchNextPage, hasNextPage, isFetchingNextPage } = history;
   useEffect(() => {
-    if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
-  useEffect(() => {
-    const texts = serverTurns.filter((turn) => turn.author === 'you').map((turn) => turn.text.trim());
-    setEchoes((current) => current.filter((echo) => !texts.some((text) =>
-      text === echo.text.trim() || text.startsWith(`${echo.text.trim()}\n`),
-    )));
+    setEchoes((current) => reconcileUserEchoes(serverTurns, current));
   }, [serverTurns]);
-  useEffect(() => { setEchoes([]); }, [cardId]);
+  useEffect(() => {
+    setEchoes([]);
+    setActionError(null);
+    setActionMessage(null);
+    sendingRef.current = false;
+    setSending(false);
+    setInterruptPending(false);
+    setResetting(false);
+  }, [cardId]);
 
   const turns = [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs);
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
+  const stopping = phase === 'issuing_interrupt' || interruptPending;
   const conversation: Conversation | null = scope === null ? null : {
     id: scope.cardId, waveId: scope.id, waveTitle: scope.title,
     title: scope.cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
@@ -120,22 +118,69 @@ function useConversationStore(transport: ApiTransportPort, scope: SpecConversati
   };
 
   const send = (_conversationId: string, text: string) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    setActionError(null);
+    setActionMessage(null);
     seq.current += 1;
     const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
     setEchoes((current) => [...current, echo]);
-    void mutations.send(text).catch(() => {
+    void mutations.send(text).catch((error: unknown) => {
       setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
+      setActionError(errorMessage(error, 'Could not send the message.'));
+    }).finally(() => {
+      sendingRef.current = false;
+      setSending(false);
     });
+  };
+
+  const interrupt = () => {
+    if (!working || stopping) return;
+    setInterruptPending(true);
+    setActionError(null);
+    void mutations.interrupt().then((result) => {
+      if (result.stopped) setActionMessage('Turn stopped');
+    }).catch((error: unknown) => {
+      setActionError(errorMessage(error, 'Could not stop the turn.'));
+    }).finally(() => setInterruptPending(false));
+  };
+
+  const reset = async (): Promise<boolean> => {
+    if (resetting) return false;
+    setResetting(true);
+    setActionError(null);
+    try {
+      await mutations.reset();
+      setEchoes([]);
+      setActionMessage(null);
+      return true;
+    } catch (error: unknown) {
+      setActionError(errorMessage(error, 'Could not reset the conversation.'));
+      return false;
+    } finally {
+      setResetting(false);
+    }
   };
 
   return {
     conversations: conversation === null ? [] : [conversation],
     turnsOf: () => turns,
     pending: working && conversation !== null ? new Set([conversation.id]) : new Set(),
+    working,
+    stopping,
+    sending,
+    resetting,
+    hasEarlier: history.hasNextPage,
+    loadingEarlier: history.isFetchingNextPage,
+    historyError: history.error instanceof Error ? history.error.message : null,
+    actionError,
+    actionMessage,
     start: () => conversation,
     send,
-    interrupt: () => { void mutations.interrupt(); },
-    reset: () => { void mutations.reset().then(() => setEchoes([])); },
+    interrupt,
+    reset,
+    loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
   };
 }
 
@@ -202,24 +247,6 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
 }
 
 /**
- * The conversation module every route's panel card carries, plus the drawer it
- * opens into.
- *
- * It lives here, in the composition layer, for two separate reasons. The list
- * is `features/chat` and the pages are `features/today|cove|wave`, and a
- * feature may not import a sibling domain — so someone above them has to put
- * the two together, exactly as `renderWaveRow` and `waveList` already are. And
- * the drawer overlays the entire main region (§7.6), which is not something a
- * 308px module inside one page should own.
- *
- * The store is a route-local `useState` stub, so each route component creates
- * a fresh instance: conversations do not survive navigation, and Today's
- * cross-wave list is always empty. The kernel holds this data
- * (`WorkerSessionProjection` + `HarnessItem`) but no HTTP endpoint serves it
- * yet, so the list renders §5.3's unbuilt shape. See
- * `core/domain/conversation.ts`.
- */
-/**
  * The conversation module, identical on all three routes: a list, a `+` in the
  * module head, and the drawer both of them open.
  *
@@ -238,6 +265,20 @@ function useConversationPanel(
   const [openId, setOpenId] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
+
+  useEffect(() => {
+    if (open === null || !store.working || store.stopping || confirmingReset) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest('[role="complementary"]') === null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      store.interrupt();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [confirmingReset, open, store]);
 
   /*
    * The `+` starts a conversation *and* opens it. A control that creates a row
@@ -273,27 +314,48 @@ function useConversationPanel(
         onClose={() => setOpenId(null)}
         footer={open === null ? undefined : (
           <>
-            <ChatComposer onSend={(text) => store.send(open.id, text)} />
-            <button type="button" onClick={store.interrupt}>Stop</button>
+            <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
+            {(store.working || store.stopping) && (
+              <button type="button" disabled={store.stopping} onClick={store.interrupt}>
+                {store.stopping ? 'Stopping…' : 'Stop'}
+              </button>
+            )}
             <button type="button" onClick={() => setConfirmingReset(true)}>Reset conversation</button>
+            {store.actionError !== null && <p role="alert">{store.actionError}</p>}
+            {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
           </>
         )}
       >
         {open !== null && (
-          <ChatThread
-            conversation={open}
-            turns={store.turnsOf(open.id)}
-            pending={store.pending.has(open.id)}
-          />
+          <>
+            {store.hasEarlier && (
+              <button type="button" disabled={store.loadingEarlier} onClick={store.loadEarlier}>
+                {store.loadingEarlier ? 'Loading…' : 'Load earlier'}
+              </button>
+            )}
+            {store.historyError !== null && <p role="alert">{store.historyError}</p>}
+            <ChatThread
+              conversation={open}
+              turns={store.turnsOf(open.id)}
+              pending={store.pending.has(open.id)}
+            />
+          </>
         )}
       </Drawer>
       <ConfirmDialog
         open={confirmingReset}
         title="Reset conversation?"
-        description="This clears the transcript and starts a new agent thread. This cannot be undone."
+        description={<>
+          <p>This clears the transcript and starts a new agent thread. This cannot be undone.</p>
+          {store.actionError !== null && <p role="alert">{store.actionError}</p>}
+        </>}
         confirmLabel="Reset conversation"
-        onCancel={() => setConfirmingReset(false)}
-        onConfirm={() => { setConfirmingReset(false); store.reset(); }}
+        confirmBusyLabel="Resetting…"
+        confirmState={store.resetting ? 'busy' : 'ready'}
+        onCancel={() => { if (!store.resetting) setConfirmingReset(false); }}
+        onConfirm={() => {
+          void store.reset().then((succeeded) => { if (succeeded) setConfirmingReset(false); });
+        }}
       />
       </>
     ),

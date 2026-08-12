@@ -28,7 +28,7 @@ import {
   type NewWaveBody, type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody,
 } from '../../../../core/domain/wave.ts';
 import {
-  harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
   specRunOperation,
 } from '../../../../core/domain/conversation.ts';
 import type { ServerVersionInfo } from './public.tsx';
@@ -74,7 +74,7 @@ export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: st
     ),
     initialPageParam: 0,
     getNextPageParam: (page: HarnessItem[]) =>
-      page.length === 300 ? page[page.length - 1]?.id : undefined,
+      page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0]?.id : undefined,
   };
 }
 
@@ -91,10 +91,14 @@ export function useSpecMutations(transport: ApiTransportPort, cardId: string) {
     client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
     client.invalidateQueries({ queryKey: queryKeys.specRun(cardId) }),
   ]).then(() => undefined);
+  const refreshAfter = async <T,>(result: T): Promise<T> => {
+    await refresh();
+    return result;
+  };
   return {
-    send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text)),
-    interrupt: () => runOperation(transport, interruptSpecOperation(cardId)).then(refresh),
-    reset: () => runOperation(transport, resetSpecOperation(cardId)).then(refresh),
+    send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text)).then(refreshAfter),
+    interrupt: () => runOperation(transport, interruptSpecOperation(cardId)).then(refreshAfter),
+    reset: () => runOperation(transport, resetSpecOperation(cardId)).then(refreshAfter),
   };
 }
 
