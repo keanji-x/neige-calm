@@ -4,7 +4,7 @@
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
     max-inline-size: var(--measure-page);
-    padding-block: var(--space-9) var(--space-11);
+    padding-block: 0 var(--space-11);
     padding-inline: var(--space-10);
   }
 

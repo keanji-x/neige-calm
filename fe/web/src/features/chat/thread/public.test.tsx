@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,7 +15,7 @@ const NOW = 1_760_000_000_000;
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
-    id: 'c1', waveId: 'w1', waveTitle: 'Ship the rewrite', kind: 'codex',
+    id: 'c1', waveId: 'w1', waveTitle: 'Ship the rewrite', title: null, kind: 'codex',
     state: 'idle', updatedAt: NOW, turns: 0,
     ...overrides,
   };
@@ -106,6 +106,30 @@ describe('ChatComposer', () => {
     await userEvent.type(screen.getByLabelText('Message'), 'one{Shift>}{Enter}{/Shift}two');
     expect(onSend).not.toHaveBeenCalled();
     expect(screen.getByLabelText<HTMLTextAreaElement>('Message').value).toBe('one\ntwo');
+  });
+
+  /*
+   * Enter belongs to the input method while it is composing.
+   *
+   * Reproduced in a real browser before the fix, with `Input.imeSetComposition`:
+   * typing `ceshi` and pressing Enter to accept 测试 sent the literal pinyin as
+   * a turn. In the live app the composition then commits into the box that was
+   * just cleared, which is what "sending doesn't clear the box" looks like from
+   * the outside. Everyone typing Chinese, Japanese or Korean hits this on their
+   * first message.
+   */
+  it('leaves Enter to the input method while it is composing', () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} />);
+    const field = screen.getByLabelText<HTMLTextAreaElement>('Message');
+    fireEvent.change(field, { target: { value: 'ceshi' } });
+
+    fireEvent.keyDown(field, { key: 'Enter', isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+
+    // …and the very next Enter, once the candidate is committed, does send.
+    fireEvent.keyDown(field, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('ceshi');
   });
 
   it('sends from the button as well as the key', async () => {

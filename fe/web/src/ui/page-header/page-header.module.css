@@ -56,6 +56,24 @@
     flex-direction: column;
     gap: var(--space-3);
 
+    /*
+     * The band belongs to the header, not to the page.
+     *
+     * It used to be `.page`'s `padding-block-start` — 20px of scroll container
+     * above a sticky header. Which works until you scroll: the padding scrolls
+     * away, the header pins at 0, and the title jumps up 20px. Measured, the
+     * route title's baseline went 41.7 → **21.7** on the first scroll, while
+     * the rail's and the drawer's stayed at 42. The one header that moves is
+     * the one you are reading, and it moves out of line with the two that
+     * don't.
+     *
+     * Now the inset is the header's own, so it survives pinning, and it is
+     * derived from `--header-baseline` like the other two: 21.7 is this
+     * header's top-to-baseline (a 20.7px line centred in a 32px title row is
+     * 5.7, plus 16 to the baseline inside it).
+     */
+    padding-block-start: calc(var(--header-baseline) - 21.7px);
+
     /* Opaque, and the same ground as the page: a header on its own surface
        would read as a separate region from the content it labels. */
     background: var(--bg);

@@ -23,6 +23,14 @@ export type Conversation = Readonly<{
   waveId: string;
   /** The wave's title, resolved by whoever knows about waves. */
   waveTitle: string;
+  /**
+   * The conversation's own name, or null before it has one.
+   *
+   * The kernel's session card carries a `title`; this mirrors it. It is not the
+   * wave's title and must never be filled with one — a wave holds several
+   * conversations, and naming them all after their wave names none of them.
+   */
+  title: string | null;
   kind: ConversationKind;
   state: ConversationState;
   /** Last turn, or the session's own update time when it has no turns yet. */
@@ -30,6 +38,46 @@ export type Conversation = Readonly<{
   /** Turn count. Zero is legal: a session can exist before its first turn. */
   turns: number;
 }>;
+
+/** What a session is called when it has no name of its own. `kind` is its
+ *  identity, not decoration — a nameless Codex session is "Codex". */
+export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>> = Object.freeze({
+  terminal: 'Terminal',
+  codex: 'Codex',
+  claude: 'Claude',
+  'shared-spec': 'Spec',
+});
+
+/**
+ * The one name a conversation shows, wherever it is shown.
+ *
+ * It lives here because two surfaces show it — the list in the panel and the
+ * drawer's own head — and they must not disagree. The drawer used to show the
+ * *wave's* title, which made every conversation on a wave look like the same
+ * conversation.
+ */
+export function conversationName(conversation: Conversation): string {
+  return conversation.title ?? CONVERSATION_KIND_LABEL[conversation.kind];
+}
+
+/**
+ * A name taken from the first thing said, which is what a conversation is
+ * about far more reliably than anything chosen up front.
+ *
+ * One line — a message that opens with a paragraph and then pastes a stack
+ * trace is about its first line. `--panel-w` fits roughly this many characters
+ * at `--text-base`, and a name that has to be truncated on every surface that
+ * shows it is not a name.
+ */
+export const CONVERSATION_NAME_MAX = 48;
+
+export function conversationNameFrom(text: string): string | null {
+  const line = text.trim().split('\n', 1)[0]?.trim() ?? '';
+  if (line === '') return null;
+  return line.length <= CONVERSATION_NAME_MAX
+    ? line
+    : `${line.slice(0, CONVERSATION_NAME_MAX - 1).trimEnd()}…`;
+}
 
 /**
  * A session is *live* while it can still produce turns. This is the one

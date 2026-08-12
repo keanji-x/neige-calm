@@ -10,18 +10,10 @@
 // a module 308px wide has no business owning something that wide (§7.6).
 
 import {
-  byRecency, isLiveConversation, type Conversation,
+  byRecency, conversationName, isLiveConversation, type Conversation,
 } from '../../../../../core/domain/conversation.ts';
 import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
 import styles from './list.module.css';
-
-/** The label a session shows. `kind` is its identity, not decoration. */
-const KIND_LABEL: Readonly<Record<Conversation['kind'], string>> = Object.freeze({
-  terminal: 'Terminal',
-  codex: 'Codex',
-  claude: 'Claude',
-  'shared-spec': 'Spec',
-});
 
 export type ChatListProps = Readonly<{
   conversations: readonly Conversation[];
@@ -53,13 +45,13 @@ export function ChatList({
               data-nc-role="row"
               className={`${styles.row} ${active ? styles.rowActive : ''}`}
               aria-current={active ? 'true' : undefined}
-              aria-label={`Conversation ${KIND_LABEL[conversation.kind]}`
+              aria-label={`Conversation ${conversationName(conversation)}`
                 + (showWave ? `, on ${conversation.waveTitle}` : '')
                 + `, ${conversation.turns} turns${live ? ', live' : ''}`}
               onClick={() => onOpen(conversation)}
             >
               <span className={styles.label}>
-                {showWave ? conversation.waveTitle : KIND_LABEL[conversation.kind]}
+                {showWave ? conversation.waveTitle : conversationName(conversation)}
               </span>
             </button>
             {/* Trailing, outside the button — the same shape a wave row takes in

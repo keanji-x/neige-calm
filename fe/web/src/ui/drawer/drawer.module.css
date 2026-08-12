@@ -188,12 +188,33 @@
     overflow: auto;
   }
 
-  /* Enter animates, exit is instant (§7.6). An exit transition on something you
-     dismissed keeps the screen busy after the decision is already made. */
+  /*
+   * It slides in from the edge and back out to it — the same distance, the same
+   * duration, reversed. §7.6 asked for an instant exit, which is right for a
+   * dialog (a thing that was in the way and is now gone) and wrong for a panel
+   * welded to an edge: retracting says "still there, off-screen", vanishing
+   * says "destroyed". See the note in public.tsx.
+   */
   @keyframes drawer-in {
     from {
       translate: var(--drawer-w) 0;
     }
+  }
+
+  @keyframes drawer-out {
+    to {
+      translate: var(--drawer-w) 0;
+    }
+  }
+
+  .drawerClosing {
+    /* `forwards`, so the panel stays off-screen for the frame between the
+       animation ending and React unmounting it. */
+    animation: drawer-out var(--motion-medium) ease-in forwards;
+
+    /* It is on its way out; it must not intercept a click meant for the page
+       behind it. */
+    pointer-events: none;
   }
 
   @media (prefers-reduced-motion: reduce) {

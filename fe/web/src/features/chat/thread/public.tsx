@@ -139,6 +139,22 @@ export function ChatComposer({ onSend, disabled = false }: {
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== 'Enter' || event.shiftKey) return;
+    /*
+     * Enter belongs to the IME while it is composing.
+     *
+     * Typing Chinese, Japanese or Korean, Enter is how you accept the candidate
+     * the input method is offering — it is not how you send. Without this
+     * guard, typing `ceshi` and pressing Enter to pick 测试 sends the literal
+     * pinyin, and then the composition commits into the field that was just
+     * cleared, so the box refills the instant after it "sent". That is the
+     * "sending doesn't clear the box" report, and it is only reachable through
+     * an IME: reproduced with `Input.imeSetComposition`, which sent `ceshi` as
+     * a turn.
+     *
+     * `isComposing` lives on the native event; React's synthetic keyboard event
+     * does not surface it.
+     */
+    if (event.nativeEvent.isComposing) return;
     event.preventDefault();
     send();
   };

@@ -10,7 +10,7 @@
        inside a 900 tall main — so the document column had no space to centre an
        empty state in. Content taller than the region still grows it. */
     min-block-size: 100%;
-    padding-block: var(--space-9) var(--space-11);
+    padding-block: 0 var(--space-11);
     padding-inline: var(--space-10);
   }
 

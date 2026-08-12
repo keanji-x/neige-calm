@@ -39,6 +39,31 @@ export function Drawer({ open, title, onClose, children, footer }: {
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const wasOpen = useRef(open);
+
+  /*
+   * What a retracting drawer shows.
+   *
+   * The caller drops its selection the instant it asks for a close — the
+   * conversation is gone from its state before this component renders again —
+   * so without this the panel would slide out blank, which looks like a bug
+   * rather than like a panel going away. Held in a ref, not state: it is a
+   * snapshot of the last frame that had content, and it must never cause a
+   * render of its own.
+   */
+  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode }>({ title, children, footer });
+  if (open) lastFrame.current = { title, children, footer };
+  const frame = open ? { title, children, footer } : lastFrame.current;
+
+  useEffect(() => {
+    if (open === wasOpen.current) return;
+    // Only a true → false edge starts a retraction; mounting closed does not.
+    const retracts = wasOpen.current && !open
+      && !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    wasOpen.current = open;
+    setClosing(retracts);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -51,18 +76,34 @@ export function Drawer({ open, title, onClose, children, footer }: {
   // held there, because the drawer is not modal.
   useEffect(() => { if (open) panelRef.current?.focus(); }, [open]);
 
-  if (!open) return null;
+  /*
+   * The drawer **retracts**; it does not vanish.
+   *
+   * §7.6 said enter animates and exit is instant, on the reasoning that an exit
+   * transition keeps the screen busy after the decision is made. That is right
+   * for a dialog, which is a thing that was in the way and is now gone. It is
+   * wrong for a panel attached to an edge: the whole point of an edge panel is
+   * that it is *still there*, pushed off-screen, and an instant disappearance
+   * says it was destroyed. The control says the same thing — `›`, the direction
+   * it goes, the same glyph the rail's own collapse uses.
+   *
+   * So closing holds the element mounted for one animation. Reduced motion
+   * skips the phase entirely rather than waiting on an `animationend` that a
+   * suppressed animation will never fire.
+   */
+  if (!open && !closing) return null;
   return (
     <div
       ref={panelRef}
-      className={styles.drawer}
+      className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role="complementary"
-      aria-label={title}
+      aria-label={frame.title}
       tabIndex={-1}
+      onAnimationEnd={() => { if (closing) setClosing(false); }}
       {...(scrolled ? { 'data-nc-scrolled': '' } : {})}
     >
       <div className={styles.head}>
-        <h2 className={styles.title}>{title}</h2>
+        <h2 className={styles.title}>{frame.title}</h2>
         <button
           type="button"
           data-nc-role="icon"
@@ -71,7 +112,7 @@ export function Drawer({ open, title, onClose, children, footer }: {
           title="Close"
           onClick={onClose}
         >
-          ×
+          ›
         </button>
       </div>
       <div
@@ -84,9 +125,9 @@ export function Drawer({ open, title, onClose, children, footer }: {
           if (past !== scrolled) setScrolled(past);
         }}
       >
-        {children}
+        {frame.children}
       </div>
-      {footer}
+      {frame.footer}
     </div>
   );
 }

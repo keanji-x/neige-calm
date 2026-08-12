@@ -31,7 +31,10 @@ import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx'
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { readWaveReport } from '../../../../core/domain/report.ts';
-import type { Conversation, ConversationTurn } from '../../../../core/domain/conversation.ts';
+import {
+  conversationName, conversationNameFrom,
+  type Conversation, type ConversationTurn,
+} from '../../../../core/domain/conversation.ts';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
@@ -94,7 +97,7 @@ function useConversationStore(): ConversationStore {
   const start = (wave: { id: string; title: string }): Conversation => {
     const now = Date.now();
     const conversation: Conversation = {
-      id: nextId('conv'), waveId: wave.id, waveTitle: wave.title,
+      id: nextId('conv'), waveId: wave.id, waveTitle: wave.title, title: null,
       kind: 'codex', state: 'idle', updatedAt: now, turns: 0,
     };
     setConversations((current) => [conversation, ...current]);
@@ -112,6 +115,17 @@ function useConversationStore(): ConversationStore {
 
   const send = (conversationId: string, text: string) => {
     append(conversationId, { id: nextId('turn'), author: 'you', text, atMs: Date.now() });
+    /*
+     * The first thing you say names the conversation, and nothing after it
+     * renames it. That is what every agent surface does, and the reason is that
+     * a name has to be stable to be a name: one that tracked the latest message
+     * would move in the list every time you spoke.
+     */
+    setConversations((current) => current.map((conversation) => (
+      conversation.id === conversationId && conversation.title === null
+        ? { ...conversation, title: conversationNameFrom(text) }
+        : conversation
+    )));
     setPending(conversationId);
     // A delay, because the state it puts the surface in is real: the live dot
     // and the "working" state exist and have to be reachable to be looked at.
@@ -254,7 +268,7 @@ function useConversationPanel(
     drawer: (
       <Drawer
         open={open !== null}
-        title={open?.waveTitle ?? ''}
+        title={open === null ? '' : conversationName(open)}
         onClose={() => setOpenId(null)}
         footer={open === null ? undefined : (
           <ChatComposer onSend={(text) => store.send(open.id, text)} />
