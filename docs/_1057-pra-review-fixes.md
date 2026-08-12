@@ -44,5 +44,8 @@
 ## 门禁实跑
 
 - 关键定向证伪：T-B4 变异红；T-D9 四条变异逐条红。
-- 完整 mutation：待本文件首轮提交后运行并回填实际 JSON 摘要。
-- 常规门禁：待 mutation 完成后运行并回填。
+- 完整 mutation（`cd fe && setsid npm run test:mutation`）实际 JSON 摘要：
+  `{"selected":50,"ran":50,"total":50,"ok":true,"failed":[]}`。
+  runner 结束后 `git status --short` 无输出，工作树已恢复。
+- 常规门禁：`OWNERSHIP_BASE_SHA=origin/main npm run lint && npm run build && npm test` 全部通过；
+  vitest 为 90 files、1049 passed、1 skipped，wire 与 mock drift 门禁均通过。
