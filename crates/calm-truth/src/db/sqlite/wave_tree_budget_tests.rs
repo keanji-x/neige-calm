@@ -8,6 +8,7 @@
 //! `evaluate_schedulability`, `project_tasks_tx`); no fixture re-implements
 //! the predicate under test.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use calm_types::report_blocks::tasks::TaskDeclaration;
@@ -1210,11 +1211,12 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     ));
 }
 
-/// Degradation rule for D.4 #7. Every non-terminal spec row consumes tree
-/// share. Starting above B therefore admits no new row; capacity returns only
-/// as the in-flight rows terminate, and projection never edits those rows.
+/// Truth-layer fail-closed behavior for a pre-existing overage. Raw SQL builds
+/// this state so the occupancy subtraction remains directly testable; the
+/// production tree-budget PATCH rejects this input atomically and cannot
+/// commit the degraded state.
 #[tokio::test]
-async fn in_flight_spec_consumes_tree_share_until_it_terminates() {
+async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "upgraded-root").await;
@@ -1302,7 +1304,7 @@ async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() 
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "upgraded-default-root").await;
-    set_ceiling(&repo, &root, 32).await;
+    set_ceiling(&repo, &root, 64).await;
     project(&repo, &root, &["in-flight-a", "in-flight-b"]).await;
     mark_all_tasks_as_running(&repo, &root).await;
 
@@ -1397,13 +1399,20 @@ async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     )
     .await
     .unwrap();
-    assert!(
-        verdicts.len() >= new_declarations.len(),
-        "each new declaration must have a verdict: {verdicts:#?}"
+    assert_eq!(
+        verdicts.len(),
+        new_declarations.len() + 3,
+        "all three undeclared in-flight rows must contribute synthetic verdicts: {verdicts:#?}"
     );
-    assert!(
-        verdicts.len() > new_declarations.len(),
-        "the in-flight rows must contribute synthetic withdrawal verdicts: {verdicts:#?}"
+    let synthetic_keys = verdicts
+        .iter()
+        .skip(new_declarations.len())
+        .map(|verdict| verdict.key.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        synthetic_keys,
+        BTreeSet::from(["child-a", "child-b", "child-c"]),
+        "synthetic verdicts must cover the complete undeclared in-flight set"
     );
     assert!(
         verdicts.iter().take(new_declarations.len()).all(|verdict| {

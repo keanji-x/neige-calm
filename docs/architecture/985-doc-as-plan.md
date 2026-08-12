@@ -325,7 +325,7 @@ worker_card_id）贴在块上；`gate_result` 在服务端收窄为 `{passed, fa
 | # | 规则 |
 |---|---|
 | 1 | **声明消失 ⇒ 守卫式删除**（`DELETE … AND status='pending'`）。四种触发：块被删除 / 被墓碑覆盖 / `ready` 从 true 撤回 / 该块新产生了诊断 |
-| 2 | **非 `pending` 行的声明内容不再更新**，只产出诊断；例外是收养与 `0070_` backfill 对 `decl_*` 影子位的**初始化**，它不改变 worker 可见规格。**已派发过的 `key` 不复活** —— `tasks.id = "{wave}:{key}"` 就是 operation 幂等键（§3.3）|
+| 2 | **非 `pending` 行的声明内容不再更新**，只产出诊断；唯一例外是已发布且不可修改的 `0070_` 历史 backfill 对 `decl_*` 影子位的**初始化**，它不改变 worker 可见规格。**已派发过的 `key` 不复活** —— `tasks.id = "{wave}:{key}"` 就是 operation 幂等键（§3.3）|
 | 3 | **可调度谓词是唯一的**：`schedulable = ready ∧ ¬tombstone ∧ diagnostics.is_empty() ∧ 准入`（§8 的 ceiling）|
 | 4 | **诊断零存储、零缓存、零事件** —— 读端在读事务内派生的标注 |
 | 5 | **`kernel_events` 必须被调用者消费**（§5.4）|
@@ -660,7 +660,7 @@ snapshot；该桶任一非零增量立即告警（验收：注入一份损坏持
 
 | 载体 | 谁写 | rebuild 怎么重放 | migration |
 |---|---|---|---|
-| `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不改声明内容**，但收养初始化 `decl_ready=1` | 撤回退化为**当前状态的纯函数**；收养与 `0070_` backfill 初始化影子位不改变 worker 可见规格 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
+| `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不改声明内容** | 撤回退化为**当前状态的纯函数**；已发布且不可修改的 `0070_` 历史 backfill 初始化影子位，不改变 worker 可见规格 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
 
 **三条边界**：
 
@@ -1206,23 +1206,18 @@ D.1 #11「rebuild ≡ 增量差分」在树上原样成立。
 `sub-wave-tree-budget-exhausted`），并在 N 改变后走与 B PATCH 相同的整树重投影/后置复核。
 因此任一由本 build 准入的新状态都满足 `Σ_v live_spec(v) ≤ B`；承重验收是
 `whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences` 与
-`in_flight_spec_consumes_tree_share_until_it_terminates`、
+`raw_sql_tree_overage_consumes_share_until_inflight_terminates`（truth 层防御性构造）、
 `in_flight_member_overage_freezes_new_blocks_across_the_tree`。
 **求不到树根时 fail-closed**（诊断 `tree_root_unresolved`，该 wave 一条都不准入）——
 一条断链绝不能让整棵子树无约束。
-
-**既有在飞行超出新上界时的退化语义（与 ceiling 退化语义并列）**：若人调低 per-wave
-ceiling 或 tree budget，使既有 `K` 条不可裁在飞行达到或超过新的 ceiling / share，既有行
-逐字节不变、不得裁；相关 wave 或整树的新行容量为 0。每终结一条才释放相应容量，存量不得
-继续上升，并单调收敛回新的严格上界。`K` 恰等于新上界时同样不能再落一条新声明；`K` 超出
-新上界是配置收紧接管的既有状态，后续写不得维持或扩大超额。
 
 **单 wave ceiling 上界的精确形式**：`非终结行数 = occupied + |准入| ≤ max(ceiling, occupied)`。
 若人把 ceiling 调低到当时的在飞行数以下，上界**暂时退化为调低那一刻的在飞行数**，
 并随这些行终结**单调收敛**回新 ceiling —— 期间 `capacity = 0`，不准入任何新行。
 这条退化只属于 `spec_task_ceiling`；tree B/N 改动由整树后置复核拒绝 in-flight 超额，
-不允许新准入行把树总量上界进一步退化；若配置收紧后已存在不可裁超额，则按上一段冻结准入并
-随终结收敛。
+不允许通过生产写口提交树级退化状态。truth 层仍对 raw SQL、旧快照或损坏数据中已经存在的
+树级不可裁超额 fail-closed：冻结整树准入并随终结收敛；这是防御性读取语义，不代表该状态可由
+生产 PATCH 构造。
 
 子 wave 创建还有一个显式 409 失败模式：点一库存/成员准入可能放行，但 `N` 增长后的整树
 重投影若发现任一成员的不可裁 in-flight 存量高于新 share，整笔创建回滚并返回 Conflict；调用方
@@ -2010,7 +2005,7 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 3c | 人能看见状态与诊断、能放行 | 无 |
 | 4 | 误报下降，冻结点可推进 | 无 |
 | 5 | 模板可 fork，agent 只剩一个写口 | 无 |
-| 6 PR-A | 子 wave 可用、深度有界、父任务可闭合 | PR-B 已用确定性份额、整树后置复核与升级 legacy 退化语义收口树存量上界 |
+| 6 PR-A | 子 wave 可用、深度有界、父任务可闭合 | PR-B 已用确定性份额、整树后置复核与 ceiling 收紧退化语义收口树存量上界 |
 
 ### D.4 补充不变量（B13 恢复项）
 
@@ -2021,7 +2016,7 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 5 的三构造 | (a) worker 未开始 → 重启 → 不得 spawn；(b) **gate 未开始**（`gate_attempt = 0` + material）→ 重启 → **不得有任何 gate shell 命令被执行**；(c) **已开始的不受影响**（验证没有过度收紧）|
 | 5b seam | boot 顺序**两半缺一不可**：(a) 源码序断言 + (b) **seam 测试**（真实跑一次 boot，断言上下文 sweep 的副作用先于 operation 恢复可见）|
 | 6b | **两个清除动作互相独立**（B2 后不再有派生耦合）：删墓碑 ⇒ 该 `key` 可重新声明；PATCH `automation_policy='auto-declare'` ⇒ 恢复自动化**且墓碑保留**。（换 key 不再被机制挡 —— 那是 §12.1 风险 15 记录的**已知缺口**，不是本条要验收的不变量）|
-| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**；以及由本 build 新准入形成的稳态树满足 `Σ_v live_spec(v) ≤ tree_task_budget`。后者由库存/成员创建准入、`evaluate_schedulability` 的确定性配额分割，以及 B/N 两个触发点共用的整树重投影/逐成员 + 总量后置复核共同保证；pending 超额被裁，无法裁掉的 in-flight 超额使 B/N 变更回滚。**既有在飞行超出新上界时的精确退化形式（这是 7b 同一条教训的第二次，不能再把稳态界写成升级瞬间也无条件成立的全称句）**：若人把 per-wave ceiling 或 tree budget 调低，使既有不可裁在飞占用 `K` 达到或超过新的 ceiling / share，所有既有在飞行逐字节不变；相关 wave 或整树冻结新准入，并随这些行终结单调收敛回新上界。`K` 恰等于新上界时同样没有新容量；`K` 超过新上界时，有效上界暂时退化为配置收紧那一刻的既有占用，后续写不得维持或扩大超额。任一成员不可裁占用超过 share 时整树冻结；`N=1` 仍按公式，配额只依赖树形状与不可裁既有占用而不依赖 pending 投影产物，保持 D.1 #11。承重验收：`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`、`in_flight_spec_consumes_tree_share_until_it_terminates`、`in_flight_member_overage_freezes_new_blocks_across_the_tree`、`child_creation_409s_when_inflight_member_exceeds_its_new_share`；排除 in-flight 占用、关闭整树冻结、删除 member 后置复核或删除 child-wave 后的整树重投影均 RED。整树成员数由 `MAX_TREE_TASK_BUDGET=64` 封顶，递归树查询固定 2 次，成员处理 O(N) |
+| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**；以及由本 build 新准入形成的稳态树满足 `Σ_v live_spec(v) ≤ tree_task_budget`。后者由库存/成员创建准入、`evaluate_schedulability` 的确定性配额分割，以及 B/N 两个触发点共用的整树重投影/逐成员 + 总量后置复核共同保证；pending 超额被裁，无法裁掉的 in-flight 超额使 B/N 变更回滚。**既有在飞行超出新 ceiling 时的精确退化形式（这是 7b 同一条教训的第二次，不能再把稳态界写成配置收紧瞬间也无条件成立的全称句）**：若人把 per-wave ceiling 调低，使既有不可裁在飞占用 `K` 达到或超过新 ceiling，所有既有在飞行逐字节不变，该 wave 冻结新准入，并随这些行终结单调收敛回新上界。`K` 恰等于新上界时同样没有新容量；`K` 超过新上界时，有效上界暂时退化为配置收紧那一刻的既有占用，后续写不得维持或扩大超额。tree B/N 的生产改动遇 in-flight 超额则整笔回滚，不提交退化状态；truth 层对 raw SQL、旧快照或损坏数据中的既有成员超 share 状态仍冻结整树。`N=1` 仍按公式，配额只依赖树形状与不可裁既有占用而不依赖 pending 投影产物，保持 D.1 #11。承重验收：`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`、`tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state`、`tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomically`、`raw_sql_tree_overage_consumes_share_until_inflight_terminates`、`in_flight_member_overage_freezes_new_blocks_across_the_tree`、`child_creation_409s_when_inflight_member_exceeds_its_new_share`；排除 in-flight 占用、关闭整树冻结、删除 member 后置复核或删除 child-wave 后的整树重投影均 RED。整树成员数由 `MAX_TREE_TASK_BUDGET=64` 封顶，递归树查询固定 2 次，成员处理 O(N) |
 | 10 | **`refs[]` 的 cove 边界**：越界引用 ⇒ 该块不可调度 + 诊断，且**该引用不得出现在任何 `TaskContextFrozen.refs` 里** |
 | 11 生成器 | rebuild ≡ 增量的属性测试，其生成器**必须能生成「制造诊断的编辑」**：重复 key / 环 / 跨 cove / 撤回放行位 |
 | 13 | 删除必须能被检出：(a) wave 删除 (b) cove 删除 —— **各要「事件正常投递」与「事件被丢弃」两个变体，且必须给出同一结论**；(c) `EditAuthor::Spec` 编辑被引用块必须被第 1 级检出 |

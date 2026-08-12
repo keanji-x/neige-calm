@@ -2,6 +2,8 @@ use std::borrow::Cow;
 
 use sqlx::sqlite::SqlitePoolOptions;
 
+use super::SqlxRepo;
+
 fn migrator_through_0066() -> sqlx::migrate::Migrator {
     sqlx::migrate::Migrator {
         migrations: Cow::Owned(
@@ -102,6 +104,40 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     assert!(
         !first_sweep_material,
         "the first sweep after upgrade must not mark a backfilled legacy task material"
+    );
+}
+
+#[tokio::test]
+async fn upgrade_0068_backfills_preexisting_tasks_as_spec_declared() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open migration fixture");
+    migrator_through_0066()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0066");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,created_at_ms,updated_at_ms) \
+         VALUES ('preexisting','w','preexisting','codex','g','null','[]','done',1,1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed task created before declared_by existed");
+
+    migrator_through_0068()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0068");
+    let declared_by: String =
+        sqlx::query_scalar("SELECT declared_by FROM tasks WHERE id='preexisting'")
+            .fetch_one(&pool)
+            .await
+            .expect("read 0068 attribution backfill");
+    assert_eq!(
+        declared_by, "spec",
+        "0068 must put every preexisting task in the spec occupancy domain"
     );
 }
 
@@ -224,10 +260,13 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
 }
 
 #[tokio::test]
-async fn upgrade_0073_rejects_nonterminal_legacy_rows() {
+async fn sqlx_repo_open_rejects_nonterminal_legacy_rows_at_0073() {
+    let dir = tempfile::tempdir().expect("temporary database directory");
+    let path = dir.path().join("nonterminal-at-0072.sqlite");
+    let url = format!("sqlite://{}?mode=rwc", path.display());
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect("sqlite::memory:")
+        .connect(&url)
         .await
         .expect("open migration fixture");
     migrator_through_0072()
@@ -241,12 +280,70 @@ async fn upgrade_0073_rejects_nonterminal_legacy_rows() {
     .execute(&pool)
     .await
     .expect("seed pre-0073 nonterminal legacy task");
+    pool.close().await;
 
-    let result = crate::MIGRATOR.run(&pool).await;
+    let result = SqlxRepo::open(&url).await;
     assert!(
         result.is_err(),
-        "0073 must reject a nonterminal legacy task before dropping origin"
+        "the production startup boundary must reject a nonterminal legacy task at 0073"
     );
+}
+
+#[tokio::test]
+async fn upgrade_from_pre_0068_with_nonterminal_task_aborts_cleanly_at_0072() {
+    let dir = tempfile::tempdir().expect("temporary database directory");
+    let path = dir.path().join("pre-0068-nonterminal.sqlite");
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("open migration fixture");
+    migrator_through_0066()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0066");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,created_at_ms,updated_at_ms) \
+         VALUES ('preexisting-live','w','preexisting-live','codex','g','null','[]','running',1,1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed nonterminal task before origin existed");
+    migrator_through_0072()
+        .run(&pool)
+        .await
+        .expect("upgrade the pre-0068 fixture through 0072");
+    pool.close().await;
+
+    assert!(
+        SqlxRepo::open(&url).await.is_err(),
+        "0073 must fail closed when 0068 attributed a preexisting live task"
+    );
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("reopen the rejected database for inspection");
+    let highest: i64 = sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+        .fetch_one(&pool)
+        .await
+        .expect("read migration stop");
+    assert_eq!(highest, 72, "failed 0073 must not be recorded as applied");
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('tasks')")
+        .fetch_all(&pool)
+        .await
+        .expect("read task columns after rejected migration");
+    assert!(
+        columns.iter().any(|column| column == "origin"),
+        "the failed migration must roll back DROP COLUMN origin"
+    );
+    let origin: String = sqlx::query_scalar("SELECT origin FROM tasks WHERE id='preexisting-live'")
+        .fetch_one(&pool)
+        .await
+        .expect("read the row preserved by the rejected migration");
+    assert_eq!(origin, "legacy", "0068 must attribute the preexisting row");
 }
 
 #[tokio::test]
@@ -271,6 +368,50 @@ async fn upgrade_0073_accepts_terminal_legacy_rows_and_an_empty_database() {
         .run(&terminal_pool)
         .await
         .expect("terminal legacy task may upgrade through 0073");
+    let terminal_json: String = sqlx::query_scalar(
+        "SELECT json_object( \
+           'id',id,'wave_id',wave_id,'key',key,'kind',kind,'goal',goal, \
+           'context_json',json(context_json),'depends_on_json',json(depends_on_json), \
+           'status',status,'declared_by',declared_by, \
+           'claim_context_json',json(claim_context_json),'spawn',spawn, \
+           'decl_ready',decl_ready,'decl_released_by_user',decl_released_by_user, \
+           'context_verify_failures',context_verify_failures, \
+           'created_at_ms',created_at_ms,'updated_at_ms',updated_at_ms) \
+         FROM tasks WHERE id='done'",
+    )
+    .fetch_one(&terminal_pool)
+    .await
+    .expect("0073 must preserve the complete terminal task row");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&terminal_json).unwrap(),
+        serde_json::json!({
+            "id": "done",
+            "wave_id": "w",
+            "key": "done",
+            "kind": "codex",
+            "goal": "g",
+            "context_json": null,
+            "depends_on_json": [],
+            "status": "done",
+            "declared_by": "spec",
+            "claim_context_json": [],
+            "spawn": "in-wave",
+            "decl_ready": 0,
+            "decl_released_by_user": 0,
+            "context_verify_failures": 0,
+            "created_at_ms": 1,
+            "updated_at_ms": 1
+        }),
+        "0073 may remove only the origin label, not terminal task data"
+    );
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('tasks')")
+        .fetch_all(&terminal_pool)
+        .await
+        .expect("read task columns after 0073");
+    assert!(
+        !columns.iter().any(|column| column == "origin"),
+        "0073 must remove the origin column after preserving terminal rows"
+    );
 
     let empty_pool = SqlitePoolOptions::new()
         .max_connections(1)

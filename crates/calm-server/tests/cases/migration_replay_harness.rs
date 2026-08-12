@@ -23,6 +23,11 @@ use support::migration_replay as harness;
 
 #[tokio::test]
 async fn synthetic_fixture_replays_from_every_version() {
+    // The fixture's task rows must be terminal: every task staged before 0068
+    // is historically attributed as origin='legacy', and 0073 intentionally
+    // rejects an upgrade while any such row is nonterminal. The rejected path
+    // is covered explicitly by
+    // `upgrade_from_pre_0068_with_nonterminal_task_aborts_cleanly_at_0072`.
     let fixture =
         harness::Fixture::from_json(include_str!("../fixtures/migration_replay/core.json"));
     let fresh = harness::fresh_head_fingerprint().await;

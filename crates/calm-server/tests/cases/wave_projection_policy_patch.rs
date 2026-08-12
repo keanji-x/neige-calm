@@ -102,6 +102,38 @@ async fn event_count(repo: &Arc<dyn Repo>) -> i64 {
         .unwrap()
 }
 
+async fn task_row_snapshot(repo: &Arc<dyn Repo>, task_id: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT json_array( \
+           id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json, \
+           priority,gate_json,status,status_detail,worker_card_id,gate_result_json,gate_attempt, \
+           gate_pid,gate_pid_starttime,gate_pid_boot_id,running_deadline_ms,context_stale_at_ms, \
+           declared_by,spawn,created_at_ms,updated_at_ms,finished_at_ms) \
+         FROM tasks WHERE id=?1",
+    )
+    .bind(task_id)
+    .fetch_one(&repo.sqlite_pool().unwrap())
+    .await
+    .unwrap()
+}
+
+async fn wave_policy_snapshots(repo: &Arc<dyn Repo>, wave_ids: &[&str]) -> Vec<String> {
+    let mut snapshots = Vec::with_capacity(wave_ids.len());
+    for wave_id in wave_ids {
+        snapshots.push(
+            sqlx::query_scalar(
+                "SELECT json_array(id,parent_wave_id,spec_task_ceiling,automation_policy,tree_task_budget) \
+                 FROM waves WHERE id=?1",
+            )
+            .bind(wave_id)
+            .fetch_one(&repo.sqlite_pool().unwrap())
+            .await
+            .unwrap(),
+        );
+    }
+    snapshots
+}
+
 async fn seed_pending_report_task(repo: &Arc<dyn Repo>, wave_id: &str, key: &str) -> String {
     let block = calm_types::wave_report::ReportBlock {
         id: format!("b_{key}"),
@@ -542,14 +574,52 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     tx.commit().await.unwrap();
 
     let before_events = event_count(&repo).await;
+    let before_waves = wave_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await;
+    let before_task = task_row_snapshot(&repo, &task_id).await;
     let response = patch(state, &root_id, None, json!({"tree_task_budget": 0})).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
-    assert_eq!(tree_budget(&repo, &root_id).await, None);
-    assert_eq!(event_count(&repo).await, before_events);
-    let status: String = sqlx::query_scalar("SELECT status FROM tasks WHERE id=?1")
-        .bind(&task_id)
-        .fetch_one(&repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-    assert_eq!(status, "dispatched");
+    assert_eq!(
+        wave_policy_snapshots(&repo, &[&root_id, child.id.as_str()]).await,
+        before_waves,
+        "a rejected tree-budget PATCH must not alter either affected wave"
+    );
+    assert_eq!(
+        task_row_snapshot(&repo, &task_id).await,
+        before_task,
+        "a rejected tree-budget PATCH must not alter the in-flight task"
+    );
+    assert_eq!(
+        event_count(&repo).await,
+        before_events,
+        "a rejected tree-budget PATCH must not append events"
+    );
+}
+
+/// Unlike a tree-budget change, a per-wave ceiling may be committed below
+/// immutable in-flight occupancy. The task is preserved byte-for-byte and new
+/// admission remains frozen until occupancy converges to the new ceiling.
+#[tokio::test]
+async fn tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state() {
+    let (state, wave_id, repo) = boot().await;
+    let task_id = seed_pending_report_task(&repo, &wave_id, "inflight").await;
+    let mut tx = repo.sqlite_pool().unwrap().begin().await.unwrap();
+    assert_eq!(
+        task_claim_pending_tx(&mut tx, &task_id, 1, &[], false)
+            .await
+            .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    let before_task = task_row_snapshot(&repo, &task_id).await;
+    let before_events = event_count(&repo).await;
+    let response = patch(state, &wave_id, None, json!({"spec_task_ceiling": 0})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(columns(&repo, &wave_id).await.0, Some(0));
+    assert_eq!(
+        task_row_snapshot(&repo, &task_id).await,
+        before_task,
+        "ceiling degradation must not edit immutable in-flight task bytes"
+    );
+    assert_eq!(event_count(&repo).await, before_events + 1);
 }
