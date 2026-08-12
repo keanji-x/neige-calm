@@ -4,8 +4,11 @@ The `core-no-web-styles` fixture directory is the styles-path case for the
 `core-no-web-layers` dependency-cruiser rule; it does not represent a separate rule.
 
 Dependency-cruiser fails closed on unresolvable imports, treats `styles` as a leaf
-that cannot import runtime layers, and prevents non-test runtime code from importing
-verification-only `mock`, `tools`, or `web/e2e` modules so fixtures cannot enter bundles.
+that cannot import any runtime layer (`core`, `app`, `features`, `systems`, `ui`, or
+`main.tsx`), and prevents runtime code from importing verification-only `mock`,
+`tools`, or `e2e` modules so fixtures cannot enter bundles. Test-shaped files are
+the explicit exception: `*.test.*`, `*.contract.test.*`, `*.browser.test.*`, and
+`*.spec.*` may consume verification domains.
 
 `architecture/no-direct-persistence` keeps browser persistence in
 `core/keys/storage.ts`. Application code should receive a storage port; this

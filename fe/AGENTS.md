@@ -2,7 +2,7 @@
 
 ## 分层概览
 
-运行时依赖单向流动：`app → features → systems → ui → core`。层级可以向下跨层，但不得向上导入；feature 域之间不得互相导入。`styles` 是有明确 owner 的非运行时叶子层，不得依赖运行时层；运行时代码不得导入 `mock`、`tools` 或 `web/e2e`，无法解析的 import 一律拒绝。
+运行时依赖单向流动：`app → features → systems → ui → core`。层级可以向下跨层，但不得向上导入；feature 域之间不得互相导入。`styles` 是有明确 owner 的非运行时叶子层，不得依赖运行时层；除 `*.test.*` 与 `*.spec.*` 测试形状外，运行时代码不得导入 `mock`、`tools` 或 `e2e`，无法解析的 import 一律拒绝。
 
 ## 放置规则
 
