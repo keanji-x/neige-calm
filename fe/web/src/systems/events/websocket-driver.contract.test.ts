@@ -81,9 +81,12 @@ describe('WebSocketDriver contracts', () => {
     driver.start(configuration, 'ws://example/api/events', sink);
     fake.sockets[0].close(); vi.advanceTimersByTime(0);
     const pendingTimer = vi.getTimerCount();
-    driver.stop(); driver.start(configuration, 'ws://example/api/events', sink);
+    driver.stop();
+    const timersAfterStop = vi.getTimerCount();
+    driver.start(configuration, 'ws://example/api/events', sink);
     vi.advanceTimersByTime(500);
     expect(pendingTimer).toBe(1);
+    expect(timersAfterStop).toBe(0);
     expect(fake.constructionCount).toBe(2);
   });
 

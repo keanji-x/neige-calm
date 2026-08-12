@@ -475,7 +475,6 @@
     "expected_red": [
       "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
       "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
-      "accepts all real oracle data without exceptions",
       "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
       "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
     ],
@@ -558,8 +557,7 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -68,7 +68,6 @@\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n     this.retryTimer = null;\n     const socket = this.socket;\n     this.socket = null;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -593,8 +591,7 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -95,7 +95,6 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n-      this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n@@ -126,7 +125,7 @@\n   private scheduleRetry(epoch: number): void {\n     if (this.closed || epoch !== this.epoch || this.retryTimer !== null) return;\n     const delay = this.retryDelay;\n-    this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n+    this.retryDelay *= 2;\n     this.retryTimer = setTimeout(() => {\n       if (this.closed || epoch !== this.epoch) return;\n       this.retryTimer = null;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -624,8 +621,7 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -135,7 +135,6 @@\n   }\n \n   private probe(epoch: number): void {\n-    if (this.probeInFlight) return;\n     this.probeInFlight = true;\n     void this.probeUnauthorized().then(() => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D8 permits only one unauthorized probe in flight",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-D8 permits only one unauthorized probe in flight"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -655,8 +651,7 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -87,8 +87,7 @@\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n     let socket: SocketPort;\n-    try { socket = this.socketFactory(this.url); }\n-    catch { this.scheduleRetry(epoch); return; }\n+    socket = this.socketFactory(this.url);\n     if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n     this.socket = socket;\n     let opened = false;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D10 contains socket construction failures and retries",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-D10 contains socket construction failures and retries"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -769,8 +764,7 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,9 +114,9 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n     };\n   }\n \n",
     "expected_red": [
-      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary",
-      "accepts all real oracle data without exceptions"
+      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -845,9 +839,10 @@
     "target": "web/src/styles/tokens.css",
     "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
     "expected_red": [
-      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"
+      "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground"
     ],
     "selection_paths": [
+      "tools/styles/styles.test.ts",
       "web/src/app/theme/theme.browser.test.tsx"
     ],
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
