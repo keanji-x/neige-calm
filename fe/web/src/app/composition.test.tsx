@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApiTransportPort } from '../../../core/api/types.ts';
 import { createFakeSocketFactory } from '../systems/events/fake-socket.ts';
 import { WebSocketDriver } from '../systems/events/websocket-driver.ts';
-import { createEventComposition } from './composition.ts';
+import { createBrowserEventComposition, createEventComposition } from './composition.ts';
 import { EventBridge } from './events/event-bridge.tsx';
 
 const transport: ApiTransportPort = { send: () => Promise.reject(new Error('unused')) };
@@ -24,6 +24,15 @@ function cardAdded(id: number, waveId = 'wave_1'): string {
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('event composition', () => {
+  it('T-A3 publishes driver unauthorized transitions through the browser channel', () => {
+    vi.useFakeTimers();
+    const notify = vi.fn();
+    const composition = createBrowserEventComposition({ storage: storage(), transport, unauthorizedChannel: { notify } });
+    const driver = composition.driver as unknown as { onUnauthorized: () => void };
+    driver.onUnauthorized();
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
   it('T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id', () => {
     vi.useFakeTimers();
     const fake = createFakeSocketFactory();

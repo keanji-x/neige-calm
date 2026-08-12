@@ -110,16 +110,13 @@ export class WebSocketDriver implements EventStreamDriver {
         if (this.closed || epoch !== this.epoch) return;
       }
       sink.frame(decoded.frame);
-      if (this.closed || epoch !== this.epoch) return;
     };
-    socket.onerror = () => { if (this.closed || epoch !== this.epoch) return; };
     socket.onclose = () => {
       if (this.closed || epoch !== this.epoch) return;
       if (this.socket === socket) this.socket = null;
       if (!opened) this.probe(epoch);
       this.scheduleRetry(epoch);
       sink.connectionState('connecting');
-      if (this.closed || epoch !== this.epoch) return;
     };
   }
 

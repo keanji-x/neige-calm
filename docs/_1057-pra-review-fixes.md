@@ -1,51 +1,44 @@
-# #1057 PR-A 双通道评审修复报告
-
-范围：逐条处理 `_1057-impl-review-codex.md` 与 `_1057-impl-review-subagent.md`。
+# #1057 PR-A 第二轮终审修复报告
 
 ## Blocking
 
-- Codex B1 / subagent B1：manifest 的 `defends` 已全部改为真实 `oracle:` / `arch-rule:`；新增
-  INV-APP-106..112，迁移并回填 INV-APP-046/047/048。多文件变异拆成 reducer 与 driver 两条单文件变异。
-- subagent B2：所有相关 patch 均由带上下文的真实 unified diff 重建；本地逐条
-  `git apply --directory=fe --check` 结果为 `51/51` 成功、0 失败。
-- subagent B3：删除已失效的 `app-providers-retry-401-as-400`；并同步重建另外五条受 provider 重构影响的旧 patch。
-- Codex B2 / subagent B4：T-B4 改为 `start → close → stop → start → drain`，断言重启后旧 close 续体不得构造第三条 socket；
-  `events-driver-drop-all-epoch-protection` 同时删除 close 的 `closed/epoch` guard。定向实跑该变异时 T-B4 确实红。
-- Codex B3：T-D9 现有四条独立变异：401 停止重试、401 改 60s 退避、每次 notify、unauthorized 标志 per-epoch；
-  四条均定向实跑且各自由 T-D9 杀死。
+- B1：恢复 `app-theme-swap-light-dark-bg`。manifest 现为 52 条；相对 main 的 21 条，新增 32 条，
+  仅删除 `app-providers-retry-401-as-400`（已由更准确的 `app-providers-retry-reads-top-level-status`
+  替代），没有再删除任何既有防守。52/52 patch 均通过 `git apply --check`。
+- 恢复项已实跑：`app-theme-swap-light-dark-bg` 只红
+  `E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers`（1 failed / 4 passed）。
+- B2：遵守 `docs/oracle/FOLLOWUPS.md:67`“基线只能下降，不能新增或换子类”及
+  `fe/tools/oracle/README.md:7`“shrinking baseline, not an exemption”。删除本 PR 新增的
+  `INV-APP-112 not-in-file`、`INV-APP-108 range-miss` 两项，并修正 source anchor。
+  baseline 现为 218 项，与 main 的 218 项相同（未上涨）；oracle 真实数据测试 59/59 通过。
 
 ## Major
 
-- Codex M1：`main.tsx` 构造真实 `UnauthorizedChannel`，把 driver 的 `onUnauthorized` 发布接入 channel；本 issue 仍不增加订阅者。
-- Codex M2：T-D11 现在同时观察新 epoch probe 闩锁、notification 与原有 1000ms 退避；旧 epoch reject 不得污染三者。
-- Codex M3 / subagent M1：composition 增加窄 driver factory seam；T-A1 断言 factory 恰好调用一次，且返回的就是 composition driver。
-- subagent M2：oracle 已改述 INV-APP-048 为单-driver composition 前提下的实例级 per-epoch 闩锁；
-  INV-APP-046/047/048 已回填权威测试并迁移。
-- subagent M3：T-D5b 删除恒真的“构造数−关闭数”断言，改为精确构造数，并观察 pending timer 与 clearTimeout handle。
+- M1：`INV-APP-107` 精确补入 cursor storage best-effort/异常不逃逸契约；reducer 效果顺序拆为
+  独立 `INV-APP-113`，`events-reducer-reconnect-before-persist` 改为防守该条目。
+- M2：新增 `createBrowserEventComposition`，在 app composition 内构造真实 UnauthorizedChannel，
+  `main.tsx` 只调用该 factory。`INV-APP-112` 迁移为有权威测试的真实契约；新增
+  `app-browser-composition-silence-unauthorized`，定向实跑只红 T-A3（1 failed / 3 passed）。
+- M3：确认 message 的末次 frame sink 与 close 的末次 state sink 后均无续体，删除两处死 epoch 重核；
+  同时在设计 §5.3(a) 写明 replay-complete 的 connected sink 后仍有 frame，只有该路径需要 post-sink
+  重核，message/close 尾部结构上不可达。重建受影响的变异 patch。
 
 ## Minor
 
-- Codex minor 1：T-D3 仍锁协议行为（必须带 `since`），不升级为源码身份契约；oracle INV-APP-049 的语义也是出站帧行为。
-- Codex minor 2：T-D5b 的名称与断言收窄为 pending retry；已出队 callback 仍由 T-D5a 独立负责。
-- subagent minor 1：`write(null)` 同步 remove 是 durable reset 语义；未改成 idle，因为 null 不是高频 cursor 推进，且同步清除避免旧 cursor 存活窗口。
-- subagent minor 2：保留 `writtenBeforeAdopt`，因为设计明确要求 pre-adopt write 更新内存；补入 INV-APP-107 的 fail-closed/adopt 契约。
-- subagent minor 3：T-A2 删除“伪 socket”解释；有效断言仍是实例切换时 bridge 构造为 0，变异直接让该断言红。
-- subagent minor 4：不在 start 重置 retryDelay；INV-APP-046 明确规定 open 后重置，stop/start 保留退避是既有设计语义。
-- subagent minor 5：providers effect 依赖未回退；生产引用稳定，依赖完整性优先，连接 effect 本身仍严格不含 dbInstanceId。
-- subagent minor 6：保留由 verdict 蕴含的 `query.data!`；空 dbInstanceId 不属于 server schema 的有效返回。
-- subagent minor 7：保留 message 尾部与 onerror 的显式 epoch 重核；它们是 §5.3(a)(c) 的源码级边界，不作为死代码删除。
-- subagent minor 8：T-C3 继续用“强制执行已取消 callback”锁第二道 null 防线；组合变异同时删除 cancel 与 null guard，确实会红。
+1. 删除无行为的 `onerror` 空守卫，并在设计中明确无行为时不安装空 callback。
+2. 删除 T-D5b 不精确的 `clearTimeout(expect.anything())`；保留有效的 pending timer 与构造数断言。
+3. 保留 `driverFactory` 测试缝：它同时验证工厂只调用一次、返回 driver 身份与共享 cursor 的端到端重连，
+   未把单 driver 契约降为单一 mock 调用断言。
+4. 保留 10 条 mutation 对 oracle anchor 测试的诚实 expected-red：anchor 是独立门禁，删除这些红会使
+   runner 错报实际红集合；本轮已修正新增欠债，未再用 baseline 绕过。后续行号漂移仍须同步 manifest。
+5. 保留 `write(null)` 同步 durable reset：null 是低频清除且同步 remove 避免旧 cursor 存活窗口；
+   保留 `writtenBeforeAdopt`，因为设计要求 pre-adopt write 更新内存并在随后 adopt 时保持该值。
+6. 保留 stop/start 之间的 `retryDelay`：INV-APP-046 明确只在 open 后复位；bounce 延续既有退避，
+   避免 snapshot-required 重启绕过 backoff。两项均是明确契约裁决，不静默改语义。
 
-## 生产缺口
+## 验证摘要
 
-- close handler 现先完成 socket 清理、probe latch 与 retry 状态写入，再首次调用 `sink.connectionState`；sink 返回后只做 epoch 重核。
-- unauthorized 发布端已接到真实 channel，不再默认静音。
-
-## 门禁实跑
-
-- 关键定向证伪：T-B4 变异红；T-D9 四条变异逐条红。
-- 完整 mutation（`cd fe && setsid npm run test:mutation`）实际 JSON 摘要：
-  `{"selected":50,"ran":50,"total":50,"ok":true,"failed":[]}`。
-  runner 结束后 `git status --short` 无输出，工作树已恢复。
-- 常规门禁：`OWNERSHIP_BASE_SHA=origin/main npm run lint && npm run build && npm test` 全部通过；
-  vitest 为 90 files、1049 passed、1 skipped，wire 与 mock drift 门禁均通过。
+- 定向：composition + driver 19/19；oracle + mutation runner 90/90；52/52 patch apply-check。
+- 恢复主题变异：E2E-CAP-AXE-005 精确红；新增 401 composition 变异：T-A3 精确红。
+- 完整门禁：`OWNERSHIP_BASE_SHA=origin/main npm run lint && npm run build && npm test`（见提交前实跑）。
+- 本轮未改 `core/events`；`systems/events` 的生产与契约测试变更均在提交中附精确路径 em-dash 尾注。

@@ -1981,7 +1981,8 @@
   family: app-event-stream
   statement: >
     fe cursor store 在 adopt 前必须 fail-closed；持久值必须绑定匹配的 dbInstanceId 且 cursor 为非负安全整数；
-    clear() 必须取消 pending flush、清空持久值但保留 adopt 状态，实例切换裁决前不得挂载 EventBridge。
+    clear() 必须取消 pending flush、清空持久值但保留 adopt 状态，实例切换裁决前不得挂载 EventBridge；
+    storage 读写是 best-effort，异常不得逃逸且内存值继续保持权威。
   why: >
     这些约束共同阻止跨数据库 cursor 重放、旧 idle 续体复活 cursor，以及实例切换首帧先建连。
   source: fe/web/src/app/events/browser-cursor-store.ts:24-91; fe/web/src/app/providers/public.tsx:35-64
@@ -1998,10 +1999,12 @@
   family: app-event-stream
   statement: >
     fe WebSocket driver 的 start/stop、socket 回调、timer 与 probe 续体必须受 epoch 隔离；
-    socket handler 的自身状态写入必须在第一次 sink 调用前完成，并在每次 sink 返回后重核 epoch；构造异常不得向上逃逸。
+    socket handler 的自身状态写入必须在第一次 sink 调用前完成；只有 replay-complete 的 connected sink 后仍有 frame
+    投递，因此该路径必须在 sink 返回后重核 epoch，message 的末次 frame sink 与 close 的末次 state sink 后结构上无续体；
+    构造异常不得向上逃逸。
   why: >
     StrictMode 与同步 sink 重入会让旧续体和新连接交错；缺少任一边界都会产生双 socket 或跨 epoch 字段污染。
-  source: fe/web/src/systems/events/websocket-driver.ts:54-154
+  source: fe/web/src/systems/events/websocket-driver.ts:52-150
   authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
   owner_slice: systems/events-transport/stream
   runtime_layer: systems
@@ -2034,7 +2037,7 @@
     401 不得停止 retry 或改变 500..8000ms 退避参数。
   why: >
     持续重试保证 cookie 恢复后自愈；实例级跨 epoch 去重避免重复通知，同时不把认证状态混入连接退避。
-  source: fe/web/src/systems/events/websocket-driver.ts:135-154
+  source: fe/web/src/systems/events/websocket-driver.ts:134-150
   authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
   owner_slice: systems/events-transport/stream
   runtime_layer: systems
@@ -2066,11 +2069,27 @@
     浏览器 composition 必须把 WebSocket driver 的 unauthorized 发布端接到真实 UnauthorizedChannel，不得使用默认 no-op。
   why: >
     即使订阅者由后续 session issue 实现，静音发布端也会永久丢失所有 probe 401 通知。
-  source: fe/web/src/main.tsx:15-27
-  authoritative_test: NONE
+  source: fe/web/src/app/composition.ts:18-31
+  authoritative_test: fe/web/src/app/composition.test.tsx:1
   owner_slice: app/providers
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
   intentional_omission: false
-  migration: pending
+  migration: migrated
+
+- id: INV-APP-113
+  kind: invariant
+  family: event-stream
+  statement: >
+    snapshot-required 的 reducer 效果顺序必须先持久化 null cursor，再清空 cache，最后 reconnect。
+  why: >
+    reconnect 必须在 cursor 清零后发生，否则新 socket 会携带旧续传点。
+  source: fe/core/events/reducer.ts:27-43
+  authoritative_test: fe/core/events/reducer.test.ts:1
+  owner_slice: app/events-glue/invalidation
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: static
+  intentional_omission: false
+  migration: migrated

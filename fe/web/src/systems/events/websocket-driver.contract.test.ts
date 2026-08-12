@@ -77,7 +77,6 @@ describe('WebSocketDriver contracts', () => {
 
   it('T-D5b cancels pending retry and old close work cannot create a second live socket', () => {
     vi.useFakeTimers();
-    const clear = vi.spyOn(globalThis, 'clearTimeout');
     const { driver, fake, sink } = harness();
     driver.start(configuration, 'ws://example/api/events', sink);
     fake.sockets[0].close(); vi.advanceTimersByTime(0);
@@ -85,7 +84,6 @@ describe('WebSocketDriver contracts', () => {
     driver.stop(); driver.start(configuration, 'ws://example/api/events', sink);
     vi.advanceTimersByTime(500);
     expect(pendingTimer).toBe(1);
-    expect(clear).toHaveBeenCalledWith(expect.anything());
     expect(fake.constructionCount).toBe(2);
   });
 

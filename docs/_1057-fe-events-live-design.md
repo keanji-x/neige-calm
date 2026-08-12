@@ -173,12 +173,14 @@ driver 在投递 `replay-complete` 帧前先 `sink.connectionState('connected')`
 
 **driver 必须满足的五条**（每条对应真实竞态）：
 
-- **(a) 内部 epoch**：每次 `start()` / `stop()` 推进内部 epoch。**所有回调与所有异步续体**——open / message / close / error / timer，**以及 probe 的 `.then`/`.catch`/`.finally` 与任何 `await` 之后的代码**——进入时先核对捕获的 epoch；`connect(epoch)` 在创建 socket 前再核对一次。旧 epoch 只能关闭自己捕获的 socket，**不得**清空或覆盖新 epoch 的任何字段。
+- **(a) 内部 epoch**：每次 `start()` / `stop()` 推进内部 epoch。所有会产生行为的回调与所有异步续体——open / message / close / timer，以及 probe 的 `.then`/`.catch`/`.finally` 与任何 `await` 之后的代码——进入时先核对捕获的 epoch；`connect(epoch)` 在创建 socket 前再核对一次。`error` 当前没有行为，因而不安装空回调。旧 epoch 只能关闭自己捕获的 socket，**不得**清空或覆盖新 epoch 的任何字段。
   > 为什么不够用只清 timer：`EventStream` 的 `generation`（`event-stream.ts:105,112`）只过滤**投递**方向，挡不住已排队的旧回调调用 driver 的 `connect()`。
 - **(b) `stop()`**：置 `closed` + `clearTimeout` pending 重试 + 摘掉当前 socket 全部监听后再 `close()`；**幂等**，允许 start 前 / 重复调用（`event-stream.ts:20` 明写此义务）。
 - **(c) 重入安全（v2 措辞自相矛盾，此处重写）**：reducer 的 `reconnect` effect 在 **`sink.*` 的同步调用栈内**执行（`event-bridge.tsx:61-70` 全同步 ← `event-stream.ts:104-114`）。且 `replay-complete` 路径上**必然有两次** `sink.*` 调用（先 `connectionState` 后 `frame`，§5.2），所以"sink 必须是最后一条语句"不可实现。正确的两条是：
   1. **进入任一 socket 事件处理函数后，所有对 driver 自身状态的写入必须在第一次 `sink.*` 调用之前完成**；
-  2. **每次 `sink.*` 返回后必须重新核对 epoch；epoch 已变则立即 `return`，不得再触碰任何 `this.*`。**
+  2. **`sink.*` 返回后若仍有后续行为，必须重新核对 epoch；epoch 已变则立即 `return`，不得再触碰任何 `this.*`。**
+     当前只有 replay-complete 的 `connectionState('connected')` 后还会投递 `frame`，所以需要重核；message 的末次
+     `frame` 与 close 的末次 `connectionState('connecting')` 后结构上没有续体，不安装不可证伪的尾部空守卫。
 - **(d) `start()` 不得抛出**：`new WebSocket(url)` 在 URL 非法 / 协议不匹配时会抛 `SyntaxError`/`SecurityError`。`EventStream.start()` 的抛出路径（`:116-123`）会 `started=false` + `driver.stop()` + rethrow，而**没有任何东西会再 start** ⇒ 静默永久断流。⇒ socket 构造失败必须被 driver 自己捕获，转成 `connecting` + 进入退避。
 - **(e) StrictMode**：`main.tsx:36` 是 `<StrictMode>`，dev 下 React 会 mount→cleanup→mount，即 `start(); stop(); start();`。叠加退避 timer 后 dev 环境**天然**走一遍 (a)(b)。
 

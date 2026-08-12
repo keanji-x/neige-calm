@@ -3,9 +3,8 @@ import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { createUnauthorizedChannel } from '../../core/api/unauthorized.ts';
 import { AppProviders, type ProviderRuntime } from './app/providers/public.tsx';
-import { createEventComposition } from './app/composition.ts';
+import { createBrowserEventComposition } from './app/composition.ts';
 import { EventBridge } from './app/events/event-bridge.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from './app/providers/queries.ts';
 import { createFetchTransport } from './app/providers/transport.ts';
@@ -17,11 +16,9 @@ if (!root) throw new Error('Missing #root mount point');
 
 const transport = createFetchTransport();
 const client = new QueryClient();
-const unauthorized = createUnauthorizedChannel({ enqueue: (task) => queueMicrotask(task) }, { report: console.error });
-const events = createEventComposition({
+const events = createBrowserEventComposition({
   storage: window.localStorage,
   transport,
-  onUnauthorized: () => unauthorized.notify(),
 });
 const router = createAppRouter({
   transport,

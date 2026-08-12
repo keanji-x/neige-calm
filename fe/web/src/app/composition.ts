@@ -1,5 +1,6 @@
 import { whoamiOperation } from '../../../core/api/auth.ts';
 import type { ApiTransportPort } from '../../../core/api/types.ts';
+import { createUnauthorizedChannel, type UnauthorizedChannel } from '../../../core/api/unauthorized.ts';
 import { createBrowserCursorStore, type CursorIdleScheduler } from './events/browser-cursor-store.ts';
 import { runOperation } from './providers/queries.ts';
 import type { SyncCursorPort } from '../systems/events/cursor-port.ts';
@@ -13,6 +14,22 @@ export type EventComposition = Readonly<{
 }>;
 
 export type EventDriverFactory = (options: ConstructorParameters<typeof WebSocketDriver>[0]) => WebSocketDriver;
+
+export function createBrowserEventComposition(options: Readonly<{
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+  transport: ApiTransportPort;
+  unauthorizedChannel?: Pick<UnauthorizedChannel, 'notify'>;
+}>): EventComposition {
+  const unauthorized = options.unauthorizedChannel ?? createUnauthorizedChannel(
+    { enqueue: (task) => queueMicrotask(task) },
+    { report: console.error },
+  );
+  return createEventComposition({
+    storage: options.storage,
+    transport: options.transport,
+    onUnauthorized: () => unauthorized.notify(),
+  });
+}
 
 export function createEventComposition(options: Readonly<{
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;

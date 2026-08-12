@@ -607,7 +607,7 @@
       "oracle:INV-APP-047"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -116,7 +116,7 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n-      if (!opened) this.probe(epoch);\n+      this.probe(epoch);\n       this.scheduleRetry(epoch);\n       sink.connectionState('connecting');\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,7 +114,7 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n-      if (!opened) this.probe(epoch);\n+      this.probe(epoch);\n       this.scheduleRetry(epoch);\n       sink.connectionState('connecting');\n     };\n",
     "expected_red": [
       "WebSocketDriver contracts T-D7 probes only a connection that closes before open"
     ],
@@ -734,7 +734,7 @@
       "oracle:INV-APP-108"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -53,7 +53,7 @@\n   }\n \n   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void {\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n     this.configuration = configuration;\n@@ -65,7 +65,6 @@\n   }\n \n   stop(): void {\n-    ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n     if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n@@ -82,7 +81,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -114,7 +113,6 @@\n     };\n     socket.onerror = () => { if (this.closed || epoch !== this.epoch) return; };\n     socket.onclose = () => {\n-      if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -53,7 +53,7 @@\n   }\n \n   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void {\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n     this.configuration = configuration;\n@@ -65,7 +65,6 @@\n   }\n \n   stop(): void {\n-    ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n     if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n@@ -82,7 +81,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -112,7 +111,6 @@\n       sink.frame(decoded.frame);\n     };\n     socket.onclose = () => {\n-      if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n",
     "expected_red": [
       "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete",
       "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation",
@@ -749,7 +749,7 @@
   {
     "mutation_id": "events-reducer-reconnect-before-persist",
     "defends": [
-      "oracle:INV-APP-107"
+      "oracle:INV-APP-113"
     ],
     "target": "core/events/reducer.ts",
     "patch": "diff --git a/core/events/reducer.ts b/core/events/reducer.ts\n--- a/core/events/reducer.ts\n+++ b/core/events/reducer.ts\n@@ -32,7 +32,7 @@\n   if (frame.type === 'snapshot-required') {\n     return {\n       state: { ...state, cursor: null },\n-      effects: [{ type: 'persist-cursor', id: null }, { type: 'clear-cache' }, { type: 'reconnect' }],\n+      effects: [{ type: 'reconnect' }, { type: 'persist-cursor', id: null }, { type: 'clear-cache' }],\n     };\n   }\n   if (frame.type === 'replay-complete') {\n",
@@ -767,7 +767,7 @@
       "oracle:INV-APP-108"
     ],
     "target": "web/src/systems/events/websocket-driver.ts",
-    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -116,10 +116,9 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n-      if (this.closed || epoch !== this.epoch) return;\n     };\n   }\n \n",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,9 +114,9 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n     };\n   }\n \n",
     "expected_red": [
       "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary",
       "accepts all real oracle data without exceptions"
@@ -821,5 +821,35 @@
       "web/src/systems/events/websocket-driver.contract.test.ts"
     ],
     "why_more_than_one": "T-D9 restarts and proves the transition latch is instance-scoped across epochs."
+  },
+  {
+    "mutation_id": "app-browser-composition-silence-unauthorized",
+    "defends": [
+      "oracle:INV-APP-112"
+    ],
+    "target": "web/src/app/composition.ts",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -27,7 +27,7 @@\n   return createEventComposition({\n     storage: options.storage,\n     transport: options.transport,\n-    onUnauthorized: () => unauthorized.notify(),\n+    onUnauthorized: () => undefined,\n   });\n }\n \n",
+    "expected_red": [
+      "event composition T-A3 publishes driver unauthorized transitions through the browser channel"
+    ],
+    "selection_paths": [
+      "web/src/app/composition.test.tsx"
+    ],
+    "why_more_than_one": "T-A3 directly observes the browser composition's injected channel notification."
+  },
+  {
+    "mutation_id": "app-theme-swap-light-dark-bg",
+    "defends": [
+      "oracle:E2E-CAP-AXE-005"
+    ],
+    "target": "web/src/styles/tokens.css",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
+    "expected_red": [
+      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"
+    ],
+    "selection_paths": [
+      "web/src/app/theme/theme.browser.test.tsx"
+    ],
+    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
   }
 ]
