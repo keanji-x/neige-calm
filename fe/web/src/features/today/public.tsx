@@ -9,7 +9,7 @@
 // header's right edge at --text-base: a page whose job is "what needs me" cannot
 // have a clock as its main emphasis.
 
-import { useEffect, useMemo, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import {
   activeWavesOn, isRunning, needsUserAttention, type Wave,
@@ -112,11 +112,22 @@ export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
   pageTitleRef, nowMs,
 }: TodayPageProps) {
+  const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
+
+  useEffect(() => {
+    if (nowMs !== undefined) {
+      setNow(new Date(nowMs));
+      return;
+    }
+    const id = setInterval(() => setNow(new Date()), 15_000);
+    return () => clearInterval(id);
+  }, [nowMs]);
+
   const today = useMemo(() => {
-    const start = nowMs === undefined ? new Date() : new Date(nowMs);
+    const start = new Date(now);
     start.setHours(0, 0, 0, 0);
     return start;
-  }, [nowMs]);
+  }, [now]);
 
   const waiting = waves.filter(needsUserAttention);
   const running = waves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
@@ -136,7 +147,7 @@ export function TodayPage({
       <div className={styles.page}>
         <TodayHeader
           today={today} waiting={waiting.length} running={running.length}
-          pageTitleRef={pageTitleRef} nowMs={nowMs}
+          pageTitleRef={pageTitleRef} now={now}
         />
         <div className={styles.emptyPage}>
           <p className={styles.hero}>Nothing here yet.</p>
@@ -149,7 +160,7 @@ export function TodayPage({
     <div className={styles.page}>
       <TodayHeader
         today={today} waiting={waiting.length} running={running.length}
-        pageTitleRef={pageTitleRef} nowMs={nowMs}
+        pageTitleRef={pageTitleRef} now={now}
       />
       <div className={styles.content}>
         {/* Decision first, ambience after: the two attention sections take as
@@ -183,7 +194,7 @@ export function TodayPage({
                 coves={coves}
                 scheduledEvents={scheduledEvents}
                 renderWaveRow={renderWaveRow}
-                nowMs={nowMs}
+                nowMs={now.getTime()}
               />
             </PanelModule>
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
@@ -194,12 +205,12 @@ export function TodayPage({
   );
 }
 
-function TodayHeader({ today, waiting, running, pageTitleRef, nowMs }: {
+function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
   today: Date;
   waiting: number;
   running: number;
   pageTitleRef?: React.RefObject<HTMLElement | null>;
-  nowMs?: number;
+  now: Date;
 }) {
   return (
     <PageHeader
@@ -221,22 +232,14 @@ function TodayHeader({ today, waiting, running, pageTitleRef, nowMs }: {
           <span className={styles.countWord}>running</span>
         </span>
       }
-      actions={<Clock nowMs={nowMs} />}
+      actions={<Clock now={now} />}
     />
   );
 }
 
 /** Ambient, so position is its entire signal. No seconds — a digit changing
  *  once a second in the corner of a page people read is motion for nothing. */
-function Clock({ nowMs }: { nowMs?: number }) {
-  const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
-
-  useEffect(() => {
-    if (nowMs !== undefined) return;
-    const id = setInterval(() => setNow(new Date()), 15_000);
-    return () => clearInterval(id);
-  }, [nowMs]);
-
+function Clock({ now }: { now: Date }) {
   const hours = now.getHours();
   return (
     <span className={styles.clock}>
@@ -272,6 +275,11 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
   nowMs?: number;
 }) {
   const [selected, setSelected] = useState<Date>(today);
+  const previousToday = useRef(today);
+  useEffect(() => {
+    setSelected((current) => sameDay(current, previousToday.current) ? today : current);
+    previousToday.current = today;
+  }, [today]);
   const now = nowMs ?? Date.now();
   const weekStart = startOfWeek(selected);
   const days = Array.from({ length: 7 }, (_, index) => addDays(weekStart, index));

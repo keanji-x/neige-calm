@@ -69,6 +69,7 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
       <div className={styles.empty} data-nc-thread-empty="">
         <p className={styles.emptyLead}>Nothing said yet.</p>
         <p className={styles.emptyHint}>Write below and it starts here.</p>
+        {live && <span className={styles.live} aria-label="Working" />}
       </div>
     );
   }

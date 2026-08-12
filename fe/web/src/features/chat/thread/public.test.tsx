@@ -31,6 +31,11 @@ describe('ChatThread', () => {
     expect(screen.getByText('Nothing said yet.')).toBeTruthy();
   });
 
+  it('shows the live mark in an empty pending conversation', () => {
+    render(<ChatThread conversation={conversation()} turns={[]} pending />);
+    expect(screen.getByLabelText('Working')).toBeTruthy();
+  });
+
   it('keeps each turn verbatim and marks who wrote it', () => {
     const { container } = render(
       <ChatThread

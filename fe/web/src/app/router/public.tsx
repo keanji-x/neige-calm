@@ -82,7 +82,7 @@ const STUB_REPLY_DELAY_MS = 400;
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly ConversationTurn[];
-  pending: string | null;
+  pending: ReadonlySet<string>;
   start: (wave: { id: string; title: string }) => Conversation;
   send: (conversationId: string, text: string) => void;
 }>;
@@ -90,7 +90,7 @@ type ConversationStore = Readonly<{
 function useConversationStore(): ConversationStore {
   const [conversations, setConversations] = useState<readonly Conversation[]>([]);
   const [turns, setTurns] = useState<Readonly<Record<string, readonly ConversationTurn[]>>>({});
-  const [pending, setPending] = useState<string | null>(null);
+  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const seq = useRef(0);
   const nextId = (prefix: string) => { seq.current += 1; return `${prefix}-${seq.current}`; };
 
@@ -126,12 +126,16 @@ function useConversationStore(): ConversationStore {
         ? { ...conversation, title: conversationNameFrom(text) }
         : conversation
     )));
-    setPending(conversationId);
+    setPending((current) => new Set(current).add(conversationId));
     // A delay, because the state it puts the surface in is real: the live dot
     // and the "working" state exist and have to be reachable to be looked at.
     window.setTimeout(() => {
       append(conversationId, { id: nextId('turn'), author: 'agent', text: STUB_REPLY, atMs: Date.now() });
-      setPending(null);
+      setPending((current) => {
+        const next = new Set(current);
+        next.delete(conversationId);
+        return next;
+      });
     }, STUB_REPLY_DELAY_MS);
   };
 
@@ -278,7 +282,7 @@ function useConversationPanel(
           <ChatThread
             conversation={open}
             turns={store.turnsOf(open.id)}
-            pending={store.pending === open.id}
+            pending={store.pending.has(open.id)}
           />
         )}
       </Drawer>

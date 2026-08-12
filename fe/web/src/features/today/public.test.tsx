@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
 import { NEUTRAL_ACTIVITY, type Wave } from '../../../../core/domain/wave.ts';
@@ -18,7 +18,10 @@ const renderWaveRow: TodayPageProps['renderWaveRow'] = (wave, options) => (
   </span>
 );
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 const NOW = new Date(2026, 7, 10, 15, 0, 0).getTime();
 const DAY = 86_400_000;
@@ -58,6 +61,16 @@ describe('Today clock', () => {
     // One string, not three elements: the clock is ambient and its whole
     // signal is position, so it spends no structure on itself.
     expect(screen.getByText('3:00 PM')).toBeTruthy();
+  });
+
+  it('moves the page date across midnight on the clock tick', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 7, 10, 23, 59, 50));
+    render(<TodayPage renderWaveRow={renderWaveRow} waves={[]} coves={[]} />);
+    expect(screen.getByRole('heading', { name: 'Monday, August 10' })).toBeTruthy();
+
+    act(() => vi.advanceTimersByTime(15_000));
+    expect(screen.getByRole('heading', { name: 'Tuesday, August 11' })).toBeTruthy();
   });
 });
 
