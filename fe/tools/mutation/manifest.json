@@ -44,7 +44,7 @@
     "mutation_id": "test-tier-allow-browser-overlap",
     "defends": ["oracle:INV-OVERLAY-006"],
     "target": "vitest.config.ts",
-    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -15,7 +15,7 @@ export default defineConfig({\n           environment: 'node',\n           setupFiles,\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}', 'tools/architecture/fixtures/**'],\n+          exclude: ['tools/architecture/fixtures/**'],\n         },\n       },\n       {\n",
+    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\nindex 8dbab0c4..5156ef01 100644\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -15,7 +15,7 @@ export default defineConfig({\n           environment: 'node',\n           setupFiles,\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}', 'tools/architecture/fixtures/**'],\n+          exclude: ['tools/architecture/fixtures/**'],\n         },\n       },\n       {\n",
     "expected_red": [
       "test-tier-project fixtures accepts the positive directory",
       "uses a layout engine for rendered element geometry",
