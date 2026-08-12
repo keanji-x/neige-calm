@@ -95,12 +95,33 @@
   }
 
 
+  /*
+   * The panel **stays** while the document scrolls under it.
+   *
+   * It is the page's controls and its inventory — the thing you scroll the
+   * document in order to act on — and it used to slide off the top with the
+   * prose, so acting on what you had just read meant scrolling back up to find
+   * the card again.
+   *
+   * The offset is the header's real height, `--header-band + --header-h`,
+   * published by `ui/page-header` onto this page (see its note on `:has(>
+   * .header)`). Plus the grid's own gutter, so the card clears the header by
+   * the same distance everything else on this page clears everything else.
+   *
+   * `max-block-size` with `overflow: auto` is the escape for a card taller than
+   * the viewport: sticky would otherwise pin its top and leave the bottom
+   * unreachable, which is worse than not sticking at all.
+   */
   .panel {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
     align-self: start;
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
     min-inline-size: 0;
+    max-block-size: calc(100dvh - var(--header-band) - var(--header-h) - var(--space-8) * 2);
+    overflow: auto;
   }
 
   /* Uppercase plus tracking standing in for a size the panel cannot spend. */

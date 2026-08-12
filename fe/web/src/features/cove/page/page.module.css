@@ -109,8 +109,14 @@
   }
 
 
+  /* Sticky for the same reason the wave page's is, and off the same published
+     header height — see the long note there. */
   .panel {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
     align-self: start;
     min-inline-size: 0;
+    max-block-size: calc(100dvh - var(--header-band) - var(--header-h) - var(--space-8) * 2);
+    overflow: auto;
   }
 }

@@ -4,15 +4,31 @@
    * always 32, and each extra row adds a 24px slot plus the 6px inter-row gap.
    * The four routes land on Today 32 / cove 62 / Settings 62 / wave 92.
    */
-  .header[data-nc-header-rows] {
+  /*
+   * These land on the header's **parent**, not on the header.
+   *
+   * `--header-h` was declared on `.header` itself and then consumed by nothing
+   * — three routes carried comments saying what it worked out to, and no rule
+   * anywhere read it. Its missing consumer is the panel card, which has to
+   * stick underneath the header and therefore has to know how tall it is; and a
+   * sibling cannot read a custom property set on a sibling.
+   *
+   * `:has(> .header)` names the parent without the parent having to name
+   * itself, so the four page modules stay ignorant of this and the row
+   * arithmetic stays in one place. The value then inherits to everything in the
+   * page, the header included.
+   */
+  :where(*):has(> .header) {
+    /* The band above the title — see `.header`'s own note. */
+    --header-band: calc(var(--header-baseline) - 21.7px);
     --header-h: var(--control-h-lg);
   }
 
-  .header[data-nc-header-rows='2'] {
+  :where(*):has(> .header[data-nc-header-rows='2']) {
     --header-h: calc(var(--control-h-lg) + var(--row-h-sm) + var(--space-3));
   }
 
-  .header[data-nc-header-rows='3'] {
+  :where(*):has(> .header[data-nc-header-rows='3']) {
     --header-h: calc(var(--control-h-lg) + var(--row-h-sm) * 2 + var(--space-3) * 2);
   }
 
@@ -72,7 +88,7 @@
      * header's top-to-baseline (a 20.7px line centred in a 32px title row is
      * 5.7, plus 16 to the baseline inside it).
      */
-    padding-block-start: calc(var(--header-baseline) - 21.7px);
+    padding-block-start: var(--header-band);
 
     /* Opaque, and the same ground as the page: a header on its own surface
        would read as a separate region from the content it labels. */

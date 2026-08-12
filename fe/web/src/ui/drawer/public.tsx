@@ -56,14 +56,28 @@ export function Drawer({ open, title, onClose, children, footer }: {
   if (open) lastFrame.current = { title, children, footer };
   const frame = open ? { title, children, footer } : lastFrame.current;
 
-  useEffect(() => {
-    if (open === wasOpen.current) return;
-    // Only a true → false edge starts a retraction; mounting closed does not.
+  /*
+   * The retraction starts **during render**, not in an effect, and that is the
+   * whole of the fix for the flash on `›`.
+   *
+   * In an effect it cost a frame: `open` went false, this rendered with
+   * `closing` still false, so the early return below unmounted the drawer — and
+   * only then did the effect set `closing` and mount it again, replaying the
+   * enter animation on the way out. Gone, back, slide out. One frame each way,
+   * which is exactly what a flash is.
+   *
+   * Adjusting state while rendering is React's own answer for state that
+   * derives from a prop change: the re-render happens before anything is
+   * committed to the DOM, so there is no intermediate frame to see. The
+   * `wasOpen` guard makes it run once per edge rather than every render.
+   */
+  if (open !== wasOpen.current) {
+    // Only a true → false edge retracts; mounting closed does not.
     const retracts = wasOpen.current && !open
       && !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     wasOpen.current = open;
     setClosing(retracts);
-  }, [open]);
+  }
 
   useEffect(() => {
     if (!open) return;
