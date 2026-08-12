@@ -39,14 +39,24 @@
 
     /*
      * The top inset puts the wordmark's baseline on `--header-baseline`, the
-     * one the route title and the drawer title also sit on. Measured: the
-     * brand row's own top-to-baseline distance is 14 (a 13px line, centred in
-     * a 28px row), so the inset is 42 − 14 = 28.
+     * one the route title and the drawer title also sit on. It was `--space-3`
+     * (6), which put the wordmark 22px above the route title it sits beside all
+     * day.
      *
-     * It was `--space-3` (6), which put the wordmark 22px above the route title
-     * it sits beside all day.
+     * 17.5 is this header's own top-to-baseline distance, and unlike the
+     * drawer's it is not just the line's: `.brandRow` is a 28px row centring a
+     * 14.95px line box (6.5), and the baseline sits 11 into that line. Both
+     * halves have to be paid.
+     *
+     * That distinction is the whole reason this number is measured rather than
+     * assumed. The first attempt at this used the drawer's 14 here as well, and
+     * the wordmark landed at 45.5 against the route title's 41.7 — measured
+     * with a probe dropped into `.brandRow` itself, which, being a flex
+     * container, made the probe an anonymous flex item and reported the row's
+     * centring instead of the text's baseline. Probe the element that owns the
+     * text node, never its layout parent.
      */
-    padding-block: calc(var(--header-baseline) - 14px) var(--space-7);
+    padding-block: calc(var(--header-baseline) - 17.5px) var(--space-7);
 
     /* The only inline padding in the rail. A section that adds a second layer
        would cut the usable width from 180 to 168 and flatten the asymmetric
