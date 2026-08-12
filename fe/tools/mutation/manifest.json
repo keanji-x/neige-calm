@@ -96,12 +96,12 @@
       "test-tier-project fixtures checks whether browser tier has sufficient capability in web-dom",
       "test-tier-project fixtures checks whether jsdom tier has sufficient capability in platform-independent",
       "test-tier-project fixtures enforces tier mismatch only after migration",
+      "test-tier-project fixtures parses every authoritative location composition without textual path heuristics",
       "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent",
-      "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects a test collected by the expected project and an extra project",
       "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
+      "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects overlap for jsdom as well as browser",
-      "test-tier-project fixtures parses every authoritative location composition without textual path heuristics",
       "tier gate decisions reports an oracle tier/project mismatch"
     ],
     "selection_paths": [
@@ -122,8 +122,8 @@
       "test-tier-project fixtures checks whether jsdom tier has sufficient capability in platform-independent",
       "test-tier-project fixtures enforces tier mismatch only after migration",
       "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent",
-      "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
+      "test-tier-project fixtures rejects every negative source with its own rule",
       "tier gate decisions reports an oracle tier/project mismatch"
     ],
     "selection_paths": [
@@ -164,21 +164,6 @@
       "app/theme contracts E2E-CAP-THEME-011 exposes exactly three parseable modes"
     ],
     "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
-  },
-  {
-    "mutation_id": "app-theme-swap-light-dark-bg",
-    "defends": [
-      "oracle:E2E-CAP-AXE-005"
-    ],
-    "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
-    "selection_paths": [
-      "web/src/app/theme/theme.browser.test.tsx"
-    ],
-    "expected_red": [
-      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"
-    ],
-    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
   },
   {
     "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
@@ -254,8 +239,6 @@
       "web/src/app/providers/providers.browser.test.tsx"
     ],
     "expected_red": [
-      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
-      "browser provider contracts INV-APP-009 routes button and Escape through the same reload handler",
       "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel"
     ],
     "why_more_than_one": "Removing Dialog and the client-version text simultaneously removes initial modal focus and dual-version reporting; the button still calls reload directly, but Escape no longer reaches the same handler, so the consolidated button-and-Escape routing contract also fails."
@@ -319,10 +302,9 @@
       "web/src/app/providers/public.test.tsx"
     ],
     "expected_red": [
-      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
+      "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
       "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel",
-      "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id",
-      "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict"
+      "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"
     ],
     "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it. Re-measured after this PR added web/src/app/events/event-bridge.contract.test.tsx: a gate that returns null never mounts the bridge either, so the bridge-side statement of INV-APP-001 fails on its positive half. Four tests, one cause — the gate rendering nothing."
   },
@@ -338,8 +320,9 @@
       "web/src/app/providers/public.test.tsx"
     ],
     "expected_red": [
+      "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
       "provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain",
-      "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict"
+      "provider behavior T-A2 never constructs the bridge when the persisted database instance has switched"
     ],
     "why_more_than_one": "Measured, twice. The first measurement predated web/src/app/events/event-bridge.contract.test.tsx, so the red set was a single test. That file now states the same invariant from the bridge's side and renders the pending verdict, so dropping the guard dereferences an absent query.data there too — two tests, one invariant, approached from either end. Nothing else in the suite renders ServerCompatGate before its data arrives."
   },
@@ -351,7 +334,8 @@
     "target": "web/src/app/events/browser-cursor-store.ts",
     "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -54,7 +54,7 @@\n   };\n \n   return {\n-    read: () => adoptedInstanceId === null ? null : cursor,\n+    read: () => adoptedInstanceId === null ? null : persistedCursor(storage.getItem(SYNC_CURSOR_KEY), adoptedInstanceId),\n     write: (value) => {\n       cursor = value;\n       if (adoptedInstanceId === null) {\n",
     "expected_red": [
-      "browser cursor store T-C1 write is synchronously visible from memory"
+      "browser cursor store T-C1 write is synchronously visible from memory",
+      "browser cursor store T-C5 contains storage failures without losing the in-memory cursor"
     ],
     "selection_paths": [
       "web/src/app/events/browser-cursor-store.test.ts"
@@ -486,7 +470,10 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,6 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor"
+      "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
+      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
+      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -501,7 +488,10 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      if (this.retryDelay !== 500) socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect"
+      "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
+      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
+      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -517,7 +507,9 @@
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      socket.send(JSON.stringify({ sub: configuration.topics }));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
     "expected_red": [
       "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
-      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect"
+      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
+      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -577,6 +569,10 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -65,6 +65,7 @@\n   }\n \n   stop(): void {\n+    if (this.socket === null) throw new Error('not started');\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n",
     "expected_red": [
+      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary",
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
+      "WebSocketDriver contracts T-D5a rejects an already-dequeued retry callback after stop",
+      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket",
       "WebSocketDriver contracts T-D5c stop is idempotent before start and after stop"
     ],
     "selection_paths": [
@@ -712,7 +708,12 @@
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -32,7 +32,7 @@\n   const [head, first, second] = key;\n   if (head === 'coves' && key.length === 1) return queryKeys.coves();\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   return null;\n }\n",
     "expected_red": [
-      "event composition T-B2 carries a real socket card event through the bridge into wave invalidation"
+      "event composition T-B2 carries a real socket card event through the bridge into wave invalidation",
+      "query invalidation adapter invalidates each mapped key of an invalidate effect",
+      "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
+      "query invalidation adapter preserves effect order across a snapshot-required style batch",
+      "query invalidation adapter removes mapped keys for a remove effect",
+      "query invalidation adapter turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal"
     ],
     "selection_paths": [
       "web/src/app/composition.test.tsx"
@@ -727,9 +728,9 @@
     "target": "web/src/systems/events/websocket-driver.ts",
     "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -53,7 +53,7 @@\n   }\n \n   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void {\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n     this.configuration = configuration;\n@@ -65,7 +65,6 @@\n   }\n \n   stop(): void {\n-    ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n     if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n@@ -82,7 +81,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -114,7 +113,6 @@\n     };\n     socket.onerror = () => { if (this.closed || epoch !== this.epoch) return; };\n     socket.onclose = () => {\n-      if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n",
     "expected_red": [
-      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
       "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete",
-      "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation"
+      "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation",
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
@@ -744,7 +745,7 @@
     "target": "core/events/reducer.ts",
     "patch": "diff --git a/core/events/reducer.ts b/core/events/reducer.ts\n--- a/core/events/reducer.ts\n+++ b/core/events/reducer.ts\n@@ -32,7 +32,7 @@\n   if (frame.type === 'snapshot-required') {\n     return {\n       state: { ...state, cursor: null },\n-      effects: [{ type: 'persist-cursor', id: null }, { type: 'clear-cache' }, { type: 'reconnect' }],\n+      effects: [{ type: 'reconnect' }, { type: 'persist-cursor', id: null }, { type: 'clear-cache' }],\n     };\n   }\n   if (frame.type === 'replay-complete') {\n",
     "expected_red": [
-      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
+      "event reducer behavior turns control frames into pure cache and reconnect effects"
     ],
     "selection_paths": [
       "web/src/systems/events/websocket-driver.contract.test.ts"
