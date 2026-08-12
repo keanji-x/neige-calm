@@ -484,25 +484,15 @@ async fn ready_withdrawal_marks_inflight_material_under_both_policies() {
 }
 
 #[tokio::test]
-async fn adopted_legacy_inflight_initializes_ready_shadow_before_withdrawal() {
+async fn inflight_ready_withdrawal_emits_once_and_surfaces_on_both_reads() {
     let boot = new_boot().await;
     let declaration = task("adopted-ready");
-    let (id, rev) = upsert(&boot, None, declaration.clone()).await;
-    sqlx::query("UPDATE tasks SET status='running',origin='legacy',decl_ready=0 WHERE wave_id=?1 AND key='adopted-ready'")
+    let (id, _) = upsert(&boot, None, declaration.clone()).await;
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='adopted-ready'")
         .bind(boot.wave_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-
-    upsert(&boot, Some((&id, rev)), declaration.clone()).await;
-    let adopted: (String, i64) = sqlx::query_as(
-        "SELECT origin,decl_ready FROM tasks WHERE wave_id=?1 AND key='adopted-ready'",
-    )
-    .bind(boot.wave_id.as_str())
-    .fetch_one(&boot.repo.sqlite_pool().unwrap())
-    .await
-    .unwrap();
-    assert_eq!(adopted, ("block".into(), 1));
 
     let latest = read(&boot).await;
     let rev = latest["blocks"]
@@ -1089,14 +1079,14 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
 }
 
 async fn task_bytes(boot: &Boot) -> Vec<String> {
-    sqlx::query_scalar("SELECT json_object('key',key,'kind',kind,'goal',goal,'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd,'depends',depends_on_json,'priority',priority,'gate',gate_json,'declared_by',declared_by,'origin',origin,'decl_ready',decl_ready,'decl_released_by_user',decl_released_by_user,'context_verify_failures',context_verify_failures,'status',status,'status_detail',status_detail,'worker',worker_card_id,'gate_result',gate_result_json,'gate_attempt',gate_attempt,'gate_pid',gate_pid,'gate_pid_starttime',gate_pid_starttime,'gate_pid_boot_id',gate_pid_boot_id,'finished',finished_at_ms,'deadline',running_deadline_ms,'claim_context',claim_context_json,'context_stale',context_stale_at_ms,'closure_truncated',context_closure_truncated) FROM tasks WHERE wave_id=?1 ORDER BY key")
+    sqlx::query_scalar("SELECT json_object('key',key,'kind',kind,'goal',goal,'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd,'depends',depends_on_json,'priority',priority,'gate',gate_json,'declared_by',declared_by,'decl_ready',decl_ready,'decl_released_by_user',decl_released_by_user,'context_verify_failures',context_verify_failures,'status',status,'status_detail',status_detail,'worker',worker_card_id,'gate_result',gate_result_json,'gate_attempt',gate_attempt,'gate_pid',gate_pid,'gate_pid_starttime',gate_pid_starttime,'gate_pid_boot_id',gate_pid_boot_id,'finished',finished_at_ms,'deadline',running_deadline_ms,'claim_context',claim_context_json,'context_stale',context_stale_at_ms,'closure_truncated',context_closure_truncated) FROM tasks WHERE wave_id=?1 ORDER BY key")
         .bind(boot.wave_id.as_str()).fetch_all(&boot.repo.sqlite_pool().unwrap()).await.unwrap()
 }
 
 #[tokio::test]
 async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     let boot = new_boot().await;
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,status,status_detail,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'flight','codex','goal flight','{\"key\":\"flight\"}','accept flight','/flight','[]',3,'{\"steps\":[{\"name\":\"accept\",\"cmd\":\"true\"}]}','running','owned-byte','spec','legacy',0,0)")
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,status,status_detail,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'flight','codex','goal flight','{\"key\":\"flight\"}','accept flight','/flight','[]',3,'{\"steps\":[{\"name\":\"accept\",\"cmd\":\"true\"}]}','running','owned-byte','spec',0,0)")
         .bind(format!("{}:flight", boot.wave_id)).bind(boot.wave_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     let (a, a_rev) = upsert(&boot, None, task("a")).await;
@@ -1134,19 +1124,20 @@ async fn rebuild_matches_incremental_bytes_after_adversarial_edit_sequence() {
     changed["ready"] = json!(false);
     upsert(&boot, Some((&a, a_rev)), changed).await;
     let before = task_bytes(&boot).await;
-    // Option (a): damage materialized block rows so rebuild must recreate a
-    // surviving pending row and re-adopt the frozen in-flight legacy row.
-    sqlx::query("DELETE FROM tasks WHERE wave_id=?1 AND key='b'")
-        .bind(boot.wave_id.as_str())
-        .execute(&boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tasks SET origin='legacy' WHERE wave_id=?1 AND key='flight'")
+    // Damage materialized rows in two distinct ways so rebuild must recreate
+    // a surviving pending row and repair declaration bytes on the in-flight row.
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'undeclared-damage','codex','damage','{}','[]',0,'pending','spec',0,0)")
+        .bind(format!("{}:undeclared-damage", boot.wave_id))
         .bind(boot.wave_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
     assert_ne!(task_bytes(&boot).await, before, "damage must be observable");
+    sqlx::query("DELETE FROM tasks WHERE wave_id=?1 AND key='b'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
     tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
         .await
@@ -1375,10 +1366,10 @@ async fn inflight_priority_and_declared_by_changes_do_not_promise_context_reject
 }
 
 #[tokio::test]
-async fn legacy_canonical_gate_and_context_are_semantically_equal_to_block_declaration() {
+async fn canonical_gate_and_context_are_semantically_equal_to_block_declaration() {
     let boot = new_boot().await;
     let (id, rev) = upsert(&boot, None, task("flight")).await;
-    sqlx::query("UPDATE tasks SET status='running',origin='legacy',gate_json=?1,context_json=?2 WHERE wave_id=?3 AND key='flight'")
+    sqlx::query("UPDATE tasks SET status='running',gate_json=?1,context_json=?2 WHERE wave_id=?3 AND key='flight'")
         .bind(r#"{"steps":[{"name":"accept","cmd":"true"}]}"#)
         .bind(r#"{"key":"flight"}"#)
         .bind(boot.wave_id.as_str())
@@ -1386,26 +1377,23 @@ async fn legacy_canonical_gate_and_context_are_semantically_equal_to_block_decla
     upsert(&boot, Some((&id, rev)), task("flight")).await;
     assert!(
         !diagnostic_contains(&read(&boot).await, "flight", "declaration changes"),
-        "legacy JSON spelling must not create a stale diagnostic"
+        "equivalent JSON spelling must not create a stale diagnostic"
     );
 }
 
 #[tokio::test]
-async fn unknown_dependencies_use_all_inflight_rows_but_not_legacy_pending_rows() {
+async fn unknown_dependencies_treat_inflight_rows_as_known() {
     let boot = new_boot().await;
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'old-running','codex','old','{}','[]',0,'running','spec','legacy',0,0), (?3,?2,'old-pending','codex','old','{}','[]',0,'pending','spec','legacy',0,0)")
-        .bind(format!("{}:old-running", boot.wave_id)).bind(boot.wave_id.as_str())
-        .bind(format!("{}:old-pending", boot.wave_id))
-        .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+    upsert(&boot, None, task("old-running")).await;
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND key='old-running'")
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     let mut known = task("uses-running");
     known["depends_on"] = json!(["old-running"]);
     upsert(&boot, None, known).await;
     assert!(keys(&boot).await.contains(&"uses-running".into()));
-
-    let mut unknown = task("uses-pending");
-    unknown["depends_on"] = json!(["old-pending"]);
-    upsert(&boot, None, unknown).await;
-    assert_diagnosed_on_both_reads(&boot, "uses-pending", "unknown dependency `old-pending`").await;
 }
 
 #[tokio::test]
@@ -1597,7 +1585,7 @@ async fn terminal_spec_key_does_not_consume_ceiling_capacity() {
         .execute(&boot.repo.sqlite_pool().unwrap())
         .await
         .unwrap();
-    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,'done','codex','done','{}','[]',0,'done','spec','block',0,0)")
+    sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'done','codex','done','{}','[]',0,'done','spec',0,0)")
         .bind(format!("{}:done", boot.wave_id)).bind(boot.wave_id.as_str())
         .execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     upsert(&boot, None, task("new-capacity")).await;
