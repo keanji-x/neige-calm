@@ -32,17 +32,20 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
     return (
       <div className={styles.task} data-nc-task-state="withdrawn">
         <div className={styles.head}>
+          <span className={styles.kindLabel}>Task</span>
           <span className={styles.key}>{payload.key}</span>
+          <span className={styles.spacer} />
           <span className={styles.withdrawn}>Withdrawn</span>
         </div>
-        <p className={styles.meta}>
-          Declared by {DECLARED_BY[payload.declared_by]}
-          {' · '}
-          Withdrawn by {DECLARED_BY[payload.tombstoned_by]}
-        </p>
         {reason !== null && reason !== undefined && reason !== '' && (
           <p className={styles.goal}>{reason}</p>
         )}
+        <dl className={styles.fields}>
+          <dt className={styles.label}>Declared by</dt>
+          <dd className={styles.value}>{DECLARED_BY[payload.declared_by]}</dd>
+          <dt className={styles.label}>Withdrawn by</dt>
+          <dd className={styles.value}>{DECLARED_BY[payload.tombstoned_by]}</dd>
+        </dl>
       </div>
     );
   }
@@ -51,37 +54,56 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
   return (
     <div className={styles.task} data-nc-task-state={live.ready ? 'ready' : 'not-ready'}>
       <div className={styles.head}>
+        {/* The block says what it is. Every other kind announces itself by its
+            own shape — a table is a table — but a task is a paragraph of
+            structured text, and without the word it reads as prose that has
+            gone strange. */}
+        <span className={styles.kindLabel}>Task</span>
         <span className={styles.key}>{live.key}</span>
+        <span className={styles.spacer} />
         <span className={styles.kind}>{live.kind}</span>
         {live.spawn === 'sub-wave' && <span className={styles.kind}>sub-wave</span>}
-      </div>
-      <p className={styles.meta}>
-        Declared by {DECLARED_BY[live.declared_by]}
-        {' · '}
         {/* Ready is a fact about the task, carried in words. It is not a badge:
             §6.6 spends a pill on lifecycle, and a second pill on this page
             would make two different things look like one kind of thing. */}
         <span className={live.ready ? styles.ready : styles.notReady}>
           {live.ready ? 'Ready' : 'Not ready'}
         </span>
-      </p>
+      </div>
+
       <p className={styles.goal}>{live.goal}</p>
-      {live.acceptance !== undefined && live.acceptance !== '' && (
-        <p className={styles.acceptance}>
-          <span className={styles.label}>Done when</span>
-          {live.acceptance}
-        </p>
-      )}
-      {live.gate !== undefined && live.gate.steps.length > 0 && (
-        <ul className={styles.gate}>
-          {live.gate.steps.map((step) => (
-            <li key={step.name} className={styles.step}>
-              <span className={styles.stepName}>{step.name}</span>
-              <span className={styles.stepCmd}>{step.cmd}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+
+      {/*
+        Label / value, one grid, one label column — the same shape the rest of
+        the app gives a set of facts about one object. It replaces three
+        different inline layouts (a run-in label, a two-column list, a bare
+        line), which is what made this block look like it had been assembled
+        out of whatever was to hand.
+      */}
+      <dl className={styles.fields}>
+        {live.acceptance !== undefined && live.acceptance !== '' && (
+          <>
+            <dt className={styles.label}>Done when</dt>
+            <dd className={styles.value}>{live.acceptance}</dd>
+          </>
+        )}
+        {live.gate !== undefined && live.gate.steps.length > 0 && (
+          <>
+            <dt className={styles.label}>Checks</dt>
+            <dd className={styles.value}>
+              <ul>
+                {live.gate.steps.map((step) => (
+                  <li key={step.name} className={styles.step}>
+                    <span className={styles.stepCmd}>{step.cmd}</span>
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </>
+        )}
+        <dt className={styles.label}>Declared by</dt>
+        <dd className={styles.value}>{DECLARED_BY[live.declared_by]}</dd>
+      </dl>
     </div>
   );
 }

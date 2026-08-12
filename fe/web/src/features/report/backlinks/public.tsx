@@ -46,7 +46,16 @@ export function ReportBacklinks({ waveId, backlinks, onOpen }: ReportBacklinksPr
     <div className={styles.backlinks}>
       <ul>
         {groups.map((group) => (
-          <li key={group.waveId}>
+          /*
+           * The wave is named once, and its citations hang under it.
+           *
+           * Printing the title on every row made a wave that cites you twice
+           * look like two waves, and spent the widest line in a 280 column
+           * saying the same eight words again. What differs between two rows of
+           * one group is the quote — so the quote is what a row is.
+           */
+          <li key={group.waveId} className={styles.group}>
+            <p className={styles.title}>{group.title}</p>
             <ul>
               {group.entries.map((entry, index) => (
                 <li key={`${entry.src_block_id}:${entry.dst_block_id ?? ''}:${index}`}>
@@ -57,8 +66,7 @@ export function ReportBacklinks({ waveId, backlinks, onOpen }: ReportBacklinksPr
                     className={styles.row}
                     onClick={() => onOpen(group.waveId, entry.src_block_id)}
                   >
-                    <span className={styles.title}>{group.title}</span>
-                    <span className={styles.quote}><Quote backlink={entry} /></span>
+                    <Quote backlink={entry} />
                   </button>
                 </li>
               ))}

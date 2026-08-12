@@ -1,9 +1,10 @@
 @layer features {
   /*
-   * A task is a *record inside a document*, so it is set as one: no card, no
-   * frame, one hairline above it to say where it starts. It sits in the
-   * interface register rather than the prose one because it is a structured
-   * declaration, not a paragraph.
+   * A task is a *record inside a document*: no card and no frame, one hairline
+   * above it to say where it starts. It sits in the interface register rather
+   * than the prose one because it is a structured declaration, not a paragraph
+   * — and it names itself, because unlike a table or a chart its shape alone
+   * does not say what kind of thing it is.
    */
   .task {
     padding-block-start: var(--space-4);
@@ -17,9 +18,26 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: var(--space-3);
+    gap: var(--space-4);
+    min-block-size: var(--row-h);
   }
 
+  .spacer {
+    flex: 1;
+  }
+
+  /* The one word that says what this block is. Same label register as a panel
+     module's head, so it reads as a heading and not as data. */
+  .kindLabel {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wider);
+    text-transform: uppercase;
+  }
+
+  /* The key is the task's identity — mono, because it is a literal other
+     reports and the kernel both address it by. */
   .key {
     font-family: var(--font-mono);
     font-size: var(--text-base);
@@ -41,61 +59,63 @@
     text-transform: uppercase;
   }
 
-  .meta {
-    margin-block: var(--space-2) 0;
-    font-size: var(--text-xs);
-    color: var(--text-3);
-  }
-
   /* Ready carries a colour and Not ready does not: only one of the two is a
      state you might act on, and colouring both would make the pair decorative. */
   .ready {
+    font-size: var(--text-xs);
     color: var(--success-text);
   }
 
   .notReady {
+    font-size: var(--text-xs);
     color: var(--text-3);
   }
 
+  /* The goal is the one line of this block that is actually prose, so it keeps
+     the prose measure even though the block is 748 wide: 748 of 15px sans is
+     past the point where a line is comfortable to read. */
   .goal {
+    max-inline-size: var(--measure-prose);
     margin-block: var(--space-3) 0;
     color: var(--text-2);
   }
 
-  .acceptance {
-    margin-block: var(--space-2) 0;
-    color: var(--text-3);
+  /*
+   * Label / value. One label column for every field, so the block has one
+   * left edge for its labels and one for its values — the shape a set of facts
+   * about a single object takes everywhere else in the app.
+   */
+  .fields {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    column-gap: var(--space-6);
+    row-gap: var(--space-2);
+    margin-block: var(--space-4) 0;
   }
 
   .label {
-    margin-inline-end: var(--space-3);
     font-size: var(--text-xs);
-    letter-spacing: var(--tracking-wider);
-    text-transform: uppercase;
+    line-height: var(--row-h-sm);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wide);
   }
 
-  .gate {
-    margin-block-start: var(--space-3);
+  .value {
+    max-inline-size: var(--measure-prose);
+    margin: 0;
+    font-size: var(--text-xs);
+    line-height: var(--row-h-sm);
+    color: var(--text-2);
   }
 
   .step {
-    display: flex;
-    gap: var(--space-4);
-    font-size: var(--text-xs);
-    line-height: var(--row-h-sm);
+    display: block;
   }
 
-  .stepName {
-    flex: none;
-    inline-size: 96px;
-    color: var(--text-3);
-  }
-
-  /* The command is a literal, so mono says so without spending a colour. */
+  /* A command is a literal; mono says so without spending a colour. */
   .stepCmd {
     overflow: hidden;
     font-family: var(--font-mono);
-    color: var(--text-2);
     text-overflow: ellipsis;
     white-space: nowrap;
   }

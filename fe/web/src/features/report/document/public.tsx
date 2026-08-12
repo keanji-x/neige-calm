@@ -40,6 +40,8 @@ export type ReportDocumentProps = Readonly<{
   report: WaveReport | null;
   /** What the empty state should offer, which differs per route. */
   empty: ReactNode;
+  /** The outline rail (§6.16), which hangs in the document's leading gutter. */
+  rail?: ReactNode;
   /** The byline row (`Spec Agent · 2h`), composed by `app/router`. */
   byline?: ReactNode;
   /** How many backlinks land on each block, for the sidenote markers. */
@@ -58,7 +60,7 @@ export type ReportDocumentProps = Readonly<{
  * the single place a native link exists.
  */
 export function ReportDocument({
-  report, empty, byline, backlinkCounts, onOpenLink, arrivalAnchorId,
+  report, empty, rail, byline, backlinkCounts, onOpenLink, arrivalAnchorId,
 }: ReportDocumentProps) {
   useEffect(() => {
     if (arrivalAnchorId === null || arrivalAnchorId === undefined) return;
@@ -74,9 +76,18 @@ export function ReportDocument({
        columns and the sidenote. Two prose definitions is how the question
        "what does prose look like" stops having one answer. */
     <article className={`calm-prose ${styles.doc}`} data-nc-report="">
-      {byline}
+      {rail}
+      {byline !== undefined && <div className={styles.byline}>{byline}</div>}
       {report.blocks === null
-        ? <ProseBlock markdown={report.body} blockId={null} onOpenLink={onOpenLink} />
+        ? (
+          // A v1 report is one prose block that happens to have no id: same
+          // column, same measure, just nothing to anchor to.
+          <div className={styles.row}>
+            <div className={styles.prose}>
+              <ProseBlock markdown={report.body} blockId={null} onOpenLink={onOpenLink} />
+            </div>
+          </div>
+        )
         : report.blocks.map((block) => (
           <BlockSlot
             key={block.id}

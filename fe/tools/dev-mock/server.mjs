@@ -187,7 +187,7 @@ const w1Report = {
       payload: {
         key: 'ingest-resolver', kind: 'codex', declared_by: 'spec', ready: true,
         goal: 'Route the two ingest-path call sites through the resolver, building the index during ingest.',
-        acceptance: 'No direct `cards.iter().find` on a reference id anywhere under crates/calm-truth.',
+        acceptance: 'No direct cards.iter().find on a reference id anywhere under crates/calm-truth.',
         gate: {
           steps: [
             { name: 'fmt', cmd: 'cargo fmt --check' },

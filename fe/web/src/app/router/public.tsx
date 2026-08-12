@@ -516,6 +516,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       cards={cards}
       report={<ReportDocument
         report={report}
+        rail={<ReportOutline items={outline} />}
         backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
         onOpenLink={openReportLink}
         arrivalAnchorId={arrivalAnchorId}
@@ -527,7 +528,6 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
           ]}
         />}
       />}
-      outline={<ReportOutline items={outline} />}
       backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
         ? (
           <ReportBacklinks

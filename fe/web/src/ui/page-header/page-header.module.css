@@ -43,25 +43,26 @@
    * must still span the full page, or content scrolls out from under it at the
    * edges.
    */
+  /*
+   * **The page it labels owns this number.** A document route sets
+   * `--document-start` on its own root to the distance from the content edge to
+   * the first character of its prose, and the title lands on exactly that —
+   * because a page title that is not on the same vertical as the text below it
+   * reads as two documents, whatever the reasoning behind the offset was.
+   *
+   * The fallback is the old derivation, kept for a route that publishes
+   * nothing: the prose measure centred in the main column.
+   *
+   * The title used to *hang* one gutter short of the prose, so the header read
+   * as the page's label rather than as the document's first line. Measured
+   * against a real document that distinction was not worth the misalignment it
+   * bought — the hang is gone, and the rank difference (18px sans chrome
+   * against 18px serif prose, §2.2) carries it instead.
+   */
   .header[data-nc-align='document'] {
-    --document-start: calc(
+    padding-inline-start: var(--document-start, calc(
       (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--measure-prose)) / 2
-    );
-
-    /*
-     * The title *hangs* — it stops one gutter short of the prose rather than
-     * landing on it. Flush, the header reads as the document's first line;
-     * hung, it reads as what it is, the page's label for the document below.
-     *
-     * One `--space-10` is the size chosen, and the reason it is not free: the
-     * page's own inset and the grid's gutter are both `--space-10`, so a hang
-     * of exactly one gutter is a distance already on the page rather than a new
-     * one. Bigger reads as misalignment (the 162 it started at was the whole
-     * offset, and looked like a bug); smaller stops registering as deliberate.
-     */
-    --title-hang: var(--space-10);
-
-    padding-inline-start: calc(var(--document-start) - var(--title-hang));
+    ));
   }
 
   .header {

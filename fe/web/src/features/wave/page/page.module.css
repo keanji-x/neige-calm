@@ -1,5 +1,14 @@
 @layer features {
   .page {
+    /*
+     * The outline gutter (§6.16), published to the whole page: the document
+     * hangs its dot rail in it, and `ui/page-header` starts the title after it,
+     * so the title and the first character of the prose sit on one vertical.
+     * One declaration, two consumers — the alternative is the same number typed
+     * in two files that then drift.
+     */
+    --document-start: calc(var(--space-10) + var(--space-8));
+
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
@@ -84,14 +93,18 @@
     min-block-size: 0;
   }
 
-  /* Centred, not start-aligned. The prose is 616 in an 828 column, and hanging
-     all 212 of the slack off its trailing edge put a dead band between the last
-     word and the panel card — the two things on the page that carry content
-     were the two things furthest apart. */
+  /*
+   * Start-aligned, at the outline gutter — the same offset the title takes.
+   *
+   * It was centred, to keep the column's slack from all piling up between the
+   * last word and the panel card. That reasoning was about a document with
+   * nothing to its leading side; this one has the outline rail there, and a
+   * centred document put its first character 100px away from the title of the
+   * page it is the content of.
+   */
   .doc {
-    max-inline-size: var(--measure-doc);
+    max-inline-size: calc(var(--document-start) + var(--measure-doc));
     min-inline-size: 0;
-    margin-inline: auto;
   }
 
 

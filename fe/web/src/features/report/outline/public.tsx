@@ -1,25 +1,26 @@
-// The outline (§6.16).
+// The outline (§6.16) — a rail of dots in the document's leading gutter.
 //
-// **It is an overlay, not a third column.** The 1180 of content is already
-// spent on the document and the panel card; a permanent index column has no
-// arithmetic to come from, and squeezing the document would reflow the prose
-// every time the outline opened or closed (原则 3). So it is a `--panel-w`
-// layer that covers the panel card — what it hides is CARDS / REFERENCED BY,
-// never the text you are reading — and the document does not move a pixel.
+// **Not a column, not a header button, and not a panel.** It is the document's
+// own margin: one dot per section, hanging where a manuscript's marginalia
+// would be, taking 24px that no text was using. Hovering (or tabbing into) the
+// rail turns the dots into their labels; everything else on the page stays
+// exactly where it was.
+//
+// Why this and not the overlay it started as: an overlay had to live on the
+// trailing side, over the panel card, which made "where am I in this document"
+// a thing you looked for on the opposite side of the screen from the text —
+// and it cost the document its alignment with its own title, because the
+// leading gutter had nothing in it and the document drifted to the middle of
+// the column to compensate.
 //
 // The shape of the list is decided in `core/domain/report.ts`
 // (`deriveReportOutline`): sections are numbered continuously across blocks,
 // and a non-prose block hangs under the section above it. That is the kernel's
-// block model showing through, not a display choice, which is why it is
-// derived in core and only rendered here.
-//
-// **Used once, then gone**: picking a section scrolls to it and closes. That
-// is the whole lifecycle, and it is why this is not a thing you dock.
+// block model showing through, not a display choice.
 
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 
 import type { ReportOutlineItem } from '../../../../../core/domain/report.ts';
-import { useRovingTabindex } from '../../../ui/focus/public.ts';
 import { useState } from '../../../ui/state/public.ts';
 import { revealReportAnchor } from '../anchor/public.ts';
 import styles from './outline.module.css';
@@ -42,95 +43,74 @@ function flatten(items: readonly ReportOutlineItem[]): Row[] {
 }
 
 export function ReportOutline({ items, onSelect = revealReportAnchor }: ReportOutlineProps) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
   const rows = flatten(items);
+  /*
+   * Roving tabindex, locally.
+   *
+   * `ui/focus`'s `useRovingTabindex` focuses its active item as soon as that
+   * item mounts — exactly right for the menus and dialogs it was written for,
+   * which mount when they open, and exactly wrong for a rail that is mounted
+   * for the whole visit: it stole the page's focus on load, before the reader
+   * had touched anything. Asking that module for an opt-out is a change request
+   * against a frozen interface (§6.7c); until then this is the same contract —
+   * one tab stop, arrows within, focus follows — without the mount-time focus.
+   */
+  const [activeIndex, setActiveIndex] = useState(0);
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  const closeAndRestoreFocus = () => {
-    setOpen(false);
-    triggerRef.current?.focus();
+  const focusRow = (index: number) => {
+    const next = ((index % rows.length) + rows.length) % rows.length;
+    setActiveIndex(next);
+    refs.current[next]?.focus();
   };
 
-  const activate = (index: number) => {
-    const row = rows[index];
-    if (row === undefined) return;
-    closeAndRestoreFocus();
-    onSelect(row.anchorId);
+  const onKeyDown = (event: React.KeyboardEvent, index: number) => {
+    switch (event.key) {
+      case 'ArrowDown': event.preventDefault(); focusRow(index + 1); return;
+      case 'ArrowUp': event.preventDefault(); focusRow(index - 1); return;
+      case 'Home': event.preventDefault(); focusRow(0); return;
+      case 'End': event.preventDefault(); focusRow(rows.length - 1); return;
+      default:
+    }
   };
 
-  const { activeIndex, setActiveIndex, getItemProps } = useRovingTabindex<HTMLButtonElement>({
-    itemCount: rows.length,
-    onActivate: activate,
-    onEscape: closeAndRestoreFocus,
-    getLabel: (index) => rows[index]?.label ?? '',
-  });
-
-  useEffect(() => { if (open && rows.length > 0) setActiveIndex(0); }, [open, rows.length, setActiveIndex]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (event.target instanceof Node && wrapRef.current?.contains(event.target) !== true) setOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown);
-    return () => document.removeEventListener('mousedown', onPointerDown);
-  }, [open, setOpen]);
-
-  // A report with no sections has no outline to open, and §6.1's rule for a
-  // zero-row section applies to its trigger too: it is not rendered at all,
-  // rather than rendered disabled. A v1 report (no blocks, hence no anchors) is
-  // the same case.
+  // A report with no sections has no outline, and §6.1's rule for a zero-row
+  // section applies to its rail too: not rendered, rather than rendered empty.
+  // A v1 report (no blocks, hence no anchors) is the same case.
   if (rows.length === 0) return null;
 
   return (
-    <div className={styles.wrap} ref={wrapRef}>
-      <button
-        type="button"
-        ref={triggerRef}
-        data-nc-role="icon"
-        className={styles.trigger}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        aria-label="Outline"
-        title="Outline"
-        onClick={() => setOpen((value) => !value)}
-      >
-        ≡
-      </button>
-      {open && (
-        <div className={styles.panel} role="menu" aria-label="Outline">
-          <p className={styles.legend}>Outline</p>
-          <ol className={styles.list}>
-            {rows.map((row, index) => {
-              const props = getItemProps(index);
-              return (
-                <li key={`${row.anchorId}:${index}`} role="none">
-                  <button
-                    ref={props.ref}
-                    type="button"
-                    role="menuitem"
-                    tabIndex={props.tabIndex}
-                    className={row.child ? `${styles.row} ${styles.child}` : styles.row}
-                    data-nc-active={index === activeIndex ? '' : undefined}
-                    onKeyDown={props.onKeyDown}
-                    onMouseMove={() => setActiveIndex(index)}
-                    onClick={() => activate(index)}
-                  >
-                    {/* The number belongs to the section, so a child never
-                        carries one — and a leading non-prose block has no
-                        number to carry (§6.16 rule 3). */}
-                    {row.number !== null && (
-                      <span className={styles.number}>{String(row.number).padStart(2, '0')}</span>
-                    )}
-                    <span className={styles.label}>{row.label}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
-        </div>
-      )}
-    </div>
+    <nav className={styles.rail} aria-label="Outline">
+      <ol className={styles.list}>
+        {rows.map((row, index) => (
+            <li key={`${row.anchorId}:${index}`}>
+              {/*
+                The dot is the button, and the label is inside it — collapsed to
+                a dot at rest, revealed on hover or focus. One element in both
+                states means the accessible name never depends on the visual
+                one: a screen reader has always read the label.
+              */}
+              <button
+                ref={(element) => { refs.current[index] = element; }}
+                type="button"
+                tabIndex={index === activeIndex ? 0 : -1}
+                className={row.child ? `${styles.row} ${styles.child}` : styles.row}
+                data-nc-active={index === activeIndex ? '' : undefined}
+                onKeyDown={(event) => onKeyDown(event, index)}
+                onFocus={() => setActiveIndex(index)}
+                onClick={() => onSelect(row.anchorId)}
+              >
+                <span className={styles.dot} aria-hidden="true" />
+                <span className={styles.label}>
+                  {row.number !== null && (
+                    <span className={styles.number}>{String(row.number).padStart(2, '0')}</span>
+                  )}
+                  {row.label}
+                </span>
+              </button>
+            </li>
+        ))}
+      </ol>
+    </nav>
   );
 }

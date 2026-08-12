@@ -5,48 +5,51 @@
     gap: var(--space-1);
   }
 
+  .group + .group {
+    margin-block-start: var(--space-4);
+  }
+
+  /* The citing wave, named once for the group. */
+  .title {
+    padding-inline: var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--row-h-sm);
+    color: var(--text-2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   /*
-   * Two lines per citation: the source wave, then the sentence it cites from.
-   * A backlink row is taller than the §6.0 row for that reason — the quote is
-   * the payload, and truncating it to one line would leave the row saying only
-   * what the title already said.
+   * One row is one citation, and a citation *is* its quote — the title above
+   * has already said which wave. It runs to three lines because the sentence is
+   * the whole point; one line would leave the row saying nothing the group
+   * heading did not.
    */
   .row {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
+    /* Three lines, then an ellipsis: enough to see what was being said, not
+       enough to turn the panel into a reading surface. */
+    display: -webkit-box;
+    overflow: hidden;
     inline-size: 100%;
     padding-block: var(--space-2);
     padding-inline: var(--space-3);
     border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
     text-align: start;
     cursor: pointer;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
   }
 
   .row:hover,
   .row:focus-visible {
     background: var(--overlay-hover);
-  }
-
-  .title {
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-snug);
-    color: var(--text-2);
-  }
-
-  /* The quote is set two steps down from the title: it is context, and it is
-     the longer of the two. Three lines then an ellipsis — enough to see what
-     was being said, not enough to turn the panel into a reading surface. */
-  .quote {
-    display: -webkit-box;
-    overflow: hidden;
-    font-size: var(--text-xs);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 3;
   }
 
   /* The words that actually form the link. Weight, not colour: colour here

@@ -33,24 +33,35 @@
    * report is the one consumer that is wider than its own text, so it overrides
    * that here and hands the measure to the prose column instead.
    *
-   * `inline-size`, not merely `max-inline-size`: the slot this lands in is
-   * `margin-inline: auto` inside its grid column, which makes it shrink-to-fit
-   * — so a document that only *allowed* itself 748 got sized by its widest row
-   * instead, and the breakout blocks stopped short of the column they were
-   * supposed to break out to. Asking for the measure outright is what makes
-   * "the document is 748 wide" true rather than aspirational.
+   * The leading `--document-start` column is the outline gutter: the rail's
+   * dots hang there, and the page publishes the same distance to the header, so
+   * the title starts on the prose's first character. Everything after it is the
+   * 748 document.
+   *
+   * `inline-size`, not merely `max-inline-size`: the slot this lands in can be
+   * shrink-to-fit, and a document that only *allowed* itself 748 got sized by
+   * its widest row instead — the breakout blocks then stopped short of the
+   * column they were supposed to break out to. Asking for the measure outright
+   * is what makes "the document is 748 wide" true rather than aspirational.
    */
   .doc {
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    inline-size: var(--measure-doc);
+    grid-template-columns: var(--document-start) minmax(0, 1fr);
+    inline-size: calc(var(--document-start) + var(--measure-doc));
     max-inline-size: 100%;
-    margin-inline: auto;
     counter-reset: report-section;
   }
 
   /* One block: the block itself in the measure (or across the full width) and
-     its sidenote beside it. */
+     its sidenote beside it. Placed in column 2 explicitly — the rail claims
+     column 1, and auto-placement would put the first block there whenever a
+     document is rendered without one. */
+  .row,
+  .raw,
+  .byline {
+    grid-column: 2;
+  }
+
   .row {
     display: grid;
     grid-template-columns: var(--measure-prose) minmax(0, 1fr);
