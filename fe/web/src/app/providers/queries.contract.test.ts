@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { ApiError, coveListQueryOptions, wavesInCoveQueryOptions } from './queries.ts';
+import { ApiError, coveListQueryOptions, harnessItemsQueryOptions, wavesInCoveQueryOptions } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
   const paths: string[] = [];
@@ -61,5 +61,22 @@ describe('wave list', () => {
     await wavesInCoveQueryOptions(transport, 'c1').queryFn();
     await wavesInCoveQueryOptions(transport, 'c2').queryFn();
     expect(paths).toEqual(['/api/coves/c1/waves', '/api/coves/c2/waves']);
+  });
+});
+
+describe('spec history pagination', () => {
+  it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
+    const firstPage = Array.from({ length: 300 }, (_, index) => ({
+      id: 701 + index, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+      turn_id: null, item_uuid: null, item_type: 'agent_message', method: 'item/completed',
+      params: '{}', created_at_ms: index,
+    }));
+    const { transport, paths } = recordingTransport(() => ok(firstPage));
+    const options = harnessItemsQueryOptions(transport, 'card');
+    const page = await options.queryFn({ pageParam: 0 });
+    const cursor = options.getNextPageParam(page);
+    expect(cursor).toBe(701);
+    await options.queryFn({ pageParam: cursor ?? 0 });
+    expect(paths[1]).toContain('after_id=701');
   });
 });

@@ -1,15 +1,7 @@
-// A conversation is one agent worker session and the thread of turns under it.
-//
-// The kernel already owns this: `WorkerSessionProjection` carries the session,
-// its provider and its state, and `HarnessItem` carries the thread's turns
-// (`harness.item.added` streams them live). What does *not* exist yet is an
-// HTTP endpoint the frontend can read them from — the FE has `/api/coves`,
-// `/api/waves`, `/api/settings` and the event stream, and nothing else.
-//
-// So this type is the shape of a fact the kernel really holds, not one the
-// frontend invented, and the surfaces that render it take a list and render
-// §5.3's unbuilt shape when that list is empty. That is the honest state of it
-// until the endpoint lands: the interface is real, the wire is not there yet.
+import { z } from 'zod';
+
+import type { HarnessItem } from '../api/generated/wire.js';
+import type { ApiOperation } from '../api/types.js';
 
 /** Mirrors `WorkerSessionKind` in `core/api/generated/wire.ts`. */
 export type ConversationKind = 'terminal' | 'codex' | 'claude' | 'shared-spec';
@@ -110,6 +102,124 @@ export type ConversationTurn = Readonly<{
   text: string;
   atMs: number;
 }>;
+
+const harnessItemSchema: z.ZodType<HarnessItem> = z.object({
+  id: z.number(), runtime_id: z.string(), card_id: z.string(), wave_id: z.string(),
+  thread_id: z.string(), turn_id: z.string().nullable(), item_uuid: z.string().nullable(),
+  item_type: z.string().nullable(), method: z.string(), params: z.string(), created_at_ms: z.number(),
+});
+
+const harnessPhaseSchema = z.enum([
+  'pending_thread_start', 'idle', 'issuing_turn', 'issuing_interrupt',
+  'turn_running', 'turn_completed', 'resumed', 'wedged',
+]);
+
+export type SpecRun = Readonly<{
+  card_id: string;
+  runtime_id?: string | null;
+  phase?: z.infer<typeof harnessPhaseSchema> | null;
+}>;
+
+export const HARNESS_ITEMS_PAGE_LIMIT = 300;
+
+export function harnessItemsOperation(cardId: string, afterId = 0, direction: 'asc' | 'desc' = 'desc'):
+ApiOperation<HarnessItem[]> {
+  return {
+    method: 'GET',
+    path: `/api/cards/${encodeURIComponent(cardId)}/harness/items?after_id=${afterId}&limit=${HARNESS_ITEMS_PAGE_LIMIT}&direction=${direction}`,
+    responseSchema: z.array(harnessItemSchema),
+  };
+}
+
+export function specRunOperation(cardId: string): ApiOperation<SpecRun> {
+  return {
+    method: 'GET', path: `/api/cards/${encodeURIComponent(cardId)}/spec/run`,
+    responseSchema: z.object({
+      card_id: z.string(), runtime_id: z.string().nullable().optional(), phase: harnessPhaseSchema.nullable().optional(),
+    }),
+  };
+}
+
+export function sendSpecInputOperation(cardId: string, text: string): ApiOperation<unknown> {
+  return {
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/spec/input`, body: { text },
+    responseSchema: z.object({ card_id: z.string(), runtime_id: z.string() }),
+  };
+}
+
+export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: boolean }> {
+  return {
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/spec/interrupt`,
+    responseSchema: z.object({ card_id: z.string(), runtime_id: z.string(), stopped: z.boolean() }),
+  };
+}
+
+export function resetSpecOperation(cardId: string): ApiOperation<unknown> {
+  return {
+    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/spec/reset`,
+    responseSchema: z.object({
+      card_id: z.string(), terminal_id: z.string(), new_thread_id: z.string(), wave: z.unknown().optional(),
+    }),
+  };
+}
+
+const DIFF_PREFIX = '## Wave state changes since your last turn';
+const DIFF_END = '\n\n---\n\n';
+const USER_SAYS = 'User says:\n';
+
+export function harnessItemToTurn(item: HarnessItem): ConversationTurn | null {
+  if (item.method !== 'item/completed' ||
+      (item.item_type !== 'agent_message' && item.item_type !== 'user_message')) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(item.params); } catch { return null; }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
+  if (typeof envelope.item !== 'object' || envelope.item === null) return null;
+  const payload = envelope.item as { text?: unknown; content?: unknown };
+  let text = item.item_type === 'agent_message'
+    ? (typeof payload.text === 'string' ? payload.text : '')
+    : (Array.isArray(payload.content) ? payload.content.map((part: unknown) => (
+      typeof part === 'object' && part !== null && typeof (part as { text?: unknown }).text === 'string'
+        ? (part as { text: string }).text : ''
+    )).join('') : '');
+  if (item.item_type === 'user_message' && text.startsWith(DIFF_PREFIX)) {
+    const end = text.indexOf(DIFF_END);
+    if (end >= 0) text = text.slice(end + DIFF_END.length);
+  }
+  if (item.item_type === 'user_message' && text.startsWith(USER_SAYS)) text = text.slice(USER_SAYS.length);
+  text = text.trim();
+  if (text === '') return null;
+  return {
+    id: String(item.id), author: item.item_type === 'user_message' ? 'you' : 'agent', text,
+    atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
+      ? envelope.completedAtMs : item.created_at_ms,
+  };
+}
+
+const ECHO_RECONCILIATION_LOOKBACK = 50;
+
+function userTextMatchesEcho(userText: string, echoText: string): boolean {
+  const user = userText.trim();
+  const echo = echoText.trim();
+  return user !== '' && echo !== '' && (user === echo || user.startsWith(`${echo}\n`));
+}
+
+/** Reconcile recent persisted user rows with optimistic echoes one-to-one. */
+export function reconcileUserEchoes(
+  serverTurns: readonly ConversationTurn[],
+  echoes: readonly ConversationTurn[],
+): readonly ConversationTurn[] {
+  const userTexts = serverTurns.filter((turn) => turn.author === 'you')
+    .slice(-ECHO_RECONCILIATION_LOOKBACK).map((turn) => turn.text);
+  const matchedUserIndexes = new Set<number>();
+  return echoes.filter((echo) => {
+    const match = userTexts.findIndex((text, index) =>
+      !matchedUserIndexes.has(index) && userTextMatchesEcho(text, echo.text));
+    if (match < 0) return true;
+    matchedUserIndexes.add(match);
+    return false;
+  });
+}
 
 /**
  * An *exchange* is one thing you said and everything that came back before you
