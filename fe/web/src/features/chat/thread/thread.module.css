@@ -1,22 +1,29 @@
 @layer features {
   /*
-   * ── Register, not chrome ────────────────────────────────────────────────
+   * ── Tinted turn, flat reply ─────────────────────────────────────────────
    *
    * Interface type, 13px sans, for the whole transcript. The report reads at
    * `--text-lg` serif and this deliberately does not: the drawer's measure is
-   * fixed at 372px, and 18px there runs 52 characters a line (choppy) while a
-   * serif at the 13px that *does* land in the band — 71 characters — is below
-   * the size a serif holds up at on screen. A conversation is working type; a
-   * report is published type. Two registers, each at the size its column can
-   * carry.
+   * fixed at 364px, and 18px there runs 52 characters a line (choppy) while a
+   * serif at the 13px that *does* land in the band is below the size a serif
+   * holds up at on screen. A conversation is working type; a report is
+   * published type.
    *
-   * Who spoke is carried by that register and nothing else:
+   * Who spoke is carried by **fill**, which is this system's first instrument:
    *
-   *   what you said   `--text`, medium weight — a directive, usually one line
-   *   what came back  `--text-2`, normal weight — the substance
+   *   what you said   a `--surface-chip` block, sized to its own text
+   *   what came back  flat, the full column, full ink
    *
-   * The alternation does the rest. Eight "YOU"/"AGENT" labels down four
-   * exchanges said what the alternation already said, in a column 372px wide.
+   * That is the shape every serious agent surface converged on — flat
+   * full-width assistant text with the user's turn differentiated by a subtle
+   * ground, rather than two colours of bubble. It also replaces two weaker
+   * devices that were doing the same job badly: a 500-against-400 weight step
+   * and a 16px hanging indent, neither of which is legible at 13px, and both of
+   * which had to be *looked for* to answer the one question you must never have
+   * to look for.
+   *
+   * The reply gets the full column and full ink because it is the substance;
+   * your own line is the shorter thing you already know you wrote.
    */
   .thread {
     display: flex;
@@ -50,35 +57,37 @@
   }
 
   /*
-   * Weight and tone alone were not enough — measured by looking at it: at 13px
-   * a 500 against a 400 and `--text` against `--text-2` is a difference you
-   * have to go looking for, and "who spoke" is the one thing you must never
-   * have to look for. So the reply also *hangs*: your line keeps the column's
-   * flush edge, the reply is inset one step under it.
+   * `fit-content` up to 92%: the block is the length of what you wrote, so a
+   * three-word instruction is a three-word chip and not a banner across the
+   * column. The 92% ceiling keeps a long one from squaring off against the
+   * edges and turning back into a full-bleed slab.
    *
-   * That is the oldest convention there is for a transcript, it costs 16 of the
-   * 372 (a reply still runs 68 characters, inside the band), and it gives the
-   * column a left-edge rhythm you can scan without reading a word.
+   * `--radius-md`, the same corner the composer takes: what you type and what
+   * you typed are the same object at two moments.
    */
   .said {
+    inline-size: fit-content;
+    max-inline-size: 92%;
     min-inline-size: 0;
+    padding: var(--space-3) var(--space-5);
+    border-radius: var(--radius-md);
+    background: var(--surface-chip);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     font-size: var(--text-base);
-    font-weight: var(--weight-semibold);
+    font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text);
   }
 
   .reply {
     min-inline-size: 0;
-    padding-inline-start: var(--space-8);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-base);
-    color: var(--text-2);
+    color: var(--text);
   }
 
   /* The time, where the conversation stopped and started again. Centred and
@@ -138,25 +147,37 @@
   }
 
   /*
-   * The composer is one row: field, then Send on the same line.
+   * ── The composer is an object, not a bar ────────────────────────────────
    *
-   * On its own row the button cost 28px of height plus a gap to say what one
-   * inline button says — in a 396px drawer that turned a one-line message into
-   * a 100px grey slab. It aligns to the *end* of the field so it stays put as
-   * the field grows.
+   * It was a full-bleed `--surface-chip` rectangle with square corners welded
+   * across the bottom of the drawer, so it read as a status bar you could not
+   * touch rather than a field you type in — and on focus it drew a 2px accent
+   * rectangle around the whole 396px width to say a caret had landed in it.
    *
-   * The well sits on the recessed rank rather than behind a rule: the ladder
-   * says −1 is "behind the page" and the drawer's own surface is `--paper`, so
-   * a well cut into it reads as somewhere you put things. That is the
-   * elevation ladder doing the job a `border-block-start` would otherwise do,
-   * which is this system's rule.
+   * Now it is a rounded well that floats clear of the drawer's edges, which is
+   * the shape every agent composer settled on. The geometry is exact rather
+   * than eyeballed:
+   *
+   *   gutter        `--space-2` (4) on both sides and the bottom
+   *   corner        `--radius-md` (12) = the drawer's `--radius-lg` (16) − 4,
+   *                 so the well's arc and the drawer's bottom-inline-start arc
+   *                 share a centre — the concentric rule, satisfied exactly
+   *   text edge     4 gutter + 12 inset = 16, the drawer body's own inset, so
+   *                 the caret sits on the same vertical as the transcript
+   *
+   * The fill is the recessed rank: the ladder says −1 is "behind the page", the
+   * drawer's own surface is `--paper`, and a well cut into it reads as somewhere
+   * you put things. That is elevation doing the job a `border-block-start`
+   * would otherwise do, which is this system's rule.
    */
   .composer {
     display: flex;
     align-items: flex-end;
     gap: var(--space-3);
     flex: none;
-    padding: var(--space-3) var(--space-4) var(--space-3) var(--space-6);
+    margin: 0 var(--space-2) var(--space-2);
+    padding: var(--space-3) var(--space-3) var(--space-3) var(--space-6);
+    border-radius: var(--radius-md);
     background: var(--surface-chip);
   }
 
@@ -173,9 +194,9 @@
     field-sizing: content;
     flex: 1;
     min-inline-size: 0;
-    min-block-size: var(--control-h-sm);
+    min-block-size: var(--control-h);
     max-block-size: calc(var(--control-h) * 5);
-    padding-block: var(--space-1);
+    padding-block: var(--space-2);
     padding-inline: var(--space-0);
     border: none;
     resize: none;
@@ -211,10 +232,52 @@
     color: var(--text-4);
   }
 
+  /*
+   * A round send, `data-nc-role="icon"` — a component geometry, not a bent
+   * `[data-nc-action]`. §4.1's four tiers are one fixed geometry on purpose and
+   * base.css says in as many words that a per-module copy is the drift its gate
+   * exists to catch; the old `.send` was already overriding that geometry's
+   * height and padding. A role carries its own §6 entry instead, which is the
+   * sanctioned way to be a different shape.
+   *
+   * It is still the surface's one primary action and still says "Send" — to a
+   * screen reader through `aria-label`, and to a pointer through the accent
+   * fill, which nothing else in the drawer wears.
+   */
   .send {
+    display: grid;
+    place-items: center;
     flex: none;
-    block-size: var(--control-h-sm);
-    padding-inline: var(--space-4);
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    font-size: var(--glyph-sm);
+    line-height: var(--leading-none);
+    color: var(--text-on-accent);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out,
+      color var(--motion-quick) ease-out;
+  }
+
+  .send:hover,
+  .send:focus-visible {
+    background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
+  }
+
+  /*
+   * Nothing to send: the button drops to the ground it sits on and the arrow
+   * goes quiet. It keeps its size and its place in the focus order — §5.1, and
+   * `aria-disabled` rather than `disabled` in the markup for the same reason.
+   */
+  .send[aria-disabled='true'] {
+    background: var(--overlay-hover);
+    color: var(--text-4);
+    cursor: default;
+  }
+
+  .send[aria-disabled='true']:hover {
+    background-image: none;
   }
 
   @keyframes thread-pulse {

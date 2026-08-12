@@ -245,6 +245,7 @@ function useConversationPanel(
     drawer: (
       <Drawer
         open={open !== null}
+        label="Conversation"
         title={open?.waveTitle ?? ''}
         onClose={() => setOpenId(null)}
         footer={open === null ? undefined : (

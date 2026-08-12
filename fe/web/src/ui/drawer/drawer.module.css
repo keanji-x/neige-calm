@@ -7,6 +7,12 @@
    * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
    * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
    * unrelated content, which is exactly what the exemption is for.
+   *
+   * **No edge line.** The drawer used to carry `border-inline-start: 1px solid
+   * var(--hairline)`, which put a visible hairline down the left of a panel that
+   * already casts a 32px shadow onto the page behind it. Two separators for one
+   * boundary, and the rule here is that if colour can separate, no line is
+   * drawn. The shadow *is* the colour.
    */
   .drawer {
     position: fixed;
@@ -17,7 +23,6 @@
     flex-direction: column;
     inline-size: var(--drawer-w);
     max-inline-size: 100%;
-    border-inline-start: 1px solid var(--hairline);
     border-start-start-radius: var(--radius-lg);
     border-end-start-radius: var(--radius-lg);
     background: var(--paper);
@@ -29,32 +34,84 @@
     outline-offset: -2px;
   }
 
+  /*
+   * ── The head ──────────────────────────────────────────────────────────────
+   *
+   * Built on the app's own header vocabulary (`ui/page-header`): a small label
+   * row, then the title. It was one 12.5px line pinned to a 32px bar with a rule
+   * under it, sitting 12px off the edge — the shape of a browser toolbar, not of
+   * a heading, and it said nothing the title alone did not.
+   *
+   * The label says what the surface *is* (a conversation); the title says what
+   * it is *about* (the wave). That is the crumb/title split the page headers
+   * already use, one rank smaller.
+   *
+   * Inset is `--space-8` — 16, not the 12 it had. The drawer is 396 wide and its
+   * content is a column of prose; 12 is the inset a dense card row wants, and
+   * against a rounded 16px corner it read as text falling off the edge.
+   */
   .head {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: var(--space-2);
+    gap: var(--space-4);
     flex: none;
-    block-size: var(--control-h-lg);
-    padding-inline: var(--space-6) var(--space-4);
-    border-block-end: 1px solid var(--hairline);
+
+    /* End inset is smaller because the close button carries its own 28px hit
+       area: 8 + (28 − 16) / 2 lands the × glyph optically on the 16 inset. */
+    padding: var(--space-8) var(--space-4) var(--space-6) var(--space-8);
+    border-block-end: 1px solid transparent;
+    transition: border-color var(--motion-quick) ease-out;
   }
 
-  .title {
-    min-inline-size: 0;
-    overflow: hidden;
-    font-size: var(--text-sm);
+  /*
+   * The one line that survives, and only while it is doing work: once the
+   * transcript has scrolled under the head, no colour separates them — both are
+   * `--paper` — so the hairline is the only thing that can. Same trade, same
+   * attribute, same token as `[data-nc-scrolled] .header` in `ui/page-header`.
+   */
+  [data-nc-scrolled] .head {
+    border-block-end-color: var(--hairline);
+  }
+
+  .label {
+    font-size: var(--text-xs);
     font-weight: var(--weight-medium);
-    line-height: var(--leading-tight);
-    color: var(--text);
-    white-space: nowrap;
-    text-overflow: ellipsis;
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-4);
+    text-transform: uppercase;
   }
 
+  /*
+   * Two lines, then clamp — not one line with an ellipsis. A wave title is a
+   * sentence ("Reference resolver: this round of fixes"), and at 396px an
+   * ellipsis eats the half of it that says which round.
+   */
+  .title {
+    display: -webkit-box;
+    margin-block-start: var(--space-3);
+    overflow: hidden;
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-snug);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  /*
+   * Pulled up so the × lands on the label's line rather than floating between
+   * the two: a 28px hit area against an 11px line is (11 − 28) / 2 of overhang.
+   * The hit area keeps its full size — this moves where it sits, not how big it
+   * is (§5, 2.5.8).
+   */
   .close {
     display: grid;
     place-items: center;
     flex: none;
+    margin-block-start: calc((var(--text-xs) - var(--control-h)) / 2);
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
@@ -80,7 +137,7 @@
     flex-direction: column;
     gap: var(--space-4);
     min-block-size: 0;
-    padding: var(--space-6);
+    padding: var(--space-4) var(--space-8) var(--space-6);
     overflow: auto;
   }
 

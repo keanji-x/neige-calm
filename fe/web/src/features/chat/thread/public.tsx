@@ -2,28 +2,31 @@
 //
 // ── Why it does not look like a chat app ──────────────────────────────────
 //
-// **No bubbles.** A bubble is a variable-width column, so the prose inside it
-// has no measure — every turn wraps at a different width. In the 372px this
-// drawer actually has, a bubble with its own padding leaves ~330, and the text
-// inside runs 45 characters a line against the 65–75 prose is read at. A bubble
-// also spends a whole shape to encode one bit: who spoke.
+// **Not two bubbles.** The reply is never a bubble: a bubble is a
+// variable-width column, so the prose inside it has no measure — every turn
+// wraps at a different width — and in the 364px this drawer actually has, a
+// bubble with its own padding leaves ~320 and runs 45 characters a line against
+// the 65–75 prose is read at. The reply is the substance and takes the whole
+// column flat, at full ink.
 //
-// **No side-swapping.** Aligning your turns right destroys the one flush left
-// edge that makes a narrow column readable, to gain the same one bit.
+// **One tinted block, for your turn only.** That is the asymmetry every serious
+// agent surface converged on, and the reason it works is that the two turns are
+// not the same kind of object: yours is short, already known to you, and needs
+// only to be *found*; the reply is long and needs to be *read*. A block sized to
+// its own text finds instantly and costs the reply nothing.
+//
+// **No side-swapping.** Right-aligning your turns destroys the one flush left
+// edge that makes a narrow column readable, to gain a bit the fill already
+// carries.
 //
 // **No per-turn labels, and no per-turn timestamps.** This is where the first
 // version of this file was wrong, and it was wrong by measurement: in a strict
 // alternation "YOU" and "AGENT" appeared eight times down four exchanges, and
 // "now" eight times beside them. Sixteen lines of chrome restating the two
 // facts the reader already had — that they are in this conversation, and that
-// turns alternate.
-//
-// What carries "who" instead is **register**, which is free: what you wrote is
-// interface type at full ink and medium weight, a directive; what came back is
-// body tone at normal weight, the substance. What carries "when" is a
-// separator, printed only where the conversation actually stopped and started
-// again (`CONVERSATION_GAP_MS`), which is the only time the answer is not
-// "just now".
+// turns alternate. What carries "when" instead is a separator, printed only
+// where the conversation actually stopped and started again
+// (`CONVERSATION_GAP_MS`), which is the only time the answer is not "just now".
 //
 // The unit is the **exchange** — one thing you said and everything that came
 // back — and the layout groups by it: tight inside, loose between.
@@ -167,11 +170,13 @@ export function ChatComposer({ onSend, disabled = false }: {
       */}
       <button
         type="submit"
-        data-nc-action="primary"
+        data-nc-role="icon"
+        aria-label="Send"
+        title="Send"
         aria-disabled={ready ? undefined : 'true'}
         className={styles.send}
       >
-        Send
+        ↑
       </button>
     </form>
   );

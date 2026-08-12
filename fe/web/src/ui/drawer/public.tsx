@@ -9,12 +9,21 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode, type UIEvent } from 'react';
 
+import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
-export function Drawer({ open, title, onClose, children, footer }: {
+export function Drawer({ open, label, title, onClose, children, footer }: {
   open: boolean;
+  /**
+   * What the surface is — "Conversation". The app's page headers carry a crumb
+   * row above the title for the same reason: a title alone says what this is
+   * *about* and leaves what it *is* to be inferred from context the drawer,
+   * overlaying unrelated content, does not have.
+   */
+  label: string;
+  /** What it is about — the wave. */
   title: string;
   onClose: () => void;
   children: ReactNode;
@@ -27,6 +36,7 @@ export function Drawer({ open, title, onClose, children, footer }: {
   footer?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -41,9 +51,19 @@ export function Drawer({ open, title, onClose, children, footer }: {
 
   if (!open) return null;
   return (
-    <div ref={panelRef} className={styles.drawer} role="complementary" aria-label={title} tabIndex={-1}>
+    <div
+      ref={panelRef}
+      className={styles.drawer}
+      role="complementary"
+      aria-label={title}
+      tabIndex={-1}
+      {...(scrolled ? { 'data-nc-scrolled': '' } : {})}
+    >
       <div className={styles.head}>
-        <h2 className={styles.title}>{title}</h2>
+        <div>
+          <p className={styles.label}>{label}</p>
+          <h2 className={styles.title}>{title}</h2>
+        </div>
         <button
           type="button"
           data-nc-role="icon"
@@ -55,7 +75,18 @@ export function Drawer({ open, title, onClose, children, footer }: {
           ×
         </button>
       </div>
-      <div className={styles.body}>{children}</div>
+      <div
+        className={styles.body}
+        onScroll={(event: UIEvent<HTMLDivElement>) => {
+          // The head's rule appears only once something is under it. Compared
+          // against the current value so a scroll event per frame does not
+          // become a render per frame.
+          const past = event.currentTarget.scrollTop > 0;
+          if (past !== scrolled) setScrolled(past);
+        }}
+      >
+        {children}
+      </div>
       {footer}
     </div>
   );
