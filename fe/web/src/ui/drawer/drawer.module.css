@@ -37,14 +37,14 @@
   /*
    * ── The head ──────────────────────────────────────────────────────────────
    *
-   * Built on the app's own header vocabulary (`ui/page-header`): a small label
-   * row, then the title. It was one 12.5px line pinned to a 32px bar with a rule
-   * under it, sitting 12px off the edge — the shape of a browser toolbar, not of
-   * a heading, and it said nothing the title alone did not.
+   * One line: the title, grey, on the close button's row. Nothing else.
    *
-   * The label says what the surface *is* (a conversation); the title says what
-   * it is *about* (the wave). That is the crumb/title split the page headers
-   * already use, one rank smaller.
+   * It has now been three shapes. A 13px line pinned to a 32px bar with a rule
+   * under it — a browser toolbar. Then a "CONVERSATION" eyebrow above a
+   * full-ink title — the page-header vocabulary, which gave the head a second
+   * line and a second rank to caption a surface that needs no caption. Now the
+   * title alone, quiet, because the head's whole job is to say *which wave* and
+   * then get out of the way of the conversation, which is the P0 here.
    *
    * Inset is `--space-8` — 16, not the 12 it had. The drawer is 396 wide and its
    * content is a column of prose; 12 is the inset a dense card row wants, and
@@ -74,15 +74,6 @@
     border-block-end-color: var(--hairline);
   }
 
-  .label {
-    font-size: var(--text-xs);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
-    letter-spacing: var(--tracking-wider);
-    color: var(--text-4);
-    text-transform: uppercase;
-  }
-
   /*
    * Two lines, then clamp — not one line with an ellipsis. A wave title is a
    * sentence ("Reference resolver: this round of fixes"), and at 396px an
@@ -102,7 +93,7 @@
    */
   .title {
     display: -webkit-box;
-    margin-block-start: var(--space-3);
+    min-inline-size: 0;
     overflow: hidden;
     font-size: var(--text-md);
     font-weight: var(--weight-medium);
@@ -114,16 +105,16 @@
   }
 
   /*
-   * Pulled up so the × lands on the label's line rather than floating between
-   * the two: a 28px hit area against an 11px line is (11 − 28) / 2 of overhang.
-   * The hit area keeps its full size — this moves where it sits, not how big it
-   * is (§5, 2.5.8).
+   * Pulled up so the × centres on the title's **first line** — which is what
+   * keeps them on one row when the title wraps to two. A 28px hit area against
+   * a 19.5px line (15 × 1.3) is (19.5 − 28) / 2 of overhang. The hit area keeps
+   * its full size; this moves where it sits, not how big it is (§5, 2.5.8).
    */
   .close {
     display: grid;
     place-items: center;
     flex: none;
-    margin-block-start: calc((var(--text-xs) - var(--control-h)) / 2);
+    margin-block-start: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);

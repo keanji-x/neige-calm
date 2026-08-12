@@ -239,25 +239,33 @@
   }
 
   /*
-   * The focus ring moves to the well, it does not disappear.
+   * ── Focus is shown by the arrow, not by a ring ──────────────────────────
    *
-   * A ring around the field alone would trace a shape with no edges of its own
-   * — the field *is* the well — so it reads as a stray rectangle. On the well
-   * it is exactly the app's ring around the thing you are typing into.
+   * A 2px accent outline around a 364px well is a lot of blue to say that a
+   * caret landed somewhere. It also stated the loudest thing on the surface,
+   * every time you clicked into the box — which is the opposite of what a quiet
+   * app should do with the most ordinary action it has.
    *
-   * `:focus-within`, not `:focus-visible`, because the target is the parent.
+   * So the ring is gone and the send arrow carries it instead: **no focus, no
+   * arrow.** The well darkens one overlay step at the same moment, so the state
+   * is carried by colour rather than by a line, which is this system's rule
+   * everywhere else.
+   *
+   * There is one deliberate exception to "no focus, no arrow": a well holding
+   * an unsent draft keeps its arrow even when focus has gone. Hiding it there
+   * would leave text you can see and no visible way to send it.
    */
   .field:focus-visible {
     outline: none;
 
-    /* base.css draws a focused field's rule as an inset shadow; the well's ring
-       replaces it, and both together give an underline and a ring at once. */
+    /* base.css draws a focused field's rule as an inset shadow; without a ring
+       around the well, that shadow would be the only chrome left and would read
+       as an underline under a box that has no other lines. */
     box-shadow: none;
   }
 
   .composer:focus-within {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
+    background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
   }
 
   .field::placeholder {
@@ -276,6 +284,28 @@
    * screen reader through `aria-label`, and to a pointer through the accent
    * fill, which nothing else in the drawer wears.
    */
+  /*
+   * ── The send is an arrow, and the arrow is the state ────────────────────
+   *
+   * It was an accent-filled circle, which made the surface's most routine
+   * control its loudest object — a solid blue disc sitting in the corner of a
+   * grey well whether or not there was anything to send. Now it is a glyph on
+   * no ground at all, and its **ink** is the entire state machine:
+   *
+   *   absent      nothing typed and focus elsewhere — there is nothing to do
+   *   `--text-4`  the well is live but empty; the arrow is there, greyed
+   *   `--text`    there is something to send: full ink, maximum against the
+   *               well in both themes (near-black on light, near-white on dark)
+   *
+   * `data-nc-role="icon"`, not `[data-nc-action]`: §4.1's four tiers are one
+   * fixed geometry and base.css says a per-module copy of it is the drift its
+   * gate exists to catch. A role carries its own §6 entry, which is how a
+   * control gets to be a different shape.
+   *
+   * It keeps the full 28px hit area (§5, 2.5.8) and its place in the focus
+   * order at every state — `aria-disabled`, never `disabled`, for the reason
+   * given at the markup.
+   */
   .send {
     display: grid;
     place-items: center;
@@ -283,33 +313,35 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-pill);
-    background: var(--accent);
-    font-size: var(--glyph-sm);
+    background: none;
+    font-size: var(--glyph);
     line-height: var(--leading-none);
-    color: var(--text-on-accent);
+    color: var(--text);
     cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out;
+    transition: color var(--motion-quick) ease-out,
+      opacity var(--motion-quick) ease-out;
   }
 
-  .send:hover,
-  .send:focus-visible {
-    background-image: linear-gradient(var(--overlay-active), var(--overlay-active));
-  }
-
-  /*
-   * Nothing to send: the button drops to the ground it sits on and the arrow
-   * goes quiet. It keeps its size and its place in the focus order — §5.1, and
-   * `aria-disabled` rather than `disabled` in the markup for the same reason.
-   */
   .send[aria-disabled='true'] {
-    background: var(--overlay-hover);
     color: var(--text-4);
     cursor: default;
   }
 
-  .send[aria-disabled='true']:hover {
-    background-image: none;
+  /*
+   * Hidden, not removed: `opacity` keeps it in the layout, in the focus order
+   * and in the accessibility tree, so tabbing into the composer still reaches
+   * Send — and the moment focus lands anywhere inside, `:focus-within` is true
+   * and the arrow is already visible.
+   */
+  .composer:not(:focus-within) .send[aria-disabled='true'] {
+    opacity: 0;
+  }
+
+  /* Keyboard focus still needs to be visible on the control itself; the arrow's
+     appearance says the *well* is live, not which control is focused. */
+  .send:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   @keyframes thread-pulse {

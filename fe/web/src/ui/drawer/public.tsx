@@ -14,16 +14,18 @@ import { useEffect, useRef, type ReactNode, type UIEvent } from 'react';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
-export function Drawer({ open, label, title, onClose, children, footer }: {
+export function Drawer({ open, title, onClose, children, footer }: {
   open: boolean;
   /**
-   * What the surface is — "Conversation". The app's page headers carry a crumb
-   * row above the title for the same reason: a title alone says what this is
-   * *about* and leaves what it *is* to be inferred from context the drawer,
-   * overlaying unrelated content, does not have.
+   * The whole head — one grey line on the close button's row.
+   *
+   * It briefly carried a "CONVERSATION" eyebrow above this, on the theory that
+   * a title says what the surface is *about* and leaves what it *is* to be
+   * inferred. In a drawer that only ever opens from a conversation control,
+   * with a transcript and a message box under it, nothing was left to infer:
+   * the word was a caption on an unambiguous thing, and it cost the head a
+   * whole line and a second type rank to say it.
    */
-  label: string;
-  /** What it is about — the wave. */
   title: string;
   onClose: () => void;
   children: ReactNode;
@@ -60,10 +62,7 @@ export function Drawer({ open, label, title, onClose, children, footer }: {
       {...(scrolled ? { 'data-nc-scrolled': '' } : {})}
     >
       <div className={styles.head}>
-        <div>
-          <p className={styles.label}>{label}</p>
-          <h2 className={styles.title}>{title}</h2>
-        </div>
+        <h2 className={styles.title}>{title}</h2>
         <button
           type="button"
           data-nc-role="icon"
