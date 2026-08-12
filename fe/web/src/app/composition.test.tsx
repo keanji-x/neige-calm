@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiTransportPort } from '../../../core/api/types.ts';
 import { createFakeSocketFactory } from '../systems/events/fake-socket.ts';
+import { WebSocketDriver } from '../systems/events/websocket-driver.ts';
 import { createEventComposition } from './composition.ts';
 import { EventBridge } from './events/event-bridge.tsx';
 
@@ -26,14 +27,16 @@ describe('event composition', () => {
   it('T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id', () => {
     vi.useFakeTimers();
     const fake = createFakeSocketFactory();
-    const composition = createEventComposition({ storage: storage(), transport, socketFactory: fake.factory, url: 'ws://example/api/events' });
+    const driverFactory = vi.fn((options: ConstructorParameters<typeof WebSocketDriver>[0]) => new WebSocketDriver(options));
+    const composition = createEventComposition({ storage: storage(), transport, socketFactory: fake.factory, driverFactory, url: 'ws://example/api/events' });
     render(<EventBridge client={new QueryClient()} stream={composition.stream} syncEventVersion={3} dbInstanceId="db-a" cursor={composition.store} />);
     expect(fake.constructionCount).toBe(1);
     fake.sockets[0].open(); fake.sockets[0].message(cardAdded(23));
     fake.sockets[0].close(); vi.advanceTimersByTime(0); vi.advanceTimersByTime(500);
     fake.sockets[1].open();
     expect(JSON.parse(fake.sockets[1].sent[0])).toEqual({ sub: ['*'], since: 23 });
-    expect(composition.driver).toBeDefined();
+    expect(driverFactory).toHaveBeenCalledOnce();
+    expect(composition.driver).toBe(driverFactory.mock.results[0].value);
   });
 
   it('T-B2 carries a real socket card event through the bridge into wave invalidation', async () => {

@@ -12,6 +12,8 @@ export type EventComposition = Readonly<{
   stream: UnconfiguredEventStream;
 }>;
 
+export type EventDriverFactory = (options: ConstructorParameters<typeof WebSocketDriver>[0]) => WebSocketDriver;
+
 export function createEventComposition(options: Readonly<{
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
   transport: ApiTransportPort;
@@ -19,10 +21,12 @@ export function createEventComposition(options: Readonly<{
   socketFactory?: SocketFactory;
   idle?: CursorIdleScheduler;
   probeUnauthorized?: UnauthorizedProbe;
+  driverFactory?: EventDriverFactory;
   url?: string;
 }>): EventComposition {
   const store = createBrowserCursorStore(options.storage, options.idle);
-  const driver = new WebSocketDriver({
+  const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));
+  const driver = createDriver({
     cursor: store,
     probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation())),
     onUnauthorized: options.onUnauthorized ?? (() => undefined),

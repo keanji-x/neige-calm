@@ -81,10 +81,12 @@ describe('WebSocketDriver contracts', () => {
     const { driver, fake, sink } = harness();
     driver.start(configuration, 'ws://example/api/events', sink);
     fake.sockets[0].close(); vi.advanceTimersByTime(0);
+    const pendingTimer = vi.getTimerCount();
     driver.stop(); driver.start(configuration, 'ws://example/api/events', sink);
     vi.advanceTimersByTime(500);
-    expect(clear).toHaveBeenCalled();
-    expect(fake.constructionCount - fake.closeCount).toBeLessThanOrEqual(1);
+    expect(pendingTimer).toBe(1);
+    expect(clear).toHaveBeenCalledWith(expect.anything());
+    expect(fake.constructionCount).toBe(2);
   });
 
   it('T-D5c stop is idempotent before start and after stop', () => {
@@ -159,15 +161,21 @@ describe('WebSocketDriver contracts', () => {
 
   it('T-D11 ignores an old epoch probe continuation', async () => {
     vi.useFakeTimers();
-    let reject!: (error: unknown) => void;
+    const rejects: Array<(error: unknown) => void> = [];
     const notify = vi.fn();
-    const probe = vi.fn(() => new Promise((_, fail) => { reject = fail; }));
+    const probe = vi.fn(() => new Promise((_, fail) => { rejects.push(fail); }));
     const { driver, fake, sink } = harness({ probe, notify });
     driver.start(configuration, 'ws://example/api/events', sink);
     fake.sockets[0].close(); vi.advanceTimersByTime(0);
     driver.stop(); driver.start(configuration, 'ws://example/api/events', sink);
-    reject(unauthorized); await drain();
+    fake.sockets[1].close(); vi.advanceTimersByTime(0);
+    expect(probe).toHaveBeenCalledTimes(2);
+    rejects[0](unauthorized); await drain();
     expect(notify).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(999);
+    expect(fake.constructionCount).toBe(2);
+    vi.advanceTimersByTime(1);
+    expect(fake.constructionCount).toBe(3);
   });
 
   it('T-B3 rechecks epoch after connected delivery before delivering replay-complete', () => {
@@ -184,14 +192,37 @@ describe('WebSocketDriver contracts', () => {
     expect(fake.constructionCount - fake.closeCount).toBe(1);
   });
 
+  it('T-B3 completes close-side driver writes before the reentrant sink boundary', () => {
+    vi.useFakeTimers();
+    const fake = createFakeSocketFactory();
+    const probe = vi.fn(() => new Promise<void>(() => undefined));
+    const driver = new WebSocketDriver({ cursor: { read: () => null }, probeUnauthorized: probe, onUnauthorized: () => undefined, socketFactory: fake.factory });
+    let restarted = false;
+    const sink: EventStreamSink = {
+      connectionState: (state) => {
+        if (state === 'connecting' && fake.constructionCount === 1 && !restarted) {
+          restarted = true;
+          driver.stop();
+          driver.start(configuration, 'ws://example/api/events', sink);
+        }
+      },
+      frame: () => undefined,
+    };
+    driver.start(configuration, 'ws://example/api/events', sink);
+    fake.sockets[0].close(); vi.advanceTimersByTime(0);
+    fake.sockets[1].close(); vi.advanceTimersByTime(0);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
   it('T-B4 stop prevents any new socket construction from an in-flight old close continuation', () => {
     vi.useFakeTimers();
     const { driver, fake, sink } = harness();
     driver.start(configuration, 'ws://example/api/events', sink);
     fake.sockets[0].close();
     driver.stop();
-    const afterStop = fake.constructionCount;
+    driver.start(configuration, 'ws://example/api/events', sink);
+    const afterRestart = fake.constructionCount;
     vi.runAllTimers();
-    expect(fake.constructionCount).toBe(afterStop);
+    expect(fake.constructionCount).toBe(afterRestart);
   });
 });
