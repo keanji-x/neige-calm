@@ -12,8 +12,8 @@
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
-import { useRef } from 'react';
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef } from 'react';
+import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
@@ -32,16 +32,17 @@ import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { readWaveReport } from '../../../../core/domain/report.ts';
 import {
-  conversationName, conversationNameFrom,
+  conversationName, conversationNameFrom, harnessItemToTurn,
   type Conversation, type ConversationTurn,
 } from '../../../../core/domain/conversation.ts';
-import { Dialog } from '../../ui/dialog/public.tsx';
+import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, prefetchCoveList, settingsQueryOptions, useCoveMutations, useSettingsMutation,
-  useWaveMutations, useWorkspace, waveDetailQueryOptions,
+  ApiError, harnessItemsQueryOptions, prefetchCoveList, settingsQueryOptions, specRunQueryOptions,
+  useCoveMutations, useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
+  waveDetailQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
@@ -72,85 +73,75 @@ import { PendingRoute } from './pending-route.tsx';
  * stub has to have some — and it stays honest by naming itself, rather than by
  * being too short to read.
  */
-const STUB_REPLY =
-  'No agent is attached to this build, so this is a canned reply. It runs a few '
-  + 'sentences on purpose: the length is the point, because a one-word answer '
-  + 'cannot show what a real one does to the column. The reply keeps the full '
-  + 'width and the serif; your own turn stays short, sans, and on the other side.';
-const STUB_REPLY_DELAY_MS = 400;
-
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly ConversationTurn[];
   pending: ReadonlySet<string>;
-  start: (wave: { id: string; title: string }) => Conversation;
+  start: () => Conversation | null;
   send: (conversationId: string, text: string) => void;
+  interrupt: () => void;
+  reset: () => void;
 }>;
 
-function useConversationStore(): ConversationStore {
-  const [conversations, setConversations] = useState<readonly Conversation[]>([]);
-  const [turns, setTurns] = useState<Readonly<Record<string, readonly ConversationTurn[]>>>({});
-  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
+  const cardId = scope?.cardId ?? '';
+  const history = useInfiniteQuery({
+    ...harnessItemsQueryOptions(transport, cardId), enabled: scope !== null,
+  });
+  const run = useQuery({ ...specRunQueryOptions(transport, cardId), enabled: scope !== null });
+  const mutations = useSpecMutations(transport, cardId);
+  const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
   const seq = useRef(0);
-  const nextId = (prefix: string) => { seq.current += 1; return `${prefix}-${seq.current}`; };
+  const serverTurns = useMemo(() => (history.data?.pages ?? [])
+    .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
+      const turn = harnessItemToTurn(item);
+      return turn === null ? [] : [turn];
+    }), [history.data]);
+  const { fetchNextPage, hasNextPage, isFetchingNextPage } = history;
+  useEffect(() => {
+    if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  useEffect(() => {
+    const texts = serverTurns.filter((turn) => turn.author === 'you').map((turn) => turn.text.trim());
+    setEchoes((current) => current.filter((echo) => !texts.some((text) =>
+      text === echo.text.trim() || text.startsWith(`${echo.text.trim()}\n`),
+    )));
+  }, [serverTurns]);
+  useEffect(() => { setEchoes([]); }, [cardId]);
 
-  const start = (wave: { id: string; title: string }): Conversation => {
-    const now = Date.now();
-    const conversation: Conversation = {
-      id: nextId('conv'), waveId: wave.id, waveTitle: wave.title, title: null,
-      kind: 'codex', state: 'idle', updatedAt: now, turns: 0,
-    };
-    setConversations((current) => [conversation, ...current]);
-    return conversation;
+  const turns = [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs);
+  const phase = run.data?.phase ?? null;
+  const working = phase === 'issuing_turn' || phase === 'turn_running';
+  const conversation: Conversation | null = scope === null ? null : {
+    id: scope.cardId, waveId: scope.id, waveTitle: scope.title,
+    title: scope.cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+    kind: 'shared-spec', state: working ? 'running' : 'idle',
+    updatedAt: turns.at(-1)?.atMs ?? scope.updatedAt, turns: turns.length,
   };
 
-  const append = (conversationId: string, turn: ConversationTurn) => {
-    setTurns((current) => ({ ...current, [conversationId]: [...(current[conversationId] ?? []), turn] }));
-    setConversations((current) => current.map((conversation) => (
-      conversation.id === conversationId
-        ? { ...conversation, updatedAt: turn.atMs, turns: conversation.turns + 1 }
-        : conversation
-    )));
-  };
-
-  const send = (conversationId: string, text: string) => {
-    append(conversationId, { id: nextId('turn'), author: 'you', text, atMs: Date.now() });
-    /*
-     * The first thing you say names the conversation, and nothing after it
-     * renames it. That is what every agent surface does, and the reason is that
-     * a name has to be stable to be a name: one that tracked the latest message
-     * would move in the list every time you spoke.
-     */
-    setConversations((current) => current.map((conversation) => (
-      conversation.id === conversationId && conversation.title === null
-        ? { ...conversation, title: conversationNameFrom(text) }
-        : conversation
-    )));
-    setPending((current) => new Set(current).add(conversationId));
-    // A delay, because the state it puts the surface in is real: the live dot
-    // and the "working" state exist and have to be reachable to be looked at.
-    window.setTimeout(() => {
-      append(conversationId, { id: nextId('turn'), author: 'agent', text: STUB_REPLY, atMs: Date.now() });
-      setPending((current) => {
-        const next = new Set(current);
-        next.delete(conversationId);
-        return next;
-      });
-    }, STUB_REPLY_DELAY_MS);
+  const send = (_conversationId: string, text: string) => {
+    seq.current += 1;
+    const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
+    setEchoes((current) => [...current, echo]);
+    void mutations.send(text).catch(() => {
+      setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
+    });
   };
 
   return {
-    conversations,
-    turnsOf: (conversationId) => turns[conversationId] ?? EMPTY_TURNS,
-    pending,
-    start,
+    conversations: conversation === null ? [] : [conversation],
+    turnsOf: () => turns,
+    pending: working && conversation !== null ? new Set([conversation.id]) : new Set(),
+    start: () => conversation,
     send,
+    interrupt: () => { void mutations.interrupt(); },
+    reset: () => { void mutations.reset().then(() => setEchoes([])); },
   };
 }
 
-/** One frozen reference, so a conversation with no turns does not hand React a
- *  new array on every render. */
-const EMPTY_TURNS: readonly ConversationTurn[] = Object.freeze([]);
+type SpecConversationScope = Readonly<{
+  id: string; title: string; cardId: string; cardTitle: string | null; updatedAt: number;
+}>;
 
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
@@ -239,11 +230,13 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
  * `open === null` check in every branch that reads one.
  */
 function useConversationPanel(
-  scope: { id: string; title: string } | null,
+  transport: ApiTransportPort,
+  scope: SpecConversationScope | null,
   options?: { showWave?: boolean },
 ) {
-  const store = useConversationStore();
+  const store = useConversationStore(transport, scope);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
 
   /*
@@ -254,7 +247,8 @@ function useConversationPanel(
    */
   const start = () => {
     if (scope === null) return;
-    setOpenId(store.start(scope).id);
+    const conversation = store.start();
+    if (conversation !== null) setOpenId(conversation.id);
   };
 
   return {
@@ -272,12 +266,17 @@ function useConversationPanel(
       ? undefined
       : <PanelAction label="New conversation" onClick={start}>+</PanelAction>,
     drawer: (
+      <>
       <Drawer
         open={open !== null}
         title={open === null ? '' : conversationName(open)}
         onClose={() => setOpenId(null)}
         footer={open === null ? undefined : (
-          <ChatComposer onSend={(text) => store.send(open.id, text)} />
+          <>
+            <ChatComposer onSend={(text) => store.send(open.id, text)} />
+            <button type="button" onClick={store.interrupt}>Stop</button>
+            <button type="button" onClick={() => setConfirmingReset(true)}>Reset conversation</button>
+          </>
         )}
       >
         {open !== null && (
@@ -288,6 +287,15 @@ function useConversationPanel(
           />
         )}
       </Drawer>
+      <ConfirmDialog
+        open={confirmingReset}
+        title="Reset conversation?"
+        description="This clears the transcript and starts a new agent thread. This cannot be undone."
+        confirmLabel="Reset conversation"
+        onCancel={() => setConfirmingReset(false)}
+        onConfirm={() => { setConfirmingReset(false); store.reset(); }}
+      />
+      </>
     ),
   };
 }
@@ -300,7 +308,7 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(null);
+  const chat = useConversationPanel(transport, null);
   return (
     <>
     <TodayPage
@@ -344,7 +352,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(null);
+  const chat = useConversationPanel(transport, null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -478,8 +486,15 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
   const go = useGo();
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
+  const specCard = cards.find((card) => card.kind === 'codex' &&
+    typeof card.payload === 'object' && card.payload !== null &&
+    (card.payload as { spec_harness?: unknown }).spec_harness === true);
   const chat = useConversationPanel(
-    { id: wave.id, title: waveDisplayTitle(wave.title) },
+    transport,
+    specCard === undefined ? null : {
+      id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
+      cardTitle: specCard.title, updatedAt: specCard.updated_at,
+    },
     { showWave: false },
   );
 

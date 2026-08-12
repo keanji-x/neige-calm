@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import type { HarnessItem } from '../api/generated/wire.js';
 import {
-  CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
+  CONVERSATION_NAME_MAX, conversationName, conversationNameFrom, harnessItemToTurn,
   type Conversation,
 } from './conversation.js';
 
@@ -43,9 +44,35 @@ describe('conversationNameFrom', () => {
     expect(conversationNameFrom(exact)).toBe(exact);
   });
 
-  /* A message can be sent with only whitespace trimmed away by the composer,
-     but this is a pure function and callers should not have to pre-check. */
   it.each([['empty', ''], ['whitespace', '   \n  ']])('has no name for a %s message', (_label, text) => {
     expect(conversationNameFrom(text)).toBeNull();
+  });
+});
+
+function item(overrides: Partial<HarnessItem> = {}): HarnessItem {
+  return {
+    id: 7, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+    turn_id: 'turn', item_uuid: 'item', item_type: 'agent_message', method: 'item/completed',
+    params: JSON.stringify({ completedAtMs: 99, item: { text: 'answer' } }), created_at_ms: 50,
+    ...overrides,
+  };
+}
+
+describe('harnessItemToTurn', () => {
+  it('maps completed agent messages', () => {
+    expect(harnessItemToTurn(item())).toEqual({ id: '7', author: 'agent', text: 'answer', atMs: 99 });
+  });
+
+  it('strips the injected wave diff and user marker', () => {
+    const text = '## Wave state changes since your last turn\nchanged\n\n---\n\nUser says:\nhello';
+    expect(harnessItemToTurn(item({
+      item_type: 'user_message', params: JSON.stringify({ item: { content: [{ type: 'text', text }] } }),
+    }))).toMatchObject({ author: 'you', text: 'hello' });
+  });
+
+  it('drops incomplete and unsupported entries', () => {
+    expect(harnessItemToTurn(item({ method: 'item/started' }))).toBeNull();
+    expect(harnessItemToTurn(item({ item_type: 'command_execution' }))).toBeNull();
+    expect(harnessItemToTurn(item({ params: '{broken' }))).toBeNull();
   });
 });
