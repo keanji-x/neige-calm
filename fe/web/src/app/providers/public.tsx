@@ -26,7 +26,7 @@ export function retryUnless401(failureCount: number, error: unknown): boolean {
 
 export function AppProviders({ children, runtime, renderEventBridge, cursorStore, client }: {
   children: ReactNode; runtime: ProviderRuntime; renderEventBridge?: (server: ServerVersionInfo) => ReactNode;
-  cursorStore?: Pick<SyncCursorPort, 'clear'>; client: QueryClient;
+  cursorStore: Pick<SyncCursorPort, 'clear'>; client: QueryClient;
 }) {
   return <QueryClientProvider client={client}><ThemeProvider storage={runtime.storage}>
     <ServerCompatGate client={client} runtime={runtime} renderEventBridge={renderEventBridge} cursorStore={cursorStore}>{children}</ServerCompatGate>
@@ -39,7 +39,7 @@ function safeDelete(runtime: ProviderRuntime): void { try { runtime.deleteDataba
 
 export function ServerCompatGate({ children, runtime, client, renderEventBridge, cursorStore }: {
   children: ReactNode; runtime: ProviderRuntime; client: QueryClient;
-  renderEventBridge?: (server: ServerVersionInfo) => ReactNode; cursorStore?: Pick<SyncCursorPort, 'clear'>;
+  renderEventBridge?: (server: ServerVersionInfo) => ReactNode; cursorStore: Pick<SyncCursorPort, 'clear'>;
 }) {
   const [busted, setBusted] = useState(false);
   const [previousInstanceId] = useState(() => safeRead(runtime, DB_INSTANCE_ID_KEY));
@@ -50,7 +50,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge,
     if (!id) return;
     const previous = previousInstanceId;
     if (previous && previous !== id) {
-      client.clear(); cursorStore?.clear(); safeDelete(runtime);
+      client.clear(); cursorStore.clear(); safeDelete(runtime);
       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;
     }
     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);

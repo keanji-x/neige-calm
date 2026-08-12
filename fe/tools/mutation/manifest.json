@@ -1,5 +1,14 @@
 [
   {
+    "mutation_id": "events-bridge-reconnect-before-persist-and-post-sink-write",
+    "defends": ["design:§5.1", "design:§5.3(c)"],
+    "target": "web/src/app/events/event-bridge.tsx",
+    "patch": "diff --git a/core/events/reducer.ts b/core/events/reducer.ts\n--- a/core/events/reducer.ts\n+++ b/core/events/reducer.ts\n@@ -33,1 +33,1 @@\n-        effects: [{ type: 'persist-cursor', id: null }, { type: 'clear-cache' }, { type: 'reconnect' }],\n+        effects: [{ type: 'reconnect' }, { type: 'persist-cursor', id: null }, { type: 'clear-cache' }],\ndiff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,0 +115,1 @@\n+      this.socket = socket;\n",
+    "expected_red": ["event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket", "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete"],
+    "selection_paths": ["web/src/app/composition.test.tsx", "web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "The combined mutation covers reducer effect order and a driver field write after the synchronous sink boundary."
+  },
+  {
     "mutation_id": "no-class-dom-query-drop-closest",
     "defends": ["arch-rule:no-class-dom-query"],
     "target": "tools/architecture/no-class-dom-query.mjs",
@@ -323,5 +332,158 @@
     "expected_red": ["app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"],
     "selection_paths": ["web/src/app/providers/public.contract.test.tsx"],
     "why_more_than_one": "Only the retry-policy contract passes real ApiError instances whose HTTP status is nested under failure."
+  },
+  {
+    "mutation_id": "events-driver-drop-subscription",
+    "defends": ["oracle:INV-APP-049"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -104,1 +104,0 @@\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n",
+    "expected_red": ["WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D1 directly observes the first open publication."
+  },
+  {
+    "mutation_id": "events-driver-subscribe-first-open-only",
+    "defends": ["oracle:INV-APP-055"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -104,1 +104,1 @@\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      if (this.retryDelay !== 500) socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n",
+    "expected_red": ["WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D2 uniquely observes the second open."
+  },
+  {
+    "mutation_id": "events-driver-handmade-subscription",
+    "defends": ["oracle:INV-APP-049"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -104,1 +104,1 @@\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      socket.send(JSON.stringify({ sub: configuration.topics }));\n",
+    "expected_red": ["WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor", "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "Both first and sticky subscription assertions consume the shared protocol frame."
+  },
+  {
+    "mutation_id": "events-driver-connect-on-open",
+    "defends": ["oracle:INV-APP-044"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -102,0 +103,1 @@\n+      sink.connectionState('connected');\n",
+    "expected_red": ["WebSocketDriver contracts T-D4 stays connecting on open and becomes connected only before replay-complete delivery"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "Only T-D4 records state before replay completion."
+  },
+  {
+    "mutation_id": "events-driver-drop-retry-epoch-guards",
+    "defends": ["design:§5.3(a)(b)"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -88,1 +88,1 @@\n-    if (this.closed || epoch !== this.epoch) return;\n+    // mutated: connect guard removed\n@@ -142,1 +142,1 @@\n-      if (this.closed || epoch !== this.epoch) return;\n+      // mutated: timer closed/epoch guard removed\n",
+    "expected_red": ["WebSocketDriver contracts T-D5a rejects an already-dequeued retry callback after stop"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "Combined patch removes the timer closed check, timer epoch check, and connect entry check represented by the two compound guards."
+  },
+  {
+    "mutation_id": "events-driver-drop-clear-retry",
+    "defends": ["design:§5.3(b)"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -73,1 +73,0 @@\n-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n",
+    "expected_red": ["WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D5b separately observes cancellation and live socket balance."
+  },
+  {
+    "mutation_id": "events-driver-stop-before-start-throws",
+    "defends": ["event-stream.ts:20"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -69,0 +70,1 @@\n+    if (this.socket === null) throw new Error('not started');\n",
+    "expected_red": ["WebSocketDriver contracts T-D5c stop is idempotent before start and after stop"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "Only T-D5c stops before start."
+  },
+  {
+    "mutation_id": "events-driver-remove-backoff-cap-reset",
+    "defends": ["oracle:INV-APP-046"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -103,1 +103,0 @@\n-      this.retryDelay = 500;\n@@ -139,1 +138,1 @@\n-    this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n+    this.retryDelay *= 2;\n",
+    "expected_red": ["WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "The assertion locks both cap and open reset."
+  },
+  {
+    "mutation_id": "events-driver-probe-live-close",
+    "defends": ["oracle:INV-APP-047"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -130,1 +130,1 @@\n-      if (!opened) this.probe(epoch);\n+      this.probe(epoch);\n",
+    "expected_red": ["WebSocketDriver contracts T-D7 probes only a connection that closes before open"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D7 contrasts pre-open and post-open close."
+  },
+  {
+    "mutation_id": "events-driver-drop-probe-latch",
+    "defends": ["oracle:INV-APP-048"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -149,1 +149,0 @@\n-    if (this.probeInFlight) return;\n",
+    "expected_red": ["WebSocketDriver contracts T-D8 permits only one unauthorized probe in flight"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D8 creates two closes while the first probe remains pending."
+  },
+  {
+    "mutation_id": "events-driver-notify-every-401",
+    "defends": ["design:§5.5"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -157,1 +157,1 @@\n-      if (isUnauthorized(error) && !this.unauthorized) {\n+      if (isUnauthorized(error)) {\n",
+    "expected_red": ["WebSocketDriver contracts T-D9 continues normal retry and notifies only on an ok-to-unauthorized transition across epochs"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D9 observes repeated 401s within and across epochs."
+  },
+  {
+    "mutation_id": "events-driver-let-constructor-throw",
+    "defends": ["design:§5.3(d)"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -94,2 +94,1 @@\n-    try { socket = this.socketFactory(this.url); }\n-    catch { this.scheduleRetry(epoch); return; }\n+    socket = this.socketFactory(this.url);\n",
+    "expected_red": ["WebSocketDriver contracts T-D10 contains socket construction failures and retries"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "Only T-D10 injects a throwing constructor."
+  },
+  {
+    "mutation_id": "events-driver-old-probe-mutates-new-epoch",
+    "defends": ["design:§5.3(a)"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -156,1 +156,1 @@\n-      if (this.closed || epoch !== this.epoch) return;\n+      // mutated: stale probe continuation allowed\n",
+    "expected_red": ["WebSocketDriver contracts T-D11 ignores an old epoch probe continuation"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "T-D11 resolves epoch one after epoch two starts."
+  },
+  {
+    "mutation_id": "app-composition-split-cursor-store",
+    "defends": ["design:§4.1", "design:§5.5"],
+    "target": "web/src/app/composition.ts",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -31,1 +31,1 @@\n-    cursor: store,\n+    cursor: createBrowserCursorStore(options.storage, options.idle),\n",
+    "expected_red": ["event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id"],
+    "selection_paths": ["web/src/app/composition.test.tsx"],
+    "why_more_than_one": "T-A1 writes through the bridge store before the idle flush and observes the driver store."
+  },
+  {
+    "mutation_id": "app-bridge-reopen-on-context-change",
+    "defends": ["oracle:INV-APP-020"],
+    "target": "web/src/app/events/event-bridge.tsx",
+    "patch": "diff --git a/web/src/app/events/event-bridge.tsx b/web/src/app/events/event-bridge.tsx\n--- a/web/src/app/events/event-bridge.tsx\n+++ b/web/src/app/events/event-bridge.tsx\n@@ -76,1 +76,1 @@\n-  }, [stream, syncEventVersion]);\n+  }, [stream, syncEventVersion, context]);\n",
+    "expected_red": ["EventBridge contracts INV-APP-020 starts exactly once per stream instance across re-renders and remounts"],
+    "selection_paths": ["web/src/app/events/event-bridge.contract.test.tsx"],
+    "why_more_than_one": "The contract rerenders with fresh context identities."
+  },
+  {
+    "mutation_id": "app-adapter-drop-wave-invalidation",
+    "defends": ["design:T-B2"],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -34,1 +34,1 @@\n-  if (head === 'wave' && typeof key[1] === 'string') return ['wave', key[1]];\n+  if (head === 'wave' && typeof key[1] === 'string') return null;\n",
+    "expected_red": ["event composition T-B2 carries a real socket card event through the bridge into wave invalidation"],
+    "selection_paths": ["web/src/app/composition.test.tsx"],
+    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter."
+  },
+  {
+    "mutation_id": "events-driver-drop-all-epoch-protection",
+    "defends": ["design:§5.3(e)"],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -58,1 +58,1 @@\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n@@ -69,1 +69,0 @@\n-    ++this.epoch;\n@@ -88,1 +87,1 @@\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n",
+    "expected_red": ["WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation"],
+    "selection_paths": ["web/src/systems/events/websocket-driver.contract.test.ts"],
+    "why_more_than_one": "The combined mutation removes epoch advancement and representative callback/connect guards; T-B4 asserts construction count after stop."
   }
 ]

@@ -7,6 +7,7 @@ import { AppProviders, ServerCompatGate, WEB_COMPAT_VERSION, type ProviderRuntim
 import { useTheme as requireTheme } from '../theme/public.tsx';
 
 const compatible = { webCompatVersion: WEB_COMPAT_VERSION, minWebCompatVersion: WEB_COMPAT_VERSION, syncEventVersion: 2, dbInstanceId: 'db-a' };
+const noopCursorStore = { clear: () => undefined };
 function memoryStorage() { const values = new Map<string, string>(); return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } }; }
 function runtime(overrides: Partial<ProviderRuntime> = {}): ProviderRuntime {
   return { fetchVersion: () => Promise.resolve(compatible), reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'neige-calm', storage: memoryStorage(), ...overrides };
@@ -19,14 +20,14 @@ describe('provider behavior', () => {
       const { resolved } = requireTheme();
       return <span>route:{resolved}</span>;
     }
-    render(<AppProviders client={new QueryClient()} runtime={runtime()}><ThemeConsumer /></AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime()} cursorStore={noopCursorStore}><ThemeConsumer /></AppProviders>);
     expect(screen.getByText(/^route:(?:light|dark)$/u)).toBeTruthy();
   });
   it('CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel', async () => {
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
     const server = { ...compatible, minWebCompatVersion: WEB_COMPAT_VERSION + 1 };
-    render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })}>route</ServerCompatGate>);
+    render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ fetchVersion: () => Promise.resolve(server) })} cursorStore={noopCursorStore}>route</ServerCompatGate>);
     const action = await screen.findByRole('button', { name: 'Refresh now' });
     expect(document.activeElement).toBe(action);
     const panel = screen.getByRole('dialog');
@@ -35,21 +36,21 @@ describe('provider behavior', () => {
   it('INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain', async () => {
     let resolve!: (value: typeof compatible) => void;
     const fetchVersion = () => new Promise<typeof compatible>((done) => { resolve = done; });
-    render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })} renderEventBridge={() => <i>bridge</i>}><b>route</b></AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })} cursorStore={noopCursorStore} renderEventBridge={() => <i>bridge</i>}><b>route</b></AppProviders>);
     expect(screen.getByText('route')).toBeTruthy(); expect(screen.queryByText('bridge')).toBeNull();
     resolve(compatible); await waitFor(() => expect(screen.getByText('bridge')).toBeTruthy());
   });
 
   it('INV-APP-007 checks once per mount without retaining the version query', async () => {
-    const fetchVersion = vi.fn(() => Promise.resolve(compatible)); const first = render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })}>ok</AppProviders>);
+    const fetchVersion = vi.fn(() => Promise.resolve(compatible)); const first = render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })} cursorStore={noopCursorStore}>ok</AppProviders>);
     await waitFor(() => expect(fetchVersion).toHaveBeenCalledTimes(1)); first.unmount();
-    render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })}>ok</AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime({ fetchVersion })} cursorStore={noopCursorStore}>ok</AppProviders>);
     await waitFor(() => expect(fetchVersion).toHaveBeenCalledTimes(2));
   });
 
   it('INV-APP-008 preserves children and skips cache work on a version failure', async () => {
     const clear = vi.fn(); const client = new QueryClient(); vi.spyOn(client, 'clear').mockImplementation(clear);
-    render(<ServerCompatGate client={client} runtime={runtime({ fetchVersion: () => Promise.reject(new Error('offline')) })}>route</ServerCompatGate>);
+    render(<ServerCompatGate client={client} runtime={runtime({ fetchVersion: () => Promise.reject(new Error('offline')) })} cursorStore={noopCursorStore}>route</ServerCompatGate>);
     expect(screen.getByText('route')).toBeTruthy(); await new Promise((done) => setTimeout(done, 0)); expect(clear).not.toHaveBeenCalled();
   });
 
@@ -68,17 +69,18 @@ describe('provider behavior', () => {
   it('T-A2 never constructs the bridge when the persisted database instance has switched', async () => {
     const storage = memoryStorage(); storage.setItem(DB_INSTANCE_ID_KEY, 'db-old');
     storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: 'db-old', cursor: 99 }));
-    const renderEventBridge = vi.fn(() => <i>bridge</i>); const cursorStore = { clear: vi.fn() };
+    let socketConstructionCount = 0;
+    const renderEventBridge = vi.fn(() => { socketConstructionCount += 1; return <i>bridge</i>; }); const cursorStore = { clear: vi.fn() };
     render(<ServerCompatGate client={new QueryClient()} runtime={runtime({ storage })} cursorStore={cursorStore} renderEventBridge={renderEventBridge}>route</ServerCompatGate>);
     await waitFor(() => expect(cursorStore.clear).toHaveBeenCalledOnce());
-    expect(renderEventBridge).not.toHaveBeenCalled(); expect(screen.queryByText('bridge')).toBeNull();
+    expect(renderEventBridge).not.toHaveBeenCalled(); expect(socketConstructionCount).toBe(0); expect(screen.queryByText('bridge')).toBeNull();
   });
 
   it('INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id', async () => {
     for (const prior of [null, 'db-a']) {
       const storage = memoryStorage(); if (prior) storage.setItem(DB_INSTANCE_ID_KEY, prior); storage.setItem(SYNC_CURSOR_KEY, 'keep');
       const reload = vi.fn(); const deleteDatabase = vi.fn(); const r = runtime({ storage, reload, deleteDatabase }); const client = new QueryClient(); const clear = vi.spyOn(client, 'clear');
-      const view = render(<ServerCompatGate client={client} runtime={r}>route</ServerCompatGate>);
+      const view = render(<ServerCompatGate client={client} runtime={r} cursorStore={noopCursorStore}>route</ServerCompatGate>);
       await waitFor(() => expect(storage.getItem(DB_INSTANCE_ID_KEY)).toBe('db-a'));
       expect(clear).not.toHaveBeenCalled(); expect(deleteDatabase).not.toHaveBeenCalled(); expect(reload).not.toHaveBeenCalled();
       expect(storage.getItem(SYNC_CURSOR_KEY)).toBe('keep'); view.unmount();
@@ -87,7 +89,7 @@ describe('provider behavior', () => {
 
   it('INV-APP-015 degrades when storage and indexedDB adapters throw', async () => {
     const broken = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); }, removeItem: () => { throw new Error('blocked'); }, clear: vi.fn(), key: () => null, length: 0 } satisfies Storage;
-    render(<AppProviders client={new QueryClient()} runtime={runtime({ storage: broken, deleteDatabase: () => { throw new Error('blocked'); } })}>route</AppProviders>);
+    render(<AppProviders client={new QueryClient()} runtime={runtime({ storage: broken, deleteDatabase: () => { throw new Error('blocked'); } })} cursorStore={noopCursorStore}>route</AppProviders>);
     expect(screen.getByText('route')).toBeTruthy(); await new Promise((done) => setTimeout(done, 0)); expect(screen.getByText('route')).toBeTruthy();
   });
 });

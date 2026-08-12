@@ -91,6 +91,7 @@ describe('EventBridge contracts', () => {
       <ServerCompatGate
         client={client}
         runtime={runtime({ fetchVersion })}
+        cursorStore={{ clear: () => undefined }}
         renderEventBridge={(server) => (
           <EventBridge client={client} stream={stream} syncEventVersion={server.syncEventVersion} dbInstanceId={server.dbInstanceId} cursor={memoryCursor()} />
         )}
