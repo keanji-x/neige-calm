@@ -1,0 +1,28 @@
+@layer ui {
+  .title {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    padding: var(--space-1) var(--space-2);
+    margin-inline-start: calc(-1 * var(--space-2));
+    font: inherit;
+    color: inherit;
+    cursor: text;
+    text-align: start;
+  }
+
+  .title:hover {
+    border-color: var(--hairline);
+    background: var(--overlay-hover-faint);
+  }
+
+  /* Rule, box and colour come from base.css's one text-field recipe. What is
+     local is the alignment: the input replaces the title in place, so it keeps
+     the title's own type and sheds the button's inline padding rather than
+     re-adding its own — the characters must not move when editing opens. */
+  .input {
+    padding-block: var(--space-1);
+    font: inherit;
+    min-width: 0;
+  }
+}

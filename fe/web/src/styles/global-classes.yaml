@@ -1,1 +1,17 @@
-[]
+# The closed list of global (non-module) CSS classes. `repository-check.mjs`
+# compares it against the actual non-module CSS both ways, so an unlisted class
+# and an unused entry both fail. A twelfth entry is a design-spec change.
+#
+# base.css owns the first two; styles/dialog.css owns the nine the frozen dialog
+# primitive hard-codes (§0.2, §0.4 CR-4 / CR-7).
+- calm-prose
+- tnum
+- dialog-overlay
+- dialog-overlay-wide
+- dialog-panel
+- dialog-panel-wide
+- dialog-header
+- dialog-body
+- dialog-child-view
+- confirm-dialog-actions
+- confirm-dialog-label

@@ -1,0 +1,190 @@
+@layer ui {
+  /*
+   * `--header-h` is derived from the rows actually rendered: the title row is
+   * always 32, and each extra row adds a 24px slot plus the 6px inter-row gap.
+   * The four routes land on Today 32 / cove 62 / Settings 62 / wave 92.
+   */
+  /*
+   * These land on the header's **parent**, not on the header.
+   *
+   * `--header-h` was declared on `.header` itself and then consumed by nothing
+   * — three routes carried comments saying what it worked out to, and no rule
+   * anywhere read it. Its missing consumer is the panel card, which has to
+   * stick underneath the header and therefore has to know how tall it is; and a
+   * sibling cannot read a custom property set on a sibling.
+   *
+   * `:has(> .header)` names the parent without the parent having to name
+   * itself, so the four page modules stay ignorant of this and the row
+   * arithmetic stays in one place. The value then inherits to everything in the
+   * page, the header included.
+   */
+  :where(*):has(> .header) {
+    /* The band above the title — see `.header`'s own note. */
+    --header-band: calc(var(--header-baseline) - 21.7px);
+    --header-h: var(--control-h-lg);
+  }
+
+  :where(*):has(> .header[data-nc-header-rows='2']) {
+    --header-h: calc(var(--control-h-lg) + var(--row-h-sm) + var(--space-3));
+  }
+
+  :where(*):has(> .header[data-nc-header-rows='3']) {
+    --header-h: calc(var(--control-h-lg) + var(--row-h-sm) * 2 + var(--space-3) * 2);
+  }
+
+  /*
+   * The document routes' offset, derived rather than typed: the main column is
+   * the page's inner width less the panel and its gutter, and the prose is
+   * centred in it, so the title's start is half the difference.
+   *
+   *   (1180 − 3×24 − 280 − 504) / 2 = 162
+   *
+   * `padding-inline-start`, not a max-width — the sticky header's background
+   * must still span the full page, or content scrolls out from under it at the
+   * edges.
+   */
+  .header[data-nc-align='document'] {
+    --document-start: calc(
+      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--measure-prose)) / 2
+    );
+
+    /*
+     * The title *hangs* — it stops one gutter short of the prose rather than
+     * landing on it. Flush, the header reads as the document's first line;
+     * hung, it reads as what it is, the page's label for the document below.
+     *
+     * One `--space-10` is the size chosen, and the reason it is not free: the
+     * page's own inset and the grid's gutter are both `--space-10`, so a hang
+     * of exactly one gutter is a distance already on the page rather than a new
+     * one. Bigger reads as misalignment (the 162 it started at was the whole
+     * offset, and looked like a bug); smaller stops registering as deliberate.
+     */
+    --title-hang: var(--space-10);
+
+    padding-inline-start: calc(var(--document-start) - var(--title-hang));
+  }
+
+  .header {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--z-sticky);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+
+    /*
+     * The band belongs to the header, not to the page.
+     *
+     * It used to be `.page`'s `padding-block-start` — 20px of scroll container
+     * above a sticky header. Which works until you scroll: the padding scrolls
+     * away, the header pins at 0, and the title jumps up 20px. Measured, the
+     * route title's baseline went 41.7 → **21.7** on the first scroll, while
+     * the rail's and the drawer's stayed at 42. The one header that moves is
+     * the one you are reading, and it moves out of line with the two that
+     * don't.
+     *
+     * Now the inset is the header's own, so it survives pinning, and it is
+     * derived from `--header-baseline` like the other two: 21.7 is this
+     * header's top-to-baseline (a 20.7px line centred in a 32px title row is
+     * 5.7, plus 16 to the baseline inside it).
+     */
+    padding-block-start: var(--header-band);
+
+    /* Opaque, and the same ground as the page: a header on its own surface
+       would read as a separate region from the content it labels. */
+    background: var(--bg);
+    border-block-end: 1px solid transparent;
+    transition: border-color var(--motion-quick) ease-out;
+  }
+
+  /* The rule appears only once there is content scrolled underneath it. The
+     attribute is written by the main region's scroll listener — one
+     implementation, four routes. */
+  [data-nc-scrolled] .header {
+    border-block-end-color: var(--hairline);
+  }
+
+  .crumbRow,
+  .identityRow {
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h-sm);
+  }
+
+  .titleRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-block-size: var(--control-h-lg);
+  }
+
+  /* Identical on all four routes: the largest type on the page is chrome, so it
+     does not compete for P0 (§3.3). */
+  .title {
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  .spring {
+    flex: 1;
+    margin-inline-start: var(--space-3);
+  }
+
+  .crumbs {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+  }
+
+  .back {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .back:hover,
+  .back:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  /* "You are here" costs exactly one weight step over the ancestor. */
+  .crumbLink {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .crumbLink:hover,
+  .crumbLink:focus-visible {
+    color: var(--text-2);
+  }
+
+  .crumbCurrent {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+  }
+
+  /* A glyph that renders no meaning: the one legitimate use of --text-4 outside
+     a real `:disabled`. */
+  .crumbSep {
+    color: var(--text-4);
+  }
+}

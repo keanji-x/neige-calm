@@ -6,11 +6,25 @@ export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?:
 export interface DialogViewController { pushView: (view: DialogChildView) => () => void; popView: () => void }
 export interface DialogProps {
   open: boolean; onClose: () => void; title?: string; hideTitleRow?: boolean; children?: ReactNode; wide?: boolean;
+  /** CR-3 — drop the `×` while keeping the title. `hideTitleRow` can only remove both. */
+  hideClose?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>; restoreFocusRef?: RefObject<HTMLElement | null>;
 }
+/**
+ * CR-6 — three mutually exclusive Confirm states. `blocked` is a genuine
+ * unavailability (real `disabled`); `busy` keeps the button focusable so the
+ * focus trap does not lose a member mid-flight (§5.1).
+ */
+export type ConfirmState = 'ready' | 'blocked' | 'busy';
 export interface ConfirmDialogProps {
   open: boolean; title: string; description?: ReactNode; confirmLabel?: string; cancelLabel?: string;
-  onConfirm: () => void; onCancel: () => void; destructive?: boolean; confirmDisabled?: boolean;
+  onConfirm: () => void; onCancel: () => void; destructive?: boolean; confirmState?: ConfirmState;
+  /** CR-7 — second label node, so busy can swap text without changing width. */
+  confirmBusyLabel?: string;
+  /** CR-1 — override the initial focus target; defaults to Cancel. */
+  initialFocusRef?: RefObject<HTMLElement | null>;
+  /** CR-8 — where focus goes on close when the trigger has been unmounted. */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 const DialogViewContext = createContext<DialogViewController | null>(null);
@@ -30,7 +44,7 @@ function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
   return true;
 }
 
-export function Dialog({ open, onClose, title, hideTitleRow, children, wide, initialFocusRef, restoreFocusRef }: DialogProps) {
+export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef, restoreFocusRef }: DialogProps) {
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
   const titleId = `${useId()}-title`;
@@ -112,20 +126,43 @@ export function Dialog({ open, onClose, title, hideTitleRow, children, wide, ini
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
       tabIndex={-1} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onPanelKeyDown}>
-      {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span id={titleId}>{headerTitle}</span><button type="button" aria-label="Close" onClick={() => {
+      {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span id={titleId}>{headerTitle}</span>{(showingView || !hideClose) && <button type="button" data-nc-role="icon" aria-label="Close" onClick={() => {
         if (view) { if (view.onEscape) view.onEscape(); else popView(); }
         else onClose();
-      }}>×</button></header>}
+      }}>×</button>}</header>}
       <div className="dialog-body" style={showingView ? { display: 'none' } : undefined}>{children}</div>
       {showingView && <div className="dialog-body dialog-child-view">{view.body}</div>}
     </div>
   </div></DialogViewContext.Provider>, document.body);
 }
 
-export function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmDisabled = false }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmState = 'ready', confirmBusyLabel, initialFocusRef, restoreFocusRef }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
-  return <Dialog open={open} title={title} onClose={onCancel} initialFocusRef={cancelRef}>
-    {description}<div className="confirm-dialog-actions"><button ref={cancelRef} type="button" onClick={onCancel}>{cancelLabel}</button>
-      <button type="button" data-variant={destructive ? 'danger' : 'primary'} disabled={confirmDisabled} onClick={onConfirm}>{confirmLabel}</button></div>
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+
+  // CR-2 — the instant Confirm becomes really `disabled` it leaves the focus trap
+  // (`focusables()` filters `[disabled]`), so move focus to Cancel first. `busy` does
+  // not trigger this: it keeps the button focusable, and yanking focus out from under
+  // the pointer would be an unasked-for jump.
+  useEffect(() => {
+    if (confirmState !== 'blocked') return;
+    if (document.activeElement === confirmRef.current) cancelRef.current?.focus();
+  }, [confirmState]);
+
+  const busy = confirmState === 'busy';
+  const label = confirmBusyLabel === undefined ? confirmLabel : (
+    <span className="confirm-dialog-label">
+      <span aria-hidden={busy}>{confirmLabel}</span>
+      <span aria-hidden={!busy}>{confirmBusyLabel}</span>
+    </span>
+  );
+  return <Dialog open={open} title={title} onClose={onCancel} hideClose
+    initialFocusRef={initialFocusRef ?? cancelRef} restoreFocusRef={restoreFocusRef}>
+    {description}<div className="confirm-dialog-actions"><button ref={cancelRef} type="button" data-nc-action="secondary" onClick={onCancel}>{cancelLabel}</button>
+      <button ref={confirmRef} type="button" data-nc-action={destructive ? 'destructive' : 'primary'}
+        disabled={confirmState === 'blocked'}
+        aria-busy={busy ? true : undefined} aria-disabled={busy ? true : undefined}
+        data-nc-state={busy ? 'busy' : undefined}
+        onClick={() => { if (confirmState !== 'ready') return; onConfirm(); }}>{label}</button></div>
   </Dialog>;
 }

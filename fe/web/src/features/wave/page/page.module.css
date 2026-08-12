@@ -1,0 +1,193 @@
+@layer features {
+  .page {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: var(--space-8);
+    max-inline-size: var(--measure-page);
+
+    /* Fills the scroll region rather than hugging its content. Without it the
+       page's own `1fr` row resolves against nothing — the grid was 308 tall
+       inside a 900 tall main — so the document column had no space to centre an
+       empty state in. Content taller than the region still grows it. */
+    min-block-size: 100%;
+    padding-block: 0 var(--space-11);
+    padding-inline: var(--space-10);
+  }
+
+  .title {
+    min-inline-size: 0;
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  /* `any_card_needs_input` is a field the kernel really writes, so it can carry
+     a page's attention — unlike progress/eta/now, which have no writer at all. */
+  .needsInput {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--warn-text);
+  }
+
+  .needsInputDot {
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--warn);
+  }
+
+  /* Coloured at rest, not on hover (§4.3). 28px box, 16px glyph — the one
+     chrome pairing. */
+  .headerDelete {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    font-size: var(--glyph);
+    line-height: var(--leading-none);
+    color: var(--error-text);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .headerDelete:hover,
+  .headerDelete:focus-visible {
+    background: var(--error-soft);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .headerDelete {
+      transition: none;
+    }
+  }
+
+  /* Main column plus a 308 panel column, separated by the standard 24px gutter.
+     At 1440 that is 848 / 24 / 308 = 1180. */
+  /*
+   * One row, and it fills. Left implicit, the row is sized by its tallest item
+   * — the panel card — so the document column ended where the card ended and an
+   * empty document could not centre itself in the space it owns. The panel
+   * pins to the top instead of stretching with it.
+   */
+  .content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-rows: minmax(0, 1fr);
+    gap: var(--space-10);
+    min-block-size: 0;
+  }
+
+  /* Centred, not start-aligned. The prose is 616 in an 828 column, and hanging
+     all 212 of the slack off its trailing edge put a dead band between the last
+     word and the panel card — the two things on the page that carry content
+     were the two things furthest apart. */
+  .doc {
+    max-inline-size: var(--measure-doc);
+    min-inline-size: 0;
+    margin-inline: auto;
+  }
+
+
+  /*
+   * The panel **stays** while the document scrolls under it.
+   *
+   * It is the page's controls and its inventory — the thing you scroll the
+   * document in order to act on — and it used to slide off the top with the
+   * prose, so acting on what you had just read meant scrolling back up to find
+   * the card again.
+   *
+   * The offset is the header's real height, `--header-band + --header-h`,
+   * published by `ui/page-header` onto this page (see its note on `:has(>
+   * .header)`). Plus the grid's own gutter, so the card clears the header by
+   * the same distance everything else on this page clears everything else.
+   *
+   * `max-block-size` with `overflow: auto` is the escape for a card taller than
+   * the viewport: sticky would otherwise pin its top and leave the bottom
+   * unreachable, which is worse than not sticking at all.
+   */
+  .panel {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    align-self: start;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-inline-size: 0;
+    max-block-size: calc(100dvh - var(--header-band) - var(--header-h) - var(--space-8) * 2);
+    overflow: auto;
+  }
+
+  /* Uppercase plus tracking standing in for a size the panel cannot spend. */
+  .sectionLabel {
+    margin-block-start: var(--space-8);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+
+  .sectionLabel:first-child {
+    margin-block-start: var(--space-0);
+  }
+
+  .cards {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-inline: calc(var(--space-2) * -1);
+  }
+
+  .cardRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+  }
+
+  .cardKind {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .kernelOwned {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  /* The inline empty state: one line of hint-toned text in a dashed row-height
+     box. Dashed is the difference between "a container with nothing in it" and
+     "something is here". */
+  .inlineEmpty {
+    display: flex;
+    align-items: center;
+    min-block-size: var(--row-h);
+    padding-inline: var(--space-4);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+}

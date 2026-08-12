@@ -17,6 +17,8 @@
 - { path: fe/tools/mutation, type: directory, owner: tooling/mutation-evidence, readonly: false, basis: "#997 tracked, replayable mutation evidence" }
 - { path: fe/tools/mock, type: directory, owner: tooling/mock, readonly: false, basis: "architecture §5 repository tree; mock generation and drift enforcement infrastructure (#997)" }
 - { path: fe/tools/test-tier, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-tier policy enforcement infrastructure (#997)" }
+- { path: fe/tools/dev-mock, type: directory, owner: tooling/mock, readonly: false, basis: "dev-only in-memory kernel behind FE_DEV_MOCK; never bundled (#997)" }
+- { path: fe/tools/vitest, type: directory, owner: tooling/test-tier, readonly: false, basis: "test-run setup; supplies §0.5's build-time constants Vitest cannot get from vite.config.ts (#997)" }
 - { path: fe/web/index.html, type: file, owner: app/bootstrap, readonly: false, basis: "architecture §5 repository tree; web bootstrap shell" }
 - { path: fe/core/AGENTS.md, type: file, owner: architecture, readonly: false, basis: "architecture §2/§14" }
 - { path: fe/web/src/main.tsx, type: file, owner: app/bootstrap, readonly: false, basis: "architecture disease 9" }
@@ -39,6 +41,7 @@
 # App composition (§2: router/providers/theme/shell/DI and §4.7 events).
 - { path: fe/web/src/app/cards.contract.test.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
 - { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
+- { path: fe/web/src/app/env.d.ts, type: file, owner: app/bootstrap, readonly: false, basis: "§0.5 构建期常量的环境声明；web/src 顶层只允许 main.tsx，故落在 app/ (#997)" }
 - { path: fe/web/src/app/markdown-legacy-differential.test.ts, type: file, owner: app/markdown-migration, readonly: false, basis: "architecture §4.9" }
 - { path: fe/web/src/app/router, type: directory, owner: app/router, readonly: false, basis: "architecture §2" }
 - { path: fe/web/src/app/providers, type: directory, owner: app/providers, readonly: false, basis: "architecture §2" }
@@ -91,6 +94,11 @@
 - { path: fe/web/src/ui/calm-select, type: directory, owner: ui/calm-select, readonly: true, basis: "INV-DUP-002" }
 - { path: fe/web/src/ui/editable-title, type: directory, owner: ui/editable-title, readonly: true, basis: "INV-DUP-008" }
 - { path: fe/web/src/ui/confirm-dialog, type: directory, owner: ui/confirm-dialog, readonly: true, basis: "INV-DUP-010" }
+- { path: fe/web/src/ui/page-header, type: directory, owner: ui/page-header, readonly: false, basis: "design §6.4/§6.14" }
+- { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
+- { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }
+- { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
+- { path: fe/web/src/features/chat, type: directory, owner: features/chat, readonly: false, basis: "对话列表；数据源为 WorkerSessionProjection + HarnessItem，端点未落地 (#997)" }
 
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).
 - { path: fe/web/src/styles, type: directory, owner: styles, readonly: true, basis: "frozen interface §6.8" }

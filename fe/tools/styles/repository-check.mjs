@@ -25,9 +25,11 @@ export const DATA_ATTRIBUTE_SOURCE_FORMS = Object.freeze([
   'computed-static-string', 'computed-static-template', 'set-attribute-static-string',
   'variable-key-known-escape',
 ]);
-const LEGACY_DATA_ATTRIBUTES = new Map([
-  ['web/src/ui/dialog/public.tsx:data-variant', 'frozen UI interface; visual variant, not a DOM locator'],
-]);
+// Empty by design: `data-variant` was the last entry and is gone (§0.3 — the
+// dialog's confirm button now carries `data-nc-action`, whose `destructive` value
+// is the same word §4 uses everywhere else). A stale exemption is a violation in
+// its own right, so entries leave this map the moment their subject does.
+const LEGACY_DATA_ATTRIBUTES = new Map([]);
 
 function filesUnder(directory) {
   const result = [];
@@ -73,12 +75,30 @@ export function auditDataAttributes(code, file) {
   return violations;
 }
 
+// A `@layer` name is a cascade position, not a directory name. `app` is the
+// composition layer: its shell styles must sit at the same cascade position as
+// the features it composes, so they declare `@layer features`. Giving `app` its
+// own layer would desync the eight-layer order frozen in styles/entry.css
+// (architecture §4), which this slice is not allowed to change.
 export function auditModuleLayer(css, file) {
   const expected = file.startsWith('web/src/ui/') ? 'ui'
-    : file.startsWith('web/src/features/') ? 'features' : undefined;
-  if (!expected) return [`${file}: CSS Module must live below ui/ or features/`];
+    : file.startsWith('web/src/features/') || file.startsWith('web/src/app/') ? 'features' : undefined;
+  if (!expected) return [`${file}: CSS Module must live below ui/, features/, or app/`];
   const violations = auditLayeredCss(css, [expected]);
   return violations.map(({ message }) => `${file}: ${message}`);
+}
+
+// Architecture §3 disease 6: components may import `*.module.css` and nothing
+// else; ordinary `.css` still enters only through styles/entry.css. The window
+// is deliberately narrow — same-directory specifier, no query and no fragment,
+// and only from the three layers that own components. `?inline` / `?raw` hand
+// back a string instead of the class-name map, so they stay violations.
+const CSS_MODULE_IMPORTER_ROOTS = Object.freeze(['web/src/ui/', 'web/src/features/', 'web/src/app/']);
+const COLOCATED_CSS_MODULE = /^\.\/[^/?#]+\.module\.css$/;
+
+export function isColocatedCssModuleImport(specifier, file) {
+  return COLOCATED_CSS_MODULE.test(specifier)
+    && CSS_MODULE_IMPORTER_ROOTS.some((root) => file.startsWith(root));
 }
 
 export function auditCssImports(code, file) {
@@ -107,8 +127,9 @@ export function auditCssImports(code, file) {
       : ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword
         || (ts.isIdentifier(node.expression) && node.expression.text === 'require'))
         ? node.arguments[0] : undefined;
-    const pathname = specifier && ts.isStringLiteralLike(specifier) ? specifier.text.split(/[?#]/, 1)[0] : '';
-    if (pathname.endsWith('.css')) {
+    const raw = specifier && ts.isStringLiteralLike(specifier) ? specifier.text : '';
+    const pathname = raw.split(/[?#]/, 1)[0];
+    if (pathname.endsWith('.css') && !isColocatedCssModuleImport(raw, file)) {
       violations.push(`${file}: CSS must enter through styles/entry.css, not a source import`);
     }
     ts.forEachChild(node, visit);
