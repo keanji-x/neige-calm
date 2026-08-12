@@ -41,6 +41,19 @@ fn migrator_through_0069() -> sqlx::migrate::Migrator {
     }
 }
 
+fn migrator_through_0072() -> sqlx::migrate::Migrator {
+    sqlx::migrate::Migrator {
+        migrations: Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|migration| migration.version <= 72)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+}
+
 #[tokio::test]
 async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     let pool = SqlitePoolOptions::new()
@@ -66,7 +79,7 @@ async fn upgrade_backfills_legacy_nonterminal_claim_context_to_empty_set() {
     .await
     .expect("seed task created before context columns existed");
 
-    crate::MIGRATOR
+    migrator_through_0072()
         .run(&pool)
         .await
         .expect("upgrade through context-freeze migration");
@@ -170,14 +183,13 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
         "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,created_at_ms,updated_at_ms) VALUES \
          ('flight','w','flight','codex','g','null','[]','running','spec','block','[]',1,1), \
          ('pending','w','pending','codex','g','null','[]','pending','spec','block',NULL,1,1), \
-         ('terminal','w','terminal','codex','g','null','[]','done','spec','block','[]',1,1), \
-         ('legacy','w','legacy','codex','g','null','[]','running','spec','legacy','[]',1,1)",
+         ('terminal','w','terminal','codex','g','null','[]','done','spec','block','[]',1,1)",
     )
     .execute(&pool)
     .await
     .expect("seed pre-0070 in-flight block task");
 
-    crate::MIGRATOR
+    migrator_through_0072()
         .run(&pool)
         .await
         .expect("run the real 0070 migration");
@@ -191,7 +203,6 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
         rows,
         vec![
             ("flight".into(), 1, 0, 0, None),
-            ("legacy".into(), 0, 0, 0, None),
             ("pending".into(), 0, 0, 0, None),
             ("terminal".into(), 0, 0, 0, None),
         ]
@@ -210,4 +221,68 @@ async fn upgrade_0070_backfills_inflight_block_declaration_state() {
         .await
         .expect("execute the backfill from the real 0070 migration file a second time");
     assert_eq!(repeated.rows_affected(), 0, "0070 backfill is idempotent");
+}
+
+#[tokio::test]
+async fn upgrade_0073_rejects_nonterminal_legacy_rows() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open migration fixture");
+    migrator_through_0072()
+        .run(&pool)
+        .await
+        .expect("apply migrations through 0072");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,spawn,decl_ready,decl_released_by_user,context_verify_failures,created_at_ms,updated_at_ms) \
+         VALUES ('in-flight','w','in-flight','codex','g','null','[]','running','spec','legacy','[]','in-wave',0,0,0,1,1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed pre-0073 nonterminal legacy task");
+
+    let result = crate::MIGRATOR.run(&pool).await;
+    assert!(
+        result.is_err(),
+        "0073 must reject a nonterminal legacy task before dropping origin"
+    );
+}
+
+#[tokio::test]
+async fn upgrade_0073_accepts_terminal_legacy_rows_and_an_empty_database() {
+    let terminal_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open terminal migration fixture");
+    migrator_through_0072()
+        .run(&terminal_pool)
+        .await
+        .expect("apply migrations through 0072");
+    sqlx::query(
+        "INSERT INTO tasks (id,wave_id,key,kind,goal,context_json,depends_on_json,status,declared_by,origin,claim_context_json,spawn,decl_ready,decl_released_by_user,context_verify_failures,created_at_ms,updated_at_ms) \
+         VALUES ('done','w','done','codex','g','null','[]','done','spec','legacy','[]','in-wave',0,0,0,1,1)",
+    )
+    .execute(&terminal_pool)
+    .await
+    .expect("seed pre-0073 terminal legacy task");
+    crate::MIGRATOR
+        .run(&terminal_pool)
+        .await
+        .expect("terminal legacy task may upgrade through 0073");
+
+    let empty_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open empty migration fixture");
+    migrator_through_0072()
+        .run(&empty_pool)
+        .await
+        .expect("apply migrations through 0072");
+    crate::MIGRATOR
+        .run(&empty_pool)
+        .await
+        .expect("empty database may upgrade through 0073");
 }
