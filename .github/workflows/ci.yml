@@ -558,9 +558,13 @@ jobs:
         run: npm run test:browser
 
   fe-mutation:
-    name: fe-mutation (tracked evidence)
+    name: fe-mutation ${{ matrix.shard }}/4 (tracked evidence)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
     defaults:
@@ -585,18 +589,18 @@ jobs:
 
       - name: Run mutation evidence selected by PR target intersection
         if: github.event_name == 'pull_request'
-        run: npm run test:mutation -- --base "$BASE_SHA" --report /tmp/mutation-report.json
+        run: npm run test:mutation -- --base "$BASE_SHA" --shard ${{ matrix.shard }}/4 --report /tmp/mutation-report-${{ matrix.shard }}.json
 
       - name: Run all mutation evidence on main
         if: github.event_name == 'push'
-        run: npm run test:mutation -- --report /tmp/mutation-report.json
+        run: npm run test:mutation -- --shard ${{ matrix.shard }}/4 --report /tmp/mutation-report-${{ matrix.shard }}.json
 
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutation-report
-          path: /tmp/mutation-report.json
+          name: mutation-report-${{ matrix.shard }}
+          path: /tmp/mutation-report-${{ matrix.shard }}.json
           if-no-files-found: warn
 
   # #903 — the rust-dependent half of the `web (build + test + a11y)` split

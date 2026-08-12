@@ -4,7 +4,8 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
   byteSequencesEqual, declaredFixtureDirectories, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
-  parseFailedTestIds, parsePatchTarget, parseVitestReport, selectedEntries, trackedFixtureSetMatches, validateManifest,
+  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
+  trackedFixtureSetMatches, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -92,6 +93,36 @@ describe('selection and manifest judgments', () => {
   });
 });
 
+describe('mutation shards', () => {
+  it('parses valid shards and rejects invalid shards', () => {
+    expect(parseShard('1/4')).toEqual({ index: 1, total: 4 });
+    expect(parseShard('4/4')).toEqual({ index: 4, total: 4 });
+    for (const value of ['0/4', '5/4', 'a/4', '1/0', '1']) {
+      expect(() => parseShard(value)).toThrow('invalid shard');
+    }
+  });
+
+  it('round-robin shards form a balanced, ordered, disjoint partition', () => {
+    const entries = Array.from({ length: 21 }, (_value, index) => ({
+      ...baseEntry, mutation_id: `mutation-${index}`,
+    }));
+    const shards = Array.from({ length: 4 }, (_value, index) => shardEntries(entries, { index: index + 1, total: 4 }));
+    expect(shards.flat().map(({ mutation_id }) => mutation_id).sort())
+      .toEqual(entries.map(({ mutation_id }) => mutation_id).sort());
+    expect(new Set(shards.flat()).size).toBe(entries.length);
+    for (const shard of shards) {
+      expect(shard.map((entry) => entries.indexOf(entry))).toEqual([...shard.map((entry) => entries.indexOf(entry))].sort((a, b) => a - b));
+    }
+    const lengths = shards.map(({ length }) => length);
+    expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(1);
+  });
+
+  it('returns the original entries when shard is null', () => {
+    const entries = [baseEntry];
+    expect(shardEntries(entries, null)).toBe(entries);
+  });
+});
+
 describe('report infrastructure classification', () => {
   it('classifies global unhandled errors and reporter errors independently', () => {
     expect(parseVitestReport(JSON.stringify({ unhandledErrors: [{}], testResults: [] })).infrastructureErrors)
@@ -110,8 +141,11 @@ describe('report infrastructure classification', () => {
 
 describe('zero-selection exit policy', () => {
   it('passes unrelated PRs and fails infrastructure PRs with zero selections', () => {
-    expect(mutationRunExitCode([], false, true)).toBe(0);
-    expect(mutationRunExitCode([], true, true)).toBe(1);
+    expect(mutationRunExitCode([], false, true, 0)).toBe(0);
+    expect(mutationRunExitCode([], true, true, 0)).toBe(1);
+  });
+  it('passes an empty shard when mutations were selected globally', () => {
+    expect(mutationRunExitCode([], true, true, 1)).toBe(0);
   });
 });
 
