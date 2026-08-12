@@ -36,7 +36,17 @@
     flex-direction: column;
     gap: var(--space-8);
     min-block-size: 0;
-    padding-block: var(--space-3) var(--space-7);
+
+    /*
+     * The top inset puts the wordmark's baseline on `--header-baseline`, the
+     * one the route title and the drawer title also sit on. Measured: the
+     * brand row's own top-to-baseline distance is 14 (a 13px line, centred in
+     * a 28px row), so the inset is 42 − 14 = 28.
+     *
+     * It was `--space-3` (6), which put the wordmark 22px above the route title
+     * it sits beside all day.
+     */
+    padding-block: calc(var(--header-baseline) - 14px) var(--space-7);
 
     /* The only inline padding in the rail. A section that adds a second layer
        would cut the usable width from 180 to 168 and flatten the asymmetric

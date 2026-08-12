@@ -12,8 +12,8 @@
    * Who spoke is carried by **which side of the column it is on**, and by
    * nothing else — no fill, no bubble, no label, no weight step:
    *
-   *   what you said   flush to the inline-end edge, `--text-2`
-   *   what came back  flush to the inline-start edge, the full column, `--text`
+   *   what you said   flush to the inline-end edge, sans 13
+   *   what came back  flush to the inline-start edge, the full column, serif 15
    *
    * Side is the strongest signal available and the cheapest: it costs no ink,
    * no shape, and no width. Two devices this replaced were both weaker and both
@@ -23,9 +23,14 @@
    *   a `--surface-chip` block, which had to be looked for less but put a slab
    *   of grey behind every other paragraph of a 364px column.
    *
-   * With side doing the work, tone is only support: your line recedes one rank
-   * because you already know what you wrote, and the reply keeps full ink and
-   * the whole column because it is the thing to be read.
+   * **Both turns are at full ink**, and that is deliberate. Your line spent one
+   * round at `--text-2` on the theory that you already know what you wrote —
+   * but side, family and size had already separated the two turns three ways
+   * over, so the tone step bought nothing there and cost something elsewhere:
+   * `--text-2` is the *label* rank, and it put your own words at the same
+   * loudness as the drawer's header, which is a caption. Your message is
+   * content. It sits on the content rank, and the header keeps the meta rank to
+   * itself.
    *
    * Your turn sets `text-align: end` rather than being a left-aligned block
    * pushed right. Without a fill the block has no visible edges, so a
@@ -80,7 +85,7 @@
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
-    color: var(--text-2);
+    color: var(--text);
     text-align: end;
   }
 

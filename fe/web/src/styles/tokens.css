@@ -147,6 +147,36 @@
      * Steps: 1.18 · 1.15 · 1.20 · 1.22. Even, and every one of them visible.
      * A new rank needs a job no rank above has, not a size between two.
      */
+    /*
+     * ── One header baseline for the whole window ──────────────────────────
+     *
+     * The three regions each grew their own header — the rail's wordmark, the
+     * route's title, the drawer's title — and nothing tied them together.
+     * Measured with the drawer open, the three baselines sat at:
+     *
+     *   rail "neige · calm"   20.0
+     *   route title           41.7
+     *   drawer title          30.0
+     *
+     * Three lines of the same kind of thing, at three heights, across a window
+     * you see all of at once. Nobody chose that; it is what three independent
+     * paddings add up to.
+     *
+     * This is the distance from the top of the window to the baseline of the
+     * first line of *every* region's header. The number is the route title's,
+     * because the route title is the one that cannot move: it belongs to the
+     * document, and the chrome around a document aligns to it, not the other
+     * way round. (41.7 → 42, the 0.3 being where its 32px title row centres a
+     * 18px line.)
+     *
+     * A region cannot compute its own padding from this in CSS — the offset
+     * from a line box's top to its baseline depends on font metrics CSS cannot
+     * read — so each header subtracts a measured constant and says so at the
+     * point of use. The rule stays checkable: open the app and all three
+     * baselines are one number.
+     */
+    --header-baseline: 42px;
+
     --text-xs: 11px;
     --text-base: 13px;
     --text-md: 15px;

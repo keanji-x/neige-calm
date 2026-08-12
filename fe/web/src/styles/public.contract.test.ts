@@ -41,7 +41,7 @@ const TOKEN_INVENTORY = [
   '--weight-normal', '--weight-medium', '--weight-semibold',
   '--row-h-sm', '--row-h', '--row-h-lg',
   '--control-h-sm', '--control-h', '--control-h-lg',
-  '--rail-w', '--rail-w-collapsed', '--panel-w', '--drawer-w',
+  '--rail-w', '--rail-w-collapsed', '--panel-w', '--drawer-w', '--header-baseline',
   '--measure-prose', '--measure-form', '--measure-page', '--measure-board',
   '--measure-list', '--measure-doc',
   '--slot-h', '--rule-h', '--dot-sm', '--dot-md',

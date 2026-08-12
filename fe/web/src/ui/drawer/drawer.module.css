@@ -30,8 +30,25 @@
     animation: drawer-in var(--motion-medium) ease-out;
   }
 
+  /*
+   * The drawer takes focus when it opens (see the effect in public.tsx), and it
+   * is `tabindex="-1"` — a landing spot, not a control.
+   *
+   * Measured: `:focus-visible` does not match on the programmatic focus itself,
+   * so the drawer opens clean; but the *first key you press* while focus is
+   * still sitting on the container flips the browser into keyboard-modality and
+   * the global focus ring in base.css paints a 2px accent outline around all
+   * 396×900 of it. Press Enter with the composer unfocused and the whole drawer
+   * lights up blue to say that a container you cannot operate is focused.
+   *
+   * So this one has no ring. It costs nothing: a `tabindex="-1"` element is not
+   * in the tab order, so no keyboard user ever arrives here by tabbing — the
+   * only way in is this open effect, and the next Tab goes to Close, which does
+   * ring. What the ring would have communicated (the drawer opened) the drawer
+   * appearing already communicates.
+   */
   .drawer:focus-visible {
-    outline-offset: -2px;
+    outline: none;
   }
 
   /*
@@ -57,9 +74,18 @@
     gap: var(--space-4);
     flex: none;
 
-    /* End inset is smaller because the close button carries its own 28px hit
-       area: 8 + (28 − 16) / 2 lands the × glyph optically on the 16 inset. */
-    padding: var(--space-8) var(--space-4) var(--space-6) var(--space-8);
+    /*
+     * Top inset puts the title's baseline on `--header-baseline`, the same one
+     * the rail's wordmark and the route title sit on — three headers, one line,
+     * across a window you see all of at once. Measured: this title's own
+     * top-to-baseline distance is 14 (a 15px line at `--leading-snug`), so the
+     * inset is 42 − 14 = 28. It was 16, which sat the drawer's title 12px above
+     * the route title it opens beside.
+     *
+     * End inset is smaller because the close button carries its own 28px hit
+     * area: 8 + (28 − 16) / 2 lands the × glyph optically on the 16 inset.
+     */
+    padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-6) var(--space-8);
     border-block-end: 1px solid transparent;
     transition: border-color var(--motion-quick) ease-out;
   }
@@ -87,16 +113,22 @@
    *
    * Measured on both grounds: `--text` is 18.1:1 light and 11.5:1 dark,
    * `--text-3` is 7.8:1 and 6.5:1. Less than half the loudness, still well
-   * clear of AAA's 7:1 in light and AA's 4.5:1 in dark — quiet costs this
-   * nothing in legibility. `--text-4` (2.3:1) would; that rank is decorative
-   * and is where the label above sits, which is right for a word you read once.
+   * clear of AAA's 7:1 in light and AA's 4.5:1 in dark.
+   *
+   * `--text-3` is where this stops, and the next rank is why. The ladder is
+   * 18.1 → 10.0 → 7.8 → **2.3**: `--text-4` is the *decorative* rank, and a
+   * 15px heading set in it fails AA outright. The separation this title needed
+   * from the transcript was found on the other side instead — a message is
+   * content and now sits on the content rank, so the gap is 7.8 against 18.1
+   * rather than 7.8 against 10.0. Weight carries the rest: `--weight-normal`,
+   * because a caption has no reason to be bolder than what it captions.
    */
   .title {
     display: -webkit-box;
     min-inline-size: 0;
     overflow: hidden;
     font-size: var(--text-md);
-    font-weight: var(--weight-medium);
+    font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     letter-spacing: var(--tracking-tight);
     color: var(--text-3);
