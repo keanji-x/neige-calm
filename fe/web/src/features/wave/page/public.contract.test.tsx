@@ -41,7 +41,7 @@ describe('WavePage delete confirm contract', () => {
     expect(confirm.hasAttribute('disabled')).toBe(false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
     expect(confirm.dataset.ncState).toBe('busy');
-    expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(true);
 
     gate.resolve();
     await gate.promise;

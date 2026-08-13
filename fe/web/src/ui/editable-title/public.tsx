@@ -45,6 +45,7 @@ export function EditableTitle({
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const suppressClickUntil = useRef(0);
+  const pending = useRef(false);
   const feedback = useOperationFeedback();
 
   useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
@@ -56,12 +57,15 @@ export function EditableTitle({
   }, [value]);
 
   const commit = useCallback((viaKeyboard: boolean) => {
+    if (pending.current) return;
     const next = draft.trim();
     if (next === '' || next === value) { setEditing(false); return; }
+    pending.current = true;
+    if (viaKeyboard) suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS;
     void feedback.run(Promise.resolve().then(() => onCommit(next)), 'Could not rename this item.').then((saved) => {
-      if (!saved) return;
-      setEditing(false);
-      if (viaKeyboard) suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS;
+      if (saved) setEditing(false);
+    }).finally(() => {
+      pending.current = false;
     });
   }, [draft, feedback, onCommit, value]);
 
@@ -93,7 +97,7 @@ export function EditableTitle({
       aria-label={inputLabel}
       value={draft}
       onChange={(event) => setDraft(event.target.value)}
-      onBlur={() => commit(false)}
+      onBlur={() => { if (feedback.error === null) commit(false); else setEditing(false); }}
       onKeyDown={(event) => {
         if (event.key === 'Enter') { event.preventDefault(); commit(true); }
         else if (event.key === 'Escape') { event.preventDefault(); setEditing(false); }

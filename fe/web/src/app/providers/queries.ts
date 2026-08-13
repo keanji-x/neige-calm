@@ -145,7 +145,7 @@ export function useWorkspace(transport: ApiTransportPort): Workspace {
   const covesQuery = useQuery(coveListQueryOptions(transport));
   const overlaysQuery = useQuery(waveOverlaysQueryOptions(transport));
   const coves = covesQuery.data ?? [];
-  const overlays = overlaysQuery.data;
+  const overlays = overlaysQuery.data ?? [];
   const waveQueries = useQueries({
     queries: coves.map((cove) => wavesInCoveQueryOptions(transport, cove.id)),
   });
@@ -157,7 +157,7 @@ export function useWorkspace(transport: ApiTransportPort): Workspace {
     const query = waveQueries[index];
     wavesLoadingByCove.set(cove.id, query?.isLoading ?? false);
     if (query?.error instanceof Error) waveErrorsByCove.set(cove.id, query.error);
-    if (query?.data !== undefined && overlays !== undefined) {
+    if (query?.data !== undefined) {
       const rows = query.data.map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
       wavesByCove.set(cove.id, rows);
       waves.push(...rows);

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 // Invariants owned by the route tree.
 import { QueryClient } from '@tanstack/react-query';
-import { describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { changePendingCount, createRouteTree } from './public.tsx';
+import { createRouteTree, useConversationStore } from './public.tsx';
 import { pathFor, routeParamFromPath } from './navigation.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -86,13 +87,24 @@ describe('route parameter codec', () => {
   });
 });
 
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+
 describe('conversation pending accounting', () => {
-  it('keeps a conversation pending until both concurrent replies finish', () => {
-    let counts = changePendingCount(new Map(), 'c1', 1);
-    counts = changePendingCount(counts, 'c1', 1);
-    counts = changePendingCount(counts, 'c1', -1);
-    expect(counts.get('c1')).toBe(1);
-    counts = changePendingCount(counts, 'c1', -1);
-    expect(counts.has('c1')).toBe(false);
+  function PendingHarness() {
+    const store = useConversationStore();
+    return <><output>{store.pending.has('c1') ? 'Working' : 'Idle'}</output>
+      <button type="button" onClick={() => store.send('c1', 'hello')}>Send</button></>;
+  }
+
+  it('keeps the user-visible Working state until both concurrent replies finish', () => {
+    vi.useFakeTimers();
+    render(<PendingHarness />);
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    act(() => { vi.advanceTimersByTime(200); });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(screen.getByText('Working')).toBeTruthy();
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(screen.getByText('Idle')).toBeTruthy();
   });
 });

@@ -30,7 +30,7 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
   const waveMutations = useWaveMutations(transport);
   const currentPath = useCurrentPath();
   const go = useGo();
-  const readError = workspace.covesError ?? workspace.overlaysError
+  const readError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
   /*
@@ -60,7 +60,9 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
         waves={workspace.waves}
         currentPath={currentPath}
         readError={readError?.message ?? null}
-        readLoading={workspace.covesLoading}
+        readLoading={workspace.covesLoading || workspace.overlaysLoading
+          || [...workspace.wavesLoadingByCove.values()].some(Boolean)}
+        activityError={workspace.overlaysError?.message ?? null}
         onRetryRead={() => {
           workspace.retryCoves(); workspace.retryOverlays();
           for (const cove of workspace.coves) workspace.retryWaves(cove.id);

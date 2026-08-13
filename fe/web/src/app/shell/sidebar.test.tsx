@@ -190,6 +190,13 @@ describe('destructive confirms', () => {
     expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
   });
 
+  it('describes deletion of a genuinely empty cove without claiming it deletes zero waves', async () => {
+    renderSidebar({ wavesByCove: new Map([['c1', []]]) });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('This deletes the cove.');
+    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
+  });
+
   it('keeps the confirm mounted while the delete is in flight and clears it on rejection', async () => {
     let reject: (reason: Error) => void = () => {};
     const onDeleteWave = vi.fn(() => new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; }));
@@ -203,7 +210,10 @@ describe('destructive confirms', () => {
     const confirm = screen.getByRole('button', { name: 'Deleting…' });
     expect(confirm.hasAttribute('disabled')).toBe(false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(cancel.hasAttribute('disabled')).toBe(true);
+    await userEvent.click(cancel);
+    expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
 
     reject(new Error('boom'));
     await screen.findByRole('button', { name: 'Delete Task' });

@@ -8,7 +8,7 @@
 import { useEffect, useRef } from 'react';
 
 import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
-import { needsUserAttention, type Wave } from '../../../../core/domain/wave.ts';
+import { needsUserAttention, visibleWaves, type Wave } from '../../../../core/domain/wave.ts';
 import { COVE_PALETTE } from '../../features/cove/palette.ts';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { deleteCoveCopy, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
@@ -21,6 +21,7 @@ import {
 import { useState } from '../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
+import { routeParamFromPath } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 import styles from './shell.module.css';
 
@@ -48,6 +49,7 @@ export type SidebarProps = Readonly<{
   userLabel?: string;
   nowMs?: number;
   readError?: string | null;
+  activityError?: string | null;
   readLoading?: boolean;
   onRetryRead?: () => void;
 }>;
@@ -85,7 +87,8 @@ export function Sidebar({
   coves, wavesByCove, waves, currentPath, onGo,
   onCreateCove, onDeleteCove, onSetPinned, onDeleteWave,
   onOpenSettings, onSignOut, collapsed, onToggleCollapsed, pageTitleRef,
-  userLabel = 'You', nowMs, readError = null, readLoading = false, onRetryRead = () => undefined,
+  userLabel = 'You', nowMs, readError = null, activityError = null,
+  readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
   const { mode, resolved, setMode } = useTheme();
   const [expandedOverride, setExpandedOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -99,15 +102,15 @@ export function Sidebar({
 
   const userCoves = visibleCoves(coves);
   const userCoveIds = new Set(userCoves.map((cove) => cove.id));
-  const visibleWaves = waves.filter((wave) => wave.archivedAt === null && userCoveIds.has(wave.coveId));
-  const waiting = visibleWaves.filter(needsUserAttention);
-  const pinned = visibleWaves.filter((wave) => wave.pinnedAt !== null)
+  const userWaves = visibleWaves(waves).filter((wave) => userCoveIds.has(wave.coveId));
+  const waiting = userWaves.filter(needsUserAttention);
+  const pinned = userWaves.filter((wave) => wave.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
-  const activeWaveId = currentPath.startsWith('/wave/') ? currentPath.slice('/wave/'.length) : null;
+  const activeWaveId = routeParamFromPath(currentPath, '/wave/') ?? null;
   const activeCoveId = activeWaveId === null
     ? null
-    : visibleWaves.find((wave) => wave.id === activeWaveId)?.coveId ?? null;
+    : userWaves.find((wave) => wave.id === activeWaveId)?.coveId ?? null;
 
   const deletingCove = userCoves.find((cove) => cove.id === coveConfirm.target);
   const typed = useTypedConfirm(deletingCove?.name ?? '');
@@ -196,6 +199,8 @@ export function Sidebar({
         </button>
       </div>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
+      {activityError !== null && <ErrorBox message={`Wave activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
+      {readLoading && <div role="status">Loading workspace…</div>}
       <OperationFeedback feedback={writeFeedback} />
 
       {collapsed ? (
@@ -222,10 +227,10 @@ export function Sidebar({
               key={cove.id}
               type="button"
               data-nc-role="row"
-              className={`${styles.stripItem} ${currentPath === `/cove/${cove.id}` ? styles.stripItemActive : ''}`}
+              className={`${styles.stripItem} ${routeParamFromPath(currentPath, '/cove/') === cove.id ? styles.stripItemActive : ''}`}
               aria-label={cove.name}
               title={cove.name}
-              aria-current={currentPath === `/cove/${cove.id}` ? 'page' : undefined}
+              aria-current={routeParamFromPath(currentPath, '/cove/') === cove.id ? 'page' : undefined}
               onClick={() => onGo({ name: 'cove', coveId: cove.id })}
             >
               <span className={styles.stripInitial} aria-hidden="true">{initialsOf(cove.name)[0]}</span>
@@ -283,7 +288,7 @@ export function Sidebar({
                   <CoveGroup
                     key={cove.id}
                     cove={cove}
-                    coveWaves={(wavesByCove.get(cove.id) ?? []).filter((wave) => wave.archivedAt === null)}
+                    coveWaves={visibleWaves(wavesByCove.get(cove.id) ?? [])}
                     expanded={expandedOverride.get(cove.id) ?? true}
                     onToggle={(next) => setExpandedOverride((current) => new Map(current).set(cove.id, next))}
                     onRequestDelete={coveConfirm.request}
@@ -417,7 +422,7 @@ function CoveGroup({
   onToggle: (expanded: boolean) => void;
   onRequestDelete: (coveId: string) => void;
 }) {
-  const active = currentPath === `/cove/${cove.id}`;
+  const active = routeParamFromPath(currentPath, '/cove/') === cove.id;
 
   return (
     <div className={styles.coveGroup}>
@@ -467,7 +472,7 @@ function CoveGroup({
               wave={wave}
               variant="rail"
               nowMs={nowMs}
-              active={currentPath === `/wave/${wave.id}`}
+              active={routeParamFromPath(currentPath, '/wave/') === wave.id}
               onOpen={(waveId) => onGo({ name: 'wave', waveId })}
               onSetPinned={onSetPinned}
               onDelete={onDelete}

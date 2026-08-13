@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 import { ApiError, coveListQueryOptions, useWorkspace, wavesInCoveQueryOptions } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -52,16 +53,21 @@ describe('failure channel', () => {
     await expect(coveListQueryOptions(transport).queryFn()).rejects.toBeInstanceOf(ApiError);
   });
 
-  it('exports cove and overlay read failures instead of collapsing them into healthy empty arrays', async () => {
-    const { transport } = recordingTransport((request) => request.path === '/api/coves'
-      ? { status: 500, statusText: 'Server Error', body: { error: 'coves down' } }
-      : { status: 500, statusText: 'Server Error', body: { error: 'overlays down' } });
+  it('keeps neutral waves readable while exporting an overlay failure', async () => {
+    const wave = { id: 'w1', cove_id: 'c1', title: 'Task', sort: 1, lifecycle: 'working', cwd: '/tmp',
+      archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+    const { transport } = recordingTransport((request) => {
+      if (request.path === '/api/coves') return ok([userCove]);
+      if (request.path === '/api/coves/c1/waves') return ok([wave]);
+      return { status: 500, statusText: 'Server Error', body: { error: 'overlays down' } };
+    });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
     const { result } = renderHook(() => useWorkspace(transport), { wrapper });
-    await waitFor(() => expect(result.current.covesError).toBeInstanceOf(ApiError));
+    await waitFor(() => expect(result.current.waves).toHaveLength(1));
+    expect(result.current.covesError).toBeNull();
     expect(result.current.overlaysError).toBeInstanceOf(ApiError);
-    expect(result.current.waves).toEqual([]);
+    expect(result.current.waves[0]).toMatchObject(NEUTRAL_ACTIVITY);
   });
 
   it('rejects when the payload does not match the schema instead of rendering junk', async () => {

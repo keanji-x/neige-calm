@@ -102,7 +102,7 @@ export function changePendingCount(
   return next;
 }
 
-function useConversationStore(): ConversationStore {
+export function useConversationStore(): ConversationStore {
   const [conversations, setConversations] = useState<readonly Conversation[]>([]);
   const [turns, setTurns] = useState<Readonly<Record<string, readonly ConversationTurn[]>>>({});
   const [pendingCounts, setPendingCounts] = useState<ReadonlyMap<string, number>>(() => new Map());
@@ -309,14 +309,15 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const waveMutations = useWaveMutations(transport);
   const deletion = useDeleteConfirm((waveId) => {
     const wave = workspace.waves.find((candidate) => candidate.id === waveId);
-    return wave === undefined ? undefined : waveMutations.remove(wave.id, wave.coveId);
+    if (wave === undefined) throw new Error('This wave is no longer available.');
+    return waveMutations.remove(wave.id, wave.coveId);
   });
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
   const chat = useConversationPanel(null);
-  const workspaceError = workspace.covesError ?? workspace.overlaysError
+  const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspaceError !== null) return <ErrorBox
     message={workspaceError.message}
@@ -325,10 +326,11 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
       for (const cove of workspace.coves) workspace.retryWaves(cove.id);
     }}
   />;
-  if (workspace.covesLoading || workspace.overlaysLoading
+  if (workspace.covesLoading
     || (workspace.waves.length === 0 && [...workspace.wavesLoadingByCove.values()].some(Boolean))) return null;
   return (
     <>
+    {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
     <TodayPage
       waves={workspace.waves}
       coves={workspace.coves}
@@ -393,7 +395,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
     if (workspace.covesError !== null) return <ErrorBox message={workspace.covesError.message} onRetry={workspace.retryCoves} />;
     return <PendingRoute label="Cove" owner="features/cove" missing />;
   }
-  const waveError = workspace.waveErrorsByCove.get(cove.id) ?? workspace.overlaysError;
+  const waveError = workspace.waveErrorsByCove.get(cove.id);
   if (waveError !== null && waveError !== undefined) return <ErrorBox
     message={waveError.message}
     onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
@@ -421,6 +423,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
 
   return (
     <>
+      {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
       <CovePage
         cove={cove}
         waveCount={waves.length}

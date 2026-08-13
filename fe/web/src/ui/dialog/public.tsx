@@ -158,7 +158,9 @@ export function ConfirmDialog({ open, title, description, confirmLabel = 'Confir
   );
   return <Dialog open={open} title={title} onClose={onCancel} hideClose
     initialFocusRef={initialFocusRef ?? cancelRef} restoreFocusRef={restoreFocusRef}>
-    {description}<div className="confirm-dialog-actions"><button ref={cancelRef} type="button" data-nc-action="secondary" onClick={onCancel}>{cancelLabel}</button>
+    {description}<div className="confirm-dialog-actions"><button ref={cancelRef} type="button" data-nc-action="secondary"
+      disabled={busy} title={busy ? 'The delete request cannot be canceled once sent.' : undefined}
+      onClick={onCancel}>{cancelLabel}</button>
       <button ref={confirmRef} type="button" data-nc-action={destructive ? 'destructive' : 'primary'}
         disabled={confirmState === 'blocked'}
         aria-busy={busy ? true : undefined} aria-disabled={busy ? true : undefined}

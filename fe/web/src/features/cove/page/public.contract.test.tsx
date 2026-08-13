@@ -53,7 +53,7 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     const confirm = screen.getByRole('button', { name: 'Deleting…' });
     expect(confirm).toHaveProperty('disabled', false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveProperty('disabled', true);
 
     pending.settle.resolve();
   });
