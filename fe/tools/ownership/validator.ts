@@ -16,6 +16,12 @@ export const OWNERSHIP_RULES = Object.freeze([
 export const OWNERSHIP_YAML_FIELDS = Object.freeze([
   'entry.path', 'entry.type', 'entry.owner', 'entry.readonly',
 ] as const);
+export const OWNERSHIP_CONTROL_FILES = Object.freeze([
+  'fe/.dependency-cruiser.cjs', 'fe/eslint.config.js', 'fe/module-file-inventory.yaml',
+  'fe/ownership-manifest.d.mts', 'fe/ownership-manifest.mjs', 'fe/package.json', 'fe/package-lock.json',
+  'fe/stylelint.config.js', 'fe/tsconfig.app.json', 'fe/tsconfig.core.json', 'fe/tsconfig.json',
+  'fe/tsconfig.node.json', 'fe/vite.config.ts', 'fe/vitest.config.ts',
+] as const);
 
 function clean(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
@@ -94,13 +100,14 @@ export function validateOwnership(
 
 export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
   const roots = ['fe/core', 'fe/mock', 'fe/web', 'fe/tools'];
-  const controls = [
+  const controls: readonly string[] = OWNERSHIP_CONTROL_FILES;
+  /*
     'fe/.dependency-cruiser.cjs', 'fe/eslint.config.js', 'fe/module-file-inventory.yaml',
     'fe/ownership-manifest.d.mts', 'fe/ownership-manifest.mjs', 'fe/package.json',
     'fe/package-lock.json', 'fe/stylelint.config.js', 'fe/tsconfig.app.json',
     'fe/tsconfig.core.json', 'fe/tsconfig.json', 'fe/tsconfig.node.json',
     'fe/vite.config.ts', 'fe/vitest.config.ts',
-  ];
+  ]; */
   const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', ...roots, ...controls], {
     cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).split(/\r?\n/).filter(Boolean);

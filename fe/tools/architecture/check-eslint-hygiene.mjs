@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { architecturePlugin } from './plugin.mjs';
 
 /** @param {string} root @param {string} [relative] @returns {string[]} */
 function findConfigs(root, relative = '') {
@@ -41,11 +42,15 @@ export async function checkEslintHygiene(rootPath = '.') {
   const rootConfig = resolve(root, 'eslint.config.js');
   const source = readFileSync(rootConfig, 'utf8');
   const imported = await import(`${pathToFileURL(rootConfig).href}?hygiene=${Date.now()}`);
+  const enabledArchitectureRules = new Set();
+  let registersArchitecturePlugin = false;
   for (const item of flatten(imported.default ?? [])) {
-    const config = /** @type {{ rules?: Record<string, unknown> }} */ (item);
+    const config = /** @type {{ rules?: Record<string, unknown>, plugins?: Record<string, unknown> }} */ (item);
+    if (config.plugins?.architecture) registersArchitecturePlugin = true;
     for (const [ruleName, value] of Object.entries(config?.rules ?? {})) {
       const setting = Array.isArray(value) ? value[0] : value;
       const architectureRule = ruleName.startsWith('architecture/');
+      if (architectureRule && (setting === 'error' || setting === 2)) enabledArchitectureRules.add(ruleName.slice(13));
       if (architectureRule && (setting === 'warn' || setting === 1)) {
         errors.push(`eslint-no-warn-shims: architecture rule must be error: ${ruleName}`);
       }
@@ -54,6 +59,9 @@ export async function checkEslintHygiene(rootPath = '.') {
         errors.push(`eslint-no-off-shims: unexplained off rule ${ruleName}`);
       }
     }
+  }
+  for (const ruleName of registersArchitecturePlugin ? Object.keys(architecturePlugin.rules ?? {}) : []) {
+    if (!enabledArchitectureRules.has(ruleName)) errors.push(`eslint-architecture-completeness: missing error rule architecture/${ruleName}`);
   }
   if (/\.\.\.\s*tseslint\.configs\.disableTypeChecked/.test(source) && !/\/\/\s*Reason:[^\n]*\n\s*\.\.\.\s*tseslint\.configs\.disableTypeChecked/.test(source)) {
     errors.push('eslint-no-off-shims: unexplained disableTypeChecked preset');

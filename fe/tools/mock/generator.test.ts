@@ -70,9 +70,11 @@ describe('mock OpenAPI generator', () => {
   });
 
   it('fails closed when a required OpenAPI schema loses its wire type mapping', () => {
-    const document = { paths: {}, components: { schemas: { Cove: { type: 'object' } } } };
+    const document = { paths: { '/coves': { get: { responses: { 200: { content: { 'application/json': {
+      schema: { $ref: '#/components/schemas/Cove' },
+    } } } } } } }, components: { schemas: { Cove: { type: 'object' } } } };
     expect(() => generateMockFiles(document, 'export interface CoveRenamed {}'))
-      .toThrow('required schema wire types missing: Cove');
+      .toThrow('response schema wire types missing: Cove');
     expect(() => generateMockFiles(document, 'export interface Cove {}')).not.toThrow();
   });
 

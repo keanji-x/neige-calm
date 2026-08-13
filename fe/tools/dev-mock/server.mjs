@@ -134,7 +134,7 @@ export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/version'], ['GET', '/api/settings'], ['PUT', '/api/settings'],
   ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
   ['GET', '/api/coves/{cove_id}/waves'], ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
-  ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
+  ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
 ].map((route) => Object.freeze(route)));
 
 function send(res, status, body) {
@@ -155,7 +155,12 @@ export function devMockApi() {
   return {
     name: 'neige-dev-mock-api',
     configureServer(server) {
-      server.middlewares.use(async (req, res, next) => {
+      server.middlewares.use(handleDevMockRequest);
+    },
+  };
+}
+
+export async function handleDevMockRequest(req, res, next) {
         const url = new URL(req.url ?? '/', 'http://mock');
         const path = url.pathname;
         if (!path.startsWith('/api/')) return next();
@@ -189,7 +194,7 @@ export function devMockApi() {
             sort: coves.length, kind: 'user', created_at: Date.now(), updated_at: Date.now(),
           };
           coves.push(cove);
-          return send(res, 200, cove);
+          return send(res, 201, cove);
         }
 
         const coveWaves = /^\/api\/coves\/([^/]+)\/waves$/.exec(path);
@@ -211,6 +216,7 @@ export function devMockApi() {
           return send(res, 200, coves[index]);
         }
 
+        if (path === '/api/waves' && method === 'GET') return send(res, 200, waves);
         if (path === '/api/waves' && method === 'POST') {
           const body = await readBody(req);
           const wave = {
@@ -219,7 +225,7 @@ export function devMockApi() {
             terminal_at: null, created_at: Date.now(), updated_at: Date.now(),
           };
           waves.push(wave);
-          return send(res, 200, wave);
+          return send(res, 201, wave);
         }
         const waveId = /^\/api\/waves\/([^/]+)$/.exec(path);
         if (waveId) {
@@ -240,7 +246,4 @@ export function devMockApi() {
         }
 
         return send(res, 404, { message: `dev mock has no route for ${method} ${path}` });
-      });
-    },
-  };
 }

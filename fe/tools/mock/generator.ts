@@ -11,13 +11,19 @@ const object = (value: unknown): value is JsonObject => value !== null && typeof
 const unknownArray = (value: unknown): unknown[] => Array.isArray(value) ? value as unknown[] : [];
 const codePointCompare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
 const PATH_ITEM_FIELDS = new Set<string>([...HTTP_METHODS, 'summary', 'description', 'servers', 'parameters']);
-export const REQUIRED_SCHEMA_WIRE_TYPES = Object.freeze([
-  'AgentProvider', 'Card', 'CardRole', 'CardRuntimeView', 'Cove', 'CoveFolder', 'CoveKind', 'CoveResolve',
-  'FolderConflict', 'FolderConflictKind', 'HarnessItem', 'HarnessPhaseTag', 'Overlay', 'ReportBlock', 'Wave',
-  'WaveFsCardMeta', 'WaveFsHookEvent', 'WaveFsRunDetail', 'WaveFsRunEventRef', 'WaveFsRunEvents',
-  'WaveFsRunIndexEntry', 'WaveFsRunStatus', 'WaveFsRunVerdict', 'WaveFsRunVerdictSummary', 'WaveLifecycle',
-  'WaveReportPayload', 'WorkerSessionKind', 'WorkerSessionState',
-] as const);
+const responseWireTypeExceptionNames = [
+  ...['ErrorBody', 'GetSpecRunResponse', 'GitDiffResponse', 'GitStatusResponse', 'InterruptSpecCardResponse',
+    'ListdirResponse', 'PluginDetail', 'PluginListItem', 'RatifyCardResponse', 'ReadFileResponse',
+    'ReportBlockWriteResponse', 'ResetSpecCardResponse', 'SendSpecInputResponse', 'SettingsBag', 'Terminal',
+    'ThreadCardResolution', 'TodayLaunchpad', 'VersionInfo', 'ViewCatalogEntry', 'WaveBacklinksResponse',
+    'WaveDetail', 'WaveFsContent', 'WaveFsEntry', 'WaveReportReadResponse']
+] as const;
+export const RESPONSE_WIRE_TYPE_EXEMPTIONS: Readonly<Record<string, string>> = Object.freeze(
+  responseWireTypeExceptionNames.reduce<Record<string, string>>((entries, name) => {
+    entries[name] = 'Legacy OpenAPI response has no frozen ts-rs wire export; migrate it before removing this exception.';
+    return entries;
+  }, {}),
+);
 
 export function parsePathTemplate(path: string): { tokens: TemplateToken[]; parameters: string[] } {
   if (!path.startsWith('/')) throw new Error('path template must start with /');
@@ -138,6 +144,7 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
   if (violations.length) throw new Error(violations.map((item) => `${item.rule} ${item.location}: ${item.message}`).join('\n'));
   const document = input as JsonObject & { paths: JsonObject };
   const wireTypes = extractWireTypeNames(wireSource);
+  const responseSchemaRefs = new Set<string>();
   const routes: unknown[] = [];
   for (const path of Object.keys(document.paths).sort()) {
     const pathItem = document.paths[path] as JsonObject;
@@ -153,6 +160,13 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
       const responses = Object.entries(operation.responses as JsonObject).sort(([left], [right]) => codePointCompare(left, right)).map(([status, raw]) => {
         const response = object(raw) && typeof raw.$ref === 'string' ? resolveLocalRef(document, raw.$ref) : raw;
         const content = object(response) && object(response.content) ? response.content : {};
+        const collectResponseRefs = (value: unknown): void => {
+          if (Array.isArray(value)) { value.forEach(collectResponseRefs); return; }
+          if (!object(value)) return;
+          if (typeof value.$ref === 'string' && value.$ref.startsWith('#/components/schemas/')) responseSchemaRefs.add(value.$ref.slice(21));
+          Object.values(value).forEach(collectResponseRefs);
+        };
+        collectResponseRefs(content);
         return { status, bodies: Object.entries(content).sort(([left], [right]) => codePointCompare(left, right)).map(([contentType, media]) => ({
           contentType, schema: object(media) ? media.schema ?? null : null,
         })) };
@@ -164,8 +178,8 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
   }
   assertRouteCardinality(document.paths, routes.length);
   const componentSchemas = object(document.components) && object(document.components.schemas) ? document.components.schemas : {};
-  const missingWireTypes = REQUIRED_SCHEMA_WIRE_TYPES.filter((name) => Object.hasOwn(componentSchemas, name) && !wireTypes.has(name));
-  if (missingWireTypes.length > 0) throw new Error(`required schema wire types missing: ${missingWireTypes.join(', ')}`);
+  const missingWireTypes = [...responseSchemaRefs].filter((name) => !wireTypes.has(name) && !Object.hasOwn(RESPONSE_WIRE_TYPE_EXEMPTIONS, name)).sort();
+  if (missingWireTypes.length > 0) throw new Error(`response schema wire types missing: ${missingWireTypes.join(', ')}`);
   const schemaWireTypes = Object.fromEntries(Object.keys(componentSchemas).sort().map((name) => [name, wireTypes.has(name) ? name : null]));
   const banner = '// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。\n';
   const body = `export const mockOperations = ${JSON.stringify(stable(routes), null, 2)} as const;\n\nexport const schemaWireTypes = ${JSON.stringify(schemaWireTypes, null, 2)} as const;\n`;

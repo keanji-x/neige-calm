@@ -18,6 +18,7 @@ export interface ValidateOptions {
   anchorNonePath?: string;
   anchorBaselinePath?: string;
   anchorUnsupportedPath?: string;
+  today?: string;
 }
 
 export const ORACLE_RULES = Object.freeze([
@@ -235,7 +236,7 @@ export function extractStatementIdentifiers(statement: unknown): string[] {
   return [...identifiers];
 }
 
-type AnchorSubtype = 'not-in-file' | 'range-miss' | 'no-identifiers';
+type AnchorSubtype = 'not-in-file' | 'range-miss';
 
 interface AnchorResult {
   error: string | null;
@@ -287,6 +288,7 @@ function parseStructuredList(path: string | undefined): unknown[] {
 }
 
 export function validateOracle(options: ValidateOptions): Violation[] {
+  const today = options.today ?? new Date().toISOString().slice(0, 10);
   const owners = canonicalOwners(options.ownerAliasesPath);
   const anchorNone = new Map<string, Set<string>>();
   for (const raw of parseStructuredList(options.anchorNonePath)) {
@@ -302,10 +304,10 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   for (const raw of baselineRows) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
-    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss'
-      || entry.subtype === 'no-identifiers') && typeof entry.reason === 'string' && entry.reason.trim() !== ''
+    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')
+      && typeof entry.reason === 'string' && entry.reason.trim() !== ''
       && typeof entry.expiry === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiry)
-      && entry.expiry >= new Date().toISOString().slice(0, 10)) {
+      && entry.expiry >= today) {
       baseline.set(entry.id, entry.subtype);
     }
   }
@@ -318,7 +320,7 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       && entry.locations.every((location) => typeof location === 'string')
       && typeof entry.reason === 'string' && entry.reason.trim() !== ''
       && typeof entry.expiry === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiry)
-      && entry.expiry >= new Date().toISOString().slice(0, 10)) {
+      && entry.expiry >= today) {
       registeredUnsupported.set(entry.id, entry.locations);
     }
   }
@@ -400,9 +402,6 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       if (entry.authoritative_test !== 'NONE') {
         const testErrors = locationErrors(entry.authoritative_test, options.repoRoot);
         if (testErrors.length) add(file, id, 'authoritative-test-location', testErrors.join('; '));
-      }
-      if (options.anchorBaselinePath && extractStatementIdentifiers(entry.statement).length === 0) {
-        actualBaseline.set(id, 'no-identifiers');
       }
       if (typeof entry.why !== 'string' || entry.why.trim() === '') add(file, id, 'why-nonempty', 'why must be non-empty');
       if (typeof entry.statement !== 'string' || entry.statement.trim() === '') add(file, id, 'statement-nonempty', 'statement must be non-empty');

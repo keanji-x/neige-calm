@@ -7,6 +7,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { checkCoreNoJsx } from './check-core-no-jsx.mjs';
 import { checkEslintHygiene } from './check-eslint-hygiene.mjs';
+import { breakpointMismatches } from './check-breakpoint-literals.mjs';
 import { checkTopLevel } from './check-top-level.mjs';
 import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
 import { duplicationManifest } from './duplication-manifest.mjs';
@@ -178,6 +179,12 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 }
 
 describe('architecture fixtures', () => {
+  it('parses media/container ranges and ignores comments and strings', () => {
+    expect(breakpointMismatches('@container card (min-width: 30em) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@media (30em <= width <= 61em) {}')).toHaveLength(2);
+    expect(breakpointMismatches('/* @media (min-width: 30em) {} */ a { content: "@media (30em)" }')).toEqual([]);
+    expect(breakpointMismatches('@media (width >= 60rem) {}')).toEqual([]);
+  });
   const expectedViolation = new Map<string, string>([
     ['dup-inv-001', 'INV-DUP-001'],
     ['dup-inv-002', 'INV-DUP-002'],

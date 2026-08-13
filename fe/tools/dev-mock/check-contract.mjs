@@ -1,29 +1,72 @@
+// @ts-nocheck -- executable contract probe uses minimal Connect request/response doubles.
+import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { cardSchema, coveSchema, overlaySchema, waveSchema } from '../../core/api/schemas.ts';
-import { DEV_MOCK_ROUTES, devMockCards, devMockCoves, devMockOverlays, devMockWaves } from './server.mjs';
+import { DEV_MOCK_ROUTES, handleDevMockRequest } from './server.mjs';
+import { DEV_MOCK_ROUTE_EXEMPTIONS } from './route-exemptions.mjs';
 
 const openapi = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../../web/src/api/openapi.json'), 'utf8'));
-const actual = new Set(Object.entries(openapi.paths).flatMap(([path, item]) =>
+const openApiRoutes = new Set(Object.entries(openapi.paths).flatMap(([path, item]) =>
   Object.keys(item).filter((method) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
     .map((method) => `${method.toUpperCase()} ${path}`)));
-const missing = DEV_MOCK_ROUTES.map(([method, path]) => `${method} ${path}`).filter((route) => !actual.has(route));
-if (missing.length > 0) {
-  console.error(`dev-mock-contract: routes absent from OpenAPI: ${missing.join(', ')}`);
+const declared = new Set(DEV_MOCK_ROUTES.map(([method, path]) => `${method} ${path}`));
+const exempted = new Set(DEV_MOCK_ROUTE_EXEMPTIONS.map(({ route }) => route));
+if (DEV_MOCK_ROUTE_EXEMPTIONS.some(({ reason }) => reason.trim() === '') || exempted.size !== DEV_MOCK_ROUTE_EXEMPTIONS.length) {
+  console.error('dev-mock-contract: route exemptions require unique routes and nonempty reasons'); process.exitCode = 1;
+}
+const absent = [...declared].filter((route) => !openApiRoutes.has(route));
+if (absent.length) { console.error(`dev-mock-contract: routes absent from OpenAPI: ${absent.join(', ')}`); process.exitCode = 1; }
+const unaccounted = [...openApiRoutes].filter((route) => !declared.has(route) && !exempted.has(route));
+const staleExemptions = [...exempted].filter((route) => !openApiRoutes.has(route) || declared.has(route));
+if (unaccounted.length || staleExemptions.length) {
+  console.error(`dev-mock-contract: unaccounted OpenAPI routes: ${unaccounted.join(', ')}; stale exemptions: ${staleExemptions.join(', ')}`);
   process.exitCode = 1;
 }
-/** @type {ReadonlyArray<readonly [string, { safeParse(value: unknown): { success: boolean, error?: { message: string } } }, unknown]>} */
-const payloads = [
-  ...devMockCoves.map((value) => /** @type {const} */ (['Cove', coveSchema, value])),
-  ...devMockWaves.map((value) => /** @type {const} */ (['Wave', waveSchema, value])),
-  ...devMockOverlays.map((value) => /** @type {const} */ (['Overlay', overlaySchema, value])),
-  ...Object.values(devMockCards).flat().map((value) => /** @type {const} */ (['Card', cardSchema,
-    { ...value, created_at: 0, updated_at: 0 }])),
-];
-for (const [name, schema, value] of payloads) {
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    console.error(`dev-mock-contract: invalid ${name} payload: ${result.error?.message ?? 'unknown schema error'}`);
-    process.exitCode = 1;
+
+function concrete(path) {
+  return path.replace('{cove_id}', 'cove-atlas').replace('{id}', path.startsWith('/api/coves/') ? 'cove-atlas' : 'w-1');
+}
+async function invoke(method, path, body = {}) {
+  const req = new EventEmitter(); req.method = method; req.url = concrete(path);
+  const result = await new Promise((resolveResult) => {
+    const headers = {}; const chunks = [];
+    const res = { statusCode: 0, setHeader: (key, value) => { headers[key] = value; }, end: (chunk = '') => {
+      chunks.push(String(chunk)); resolveResult({ status: res.statusCode, body: chunks.join('') ? JSON.parse(chunks.join('')) : undefined });
+    } };
+    void handleDevMockRequest(req, res, () => resolveResult({ status: 0, body: undefined }));
+    queueMicrotask(() => { req.emit('data', JSON.stringify(body)); req.emit('end'); });
+  });
+  return result;
+}
+
+// Probe every OpenAPI GET. A newly implemented dispatch is discovered from behavior,
+// so an unlisted handler cannot hide behind the inventory.
+for (const route of [...openApiRoutes].filter((item) => item.startsWith('GET '))) {
+  const [method, path] = route.split(' ');
+  const response = await invoke(method, path);
+  if (response.status !== 404 && !declared.has(route) && !path.startsWith('/api/auth/')) {
+    console.error(`dev-mock-contract: implemented route absent from inventory: ${route}`); process.exitCode = 1;
   }
+}
+
+const checks = [
+  ['GET', '/api/coves', coveSchema.strict().array()], ['GET', '/api/waves', waveSchema.strict().array()],
+  ['GET', '/api/overlays', overlaySchema.strict().array()],
+];
+for (const [method, path, schema] of checks) {
+  const response = await invoke(method, path);
+  const expected = Number(Object.keys(openapi.paths[path][method.toLowerCase()].responses).find((status) => /^2\d\d$/.test(status)));
+  if (response.status !== expected) { console.error(`dev-mock-contract: ${method} ${path} returned ${response.status}, expected ${expected}`); process.exitCode = 1; }
+  const parsed = schema.safeParse(response.body);
+  if (!parsed.success) { console.error(`dev-mock-contract: invalid response for ${method} ${path}: ${parsed.error.message}`); process.exitCode = 1; }
+}
+const detail = await invoke('GET', '/api/waves/{id}');
+const detailChecks = [waveSchema.strict().safeParse(detail.body?.wave), cardSchema.strict().array().safeParse(detail.body?.cards),
+  overlaySchema.strict().array().safeParse(detail.body?.overlays)];
+if (detailChecks.some((result) => !result.success)) { console.error('dev-mock-contract: invalid real GET /api/waves/{id} response'); process.exitCode = 1; }
+for (const [method, path] of [['POST', '/api/coves'], ['POST', '/api/waves']]) {
+  const response = await invoke(method, path, path.endsWith('coves') ? { name: 'probe', color: '#000000' } : { cove_id: 'cove-atlas', title: 'probe' });
+  const expected = Number(Object.keys(openapi.paths[path][method.toLowerCase()].responses).find((status) => /^2\d\d$/.test(status)));
+  if (response.status !== expected) { console.error(`dev-mock-contract: ${method} ${path} returned ${response.status}, expected ${expected}`); process.exitCode = 1; }
 }
