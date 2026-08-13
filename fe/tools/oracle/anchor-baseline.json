@@ -54,6 +54,10 @@
     "expiry": "2026-12-31"
   },
   {
+    "id": "CAP-APP-037",
+    "subtype": "range-miss"
+  },
+  {
     "id": "CAP-APP-038",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",

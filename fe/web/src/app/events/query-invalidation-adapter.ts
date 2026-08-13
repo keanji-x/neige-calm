@@ -37,6 +37,8 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);
   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);
   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);
+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
+  if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);
   return null;
 }
 

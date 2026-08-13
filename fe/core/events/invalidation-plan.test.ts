@@ -80,6 +80,18 @@ describe('invalidation plan behavior', () => {
     ).invalidate).toEqual([['wave-files', 'wave-1'], ['wave-report', 'wave-1']]);
   });
 
+  it('plans each harness event against the projections it can change', () => {
+    const planned = (ev: WireEvent['ev']) => invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } })).invalidate;
+    expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
+    expect(planned('harness.phase.changed')).toEqual([['spec-run', 'card-1']]);
+    expect(planned('harness.transcript.cleared')).toEqual([
+      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+    ]);
+    expect(planned('harness.user_message.enqueued')).toEqual([
+      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+    ]);
+  });
+
   it('returns an empty plan for explicit no-op policies', () => {
     const empty = { invalidate: [], remove: [], writeThrough: [] };
     expect(invalidationPlanFor(event({ ev: 'plugin.state', data: {} }))).toEqual(empty);
