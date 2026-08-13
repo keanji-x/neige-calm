@@ -985,6 +985,9 @@ jobs:
         working-directory: web
         run: npm run gen:api
 
-      - name: fail if committed spec / types are stale
+      - name: regenerate fe OpenAPI spec
+        run: cargo run --quiet --manifest-path Cargo.toml --bin emit-openapi > fe/core/api/generated/openapi.json
+
+      - name: fail if committed web / fe spec or types are stale
         run: |
-          git diff --exit-code -- web/src/api/openapi.json web/src/api/generated.ts web/src/api/generated-terminal.ts web/src/api/generated-events.ts web/src/editor/types/
+          git diff --exit-code -- web/src/api/openapi.json web/src/api/generated.ts web/src/api/generated-terminal.ts web/src/api/generated-events.ts web/src/editor/types/ fe/core/api/generated/wire.ts fe/core/api/generated/openapi.json

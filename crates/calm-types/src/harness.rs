@@ -13,7 +13,7 @@ use utoipa::ToSchema;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum HarnessPhaseTag {
     PendingThreadStart,
     Idle,
