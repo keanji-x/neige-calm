@@ -16,10 +16,10 @@
     "test:mutation:fixtures": "node tools/mutation/fixture-e2e.mjs",
     "test:wire": "diff ../web/src/api/generated-events.ts core/api/generated/wire.ts || { echo 'generated wire.ts drifted from the ts-rs output; do not hand-edit — re-run the generator'; exit 1; }",
     "mock:generate": "node --experimental-strip-types tools/mock/generate.mjs",
-    "test:mock-drift": "node --experimental-strip-types tools/mock/check-drift.mjs",
+    "test:mock-drift": "node --experimental-strip-types tools/mock/check-drift.mjs && node tools/dev-mock/check-contract.mjs",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
-    "lint:js": "eslint . && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/architecture/check-breakpoint-literals.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
-    "lint:css": "stylelint 'web/src/**/*.css' --allow-empty-input",
+    "lint:js": "eslint . --max-warnings=0 && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/architecture/check-breakpoint-literals.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
+    "lint:css": "stylelint 'web/**/*.css' '!web/dist/**'",
     "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs . && node tools/architecture/check-core-no-jsx.mjs core",
     "e2e": "playwright test"
   },

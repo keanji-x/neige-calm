@@ -11,6 +11,13 @@ const object = (value: unknown): value is JsonObject => value !== null && typeof
 const unknownArray = (value: unknown): unknown[] => Array.isArray(value) ? value as unknown[] : [];
 const codePointCompare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0;
 const PATH_ITEM_FIELDS = new Set<string>([...HTTP_METHODS, 'summary', 'description', 'servers', 'parameters']);
+export const REQUIRED_SCHEMA_WIRE_TYPES = Object.freeze([
+  'AgentProvider', 'Card', 'CardRole', 'CardRuntimeView', 'Cove', 'CoveFolder', 'CoveKind', 'CoveResolve',
+  'FolderConflict', 'FolderConflictKind', 'HarnessItem', 'HarnessPhaseTag', 'Overlay', 'ReportBlock', 'Wave',
+  'WaveFsCardMeta', 'WaveFsHookEvent', 'WaveFsRunDetail', 'WaveFsRunEventRef', 'WaveFsRunEvents',
+  'WaveFsRunIndexEntry', 'WaveFsRunStatus', 'WaveFsRunVerdict', 'WaveFsRunVerdictSummary', 'WaveLifecycle',
+  'WaveReportPayload', 'WorkerSessionKind', 'WorkerSessionState',
+] as const);
 
 export function parsePathTemplate(path: string): { tokens: TemplateToken[]; parameters: string[] } {
   if (!path.startsWith('/')) throw new Error('path template must start with /');
@@ -157,6 +164,8 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
   }
   assertRouteCardinality(document.paths, routes.length);
   const componentSchemas = object(document.components) && object(document.components.schemas) ? document.components.schemas : {};
+  const missingWireTypes = REQUIRED_SCHEMA_WIRE_TYPES.filter((name) => Object.hasOwn(componentSchemas, name) && !wireTypes.has(name));
+  if (missingWireTypes.length > 0) throw new Error(`required schema wire types missing: ${missingWireTypes.join(', ')}`);
   const schemaWireTypes = Object.fromEntries(Object.keys(componentSchemas).sort().map((name) => [name, wireTypes.has(name) ? name : null]));
   const banner = '// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。\n';
   const body = `export const mockOperations = ${JSON.stringify(stable(routes), null, 2)} as const;\n\nexport const schemaWireTypes = ${JSON.stringify(schemaWireTypes, null, 2)} as const;\n`;

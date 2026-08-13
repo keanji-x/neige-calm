@@ -16,7 +16,7 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const now = Date.now();
 
-const coves = [
+export const devMockCoves = [
   { id: 'cove-atlas', name: 'atlas', color: '#5B8DEF', sort: 0, kind: 'user' },
   { id: 'cove-ledger', name: 'ledger-service', color: '#8B7FE8', sort: 1, kind: 'user' },
   { id: 'cove-notes', name: 'field-notes', color: '#7FC8A9', sort: 2, kind: 'user' },
@@ -37,7 +37,7 @@ const waveSeed = [
   ['w-10', 'cove-notes', '', 'planning', 90_000, false],
 ];
 
-const waves = waveSeed.map(([id, coveId, title, lifecycle, age, pinned], index) => ({
+export const devMockWaves = waveSeed.map(([id, coveId, title, lifecycle, age, pinned], index) => ({
   id, cove_id: coveId, title, sort: index, lifecycle,
   cwd: cwdOf[coveId],
   archived_at: null,
@@ -50,7 +50,7 @@ const waves = waveSeed.map(([id, coveId, title, lifecycle, age, pinned], index) 
 // `any_card_needs_input` is the one overlay the kernel really writes, so it is
 // the only one seeded: `progress` / `eta` / `now` have no writer in production
 // and the design forbids reserving space for them (§6.3).
-const overlays = [{
+export const devMockOverlays = [{
   id: 'ov-1', plugin_id: 'card-fsm', entity_kind: 'wave', entity_id: 'w-6',
   kind: 'any_card_needs_input', payload: { value: true }, updated_at: now - 60_000,
 }];
@@ -112,15 +112,30 @@ const w1Report = {
   ].join('\n'),
 };
 
-const cards = {
+export const devMockCards = {
   'w-1': [
-    { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', title: null, sort: 0, payload: w1Report, deletable: false },
+    { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', sort: 0, payload: w1Report, deletable: false },
     { id: 'c-2', wave_id: 'w-1', kind: 'codex', title: 'agent', sort: 1, payload: {}, deletable: true },
   ],
-  'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', title: null, sort: 0, payload: {}, deletable: false }],
+  'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', sort: 0, payload: {}, deletable: false }],
 };
 
 const settings = { http_proxy: 'http://127.0.0.1:2080', https_proxy: 'http://127.0.0.1:2080' };
+
+const coves = devMockCoves;
+const waves = devMockWaves;
+const overlays = devMockOverlays;
+const cards = devMockCards;
+
+// Contract-backed inventory for every non-auth route implemented below. The gate
+// compares these method/template pairs with OpenAPI; adding or renaming dispatch
+// requires changing this inventory in the same hunk.
+export const DEV_MOCK_ROUTES = Object.freeze([
+  ['GET', '/api/version'], ['GET', '/api/settings'], ['PUT', '/api/settings'],
+  ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
+  ['GET', '/api/coves/{cove_id}/waves'], ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
+  ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
+].map((route) => Object.freeze(route)));
 
 function send(res, status, body) {
   res.statusCode = status;

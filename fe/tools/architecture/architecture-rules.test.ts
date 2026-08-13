@@ -83,6 +83,7 @@ describe('architecture/no-module-runtime-state', () => {
     ['destructured-array.ts', 'Module runtime state'],
     ['schema-value.ts', 'z.object({}).parse(x)'],
     ['imported-mutable.ts', 'Object.freeze'],
+    ['top-level-new-expression.ts', "new WebSocket('/api/events')"],
   ] as const;
   for (const [fixture, entity] of rejected) {
     it(`rejects ${fixture}`, async () => {

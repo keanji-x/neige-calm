@@ -45,7 +45,12 @@ export async function checkEslintHygiene(rootPath = '.') {
     const config = /** @type {{ rules?: Record<string, unknown> }} */ (item);
     for (const [ruleName, value] of Object.entries(config?.rules ?? {})) {
       const setting = Array.isArray(value) ? value[0] : value;
-      if ((setting === 'off' || setting === 0) && declaresRule(source, ruleName) && !hasDocumentedReason(source, ruleName)) {
+      const architectureRule = ruleName.startsWith('architecture/');
+      if (architectureRule && (setting === 'warn' || setting === 1)) {
+        errors.push(`eslint-no-warn-shims: architecture rule must be error: ${ruleName}`);
+      }
+      if ((setting === 'off' || setting === 0) && (architectureRule || declaresRule(source, ruleName))
+        && !hasDocumentedReason(source, ruleName)) {
         errors.push(`eslint-no-off-shims: unexplained off rule ${ruleName}`);
       }
     }

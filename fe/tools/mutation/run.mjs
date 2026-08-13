@@ -9,7 +9,7 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 const mutationRunner = await import('./runner.ts');
 const {
   byteSequencesEqual, gitApplyDirectory, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
-  parseShard, parseVitestReport, selectedEntries, shardEntries, trackedFixtureSetMatches, validateManifest,
+  mutationProtectedPathChanged, parseShard, parseVitestReport, selectedEntries, shardEntries, trackedFixtureSetMatches, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
@@ -51,7 +51,7 @@ if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runn
 const changed = values.base ? changedPaths() : [];
 const selected = values.base ? selectedEntries(manifest, changed) : manifest;
 const entriesToRun = shardEntries(selected, shard);
-const infrastructureChanged = changed.some((path) => path.startsWith('fe/tools/mutation/'));
+const infrastructureChanged = mutationProtectedPathChanged(changed);
 const report = [];
 const temporary = mkdtempSync(resolve(tmpdir(), 'neige-mutation-'));
 try {

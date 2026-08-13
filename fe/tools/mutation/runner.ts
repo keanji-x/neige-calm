@@ -155,6 +155,14 @@ export function selectedEntries(entries: MutationEntry[], changedPaths: readonly
   return entries.filter((entry) => [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
 }
 
+export function mutationProtectedPathChanged(changedPaths: readonly string[]): boolean {
+  const protectedControls = new Set([
+    'fe/eslint.config.js', 'fe/package.json', 'fe/ownership-manifest.mjs', 'fe/module-file-inventory.yaml',
+    'fe/stylelint.config.js', 'fe/vite.config.ts', 'fe/vitest.config.ts',
+  ]);
+  return changedPaths.some((path) => protectedControls.has(path) || path.startsWith('fe/tools/'));
+}
+
 export function parseShard(value: string): { index: number; total: number } {
   const match = /^(\d+)\/(\d+)$/.exec(value);
   if (!match) throw new Error(`invalid shard: ${value}`);
