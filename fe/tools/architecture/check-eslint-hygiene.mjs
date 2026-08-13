@@ -45,7 +45,7 @@ export async function checkEslintHygiene(rootPath = '.') {
   const enabledArchitectureRules = new Set();
   let registersArchitecturePlugin = false;
   for (const item of flatten(imported.default ?? [])) {
-    const config = /** @type {{ rules?: Record<string, unknown>, plugins?: Record<string, unknown> }} */ (item);
+    const config = /** @type {{ files?: string[], rules?: Record<string, unknown>, plugins?: Record<string, unknown> }} */ (item);
     if (config.plugins?.architecture) registersArchitecturePlugin = true;
     for (const [ruleName, value] of Object.entries(config?.rules ?? {})) {
       const setting = Array.isArray(value) ? value[0] : value;
@@ -54,13 +54,18 @@ export async function checkEslintHygiene(rootPath = '.') {
       if (architectureRule && (setting === 'warn' || setting === 1)) {
         errors.push(`eslint-no-warn-shims: architecture rule must be error: ${ruleName}`);
       }
+      if (architectureRule && (setting === 'off' || setting === 0)
+        && !(config.files?.length && config.files.every((pattern) => pattern.includes('.test.') || pattern.includes('.contract.test.')))) {
+        errors.push(`eslint-architecture-scope: architecture rule disabled outside test-only files: ${ruleName}`);
+      }
       if ((setting === 'off' || setting === 0) && (architectureRule || declaresRule(source, ruleName))
         && !hasDocumentedReason(source, ruleName)) {
         errors.push(`eslint-no-off-shims: unexplained off rule ${ruleName}`);
       }
     }
   }
-  for (const ruleName of registersArchitecturePlugin ? Object.keys(architecturePlugin.rules ?? {}) : []) {
+  if (!registersArchitecturePlugin) errors.push('eslint-architecture-registration: architecture plugin is not registered');
+  for (const ruleName of Object.keys(architecturePlugin.rules ?? {})) {
     if (!enabledArchitectureRules.has(ruleName)) errors.push(`eslint-architecture-completeness: missing error rule architecture/${ruleName}`);
   }
   if (/\.\.\.\s*tseslint\.configs\.disableTypeChecked/.test(source) && !/\/\/\s*Reason:[^\n]*\n\s*\.\.\.\s*tseslint\.configs\.disableTypeChecked/.test(source)) {

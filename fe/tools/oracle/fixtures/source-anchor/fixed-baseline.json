@@ -3,6 +3,6 @@
     "id": "INV-TEST-001",
     "subtype": "range-miss",
     "reason": "test fixture",
-    "expiry": "2099-12-31"
+    "expiry": "2026-12-31"
   }
 ]

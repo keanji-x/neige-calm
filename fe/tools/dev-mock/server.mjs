@@ -189,6 +189,7 @@ export async function handleDevMockRequest(req, res, next) {
         if (path === '/api/coves' && method === 'GET') return send(res, 200, coves);
         if (path === '/api/coves' && method === 'POST') {
           const body = await readBody(req);
+          if (typeof body.name !== 'string' || typeof body.color !== 'string') return send(res, 400, { message: 'name and color are required' });
           const cove = {
             id: `cove-${Math.random().toString(36).slice(2, 8)}`, name: body.name, color: body.color,
             sort: coves.length, kind: 'user', created_at: Date.now(), updated_at: Date.now(),
@@ -219,6 +220,7 @@ export async function handleDevMockRequest(req, res, next) {
         if (path === '/api/waves' && method === 'GET') return send(res, 200, waves);
         if (path === '/api/waves' && method === 'POST') {
           const body = await readBody(req);
+          if (typeof body.cove_id !== 'string' || typeof body.title !== 'string') return send(res, 400, { message: 'cove_id and title are required' });
           const wave = {
             id: `w-${Math.random().toString(36).slice(2, 8)}`, cove_id: body.cove_id, title: body.title,
             sort: waves.length, lifecycle: 'draft', cwd: body.cwd ?? '', archived_at: null, pinned_at: null,

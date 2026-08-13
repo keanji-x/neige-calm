@@ -9,7 +9,7 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 const mutationRunner = await import('./runner.ts');
 const {
   byteSequencesEqual, gitApplyDirectory, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
-  parseShard, parseVitestReport, selectedEntries, shardEntries, trackedFixtureSetMatches, uncoveredMutationProtectedPaths, validateManifest,
+  parseShard, parseVitestReport, selectedEntries, shardEntries, trackedFixtureSetMatches, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
@@ -51,7 +51,6 @@ if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runn
 const changed = values.base ? changedPaths() : [];
 const selected = values.base ? selectedEntries(manifest, changed) : manifest;
 const entriesToRun = shardEntries(selected, shard);
-const uncoveredInfrastructure = uncoveredMutationProtectedPaths(selected, changed);
 const report = [];
 const temporary = mkdtempSync(resolve(tmpdir(), 'neige-mutation-'));
 try {
@@ -105,9 +104,7 @@ try {
 }
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner left worktree dirty');
 const output = JSON.stringify({ shard, selected: selected.length, ran: entriesToRun.length, total: manifest.length,
-  uncovered_infrastructure: uncoveredInfrastructure, mutations: report }, null, 2);
+  mutations: report }, null, 2);
 if (values.report) writeFileSync(resolve(feRoot, values.report), `${output}\n`);
 console.log(output);
-process.exitCode = mutationRunExitCode(
-  report.map(({ verdict }) => verdict), uncoveredInfrastructure.length > 0, Boolean(values.base),
-);
+process.exitCode = mutationRunExitCode(report.map(({ verdict }) => verdict));

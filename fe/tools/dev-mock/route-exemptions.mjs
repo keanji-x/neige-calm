@@ -1,5 +1,5 @@
 // Explicit omissions from the lightweight visual-development kernel.
-export const DEV_MOCK_ROUTE_EXEMPTIONS = Object.freeze([
+const routeExemptions = [
   Object.freeze({ route: "GET /api/cards/{card_id}/terminal", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "DELETE /api/cards/{id}", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "PATCH /api/cards/{id}", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
@@ -51,4 +51,10 @@ export const DEV_MOCK_ROUTE_EXEMPTIONS = Object.freeze([
   Object.freeze({ route: "POST /api/waves/{wave_id}/claude-cards", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/waves/{wave_id}/codex-cards", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/waves/{wave_id}/terminal-cards", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
-]);
+];
+const ROUTE_EXEMPTION_LIMIT = 51;
+export const DEV_MOCK_ROUTE_EXEMPTION_EXPIRY = '2026-12-31';
+if (routeExemptions.length > ROUTE_EXEMPTION_LIMIT) throw new Error('dev-mock route exemptions may only shrink');
+export const DEV_MOCK_ROUTE_EXEMPTIONS = Object.freeze(routeExemptions.map(({ route, reason }) => Object.freeze({
+  route, reason: `${route}: ${reason}`, expiry: DEV_MOCK_ROUTE_EXEMPTION_EXPIRY,
+})));

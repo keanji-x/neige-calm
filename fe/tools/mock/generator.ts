@@ -18,9 +18,14 @@ const responseWireTypeExceptionNames = [
     'ThreadCardResolution', 'TodayLaunchpad', 'VersionInfo', 'ViewCatalogEntry', 'WaveBacklinksResponse',
     'WaveDetail', 'WaveFsContent', 'WaveFsEntry', 'WaveReportReadResponse']
 ] as const;
+const RESPONSE_WIRE_TYPE_EXCEPTION_LIMIT = 24;
+export const RESPONSE_WIRE_TYPE_EXCEPTION_EXPIRY = '2026-12-31';
+if (responseWireTypeExceptionNames.length > RESPONSE_WIRE_TYPE_EXCEPTION_LIMIT) {
+  throw new Error(`response wire type exceptions may only shrink (maximum ${RESPONSE_WIRE_TYPE_EXCEPTION_LIMIT})`);
+}
 export const RESPONSE_WIRE_TYPE_EXEMPTIONS: Readonly<Record<string, string>> = Object.freeze(
   responseWireTypeExceptionNames.reduce<Record<string, string>>((entries, name) => {
-    entries[name] = 'Legacy OpenAPI response has no frozen ts-rs wire export; migrate it before removing this exception.';
+    entries[name] = `${name} is a legacy response without a frozen ts-rs wire export; migrate by ${RESPONSE_WIRE_TYPE_EXCEPTION_EXPIRY}.`;
     return entries;
   }, {}),
 );
@@ -160,10 +165,18 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
       const responses = Object.entries(operation.responses as JsonObject).sort(([left], [right]) => codePointCompare(left, right)).map(([status, raw]) => {
         const response = object(raw) && typeof raw.$ref === 'string' ? resolveLocalRef(document, raw.$ref) : raw;
         const content = object(response) && object(response.content) ? response.content : {};
+        const visitedRefs = new Set<string>();
         const collectResponseRefs = (value: unknown): void => {
           if (Array.isArray(value)) { value.forEach(collectResponseRefs); return; }
           if (!object(value)) return;
-          if (typeof value.$ref === 'string' && value.$ref.startsWith('#/components/schemas/')) responseSchemaRefs.add(value.$ref.slice(21));
+          if (typeof value.$ref === 'string' && value.$ref.startsWith('#/components/schemas/')) {
+            const name = value.$ref.slice(21);
+            responseSchemaRefs.add(name);
+            if (!Object.hasOwn(RESPONSE_WIRE_TYPE_EXEMPTIONS, name) && !visitedRefs.has(value.$ref)) {
+              visitedRefs.add(value.$ref);
+              collectResponseRefs(resolveLocalRef(document, value.$ref));
+            }
+          }
           Object.values(value).forEach(collectResponseRefs);
         };
         collectResponseRefs(content);
@@ -178,6 +191,9 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
   }
   assertRouteCardinality(document.paths, routes.length);
   const componentSchemas = object(document.components) && object(document.components.schemas) ? document.components.schemas : {};
+  const staleWireExceptions = Object.keys(componentSchemas).length > RESPONSE_WIRE_TYPE_EXCEPTION_LIMIT
+    ? Object.keys(RESPONSE_WIRE_TYPE_EXEMPTIONS).filter((name) => !(name in componentSchemas)) : [];
+  if (staleWireExceptions.length > 0) throw new Error(`stale response schema wire type exceptions: ${staleWireExceptions.join(', ')}`);
   const missingWireTypes = [...responseSchemaRefs].filter((name) => !wireTypes.has(name) && !Object.hasOwn(RESPONSE_WIRE_TYPE_EXEMPTIONS, name)).sort();
   if (missingWireTypes.length > 0) throw new Error(`response schema wire types missing: ${missingWireTypes.join(', ')}`);
   const schemaWireTypes = Object.fromEntries(Object.keys(componentSchemas).sort().map((name) => [name, wireTypes.has(name) ? name : null]));

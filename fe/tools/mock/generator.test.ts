@@ -78,6 +78,17 @@ describe('mock OpenAPI generator', () => {
     expect(() => generateMockFiles(document, 'export interface Cove {}')).not.toThrow();
   });
 
+  it('recursively requires wire types for schemas nested behind response refs', () => {
+    const document = { paths: { '/nested': { get: { responses: { 200: { content: { 'application/json': {
+      schema: { $ref: '#/components/schemas/Envelope' },
+    } } } } } } }, components: { schemas: {
+      Envelope: { type: 'object', properties: { inner: { $ref: '#/components/schemas/MissingInner' } } },
+      MissingInner: { type: 'object' },
+    } } };
+    expect(() => generateMockFiles(document, 'export interface Envelope {}'))
+      .toThrow('response schema wire types missing: MissingInner');
+  });
+
   it('serializes object keys in stable code-point order', () => {
     const content = generateMockFiles(load('positive', 'path-and-ref.json'), 'export type Cove = {};')[0].content;
     const [route] = generatedValue(content, 'mockOperations') as Array<Record<string, unknown>>;

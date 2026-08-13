@@ -1,8 +1,8 @@
 - id: feature/test/sample
   locations: []
   reason: test fixture
-  expiry: 2099-12-31
+  expiry: 2026-12-31
 - id: feature/test/sample
   locations: []
   reason: test fixture
-  expiry: 2099-12-31
+  expiry: 2026-12-31

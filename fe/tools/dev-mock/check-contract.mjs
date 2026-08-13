@@ -12,8 +12,10 @@ const openApiRoutes = new Set(Object.entries(openapi.paths).flatMap(([path, item
     .map((method) => `${method.toUpperCase()} ${path}`)));
 const declared = new Set(DEV_MOCK_ROUTES.map(([method, path]) => `${method} ${path}`));
 const exempted = new Set(DEV_MOCK_ROUTE_EXEMPTIONS.map(({ route }) => route));
-if (DEV_MOCK_ROUTE_EXEMPTIONS.some(({ reason }) => reason.trim() === '') || exempted.size !== DEV_MOCK_ROUTE_EXEMPTIONS.length) {
-  console.error('dev-mock-contract: route exemptions require unique routes and nonempty reasons'); process.exitCode = 1;
+if (DEV_MOCK_ROUTE_EXEMPTIONS.some(({ reason, expiry }) => reason.trim() === '' || expiry < new Date().toISOString().slice(0, 10))
+  || new Set(DEV_MOCK_ROUTE_EXEMPTIONS.map(({ reason }) => reason)).size !== DEV_MOCK_ROUTE_EXEMPTIONS.length
+  || exempted.size !== DEV_MOCK_ROUTE_EXEMPTIONS.length) {
+  console.error('dev-mock-contract: route exemptions require unique routes/reasons and live expiries'); process.exitCode = 1;
 }
 const absent = [...declared].filter((route) => !openApiRoutes.has(route));
 if (absent.length) { console.error(`dev-mock-contract: routes absent from OpenAPI: ${absent.join(', ')}`); process.exitCode = 1; }
@@ -45,7 +47,7 @@ async function invoke(method, path, body = {}) {
 for (const route of exempted) {
   const [method, path] = route.split(' ');
   const response = await invoke(method, path);
-  if (response.status !== 404 && !declared.has(route) && !path.startsWith('/api/auth/')) {
+  if (response.status !== 404 && !declared.has(route)) {
     console.error(`dev-mock-contract: implemented route absent from inventory: ${route}`); process.exitCode = 1;
   }
 }
@@ -70,3 +72,39 @@ for (const [method, path] of [['POST', '/api/coves'], ['POST', '/api/waves']]) {
   const expected = Number(Object.keys(openapi.paths[path][method.toLowerCase()].responses).find((status) => /^2\d\d$/.test(status)));
   if (response.status !== expected) { console.error(`dev-mock-contract: ${method} ${path} returned ${response.status}, expected ${expected}`); process.exitCode = 1; }
 }
+
+const version = await invoke('GET', '/api/version');
+if (version.status !== 200 || !Number.isInteger(version.body?.webCompatVersion)
+  || !Number.isInteger(version.body?.minWebCompatVersion) || !Number.isInteger(version.body?.syncEventVersion)
+  || typeof version.body?.dbInstanceId !== 'string') {
+  console.error('dev-mock-contract: invalid GET /api/version response'); process.exitCode = 1;
+}
+for (const method of ['GET', 'PUT']) {
+  const response = await invoke(method, '/api/settings', method === 'PUT' ? { settings: { http_proxy: 'http://probe' } } : {});
+  if (response.status !== 200 || typeof response.body?.settings !== 'object') {
+    console.error(`dev-mock-contract: invalid ${method} /api/settings response`); process.exitCode = 1;
+  }
+}
+const coveWaves = await invoke('GET', '/api/coves/{cove_id}/waves');
+if (coveWaves.status !== 200 || !waveSchema.strict().array().safeParse(coveWaves.body).success) {
+  console.error('dev-mock-contract: invalid GET /api/coves/{cove_id}/waves response'); process.exitCode = 1;
+}
+for (const [method, path, body, schema] of [
+  ['PATCH', '/api/coves/{id}', { name: 'atlas-probed' }, coveSchema.strict()],
+  ['PATCH', '/api/waves/{id}', { title: 'wave-probed' }, waveSchema.strict()],
+]) {
+  const response = await invoke(method, path, body);
+  if (response.status !== 200 || !schema.safeParse(response.body).success) {
+    console.error(`dev-mock-contract: invalid ${method} ${path} response`); process.exitCode = 1;
+  }
+}
+for (const path of ['/api/waves/{id}', '/api/coves/{id}']) {
+  const response = await invoke('DELETE', path);
+  if (response.status !== 204) { console.error(`dev-mock-contract: DELETE ${path} returned ${response.status}`); process.exitCode = 1; }
+}
+for (const path of ['/api/waves/missing-probe', '/api/coves/missing-probe']) {
+  const response = await invoke('GET', path);
+  if (response.status !== 404) { console.error(`dev-mock-contract: missing resource ${path} did not return 404`); process.exitCode = 1; }
+}
+const invalidCreate = await invoke('POST', '/api/coves', {});
+if (invalidCreate.status !== 400) { console.error('dev-mock-contract: invalid POST /api/coves did not return 400'); process.exitCode = 1; }

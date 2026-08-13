@@ -15,4 +15,10 @@ export const createContextExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/app/theme/public.tsx', reason: 'App theme provider owns the document dataset mirror.' }),
   Object.freeze({ path: 'web/src/ui/dialog/public.tsx', reason: 'Issue #997 permits context in the primitive directory while consumers remain in ui.' }),
 ]);
+/** @param {string} name @param {ReadonlyArray<{reason: string}>} entries */
+function requireReasons(name, entries) {
+  if (entries.some(({ reason }) => reason.trim() === '')) throw new Error(`${name} exceptions require a nonempty reason`);
+}
+requireReasons('module runtime state', moduleRuntimeStateExceptions);
+requireReasons('createContext', createContextExceptions);
 export const createContextAllowlist = Object.freeze(createContextExceptions.map(({ path }) => path));

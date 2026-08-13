@@ -24,13 +24,22 @@ export function breakpointMismatches(source, path = '<css>') {
   /** @type {string[]} */
   const mismatches = [];
   const ast = postcss.parse(source, { from: path });
+  /** @param {string} value */
+  const checkWidthExpression = (value) => {
+    const trimmed = value.trim();
+    if (trimmed.toLowerCase() === `${expected}rem`) return;
+    mismatches.push(`${path}: ${trimmed} (expected ${expected}rem)`);
+  };
+  ast.walkAtRules('custom-media', (rule) => {
+    const definition = /^--[\w-]+\s+([\s\S]+)$/.exec(rule.params);
+    if (!definition) return;
+    for (const match of definition[1].matchAll(/(?:min-|max-)?width\s*:\s*(calc\([^)]*\)|[^;)]+)/gi)) checkWidthExpression(match[1]);
+  });
   ast.walkAtRules(/^(media|container)$/i, (rule) => {
     const params = rule.params.replace(/(['"])(?:\\.|(?!\1).)*\1/g, '');
-    for (const match of params.matchAll(/(\d+(?:\.\d+)?)([a-z%]+)/gi)) {
-      if (Number(match[1]) !== expected || match[2].toLowerCase() !== 'rem') {
-        mismatches.push(`${path}: ${match[1]}${match[2]} (expected ${expected}rem)`);
-      }
-    }
+    for (const match of params.matchAll(/(?:min-|max-)?width\s*:\s*(calc\([^)]*\)|[^;)]+)/gi)) checkWidthExpression(match[1]);
+    for (const match of params.matchAll(/(\d+(?:\.\d+)?[a-z%]+)\s*(?:<=|<|>=|>)\s*width/gi)) checkWidthExpression(match[1]);
+    for (const match of params.matchAll(/width\s*(?:<=|<|>=|>)\s*(\d+(?:\.\d+)?[a-z%]+)/gi)) checkWidthExpression(match[1]);
   });
   return mismatches;
 }

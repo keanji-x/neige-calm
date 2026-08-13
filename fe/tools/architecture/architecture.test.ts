@@ -184,6 +184,9 @@ describe('architecture fixtures', () => {
     expect(breakpointMismatches('@media (30em <= width <= 61em) {}')).toHaveLength(2);
     expect(breakpointMismatches('/* @media (min-width: 30em) {} */ a { content: "@media (30em)" }')).toEqual([]);
     expect(breakpointMismatches('@media (width >= 60rem) {}')).toEqual([]);
+    expect(breakpointMismatches('@media (width >= 60rem) and (max-height: 40rem) {}')).toEqual([]);
+    expect(breakpointMismatches('@media (min-width: calc(60rem + 1px)) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@custom-media --narrow (max-width: 30em); @media (--narrow) {}')).toHaveLength(1);
   });
   const expectedViolation = new Map<string, string>([
     ['dup-inv-001', 'INV-DUP-001'],

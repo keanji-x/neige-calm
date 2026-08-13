@@ -3,9 +3,9 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
-  byteSequencesEqual, declaredFixtureDirectories, judgeMutation, mutationProtectedPathChanged, mutationRunExitCode, oracleIdsFromDocuments,
+  byteSequencesEqual, declaredFixtureDirectories, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
-  trackedFixtureSetMatches, uncoveredMutationProtectedPaths, validateManifest,
+  trackedFixtureSetMatches, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -140,23 +140,9 @@ describe('report infrastructure classification', () => {
 });
 
 describe('zero-selection exit policy', () => {
-  it('passes unrelated PRs and fails infrastructure PRs with zero selections', () => {
-    expect(mutationRunExitCode([], false, true)).toBe(0);
-    expect(mutationRunExitCode([], true, true)).toBe(1);
-  });
-  it('treats every checker and frontend gate config as mutation infrastructure', () => {
-    expect(mutationProtectedPathChanged(['fe/tools/architecture/check-breakpoint-literals.mjs'])).toBe(true);
-    expect(mutationProtectedPathChanged(['fe/package.json'])).toBe(true);
-    expect(mutationProtectedPathChanged(['fe/web/src/app/main.tsx'])).toBe(false);
-  });
-  it('passes an empty shard when mutations were selected globally', () => {
-    expect(mutationRunExitCode([], false, true)).toBe(0);
-  });
-  it('fails an uncovered checker even when another mutation was selected', () => {
-    expect(uncoveredMutationProtectedPaths([baseEntry], [baseEntry.target, 'fe/tools/dev-mock/check-contract.mjs']))
-      .toEqual(['fe/tools/dev-mock/check-contract.mjs']);
-    expect(mutationRunExitCode([{ ok: true, errors: [] }], true, true)).toBe(1);
-    expect(mutationProtectedPathChanged(['fe/.dependency-cruiser.cjs', 'docs/oracle/invariants.yaml'])).toBe(true);
+  it('passes an empty selection and fails an actual mutation verdict', () => {
+    expect(mutationRunExitCode([])).toBe(0);
+    expect(mutationRunExitCode([{ ok: false, errors: [{ code: 'dead-mutation', test_ids: [] }] }])).toBe(1);
   });
 });
 

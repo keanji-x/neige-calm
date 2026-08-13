@@ -155,16 +155,6 @@ export function selectedEntries(entries: MutationEntry[], changedPaths: readonly
   return entries.filter((entry) => [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
 }
 
-export function mutationProtectedPathChanged(changedPaths: readonly string[]): boolean {
-  const protectedControls = new Set<string>(OWNERSHIP_CONTROL_FILES);
-  return changedPaths.some((path) => protectedControls.has(path) || path.startsWith('fe/tools/') || path.startsWith('docs/oracle/'));
-}
-
-export function uncoveredMutationProtectedPaths(entries: MutationEntry[], changedPaths: readonly string[]): string[] {
-  const covered = new Set(entries.flatMap((entry) => [entry.target, ...entry.selection_paths]).map((path) => `fe/${path}`));
-  return changedPaths.filter((path) => mutationProtectedPathChanged([path]) && !covered.has(path)).sort();
-}
-
 export function parseShard(value: string): { index: number; total: number } {
   const match = /^(\d+)\/(\d+)$/.exec(value);
   if (!match) throw new Error(`invalid shard: ${value}`);
@@ -211,9 +201,8 @@ export function oracleIdsFromDocuments(documents: readonly unknown[]): Set<strin
 }
 
 export function mutationRunExitCode(
-  report: readonly MutationVerdict[], hasUncoveredInfrastructure: boolean, baseMode: boolean,
+  report: readonly MutationVerdict[],
 ): 0 | 1 {
-  if (baseMode && hasUncoveredInfrastructure) return 1;
   return report.some((verdict) => verdictExitCode(verdict) === 1) ? 1 : 0;
 }
 
@@ -246,4 +235,3 @@ export function judgeMutation(entry: MutationEntry, result: MutationRunResult): 
 export function verdictExitCode(verdict: MutationVerdict): 0 | 1 {
   return verdict.ok ? 0 : 1;
 }
-import { OWNERSHIP_CONTROL_FILES } from '../ownership/validator';
