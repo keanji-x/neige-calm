@@ -50,6 +50,7 @@ import {
   waveBacklinksQueryOptions, waveDetailQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
+import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -84,6 +85,7 @@ function errorMessage(error: unknown, fallback: string): string {
  * agent replies and harness phase changes do not appear here automatically.
  */
 function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
+  const registry = useConversationRegistry();
   const cardId = scope?.cardId ?? '';
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId), enabled: scope !== null,
@@ -116,16 +118,21 @@ function useConversationStore(transport: ApiTransportPort, scope: SpecConversati
     setResetting(false);
   }, [cardId]);
 
-  const turns = [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs);
+  const turns = useMemo(() => [...serverTurns, ...echoes]
+    .sort((left, right) => left.atMs - right.atMs), [echoes, serverTurns]);
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
-  const conversation: Conversation | null = scope === null ? null : {
+  const conversation = useMemo<Conversation | null>(() => scope === null ? null : ({
     id: scope.cardId, waveId: scope.id, waveTitle: scope.title,
     title: scope.cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
     kind: 'shared-spec', state: working ? 'running' : 'idle',
     updatedAt: turns.at(-1)?.atMs ?? scope.updatedAt, turns: turns.length,
-  };
+  }), [scope, turns, working]);
+  const { remember } = registry;
+  useEffect(() => {
+    if (conversation !== null) remember(conversation, turns);
+  }, [conversation, remember, turns]);
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -174,8 +181,8 @@ function useConversationStore(transport: ApiTransportPort, scope: SpecConversati
   };
 
   return {
-    conversations: conversation === null ? [] : [conversation],
-    turnsOf: () => turns,
+    conversations: registry.conversations,
+    turnsOf: (conversationId) => conversationId === conversation?.id ? turns : registry.turnsOf(conversationId),
     pending: working && conversation !== null ? new Set([conversation.id]) : new Set(),
     working,
     stopping,
@@ -186,7 +193,10 @@ function useConversationStore(transport: ApiTransportPort, scope: SpecConversati
     historyError: history.error instanceof Error ? history.error.message : null,
     actionError,
     actionMessage,
-    start: () => conversation,
+    start: () => {
+      if (conversation !== null) registry.remember(conversation, turns);
+      return conversation;
+    },
     send,
     interrupt,
     reset,
@@ -248,11 +258,11 @@ export function createAppRouter(deps: AppRouterDeps) {
 function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onSignOut: () => void }) {
   const go = useGo();
   return (
-    <AppShell
+    <ConversationProvider><AppShell
       transport={transport}
       onOpenSettings={() => go({ name: 'settings' })}
       onSignOut={onSignOut}
-    />
+    /></ConversationProvider>
   );
 }
 

@@ -46,6 +46,7 @@
 - { path: fe/web/src/app/env.d.ts, type: file, owner: app/bootstrap, readonly: false, basis: "§0.5 构建期常量的环境声明；web/src 顶层只允许 main.tsx，故落在 app/ (#997)" }
 - { path: fe/web/src/app/markdown-legacy-differential.test.ts, type: file, owner: app/markdown-migration, readonly: false, basis: "architecture §4.9" }
 - { path: fe/web/src/app/router, type: directory, owner: app/router, readonly: false, basis: "architecture §2" }
+- { path: fe/web/src/app/conversations, type: directory, owner: app/conversations, readonly: false, basis: "architecture §2 cross-route provider" }
 - { path: fe/web/src/app/providers, type: directory, owner: app/providers, readonly: false, basis: "architecture §2" }
 - { path: fe/web/src/app/theme, type: directory, owner: app/theme, readonly: false, basis: "architecture §2; INV-DUP-007" }
 - { path: fe/web/src/app/shell, type: directory, owner: app/shell, readonly: false, basis: "architecture §2" }

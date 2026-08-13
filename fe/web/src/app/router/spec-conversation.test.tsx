@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -60,7 +60,7 @@ function setup(reply?: Reply) {
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { requests };
+  return { requests, router };
 }
 
 async function openConversation() {
@@ -80,6 +80,19 @@ afterEach(() => {
 });
 
 describe('spec conversation regressions', () => {
+  it('keeps a started conversation listed across route navigation', async () => {
+    const { router } = setup();
+    fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
+    await screen.findByRole('complementary', { name: 'Spec chat' });
+
+    await act(() => router.navigate({ to: '/' }));
+    expect(await screen.findByRole('button', { name: /Conversation Spec chat.*Test wave/ })).toBeTruthy();
+
+    await act(() => router.navigate({ to: '/wave/$waveId', params: { waveId: WAVE.id } }));
+    await screen.findByRole('button', { name: 'Rename wave' });
+    expect(screen.getByRole('button', { name: /Conversation Spec chat/ })).toBeTruthy();
+  });
+
   it('loads only the first history page until the user asks for earlier rows', async () => {
     const { requests } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(HARNESS_ITEMS_PAGE_LIMIT)) : undefined);
