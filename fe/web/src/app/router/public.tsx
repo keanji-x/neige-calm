@@ -450,7 +450,9 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
           ]}
         />}
         onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
-        onDeleteCove={(signal) => coveMutations.remove(cove.id, signal).then(() => { go({ name: 'today' }); })}
+        onDeleteCove={(signal) => coveMutations.remove(cove.id, signal).then(() => {
+          if (!signal.aborted) go({ name: 'today' });
+        })}
         onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
         conversationList={chat.list}
         conversationAction={chat.action}
@@ -568,6 +570,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       conversationAction={chat.action}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
       onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.coveId, signal).then(() => {
+        if (signal.aborted) return;
         if (cove !== undefined) go({ name: 'cove', coveId: cove.id });
         else go({ name: 'today' });
       })}

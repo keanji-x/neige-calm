@@ -211,11 +211,12 @@ export function useCoveMutations(transport: ApiTransportPort): CoveMutations {
     mutationFn: ({ coveId, signal }: { coveId: string; signal?: AbortSignal }) =>
       runOperation(transport, { ...deleteCoveOperation(coveId), signal }),
     onSuccess: (_result, { coveId }) => {
-      void client.invalidateQueries({ queryKey: queryKeys.coves() });
       // The cove is gone; its wave list can never resolve again, so drop it
       // instead of leaving a permanently-stale entry behind.
       client.removeQueries({ queryKey: queryKeys.wavesInCove(coveId) });
     },
+    // Abort only ends the client wait: the server may already have committed.
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
   });
   return {
     create: async (body) => toCove(await create.mutateAsync(body)),
@@ -253,9 +254,12 @@ export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
     mutationFn: ({ waveId, signal }: { waveId: string; coveId: string; signal?: AbortSignal }) =>
       runOperation(transport, { ...deleteWaveOperation(waveId), signal }),
     onSuccess: (_result, variables) => {
+      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
+    },
+    // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
+    onSettled: (_result, _error, variables) => {
       void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(variables.coveId) });
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
-      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
     },
   });
   const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>

@@ -64,7 +64,10 @@ export function useDeleteConfirm(
       active.current = controller;
       setPending(true);
       void feedback.run(Promise.resolve().then(() => perform(target, controller.signal)), 'Could not delete this item.', () => controller.signal.aborted)
-        .then((deleted) => { if (deleted) onDone?.(); })
+        .then((deleted) => {
+          if (active.current !== controller) return;
+          if (deleted) onDone?.();
+        })
         .finally(() => {
           if (active.current !== controller) return;
           active.current = null; setPending(false); setTarget(null);

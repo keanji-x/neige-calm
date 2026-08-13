@@ -64,6 +64,36 @@ it('requires the shared confirmation before deleting from the CoveRoute panel', 
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
 });
 
+it('does not navigate on a delete success that arrives after cancellation', async () => {
+  let resolveDelete!: (response: ApiTransportResponse) => void;
+  const wave = { id: 'w1', cove_id: 'c1', title: 'Risky', sort: 1, lifecycle: 'working', cwd: '/tmp',
+    archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 1 };
+  const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
+    if (request.method === 'DELETE') return new Promise((resolve) => { resolveDelete = resolve; });
+    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+      { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
+    ] });
+    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [wave] });
+    if (request.path === '/api/waves/w1') return Promise.resolve({ status: 200, statusText: 'OK', body: { wave, cards: [], overlays: [] } });
+    if (request.path === '/api/settings') return Promise.resolve({ status: 200, statusText: 'OK', body: {} });
+    return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/wave/w1'] }) });
+  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+    <RouterProvider router={router} />
+  </ThemeProvider></QueryClientProvider>);
+  await userEvent.click(await screen.findByRole('button', { name: 'Delete wave Risky' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Account menu for You' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
+  resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
+  await screen.findByRole('heading', { name: 'Settings' });
+  expect(router.state.location.pathname).toBe('/settings');
+});
+
 it('round-trips an encoded wave id through useGo, TanStack history, and useRouteParam', async () => {
   const requests: ApiRequest[] = [];
   const waveId = 'a/b %';

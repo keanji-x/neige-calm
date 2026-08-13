@@ -1,13 +1,16 @@
 // @vitest-environment jsdom
 // Invariants owned by the shared query layer.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
-import { ApiError, coveListQueryOptions, useWorkspace, wavesInCoveQueryOptions } from './queries.ts';
+import {
+  ApiError, coveListQueryOptions, queryKeys, useCoveMutations, useWaveMutations,
+  useWorkspace, wavesInCoveQueryOptions,
+} from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
   const paths: string[] = [];
@@ -82,5 +85,58 @@ describe('wave list', () => {
     await wavesInCoveQueryOptions(transport, 'c1').queryFn();
     await wavesInCoveQueryOptions(transport, 'c2').queryFn();
     expect(paths).toEqual(['/api/coves/c1/waves', '/api/coves/c2/waves']);
+  });
+});
+
+describe('delete mutation wiring', () => {
+  function mutationWrapper(client: QueryClient) {
+    return ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+  }
+
+  it.each([
+    ['wave', (transport: ApiTransportPort) => useWaveMutations(transport),
+      (mutations: ReturnType<typeof useWaveMutations>, signal: AbortSignal) => mutations.remove('w1', 'c1', signal)],
+    ['cove', (transport: ApiTransportPort) => useCoveMutations(transport),
+      (mutations: ReturnType<typeof useCoveMutations>, signal: AbortSignal) => mutations.remove('c1', signal)],
+  ] as const)('relays the caller signal through the real %s mutation operation', async (_kind, useMutations, remove) => {
+    let requestSignal: AbortSignal | undefined;
+    const transport: ApiTransportPort = { send: vi.fn((request: ApiRequest) => {
+      requestSignal = request.signal as AbortSignal;
+      return new Promise<ApiTransportResponse>((_resolve, reject) => requestSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+    }) };
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const { result } = renderHook(() => useMutations(transport), { wrapper: mutationWrapper(client) });
+    const controller = new AbortController();
+    let pending!: Promise<void>;
+    act(() => { pending = remove(result.current as never, controller.signal); });
+    await waitFor(() => expect(requestSignal).toBe(controller.signal));
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(ApiError);
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it('invalidates the wave list even when an aborted delete may have committed', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.wavesInCove('c1'), [{ id: 'w1' }]);
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const transport: ApiTransportPort = { send: () => Promise.reject(new DOMException('aborted', 'AbortError')) };
+    const { result } = renderHook(() => useWaveMutations(transport), { wrapper: mutationWrapper(client) });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(result.current.remove('w1', 'c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.wavesInCove('c1') });
+  });
+
+  it('invalidates the cove list even when an aborted delete may have committed', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.coves(), [userCove]);
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    const transport: ApiTransportPort = { send: () => Promise.reject(new DOMException('aborted', 'AbortError')) };
+    const { result } = renderHook(() => useCoveMutations(transport), { wrapper: mutationWrapper(client) });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(result.current.remove('c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.coves() });
   });
 });

@@ -33,7 +33,9 @@ describe('fetch transport cancellation', () => {
     }));
     const pending = createFetchTransport().send(request);
     const rejected = expect(pending).rejects.toMatchObject({ name: 'TimeoutError' });
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(fetchSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
     await rejected;
     expect(fetchSignal?.aborted).toBe(true);
   });
