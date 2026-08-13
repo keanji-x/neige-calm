@@ -911,7 +911,7 @@
       "oracle:INV-APP-059"
     ],
     "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..3148cf4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -22,7 +22,7 @@ export interface ProviderRuntime {\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 400) return false;\n   return failureCount < 1;\n }\n \n",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -19,7 +19,7 @@ export function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'failure' in error) {\n     const failure = error.failure;\n-    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n+    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'authorized') return false;\n   }\n   return failureCount < 1;\n }\n\n",
     "selection_paths": [
       "web/src/app/providers/public.contract.test.tsx"
     ],
