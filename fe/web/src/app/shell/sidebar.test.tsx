@@ -141,6 +141,16 @@ describe('new cove', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Work' }));
     expect(onCreateCove.mock.calls.map((call) => (call as string[])[0])).toEqual(['Later']);
   });
+
+  it('keeps the typed name and reports a failed creation', async () => {
+    const onCreateCove = vi.fn().mockRejectedValue(new Error('Name already exists'));
+    renderSidebar({ onCreateCove });
+    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Reading{Enter}');
+
+    expect((await screen.findByRole('alert')).textContent).toBe('Name already exists');
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Cove name' }).value).toBe('Reading');
+  });
 });
 
 describe('destructive confirms', () => {
@@ -177,7 +187,7 @@ describe('destructive confirms', () => {
     expect(onDeleteCove.mock.calls).toEqual([['c1']]);
   });
 
-  it('keeps the confirm mounted while the delete is in flight and clears it on rejection', async () => {
+  it('keeps the confirm usable and reports a rejected delete', async () => {
     let reject: (reason: Error) => void = () => {};
     const onDeleteWave = vi.fn(() => new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; }));
     renderSidebar({ waves: [wave({ id: 'w1', title: 'Task' })], onDeleteWave });
@@ -193,7 +203,10 @@ describe('destructive confirms', () => {
     expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
 
     reject(new Error('boom'));
-    await screen.findByRole('button', { name: 'Delete Task' });
+    expect((await screen.findByRole('alert')).textContent).toBe('boom');
+    expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-disabled')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

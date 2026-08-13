@@ -30,16 +30,11 @@ const POSITIONAL = [
   '--text-4', '--accent', '--accent-soft', '--warn', '--warn-soft',
 ] as const;
 const CONCRETE_SURFACES = [
-  '--surface-rail', '--surface-card', '--surface-chip', '--surface-chip-focus', '--surface-toggle-overlay',
-  '--surface-panel-head',
+  '--surface-rail', '--surface-card', '--surface-chip', '--surface-chip-focus',
 ] as const;
 const PROSE_SURFACES = ['--surface-terminal', '--surface-code'] as const;
 const OVERLAYS = [
   '--overlay-hover-faint', '--overlay-hover', '--overlay-hover-strong', '--overlay-active',
-] as const;
-const ALIASES = [
-  '--surface-paper', '--surface-bg', '--surface-hover-overlay', '--text-label', '--text-meta',
-  '--text-decorative',
 ] as const;
 const TYPE_SCALE = [
   '--text-xs', '--text-base', '--text-md', '--text-lg', '--text-xl',
@@ -65,7 +60,7 @@ const MOTION = [
 const STATUS = ['--success', '--error'] as const;
 const FONT_ALIASES = ['--font-display', '--font-numeric', '--font-code'] as const;
 const MISC = [
-  '--overlay-scrim', '--cal-event-waiting-bg', '--error-text', '--warn-border',
+  '--overlay-scrim', '--error-text', '--warn-border',
   '--warn-text', '--success-text', '--error-soft', '--error-border',
 ] as const;
 // Every MISC member except the scrim, which is the deliberate rgba exception.
@@ -77,7 +72,7 @@ const BOX_SCALE = [
   '--row-h-sm', '--row-h', '--row-h-lg',
   '--control-h-sm', '--control-h', '--control-h-lg',
   '--rail-w', '--rail-w-collapsed', '--panel-w', '--drawer-w', '--header-baseline',
-  '--measure-prose', '--measure-form', '--measure-page', '--measure-board',
+  '--measure-prose', '--measure-form', '--measure-page',
   '--measure-list', '--measure-doc',
   '--slot-h', '--rule-h', '--dot-sm', '--dot-md',
   '--glyph-sm', '--glyph', '--menu-w-min', '--menu-w-max',
@@ -88,11 +83,10 @@ const COVE_IDENTITY = [
   '--cove-5', '--cove-6', '--cove-7', '--cove-8',
 ] as const;
 const SHADOW = ['--shadow-float'] as const;
-// Not in ALIASES: that group asserts `dark.has(name) === false`, and --text-on-accent
-// must resolve in both themes (§0.1 #10).
+// --text-on-accent must resolve in both themes (§0.1 #10).
 const THEMED_ALIASES = ['--text-on-accent'] as const;
 const INVENTORY = [
-  ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS, ...ALIASES,
+  ...POSITIONAL, ...CONCRETE_SURFACES, ...PROSE_SURFACES, ...OVERLAYS,
   ...TYPE_SCALE, ...LEADING, ...TRACKING, ...RADIUS, ...SPACING, ...MOTION, ...STATUS, ...FONT_ALIASES,
   ...MISC, ...Z_INDEX,
   ...BOX_SCALE, ...WEIGHTS, ...COVE_IDENTITY, ...SHADOW, ...THEMED_ALIASES,
@@ -130,11 +124,6 @@ describe('styles/tokens themed color contracts', () => {
       expect(root.get(name)).toMatch(/^oklch\([^)]*\)$/);
       expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
     });
-  });
-
-  it.each(ALIASES)('%s is a bare single-mode alias', (name) => {
-    expect(root.get(name)).toMatch(/^var\(--[a-z0-9-]+\)$/);
-    expect(dark.has(name)).toBe(false);
   });
 
   it.each(MISC)('%s has light/dark parity', (name) => {

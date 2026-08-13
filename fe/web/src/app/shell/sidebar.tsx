@@ -58,8 +58,8 @@ function randomCoveColor(): string {
 /**
  * INV-CONFIRM-001 — the destructive confirm stays mounted for the whole await:
  * Confirm goes busy, Cancel stays enabled (the user must keep an exit), and the
- * `finally` clears both pending and target so a *rejected* mutation cannot
- * strand the dialog.
+ * a rejected mutation leaves the target mounted so it can be retried or
+ * cancelled.
  *
  * Since CR-6 the in-flight state is `busy`, not a real `disabled`: a disabled
  * element is not focusable, so pressing Confirm would drop focus out of the
@@ -68,15 +68,18 @@ function randomCoveColor(): string {
 function useDeleteConfirm(perform: (id: string) => void | Promise<void>, onDone?: () => void) {
   const [target, setTarget] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   return {
     target,
     open: target !== null,
     pending,
-    request: (id: string) => setTarget(id),
-    cancel: () => { if (!pending) setTarget(null); },
+    error,
+    request: (id: string) => { setError(null); setTarget(id); },
+    cancel: () => { if (!pending) { setError(null); setTarget(null); } },
     confirm: () => {
       if (pending || target === null) return;
       setPending(true);
+      setError(null);
       void (async () => {
         try {
           await perform(target);
@@ -84,12 +87,11 @@ function useDeleteConfirm(perform: (id: string) => void | Promise<void>, onDone?
           // page's title element is mounted when the dialog's cleanup restores
           // focus to it.
           onDone?.();
-        } catch {
-          // The caller owns surfacing the failure; this surface only has to
-          // make sure the dialog cannot strand. See INV-CONFIRM-001.
+          setTarget(null);
+        } catch (cause: unknown) {
+          setError(cause instanceof Error ? cause.message : 'Delete failed.');
         } finally {
           setPending(false);
-          setTarget(null);
         }
       })();
     },
@@ -125,6 +127,7 @@ export function Sidebar({
   const [expandedOverride, setExpandedOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [creatingCove, setCreatingCove] = useState(false);
   const [coveDraft, setCoveDraft] = useState('');
+  const [createCoveError, setCreateCoveError] = useState<string | null>(null);
   const coveInputRef = useRef<HTMLInputElement | null>(null);
   const railRef = useRef<HTMLElement | null>(null);
   const waveConfirm = useDeleteConfirm(onDeleteWave);
@@ -188,9 +191,16 @@ export function Sidebar({
   const submitCove = () => {
     const name = coveDraft.trim();
     if (name === '') return;
-    setCreatingCove(false);
-    setCoveDraft('');
-    void onCreateCove(name, randomCoveColor());
+    setCreateCoveError(null);
+    void (async () => {
+      try {
+        await onCreateCove(name, randomCoveColor());
+        setCreatingCove(false);
+        setCoveDraft('');
+      } catch (cause: unknown) {
+        setCreateCoveError(cause instanceof Error ? cause.message : 'Could not create the cove.');
+      }
+    })();
   };
 
   const rowProps = {
@@ -239,11 +249,9 @@ export function Sidebar({
               {waiting.length}
             </div>
           )}
-          {/* An initial, not a colour chip. Eight cove hues stacked down a 44px
-              strip turned navigation into a palette — and they were the app's
-              only use of `--cove-*` outside the surfaces that genuinely mix
-              coves (Today's agenda, the calendar day dot). A letter says which
-              cove without spending a channel §7.5 reserves for state, and the
+          {/* An initial, not a colour chip. Persisted cove colours stacked down
+              a 44px strip turned navigation into a palette. A letter says
+              which cove without spending a channel §7.5 reserves for state, and the
               current one is still marked the way every other row marks it:
               `--accent-soft` fill. */}
           {userCoves.map((cove) => (
@@ -274,14 +282,14 @@ export function Sidebar({
                 data-nc-role="icon"
                 className={styles.sectionAction}
                 aria-label="New cove"
-                onClick={() => { setCoveDraft(''); setCreatingCove(true); }}
+                onClick={() => { setCoveDraft(''); setCreateCoveError(null); setCreatingCove(true); }}
               >
                 +
               </button>
             </div>
 
             {showInlineCreate && (
-              <input
+              <><input
                 ref={coveInputRef}
                 type="text"
                 className={styles.inlineCreate}
@@ -301,9 +309,11 @@ export function Sidebar({
                     event.preventDefault();
                     setCreatingCove(false);
                     setCoveDraft('');
+                    setCreateCoveError(null);
                   }
                 }}
               />
+              {createCoveError !== null && <p className={styles.inlineError} role="alert">{createCoveError}</p>}</>
             )}
 
             {userCoves.length > 0 && (
@@ -352,7 +362,7 @@ export function Sidebar({
       <ConfirmDialog
         open={waveConfirm.open}
         title={DELETE_WAVE_COPY.title}
-        description={DELETE_WAVE_COPY.description}
+        description={<>{DELETE_WAVE_COPY.description}{waveConfirm.error !== null && <p role="alert">{waveConfirm.error}</p>}</>}
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
         confirmState={waveConfirm.pending ? 'busy' : 'ready'}
@@ -367,13 +377,13 @@ export function Sidebar({
       <ConfirmDialog
         open={coveConfirm.open}
         title={coveCopy.title}
-        description={<TypedDeleteBody
+        description={<><TypedDeleteBody
           copy={coveCopy}
           expected={deletingCove?.name ?? ''}
           value={typed.value}
           inputRef={typed.inputRef}
           onChange={typed.setValue}
-        />}
+        />{coveConfirm.error !== null && <p role="alert">{coveConfirm.error}</p>}</>}
         confirmLabel={coveCopy.confirmLabel}
         confirmBusyLabel="Deleting…"
         confirmState={coveConfirm.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}

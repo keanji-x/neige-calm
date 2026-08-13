@@ -463,6 +463,12 @@
     color: var(--text);
   }
 
+  .inlineError {
+    color: var(--error-text);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+  }
+
   .userRow {
     margin-block-start: auto;
     display: flex;

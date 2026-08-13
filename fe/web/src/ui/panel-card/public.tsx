@@ -26,7 +26,7 @@ export function PanelCard({ children }: { children: ReactNode }) {
 }
 
 /**
- * One module: a `--control-h-lg` head on `--surface-panel-head` with an
+ * One module: a `--control-h-lg` head on the card surface with an
  * optional trailing control, then a body. Modules are separated by a hairline
  * — they are siblings inside one object, which is the boundary ladder's step ②
  * and the reason they do not each get their own card (§6.5 forbids nesting a

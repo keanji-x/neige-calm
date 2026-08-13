@@ -119,21 +119,12 @@
      * whole signal, which is what it was designed to be.
      */
     --surface-chip-focus: oklch(80% 0.005 240);
-    --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
-    --surface-panel-head: oklch(99.9% 0.003 240);
     --surface-terminal: oklch(99.9% 0.003 240);
     --surface-code: oklch(0% 0 0 / 0.04);
     --overlay-hover-faint: oklch(0% 0 0 / 0.025);
     --overlay-hover: oklch(0% 0 0 / 0.04);
     --overlay-hover-strong: oklch(0% 0 0 / 0.055);
     --overlay-active: oklch(0% 0 0 / 0.05);
-
-    --surface-paper: var(--paper);
-    --surface-bg: var(--bg);
-    --surface-hover-overlay: var(--surface-toggle-overlay);
-    --text-label: var(--text-2);
-    --text-meta: var(--text-3);
-    --text-decorative: var(--text-4);
 
     /*
      * ── The type scale ────────────────────────────────────────────────────
@@ -258,6 +249,11 @@
     --radius-lg: 16px;
     --radius-pill: 999px;
 
+    /*
+     * Scales are declared whole even when a rank has no current caller: a hole
+     * invites the next author to invent a literal. Delete a rank only when it
+     * is redundant, as `--text-sm` was at 12.5px beside 13px, not merely unused.
+     */
     --space-0: 0;
     --space-px: 1px;
     --space-1: 2px;
@@ -282,7 +278,6 @@
     --success: oklch(54% 0.14 145);
     --error: oklch(56% 0.14 25);
     --overlay-scrim: rgba(20, 30, 55, 0.32);
-    --cal-event-waiting-bg: oklch(97% 0.018 30);
     --error-text: oklch(42% 0.17 25);
     --warn-border: oklch(85% 0.05 30);
 
@@ -328,7 +323,6 @@
     --measure-prose: 504px;
     --measure-form: 544px;
     --measure-page: 1180px;
-    --measure-board: 1280px;
     --measure-list: 720px;
     --measure-doc: 748px;
     --slot-h: 240px;
@@ -349,7 +343,12 @@
 
     --shadow-float: 0 1px 2px oklch(0% 0 0 / 0.05), 0 12px 32px oklch(0% 0 0 / 0.08);
 
-    /* Cove identity slots: id hash mod 8. Never a free-form hex (§6.2). */
+    /*
+     * §6.2 requires identity dots to use the stable id hash modulo these eight
+     * slots, never the kernel colour. Live surfaces still render COVE_PALETTE's
+     * free-form hex values; that deliberate gap remains unresolved pending a
+     * decision, so restoring this contract does not change rendered colour.
+     */
     --cove-1: oklch(62% 0.09 20);
     --cove-2: oklch(62% 0.09 60);
     --cove-3: oklch(62% 0.09 110);
@@ -390,8 +389,6 @@
     /* See the light block: the direction is the same (further from the page),
        the room is not. This is the floor. */
     --surface-chip-focus: oklch(5% 0.008 245);
-    --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
-    --surface-panel-head: oklch(31.4% 0.009 245);
     --surface-terminal: oklch(31.4% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
@@ -401,7 +398,6 @@
     --success: oklch(74% 0.14 145);
     --error: oklch(74% 0.14 25);
     --overlay-scrim: rgba(0, 0, 0, 0.55);
-    --cal-event-waiting-bg: oklch(24% 0.03 30);
     --error-text: oklch(74% 0.14 25);
     --warn-border: oklch(40% 0.05 30);
 
@@ -422,5 +418,6 @@
     --cove-6: oklch(70% 0.1 245);
     --cove-7: oklch(70% 0.1 290);
     --cove-8: oklch(70% 0.1 330);
+
   }
 }

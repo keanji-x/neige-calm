@@ -33,8 +33,8 @@
   }
 
   /*
-   * No `--surface-panel-head` tint. §6.5 gives a panel head its own surface,
-   * and that worked while the card had an outline: the head was lighter than
+   * No separate panel-head tint. That worked while the card had an outline:
+   * the head was lighter than
    * the card and the outline still said where the card began. With the outline
    * gone the head — at 98, against a 98.8 page — dissolved the card's top edge,
    * and the card read as two loose grey blocks instead of one object.

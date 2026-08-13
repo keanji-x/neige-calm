@@ -4,17 +4,15 @@ export type PositionalColorToken =
   | '--accent' | '--accent-soft' | '--warn' | '--warn-soft';
 
 export type SurfaceToken =
-  | '--surface-rail' | '--surface-card' | '--surface-chip' | '--surface-chip-focus' | '--surface-toggle-overlay'
-  | '--surface-panel-head' | '--surface-terminal' | '--surface-code'
-  | '--surface-paper' | '--surface-bg' | '--surface-hover-overlay';
+  | '--surface-rail' | '--surface-card' | '--surface-chip' | '--surface-chip-focus'
+  | '--surface-terminal' | '--surface-code';
 
 export type OverlayToken =
   | '--overlay-hover-faint' | '--overlay-hover' | '--overlay-hover-strong' | '--overlay-active';
 
 export type SemanticColorToken =
-  | '--text-label' | '--text-meta' | '--text-decorative'
   | '--success' | '--error' | '--overlay-scrim'
-  | '--cal-event-waiting-bg' | '--error-text' | '--warn-border'
+  | '--error-text' | '--warn-border'
   | '--warn-text' | '--success-text' | '--error-soft' | '--error-border'
   | '--text-on-accent';
 
@@ -65,7 +63,7 @@ export type BoxScaleToken =
   | '--row-h-sm' | '--row-h' | '--row-h-lg'
   | '--control-h-sm' | '--control-h' | '--control-h-lg'
   | '--rail-w' | '--rail-w-collapsed' | '--panel-w' | '--drawer-w' | '--header-baseline'
-  | '--measure-prose' | '--measure-form' | '--measure-page' | '--measure-board'
+  | '--measure-prose' | '--measure-form' | '--measure-page'
   | '--measure-list' | '--measure-doc'
   | '--slot-h' | '--rule-h' | '--dot-sm' | '--dot-md'
   | '--glyph-sm' | '--glyph' | '--menu-w-min' | '--menu-w-max';

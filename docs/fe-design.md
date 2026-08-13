@@ -382,7 +382,7 @@ agent 在人阅读的同时往界面里写。任何在数据到达时移动、�
 
 **z 阶梯**（`tokens.css` 已有，本文三处引用即此）：`--z-base` 0 普通内容 · `--z-raised` 2 行内浮起的 hover 动作与吸底细线 · `--z-sticky` 4 吸顶页头（§6.4）· `--z-overlay` 10 菜单/弹出/抽屉 · `--z-modal` 100 对话框 · `--z-toast` 1000 toast。`z-index` 只能取这六个之一（§9.1）。
 
-**废弃别名**（`tokens.css` 里存在，本文一律不用；清理与 §0 同批走 change request，在那之前只是"不许新增引用"）：`--surface-bg`（用 `--bg`）、`--surface-paper`（用 `--paper`）、`--surface-toggle-overlay` / `--surface-hover-overlay`（用 `--overlay-*`）、`--text-label` / `--text-meta` / `--text-decorative`（用 `--text-2/3/4`）、`--cal-event-waiting-bg`（用 `--warn-soft`）、`--font-serif`（无用途）。**保留但本文暂无使用点**：`--surface-terminal`、`--surface-code`——终端槽落地时它们是终端底与代码块底。
+**废弃别名**：本 change request 已删除 `--surface-bg`（改用 `--bg`）、`--surface-paper`（改用 `--paper`）、`--surface-toggle-overlay` / `--surface-hover-overlay`（改用 `--overlay-*`）、`--text-label` / `--text-meta` / `--text-decorative`（改用 `--text-2/3/4`）、`--cal-event-waiting-bg`（改用 `--warn-soft`）；不得恢复或新增引用。`--font-serif` 原“无用途”结论已失效：report 文档与 conversation reply 均在使用。**保留但本文暂无使用点**：`--surface-terminal`、`--surface-code`——终端槽落地时它们是终端底与代码块底。
 
 ### 2.2 字体与字号
 
