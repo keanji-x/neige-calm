@@ -37,7 +37,6 @@ const routeExemptions = [
   Object.freeze({ route: "POST /api/plugins/{id}/tool-call", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/threads/{thread_id}/card", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/today/launchpad/ensure", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
-  Object.freeze({ route: "GET /api/waves/{id}/backlinks", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/waves/{id}/files/cat", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/waves/{id}/files/ls", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/waves/{id}/report", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
