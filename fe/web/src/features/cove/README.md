@@ -27,9 +27,9 @@ sentence exists to prevent.
 - **INV-A11Y-061** — no `<a href>` anywhere; navigation and destructive actions
   are `<button>` + callback. Locked by a contract test that counts `<a>` in the
   container *and* in the portalled confirm dialog.
-- **INV-CONFIRM-001** — the delete confirm stays mounted for the whole await:
-  Confirm goes disabled, Cancel stays enabled (the user keeps an exit), and a
-  `finally` clears both pending and open. A *rejected* `onDeleteCove` must
+- **INV-CONFIRM-001** — the delete confirm always keeps Cancel enabled (the
+  user keeps an exit). Closing during the await dismisses the dialog while the
+  request continues in the background; a `finally` clears pending. A *rejected* `onDeleteCove` must
   therefore still close the dialog and leave a reopened Confirm usable —
   otherwise the second attempt is dead on arrival. The rejection is swallowed
   here on purpose: surfacing it is the caller's job, not stranding the dialog is

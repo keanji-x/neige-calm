@@ -52,7 +52,9 @@ export function useDeleteConfirm(
     pending,
     feedback,
     request: (id: string) => { feedback.clear(); setTarget(id); },
-    cancel: () => { if (!pending) setTarget(null); },
+    // INV-CONFIRM-001 — closing is always available. Once sent, the request
+    // keeps running and reports through feedback; only the modal goes away.
+    cancel: () => { setTarget(null); },
     confirm: () => {
       if (pending || target === null) return;
       setPending(true);

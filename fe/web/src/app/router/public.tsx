@@ -319,18 +319,22 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const chat = useConversationPanel(null);
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
-  if (workspaceError !== null) return <ErrorBox
-    message={workspaceError.message}
-    onRetry={() => {
-      workspace.retryCoves(); workspace.retryOverlays();
-      for (const cove of workspace.coves) workspace.retryWaves(cove.id);
-    }}
-  />;
   if (workspace.covesLoading
     || (workspace.waves.length === 0 && [...workspace.wavesLoadingByCove.values()].some(Boolean))) return null;
   return (
     <>
+    {workspaceError !== null && <ErrorBox
+      message={workspaceError.message}
+      onRetry={() => {
+        workspace.retryCoves(); workspace.retryOverlays();
+        for (const cove of workspace.coves) workspace.retryWaves(cove.id);
+      }}
+    />}
     {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+    {deletion.feedback.error !== null && <div role="alert" data-nc-error-box="">
+      <span>{deletion.feedback.error}</span>
+      <button type="button" data-nc-action="tertiary" onClick={deletion.feedback.clear}>Dismiss</button>
+    </div>}
     <TodayPage
       waves={workspace.waves}
       coves={workspace.coves}
@@ -364,7 +368,6 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
       onConfirm={deletion.confirm}
       onCancel={deletion.cancel}
     />
-    <OperationFeedback feedback={deletion.feedback} />
     {chat.drawer}
     </>
   );
@@ -512,8 +515,17 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   // fetches; rendering it under this URL would show the wrong wave.
   if (waveId !== undefined && detail.data.wave.id !== waveId) return null;
 
-  const wave = workspace.waves.find((candidate) => candidate.id === detail.data.wave.id)
-    ?? toWave(detail.data.wave, waveActivityFrom(detail.data.wave.id, detail.data.overlays));
+  const workspaceWave = workspace.waves.find((candidate) => candidate.id === detail.data.wave.id);
+  const detailActivity = waveActivityFrom(detail.data.wave.id, detail.data.overlays);
+  const workspaceActivity = workspaceWave === undefined ? detailActivity : {
+    progress: workspaceWave.progress,
+    eta: workspaceWave.eta,
+    now: workspaceWave.now,
+    anyCardNeedsInput: workspaceWave.anyCardNeedsInput,
+  };
+  const wave = toWave(detail.data.wave, detail.data.overlays.length > 0
+    ? detailActivity
+    : workspaceActivity);
 
   return (
     <WaveRouteBody

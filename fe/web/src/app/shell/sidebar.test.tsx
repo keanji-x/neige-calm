@@ -53,6 +53,10 @@ function renderSidebar(props: Partial<Props> = {}) {
           onOpenSettings={merged.onOpenSettings ?? vi.fn()}
           onSignOut={merged.onSignOut ?? vi.fn()}
           userLabel={merged.userLabel}
+          readError={merged.readError}
+          activityError={merged.activityError}
+          readLoading={merged.readLoading}
+          onRetryRead={merged.onRetryRead}
         />
       </ThemeProvider>
     );
@@ -60,6 +64,26 @@ function renderSidebar(props: Partial<Props> = {}) {
   const result = render(build({}));
   return { ...result, update: (overrides: Partial<Props>) => result.rerender(build(overrides)) };
 }
+
+describe('workspace read feedback', () => {
+  it('shows loading, read failure, and retries the workspace read', async () => {
+    const onRetryRead = vi.fn();
+    const { update } = renderSidebar({ readLoading: true, onRetryRead });
+    expect(screen.getByRole('status').textContent).toContain('Loading workspace');
+    update({ readLoading: false, readError: 'coves down', onRetryRead });
+    expect(screen.getByRole('alert').textContent).toContain('coves down');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns that wave activity is unavailable and retries it', async () => {
+    const onRetryRead = vi.fn();
+    renderSidebar({ activityError: 'overlays down', onRetryRead });
+    expect(screen.getByRole('alert').textContent).toContain('Wave activity is unavailable: overlays down');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryRead).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('cove disclosure', () => {
   it('collapses and re-expands a cove wave list from its chevron', async () => {
@@ -211,9 +235,10 @@ describe('destructive confirms', () => {
     expect(confirm.hasAttribute('disabled')).toBe(false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
     const cancel = screen.getByRole('button', { name: 'Cancel' });
-    expect(cancel.hasAttribute('disabled')).toBe(true);
+    expect(cancel.hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('dialog').textContent).toContain('close this dialog; the delete request will continue in the background');
     await userEvent.click(cancel);
-    expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
+    expect(screen.queryByRole('dialog', { name: 'Delete this wave?' })).toBeNull();
 
     reject(new Error('boom'));
     await screen.findByRole('button', { name: 'Delete Task' });
