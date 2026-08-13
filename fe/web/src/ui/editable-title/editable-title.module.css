@@ -1,5 +1,10 @@
 @layer ui {
   .title {
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     background: none;
     border: 1px solid transparent;
     border-radius: var(--radius-sm);

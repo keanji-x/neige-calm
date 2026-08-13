@@ -7,11 +7,13 @@
 // session passes it in.
 
 import { Outlet } from '@tanstack/react-router';
+import { useEffect } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useCoveMutations, useWaveMutations, useWorkspace } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
+import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
@@ -39,11 +41,22 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
    * unless this element's `grid-template-columns` also changes, the column
    * stays 200px wide and the button appears to do nothing. That was the bug.
    *
-   * Manual choice always wins (§7.1). The sub-960px auto-collapse is a media
-   * query on the same grid and deliberately does not write this state, so
-   * widening the window restores whatever the user picked.
+   * The choice is tri-state: `null` follows the viewport, while either boolean
+   * is an explicit user choice and wins at every width. Thus the narrow-screen
+   * Expand control changes the UI immediately and widening never inherits a
+   * click that appeared to do nothing.
    */
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [manualRailCollapsed, setManualRailCollapsed] = useState<boolean | null>(null);
+  const [narrowRail, setNarrowRail] = useState(() => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false);
+  useEffect(() => {
+    const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
+    if (!media) return;
+    const sync = () => setNarrowRail(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   // Both wave mutations need the cove id to invalidate the right list, and the
   // rail only knows wave ids; the workspace read already has the mapping.
@@ -51,10 +64,10 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
     workspace.waves.find((wave) => wave.id === waveId)?.coveId;
 
   return (
-    <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : ''}`}>
+    <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
       <Sidebar
         collapsed={railCollapsed}
-        onToggleCollapsed={() => setRailCollapsed(!railCollapsed)}
+        onToggleCollapsed={() => setManualRailCollapsed(!railCollapsed)}
         coves={workspace.coves}
         wavesByCove={workspace.wavesByCove}
         waves={workspace.waves}

@@ -52,7 +52,7 @@ describe('degraded workspace reads stay usable', () => {
     });
     expect((await screen.findAllByText('Reliable')).length).toBeGreaterThan(1);
     expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('cove two down'))).toBe(true);
-    expect(screen.getByText('Terminal is not wired up yet.')).toBeTruthy();
+    expect(within(screen.getByRole('main')).getByRole('heading', { level: 1 })).toBeTruthy();
   });
 
   it('keeps Cove content when a refetch fails after usable wave data', async () => {
@@ -114,7 +114,7 @@ it('puts a dismissible delete failure before Today content', async () => {
   await userEvent.click(await within(rail).findByRole('button', { name: 'Delete Reliable' }));
   await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
   const alert = await screen.findByRole('alert');
-  const todayContent = screen.getByText('Terminal is not wired up yet.');
+  const todayContent = within(screen.getByRole('main')).getByRole('heading', { level: 1 });
   expect(alert.compareDocumentPosition(todayContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   await userEvent.click(within(alert).getByRole('button', { name: 'Dismiss' }));
   expect(screen.queryByRole('alert')).toBeNull();

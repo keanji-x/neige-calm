@@ -67,7 +67,6 @@ export type TodayPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
   nowMs?: number;
 }>;
@@ -110,7 +109,7 @@ function formatHour(hour: number): string {
 
 export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
-  pageTitleRef, nowMs,
+  nowMs,
 }: TodayPageProps) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
 
@@ -148,7 +147,7 @@ export function TodayPage({
       <div className={styles.page}>
         <TodayHeader
           today={today} waiting={waiting.length} running={running.length}
-          pageTitleRef={pageTitleRef} now={now}
+          now={now}
         />
         <div className={styles.emptyPage}>
           <p className={styles.hero}>Nothing here yet.</p>
@@ -161,12 +160,12 @@ export function TodayPage({
     <div className={styles.page}>
       <TodayHeader
         today={today} waiting={waiting.length} running={running.length}
-        pageTitleRef={pageTitleRef} now={now}
+        now={now}
       />
       <div className={styles.content}>
-        {/* Decision first, ambience after: the two attention sections take as
-            much height as they need, the terminal takes a fixed 240 slot, and
-            RECENT absorbs whatever is left. */}
+        {/* Decision first, ambience after. Every row follows its content while
+            the unwired terminal keeps its route anchor without reserving a
+            full terminal-height track. */}
         <div className={styles.mainColumn}>
           {/* An empty section renders nothing at all — no label, no dashed box.
               The absence is the message. */}
@@ -206,11 +205,10 @@ export function TodayPage({
   );
 }
 
-function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
+function TodayHeader({ today, waiting, running, now }: {
   today: Date;
   waiting: number;
   running: number;
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   now: Date;
 }) {
   return (
@@ -218,7 +216,7 @@ function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
       // One row only: Today is the root, so there is no breadcrumb, and it has
       // no machine identifier. --header-h is 32.
       title={
-        <PageTitle titleRef={pageTitleRef as React.RefObject<HTMLHeadingElement | null>}>
+        <PageTitle>
           {today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
         </PageTitle>
       }

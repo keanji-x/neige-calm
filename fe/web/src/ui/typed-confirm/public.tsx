@@ -44,7 +44,7 @@ export function useTypedConfirm(expected: string): TypedConfirm {
     value,
     setValue,
     inputRef,
-    matches: expected.trim() !== '' && value.trim() === expected.trim(),
+    matches: expected !== '' && value === expected,
   };
 }
 

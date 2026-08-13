@@ -12,7 +12,7 @@
 // list itself — `features/**` may not import a sibling feature domain, so
 // `app/router` composes `<CovePage waveList={<WaveList …/>} />`.
 
-import type { ReactNode, RefObject } from 'react';
+import type { ReactNode } from 'react';
 
 import type { Cove } from '../../../../../core/domain/cove.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
@@ -35,8 +35,6 @@ export type CovePageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  /** CR-8 — after a successful delete, focus lands on the next page's title. */
-  pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameCove: (name: string) => void | Promise<void>;
   onDeleteCove: (signal: AbortSignal) => void | Promise<void>;
   onRequestNewWave: () => void;
@@ -52,7 +50,7 @@ export type CovePageProps = Readonly<{
  * both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
  */
 export function CovePage({
-  cove, waveCount, waveList, report, conversationList, conversationAction, pageTitleRef,
+  cove, waveCount, waveList, report, conversationList, conversationAction,
   onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteCove(signal));
@@ -90,14 +88,14 @@ export function CovePage({
          * says it — at a glance, and with the names attached.
          */
         title={
-          <EditableTitle
+          <h1 className={styles.titleHeading}><EditableTitle
             value={cove.name}
             onCommit={onRenameCove}
             editLabel="Rename cove"
             inputLabel="Cove name"
             className={styles.title}
             isPageTitle
-          />
+          /></h1>
         }
         actions={
           /*
@@ -179,7 +177,6 @@ export function CovePage({
         confirmBusyLabel="Deleting…"
         confirmState={deletion.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
         initialFocusRef={typed.inputRef}
-        restoreFocusRef={pageTitleRef}
         onConfirm={deletion.confirm}
         onCancel={deletion.cancel}
       />

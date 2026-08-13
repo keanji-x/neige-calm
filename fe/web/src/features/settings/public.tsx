@@ -176,7 +176,7 @@ export function SettingsPage({
               does not switch views, and there is no tabpanel. Calling it a
               tablist would be an accessibility downgrade dressed as a reskin. */}
           <div className={styles.segmented} role="radiogroup" aria-label="Appearance">
-            {THEME_MODES.map((mode) => (
+            {THEME_MODES.map((mode, index) => (
               <button
                 key={mode}
                 type="button"
@@ -185,6 +185,16 @@ export function SettingsPage({
                 aria-checked={themeMode === mode}
                 className={themeMode === mode ? `${styles.segment} ${styles.segmentOn}` : styles.segment}
                 onClick={() => onThemeModeChange(mode)}
+                onKeyDown={(event) => {
+                  const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
+                    : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+                  if (step === 0) return;
+                  event.preventDefault();
+                  const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+                  const nextIndex = (index + step + THEME_MODES.length) % THEME_MODES.length;
+                  onThemeModeChange(THEME_MODES[nextIndex]);
+                  buttons?.item(nextIndex).focus();
+                }}
               >
                 {themeLabel(mode)}
               </button>

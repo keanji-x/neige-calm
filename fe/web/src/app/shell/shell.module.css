@@ -23,7 +23,11 @@
   /* The manual collapse. Without this rule the toggle only swapped the rail's
      contents and left a 200px column of empty ground beside them. */
   .shellCollapsed {
-    --rail-w: var(--rail-w-collapsed);
+    grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
+  }
+
+  .shellExpanded {
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
   }
 
   .main {
@@ -77,8 +81,8 @@
      there. The number is declared once in styles/breakpoints.ts
      (RAIL_COLLAPSE_REM); this query and the shell's must match it. */
   @media (width < 60rem) {
-    .shell {
-      --rail-w: var(--rail-w-collapsed);
+    .shell:not(.shellExpanded):not(.shellCollapsed) {
+      grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
     }
   }
 
@@ -494,9 +498,10 @@
   }
 
   .menu {
-    position: absolute;
-    inset-block-end: var(--control-h);
-    inset-inline-start: var(--space-0);
+    /* Fixed escapes `.rail`'s scroll/clipping box in the 44px icon strip. */
+    position: fixed;
+    inset-block-end: calc(var(--control-h) + var(--space-7));
+    inset-inline-start: var(--space-5);
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;

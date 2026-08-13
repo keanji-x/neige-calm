@@ -17,15 +17,11 @@
     min-block-size: 0;
   }
 
-  /*
-   * Waiting / running / terminal / recent. The last track is
-   * `minmax(min-content, 1fr)` rather than `1fr` because both behaviours are
-   * needed: absorb the slack when the list is short, and push out a scrollbar
-   * when it is long. A plain `1fr` only gives the first.
-   */
   .mainColumn {
     display: grid;
-    grid-template-rows: auto auto var(--slot-h) minmax(min-content, 1fr);
+    /* The terminal is an intentional anchor, but its unwired placeholder must
+       follow its content instead of reserving a full terminal-height track. */
+    grid-auto-rows: min-content;
     gap: var(--space-8);
     min-inline-size: 0;
   }
@@ -107,7 +103,7 @@
   .terminalSlot {
     display: grid;
     place-items: center;
-    block-size: var(--slot-h);
+    padding-block: var(--space-4);
     border: 1px dashed var(--hairline);
     border-radius: var(--radius-md);
   }

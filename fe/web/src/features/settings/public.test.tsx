@@ -68,6 +68,16 @@ describe('Settings network form', () => {
     expect(save.dataset.ncState).toBe('busy');
   });
 
+  it('marks only the ready Save label as visible before saving', async () => {
+    render(<SettingsPage {...props()} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge');
+    const save = screen.getByRole('button', { name: 'Save' });
+    const labels = save.querySelectorAll('span > span');
+    expect(labels[0]?.getAttribute('aria-hidden')).toBe('false');
+    expect(labels[1]?.getAttribute('aria-hidden')).toBe('true');
+    expect(save.dataset.ncState).toBeUndefined();
+  });
+
   it('re-seeds the fields when the settings prop reports a new server value', () => {
     const view = render(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://old' } })} />);
     view.rerender(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://new' } })} />);
@@ -99,6 +109,15 @@ describe('Settings network form', () => {
 });
 
 describe('Settings appearance', () => {
+  it('moves and selects with radiogroup arrow keys', async () => {
+    const onThemeModeChange = vi.fn();
+    render(<SettingsPage {...props({ themeMode: 'system', onThemeModeChange })} />);
+    const system = screen.getByRole('radio', { name: 'System' });
+    system.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(onThemeModeChange).toHaveBeenCalledWith('light');
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Light' }));
+  });
   it('reports the selected mode without going through onSave', async () => {
     const onThemeModeChange = vi.fn();
     const onSave = vi.fn();
