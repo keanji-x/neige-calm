@@ -17,7 +17,13 @@ function git(...args) {
 
 try {
   const feRoot = join(import.meta.dirname, '../..');
-  const base = resolveOwnershipBase(join(feRoot, '..'));
+  const base = resolveOwnershipBase(
+    join(feRoot, '..'),
+    process.env.OWNERSHIP_BASE_SHA ?? '',
+    process.env.OWNERSHIP_HEAD_SHA ?? 'HEAD',
+    process.env.OWNERSHIP_EVENT_NAME,
+    process.env.OWNERSHIP_PUSH_FORCED === 'true',
+  );
   const commits = ownershipCommitsForEvent(process.env.OWNERSHIP_EVENT_NAME,
     () => gitOwnershipCommits(join(feRoot, '..'), base));
   const repositoryViolations = validateOwnership(

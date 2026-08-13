@@ -126,10 +126,10 @@ export function ownershipCommitsForEvent(
 
 export function resolveOwnershipBase(
   repoRoot: string,
-  injectedBase = process.env.OWNERSHIP_BASE_SHA ?? '',
-  headRef = process.env.OWNERSHIP_HEAD_SHA ?? 'HEAD',
-  eventName = process.env.OWNERSHIP_EVENT_NAME,
-  pushForced = process.env.OWNERSHIP_PUSH_FORCED === 'true',
+  injectedBase: string,
+  headRef = 'HEAD',
+  eventName?: string,
+  pushForced = false,
 ): string {
   if (eventName === 'push') {
     if (pushForced) throw new Error('cannot audit ownership for a forced push');
