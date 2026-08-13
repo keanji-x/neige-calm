@@ -232,6 +232,18 @@ describe('EventBridge contracts', () => {
     ]);
   });
 
+  it('resolves a runtime card through cached wave detail before invalidating', async () => {
+    const { record, stream, emit } = fakeStream();
+    const client = new QueryClient();
+    client.setQueryData(['wave', 'w1'], { wave: {}, overlays: [], cards: [{ id: 'card-1' }] });
+    const invalidate = vi.spyOn(client, 'invalidateQueries').mockImplementation(() => Promise.resolve());
+    render(<EventBridge client={client} stream={stream} syncEventVersion={3} dbInstanceId="db-a" cursor={memoryCursor()} />);
+    await waitFor(() => expect(record.startCalls).toBe(1));
+
+    emit(eventFrame(10, { ev: 'runtime.status_changed', data: { card_id: 'card-1' } }));
+    expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toContainEqual(['wave', 'w1']);
+  });
+
   it('resumes from the persisted cursor rather than replaying from zero', async () => {
     const { record, stream, emit } = fakeStream();
     const client = new QueryClient();
