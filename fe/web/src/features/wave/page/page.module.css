@@ -1,5 +1,32 @@
 @layer features {
   .page {
+    /*
+     * The document's measure and its margins, derived from one number.
+     *
+     * **568, not the global `--measure-prose` 504.** Measured on the real font:
+     * New York at 18px averages 8.2px a character, so 504 is 61 characters a
+     * line and 568 is 69 — both inside the 45–75 comfortable range, but the
+     * narrow one made the column read as a ribbon inside a 1440 window where it
+     * is one of five vertical bands. The global token stays 504: `styles/` is a
+     * frozen interface (§6.8) and every other prose surface on it is a
+     * different shape of page. Widening it globally is a change request, and
+     * this comment is the evidence for it.
+     *
+     * The margin is what is left over, halved — a document with two equal
+     * margins reads as a page. It is also, exactly, how much room the outline
+     * has for its labels (§6.16): every pixel the measure takes is a pixel off
+     * a section title.
+     *
+     *   (1180 − 3×24 − 280 − 568) / 2 = 130
+     *
+     * `ui/page-header` reads `--document-start` too, which is what puts the
+     * page title on the first character of the prose.
+     */
+    --document-measure: calc(var(--measure-prose) + var(--space-12) * 2);
+    --document-start: calc(
+      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--document-measure)) / 2
+    );
+
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
@@ -84,14 +111,17 @@
     min-block-size: 0;
   }
 
-  /* Centred, not start-aligned. The prose is 616 in an 828 column, and hanging
-     all 212 of the slack off its trailing edge put a dead band between the last
-     word and the panel card — the two things on the page that carry content
-     were the two things furthest apart. */
+  /*
+   * Start-aligned, at the outline gutter — the same offset the title takes.
+   *
+   * It was centred, to keep the column's slack from all piling up between the
+   * last word and the panel card. That reasoning was about a document with
+   * nothing to its leading side; this one has the outline rail there, and a
+   * centred document put its first character 100px away from the title of the
+   * page it is the content of.
+   */
   .doc {
-    max-inline-size: var(--measure-doc);
     min-inline-size: 0;
-    margin-inline: auto;
   }
 
 
@@ -165,6 +195,20 @@
     color: var(--text);
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  /* The wave's folder: one line, mono, ellipsis at the end. The full path is
+     the row's tooltip — `direction: rtl` would keep the informative tail but
+     reorders the punctuation of an LTR path, which is worse than truncating. */
+  .cwd {
+    overflow: hidden;
+    padding-inline: var(--space-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--row-h-sm);
+    color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .kernelOwned {

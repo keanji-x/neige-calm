@@ -32,16 +32,17 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{
-    SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, task_insert_tx,
-};
+use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
 use calm_server::event::{Event, EventBus};
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
-use calm_server::mcp_server::tools::wave_report_blocks::TOOL_REPORT_WRITE_MARKDOWN;
+use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
+use calm_server::mcp_server::tools::wave_report_blocks::{
+    TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
+};
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
@@ -430,7 +431,6 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
@@ -438,14 +438,134 @@ fn plan_task(wave_id: &WaveId, key: &str, kind: TaskKind, deps: &[&str]) -> Task
 }
 
 async fn seed_task(boot: &Boot, task: Task) {
-    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            task_insert_tx(tx, &task).await?;
-            Ok(())
-        })
-    })
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        r#"INSERT INTO tasks
+           (id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+            depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
+            gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
+            running_deadline_ms,spawn,created_at_ms,updated_at_ms,finished_at_ms)
+           VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
+                  ?18,?19,?20,?21,?22,?23,?24)"#,
+    )
+    .bind(task.id)
+    .bind(task.wave_id)
+    .bind(task.key)
+    .bind(task.kind)
+    .bind(task.goal)
+    .bind(task.context_json)
+    .bind(task.acceptance_criteria)
+    .bind(task.cwd)
+    .bind(task.depends_on_json)
+    .bind(task.priority)
+    .bind(task.gate_json)
+    .bind(task.status)
+    .bind(task.status_detail)
+    .bind(task.worker_card_id)
+    .bind(task.gate_result_json)
+    .bind(task.gate_attempt)
+    .bind(task.gate_pid)
+    .bind(task.gate_pid_starttime)
+    .bind(task.gate_pid_boot_id)
+    .bind(task.running_deadline_ms)
+    .bind(task.spawn)
+    .bind(task.created_at_ms)
+    .bind(task.updated_at_ms)
+    .bind(task.finished_at_ms)
+    .execute(&pool)
     .await
     .expect("seed task row");
+}
+
+async fn seed_projected_task(boot: &Boot, task: Task) {
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let report_exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE wave_id=?1 AND kind='wave-report'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&pool)
+            .await
+            .expect("check report fixture");
+    if report_exists == 0 {
+        sqlx::query(
+            "INSERT INTO cards(id,wave_id,kind,sort,payload,role,deletable,created_at,updated_at) \
+             VALUES(?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
+        )
+        .bind(new_id())
+        .bind(boot.wave_id.as_str())
+        .bind(serde_json::to_string(&WaveReportPayload::initial()).unwrap())
+        .execute(&pool)
+        .await
+        .expect("seed report fixture");
+    }
+    let report = call_tool(boot, TOOL_REPORT_READ, spec_identity(boot), json!({}))
+        .await
+        .expect("read report before task projection");
+    let mut payload = serde_json::Map::from_iter([
+        ("key".into(), json!(task.key)),
+        ("kind".into(), json!(task.kind)),
+        ("goal".into(), json!(task.goal)),
+        (
+            "context".into(),
+            serde_json::from_str(&task.context_json).expect("task context JSON"),
+        ),
+        (
+            "depends_on".into(),
+            serde_json::from_str(&task.depends_on_json).expect("task dependencies JSON"),
+        ),
+        ("priority".into(), json!(task.priority)),
+        ("declared_by".into(), json!(task.declared_by)),
+        ("spawn".into(), json!(task.spawn)),
+        ("ready".into(), json!(true)),
+    ]);
+    for (key, value) in [
+        ("acceptance", task.acceptance_criteria.as_ref()),
+        ("cwd", task.cwd.as_ref()),
+    ] {
+        if let Some(value) = value {
+            payload.insert(key.into(), json!(value));
+        }
+    }
+    if let Some(gate) = task.gate_json.as_deref() {
+        payload.insert(
+            "gate".into(),
+            serde_json::from_str(gate).expect("task gate JSON"),
+        );
+    }
+    call_tool(
+        boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(boot),
+        json!({
+            "kind": "task",
+            "payload": payload,
+            "if_doc_rev": report["docRev"]
+        }),
+    )
+    .await
+    .expect("seed task through production projection");
+    sqlx::query(
+        "UPDATE tasks SET status=?1,status_detail=?2,worker_card_id=?3,gate_result_json=?4,\
+         gate_attempt=?5,gate_pid=?6,gate_pid_starttime=?7,gate_pid_boot_id=?8,\
+         running_deadline_ms=?9,context_stale_at_ms=?10,created_at_ms=?11,updated_at_ms=?12,\
+         finished_at_ms=?13 WHERE id=?14",
+    )
+    .bind(task.status)
+    .bind(task.status_detail)
+    .bind(task.worker_card_id)
+    .bind(task.gate_result_json)
+    .bind(task.gate_attempt)
+    .bind(task.gate_pid)
+    .bind(task.gate_pid_starttime)
+    .bind(task.gate_pid_boot_id)
+    .bind(task.running_deadline_ms)
+    .bind(task.context_stale_at_ms)
+    .bind(task.created_at_ms)
+    .bind(task.updated_at_ms)
+    .bind(task.finished_at_ms)
+    .bind(task.id)
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .expect("restore projected task runtime state");
 }
 
 async fn set_lifecycle(boot: &Boot, lifecycle: WaveLifecycle) {
@@ -881,6 +1001,7 @@ struct BootstrapBlockHook {
     wait_entered: Arc<tokio::sync::Notify>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+    completed: Arc<tokio::sync::Notify>,
 }
 
 impl BootstrapAdapter {
@@ -962,6 +1083,7 @@ impl ProviderAdapter for BootstrapAdapter {
             let entered = block.entered.clone();
             let wait_entered = block.wait_entered.clone();
             let release = block.release.clone();
+            let completed = block.completed.clone();
             let pool = ctx.operation_repo.sqlite_pool();
             let op_id = op.id.clone();
             let result = output.data.clone();
@@ -976,6 +1098,7 @@ impl ProviderAdapter for BootstrapAdapter {
                     complete_parked_for_test(&pool, &op_id, &ParkedOutcome::Succeeded { result })
                         .await
                         .expect("complete blocked bootstrap operation");
+                    completed.notify_one();
                 }),
             });
         }
@@ -1164,8 +1287,8 @@ impl ProviderAdapter for FailingSpawnAdapter {
 async fn plan_to_done_end_to_end() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Dispatching).await;
-    seed_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
-    seed_task(
+    seed_projected_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
+    seed_projected_task(
         &boot,
         plan_task(&boot.wave_id, "t2", TaskKind::Codex, &["t1"]),
     )
@@ -1240,7 +1363,7 @@ async fn plan_to_done_end_to_end() {
 async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_task(
+    seed_projected_task(
         &boot,
         plan_task(&boot.wave_id, "claude-live", TaskKind::Claude, &[]),
     )
@@ -1288,8 +1411,8 @@ async fn live_dispatch_claude_does_not_reconcile_recorded_pty_exit() {
 async fn budget_holds_second_task_until_first_done() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_task(&boot, plan_task(&boot.wave_id, "a", TaskKind::Codex, &[])).await;
-    seed_task(&boot, plan_task(&boot.wave_id, "b", TaskKind::Codex, &[])).await;
+    seed_projected_task(&boot, plan_task(&boot.wave_id, "a", TaskKind::Codex, &[])).await;
+    seed_projected_task(&boot, plan_task(&boot.wave_id, "b", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -1349,7 +1472,7 @@ async fn draft_wave_is_not_scheduled() {
 async fn claim_race_two_schedulers_single_winner() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_task(
+    seed_projected_task(
         &boot,
         plan_task(&boot.wave_id, "race", TaskKind::Codex, &[]),
     )
@@ -1419,7 +1542,7 @@ async fn fast_worker_report_beats_running_stamp() {
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let task = plan_task(&boot.wave_id, "fast", TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_projected_task(&boot, task).await;
     // The report lands while the row is dispatched + UNSTAMPED, so the
     // reporting card must be the op's target card (round-4 F1) — the
     // FastReportAdapter's card-shaped `prepare_tx` output provides
@@ -1472,7 +1595,7 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let task = plan_task(&boot.wave_id, "doomed", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_projected_task(&boot, task).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(FailingSpawnAdapter {
@@ -2241,7 +2364,7 @@ async fn first_server_sweep_keeps_upgraded_inflight_empty_context_non_material()
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query(
-        "UPDATE tasks SET origin='block',claim_context_json='[]',decl_ready=1,decl_released_by_user=0,context_verify_failures=0 WHERE id=?1",
+        "UPDATE tasks SET claim_context_json='[]',decl_ready=1,decl_released_by_user=0,context_verify_failures=0 WHERE id=?1",
     )
     .bind(&task_id)
     .execute(&pool)
@@ -2889,7 +3012,7 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
     let mut task = plan_task(&boot.wave_id, "revise", TaskKind::Terminal, &[]);
     task.goal = "echo old".into();
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_projected_task(&boot, task).await;
 
     // Hold the dispatcher semaphore's only permit: the scheduling pass
     // snapshots the plan rows in `schedule_pass`, then parks inside
@@ -2947,48 +3070,6 @@ async fn claim_payload_frozen_against_pre_claim_revision() {
 }
 
 #[tokio::test]
-async fn every_dispatch_persists_same_batch_legacy_empty_context_freeze() {
-    let boot = boot().await;
-    set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_task(
-        &boot,
-        plan_task(&boot.wave_id, "legacy-freeze", TaskKind::Terminal, &[]),
-    )
-    .await;
-    let (_runtime, scheduler) = build_scheduler(
-        &boot,
-        vec![Arc::new(CardSpawnAdapter {
-            kind: "terminal-worker",
-            card_id: boot.worker_card_id.as_str().to_string(),
-        })],
-    );
-
-    scheduler.schedule_wave(boot.wave_id.clone()).await;
-
-    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    let rows: Vec<(i64, String, Value)> = sqlx::query_as(
-        "SELECT id, kind, json(payload) FROM events \
-         WHERE kind IN ('task.dispatched', 'task.context_frozen') ORDER BY id",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("read dispatch batch events");
-    assert_eq!(rows.len(), 2, "one dispatch must have exactly one freeze");
-    assert_eq!(rows[0].1, "task.dispatched");
-    assert_eq!(rows[1].1, "task.context_frozen");
-    assert_eq!(rows[1].0, rows[0].0 + 1, "batch events stay adjacent");
-    assert_eq!(
-        rows[1].2["task_id"],
-        json!(format!("{}:legacy-freeze", boot.wave_id))
-    );
-    assert_eq!(
-        rows[1].2["refs"],
-        json!([]),
-        "legacy freeze is explicit empty set"
-    );
-}
-
-#[tokio::test]
 async fn block_task_production_claim_freezes_nonempty_root_context() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
@@ -2997,11 +3078,6 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     let report = WaveReportPayload {
         schema_version: WaveReportPayload::SCHEMA_VERSION,
         doc_rev: 7,
@@ -3035,6 +3111,18 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
 
     scheduler.schedule_wave(boot.wave_id.clone()).await;
 
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id,kind FROM events \
+         WHERE kind IN ('task.dispatched','task.context_frozen') ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read dispatch batch events");
+    assert_eq!(rows.len(), 2, "one dispatch must have exactly one freeze");
+    assert_eq!(rows[0].1, "task.dispatched");
+    assert_eq!(rows[1].1, "task.context_frozen");
+    assert_eq!(rows[1].0, rows[0].0 + 1, "batch events stay adjacent");
+
     let context: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id = ?1")
         .bind(&task_id)
         .fetch_one(&pool)
@@ -3063,6 +3151,33 @@ async fn block_task_production_claim_freezes_nonempty_root_context() {
         .unwrap(),
         1
     );
+}
+
+#[tokio::test]
+async fn claim_missing_task_root_fails_closed_without_dispatch() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_task(
+        &boot,
+        plan_task(&boot.wave_id, "missing-root", TaskKind::Terminal, &[]),
+    )
+    .await;
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "terminal-worker",
+            card_id: boot.worker_card_id.to_string(),
+        })],
+    );
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    assert_eq!(
+        task_row(&boot, "missing-root").await.status,
+        TaskStatus::Pending
+    );
+    assert_eq!(operation_count(&boot, "terminal-worker").await, 0);
+    assert!(event_rows(&boot, "task.dispatched").await.is_empty());
 }
 
 async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
@@ -3253,11 +3368,6 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
     let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     let resolved_closure =
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone())
             .resolve_task_closure(boot.wave_id.as_str(), key)
@@ -3532,16 +3642,6 @@ async fn depth_two_deleted_reference_is_counted_does_not_block_and_recovers_next
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&blocked_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&healthy_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3641,14 +3741,8 @@ async fn production_claim_uses_narrow_root_hash_and_full_child_hash() {
     )
     .await;
     let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
-    let task_id = task.id.clone();
     seed_task(&boot, task).await;
     let pool = boot.repo.sqlite_pool().unwrap();
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3717,11 +3811,6 @@ async fn seed_frozen_context_fixture(boot: &Boot, key: &str) -> TaskContextMonit
     let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3994,11 +4083,6 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
         plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]),
     )
     .await;
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -4269,13 +4353,7 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
             }),
         });
         let task = plan_task(&boot.wave_id, &key, TaskKind::Terminal, &[]);
-        let task_id = task.id.clone();
         seed_task(&boot, task).await;
-        sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-            .bind(&task_id)
-            .execute(&pool)
-            .await
-            .unwrap();
     }
     report.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload = ?1 WHERE id = 'context-report'")
@@ -4337,11 +4415,6 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
     let cap_task = plan_task(&boot.wave_id, "sweep-cap", TaskKind::Terminal, &[]);
     let cap_id = cap_task.id.clone();
     seed_task(&boot, cap_task).await;
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&cap_id)
-        .execute(&pool)
-        .await
-        .unwrap();
     scheduler.schedule_wave(boot.wave_id.clone()).await;
     let one: Value = serde_json::from_str::<Vec<Value>>(&frozen_json).unwrap()[0].clone();
     let oversized = vec![one; calm_server::task_context::MAX_SWEEP_NODES + 1];
@@ -4623,8 +4696,8 @@ async fn planning_wave_promotes_to_working_on_claim() {
 async fn reviewing_wave_promotes_back_to_working_on_dependent_claim() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
-    seed_task(
+    seed_projected_task(&boot, plan_task(&boot.wave_id, "t1", TaskKind::Codex, &[])).await;
+    seed_projected_task(
         &boot,
         plan_task(&boot.wave_id, "t2", TaskKind::Codex, &["t1"]),
     )
@@ -4749,7 +4822,7 @@ async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass(
 async fn sweep_boot_dispatches_pending_without_blocking() {
     let boot = boot().await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
-    seed_task(&boot, plan_task(&boot.wave_id, "bg", TaskKind::Codex, &[])).await;
+    seed_projected_task(&boot, plan_task(&boot.wave_id, "bg", TaskKind::Codex, &[])).await;
     let (_runtime, scheduler) = build_scheduler(
         &boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -5514,8 +5587,8 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let legacy = plan_task(&boot.wave_id, "legacy", TaskKind::Codex, &[]);
     let legacy_id = legacy.id.clone();
-    seed_task(&boot, legacy).await;
-    seed_task(
+    seed_projected_task(&boot, legacy).await;
+    seed_projected_task(
         &boot,
         plan_task(&boot.wave_id, "next", TaskKind::Codex, &[]),
     )
@@ -5803,12 +5876,12 @@ async fn seed_child_parent(
     (task_id, child.id.to_string())
 }
 
-async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskStatus, origin: &str) {
+async fn seed_child_task(boot: &Boot, child_id: &str, key: &str, status: TaskStatus) {
     sqlx::query(
-        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,status,declared_by,origin,spawn,created_at_ms,updated_at_ms) \
-         VALUES(?1,?2,?3,'codex','child work','{}',?4,'spec',?5,'in-wave',?6,?6)",
+        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,status,declared_by,spawn,created_at_ms,updated_at_ms) \
+         VALUES(?1,?2,?3,'codex','child work','{}',?4,'spec','in-wave',?5,?5)",
     )
-    .bind(format!("{child_id}:{key}")).bind(child_id).bind(key).bind(status).bind(origin)
+    .bind(format!("{child_id}:{key}")).bind(child_id).bind(key).bind(status)
     .bind(now_ms()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
 }
 
@@ -5950,14 +6023,7 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
         Some(gate_without_cwd.clone()),
     )
     .await;
-    seed_child_task(
-        &boot,
-        &child,
-        "gate-still-running",
-        TaskStatus::Verifying,
-        "block",
-    )
-    .await;
+    seed_child_task(&boot, &child, "gate-still-running", TaskStatus::Verifying).await;
     sqlx::query("UPDATE tasks SET gate_json=?1 WHERE wave_id=?2")
         .bind(&gate_without_cwd)
         .bind(&child)
@@ -5988,26 +6054,25 @@ async fn acceptance_13b_and_13c_inflight_child_blocks_then_eventually_closes_par
 }
 
 #[tokio::test]
-async fn acceptance_13d_done_child_with_pending_block_or_legacy_fails_with_count() {
-    for origin in ["block", "legacy"] {
-        let boot = boot().await;
-        let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
-        let (task_id, child) = seed_child_parent(&boot, origin, WaveLifecycle::Done, None).await;
-        seed_child_task(&boot, &child, "left", TaskStatus::Pending, origin).await;
-        scheduler
-            .reconcile_child_wave_for_test(&child)
-            .await
-            .unwrap();
-        let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
-        assert_eq!(row.status, TaskStatus::Failed);
-        assert_eq!(row.status_detail.as_deref(), Some("child-wave-incomplete"));
-        assert!(
-            event_rows(&boot, "task.failed").await[0].1["reason"]
-                .as_str()
-                .unwrap()
-                .contains("1 pending")
-        );
-    }
+async fn acceptance_13d_done_child_with_pending_block_fails_with_count() {
+    let boot = boot().await;
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![]);
+    let (task_id, child) =
+        seed_child_parent(&boot, "pending-child", WaveLifecycle::Done, None).await;
+    seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
+    scheduler
+        .reconcile_child_wave_for_test(&child)
+        .await
+        .unwrap();
+    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_eq!(row.status, TaskStatus::Failed);
+    assert_eq!(row.status_detail.as_deref(), Some("child-wave-incomplete"));
+    assert!(
+        event_rows(&boot, "task.failed").await[0].1["reason"]
+            .as_str()
+            .unwrap()
+            .contains("1 pending")
+    );
 }
 
 #[tokio::test]
@@ -6183,7 +6248,7 @@ async fn acceptance_18_incomplete_flip_rechecks_done_after_its_snapshot() {
     for mutation in ["delete", "reopen"] {
         let boot = boot().await;
         let (task_id, child) = seed_child_parent(&boot, mutation, WaveLifecycle::Done, None).await;
-        seed_child_task(&boot, &child, "left", TaskStatus::Pending, "block").await;
+        seed_child_task(&boot, &child, "left", TaskStatus::Pending).await;
         let pool = boot.repo.sqlite_pool().unwrap();
         let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
             .await
@@ -6319,6 +6384,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         wait_entered: Arc::new(tokio::sync::Notify::new()),
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
+        completed: Arc::new(tokio::sync::Notify::new()),
     };
     let bootstrap_adapter = Arc::new(BootstrapAdapter::new_blocking(
         minted.clone(),
@@ -6419,6 +6485,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         wait_entered: Arc::new(tokio::sync::Notify::new()),
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
+        completed: Arc::new(tokio::sync::Notify::new()),
     };
     let (crash_runtime, crash_scheduler) = build_scheduler(
         &crash_boot,
@@ -6469,10 +6536,6 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
         ],
     );
-    let recovered_sweep = {
-        let scheduler = recovered_scheduler.clone();
-        tokio::spawn(async move { scheduler.sweep_all().await })
-    };
     assert_eq!(
         crash_boot
             .repo
@@ -6484,6 +6547,13 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         TaskStatus::Dispatched
     );
     crash_block.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), crash_block.completed.notified())
+        .await
+        .expect("blocked bootstrap completion must be persisted");
+    let recovered_sweep = {
+        let scheduler = recovered_scheduler.clone();
+        tokio::spawn(async move { scheduler.sweep_all().await })
+    };
     tokio::time::timeout(Duration::from_secs(30), recovered_sweep)
         .await
         .expect("recovered bootstrap sweep must not hang")
@@ -6524,7 +6594,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
             task.status = TaskStatus::Dispatched;
         }
         let task_id = task.id.clone();
-        seed_task(&boot, task).await;
+        seed_projected_task(&boot, task).await;
         let minted = Arc::new(AtomicUsize::new(0));
         let child_adapter = Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
@@ -6636,7 +6706,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
     let mut task = plan_task(&boot.wave_id, "frozen-route", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_projected_task(&boot, task).await;
     let minted = Arc::new(AtomicUsize::new(0));
     let adapters = vec![
         Arc::new(ChildWaveAdapter::new(
@@ -6659,15 +6729,15 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
     );
     // Simulate a post-claim report whose mutable declaration now says in-wave.
     // Recovery never reads it; only the frozen tasks row is authoritative.
-    insert_report_payload(
-        &boot,
-        "post-claim-route-report",
-        serde_json::to_value(WaveReportPayload::initial()).unwrap(),
-    )
-    .await;
-    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE id=?2")
+    sqlx::query("UPDATE cards SET payload=?1 WHERE wave_id=?2 AND kind='wave-report'")
+        .bind(serde_json::to_string(&WaveReportPayload::initial()).unwrap())
+        .bind(boot.wave_id.as_str())
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET payload=json_set(payload,'$.blocks',json(?1)) WHERE wave_id=?2 AND kind='wave-report'")
         .bind(json!([{"id":"b_route","kind":"task","rev":2,"payload":{"key":"frozen-route","kind":"codex","goal":"changed","ready":true,"declared_by":"spec","spawn":"in-wave"}}]).to_string())
-        .bind("post-claim-route-report").execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
+        .bind(boot.wave_id.as_str()).execute(&boot.repo.sqlite_pool().unwrap()).await.unwrap();
     sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
         .bind(&task_id)
         .execute(&boot.repo.sqlite_pool().unwrap())
@@ -6713,13 +6783,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
     .await;
     let mut task = plan_task(&boot.wave_id, "frozen-live", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
-    let task_id = task.id.clone();
     seed_task(&boot, task).await;
-    sqlx::query("UPDATE tasks SET origin='block' WHERE id=?1")
-        .bind(&task_id)
-        .execute(&boot.repo.sqlite_pool().unwrap())
-        .await
-        .unwrap();
     let adapters = vec![
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
@@ -6759,7 +6823,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let task = plan_task(&boot.wave_id, "tx-reread", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
-    seed_task(&boot, task).await;
+    seed_projected_task(&boot, task).await;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
     let permit = semaphore.clone().acquire_owned().await.unwrap();
     let adapters = vec![

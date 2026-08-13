@@ -157,8 +157,8 @@ async fn acceptance_17_raw_lifecycle_writer_refuses_reopen_of_referenced_child()
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,status,declared_by,origin,spawn,child_wave_id,created_at_ms,updated_at_ms) \
-         VALUES('parent:t',?1,'t','codex','g','{}','running','spec','block','sub-wave',?2,1,1)",
+        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,status,declared_by,spawn,child_wave_id,created_at_ms,updated_at_ms) \
+         VALUES('parent:t',?1,'t','codex','g','{}','running','spec','sub-wave',?2,1,1)",
     )
     .bind(&parent).bind(&child).execute(repo.pool()).await.unwrap();
     let mut tx = repo.pool().begin().await.unwrap();

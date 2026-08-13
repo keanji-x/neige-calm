@@ -616,14 +616,14 @@
             "depends_on_json": [],
             "priority": 1,
             "gate_json": null,
-            "status": "pending",
+            "status": "done",
             "status_detail": null,
             "worker_card_id": null,
             "gate_result_json": null,
             "gate_attempt": 0,
             "created_at_ms": 2100,
             "updated_at_ms": 2100,
-            "finished_at_ms": null
+            "finished_at_ms": 2100
           }
         },
         {

@@ -11,7 +11,7 @@ use utoipa::ToSchema;
 
 /// A derived, addressable slice of a wave report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ReportBlock {
     pub id: String,
@@ -39,7 +39,7 @@ pub struct ReportBlock {
 /// frontend derives sections from `body` by splitting on H1 headings;
 /// the storage layer does not impose a section vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct WaveReportPayload {
     /// Tier A persistence contract — see

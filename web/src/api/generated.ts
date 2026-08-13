@@ -1049,7 +1049,7 @@ export interface components {
          *     Persisted as a lowercase string in `cards.role` (migration 0008). The
          *     serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
          *     stable; ts-rs exports the matching TS union (`"spec" | "worker" |
-         *     "reportcard"`) into `web/src/api/generated-events.ts` so the
+         *     "reportcard"`) into `fe/core/api/generated/wire.ts` so the
          *     frontend can adopt the enum once any UI lands.
          * @enum {string}
          */
@@ -1152,7 +1152,7 @@ export interface components {
          *     Persisted as a lowercase string in `coves.kind` (migration 0009).
          *     The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
          *     shape stable; ts-rs exports the matching TS union
-         *     (`"user" | "system"`) into `web/src/api/generated-events.ts` so the
+         *     (`"user" | "system"`) into `fe/core/api/generated/wire.ts` so the
          *     frontend can validate against it. UI types intentionally don't
          *     surface `kind` — the server's default filter already hides system
          *     coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
@@ -2195,7 +2195,7 @@ export interface components {
          *     Persisted as a lowercase string in `waves.lifecycle` (migration
          *     0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
          *     and storage shape stable; ts-rs exports the matching TS union into
-         *     `web/src/api/generated-events.ts` so the frontend can render the
+         *     `fe/core/api/generated/wire.ts` so the frontend can render the
          *     badge against the same vocabulary.
          * @enum {string}
          */

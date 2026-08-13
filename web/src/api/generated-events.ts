@@ -94,7 +94,7 @@ export type CardId = string;
  * Persisted as a lowercase string in `cards.role` (migration 0008). The
  * serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
  * stable; ts-rs exports the matching TS union (`"spec" | "worker" |
- * "reportcard"`) into `web/src/api/generated-events.ts` so the
+ * "reportcard"`) into `fe/core/api/generated/wire.ts` so the
  * frontend can adopt the enum once any UI lands.
  */
 export type CardRole = "worker" | "spec" | "reportcard";
@@ -187,7 +187,7 @@ export type CoveId = string;
  * Persisted as a lowercase string in `coves.kind` (migration 0009).
  * The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
  * shape stable; ts-rs exports the matching TS union
- * (`"user" | "system"`) into `web/src/api/generated-events.ts` so the
+ * (`"user" | "system"`) into `fe/core/api/generated/wire.ts` so the
  * frontend can validate against it. UI types intentionally don't
  * surface `kind` — the server's default filter already hides system
  * coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
@@ -231,7 +231,7 @@ export type EditAuthor = "spec" | "user" | "kernel" | "plugin";
  * The full set of WS event envelopes the kernel emits on `/api/events`.
  *
  * `ts-rs` derives a matching TypeScript discriminated union, written to
- * `web/src/api/generated-events.ts` when `cargo test export_bindings_` runs
+ * `fe/core/api/generated/wire.ts` when `cargo test export_bindings_` runs
  * (driven by `npm run gen:api`). The serde `tag`/`content` attributes are
  * honored — the emitted TS uses the same `{ ev, data }` envelope.
  *
@@ -556,7 +556,7 @@ export type WaveId = string;
  * Persisted as a lowercase string in `waves.lifecycle` (migration
  * 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
  * and storage shape stable; ts-rs exports the matching TS union into
- * `web/src/api/generated-events.ts` so the frontend can render the
+ * `fe/core/api/generated/wire.ts` so the frontend can render the
  * badge against the same vocabulary.
  */
 export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";

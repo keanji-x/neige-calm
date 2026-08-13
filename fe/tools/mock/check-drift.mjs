@@ -16,8 +16,8 @@ function trackedOutput() {
 }
 const tracked = trackedOutput()
   .split(/\r?\n/).filter(Boolean).map((path) => posix.relative(prefix, path)).sort();
-const openApiPath = resolve(repositoryRoot, 'web/src/api/openapi.json');
-if (!existsSync(openApiPath)) throw new Error(`mock drift input is missing: ${openApiPath}; restore or relocate the legacy OpenAPI document and update tools/mock/generate.mjs plus check-drift.mjs`);
+const openApiPath = resolve(feRoot, 'core/api/generated/openapi.json');
+if (!existsSync(openApiPath)) throw new Error(`mock drift input is missing: ${openApiPath}; run npm run gen:api`);
 const openApi = JSON.parse(readFileSync(openApiPath, 'utf8'));
 const wireSource = readFileSync(resolve(feRoot, 'core/api/generated/wire.ts'), 'utf8');
 /** @type {Array<{path: string, content: string}>} */

@@ -20,6 +20,9 @@ import {
   type Cove, type CovePatchBody, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
+  waveBacklinksOperation, type WaveBacklinks,
+} from '../../../../core/domain/report.ts';
+import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
@@ -27,7 +30,12 @@ import {
   waveActivityFrom, waveDetailOperation, wavesInCoveOperation,
   type NewWaveBody, type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody,
 } from '../../../../core/domain/wave.ts';
+import {
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
+  specRunOperation,
+} from '../../../../core/domain/conversation.ts';
 import type { ServerVersionInfo } from './public.tsx';
+import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 
 export class ApiError extends Error {
   readonly failure: ApiFailure;
@@ -55,9 +63,48 @@ export const queryKeys = Object.freeze({
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  harnessItems: (cardId: string) => ['harness-items', cardId] as const,
+  specRun: (cardId: string) => ['spec-run', cardId] as const,
 });
+
+export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string) {
+  return {
+    queryKey: queryKeys.harnessItems(cardId),
+    queryFn: ({ pageParam }: { pageParam: number }) => runOperation(
+      transport, harnessItemsOperation(cardId, pageParam, 'desc'),
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (page: HarnessItem[]) =>
+      page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0]?.id : undefined,
+  };
+}
+
+export function specRunQueryOptions(transport: ApiTransportPort, cardId: string) {
+  return {
+    queryKey: queryKeys.specRun(cardId),
+    queryFn: () => runOperation(transport, specRunOperation(cardId)),
+  };
+}
+
+export function useSpecMutations(transport: ApiTransportPort, cardId: string) {
+  const client = useQueryClient();
+  const refresh = () => Promise.all([
+    client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
+    client.invalidateQueries({ queryKey: queryKeys.specRun(cardId) }),
+  ]).then(() => undefined);
+  const refreshAfter = async <T,>(result: T): Promise<T> => {
+    await refresh();
+    return result;
+  };
+  return {
+    send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text)).then(refreshAfter),
+    interrupt: () => runOperation(transport, interruptSpecOperation(cardId)).then(refreshAfter),
+    reset: () => runOperation(transport, resetSpecOperation(cardId)).then(refreshAfter),
+  };
+}
 
 const serverVersionSchema = z.object({
   webCompatVersion: z.number(),
@@ -105,6 +152,20 @@ export function waveDetailQueryOptions(transport: ApiTransportPort, waveId: stri
   return {
     queryKey: queryKeys.waveDetail(waveId),
     queryFn: (): Promise<WaveDetailWire> => runOperation(transport, waveDetailOperation(waveId)),
+  };
+}
+
+/**
+ * Who cites this wave (§8.3).
+ *
+ * Its own cache entry rather than a field on the detail: backlinks are written
+ * by *other* waves, so they go stale on edits this wave never sees, and folding
+ * them into the detail would tie the document's freshness to theirs.
+ */
+export function waveBacklinksQueryOptions(transport: ApiTransportPort, waveId: string) {
+  return {
+    queryKey: queryKeys.waveBacklinks(waveId),
+    queryFn: (): Promise<WaveBacklinks> => runOperation(transport, waveBacklinksOperation(waveId)),
   };
 }
 

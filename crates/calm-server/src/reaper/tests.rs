@@ -6,7 +6,7 @@ use crate::card_role_cache::CardRoleCache;
 use calm_exec::WorkerProvider;
 use calm_truth::db::RepoEventWrite;
 use calm_truth::db::RepoSyncDomainRaw;
-use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx, task_insert_tx};
+use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx};
 use calm_truth::session_repo::SessionRepo;
 use calm_truth_test_harness::FakeProvider;
 use calm_types::ids::{CardId, WaveId};
@@ -187,13 +187,14 @@ async fn insert_task(repo: &SqlxRepo, wave_id: &WaveId, key: &str, status: TaskS
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     };
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-    task_insert_tx(&mut tx, &task).await.expect("insert task");
+    crate::test_support::insert_task_tx(&mut tx, &task)
+        .await
+        .expect("insert task");
     tx.commit().await.expect("commit tx");
     task
 }

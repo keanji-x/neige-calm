@@ -2,12 +2,16 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import type { ApiFailure } from '../../../../core/api/types.ts';
+import { ApiError } from './queries.ts';
 import { retryUnless401 } from './public.tsx';
 
 describe('app/providers contracts', () => {
   it('INV-APP-059 INV-APP-060 never retries 401 and retries other failures once', () => {
-    expect(retryUnless401(0, { kind: 'unauthorized', status: 401 })).toBe(false);
-    expect(retryUnless401(0, { kind: 'http', status: 500 })).toBe(true);
+    const unauthorized: ApiFailure = { kind: 'unauthorized', status: 401, code: 'unauthorized', message: 'no session' };
+    const serverError: ApiFailure = { kind: 'http', status: 500, code: 'server_error', message: 'failed' };
+    expect(retryUnless401(0, new ApiError(unauthorized))).toBe(false);
+    expect(retryUnless401(0, new ApiError(serverError))).toBe(true);
     expect(retryUnless401(1, new Error('network'))).toBe(false);
   });
 

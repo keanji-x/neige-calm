@@ -8,6 +8,7 @@
 //! `evaluate_schedulability`, `project_tasks_tx`); no fixture re-implements
 //! the predicate under test.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use calm_types::report_blocks::tasks::TaskDeclaration;
@@ -153,8 +154,8 @@ async fn live_spec_count(repo: &SqlxRepo, root: &str) -> i64 {
     wave_tree_spec_inventory(&mut conn, root).await.unwrap()
 }
 
-async fn mark_all_tasks_as_running_legacy(repo: &SqlxRepo, wave: &str) {
-    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id=?1")
+async fn mark_all_tasks_as_running(repo: &SqlxRepo, wave: &str) {
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1")
         .bind(wave)
         .execute(repo.pool())
         .await
@@ -168,7 +169,7 @@ async fn task_bytes(repo: &SqlxRepo) -> Vec<String> {
         "SELECT json_object('id',id,'wave_id',wave_id,'key',key,'kind',kind,'goal',goal, \
          'context',context_json,'acceptance',acceptance_criteria,'cwd',cwd, \
          'depends_on',depends_on_json,'priority',priority,'gate',gate_json,'status',status, \
-         'declared_by',declared_by,'origin',origin,'decl_ready',decl_ready, \
+         'declared_by',declared_by,'decl_ready',decl_ready, \
          'spawn',spawn,'child_wave_id',child_wave_id) \
          FROM tasks ORDER BY wave_id, key",
     )
@@ -627,8 +628,8 @@ async fn a_tighter_wave_ceiling_still_reports_the_ceiling_diagnostic() {
 /// Operability property for capacity diagnostics over a bounded input space.
 ///
 /// Exhaust `N=1..=3`, `B=0..=6`, every target member, `ceiling=0..=5`, and
-/// target-member legacy and block-in-flight occupancy of either zero or three
-/// rows each. The block axis crosses all three documented local relations:
+/// target-member block-in-flight occupancy of either zero or three rows. The
+/// occupancy axis crosses all three documented local relations:
 /// ceiling above, equal to, and below immutable in-flight occupancy. This is
 /// the smallest dense grid that crosses two remainder boundaries for every
 /// supported member count and includes both local and tree self-overage.
@@ -657,12 +658,11 @@ async fn the_diagnosed_capacity_action_increases_admission() {
             .await
             .unwrap();
         tx.commit().await.unwrap();
-        let admitted: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
-                .bind(wave)
-                .fetch_one(repo.pool())
-                .await
-                .unwrap();
+        let admitted: i64 = sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1")
+            .bind(wave)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
         let diagnostics = outcome
             .diagnostics
             .into_iter()
@@ -677,22 +677,6 @@ async fn the_diagnosed_capacity_action_increases_admission() {
         (admitted, diagnostics)
     }
 
-    async fn seed_legacy(repo: &SqlxRepo, wave: &str, count: usize, prefix: &str) {
-        if count == 0 {
-            return;
-        }
-        let keys = (0..count)
-            .map(|index| format!("{prefix}-{index}"))
-            .collect::<Vec<_>>();
-        let refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
-        project(repo, wave, &refs).await;
-        sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id=?1")
-            .bind(wave)
-            .execute(repo.pool())
-            .await
-            .unwrap();
-    }
-
     async fn seed_block_inflight(repo: &SqlxRepo, wave: &str, count: usize, prefix: &str) {
         if count == 0 {
             return;
@@ -702,7 +686,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
             .collect::<Vec<_>>();
         let refs = keys.iter().map(String::as_str).collect::<Vec<_>>();
         project(repo, wave, &refs).await;
-        sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1 AND origin='block'")
+        sqlx::query("UPDATE tasks SET status='running' WHERE wave_id=?1")
             .bind(wave)
             .execute(repo.pool())
             .await
@@ -721,14 +705,9 @@ async fn the_diagnosed_capacity_action_increases_admission() {
     for members in 1..=3usize {
         for budget in 0..=6i64 {
             for target_index in 0..members {
-                for (legacy_index, block_inflight) in [None, Some(target_index)]
-                    .into_iter()
-                    .flat_map(|legacy_index| {
-                        [0usize, 3].map(move |block_inflight| (legacy_index, block_inflight))
-                    })
-                {
+                for block_inflight in [0usize, 3] {
                     let case = format!(
-                        "N={members},B={budget},target={target_index},legacy={legacy_index:?},block_inflight={block_inflight}"
+                        "N={members},B={budget},target={target_index},block_inflight={block_inflight}"
                     );
                     let root = seed_wave(&repo, &cove, &format!("{case} root")).await;
                     let mut waves = vec![root.clone()];
@@ -742,9 +721,6 @@ async fn the_diagnosed_capacity_action_increases_admission() {
                         set_ceiling(&repo, wave, MAX_TREE_TASK_BUDGET).await;
                     }
                     set_tree_budget(&repo, &root, MAX_TREE_TASK_BUDGET).await;
-                    if let Some(index) = legacy_index {
-                        seed_legacy(&repo, &waves[index], 3, "legacy").await;
-                    }
                     seed_block_inflight(
                         &repo,
                         &waves[target_index],
@@ -755,9 +731,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
 
                     for ceiling in 0..=5i64 {
                         checked += 1;
-                        sqlx::query(
-                            "DELETE FROM tasks WHERE wave_id=?1 AND origin='block' AND status='pending'",
-                        )
+                        sqlx::query("DELETE FROM tasks WHERE wave_id=?1 AND status='pending'")
                             .bind(&waves[target_index])
                             .execute(repo.pool())
                             .await
@@ -836,7 +810,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
             }
         }
     }
-    assert_eq!(checked, 1008, "bounded capacity grid drifted");
+    assert_eq!(checked, 504, "bounded capacity grid drifted");
     assert!(
         ineffective.is_empty(),
         "{} bounded capacity actions were ineffective; first failures: {:#?}",
@@ -847,7 +821,7 @@ async fn the_diagnosed_capacity_action_increases_admission() {
 
 /// At the product maximum there may be no legal B that gives the target one
 /// more slot. The diagnostic must not advertise an impossible PATCH, whether
-/// the tree is ordinarily full or frozen by upgraded immutable occupancy.
+/// the tree is ordinarily full or frozen by immutable in-flight occupancy.
 #[tokio::test]
 async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
     async fn rejected_tree_diagnostic(
@@ -894,12 +868,15 @@ async fn an_unreachable_tree_budget_target_reports_no_raise_action() {
     let frozen = seed_wave(&repo, &cove, "max-budget-frozen").await;
     set_ceiling(&repo, &frozen, MAX_TREE_TASK_BUDGET).await;
     set_tree_budget(&repo, &frozen, MAX_TREE_TASK_BUDGET).await;
-    let legacy_keys = (0..33)
-        .map(|index| format!("legacy-{index:02}"))
+    let in_flight_keys = (0..33)
+        .map(|index| format!("in-flight-{index:02}"))
         .collect::<Vec<_>>();
-    let legacy_refs = legacy_keys.iter().map(String::as_str).collect::<Vec<_>>();
-    project(&repo, &frozen, &legacy_refs).await;
-    mark_all_tasks_as_running_legacy(&repo, &frozen).await;
+    let in_flight_refs = in_flight_keys
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    project(&repo, &frozen, &in_flight_refs).await;
+    mark_all_tasks_as_running(&repo, &frozen).await;
     let child = seed_wave(&repo, &cove, "max-budget-frozen-child").await;
     link(&repo, &child, &frozen).await;
     stamp_created_at(&repo, &frozen, 1).await;
@@ -1234,36 +1211,32 @@ async fn a_null_ceiling_and_tiny_budget_still_bind_a_singleton_root() {
     ));
 }
 
-/// Upgrade degradation rule for D.4 #7. Legacy rows are immutable projection
-/// inputs, but every non-terminal spec row still consumes tree share. Starting
-/// above B therefore admits no new block row; capacity returns only as the
-/// legacy rows terminate, and projection never edits or culls those rows.
+/// Truth-layer fail-closed behavior for a pre-existing overage. Raw SQL builds
+/// this state so the occupancy subtraction remains directly testable; the
+/// production tree-budget PATCH rejects this input atomically and cannot
+/// commit the degraded state.
 #[tokio::test]
-async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
+async fn raw_sql_tree_overage_consumes_share_until_inflight_terminates() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "upgraded-root").await;
     set_ceiling(&repo, &root, 8).await;
     set_tree_budget(&repo, &root, 3).await;
-    project(&repo, &root, &["legacy-a", "legacy-b", "legacy-c"]).await;
-    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id=?1")
-        .bind(&root)
-        .execute(repo.pool())
-        .await
-        .unwrap();
-    // This is the rollout state under test: K=3 pre-existing live legacy rows
-    // meet a newly effective B=2. Production cannot create new legacy rows.
+    project(&repo, &root, &["in-flight-a", "in-flight-b", "in-flight-c"]).await;
+    mark_all_tasks_as_running(&repo, &root).await;
+    // This is the degraded state under test: K=3 pre-existing in-flight rows
+    // meet a newly effective B=2.
     sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
         .bind(&root)
         .execute(repo.pool())
         .await
         .unwrap();
 
-    let legacy_bytes = || async {
+    let in_flight_bytes = || async {
         sqlx::query_scalar::<_, String>(
-            "SELECT json_group_array(json_object('id',id,'status',status,'origin',origin, \
+            "SELECT json_group_array(json_object('id',id,'status',status, \
              'goal',goal,'context',context_json,'updated',updated_at_ms)) \
-             FROM tasks WHERE wave_id=?1 AND origin='legacy' ORDER BY key",
+             FROM tasks WHERE wave_id=?1 AND status='running' ORDER BY key",
         )
         .bind(&root)
         .fetch_one(repo.pool())
@@ -1275,23 +1248,23 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
         wave_tree_spec_inventory(&mut conn, &root).await.unwrap()
     };
 
-    let before = legacy_bytes().await;
+    let before = in_flight_bytes().await;
     project(&repo, &root, &["new-a", "new-b"]).await;
     assert_eq!(
-        legacy_bytes().await,
+        in_flight_bytes().await,
         before,
-        "report writes must not edit legacy rows"
+        "report writes must not edit in-flight rows"
     );
     assert_eq!(live_count().await, 3);
     let new_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND key LIKE 'new-%'")
             .bind(&root)
             .fetch_one(repo.pool())
             .await
             .unwrap();
     assert_eq!(new_rows, 0, "K >= B must force new-block capacity to zero");
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='legacy-a'")
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='in-flight-a'")
         .bind(&root)
         .execute(repo.pool())
         .await
@@ -1299,7 +1272,7 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
     project(&repo, &root, &["new-a", "new-b"]).await;
     assert_eq!(live_count().await, 2, "K == B still has zero new capacity");
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='legacy-b'")
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='in-flight-b'")
         .bind(&root)
         .execute(repo.pool())
         .await
@@ -1308,10 +1281,10 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
     assert_eq!(
         live_count().await,
         2,
-        "one terminated legacy row restores one slot"
+        "one terminated in-flight row restores one slot"
     );
 
-    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='legacy-c'")
+    sqlx::query("UPDATE tasks SET status='done' WHERE wave_id=?1 AND key='in-flight-c'")
         .bind(&root)
         .execute(repo.pool())
         .await
@@ -1320,20 +1293,20 @@ async fn legacy_live_spec_consumes_tree_share_until_it_terminates() {
     assert_eq!(
         live_count().await,
         2,
-        "all legacy termination restores the full B=2"
+        "all in-flight termination restores the full B=2"
     );
 }
 
-/// r6 B1/codex construction: a default-budget singleton with two upgraded
+/// r6 B1/codex construction: a default-budget singleton with two existing
 /// live rows must not stack 31 new block rows on top and commit 33 > B=32.
 #[tokio::test]
-async fn singleton_default_budget_counts_legacy_occupancy_before_admission() {
+async fn singleton_default_budget_counts_in_flight_occupancy_before_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "upgraded-default-root").await;
-    set_ceiling(&repo, &root, 31).await;
-    project(&repo, &root, &["legacy-a", "legacy-b"]).await;
-    mark_all_tasks_as_running_legacy(&repo, &root).await;
+    set_ceiling(&repo, &root, 64).await;
+    project(&repo, &root, &["in-flight-a", "in-flight-b"]).await;
+    mark_all_tasks_as_running(&repo, &root).await;
 
     let keys = (0..31)
         .map(|index| format!("new-{index:02}"))
@@ -1343,49 +1316,49 @@ async fn singleton_default_budget_counts_legacy_occupancy_before_admission() {
 
     assert_eq!(live_spec_count(&repo, &root).await, 32);
     let new_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND key LIKE 'new-%'")
             .bind(&root)
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(new_rows, 30, "legacy occupancy must consume two of B=32");
+    assert_eq!(new_rows, 30, "in-flight occupancy must consume two of B=32");
 }
 
-/// r6 B1/subagent construction: B=6, ceiling=4 and four upgraded live rows
+/// r6 B1/subagent construction: B=6, ceiling=8 and four existing live rows
 /// leave exactly two slots; the report must not admit all four new keys.
 #[tokio::test]
-async fn singleton_explicit_budget_counts_legacy_occupancy_before_admission() {
+async fn singleton_explicit_budget_counts_in_flight_occupancy_before_admission() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "upgraded-explicit-root").await;
-    set_ceiling(&repo, &root, 4).await;
+    set_ceiling(&repo, &root, 8).await;
     set_tree_budget(&repo, &root, 8).await;
     project(
         &repo,
         &root,
-        &["legacy-a", "legacy-b", "legacy-c", "legacy-d"],
+        &["in-flight-a", "in-flight-b", "in-flight-c", "in-flight-d"],
     )
     .await;
-    mark_all_tasks_as_running_legacy(&repo, &root).await;
+    mark_all_tasks_as_running(&repo, &root).await;
     set_tree_budget(&repo, &root, 6).await;
 
     project(&repo, &root, &["new-a", "new-b", "new-c", "new-d"]).await;
 
     assert_eq!(live_spec_count(&repo, &root).await, 6);
     let new_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND key LIKE 'new-%'")
             .bind(&root)
             .fetch_one(repo.pool())
             .await
             .unwrap();
-    assert_eq!(new_rows, 2, "legacy occupancy must leave only B-K slots");
+    assert_eq!(new_rows, 2, "in-flight occupancy must leave only B-K slots");
 }
 
-/// The upgrade freeze is tree-wide, not merely local to the member carrying
-/// excess legacy rows. With K=B but root fixed occupancy 5 > share 4, the
+/// The overage freeze is tree-wide, not merely local to the member carrying
+/// excess in-flight rows. With K=B but root fixed occupancy 5 > share 4, the
 /// child must not use its otherwise-free fourth slot and push Σ to 9.
 #[tokio::test]
-async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
+async fn in_flight_member_overage_freezes_new_blocks_across_the_tree() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
     let cove = seed_cove(&repo).await;
     let root = seed_wave(&repo, &cove, "upgrade-root").await;
@@ -1403,7 +1376,7 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
     )
     .await;
     project(&repo, &child, &["child-a", "child-b", "child-c"]).await;
-    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id IN (?1,?2)")
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id IN (?1,?2)")
         .bind(&root)
         .bind(&child)
         .execute(repo.pool())
@@ -1426,13 +1399,41 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
     )
     .await
     .unwrap();
-    assert!(verdicts.iter().all(|verdict| {
-        !verdict.schedulable
-            && verdict
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
-    }));
+    assert_eq!(
+        verdicts.len(),
+        new_declarations.len() + 3,
+        "all three undeclared in-flight rows must contribute synthetic verdicts: {verdicts:#?}"
+    );
+    let synthetic_keys = verdicts
+        .iter()
+        .skip(new_declarations.len())
+        .map(|verdict| verdict.key.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        synthetic_keys,
+        BTreeSet::from(["child-a", "child-b", "child-c"]),
+        "synthetic verdicts must cover the complete undeclared in-flight set"
+    );
+    assert!(
+        verdicts.iter().take(new_declarations.len()).all(|verdict| {
+            !verdict.schedulable
+                && verdict
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == "tree_budget_exhausted")
+        }),
+        "{verdicts:#?}"
+    );
+    assert!(
+        verdicts.iter().skip(new_declarations.len()).all(|verdict| {
+            !verdict.schedulable
+                && verdict
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains("cannot be withdrawn"))
+        }),
+        "extra verdicts must describe synthetic withdrawals: {verdicts:#?}"
+    );
     for diagnostic in verdicts
         .iter()
         .flat_map(|verdict| &verdict.diagnostics)
@@ -1554,7 +1555,7 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
 
     project(&repo, &child, &["new-a", "new-b"]).await;
     let new_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND key LIKE 'new-%'")
             .bind(&child)
             .fetch_one(repo.pool())
             .await
@@ -1574,7 +1575,7 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
         .unwrap();
     project(&repo, &child, &["new-a", "new-b"]).await;
     let new_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND origin='block'")
+        sqlx::query_scalar("SELECT count(*) FROM tasks WHERE wave_id=?1 AND key LIKE 'new-%'")
             .bind(&child)
             .fetch_one(repo.pool())
             .await
@@ -1589,7 +1590,7 @@ async fn legacy_member_overage_freezes_new_blocks_across_the_tree() {
 
 /// Equal creation timestamps deliberately fall through to the persisted id
 /// order. When the child id sorts first it receives B=9's remainder, leaving
-/// the root's five immutable rows over its share until B reaches 10.
+/// the root's five in-flight rows over its share until B reaches 10.
 #[tokio::test]
 async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
     let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -1616,7 +1617,7 @@ async fn equal_created_at_with_child_id_first_requires_ten_to_unfreeze() {
     )
     .await;
     project(&repo, &child, &["child-a", "child-b", "child-c"]).await;
-    sqlx::query("UPDATE tasks SET status='running',origin='legacy' WHERE wave_id IN (?1,?2)")
+    sqlx::query("UPDATE tasks SET status='running' WHERE wave_id IN (?1,?2)")
         .bind(&root)
         .bind(&child)
         .execute(repo.pool())

@@ -50,7 +50,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx, task_insert_tx};
+use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::event::{Event, EventBus, EventScope};
 use calm_server::ids::ActorId;
 use calm_server::model::{
@@ -370,14 +370,13 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     };
-    let mut tx = repo.pool().begin().await.expect("begin task insert");
-    task_insert_tx(&mut tx, &task).await.expect("insert task");
-    tx.commit().await.expect("commit task insert");
+    crate::support::task::project_task(repo.pool(), &task)
+        .await
+        .expect("project task block");
 
     state
         .dispatcher

@@ -41,6 +41,8 @@
 # App composition (§2: router/providers/theme/shell/DI and §4.7 events).
 - { path: fe/web/src/app/cards.contract.test.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
 - { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
+- { path: fe/web/src/app/composition.test.tsx, type: file, owner: app/composition, readonly: false, basis: "architecture §2 dependency injection; issue #1057" }
+- { path: fe/web/src/app/composition.ts, type: file, owner: app/composition, readonly: false, basis: "architecture §2 dependency injection; issue #1057" }
 - { path: fe/web/src/app/env.d.ts, type: file, owner: app/bootstrap, readonly: false, basis: "§0.5 构建期常量的环境声明；web/src 顶层只允许 main.tsx，故落在 app/ (#997)" }
 - { path: fe/web/src/app/markdown-legacy-differential.test.ts, type: file, owner: app/markdown-migration, readonly: false, basis: "architecture §4.9" }
 - { path: fe/web/src/app/router, type: directory, owner: app/router, readonly: false, basis: "architecture §2" }

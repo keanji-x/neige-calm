@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 // Invariants owned by the route tree.
 import { QueryClient } from '@tanstack/react-query';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createRouteTree, useConversationStore } from './public.tsx';
+import { createRouteTree, pendingConversationIds } from './public.tsx';
 import { pathFor, routeParamFromPath } from './navigation.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -90,21 +90,14 @@ describe('route parameter codec', () => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe('conversation pending accounting', () => {
-  function PendingHarness() {
-    const store = useConversationStore();
-    return <><output>{store.pending.has('c1') ? 'Working' : 'Idle'}</output>
-      <button type="button" onClick={() => store.send('c1', 'hello')}>Send</button></>;
-  }
+  const conversation = {
+    id: 'c1', waveId: 'w1', waveTitle: 'Wave', title: null, kind: 'shared-spec' as const,
+    state: 'idle' as const, updatedAt: 0, turns: 0,
+  };
 
-  it('keeps the user-visible Working state until both concurrent replies finish', () => {
-    vi.useFakeTimers();
-    render(<PendingHarness />);
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    act(() => { vi.advanceTimersByTime(200); });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
-    act(() => { vi.advanceTimersByTime(200); });
-    expect(screen.getByText('Working')).toBeTruthy();
-    act(() => { vi.advanceTimersByTime(200); });
-    expect(screen.getByText('Idle')).toBeTruthy();
+  it('bridges the user-visible Working state from input submission to the real harness phase', () => {
+    expect(pendingConversationIds(conversation, false, true).has('c1')).toBe(true);
+    expect(pendingConversationIds(conversation, true, false).has('c1')).toBe(true);
+    expect(pendingConversationIds(conversation, false, false).has('c1')).toBe(false);
   });
 });

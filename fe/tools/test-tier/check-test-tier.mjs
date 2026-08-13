@@ -31,6 +31,7 @@ const trackedFixtures = trackedFiles(['fe/tools/test-tier/fixtures/**'])
   .map((path) => path.slice('fe/'.length));
 const trackedTests = trackedFiles(['fe'])
   .filter((path) => /\.(?:test|spec)\.(?:js|jsx|ts|tsx|mjs|mts|cjs|cts)$/.test(path))
+  .filter((path) => !path.startsWith('fe/tools/architecture/fixtures/'))
   .map((path) => path.slice('fe/'.length));
 const violations = tierGateViolations({ oracleEntries: entries, trackedFixtures, trackedTests, projects });
 for (const violation of violations) console.error(violation);

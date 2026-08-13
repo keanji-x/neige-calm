@@ -8,7 +8,7 @@ import { createElement, type ReactNode } from 'react';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 import {
-  ApiError, coveListQueryOptions, queryKeys, useCoveMutations, useWaveMutations,
+  ApiError, coveListQueryOptions, harnessItemsQueryOptions, queryKeys, useCoveMutations, useWaveMutations,
   useWorkspace, wavesInCoveQueryOptions,
 } from './queries.ts';
 
@@ -138,5 +138,22 @@ describe('delete mutation wiring', () => {
     controller.abort();
     await expect(result.current.remove('c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.coves() });
+  });
+});
+
+describe('spec history pagination', () => {
+  it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
+    const firstPage = Array.from({ length: 300 }, (_, index) => ({
+      id: 701 + index, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+      turn_id: null, item_uuid: null, item_type: 'agent_message', method: 'item/completed',
+      params: '{}', created_at_ms: index,
+    }));
+    const { transport, paths } = recordingTransport(() => ok(firstPage));
+    const options = harnessItemsQueryOptions(transport, 'card');
+    const page = await options.queryFn({ pageParam: 0 });
+    const cursor = options.getNextPageParam(page);
+    expect(cursor).toBe(701);
+    await options.queryFn({ pageParam: cursor ?? 0 });
+    expect(paths[1]).toContain('after_id=701');
   });
 });
