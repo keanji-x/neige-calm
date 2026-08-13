@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it } from 'vitest';
 
@@ -92,6 +92,32 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
   await screen.findByRole('heading', { name: 'Settings' });
   expect(router.state.location.pathname).toBe('/settings');
+});
+
+it('does not navigate on a cove delete success that arrives after cancellation', async () => {
+  let resolveDelete!: (response: ApiTransportResponse) => void;
+  const transport: ApiTransportPort = { send(request): Promise<ApiTransportResponse> {
+    if (request.method === 'DELETE') return new Promise((resolve) => { resolveDelete = resolve; });
+    if (request.path === '/api/coves') return Promise.resolve({ status: 200, statusText: 'OK', body: [
+      { id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 },
+    ] });
+    if (request.path === '/api/coves/c1/waves') return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+    return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
+  } };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  router.update({ history: createMemoryHistory({ initialEntries: ['/cove/c1'] }) });
+  render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+    <RouterProvider router={router} />
+  </ThemeProvider></QueryClientProvider>);
+  await userEvent.click(await within(await screen.findByRole('main')).findByRole('button', { name: 'Delete cove Work' }));
+  await userEvent.type(screen.getByRole('textbox', { name: 'Type Work to confirm.' }), 'Work');
+  await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+  await waitFor(() => expect(resolveDelete).toBeTypeOf('function'));
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
+  await new Promise((done) => { setTimeout(done, 10); });
+  expect(router.state.location.pathname).toBe('/cove/c1');
 });
 
 it('round-trips an encoded wave id through useGo, TanStack history, and useRouteParam', async () => {

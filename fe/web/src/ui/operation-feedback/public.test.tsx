@@ -33,6 +33,26 @@ it('ignores a successful delete that arrives after cancellation', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   resolve();
-  await Promise.resolve();
+  await new Promise((done) => { setTimeout(done, 10); });
   expect(onDone).not.toHaveBeenCalled();
+});
+
+it('keeps a new delete target when the cancelled request settles', async () => {
+  let resolve!: () => void;
+  function DeleteHarness() {
+    const confirm = useDeleteConfirm(() => new Promise<void>((done) => { resolve = done; }));
+    return <><button type="button" onClick={() => confirm.request('w1')}>Delete first</button>
+      <button type="button" onClick={() => confirm.request('w2')}>Delete second</button>
+      {confirm.open && <><span>{confirm.target}</span><button type="button" onClick={confirm.confirm}>Confirm</button>
+        <button type="button" onClick={confirm.cancel}>Cancel</button></>}</>;
+  }
+  render(<DeleteHarness />);
+  await userEvent.click(screen.getByRole('button', { name: 'Delete first' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete second' }));
+  resolve();
+  await new Promise((done) => { setTimeout(done, 10); });
+  expect(screen.getByText('w2')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeTruthy();
 });
