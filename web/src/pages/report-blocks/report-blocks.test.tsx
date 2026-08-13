@@ -819,7 +819,6 @@ describe('degraded blocks', () => {
     ['reference_chain_too_large', {}, /fewer blocks/],
     ['tombstone_blocks_redeclaration', {}, /keeps the rejection record/],
     ['declare_and_wait', {}, /Allow this task/],
-    ['context_stale_reference', {}, /content changed.*recover automatically.*deleted and recreated.*new identity.*new key/],
     ['context_stale_declaration', {}, /worker output is still available/],
     ['declaration_changed_in_flight', {}, /worker output is still available/],
     ['task_key_completed', {}, /already been delivered/],
@@ -836,6 +835,25 @@ describe('degraded blocks', () => {
     ['tree_root_unresolved', {}, /operator must repair the wave tree/],
   ])('gives %s a human explanation and next action', (code, messageArgs, expected) => {
     expect(taskDiagnosticText({ code, messageArgs, relatedBlockIds: [], path: 'x', message: 'compat' })).toMatch(expected);
+  });
+
+  it('qualifies stale-reference rechecks for a non-content-change rationale', () => {
+    const text = taskDiagnosticText({
+      code: 'context_stale_reference',
+      messageArgs: { status: 'running', rationale: 'MAX_RERESOLVE_FANOUT budget exceeded' },
+      relatedBlockIds: [], path: 'refs', message: 'compat',
+    });
+    expect(text).toMatch(/still in progress.*no other condition.*check again.*remains stale.*new key/);
+    expect(text).not.toMatch(/recover automatically|content changed after work started/i);
+  });
+
+  it('never gives a terminal stale-reference diagnostic a restoration hint', () => {
+    const text = taskDiagnosticText({
+      code: 'context_stale_reference', messageArgs: { status: 'failed' },
+      relatedBlockIds: [], path: 'refs', message: 'compat',
+    });
+    expect(text).toMatch(/ended.*review the worker output.*new key/i);
+    expect(text).not.toMatch(/restor|check again|recover/i);
   });
 
   it('falls back to server copy for an unknown diagnostic code', () => {

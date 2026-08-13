@@ -80,6 +80,7 @@ use calm_types::event::TaskContextRef;
 use calm_types::report_blocks::render_fence;
 use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 struct Boot {
     repo: Arc<dyn Repo>,
@@ -4002,6 +4003,102 @@ async fn seed_fresh_context_copies(
     tx.commit().await.unwrap();
 }
 
+async fn seed_stale_context_copies(
+    boot: &Boot,
+    source_task_id: &str,
+    key_prefix: &str,
+    count: usize,
+    refs_per_row: usize,
+    mismatch: bool,
+    index_destination: bool,
+) -> Vec<String> {
+    assert!(refs_per_row > 0);
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+        .bind(source_task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let source_key: String = sqlx::query_scalar("SELECT key FROM tasks WHERE id=?1")
+        .bind(source_task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let source_wave = boot
+        .repo
+        .wave_get(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap();
+    let source_refs: Vec<TaskContextRef> = serde_json::from_str(&frozen).unwrap();
+    let mut refs = vec![source_refs[0].clone()];
+    for index in 1..refs_per_row {
+        let mut reference = source_refs[0].clone();
+        reference.block_id = format!("b_missing_{index:04}");
+        reference.is_root = false;
+        refs.push(reference);
+    }
+    if mismatch {
+        refs[0].hash = "permanent-mismatch".into();
+    }
+    let frozen = serde_json::to_string(&refs).unwrap();
+    let mut clone_wave_ids = Vec::with_capacity(count);
+    for index in 0..count {
+        let wave = boot
+            .repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: source_wave.cove_id.clone(),
+                title: format!("restore cursor fixture {key_prefix} {index}"),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        clone_wave_ids.push(wave.id);
+    }
+    let mut ids = Vec::with_capacity(count);
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    for (index, clone_wave_id) in clone_wave_ids.iter().enumerate() {
+        let task_id = format!("{key_prefix}-{index:04}");
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+              declared_by,claim_context_json,context_stale_at_ms,context_closure_truncated,\
+              decl_ready,decl_released_by_user,context_verify_failures,spawn,\
+              created_at_ms,updated_at_ms) \
+             VALUES (?1,?2,?3,'terminal','true','null','[]',0,'dispatched',\
+                     'spec',?4,1,0,0,0,0,'in-wave',1,1)",
+        )
+        .bind(&task_id)
+        .bind(clone_wave_id.as_str())
+        .bind(&source_key)
+        .bind(&frozen)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        if index_destination {
+            sqlx::query(
+                "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,?3)",
+            )
+            .bind(&task_id)
+            .bind(source_refs[0].wave_id.as_str())
+            .bind(&source_refs[0].block_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        ids.push(task_id);
+    }
+    tx.commit().await.unwrap();
+    ids
+}
+
 async fn materialize_then_restore_root_bytes(
     boot: &Boot,
     monitor: &TaskContextMonitor,
@@ -4115,6 +4212,216 @@ async fn consecutive_sweeps_restore_after_a_full_fresh_budget_without_starvation
 }
 
 #[tokio::test]
+async fn event_budget_material_verdict_recovers_when_frozen_content_is_equal() {
+    let boot = boot().await;
+    let key = "zz-event-budget-recovery";
+    let monitor = seed_frozen_context_fixture(&boot, key).await;
+    let task_id = format!("{}:{key}", boot.wave_id);
+    seed_fresh_context_copies(
+        &boot,
+        &task_id,
+        calm_server::task_context::MAX_RERESOLVE_FANOUT + 1,
+        true,
+    )
+    .await;
+
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms
+            .is_some(),
+        "the first over-budget event pass must fail closed"
+    );
+    sqlx::query("DELETE FROM task_ref_index WHERE task_id IN (SELECT id FROM tasks WHERE key LIKE 'fresh-budget-%')")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms,
+        None,
+        "a material budget rationale must not permanently veto equal frozen evidence"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![
+            (
+                "material".into(),
+                "MAX_RERESOLVE_FANOUT budget exceeded".into()
+            ),
+            ("restored".into(), "content_restored_to_frozen".into()),
+        ]
+    );
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms,
+        None,
+        "the recovered task stays fresh after the fanout returns below the cap"
+    );
+}
+
+#[tokio::test]
+async fn sweep_budget_material_verdict_recovers_and_metrics_stay_split() {
+    let boot = boot().await;
+    let key = "zz-sweep-budget-recovery";
+    let monitor = seed_frozen_context_fixture(&boot, key).await;
+    let task_id = format!("{}:{key}", boot.wave_id);
+    seed_fresh_context_copies(
+        &boot,
+        &task_id,
+        calm_server::task_context::MAX_SWEEP_NODES + 1,
+        false,
+    )
+    .await;
+
+    monitor.sweep().await.unwrap();
+    assert!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms
+            .is_some(),
+        "the first over-budget sweep must fail closed"
+    );
+    sqlx::query("DELETE FROM tasks WHERE key LIKE 'fresh-budget-%'")
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    assert_eq!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms,
+        None
+    );
+    let metrics = monitor.metrics().snapshot();
+    assert_eq!(metrics.sweep_verified_tuples, 0);
+    assert_eq!(metrics.sweep_restore_verified_tuples, 1);
+    assert_eq!(metrics.sweep_hits, 0);
+    assert_eq!(metrics.sweep_restore_hits, 1);
+    assert_eq!(metrics.sweep_caps, 1);
+    assert_eq!(metrics.sweep_restore_caps, 0);
+    monitor.sweep().await.unwrap();
+    assert_eq!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms,
+        None,
+        "the recovered task stays fresh after sweep pressure returns below the cap"
+    );
+}
+
+#[tokio::test]
+async fn event_restore_cursor_reaches_multiple_targets_beyond_stale_fanout_share() {
+    let boot = boot().await;
+    let source_key = "zz-event-cursor-source";
+    let monitor = seed_frozen_context_fixture(&boot, source_key).await;
+    let source_task_id = format!("{}:{source_key}", boot.wave_id);
+    seed_stale_context_copies(&boot, &source_task_id, "a-blocker", 64, 1, true, true).await;
+    let first = seed_stale_context_copies(&boot, &source_task_id, "b-target", 1, 1, false, true)
+        .await
+        .remove(0);
+    seed_stale_context_copies(&boot, &source_task_id, "c-blocker", 64, 1, true, true).await;
+    let second = seed_stale_context_copies(&boot, &source_task_id, "d-target", 1, 1, false, true)
+        .await
+        .remove(0);
+
+    for _ in 0..3 {
+        monitor
+            .detect_wave_edit(boot.wave_id.as_str())
+            .await
+            .unwrap();
+    }
+    for task_id in [&first, &second] {
+        assert_eq!(
+            boot.repo
+                .task_get(task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .context_stale_at_ms,
+            None,
+            "persistent event rotation must eventually attempt every tail target"
+        );
+        assert_eq!(
+            context_verdicts_for_task(&boot, task_id).await,
+            vec![("restored".into(), "content_restored_to_frozen".into())]
+        );
+    }
+}
+
+#[tokio::test]
+async fn sweep_restore_cursor_reaches_multiple_targets_beyond_stale_tuple_share() {
+    let boot = boot().await;
+    let source_key = "zz-sweep-cursor-source";
+    let monitor = seed_frozen_context_fixture(&boot, source_key).await;
+    let source_task_id = format!("{}:{source_key}", boot.wave_id);
+    seed_stale_context_copies(&boot, &source_task_id, "a-blocker", 64, 64, true, false).await;
+    let first = seed_stale_context_copies(&boot, &source_task_id, "b-target", 1, 1, false, false)
+        .await
+        .remove(0);
+    seed_stale_context_copies(&boot, &source_task_id, "c-blocker", 64, 64, true, false).await;
+    let second = seed_stale_context_copies(&boot, &source_task_id, "d-target", 1, 1, false, false)
+        .await
+        .remove(0);
+
+    for _ in 0..3 {
+        monitor.sweep().await.unwrap();
+    }
+    for task_id in [&first, &second] {
+        assert_eq!(
+            boot.repo
+                .task_get(task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .context_stale_at_ms,
+            None,
+            "persistent sweep rotation must eventually attempt every tail target"
+        );
+        assert_eq!(
+            context_verdicts_for_task(&boot, task_id).await,
+            vec![("restored".into(), "content_restored_to_frozen".into())]
+        );
+    }
+}
+
+#[tokio::test]
 async fn committed_material_then_byte_identical_revert_restores_inflight_task() {
     let boot = boot().await;
     let (monitor, task_id, original_body) =
@@ -4169,6 +4476,54 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
             ("restored".into(), "content_restored_to_frozen".into()),
         ],
         "restore must be an audited edge paired with the material edge"
+    );
+}
+
+#[tokio::test]
+async fn terminal_transition_during_stale_episode_never_clears_or_emits_restored() {
+    let boot = boot().await;
+    let (monitor, task_id, original_body) =
+        seed_production_report_context_fixture(&boot, "terminal-stale-restore-guard").await;
+    let temporary_body =
+        original_body.replacen("referenced original", "referenced terminal edit", 1);
+    persist_context_report_body(&boot, temporary_body).await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let stale_at: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(stale_at.is_some());
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "content_changed".into())],
+        "the end-to-end fixture must carry the real material event"
+    );
+
+    sqlx::query("UPDATE tasks SET status='failed' WHERE id=?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    persist_context_report_body(&boot, original_body).await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+
+    let task = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+    assert_eq!(task.context_stale_at_ms, stale_at);
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "content_changed".into())],
+        "terminal candidates must never emit the restored edge"
     );
 }
 
@@ -4548,6 +4903,7 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
 
 async fn assert_excluded_root_field_vetoes_restore(
     key: &str,
+    align_frozen_root: bool,
     prepare: impl FnOnce(&mut WaveReportPayload),
     withdraw: impl FnOnce(&mut WaveReportPayload),
 ) {
@@ -4584,6 +4940,7 @@ async fn assert_excluded_root_field_vetoes_restore(
     restored.body = original_body;
     restored.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced original\n\n");
     withdraw(&mut restored);
+    let restored_root_payload = restored.blocks.as_ref().unwrap()[1].payload.clone();
     restored.doc_rev += 1;
     sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
         .bind(serde_json::to_string(&restored).unwrap())
@@ -4591,6 +4948,41 @@ async fn assert_excluded_root_field_vetoes_restore(
         .execute(&pool)
         .await
         .unwrap();
+    if align_frozen_root {
+        let mut projected = serde_json::Map::new();
+        for field in calm_server::task_context::ROOT_HASH_TASK_FIELDS {
+            if let Some(value) = restored_root_payload
+                .get(*field)
+                .filter(|value| !value.is_null())
+            {
+                projected.insert((*field).into(), value.clone());
+            }
+        }
+        let hash = format!(
+            "{:x}",
+            Sha256::digest(
+                calm_types::report_blocks::canonical_json(&Value::Object(projected)).as_bytes()
+            )
+        );
+        let frozen_json: String =
+            sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+                .bind(&task_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let mut frozen: Vec<TaskContextRef> = serde_json::from_str(&frozen_json).unwrap();
+        frozen
+            .iter_mut()
+            .find(|reference| reference.is_root)
+            .unwrap()
+            .hash = hash;
+        sqlx::query("UPDATE tasks SET claim_context_json=?1,decl_ready=0 WHERE id=?2")
+            .bind(serde_json::to_string(&frozen).unwrap())
+            .bind(&task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
     monitor
         .detect_wave_edit(boot.wave_id.as_str())
         .await
@@ -4616,6 +5008,7 @@ async fn assert_excluded_root_field_vetoes_restore(
 async fn renamed_root_key_vetoes_restore() {
     assert_excluded_root_field_vetoes_restore(
         "withdraw-key",
+        false,
         |_| {},
         |report| report.blocks.as_mut().unwrap()[1].payload["key"] = json!("renamed-key"),
     )
@@ -4626,9 +5019,15 @@ async fn renamed_root_key_vetoes_restore() {
 async fn tombstoned_root_vetoes_restore() {
     assert_excluded_root_field_vetoes_restore(
         "withdraw-tombstone",
+        true,
         |_| {},
         |report| {
-            report.blocks.as_mut().unwrap()[1].payload["tombstone"] = json!(true);
+            report.blocks.as_mut().unwrap()[1].payload = json!({
+                "key": "withdraw-tombstone",
+                "tombstone": {"reason": null},
+                "declared_by": "spec",
+                "tombstoned_by": "user",
+            });
         },
     )
     .await;
@@ -4857,6 +5256,25 @@ async fn context_sweep_marks_material_when_closure_was_truncated() {
         event_rows(&boot, "task.context_advanced").await.len(),
         1,
         "a truncated closure has an unverifiable suffix and is fail-closed"
+    );
+    monitor.sweep().await.unwrap();
+    let task_id = format!("{}:truncated-still-matches", boot.wave_id);
+    assert!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms
+            .is_some(),
+        "equal visible refs cannot prove equality for the truncated suffix"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![(
+            "material".into(),
+            "frozen reference closure was truncated".into()
+        )]
     );
 }
 
@@ -5139,6 +5557,79 @@ async fn referenced_block_deletion_is_material_even_without_changed_ids() {
 }
 
 #[tokio::test]
+async fn referenced_block_absence_recovers_only_when_the_frozen_identity_returns() {
+    let boot = boot().await;
+    let (monitor, task_id, _) =
+        seed_production_report_context_fixture(&boot, "absent-same-id-restores").await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let (_, report_card, original_report) =
+        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+            .await
+            .unwrap();
+    let frozen_json: String =
+        sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let frozen: Vec<TaskContextRef> = serde_json::from_str(&frozen_json).unwrap();
+    let child_id = frozen
+        .iter()
+        .find(|reference| !reference.is_root)
+        .unwrap()
+        .block_id
+        .clone();
+    let mut deleted = original_report.clone();
+    deleted
+        .blocks
+        .as_mut()
+        .unwrap()
+        .retain(|block| block.id != child_id);
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&deleted).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "referenced_block_absent".into())]
+    );
+
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&original_report).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms,
+        None,
+        "the original block id and hash make the frozen closure provably equal again"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![
+            ("material".into(), "referenced_block_absent".into()),
+            ("restored".into(), "content_restored_to_frozen".into()),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
     // Known gap: production reconstruction mints a new block id. This
     // content-hash restore mechanism deliberately cannot equate that new
@@ -5218,6 +5709,24 @@ async fn missing_frozen_context_is_material_and_terminal_index_is_cleaned() {
         TaskContextMonitor::new(boot.repo.clone(), boot.events.clone(), boot.write.clone());
     monitor.sweep().await.unwrap();
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+    monitor.sweep().await.unwrap();
+    assert!(
+        boot.repo
+            .task_get(&task_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .context_stale_at_ms
+            .is_some(),
+        "a missing frozen value cannot prove closure equality"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![(
+            "material".into(),
+            "frozen reference set is missing or malformed".into()
+        )]
+    );
 
     let pool = boot.repo.sqlite_pool().unwrap();
     sqlx::query("UPDATE tasks SET status = 'failed' WHERE id = ?1")
@@ -5431,10 +5940,27 @@ async fn reresolve_fanout_and_sweep_node_caps_fail_closed() {
         .await
         .unwrap();
     monitor.sweep().await.unwrap();
+    let verdicts = event_rows(&boot, "task.context_advanced")
+        .await
+        .into_iter()
+        .map(|(_, payload)| {
+            (
+                payload["verdict"].as_str().unwrap().to_string(),
+                payload["rationale"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        event_rows(&boot, "task.context_advanced").await.len(),
-        2,
-        "sweep node exhaustion must fail closed"
+        verdicts,
+        vec![
+            (
+                "material".into(),
+                "MAX_RERESOLVE_FANOUT budget exceeded".into()
+            ),
+            ("material".into(), "MAX_SWEEP_NODES budget exceeded".into()),
+            ("restored".into(), "content_restored_to_frozen".into()),
+        ],
+        "both caps fail closed, while the earlier equal fanout verdict is audibly restored"
     );
 }
 

@@ -30,8 +30,6 @@ const CONTENT_CHANGED_RATIONALE: &str = "content_changed";
 const RESTORED_RATIONALE: &str = "content_restored_to_frozen";
 const MATERIAL_VERDICT_OBSOLETE: &str = "task context material verdict became obsolete";
 const RESTORE_NOT_ELIGIBLE: &str = "task context restore candidate is no longer eligible";
-const RESTORE_NOT_CONTENT_CHANGED: &str =
-    "task context restore candidate latest verdict is not content_changed";
 const RESTORE_EVIDENCE_CHANGED: &str = "task context restore evidence changed in transaction";
 const RESTORE_DECLARATION_WITHDRAWN: &str = "task context restore vetoed by declaration withdrawal";
 
@@ -117,6 +115,9 @@ pub struct ContextMetrics {
     sweep_verified_tuples: AtomicU64,
     sweep_hits: AtomicU64,
     sweep_caps: AtomicU64,
+    sweep_restore_verified_tuples: AtomicU64,
+    sweep_restore_hits: AtomicU64,
+    sweep_restore_caps: AtomicU64,
     last_success_ms: AtomicI64,
     consecutive_failures: AtomicU64,
     claim_fence_race_lost: AtomicU64,
@@ -139,6 +140,9 @@ pub struct ContextMetricsSnapshot {
     pub sweep_verified_tuples: u64,
     pub sweep_hits: u64,
     pub sweep_caps: u64,
+    pub sweep_restore_verified_tuples: u64,
+    pub sweep_restore_hits: u64,
+    pub sweep_restore_caps: u64,
     pub last_success_age_seconds: u64,
     pub consecutive_failures: u64,
     pub claim_fence_race_lost: u64,
@@ -168,6 +172,11 @@ impl ContextMetrics {
             sweep_verified_tuples: self.sweep_verified_tuples.load(Ordering::Relaxed),
             sweep_hits: self.sweep_hits.load(Ordering::Relaxed),
             sweep_caps: self.sweep_caps.load(Ordering::Relaxed),
+            sweep_restore_verified_tuples: self
+                .sweep_restore_verified_tuples
+                .load(Ordering::Relaxed),
+            sweep_restore_hits: self.sweep_restore_hits.load(Ordering::Relaxed),
+            sweep_restore_caps: self.sweep_restore_caps.load(Ordering::Relaxed),
             last_success_age_seconds: if last <= 0 {
                 u64::MAX
             } else {
@@ -212,6 +221,9 @@ impl ContextMetrics {
             context_sweep_verified_tuples = health.sweep_verified_tuples,
             context_sweep_hits = health.sweep_hits,
             context_sweep_caps = health.sweep_caps,
+            context_sweep_restore_verified_tuples = health.sweep_restore_verified_tuples,
+            context_sweep_restore_hits = health.sweep_restore_hits,
+            context_sweep_restore_caps = health.sweep_restore_caps,
             context_claim_fence_race_lost = health.claim_fence_race_lost,
             context_material_verdict_obsolete = health.material_verdict_obsolete,
             context_restore_checks = health.restore_checks,
@@ -229,6 +241,17 @@ pub struct TaskContextMonitor {
     events: EventBus,
     write: WriteContext,
     metrics: Arc<ContextMetrics>,
+    restore_cursors: DashMap<String, String>,
+}
+
+#[derive(Debug, Default)]
+struct SweepOutcome {
+    verified_tuples: usize,
+    hits: usize,
+    capped: bool,
+    restore_verified_tuples: usize,
+    restore_hits: usize,
+    restore_capped: bool,
 }
 
 impl TaskContextMonitor {
@@ -247,11 +270,25 @@ impl TaskContextMonitor {
             events,
             write,
             metrics,
+            restore_cursors: DashMap::new(),
         }
     }
 
     pub fn metrics(&self) -> Arc<ContextMetrics> {
         Arc::clone(&self.metrics)
+    }
+
+    fn rotate_stale_rows(&self, cursor_scope: &str, rows: &mut [calm_truth::db::TaskContextRow]) {
+        let Some(cursor) = self.restore_cursors.get(cursor_scope) else {
+            return;
+        };
+        let split = rows.partition_point(|row| row.task_id.as_str() <= cursor.value().as_str());
+        rows.rotate_left(split);
+    }
+
+    fn advance_restore_cursor(&self, cursor_scope: &str, task_id: &str) {
+        self.restore_cursors
+            .insert(cursor_scope.to_string(), task_id.to_string());
     }
 
     pub async fn resolve_closure(
@@ -507,7 +544,7 @@ impl TaskContextMonitor {
 
     pub async fn detect_wave_edit(&self, dst_wave_id: &str) -> Result<()> {
         let rows = self.repo.task_contexts_by_dst_wave(dst_wave_id).await?;
-        let stale_rows = self
+        let mut stale_rows = self
             .repo
             .stale_task_contexts_by_dst_wave(dst_wave_id)
             .await?;
@@ -554,14 +591,18 @@ impl TaskContextMonitor {
                     .await?;
             }
         }
-        for (index, row) in stale_rows.into_iter().enumerate() {
+        let cursor_scope = format!("event:{dst_wave_id}");
+        self.rotate_stale_rows(&cursor_scope, &mut stale_rows);
+        let stale_count = stale_rows.len();
+        for row in stale_rows.into_iter().take(MAX_RERESOLVE_FANOUT) {
             self.metrics.detections.fetch_add(1, Ordering::Relaxed);
-            if index >= MAX_RERESOLVE_FANOUT {
-                self.metrics
-                    .record_restore_deferred("fanout_budget_exceeded");
-                continue;
-            }
+            let task_id = row.task_id.clone();
             self.attempt_restore(row).await?;
+            self.advance_restore_cursor(&cursor_scope, &task_id);
+        }
+        for _ in MAX_RERESOLVE_FANOUT..stale_count {
+            self.metrics
+                .record_restore_deferred("fanout_budget_exceeded");
         }
         Ok(())
     }
@@ -570,18 +611,29 @@ impl TaskContextMonitor {
         let started = Instant::now();
         let result = self.sweep_inner().await;
         match &result {
-            Ok((verified, hits, capped)) => {
+            Ok(outcome) => {
                 self.metrics
                     .sweep_duration_ms
                     .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
                 self.metrics
                     .sweep_verified_tuples
-                    .store(*verified as u64, Ordering::Relaxed);
+                    .store(outcome.verified_tuples as u64, Ordering::Relaxed);
                 self.metrics
                     .sweep_hits
-                    .store(*hits as u64, Ordering::Relaxed);
-                if *capped {
+                    .store(outcome.hits as u64, Ordering::Relaxed);
+                if outcome.capped {
                     self.metrics.sweep_caps.fetch_add(1, Ordering::Relaxed);
+                }
+                self.metrics
+                    .sweep_restore_verified_tuples
+                    .store(outcome.restore_verified_tuples as u64, Ordering::Relaxed);
+                self.metrics
+                    .sweep_restore_hits
+                    .store(outcome.restore_hits as u64, Ordering::Relaxed);
+                if outcome.restore_capped {
+                    self.metrics
+                        .sweep_restore_caps
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 self.metrics
                     .last_success_ms
@@ -591,9 +643,12 @@ impl TaskContextMonitor {
                     .store(0, Ordering::Relaxed);
                 tracing::info!(
                     duration_ms = started.elapsed().as_millis(),
-                    verified_tuples = *verified,
-                    hits = *hits,
-                    capped = *capped,
+                    verified_tuples = outcome.verified_tuples,
+                    hits = outcome.hits,
+                    capped = outcome.capped,
+                    restore_verified_tuples = outcome.restore_verified_tuples,
+                    restore_hits = outcome.restore_hits,
+                    restore_capped = outcome.restore_capped,
                     "task context sweep completed"
                 );
             }
@@ -607,13 +662,15 @@ impl TaskContextMonitor {
         result.map(|_| ())
     }
 
-    async fn sweep_inner(&self) -> Result<(usize, usize, bool)> {
+    async fn sweep_inner(&self) -> Result<SweepOutcome> {
         let rows = self.repo.task_contexts_inflight_fresh().await?;
-        let stale_rows = self.repo.task_contexts_inflight_stale().await?;
+        let mut stale_rows = self.repo.task_contexts_inflight_stale().await?;
         let mut verified = 0usize;
         let mut restore_verified = 0usize;
         let mut hits = 0usize;
+        let mut restore_hits = 0usize;
         let mut capped = false;
+        let mut restore_capped = false;
         for row in rows {
             let refs = row
                 .claim_context_json
@@ -661,7 +718,10 @@ impl TaskContextMonitor {
                     .await?;
             }
         }
+        const SWEEP_CURSOR_SCOPE: &str = "sweep";
+        self.rotate_stale_rows(SWEEP_CURSOR_SCOPE, &mut stale_rows);
         for row in stale_rows {
+            let task_id = row.task_id.clone();
             let refs = row
                 .claim_context_json
                 .as_deref()
@@ -669,25 +729,35 @@ impl TaskContextMonitor {
             let Some(refs) = refs else {
                 self.metrics
                     .record_restore_deferred("malformed_frozen_context");
+                self.advance_restore_cursor(SWEEP_CURSOR_SCOPE, &task_id);
                 continue;
             };
             if row.closure_truncated {
                 self.metrics.record_restore_deferred("closure_truncated");
+                self.advance_restore_cursor(SWEEP_CURSOR_SCOPE, &task_id);
                 continue;
             }
             if restore_verified.saturating_add(refs.len()) > MAX_SWEEP_NODES {
-                capped = true;
+                restore_capped = true;
                 self.metrics
                     .record_restore_deferred("sweep_budget_exceeded");
-                continue;
+                break;
             }
             restore_verified += refs.len();
             if self.attempt_restore(row).await? {
-                hits += 1;
+                restore_hits += 1;
             }
+            self.advance_restore_cursor(SWEEP_CURSOR_SCOPE, &task_id);
         }
         self.cleanup_index().await?;
-        Ok((verified.saturating_add(restore_verified), hits, capped))
+        Ok(SweepOutcome {
+            verified_tuples: verified,
+            hits,
+            capped,
+            restore_verified_tuples: restore_verified,
+            restore_hits,
+            restore_capped,
+        })
     }
 
     async fn cleanup_index(&self) -> Result<()> {
@@ -858,16 +928,7 @@ impl TaskContextMonitor {
     }
 }
 
-type FrozenTaskDbRow = (
-    String,
-    String,
-    String,
-    Option<i64>,
-    Option<String>,
-    i64,
-    i64,
-    i64,
-);
+type FrozenTaskDbRow = (String, String, String, Option<String>, i64, i64, i64);
 
 struct FrozenTaskTx {
     task_id: String,
@@ -875,7 +936,6 @@ struct FrozenTaskTx {
     task_key: String,
     status: String,
     cove_id: String,
-    stale_at_ms: Option<i64>,
     refs: Option<Vec<TaskContextRef>>,
     closure_truncated: bool,
     decl_ready: bool,
@@ -895,7 +955,7 @@ async fn frozen_task_tx(
     wave_id: &str,
 ) -> Result<Option<FrozenTaskTx>> {
     let row: Option<FrozenTaskDbRow> = sqlx::query_as(
-        "SELECT t.key,t.status,w.cove_id,t.context_stale_at_ms,t.claim_context_json,\
+        "SELECT t.key,t.status,w.cove_id,t.claim_context_json,\
          t.context_closure_truncated,t.decl_ready,t.decl_released_by_user \
          FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
     )
@@ -908,7 +968,6 @@ async fn frozen_task_tx(
             task_key,
             status,
             cove_id,
-            stale_at_ms,
             claim_context_json,
             closure_truncated,
             decl_ready,
@@ -919,7 +978,6 @@ async fn frozen_task_tx(
             task_key,
             status,
             cove_id,
-            stale_at_ms,
             refs: claim_context_json
                 .as_deref()
                 .and_then(|json| serde_json::from_str(json).ok()),
@@ -986,8 +1044,7 @@ async fn current_context_evidence_tx(
                 != Some(task.task_key.as_str())
                 || payload
                     .get("tombstone")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false)
+                    .is_some_and(serde_json::Value::is_object)
                 || (task.decl_ready
                     && !payload
                         .get("ready")
@@ -1003,7 +1060,7 @@ async fn current_context_evidence_tx(
             }
         }
     }
-    if !saw_root && !refs.is_empty() {
+    if !saw_root {
         return Ok(CurrentContextEvidence::Mismatch);
     }
     Ok(CurrentContextEvidence::Equal)
@@ -1017,25 +1074,8 @@ async fn restore_context_tx(
     let Some(task) = frozen_task_tx(tx, task_id, wave_id).await? else {
         return Err(CalmError::Conflict(RESTORE_NOT_ELIGIBLE.into()));
     };
-    if !matches!(task.status.as_str(), "dispatched" | "running" | "verifying")
-        || task.stale_at_ms.is_none()
-    {
+    if !matches!(task.status.as_str(), "dispatched" | "running" | "verifying") {
         return Err(CalmError::Conflict(RESTORE_NOT_ELIGIBLE.into()));
-    }
-    let latest: Option<(String, String)> = sqlx::query_as(
-        "SELECT json_extract(payload,'$.verdict'),json_extract(payload,'$.rationale') \
-         FROM events WHERE kind='task.context_advanced' \
-         AND json_extract(payload,'$.task_id')=?1 ORDER BY id DESC LIMIT 1",
-    )
-    .bind(task_id)
-    .fetch_optional(&mut **tx)
-    .await?;
-    if latest
-        .as_ref()
-        .map(|(verdict, rationale)| (verdict.as_str(), rationale.as_str()))
-        != Some(("material", CONTENT_CHANGED_RATIONALE))
-    {
-        return Err(CalmError::Conflict(RESTORE_NOT_CONTENT_CHANGED.into()));
     }
     match current_context_evidence_tx(tx, &task).await? {
         CurrentContextEvidence::Equal => {}
@@ -1048,7 +1088,7 @@ async fn restore_context_tx(
     }
     let changed = sqlx::query(
         "UPDATE tasks SET context_stale_at_ms=NULL WHERE id=?1 AND wave_id=?2 \
-         AND status IN ('dispatched','running','verifying') AND context_stale_at_ms IS NOT NULL",
+         AND context_stale_at_ms IS NOT NULL",
     )
     .bind(task_id)
     .bind(wave_id)
@@ -1078,7 +1118,6 @@ async fn restore_context_tx(
 fn restore_deferred_reason(message: &str) -> Option<&'static str> {
     match message {
         RESTORE_NOT_ELIGIBLE => Some("not_eligible"),
-        RESTORE_NOT_CONTENT_CHANGED => Some("latest_verdict_not_content_changed"),
         RESTORE_EVIDENCE_CHANGED => Some("transaction_evidence_changed"),
         RESTORE_DECLARATION_WITHDRAWN => Some("declaration_withdrawn"),
         _ => None,
@@ -1152,7 +1191,110 @@ mod tests {
 
     use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
     use crate::db::{Repo, ServerRepoSyncDomainRawExt};
-    use crate::model::{NewCove, NewWave, RequestTheme};
+    use crate::model::{NewCard, NewCove, NewWave, RequestTheme};
+    use calm_types::wave_report::WaveReportPayload;
+
+    async fn seed_restore_transaction_fixture(
+        status: &str,
+        stale_at_ms: Option<i64>,
+    ) -> (SqlxRepo, String, String) {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = repo
+            .cove_create(NewCove {
+                name: format!("restore-guard-{status}"),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id,
+                title: format!("restore-guard-{status}"),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let root = ReportBlock {
+            id: "b_restore_guard".into(),
+            kind: "task".into(),
+            rev: 1,
+            payload: serde_json::json!({
+                "key": "terminal",
+                "kind": "terminal",
+                "goal": "true",
+                "ready": true,
+                "declared_by": "spec",
+            }),
+        };
+        let frozen = context_ref(wave.id.as_str(), &root, true);
+        let report_card = repo
+            .card_create(NewCard {
+                wave_id: wave.id.clone(),
+                kind: "wave-report".into(),
+                sort: None,
+                payload: serde_json::to_value(WaveReportPayload::initial()).unwrap(),
+                title: None,
+            })
+            .await
+            .unwrap();
+        let task_id = format!("{}:terminal", wave.id);
+        let pool = repo.sqlite_pool().unwrap();
+        sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+            .bind(
+                serde_json::to_string(&WaveReportPayload {
+                    schema_version: 3,
+                    doc_rev: 1,
+                    summary: String::new(),
+                    body: String::new(),
+                    blocks: Some(vec![root]),
+                })
+                .unwrap(),
+            )
+            .bind(report_card.id.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+              declared_by,claim_context_json,context_stale_at_ms,\
+              context_closure_truncated,decl_ready,decl_released_by_user,\
+              context_verify_failures,spawn,created_at_ms,updated_at_ms) \
+             VALUES (?1,?2,'terminal','terminal','true','null','[]',0,?3,\
+                     'spec',?4,?5,0,1,0,0,'in-wave',1,1)",
+        )
+        .bind(&task_id)
+        .bind(wave.id.as_str())
+        .bind(status)
+        .bind(serde_json::to_string(&vec![frozen]).unwrap())
+        .bind(stale_at_ms)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO events(kind,payload,actor,at,event_version,scope_kind,scope_wave) \
+             VALUES('task.context_advanced',?1,'kernel',1,12,'wave',?2)",
+        )
+        .bind(
+            serde_json::json!({
+                "task_id": task_id,
+                "verdict": "material",
+                "rationale": "content_changed",
+            })
+            .to_string(),
+        )
+        .bind(wave.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+        (repo, wave.id.to_string(), task_id)
+    }
 
     #[test]
     fn health_export_contains_positive_sweep_signals() {
@@ -1173,52 +1315,41 @@ mod tests {
 
     #[tokio::test]
     async fn restore_transaction_rejects_terminal_candidate_even_if_called_directly() {
-        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
-        let cove = repo
-            .cove_create(NewCove {
-                name: "terminal-restore-guard".into(),
-                color: "#000".into(),
-                sort: None,
-            })
-            .await
-            .unwrap();
-        let wave = repo
-            .wave_create(NewWave {
-                workflow_input: None,
-                cove_id: cove.id,
-                title: "terminal-restore-guard".into(),
-                sort: None,
-                cwd: String::new(),
-                workflow_id: None,
-                attach_folder: false,
-                theme: RequestTheme::default_dark(),
-            })
-            .await
-            .unwrap();
-        let task_id = format!("{}:terminal", wave.id);
+        let (repo, wave_id, task_id) = seed_restore_transaction_fixture("failed", Some(1)).await;
         let pool = repo.sqlite_pool().unwrap();
-        sqlx::query(
-            "INSERT INTO tasks \
-             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
-              declared_by,claim_context_json,context_stale_at_ms,\
-              context_closure_truncated,decl_ready,decl_released_by_user,\
-              context_verify_failures,spawn,created_at_ms,updated_at_ms) \
-             VALUES (?1,?2,'terminal','terminal','true','null','[]',0,'failed',\
-                     'spec','[]',1,0,0,0,0,'in-wave',1,1)",
-        )
-        .bind(&task_id)
-        .bind(wave.id.as_str())
-        .execute(&pool)
-        .await
-        .unwrap();
 
         let mut tx = begin_immediate_tx(&pool).await.unwrap();
-        let error = restore_context_tx(&mut tx, &task_id, wave.id.as_str())
+        let error = restore_context_tx(&mut tx, &task_id, &wave_id)
             .await
             .expect_err("the transaction guard must reject a terminal row from any caller");
         assert!(
             matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
             "the direct caller must be rejected by the terminal/stale eligibility guard: {error}"
+        );
+        tx.rollback().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT context_stale_at_ms FROM tasks WHERE id=?1"
+            )
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_update_rejects_a_fresh_candidate_even_after_equal_evidence() {
+        let (repo, wave_id, task_id) = seed_restore_transaction_fixture("running", None).await;
+        let pool = repo.sqlite_pool().unwrap();
+        let mut tx = begin_immediate_tx(&pool).await.unwrap();
+        let error = restore_context_tx(&mut tx, &task_id, &wave_id)
+            .await
+            .expect_err("the conditional update must reject a row that is no longer stale");
+        assert!(
+            matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
+            "the conditional update must own the stale-level guard: {error}"
         );
         tx.rollback().await.unwrap();
     }
