@@ -18,7 +18,7 @@ const restrictedDynamicMarkdownImport = [
 ].join(', ');
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', '**/fixtures/**', 'tools/architecture/rule-fixtures/**'] },
+  { ignores: ['dist/**', 'web/dist/**', 'node_modules/**', 'tools/**/fixtures/**', 'tools/architecture/rule-fixtures/**'] },
   { linterOptions: { reportUnusedDisableDirectives: 'error' } },
   { files: ['**/*.{js,mjs,cjs,jsx,ts,tsx}'], ...js.configs.recommended },
   { files: ['tools/**/*.{js,mjs,cjs,ts}', '*.{js,mjs,cjs,ts}'], languageOptions: { globals: globals.node } },

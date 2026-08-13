@@ -140,12 +140,9 @@ describe('report infrastructure classification', () => {
 });
 
 describe('zero-selection exit policy', () => {
-  it('passes unrelated PRs and fails infrastructure PRs with zero selections', () => {
-    expect(mutationRunExitCode([], false, true, 0)).toBe(0);
-    expect(mutationRunExitCode([], true, true, 0)).toBe(1);
-  });
-  it('passes an empty shard when mutations were selected globally', () => {
-    expect(mutationRunExitCode([], true, true, 1)).toBe(0);
+  it('passes an empty selection and fails an actual mutation verdict', () => {
+    expect(mutationRunExitCode([])).toBe(0);
+    expect(mutationRunExitCode([{ ok: false, errors: [{ code: 'dead-mutation', test_ids: [] }] }])).toBe(1);
   });
 });
 

@@ -133,6 +133,12 @@ it('filters an injected tracked-file list to ownership scope', () => {
   ]);
 });
 
+it('includes every frontend gate control file in ownership scope', () => {
+  const controls = ['fe/.dependency-cruiser.cjs', 'fe/eslint.config.js', 'fe/package.json', 'fe/package-lock.json',
+    'fe/tsconfig.json', 'fe/vite.config.ts', 'fe/vitest.config.ts'];
+  expect(repositoryFiles('', controls)).toEqual([...controls].sort());
+});
+
 describe('P8b2 ownership exit', () => {
   const trackedRepositoryFiles = repositoryFiles('', [
     'fe/mock/.gitkeep',

@@ -102,6 +102,14 @@ describe('test-tier-project fixtures', () => {
     expect(checkTestTier([pending], nodeOnly, '/repo', '/repo/fe')).toEqual([]);
   });
 
+  it('rejects migrated entries without a real authoritative test', () => {
+    expect(checkTestTier([{ id: 'GATE-TIER-NONE-001', migration: 'migrated', test_tier: 'static',
+      authoritative_test: 'NONE' }], [], '/repo', '/repo/fe')).toEqual([{
+      id: 'GATE-TIER-NONE-001', rule: 'test-tier-project', source: 'NONE',
+      message: 'migrated entries require a real authoritative_test location',
+    }]);
+  });
+
   it('rejects overlap for jsdom as well as browser', () => {
     const overlapping = [
       { name: 'web-dom', include: ['probe.test.tsx'], exclude: [] },

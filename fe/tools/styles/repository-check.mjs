@@ -6,7 +6,7 @@ import { parse } from 'yaml';
 import postcss from 'postcss';
 import { auditLayeredCss, compareGlobalClassManifest, extractGlobalClasses, layerOrder } from './audit.ts';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
 export const EXPECTED_LAYER_ORDER = Object.freeze([
   'reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides',
 ]);
@@ -36,7 +36,7 @@ function filesUnder(directory) {
   if (!existsSync(directory)) return result;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) result.push(...filesUnder(path));
+    if (entry.isDirectory() && entry.name !== 'dist' && entry.name !== 'node_modules') result.push(...filesUnder(path));
     else if (entry.isFile()) result.push(path);
   }
   return result;
@@ -181,7 +181,7 @@ export function auditUnlayeredExceptions(css, file, order, entries, today = new 
 
 export function auditStyleRepository(feRoot) {
   const stylesRoot = resolve(feRoot, 'web/src/styles');
-  const webRoot = resolve(feRoot, 'web/src');
+  const webRoot = resolve(feRoot, 'web');
   const order = layerOrder(readFileSync(resolve(stylesRoot, 'entry.css'), 'utf8'));
   const allFiles = [...filesUnder(resolve(feRoot, 'core')), ...filesUnder(webRoot)];
   const cssFiles = allFiles.filter((path) => extname(path) === '.css');
