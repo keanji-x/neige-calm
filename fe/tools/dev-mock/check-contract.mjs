@@ -40,9 +40,9 @@ async function invoke(method, path, body = {}) {
   return result;
 }
 
-// Probe every OpenAPI GET. A newly implemented dispatch is discovered from behavior,
+// Probe every exempted operation. A newly implemented dispatch is discovered from behavior,
 // so an unlisted handler cannot hide behind the inventory.
-for (const route of [...openApiRoutes].filter((item) => item.startsWith('GET '))) {
+for (const route of exempted) {
   const [method, path] = route.split(' ');
   const response = await invoke(method, path);
   if (response.status !== 404 && !declared.has(route) && !path.startsWith('/api/auth/')) {

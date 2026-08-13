@@ -170,12 +170,12 @@ export async function handleDevMockRequest(req, res, next) {
           return send(res, 200, { userId: 'u-dev', displayName: 'Kenji Xie', role: 'owner', sessionId: 's-dev' });
         }
         if (path === '/api/auth/logout') return send(res, 204, undefined);
-        if (path === '/api/version') {
+        if (path === '/api/version' && method === 'GET') {
           return send(res, 200, {
             webCompatVersion: 1, minWebCompatVersion: 1, syncEventVersion: 1, dbInstanceId: 'mock',
           });
         }
-        if (path === '/api/settings') {
+        if (path === '/api/settings' && (method === 'GET' || method === 'PUT')) {
           if (method === 'PUT') {
             const body = await readBody(req);
             for (const [key, value] of Object.entries(body.settings ?? {})) {
@@ -185,7 +185,7 @@ export async function handleDevMockRequest(req, res, next) {
           }
           return send(res, 200, { settings });
         }
-        if (path === '/api/overlays') return send(res, 200, overlays);
+        if (path === '/api/overlays' && method === 'GET') return send(res, 200, overlays);
         if (path === '/api/coves' && method === 'GET') return send(res, 200, coves);
         if (path === '/api/coves' && method === 'POST') {
           const body = await readBody(req);
@@ -198,11 +198,11 @@ export async function handleDevMockRequest(req, res, next) {
         }
 
         const coveWaves = /^\/api\/coves\/([^/]+)\/waves$/.exec(path);
-        if (coveWaves) {
+        if (coveWaves && method === 'GET') {
           return send(res, 200, waves.filter((wave) => wave.cove_id === decodeURIComponent(coveWaves[1])));
         }
         const coveId = /^\/api\/coves\/([^/]+)$/.exec(path);
-        if (coveId) {
+        if (coveId && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {
           const id = decodeURIComponent(coveId[1]);
           const index = coves.findIndex((cove) => cove.id === id);
           if (index < 0) return send(res, 404, { message: 'no such cove' });
@@ -228,7 +228,7 @@ export async function handleDevMockRequest(req, res, next) {
           return send(res, 201, wave);
         }
         const waveId = /^\/api\/waves\/([^/]+)$/.exec(path);
-        if (waveId) {
+        if (waveId && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {
           const id = decodeURIComponent(waveId[1]);
           const index = waves.findIndex((wave) => wave.id === id);
           if (index < 0) return send(res, 404, { message: 'no such wave' });
