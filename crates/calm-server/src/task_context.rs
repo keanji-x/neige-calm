@@ -522,7 +522,6 @@ impl TaskContextMonitor {
             _ => &self.metrics.fanout_over_limit,
         }
         .fetch_add(1, Ordering::Relaxed);
-        let fresh_count = rows.len();
         for (index, row) in rows.into_iter().enumerate() {
             self.metrics.detections.fetch_add(1, Ordering::Relaxed);
             let verdict = if index >= MAX_RERESOLVE_FANOUT {
@@ -557,7 +556,7 @@ impl TaskContextMonitor {
         }
         for (index, row) in stale_rows.into_iter().enumerate() {
             self.metrics.detections.fetch_add(1, Ordering::Relaxed);
-            if fresh_count.saturating_add(index) >= MAX_RERESOLVE_FANOUT {
+            if index >= MAX_RERESOLVE_FANOUT {
                 self.metrics
                     .record_restore_deferred("fanout_budget_exceeded");
                 continue;
@@ -612,6 +611,7 @@ impl TaskContextMonitor {
         let rows = self.repo.task_contexts_inflight_fresh().await?;
         let stale_rows = self.repo.task_contexts_inflight_stale().await?;
         let mut verified = 0usize;
+        let mut restore_verified = 0usize;
         let mut hits = 0usize;
         let mut capped = false;
         for row in rows {
@@ -675,19 +675,19 @@ impl TaskContextMonitor {
                 self.metrics.record_restore_deferred("closure_truncated");
                 continue;
             }
-            if verified.saturating_add(refs.len()) > MAX_SWEEP_NODES {
+            if restore_verified.saturating_add(refs.len()) > MAX_SWEEP_NODES {
                 capped = true;
                 self.metrics
                     .record_restore_deferred("sweep_budget_exceeded");
                 continue;
             }
-            verified += refs.len();
+            restore_verified += refs.len();
             if self.attempt_restore(row).await? {
                 hits += 1;
             }
         }
         self.cleanup_index().await?;
-        Ok((verified, hits, capped))
+        Ok((verified.saturating_add(restore_verified), hits, capped))
     }
 
     async fn cleanup_index(&self) -> Result<()> {
@@ -1150,6 +1150,10 @@ mod tests {
     use super::*;
     use calm_types::report_blocks::TASK_FIELDS;
 
+    use crate::db::sqlite::{SqlxRepo, begin_immediate_tx};
+    use crate::db::{Repo, ServerRepoSyncDomainRawExt};
+    use crate::model::{NewCove, NewWave, RequestTheme};
+
     #[test]
     fn health_export_contains_positive_sweep_signals() {
         let metrics = ContextMetrics::default();
@@ -1165,6 +1169,58 @@ mod tests {
             exported.context_resolve_failures["malformed_stored_report"], 1,
             "the irreversible malformed-report verdict must have a named health bucket"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_transaction_rejects_terminal_candidate_even_if_called_directly() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let cove = repo
+            .cove_create(NewCove {
+                name: "terminal-restore-guard".into(),
+                color: "#000".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        let wave = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id,
+                title: "terminal-restore-guard".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let task_id = format!("{}:terminal", wave.id);
+        let pool = repo.sqlite_pool().unwrap();
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+              declared_by,claim_context_json,context_stale_at_ms,\
+              context_closure_truncated,decl_ready,decl_released_by_user,\
+              context_verify_failures,spawn,created_at_ms,updated_at_ms) \
+             VALUES (?1,?2,'terminal','terminal','true','null','[]',0,'failed',\
+                     'spec','[]',1,0,0,0,0,'in-wave',1,1)",
+        )
+        .bind(&task_id)
+        .bind(wave.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut tx = begin_immediate_tx(&pool).await.unwrap();
+        let error = restore_context_tx(&mut tx, &task_id, wave.id.as_str())
+            .await
+            .expect_err("the transaction guard must reject a terminal row from any caller");
+        assert!(
+            matches!(error, CalmError::Conflict(ref message) if message == RESTORE_NOT_ELIGIBLE),
+            "the direct caller must be rejected by the terminal/stale eligibility guard: {error}"
+        );
+        tx.rollback().await.unwrap();
     }
 
     #[test]
@@ -1300,6 +1356,62 @@ mod tests {
             context_ref("w", &block, true).hash,
             "d914beed029c5ce2775bb930f45f2fccf1f011cd2bc3b878ce7b0c9f588305ff",
             "persisted claim hashes are a cross-version compatibility boundary"
+        );
+    }
+
+    #[test]
+    fn frozen_root_gate_branches_and_child_bytes_and_hashes_are_version_stable() {
+        let base = serde_json::json!({
+            "key": "excluded-key",
+            "kind": "codex",
+            "goal": "ship",
+            "acceptance": "green",
+            "depends_on": ["alpha"],
+            "refs": ["neige://wave/w#b_child"],
+            "cwd": "/repo",
+            "context": {"z": 1, "a": 2},
+        });
+        for (field, value, expected_projection, expected_hash) in [
+            (
+                "gate",
+                serde_json::json!({"cmd": "cargo test"}),
+                "{\n  \"acceptance\": \"green\",\n  \"context\": {\n    \"a\": 2,\n    \"z\": 1\n  },\n  \"cwd\": \"/repo\",\n  \"depends_on\": [\"alpha\"],\n  \"gate\": {\n    \"cmd\": \"cargo test\"\n  },\n  \"goal\": \"ship\",\n  \"kind\": \"codex\",\n  \"refs\": [\"neige://wave/w#b_child\"]\n}",
+                "7706e6f5c0a597613e4a765b5240d04d1095394929eb4f6c420029a3787864ed",
+            ),
+            (
+                "no_gate_reason",
+                serde_json::json!("not required"),
+                "{\n  \"acceptance\": \"green\",\n  \"context\": {\n    \"a\": 2,\n    \"z\": 1\n  },\n  \"cwd\": \"/repo\",\n  \"depends_on\": [\"alpha\"],\n  \"goal\": \"ship\",\n  \"kind\": \"codex\",\n  \"no_gate_reason\": \"not required\",\n  \"refs\": [\"neige://wave/w#b_child\"]\n}",
+                "1713b5457e2b56c76197371fac747a298d94567c2a9e20c3f668692d98288f2f",
+            ),
+        ] {
+            let mut payload = base.clone();
+            payload[field] = value;
+            let root = ReportBlock {
+                id: "b_root_golden".into(),
+                kind: "task".into(),
+                rev: 7,
+                payload,
+            };
+            assert_eq!(
+                task_root_projection(&root.payload),
+                expected_projection,
+                "{field}"
+            );
+            assert_eq!(context_ref("w", &root, true).hash, expected_hash, "{field}");
+        }
+
+        let child = ReportBlock {
+            id: "b_child_golden".into(),
+            kind: "prose".into(),
+            rev: 11,
+            payload: serde_json::json!({"markdown": "referenced original\n\n"}),
+        };
+        assert_eq!(flat_text(&child), "referenced original\n\n");
+        assert_eq!(
+            context_ref("w", &child, false).hash,
+            "7d28538cbed4b590a7776ecfc7023f8b1e5897753d03f4dae24779563066e292",
+            "persisted non-root flat_text hashes are the same compatibility boundary as roots"
         );
     }
 }

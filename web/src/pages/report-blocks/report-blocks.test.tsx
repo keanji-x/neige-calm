@@ -819,7 +819,7 @@ describe('degraded blocks', () => {
     ['reference_chain_too_large', {}, /fewer blocks/],
     ['tombstone_blocks_redeclaration', {}, /keeps the rejection record/],
     ['declare_and_wait', {}, /Allow this task/],
-    ['context_stale_reference', {}, /referenced block changed/],
+    ['context_stale_reference', {}, /content changed.*recover automatically.*deleted and recreated.*new identity.*new key/],
     ['context_stale_declaration', {}, /worker output is still available/],
     ['declaration_changed_in_flight', {}, /worker output is still available/],
     ['task_key_completed', {}, /already been delivered/],

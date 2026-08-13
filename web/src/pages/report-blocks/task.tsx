@@ -91,7 +91,7 @@ const taskDiagnosticCopy = Object.freeze({
   reference_chain_too_large: () => 'The reference chain is too deep or wide, so this task is treated as invalid to stay safe. Gather the needed context into fewer blocks.',
   tombstone_blocks_redeclaration: (d: Diagnostic) => `A “do not do” record left by ${textArg(d, 'tombstoned_by') === 'user' ? 'you' : 'the AI'} blocks this task key. Remove that record to allow this key again; restoring automatic AI tasks is separate and keeps the rejection record.`,
   declare_and_wait: () => 'AI-proposed tasks in this wave wait for you. Use “Allow this task” below, or restore automatic AI tasks for the wave.',
-  context_stale_reference: () => 'A referenced block changed after work started, so this run can no longer be checked safely. Relink the intended context and create a task with a new key.',
+  context_stale_reference: () => 'A referenced block changed after work started. If only its content changed, restore the prior content exactly and this task can recover automatically. If the block was deleted and recreated, it has a new identity; relink it and create a task with a new key.',
   declaration_changed_in_flight: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
   context_stale_declaration: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
   task_key_completed: () => 'This task key has already been delivered. Create a new task card with a new key for more work.',

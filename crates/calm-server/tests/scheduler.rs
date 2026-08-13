@@ -3947,6 +3947,173 @@ async fn context_verdicts_for_task(boot: &Boot, task_id: &str) -> Vec<(String, S
         .collect()
 }
 
+async fn seed_fresh_context_copies(
+    boot: &Boot,
+    source_task_id: &str,
+    count: usize,
+    index_destination: bool,
+) {
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let frozen: String = sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+        .bind(source_task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let refs: Vec<TaskContextRef> = serde_json::from_str(&frozen).unwrap();
+    assert_eq!(
+        refs.len(),
+        1,
+        "budget fixture needs one tuple per fresh row"
+    );
+    let mut tx = calm_server::db::sqlite::begin_immediate_tx(&pool)
+        .await
+        .unwrap();
+    for index in 0..count {
+        let key = format!("fresh-budget-{index:04}");
+        let task_id = format!("{}:{key}", boot.wave_id);
+        sqlx::query(
+            "INSERT INTO tasks \
+             (id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,\
+              declared_by,claim_context_json,context_closure_truncated,\
+              decl_ready,decl_released_by_user,context_verify_failures,spawn,\
+              created_at_ms,updated_at_ms) \
+             VALUES (?1,?2,?3,'terminal','true','null','[]',0,'dispatched',\
+                     'spec',?4,0,0,0,0,'in-wave',1,1)",
+        )
+        .bind(&task_id)
+        .bind(boot.wave_id.as_str())
+        .bind(key)
+        .bind(&frozen)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        if index_destination {
+            sqlx::query(
+                "INSERT INTO task_ref_index(task_id,dst_wave_id,block_id) VALUES (?1,?2,?3)",
+            )
+            .bind(task_id)
+            .bind(refs[0].wave_id.as_str())
+            .bind(&refs[0].block_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+    }
+    tx.commit().await.unwrap();
+}
+
+async fn materialize_then_restore_root_bytes(
+    boot: &Boot,
+    monitor: &TaskContextMonitor,
+    task_id: &str,
+) {
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.goal','temporary') \
+         WHERE id='context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        stale.is_some(),
+        "fixture must commit material before revert"
+    );
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,'$.blocks[0].payload.goal','original contract') \
+         WHERE id='context-report'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn fresh_and_stale_event_fanout_budgets_are_independent() {
+    let boot = boot().await;
+    let key = "aa-event-restore-liveness";
+    let monitor = seed_frozen_context_fixture(&boot, key).await;
+    let task_id = format!("{}:{key}", boot.wave_id);
+    materialize_then_restore_root_bytes(&boot, &monitor, &task_id).await;
+    seed_fresh_context_copies(
+        &boot,
+        &task_id,
+        calm_server::task_context::MAX_RERESOLVE_FANOUT,
+        true,
+    )
+    .await;
+
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(
+        stale, None,
+        "64 stable fresh rows must not consume the stale restore budget"
+    );
+}
+
+#[tokio::test]
+async fn consecutive_sweeps_restore_after_a_full_fresh_budget_without_starvation() {
+    let boot = boot().await;
+    let key = "aa-sweep-restore-liveness";
+    let monitor = seed_frozen_context_fixture(&boot, key).await;
+    let task_id = format!("{}:{key}", boot.wave_id);
+    materialize_then_restore_root_bytes(&boot, &monitor, &task_id).await;
+    seed_fresh_context_copies(
+        &boot,
+        &task_id,
+        calm_server::task_context::MAX_SWEEP_NODES,
+        false,
+    )
+    .await;
+
+    monitor.sweep().await.unwrap();
+    let after_first: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(
+        after_first, None,
+        "a full 4096-node fresh budget must still leave an independent restore budget"
+    );
+    monitor.sweep().await.unwrap();
+    let after_second: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(after_second, None, "the next sweep must preserve recovery");
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![
+            ("material".into(), "content_changed".into()),
+            ("restored".into(), "content_restored_to_frozen".into()),
+        ],
+        "two consecutive sweeps restore once and never re-stale a stable row"
+    );
+}
+
 #[tokio::test]
 async fn committed_material_then_byte_identical_revert_restores_inflight_task() {
     let boot = boot().await;
@@ -4079,6 +4246,171 @@ async fn material_commit_rechecks_after_locked_revert_without_production_hook() 
 }
 
 #[tokio::test]
+async fn restore_and_new_material_serialize_both_commit_orders_without_fail_open() {
+    let boot = boot().await;
+    let (monitor, task_id, original_body) =
+        seed_production_report_context_fixture(&boot, "restore-race-fence").await;
+    let (_, report_card, _) = resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let first_material =
+        original_body.replacen("referenced original", "referenced first material", 1);
+    persist_context_report_body(&boot, first_material).await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let mut restored_report: WaveReportPayload = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
+            .bind(report_card.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    restored_report.body = original_body.clone();
+    restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
+        json!("referenced original\n\n");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&restored_report).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // W3 owns the real SQLite writer slot while the old restore R reads the
+    // last committed Equal evidence. R must park at BEGIN IMMEDIATE; W3 then
+    // commits a newer mismatch before R's in-transaction evidence reread.
+    let mut w3 = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *w3)
+        .await
+        .unwrap();
+    let monitor = Arc::new(monitor);
+    let metrics = monitor.metrics();
+    let mut old_restore = {
+        let monitor = Arc::clone(&monitor);
+        let wave_id = boot.wave_id.clone();
+        tokio::spawn(async move { monitor.detect_wave_edit(wave_id.as_str()).await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if metrics.snapshot().restore_checks >= 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old R must begin its restore check while W3 holds the writer slot");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), &mut old_restore)
+            .await
+            .is_err(),
+        "old R must be parked behind W3's BEGIN IMMEDIATE before W3 commits"
+    );
+    let second_material =
+        original_body.replacen("referenced original", "referenced W3 material", 1);
+    let mut w3_report: WaveReportPayload = serde_json::from_str(
+        &sqlx::query_scalar::<_, String>("SELECT payload FROM cards WHERE id=?1")
+            .bind(report_card.id.as_str())
+            .fetch_one(&mut *w3)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    w3_report.body = second_material;
+    w3_report.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced W3 material\n\n");
+    w3_report.doc_rev += 1;
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&w3_report).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&mut *w3)
+        .await
+        .unwrap();
+    sqlx::query("COMMIT").execute(&mut *w3).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), old_restore)
+        .await
+        .expect("old R must finish after W3 releases the writer slot")
+        .unwrap()
+        .unwrap();
+    let stale_after_w3: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        stale_after_w3.is_some(),
+        "W3-first serialization must not let old R clear newer material"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .restore_deferred
+            .get("transaction_evidence_changed"),
+        Some(&1),
+        "the transaction fence, not only the unlocked prefilter, must veto old R"
+    );
+
+    // Reverse the order: let R commit restoration first, then commit W3 and
+    // detect it. The durable edge sequence must rise again to material.
+    restored_report.body = original_body.clone();
+    restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
+        json!("referenced original\n\n");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&restored_report).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let stale_after_r: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stale_after_r, None, "R-first serialization must commit R");
+    restored_report.body =
+        original_body.replacen("referenced original", "referenced material after R", 1);
+    restored_report.blocks.as_mut().unwrap()[0].payload["markdown"] =
+        json!("referenced material after R\n\n");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&restored_report).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .is_some(),
+        "W3 after committed R must produce a fresh material level"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![
+            ("material".into(), "content_changed".into()),
+            ("restored".into(), "content_restored_to_frozen".into()),
+            ("material".into(), "content_changed".into()),
+        ],
+        "the two writer orders must converge to F,R,F without a fail-open clear"
+    );
+}
+
+#[tokio::test]
 async fn context_verdicts_alternate_material_restored_material_once_per_episode() {
     let boot = boot().await;
     let (monitor, task_id, original_body) =
@@ -4195,6 +4527,177 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         Some(&2),
         "event and sweep stale passes record their veto independently"
     );
+    assert_eq!(
+        metrics.context_resolve_failures.get("content_changed"),
+        Some(&1),
+        "stale restore vetoes must not pollute the fresh resolve-failure metric"
+    );
+    assert_eq!(
+        metrics
+            .context_resolve_failures
+            .get("declaration_withdrawn"),
+        None,
+        "the declaration restore-deferred reason must exist only in its dedicated metric"
+    );
+    assert_eq!(
+        (metrics.hits, row.1),
+        (1, 0),
+        "deferred restore checks neither add fresh hits nor consume verify retries"
+    );
+}
+
+async fn assert_excluded_root_field_vetoes_restore(
+    key: &str,
+    prepare: impl FnOnce(&mut WaveReportPayload),
+    withdraw: impl FnOnce(&mut WaveReportPayload),
+) {
+    let boot = boot().await;
+    let (monitor, task_id, original_body) =
+        seed_production_report_context_fixture(&boot, key).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let (_, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+            .await
+            .unwrap();
+    let mut prepared = current;
+    prepare(&mut prepared);
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&prepared).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    persist_context_report_body(
+        &boot,
+        original_body.replacen("referenced original", "referenced temporary", 1),
+    )
+    .await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let (_, report_card, mut restored) =
+        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+            .await
+            .unwrap();
+    restored.body = original_body;
+    restored.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced original\n\n");
+    withdraw(&mut restored);
+    restored.doc_rev += 1;
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&restored).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+
+    assert!(
+        sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .is_some(),
+        "an excluded declaration field withdrawal must veto restoration"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "content_changed".into())],
+        "the declaration veto must emit no restored edge"
+    );
+}
+
+#[tokio::test]
+async fn renamed_root_key_vetoes_restore() {
+    assert_excluded_root_field_vetoes_restore(
+        "withdraw-key",
+        |_| {},
+        |report| report.blocks.as_mut().unwrap()[1].payload["key"] = json!("renamed-key"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn tombstoned_root_vetoes_restore() {
+    assert_excluded_root_field_vetoes_restore(
+        "withdraw-tombstone",
+        |_| {},
+        |report| {
+            report.blocks.as_mut().unwrap()[1].payload["tombstone"] = json!(true);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn released_by_user_withdrawal_vetoes_restore() {
+    let boot = boot().await;
+    let key = "withdraw-release";
+    let (monitor, task_id, original_body) =
+        seed_production_report_context_fixture(&boot, key).await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query("UPDATE tasks SET decl_released_by_user=1 WHERE id=?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, report_card, mut report) =
+        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+            .await
+            .unwrap();
+    report.blocks.as_mut().unwrap()[1].payload["released_by_user"] = json!(true);
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&report).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    persist_context_report_body(
+        &boot,
+        original_body.replacen("referenced original", "referenced temporary", 1),
+    )
+    .await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let (_, report_card, mut restored) =
+        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+            .await
+            .unwrap();
+    restored.body = original_body;
+    restored.blocks.as_mut().unwrap()[0].payload["markdown"] = json!("referenced original\n\n");
+    restored.blocks.as_mut().unwrap()[1].payload["released_by_user"] = json!(false);
+    restored.doc_rev += 1;
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(serde_json::to_string(&restored).unwrap())
+        .bind(report_card.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+
+    assert!(
+        sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .is_some(),
+        "withdrawn user release must veto restoration"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "content_changed".into())]
+    );
 }
 
 #[tokio::test]
@@ -4253,6 +4756,15 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
         metrics.restore_deferred.get("content_changed"),
         Some(&3),
         "stale event/sweep checks use an independent deferred metric"
+    );
+    assert_eq!(
+        metrics.context_resolve_failures.get("content_changed"),
+        Some(&1),
+        "three stale checks must not enter the fresh resolve-failure bucket"
+    );
+    assert_eq!(
+        metrics.hits, 1,
+        "deferred restore checks must not inflate fresh material hits"
     );
 }
 
@@ -4624,6 +5136,75 @@ async fn referenced_block_deletion_is_material_even_without_changed_ids() {
         .await
         .unwrap();
     assert_eq!(event_rows(&boot, "task.context_advanced").await.len(), 1);
+}
+
+#[tokio::test]
+async fn deleted_then_rebuilt_reference_keeps_known_identity_gap_stale() {
+    // Known gap: production reconstruction mints a new block id. This
+    // content-hash restore mechanism deliberately cannot equate that new
+    // identity with the deleted frozen reference, even when bytes match.
+    let boot = boot().await;
+    let (monitor, task_id, original_body) =
+        seed_production_report_context_fixture(&boot, "deleted-rebuilt-known-gap").await;
+    let frozen_json: String =
+        sqlx::query_scalar("SELECT claim_context_json FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    let frozen: Vec<TaskContextRef> = serde_json::from_str(&frozen_json).unwrap();
+    let frozen_child_id = frozen
+        .iter()
+        .find(|reference| !reference.is_root)
+        .unwrap()
+        .block_id
+        .clone();
+
+    let body_without_child = original_body.replacen("referenced original\n\n", "", 1);
+    persist_context_report_body(&boot, body_without_child).await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "referenced_block_absent".into())],
+        "deleting the frozen block records the identity-loss rationale"
+    );
+
+    persist_context_report_body(&boot, original_body).await;
+    monitor
+        .detect_wave_edit(boot.wave_id.as_str())
+        .await
+        .unwrap();
+    monitor.sweep().await.unwrap();
+    let (_, _, rebuilt) = resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let rebuilt_child = rebuilt
+        .blocks
+        .unwrap()
+        .into_iter()
+        .find(|block| block.kind == "prose")
+        .unwrap();
+    assert_ne!(
+        rebuilt_child.id, frozen_child_id,
+        "production rebuild mints a new block identity even for identical bytes"
+    );
+    assert!(
+        sqlx::query_scalar::<_, Option<i64>>("SELECT context_stale_at_ms FROM tasks WHERE id=?1",)
+            .bind(&task_id)
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap()
+            .is_some(),
+        "known gap: content equality cannot restore a deleted block under a newly minted id"
+    );
+    assert_eq!(
+        context_verdicts_for_task(&boot, &task_id).await,
+        vec![("material".into(), "referenced_block_absent".into())],
+        "known gap stays fail-closed and emits no misleading restored edge"
+    );
 }
 
 #[tokio::test]
