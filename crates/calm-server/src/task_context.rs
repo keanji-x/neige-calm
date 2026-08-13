@@ -5,18 +5,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use calm_types::event::{TaskContextChangedRef, TaskContextRef};
+use calm_types::event::{Event, EventScope, TaskContextChangedRef, TaskContextRef};
 use calm_types::report_blocks::{canonical_json, flat_text, scannable_text_fields};
 use calm_types::report_links::{parse_destination, scan_links};
 use calm_types::wave_report::ReportBlock;
 use dashmap::DashMap;
 use sha2::{Digest, Sha256};
+use sqlx::{Sqlite, Transaction};
 
 use crate::db::sqlite::mark_context_material_tx;
 use crate::db::{Repo, write_in_tx_typed, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
 use crate::event::EventBus;
-use crate::ids::WaveId;
+use crate::ids::{ActorId, WaveId};
 use crate::model::now_ms;
 use crate::state::WriteContext;
 
@@ -25,6 +26,14 @@ pub const MAX_REF_NODES: usize = 64;
 pub const MAX_RERESOLVE_FANOUT: usize = 64;
 pub const MAX_SWEEP_NODES: usize = 4096;
 const VERIFY_FAILURE_LIMIT: i64 = 3;
+const CONTENT_CHANGED_RATIONALE: &str = "content_changed";
+const RESTORED_RATIONALE: &str = "content_restored_to_frozen";
+const MATERIAL_VERDICT_OBSOLETE: &str = "task context material verdict became obsolete";
+const RESTORE_NOT_ELIGIBLE: &str = "task context restore candidate is no longer eligible";
+const RESTORE_NOT_CONTENT_CHANGED: &str =
+    "task context restore candidate latest verdict is not content_changed";
+const RESTORE_EVIDENCE_CHANGED: &str = "task context restore evidence changed in transaction";
+const RESTORE_DECLARATION_WITHDRAWN: &str = "task context restore vetoed by declaration withdrawal";
 
 #[derive(Debug, PartialEq, Eq)]
 enum RefsMatch {
@@ -111,6 +120,10 @@ pub struct ContextMetrics {
     last_success_ms: AtomicI64,
     consecutive_failures: AtomicU64,
     claim_fence_race_lost: AtomicU64,
+    material_verdict_obsolete: AtomicU64,
+    restore_checks: AtomicU64,
+    restores: AtomicU64,
+    restore_deferred: DashMap<&'static str, u64>,
     context_resolve_failures: DashMap<&'static str, u64>,
 }
 
@@ -129,6 +142,10 @@ pub struct ContextMetricsSnapshot {
     pub last_success_age_seconds: u64,
     pub consecutive_failures: u64,
     pub claim_fence_race_lost: u64,
+    pub material_verdict_obsolete: u64,
+    pub restore_checks: u64,
+    pub restores: u64,
+    pub restore_deferred: BTreeMap<&'static str, u64>,
     pub context_resolve_failures: BTreeMap<&'static str, u64>,
 }
 
@@ -158,6 +175,14 @@ impl ContextMetrics {
             },
             consecutive_failures: self.consecutive_failures.load(Ordering::Relaxed),
             claim_fence_race_lost: self.claim_fence_race_lost.load(Ordering::Relaxed),
+            material_verdict_obsolete: self.material_verdict_obsolete.load(Ordering::Relaxed),
+            restore_checks: self.restore_checks.load(Ordering::Relaxed),
+            restores: self.restores.load(Ordering::Relaxed),
+            restore_deferred: self
+                .restore_deferred
+                .iter()
+                .map(|entry| (*entry.key(), *entry.value()))
+                .collect(),
             context_resolve_failures: self
                 .context_resolve_failures
                 .iter()
@@ -174,6 +199,10 @@ impl ContextMetrics {
         *self.context_resolve_failures.entry(variant).or_insert(0) += 1;
     }
 
+    fn record_restore_deferred(&self, variant: &'static str) {
+        *self.restore_deferred.entry(variant).or_insert(0) += 1;
+    }
+
     fn export(&self) -> ContextMetricsSnapshot {
         let health = self.snapshot();
         tracing::info!(
@@ -184,6 +213,10 @@ impl ContextMetrics {
             context_sweep_hits = health.sweep_hits,
             context_sweep_caps = health.sweep_caps,
             context_claim_fence_race_lost = health.claim_fence_race_lost,
+            context_material_verdict_obsolete = health.material_verdict_obsolete,
+            context_restore_checks = health.restore_checks,
+            context_restores = health.restores,
+            context_restore_deferred = ?health.restore_deferred,
             context_resolve_failures = ?health.context_resolve_failures,
             "task context sweep metrics"
         );
@@ -474,16 +507,22 @@ impl TaskContextMonitor {
 
     pub async fn detect_wave_edit(&self, dst_wave_id: &str) -> Result<()> {
         let rows = self.repo.task_contexts_by_dst_wave(dst_wave_id).await?;
+        let stale_rows = self
+            .repo
+            .stale_task_contexts_by_dst_wave(dst_wave_id)
+            .await?;
+        let fanout = rows.len().saturating_add(stale_rows.len());
         self.metrics
             .fanout_total
-            .fetch_add(rows.len() as u64, Ordering::Relaxed);
-        match rows.len() {
+            .fetch_add(fanout as u64, Ordering::Relaxed);
+        match fanout {
             0 => &self.metrics.fanout_zero,
             1..=8 => &self.metrics.fanout_one_to_eight,
             9..=MAX_RERESOLVE_FANOUT => &self.metrics.fanout_nine_to_sixty_four,
             _ => &self.metrics.fanout_over_limit,
         }
         .fetch_add(1, Ordering::Relaxed);
+        let fresh_count = rows.len();
         for (index, row) in rows.into_iter().enumerate() {
             self.metrics.detections.fetch_add(1, Ordering::Relaxed);
             let verdict = if index >= MAX_RERESOLVE_FANOUT {
@@ -515,6 +554,15 @@ impl TaskContextMonitor {
                 self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
                     .await?;
             }
+        }
+        for (index, row) in stale_rows.into_iter().enumerate() {
+            self.metrics.detections.fetch_add(1, Ordering::Relaxed);
+            if fresh_count.saturating_add(index) >= MAX_RERESOLVE_FANOUT {
+                self.metrics
+                    .record_restore_deferred("fanout_budget_exceeded");
+                continue;
+            }
+            self.attempt_restore(row).await?;
         }
         Ok(())
     }
@@ -562,6 +610,7 @@ impl TaskContextMonitor {
 
     async fn sweep_inner(&self) -> Result<(usize, usize, bool)> {
         let rows = self.repo.task_contexts_inflight_fresh().await?;
+        let stale_rows = self.repo.task_contexts_inflight_stale().await?;
         let mut verified = 0usize;
         let mut hits = 0usize;
         let mut capped = false;
@@ -610,6 +659,31 @@ impl TaskContextMonitor {
                 hits += 1;
                 self.mark_material(row.task_id, row.wave_id, changed_refs, rationale)
                     .await?;
+            }
+        }
+        for row in stale_rows {
+            let refs = row
+                .claim_context_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok());
+            let Some(refs) = refs else {
+                self.metrics
+                    .record_restore_deferred("malformed_frozen_context");
+                continue;
+            };
+            if row.closure_truncated {
+                self.metrics.record_restore_deferred("closure_truncated");
+                continue;
+            }
+            if verified.saturating_add(refs.len()) > MAX_SWEEP_NODES {
+                capped = true;
+                self.metrics
+                    .record_restore_deferred("sweep_budget_exceeded");
+                continue;
+            }
+            verified += refs.len();
+            if self.attempt_restore(row).await? {
+                hits += 1;
             }
         }
         self.cleanup_index().await?;
@@ -678,6 +752,65 @@ impl TaskContextMonitor {
         Ok(escalated)
     }
 
+    async fn attempt_restore(&self, row: calm_truth::db::TaskContextRow) -> Result<bool> {
+        self.metrics.restore_checks.fetch_add(1, Ordering::Relaxed);
+        if row.closure_truncated {
+            self.metrics.record_restore_deferred("closure_truncated");
+            return Ok(false);
+        }
+        let Some(refs) = row
+            .claim_context_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Vec<TaskContextRef>>(json).ok())
+        else {
+            self.metrics
+                .record_restore_deferred("malformed_frozen_context");
+            return Ok(false);
+        };
+        match self.refs_match(&row.wave_id, &refs).await {
+            RefsMatch::Mismatch(_, variant) => {
+                self.metrics.record_restore_deferred(variant);
+                return Ok(false);
+            }
+            RefsMatch::Retryable(error) => {
+                self.metrics.record_restore_deferred("storage_unavailable");
+                tracing::warn!(task_id=%row.task_id, %error, "task context restore deferred after retryable evidence failure");
+                return Ok(false);
+            }
+            RefsMatch::Same => {}
+        }
+
+        let task_id = row.task_id;
+        let wave_id = row.wave_id;
+        let result = write_with_actor_events_typed(
+            self.repo.as_ref(),
+            None,
+            &self.events,
+            &self.write,
+            move |tx| {
+                Box::pin(async move {
+                    let events = restore_context_tx(tx, &task_id, &wave_id).await?;
+                    Ok(((true,), events))
+                })
+            },
+        )
+        .await;
+        match result {
+            Ok(_) => {
+                self.metrics.restores.fetch_add(1, Ordering::Relaxed);
+                Ok(true)
+            }
+            Err(CalmError::Conflict(message)) => {
+                let Some(reason) = restore_deferred_reason(&message) else {
+                    return Err(CalmError::Conflict(message));
+                };
+                self.metrics.record_restore_deferred(reason);
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn mark_material(
         &self,
         task_id: String,
@@ -685,13 +818,20 @@ impl TaskContextMonitor {
         changed_refs: Vec<TaskContextChangedRef>,
         rationale: &'static str,
     ) -> Result<()> {
-        let ((changed,), _) = write_with_actor_events_typed(
+        let result = write_with_actor_events_typed(
             self.repo.as_ref(),
             None,
             &self.events,
             &self.write,
             move |tx| {
                 Box::pin(async move {
+                    if rationale == CONTENT_CHANGED_RATIONALE
+                        && let Some(task) = frozen_task_tx(tx, &task_id, &wave_id).await?
+                        && current_context_evidence_tx(tx, &task).await?
+                            == CurrentContextEvidence::Equal
+                    {
+                        return Err(CalmError::Conflict(MATERIAL_VERDICT_OBSOLETE.into()));
+                    }
                     let events =
                         mark_context_material_tx(tx, &task_id, &wave_id, changed_refs, rationale)
                             .await?;
@@ -700,11 +840,248 @@ impl TaskContextMonitor {
                 })
             },
         )
-        .await?;
+        .await;
+        let ((changed,), _) = match result {
+            Ok(value) => value,
+            Err(CalmError::Conflict(message)) if message == MATERIAL_VERDICT_OBSOLETE => {
+                self.metrics
+                    .material_verdict_obsolete
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if changed {
             self.metrics.hits.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
+    }
+}
+
+type FrozenTaskDbRow = (
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<String>,
+    i64,
+    i64,
+    i64,
+);
+
+struct FrozenTaskTx {
+    task_id: String,
+    wave_id: String,
+    task_key: String,
+    status: String,
+    cove_id: String,
+    stale_at_ms: Option<i64>,
+    refs: Option<Vec<TaskContextRef>>,
+    closure_truncated: bool,
+    decl_ready: bool,
+    decl_released_by_user: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurrentContextEvidence {
+    Equal,
+    Mismatch,
+    DeclarationWithdrawn,
+}
+
+async fn frozen_task_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    wave_id: &str,
+) -> Result<Option<FrozenTaskTx>> {
+    let row: Option<FrozenTaskDbRow> = sqlx::query_as(
+        "SELECT t.key,t.status,w.cove_id,t.context_stale_at_ms,t.claim_context_json,\
+         t.context_closure_truncated,t.decl_ready,t.decl_released_by_user \
+         FROM tasks t JOIN waves w ON w.id=t.wave_id WHERE t.id=?1 AND t.wave_id=?2",
+    )
+    .bind(task_id)
+    .bind(wave_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(row.map(
+        |(
+            task_key,
+            status,
+            cove_id,
+            stale_at_ms,
+            claim_context_json,
+            closure_truncated,
+            decl_ready,
+            decl_released_by_user,
+        )| FrozenTaskTx {
+            task_id: task_id.into(),
+            wave_id: wave_id.into(),
+            task_key,
+            status,
+            cove_id,
+            stale_at_ms,
+            refs: claim_context_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
+            closure_truncated: closure_truncated != 0,
+            decl_ready: decl_ready != 0,
+            decl_released_by_user: decl_released_by_user != 0,
+        },
+    ))
+}
+
+async fn current_context_evidence_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task: &FrozenTaskTx,
+) -> Result<CurrentContextEvidence> {
+    if task.closure_truncated {
+        return Ok(CurrentContextEvidence::Mismatch);
+    }
+    let Some(refs) = task.refs.as_deref() else {
+        return Ok(CurrentContextEvidence::Mismatch);
+    };
+    let system_cove: Option<String> =
+        sqlx::query_scalar("SELECT id FROM coves WHERE kind='system' LIMIT 1")
+            .fetch_optional(&mut **tx)
+            .await?;
+    let mut saw_root = false;
+    for frozen in refs {
+        let report: Option<(String, String)> = sqlx::query_as(
+            "SELECT w.cove_id,c.payload FROM waves w \
+             JOIN cards c ON c.wave_id=w.id AND c.kind='wave-report' WHERE w.id=?1",
+        )
+        .bind(frozen.wave_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((current_cove, payload)) = report else {
+            return Ok(CurrentContextEvidence::Mismatch);
+        };
+        if current_cove != task.cove_id && system_cove.as_deref() != Some(current_cove.as_str()) {
+            return Ok(CurrentContextEvidence::Mismatch);
+        }
+        let Ok(report) =
+            serde_json::from_str::<calm_types::wave_report::WaveReportPayload>(&payload)
+        else {
+            return Ok(CurrentContextEvidence::Mismatch);
+        };
+        let Some(block) = report
+            .blocks
+            .unwrap_or_default()
+            .into_iter()
+            .find(|block| block.id == frozen.block_id)
+        else {
+            return Ok(CurrentContextEvidence::Mismatch);
+        };
+        let current = context_ref(frozen.wave_id.as_str(), &block, frozen.is_root);
+        if current.wave_id != frozen.wave_id
+            || current.block_id != frozen.block_id
+            || current.hash != frozen.hash
+        {
+            return Ok(CurrentContextEvidence::Mismatch);
+        }
+        if frozen.is_root {
+            saw_root = true;
+            let payload = &block.payload;
+            if payload.get("key").and_then(serde_json::Value::as_str)
+                != Some(task.task_key.as_str())
+                || payload
+                    .get("tombstone")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                || (task.decl_ready
+                    && !payload
+                        .get("ready")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false))
+                || (task.decl_released_by_user
+                    && !payload
+                        .get("released_by_user")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false))
+            {
+                return Ok(CurrentContextEvidence::DeclarationWithdrawn);
+            }
+        }
+    }
+    if !saw_root && !refs.is_empty() {
+        return Ok(CurrentContextEvidence::Mismatch);
+    }
+    Ok(CurrentContextEvidence::Equal)
+}
+
+async fn restore_context_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    wave_id: &str,
+) -> Result<Vec<(ActorId, EventScope, Event)>> {
+    let Some(task) = frozen_task_tx(tx, task_id, wave_id).await? else {
+        return Err(CalmError::Conflict(RESTORE_NOT_ELIGIBLE.into()));
+    };
+    if !matches!(task.status.as_str(), "dispatched" | "running" | "verifying")
+        || task.stale_at_ms.is_none()
+    {
+        return Err(CalmError::Conflict(RESTORE_NOT_ELIGIBLE.into()));
+    }
+    let latest: Option<(String, String)> = sqlx::query_as(
+        "SELECT json_extract(payload,'$.verdict'),json_extract(payload,'$.rationale') \
+         FROM events WHERE kind='task.context_advanced' \
+         AND json_extract(payload,'$.task_id')=?1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(task_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if latest
+        .as_ref()
+        .map(|(verdict, rationale)| (verdict.as_str(), rationale.as_str()))
+        != Some(("material", CONTENT_CHANGED_RATIONALE))
+    {
+        return Err(CalmError::Conflict(RESTORE_NOT_CONTENT_CHANGED.into()));
+    }
+    match current_context_evidence_tx(tx, &task).await? {
+        CurrentContextEvidence::Equal => {}
+        CurrentContextEvidence::Mismatch => {
+            return Err(CalmError::Conflict(RESTORE_EVIDENCE_CHANGED.into()));
+        }
+        CurrentContextEvidence::DeclarationWithdrawn => {
+            return Err(CalmError::Conflict(RESTORE_DECLARATION_WITHDRAWN.into()));
+        }
+    }
+    let changed = sqlx::query(
+        "UPDATE tasks SET context_stale_at_ms=NULL WHERE id=?1 AND wave_id=?2 \
+         AND status IN ('dispatched','running','verifying') AND context_stale_at_ms IS NOT NULL",
+    )
+    .bind(task_id)
+    .bind(wave_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        return Err(CalmError::Conflict(RESTORE_NOT_ELIGIBLE.into()));
+    }
+    Ok(vec![(
+        ActorId::Kernel,
+        EventScope::Wave {
+            wave: WaveId::from(task.wave_id.as_str()),
+            cove: task.cove_id.into(),
+        },
+        Event::TaskContextAdvanced {
+            wave_id: WaveId::from(task.wave_id.as_str()),
+            task_key: task.task_key,
+            task_id: task.task_id,
+            changed_refs: Vec::new(),
+            verdict: "restored".into(),
+            rationale: RESTORED_RATIONALE.into(),
+        },
+    )])
+}
+
+fn restore_deferred_reason(message: &str) -> Option<&'static str> {
+    match message {
+        RESTORE_NOT_ELIGIBLE => Some("not_eligible"),
+        RESTORE_NOT_CONTENT_CHANGED => Some("latest_verdict_not_content_changed"),
+        RESTORE_EVIDENCE_CHANGED => Some("transaction_evidence_changed"),
+        RESTORE_DECLARATION_WITHDRAWN => Some("declaration_withdrawn"),
+        _ => None,
     }
 }
 
@@ -880,5 +1257,49 @@ mod tests {
         let baseline = context_ref("w", &absent, true).hash;
         absent.payload["context"] = serde_json::Value::Null;
         assert_eq!(context_ref("w", &absent, true).hash, baseline);
+    }
+
+    #[test]
+    fn frozen_root_projection_bytes_and_hash_are_version_stable() {
+        let block = ReportBlock {
+            id: "b_golden".into(),
+            kind: "task".into(),
+            rev: 7,
+            payload: serde_json::json!({
+                "key": "excluded-key",
+                "kind": "codex",
+                "goal": "ship",
+                "acceptance": "green",
+                "depends_on": ["alpha"],
+                "refs": ["neige://wave/w#b_child"],
+                "cwd": "/repo",
+                "context": {"z": 1, "a": 2},
+                "priority": 9,
+                "declared_by": "spec",
+                "ready": true,
+                "released_by_user": true,
+            }),
+        };
+        let projection = task_root_projection(&block.payload);
+        assert_eq!(
+            projection,
+            r#"{
+  "acceptance": "green",
+  "context": {
+    "a": 2,
+    "z": 1
+  },
+  "cwd": "/repo",
+  "depends_on": ["alpha"],
+  "goal": "ship",
+  "kind": "codex",
+  "refs": ["neige://wave/w#b_child"]
+}"#
+        );
+        assert_eq!(
+            context_ref("w", &block, true).hash,
+            "d914beed029c5ce2775bb930f45f2fccf1f011cd2bc3b878ce7b0c9f588305ff",
+            "persisted claim hashes are a cross-version compatibility boundary"
+        );
     }
 }

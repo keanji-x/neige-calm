@@ -3876,6 +3876,11 @@ async fn seed_production_report_context_fixture(
     let task = plan_task(&boot.wave_id, key, TaskKind::Terminal, &[]);
     let task_id = task.id.clone();
     seed_task(boot, task).await;
+    sqlx::query("UPDATE tasks SET decl_ready=1 WHERE id=?1")
+        .bind(&task_id)
+        .execute(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
     let (_runtime, scheduler) = build_scheduler(
         boot,
         vec![Arc::new(CardSpawnAdapter {
@@ -3973,10 +3978,12 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
     );
 
     persist_context_report_body(&boot, original_body).await;
-    monitor
-        .detect_wave_edit(boot.wave_id.as_str())
-        .await
-        .unwrap();
+    let (restore_winner, duplicate_restore) = tokio::join!(
+        monitor.detect_wave_edit(boot.wave_id.as_str()),
+        monitor.detect_wave_edit(boot.wave_id.as_str())
+    );
+    restore_winner.unwrap();
+    duplicate_restore.unwrap();
 
     let stale_after_revert: Option<i64> =
         sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id = ?1")
@@ -3995,6 +4002,79 @@ async fn committed_material_then_byte_identical_revert_restores_inflight_task() 
             ("restored".into(), "content_restored_to_frozen".into()),
         ],
         "restore must be an audited edge paired with the material edge"
+    );
+}
+
+#[tokio::test]
+async fn material_commit_rechecks_after_locked_revert_without_production_hook() {
+    let boot = boot().await;
+    let (monitor, task_id, original_body) =
+        seed_production_report_context_fixture(&boot, "material-a5-fence").await;
+    let (_, original_card, _) = resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+        .await
+        .unwrap();
+    let original_payload = original_card.payload.to_string();
+    let temporary_body =
+        original_body.replacen("referenced original", "referenced original temporary", 1);
+    persist_context_report_body(&boot, temporary_body).await;
+
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut locked_revert = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *locked_revert)
+        .await
+        .unwrap();
+
+    let monitor = Arc::new(monitor);
+    let metrics = monitor.metrics();
+    let detector = {
+        let monitor = Arc::clone(&monitor);
+        let wave_id = boot.wave_id.clone();
+        tokio::spawn(async move { monitor.detect_wave_edit(wave_id.as_str()).await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if metrics
+                .snapshot()
+                .context_resolve_failures
+                .get("content_changed")
+                == Some(&1)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("detector must classify the committed temporary content before the lock releases");
+    sqlx::query("UPDATE cards SET payload=?1 WHERE id=?2")
+        .bind(original_payload)
+        .bind(original_card.id.as_str())
+        .execute(&mut *locked_revert)
+        .await
+        .unwrap();
+    sqlx::query("COMMIT")
+        .execute(&mut *locked_revert)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), detector)
+        .await
+        .expect("detector must finish after the writer lock releases")
+        .unwrap()
+        .unwrap();
+
+    let stale: Option<i64> =
+        sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+            .bind(&task_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stale, None);
+    assert!(context_verdicts_for_task(&boot, &task_id).await.is_empty());
+    assert_eq!(
+        metrics.snapshot().material_verdict_obsolete,
+        1,
+        "the in-transaction A5 fence must suppress the obsolete material verdict"
     );
 }
 
@@ -4018,10 +4098,7 @@ async fn context_verdicts_alternate_material_restored_material_once_per_episode(
     assert_eq!(context_verdicts_for_task(&boot, &task_id).await.len(), 1);
 
     persist_context_report_body(&boot, original_body.clone()).await;
-    monitor
-        .detect_wave_edit(boot.wave_id.as_str())
-        .await
-        .unwrap();
+    monitor.sweep().await.unwrap();
     monitor
         .detect_wave_edit(boot.wave_id.as_str())
         .await
@@ -4066,30 +4143,26 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         .await
         .unwrap();
 
-    edit_report_blocks(
-        &boot,
-        &[
-            (
-                "b_2000",
-                "prose",
-                json!({"markdown": "referenced original\n\n"}),
-            ),
-            (
-                "b_1000",
-                "task",
-                json!({
-                    "key": key,
-                    "kind": "terminal",
-                    "goal": "use the referenced contract",
-                    "refs": [format!("neige://wave/{}#b_2000", boot.wave_id)],
-                    "ready": false,
-                    "declared_by": "spec",
-                }),
-            ),
-        ],
-        1,
+    let (_, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), boot.wave_id.as_str())
+            .await
+            .unwrap();
+    let blocks = current.blocks.as_ref().unwrap();
+    assert_eq!(
+        (blocks[0].id.as_str(), blocks[1].id.as_str()),
+        ("b_2000", "b_1000")
+    );
+    // One atomic DB-bypass mutation constructs the safety boundary directly:
+    // frozen projection hashes are equal again while `ready` remains withdrawn.
+    sqlx::query(
+        "UPDATE cards SET payload=json_set(payload,\
+         '$.blocks[0].payload.markdown',?1,'$.blocks[1].payload.ready',json('false')) WHERE id=?2",
     )
-    .await;
+    .bind("referenced original\n\n")
+    .bind(report_card.id.as_str())
+    .execute(&boot.repo.sqlite_pool().unwrap())
+    .await
+    .unwrap();
     monitor
         .detect_wave_edit(boot.wave_id.as_str())
         .await
@@ -4114,6 +4187,13 @@ async fn restored_content_does_not_override_withdrawn_declaration() {
         context_verdicts_for_task(&boot, &task_id).await,
         vec![("material".into(), "content_changed".into())],
         "a vetoed restoration emits no restored edge"
+    );
+    let metrics = monitor.metrics().snapshot();
+    assert_eq!(metrics.restores, 0);
+    assert_eq!(
+        metrics.restore_deferred.get("declaration_withdrawn"),
+        Some(&2),
+        "event and sweep stale passes record their veto independently"
     );
 }
 
@@ -4166,6 +4246,13 @@ async fn unreverted_material_content_stays_stale_across_writes_and_sweeps() {
         context_verdicts_for_task(&boot, &task_id).await,
         vec![("material".into(), "content_changed".into())],
         "real material content emits once and never self-restores"
+    );
+    let metrics = monitor.metrics().snapshot();
+    assert_eq!((metrics.restore_checks, metrics.restores), (3, 0));
+    assert_eq!(
+        metrics.restore_deferred.get("content_changed"),
+        Some(&3),
+        "stale event/sweep checks use an independent deferred metric"
     );
 }
 
