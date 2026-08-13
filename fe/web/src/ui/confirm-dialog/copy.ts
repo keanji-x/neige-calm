@@ -22,10 +22,12 @@ export const DELETE_WAVE_COPY = Object.freeze({
  * `description` slot cannot carry both. The component owns the layout; this file
  * owns only the strings.
  */
-export function deleteCoveCopy(coveName: string, waveCount: number) {
+export function deleteCoveCopy(coveName: string, waveCount: number | undefined) {
   return Object.freeze({
     title: `Delete ${coveName}?`,
-    consequence: waveCount === 1
+    consequence: waveCount === undefined
+      ? 'The number of waves is not available. Every wave in this cove will be deleted. This cannot be undone.'
+      : waveCount === 1
       ? 'This deletes 1 wave. This cannot be undone.'
       : `This deletes ${waveCount} waves. This cannot be undone.`,
     prompt: `Type ${coveName} to confirm.`,

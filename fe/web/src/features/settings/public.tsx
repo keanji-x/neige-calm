@@ -6,6 +6,7 @@ import { useEffect } from 'react';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
 import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
+import { ErrorBox } from '../../ui/error-box/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './settings.module.css';
 
@@ -25,6 +26,7 @@ export type SettingsPageProps = Readonly<{
   /** Timestamp of the last successful save; drives the transient confirmation. */
   savedAt: number | null;
   onSave: (patch: SettingsPatch) => void | Promise<void>;
+  onRetryLoad: () => void;
   onOpenToday: () => void;
   themeMode: ThemeMode;
   onThemeModeChange: (mode: ThemeMode) => void;
@@ -55,7 +57,7 @@ function buildPatch(draft: Draft, seed: Draft): SettingsPatch {
 }
 
 export function SettingsPage({
-  settings, loadError, saving, saveError, savedAt, onSave, onOpenToday,
+  settings, loadError, saving, saveError, savedAt, onSave, onRetryLoad, onOpenToday,
   themeMode, onThemeModeChange, savedNoticeMs = SAVED_NOTICE_MS,
 }: SettingsPageProps) {
   const loaded = settings !== undefined;
@@ -70,8 +72,12 @@ export function SettingsPage({
   const [seed, setSeed] = useState<Draft | null>(null);
   const [draft, setDraft] = useState<Draft>({ http: '', https: '' });
   if (loaded && (seed === null || seed.http !== incoming.http || seed.https !== incoming.https)) {
+    const previous = seed;
     setSeed(incoming);
-    setDraft(incoming);
+    setDraft((current) => ({
+      http: previous === null || current.http === previous.http ? incoming.http : current.http,
+      https: previous === null || current.https === previous.https ? incoming.https : current.https,
+    }));
   }
 
   const [acknowledged, setAcknowledged] = useState<number | null>(null);
@@ -100,10 +106,10 @@ export function SettingsPage({
             of four. */}
         <section className={styles.section} aria-labelledby="nc-settings-network">
           <h2 className={styles.sectionLabel} id="nc-settings-network">Network</h2>
-          {loadError !== null && <p className={styles.error} role="alert">{loadError}</p>}
-          {!loaded
+          {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
+          {!loaded && loadError === null
             ? <p className={styles.hint}>Loading settings…</p>
-            : (
+            : loaded ? (
               <>
                 <Field
                   id="nc-settings-http-proxy"
@@ -158,7 +164,7 @@ export function SettingsPage({
                 </div>
                 {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
               </>
-            )}
+            ) : null}
         </section>
 
         <section className={styles.section} aria-labelledby="nc-settings-appearance">

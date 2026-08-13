@@ -17,7 +17,9 @@ import { useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
-import { waveDisplayTitle, type Wave, type WaveDetailWire } from '../../../../core/domain/wave.ts';
+import {
+  toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
+} from '../../../../core/domain/wave.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
@@ -35,7 +37,9 @@ import {
   conversationName, conversationNameFrom,
   type Conversation, type ConversationTurn,
 } from '../../../../core/domain/conversation.ts';
-import { Dialog } from '../../ui/dialog/public.tsx';
+import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
+import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
+import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
@@ -47,6 +51,7 @@ import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { useGo, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
+import { ErrorBox } from '../../ui/error-box/public.tsx';
 
 /**
  * The conversation store, standing in for an endpoint that does not exist.
@@ -87,10 +92,20 @@ type ConversationStore = Readonly<{
   send: (conversationId: string, text: string) => void;
 }>;
 
+export function changePendingCount(
+  current: ReadonlyMap<string, number>, conversationId: string, delta: 1 | -1,
+): ReadonlyMap<string, number> {
+  const next = new Map(current);
+  const count = (next.get(conversationId) ?? 0) + delta;
+  if (count <= 0) next.delete(conversationId);
+  else next.set(conversationId, count);
+  return next;
+}
+
 function useConversationStore(): ConversationStore {
   const [conversations, setConversations] = useState<readonly Conversation[]>([]);
   const [turns, setTurns] = useState<Readonly<Record<string, readonly ConversationTurn[]>>>({});
-  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  const [pendingCounts, setPendingCounts] = useState<ReadonlyMap<string, number>>(() => new Map());
   const seq = useRef(0);
   const nextId = (prefix: string) => { seq.current += 1; return `${prefix}-${seq.current}`; };
 
@@ -126,23 +141,19 @@ function useConversationStore(): ConversationStore {
         ? { ...conversation, title: conversationNameFrom(text) }
         : conversation
     )));
-    setPending((current) => new Set(current).add(conversationId));
+    setPendingCounts((current) => changePendingCount(current, conversationId, 1));
     // A delay, because the state it puts the surface in is real: the live dot
     // and the "working" state exist and have to be reachable to be looked at.
     window.setTimeout(() => {
       append(conversationId, { id: nextId('turn'), author: 'agent', text: STUB_REPLY, atMs: Date.now() });
-      setPending((current) => {
-        const next = new Set(current);
-        next.delete(conversationId);
-        return next;
-      });
+      setPendingCounts((current) => changePendingCount(current, conversationId, -1));
     }, STUB_REPLY_DELAY_MS);
   };
 
   return {
     conversations,
     turnsOf: (conversationId) => turns[conversationId] ?? EMPTY_TURNS,
-    pending,
+    pending: new Set(pendingCounts.keys()),
     start,
     send,
   };
@@ -296,11 +307,26 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const go = useGo();
   const waveMutations = useWaveMutations(transport);
+  const deletion = useDeleteConfirm((waveId) => {
+    const wave = workspace.waves.find((candidate) => candidate.id === waveId);
+    return wave === undefined ? undefined : waveMutations.remove(wave.id, wave.coveId);
+  });
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
   const chat = useConversationPanel(null);
+  const workspaceError = workspace.covesError ?? workspace.overlaysError
+    ?? workspace.waveErrorsByCove.values().next().value ?? null;
+  if (workspaceError !== null) return <ErrorBox
+    message={workspaceError.message}
+    onRetry={() => {
+      workspace.retryCoves(); workspace.retryOverlays();
+      for (const cove of workspace.coves) workspace.retryWaves(cove.id);
+    }}
+  />;
+  if (workspace.covesLoading || workspace.overlaysLoading
+    || (workspace.waves.length === 0 && [...workspace.wavesLoadingByCove.values()].some(Boolean))) return null;
   return (
     <>
     <TodayPage
@@ -320,14 +346,23 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
              card, where every other list already puts a delete under the status
              dot. The main column's sections stay read-only: they are the day's
              report, and a report is not a place you edit from. */
-          onDelete={options.variant === 'panel'
-            ? (waveId) => { void waveMutations.remove(waveId, wave.coveId); }
-            : undefined}
+          onDelete={options.variant === 'panel' ? deletion.request : undefined}
         />
       )}
       conversationList={chat.list}
         conversationAction={chat.action}
     />
+    <ConfirmDialog
+      open={deletion.open}
+      title={DELETE_WAVE_COPY.title}
+      description={DELETE_WAVE_COPY.description}
+      confirmLabel={DELETE_WAVE_COPY.confirmLabel}
+      confirmBusyLabel="Deleting…"
+      confirmState={deletion.pending ? 'busy' : 'ready'}
+      onConfirm={deletion.confirm}
+      onCancel={deletion.cancel}
+    />
+    <OperationFeedback feedback={deletion.feedback} />
     {chat.drawer}
     </>
   );
@@ -338,6 +373,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const coveMutations = useCoveMutations(transport);
   const waveMutations = useWaveMutations(transport);
+  const waveDeletion = useDeleteConfirm((waveId) => waveMutations.remove(waveId, coveId ?? ''));
   const go = useGo();
   const [creating, setCreating] = useState(false);
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
@@ -354,8 +390,15 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
     // exists; showing "missing" first and the real page a moment later reads
     // as a flash of a wrong answer.
     if (workspace.covesLoading) return null;
+    if (workspace.covesError !== null) return <ErrorBox message={workspace.covesError.message} onRetry={workspace.retryCoves} />;
     return <PendingRoute label="Cove" owner="features/cove" missing />;
   }
+  const waveError = workspace.waveErrorsByCove.get(cove.id) ?? workspace.overlaysError;
+  if (waveError !== null && waveError !== undefined) return <ErrorBox
+    message={waveError.message}
+    onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
+  />;
+  if (workspace.wavesLoadingByCove.get(cove.id) || !workspace.wavesByCove.has(cove.id)) return null;
   const waves = workspace.wavesByCove.get(cove.id) ?? [];
   const submit = (draft: NewWaveDraft) => {
     setSubmitting(true);
@@ -412,7 +455,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
                thing at a time — the status dot, becoming the delete on hover —
                and pinning already has a permanent home in the rail, which is
                also the only place a pinned wave surfaces. */
-            onDeleteWave={(waveId) => { void waveMutations.remove(waveId, cove.id); }}
+            onDeleteWave={waveDeletion.request}
           />
         )}
       />
@@ -426,6 +469,17 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
           onSubmit={submit}
         />
       </Dialog>
+      <ConfirmDialog
+        open={waveDeletion.open}
+        title={DELETE_WAVE_COPY.title}
+        description={DELETE_WAVE_COPY.description}
+        confirmLabel={DELETE_WAVE_COPY.confirmLabel}
+        confirmBusyLabel="Deleting…"
+        confirmState={waveDeletion.pending ? 'busy' : 'ready'}
+        onConfirm={waveDeletion.confirm}
+        onCancel={waveDeletion.cancel}
+      />
+      <OperationFeedback feedback={waveDeletion.feedback} />
       {chat.drawer}
     </>
   );
@@ -448,14 +502,15 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
 
   if (!detail.data) {
     if (detail.isLoading || detail.isFetching) return null;
+    if (detail.error instanceof Error) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
     return <PendingRoute label="Wave" owner="features/wave" missing />;
   }
   // `detail.data` can still be the previously-viewed wave while this one
   // fetches; rendering it under this URL would show the wrong wave.
   if (waveId !== undefined && detail.data.wave.id !== waveId) return null;
 
-  const wave = workspace.waves.find((candidate) => candidate.id === detail.data.wave.id);
-  if (wave === undefined) return null;
+  const wave = workspace.waves.find((candidate) => candidate.id === detail.data.wave.id)
+    ?? toWave(detail.data.wave, waveActivityFrom(detail.data.wave.id, detail.data.overlays));
 
   return (
     <WaveRouteBody
@@ -482,6 +537,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
     { id: wave.id, title: waveDisplayTitle(wave.title) },
     { showWave: false },
   );
+  const report = readWaveReport(cards);
 
   return (
     <>
@@ -489,7 +545,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       wave={wave}
       cards={cards}
       report={<ReportDocument
-        body={readWaveReport(cards)?.body ?? null}
+        body={report === null ? null : report.body || report.summary}
         empty={<ReportEmpty
           lead="Nothing written here yet."
           hints={[
@@ -524,6 +580,7 @@ function SettingsRoute({ transport }: { transport: ApiTransportPort }) {
     <SettingsPage
       settings={settings.data?.settings}
       loadError={settings.error instanceof Error ? settings.error.message : null}
+      onRetryLoad={() => { void settings.refetch(); }}
       saving={saving}
       saveError={saveError}
       savedAt={savedAt}

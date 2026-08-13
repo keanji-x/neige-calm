@@ -85,6 +85,12 @@ describe('cove disclosure', () => {
 });
 
 describe('cove row', () => {
+  it('excludes archived waves from shortcuts and cove groups', () => {
+    const archived = wave({ title: 'Filed away', lifecycle: 'blocked', archivedAt: 10, pinnedAt: 9 });
+    renderSidebar({ waves: [archived], wavesByCove: new Map([['c1', [archived]]]) });
+    expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
+  });
+
   /*
    * The count is gone, and this asserts its absence.
    *
@@ -177,6 +183,13 @@ describe('destructive confirms', () => {
     expect(onDeleteCove.mock.calls).toEqual([['c1']]);
   });
 
+  it('states that the cascade count is unknown when the cove wave query has no data', async () => {
+    renderSidebar({ wavesByCove: new Map() });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('The number of waves is not available.');
+    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
+  });
+
   it('keeps the confirm mounted while the delete is in flight and clears it on rejection', async () => {
     let reject: (reason: Error) => void = () => {};
     const onDeleteWave = vi.fn(() => new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; }));
@@ -195,6 +208,7 @@ describe('destructive confirms', () => {
     reject(new Error('boom'));
     await screen.findByRole('button', { name: 'Delete Task' });
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('boom');
   });
 });
 

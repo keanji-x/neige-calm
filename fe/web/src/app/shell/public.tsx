@@ -30,6 +30,8 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
   const waveMutations = useWaveMutations(transport);
   const currentPath = useCurrentPath();
   const go = useGo();
+  const readError = workspace.covesError ?? workspace.overlaysError
+    ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
   /*
    * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
@@ -57,6 +59,12 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
         wavesByCove={workspace.wavesByCove}
         waves={workspace.waves}
         currentPath={currentPath}
+        readError={readError?.message ?? null}
+        readLoading={workspace.covesLoading}
+        onRetryRead={() => {
+          workspace.retryCoves(); workspace.retryOverlays();
+          for (const cove of workspace.coves) workspace.retryWaves(cove.id);
+        }}
         onGo={go}
         onCreateCove={async (name, color) => { await coveMutations.create({ name, color }); }}
         onDeleteCove={(coveId) => coveMutations.remove(coveId)}

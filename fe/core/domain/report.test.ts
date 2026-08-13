@@ -20,6 +20,11 @@ describe('readWaveReport', () => {
     expect(readWaveReport(cards)).toEqual({ summary: 'One line', body: '# Goal\n\nDo the thing.' });
   });
 
+  it('keeps a report whose summary is written while its body is blank', () => {
+    expect(readWaveReport([card({ payload: { summary: 'Agent finished the migration.', body: '  ' } })]))
+      .toEqual({ summary: 'Agent finished the migration.', body: '' });
+  });
+
   // A payload from a newer schema must stay readable: this surface renders two
   // fields and has no business rejecting a document because the persistence
   // layer grew a third.

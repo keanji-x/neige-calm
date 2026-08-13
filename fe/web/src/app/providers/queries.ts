@@ -120,6 +120,14 @@ export type Workspace = Readonly<{
   wavesByCove: ReadonlyMap<string, Wave[]>;
   waves: Wave[];
   covesLoading: boolean;
+  overlaysLoading: boolean;
+  covesError: Error | null;
+  overlaysError: Error | null;
+  waveErrorsByCove: ReadonlyMap<string, Error>;
+  wavesLoadingByCove: ReadonlyMap<string, boolean>;
+  retryCoves: () => void;
+  retryOverlays: () => void;
+  retryWaves: (coveId: string) => void;
 }>;
 
 /**
@@ -137,19 +145,38 @@ export function useWorkspace(transport: ApiTransportPort): Workspace {
   const covesQuery = useQuery(coveListQueryOptions(transport));
   const overlaysQuery = useQuery(waveOverlaysQueryOptions(transport));
   const coves = covesQuery.data ?? [];
-  const overlays = overlaysQuery.data ?? [];
+  const overlays = overlaysQuery.data;
   const waveQueries = useQueries({
     queries: coves.map((cove) => wavesInCoveQueryOptions(transport, cove.id)),
   });
   const wavesByCove = new Map<string, Wave[]>();
+  const waveErrorsByCove = new Map<string, Error>();
+  const wavesLoadingByCove = new Map<string, boolean>();
   const waves: Wave[] = [];
   for (const [index, cove] of coves.entries()) {
-    const rows = (waveQueries[index]?.data ?? [])
-      .map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
-    wavesByCove.set(cove.id, rows);
-    waves.push(...rows);
+    const query = waveQueries[index];
+    wavesLoadingByCove.set(cove.id, query?.isLoading ?? false);
+    if (query?.error instanceof Error) waveErrorsByCove.set(cove.id, query.error);
+    if (query?.data !== undefined && overlays !== undefined) {
+      const rows = query.data.map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
+      wavesByCove.set(cove.id, rows);
+      waves.push(...rows);
+    }
   }
-  return { coves, wavesByCove, waves, covesLoading: covesQuery.isLoading };
+  return {
+    coves, wavesByCove, waves, covesLoading: covesQuery.isLoading,
+    overlaysLoading: overlaysQuery.isLoading,
+    covesError: covesQuery.error instanceof Error ? covesQuery.error : null,
+    overlaysError: overlaysQuery.error instanceof Error ? overlaysQuery.error : null,
+    waveErrorsByCove,
+    wavesLoadingByCove,
+    retryCoves: () => { void covesQuery.refetch(); },
+    retryOverlays: () => { void overlaysQuery.refetch(); },
+    retryWaves: (coveId) => {
+      const index = coves.findIndex((cove) => cove.id === coveId);
+      if (index >= 0) void waveQueries[index]?.refetch();
+    },
+  };
 }
 
 /** Route loaders prime only this one list; see INV-APP-084 above. */

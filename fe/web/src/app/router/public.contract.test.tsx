@@ -4,8 +4,8 @@ import { QueryClient } from '@tanstack/react-query';
 import { describe, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createRouteTree } from './public.tsx';
-import { pathFor } from './navigation.ts';
+import { changePendingCount, createRouteTree } from './public.tsx';
+import { pathFor, routeParamFromPath } from './navigation.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 
@@ -72,5 +72,27 @@ describe('route registration', () => {
     expect(pathFor({ name: 'cove', coveId: 'c1' })).toBe('/cove/c1');
     expect(pathFor({ name: 'wave', waveId: 'w1' })).toBe('/wave/w1');
     expect(pathFor({ name: 'settings' })).toBe('/settings');
+  });
+});
+
+describe('route parameter codec', () => {
+  it('percent-encodes ids on output and decodes them on input', () => {
+    expect(pathFor({ name: 'wave', waveId: 'a/b %' })).toBe('/wave/a%2Fb%20%25');
+    expect(routeParamFromPath('/wave/a%2Fb%20%25', '/wave/')).toBe('a/b %');
+  });
+
+  it('treats malformed percent escapes as an unmatched parameter instead of throwing', () => {
+    expect(routeParamFromPath('/wave/%', '/wave/')).toBeUndefined();
+  });
+});
+
+describe('conversation pending accounting', () => {
+  it('keeps a conversation pending until both concurrent replies finish', () => {
+    let counts = changePendingCount(new Map(), 'c1', 1);
+    counts = changePendingCount(counts, 'c1', 1);
+    counts = changePendingCount(counts, 'c1', -1);
+    expect(counts.get('c1')).toBe(1);
+    counts = changePendingCount(counts, 'c1', -1);
+    expect(counts.has('c1')).toBe(false);
   });
 });

@@ -38,7 +38,7 @@ export type WaveReport = Readonly<{ summary: string; body: string }>;
  * The wave's report, or `null` when it has none.
  *
  * "None" covers three cases that are the same to a reader: no report card, a
- * payload that does not parse, and a payload whose body is blank. A wave that
+ * payload that does not parse, and a payload whose body and summary are blank. A wave that
  * has been created but never worked on is in the third case, which is the
  * common one — so it must not look like a failure.
  */
@@ -47,7 +47,8 @@ export function readWaveReport(cards: readonly CardWire[]): WaveReport | null {
   if (card === undefined) return null;
   const parsed = waveReportPayloadSchema.safeParse(card.payload);
   if (!parsed.success) return null;
+  const summary = parsed.data.summary.trim();
   const body = parsed.data.body.trim();
-  if (body === '') return null;
-  return { summary: parsed.data.summary.trim(), body };
+  if (body === '' && summary === '') return null;
+  return { summary, body };
 }

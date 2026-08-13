@@ -17,6 +17,7 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     saveError: null,
     savedAt: null,
     onSave: vi.fn(),
+    onRetryLoad: vi.fn(),
     onOpenToday: vi.fn(),
     themeMode: 'system',
     onThemeModeChange: vi.fn(),

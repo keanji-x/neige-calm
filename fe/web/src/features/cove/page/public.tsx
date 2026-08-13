@@ -19,8 +19,8 @@ import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { deleteCoveCopy } from '../../../ui/confirm-dialog/copy.ts';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
+import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelAction, PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
-import { useState } from '../../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../../ui/typed-confirm/public.tsx';
 import styles from './page.module.css';
 
@@ -55,26 +55,9 @@ export function CovePage({
   cove, waveCount, waveList, report, conversationList, conversationAction, pageTitleRef,
   onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const typed = useTypedConfirm(confirmOpen ? cove.name : '');
+  const deletion = useDeleteConfirm(() => onDeleteCove());
+  const typed = useTypedConfirm(deletion.open ? cove.name : '');
   const copy = deleteCoveCopy(cove.name, waveCount);
-
-  const confirmDelete = () => {
-    if (deleting) return;
-    setDeleting(true);
-    void (async () => {
-      try {
-        await onDeleteCove();
-      } catch {
-        // The caller owns surfacing the failure; this surface only has to make
-        // sure the dialog does not strand. See INV-CONFIRM-001.
-      } finally {
-        setDeleting(false);
-        setConfirmOpen(false);
-      }
-    })();
-  };
 
   return (
     <div className={styles.page}>
@@ -136,7 +119,7 @@ export function CovePage({
             className={`${styles.headerAction} ${styles.headerDelete}`}
             aria-label={`Delete cove ${cove.name}`}
             title="Delete cove"
-            onClick={() => setConfirmOpen(true)}
+            onClick={() => deletion.request(cove.id)}
           >
             ×
           </button>
@@ -183,7 +166,7 @@ export function CovePage({
           product that earns a typed confirm (§4.3 / §6.13). The rail's entry
           point opens the same dialog with the same copy. */}
       <ConfirmDialog
-        open={confirmOpen}
+        open={deletion.open}
         title={copy.title}
         description={<TypedDeleteBody
           copy={copy}
@@ -194,12 +177,13 @@ export function CovePage({
         />}
         confirmLabel={copy.confirmLabel}
         confirmBusyLabel="Deleting…"
-        confirmState={deleting ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
+        confirmState={deletion.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
         initialFocusRef={typed.inputRef}
         restoreFocusRef={pageTitleRef}
-        onConfirm={confirmDelete}
-        onCancel={() => setConfirmOpen(false)}
+        onConfirm={deletion.confirm}
+        onCancel={deletion.cancel}
       />
+      <OperationFeedback feedback={deletion.feedback} />
     </div>
   );
 }

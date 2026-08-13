@@ -226,9 +226,18 @@ export function sortByLifecycleRank(waves: readonly Wave[]): Wave[] {
   return [...waves].sort((left, right) => lifecycleRank(left) - lifecycleRank(right));
 }
 
+/** Archived is an orthogonal visibility flag, never a lifecycle bucket. */
+export function visibleWaves(waves: readonly Wave[]): Wave[] {
+  return waves.filter((wave) => wave.archivedAt === null);
+}
+
 /** The wave has work in flight. `done` / `draft` / `canceled` are neither. */
 export function isRunning(lifecycle: WaveLifecycle): boolean {
   return lifecycle === 'planning' || lifecycle === 'dispatching' || lifecycle === 'working';
+}
+
+export function isTerminal(lifecycle: WaveLifecycle): boolean {
+  return lifecycle === 'done' || lifecycle === 'canceled' || lifecycle === 'failed';
 }
 
 export const UNTITLED_WAVE_LABEL = 'Untitled wave';
@@ -279,7 +288,7 @@ export function activeWavesOn(waves: readonly Wave[], day: Date, nowMs: number):
   const dayStart = startOfDay(day);
   const dayEnd = endOfDay(day);
   const matched = waves.filter((wave) => {
-    const end = wave.terminalAt ?? nowMs;
+    const end = wave.terminalAt ?? (isTerminal(wave.lifecycle) ? wave.updatedAt : nowMs);
     return wave.createdAt <= dayEnd && end >= dayStart;
   });
   return matched.sort((left, right) => (left.createdAt !== right.createdAt
