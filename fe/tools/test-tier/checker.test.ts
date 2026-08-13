@@ -13,7 +13,20 @@ const fixtureRoot = resolve(import.meta.dirname, 'fixtures');
 const fixtureManifest = Object.freeze({
   positive: Object.freeze(['browser.browser.test.ts', 'data.yaml', 'static.test.ts']),
   negative: Object.freeze(['data.yaml', 'orphan.spec.ts', 'wrong-browser.test.ts']),
+  decisions: Object.freeze([
+    'browser-probe-misassigned.yaml', 'overlap.yaml', 'playwright-owned.yaml', 'unassigned.yaml',
+  ]),
 });
+
+interface DecisionFixture {
+  trackedTest: string;
+  projects: { name: string; include: string[]; exclude: string[] }[];
+  expected: string | null;
+}
+
+function decisionFixture(name: string): DecisionFixture {
+  return parse(readFileSync(resolve(fixtureRoot, 'decisions', name), 'utf8')) as DecisionFixture;
+}
 
 function fixtureEntries(kind: keyof typeof fixtureManifest): TierEntry[] {
   const value: unknown = parse(readFileSync(resolve(fixtureRoot, kind, 'data.yaml'), 'utf8'));
@@ -126,6 +139,10 @@ describe('test-tier-project fixtures', () => {
 
 describe('tier gate decisions', () => {
   const manifest = [
+    'tools/test-tier/fixtures/decisions/browser-probe-misassigned.yaml',
+    'tools/test-tier/fixtures/decisions/overlap.yaml',
+    'tools/test-tier/fixtures/decisions/playwright-owned.yaml',
+    'tools/test-tier/fixtures/decisions/unassigned.yaml',
     'tools/test-tier/fixtures/negative/data.yaml', 'tools/test-tier/fixtures/negative/orphan.spec.ts',
     'tools/test-tier/fixtures/negative/wrong-browser.test.ts', 'tools/test-tier/fixtures/positive/browser.browser.test.ts',
     'tools/test-tier/fixtures/positive/data.yaml', 'tools/test-tier/fixtures/positive/static.test.ts',
@@ -143,11 +160,20 @@ describe('tier gate decisions', () => {
     expect(tierGateViolations(valid)).toEqual([]);
   });
 
+  it.each(fixtureManifest.decisions)('proves the %s decision fixture independently', (name) => {
+    const fixture = decisionFixture(name);
+    const trackedTests = fixture.trackedTest === 'tools/test-tier/layout.browser.test.ts'
+      ? [fixture.trackedTest]
+      : ['tools/test-tier/layout.browser.test.ts', fixture.trackedTest];
+    const violations = tierGateViolations({ ...valid, trackedTests, projects: fixture.projects });
+    expect(violations).toEqual(fixture.expected === null ? [] : [expect.stringContaining(fixture.expected)]);
+  });
+
   it.each([
     ['missing fixture', { trackedFixtures: manifest.slice(1) }, 'tracked fixture set differs'],
     ['extra fixture', { trackedFixtures: [...manifest, 'tools/test-tier/fixtures/positive/extra.ts'] }, 'tracked fixture set differs'],
-    ['unassigned test suffix', { trackedTests: [...valid.trackedTests, 'probe.test.mts'], projects: projects.slice(1) }, 'outside every vitest project'],
-    ['overlapping test', { trackedTests: [...valid.trackedTests, 'probe.test.ts'], projects: [...projects, { name: 'other', include: ['probe.test.ts'], exclude: [] }] }, 'multiple vitest projects'],
+    ['unassigned test suffix', { trackedTests: [...valid.trackedTests, 'probe.test.mts'], projects: projects.slice(1) }, 'outside every test project'],
+    ['overlapping test', { trackedTests: [...valid.trackedTests, 'probe.test.ts'], projects: [...projects, { name: 'other', include: ['probe.test.ts'], exclude: [] }] }, 'multiple test projects'],
     ['missing browser probe', { trackedTests: ['other.browser.test.ts'] }, 'must be tracked and mapped'],
     ['misassigned browser probe', { projects: projects.slice(0, 1) }, 'must be tracked and mapped'],
   ])('reports %s', (_label, change, message) => {

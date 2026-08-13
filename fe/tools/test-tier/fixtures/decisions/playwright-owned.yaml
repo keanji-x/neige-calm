@@ -1,0 +1,9 @@
+trackedTest: e2e/playwright-owned.spec.ts
+projects:
+  - name: browser
+    include: [tools/test-tier/layout.browser.test.ts]
+    exclude: []
+  - name: playwright
+    include: [e2e/**/*.spec.ts]
+    exclude: []
+expected: null
