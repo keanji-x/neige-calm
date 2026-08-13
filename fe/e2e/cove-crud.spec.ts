@@ -38,8 +38,9 @@ test('creates and deletes a cove through the UI and persists both changes', asyn
   await row.click();
   await expect(page).toHaveURL(new RegExp(`/cove/${cove!.id}$`));
   await rail.getByRole('button', { name: `Delete cove ${name}` }).click();
-  await page.getByRole('textbox', { name: 'Cove name' }).fill(name);
-  await page.getByRole('button', { name: 'Delete cove', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: `Delete ${name}?` });
+  await dialog.getByLabel(`Type ${name} to confirm.`).fill(name);
+  await dialog.getByRole('button', { name: 'Delete cove', exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect.poll(async () => {
     const response = await request.get('/api/coves');

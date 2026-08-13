@@ -15,12 +15,20 @@ test('the four primary routes have no WCAG A or AA violations in light mode', as
   createdCoveIds.push(cove.id);
   const wave = await createWave(request, cove.id);
 
-  for (const path of ['/', `/cove/${cove.id}`, `/wave/${wave.id}`, '/settings']) {
-    await page.goto(path);
+  const routes = [
+    { path: '/', anchor: page.locator('section[aria-label="Today terminal"]') },
+    { path: `/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
+    { path: `/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
+    { path: '/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
+  ];
+
+  for (const route of routes) {
+    await page.goto(route.path);
     await expect(page.locator('nav[aria-label="Workspace"]')).toBeVisible();
+    await expect(route.anchor).toBeVisible();
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
       .analyze();
-    expect(results.violations, `${path}: ${results.violations.map((item) => item.id).join(', ')}`).toEqual([]);
+    expect(results.violations, `${route.path}: ${results.violations.map((item) => item.id).join(', ')}`).toEqual([]);
   }
 });
